@@ -75,7 +75,7 @@ from code_index.members import (
     shared_pins,
 )
 from code_index.query import IndexFamily, row_five_tuple
-from code_index.shared import get_index, get_measure_index
+from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import (
     Bound,
     BoundSet,
@@ -878,14 +878,75 @@ def measure_family_partitions(
 
     Return empty when no rows match. Served rows determine their observed
     partition; do not substitute a query's preferred election. Optional
-    `cache` reuses results with the same key.
+    `cache` reuses results with the same key. Without one, the partitions are kept on
+    `index` (`_index_measure_families`), keyed on every input `_measure_family_rows`
+    reads, among them the query's dataset scope, so the phases of one resolve and later
+    requests against the same index read them once.
     """
-    if cache is None:
-        return _measure_family_partitions_uncached(shape, index, axes, query)
-    key = measure_family_cache_key(shape, axes, query)
-    if key not in cache:
-        cache[key] = _measure_family_partitions_uncached(shape, index, axes, query)
-    return cache[key]
+    if cache is not None:
+        key = measure_family_cache_key(shape, axes, query)
+        if key not in cache:
+            cache[key] = _measure_family_partitions_uncached(shape, index, axes, query)
+        return cache[key]
+    memo = _index_measure_families(index)
+    exact = _measure_family_memo_key(shape, index, axes, query)
+    found = memo.get(exact)
+    if found is None:
+        found = _measure_family_partitions_uncached(shape, index, axes, query)
+        memo.put(exact, found)
+    return found
+
+
+_MEASURE_FAMILY_MEMO_ENTRIES = 256
+"""How many measure families `_index_measure_families` keeps per index. The wide CRS
+family's partitions hold about 6,300 member dcids."""
+
+
+class _BoundedMemo[K, V]:
+    """A memo that keeps its latest `size` entries, safe to share between threads."""
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+        self._entries: dict[K, V] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: K) -> V | None:
+        return self._entries.get(key)
+
+    def put(self, key: K, value: V) -> None:
+        with self._lock:
+            self._entries[key] = value
+            while len(self._entries) > self._size:
+                del self._entries[next(iter(self._entries))]
+
+
+@per_index
+def _index_measure_families(
+    _index: CodeIndex,
+) -> _BoundedMemo[Hashable, tuple[MeasurePartition, ...]]:
+    """The measure families `measure_family_partitions` read from one index."""
+    return _BoundedMemo(_MEASURE_FAMILY_MEMO_ENTRIES)
+
+
+def _measure_family_memo_key(
+    shape: ShapeDraft, index: CodeIndex, axes: Sequence[MeasureAxis], query: FamilyQuery
+) -> Hashable:
+    """Every input `_measure_family_rows` and the partition grouping read, apart from
+    the index: the axes, whether the index carries `shape` (`index_carries_shape`, which
+    reads its members), the shape's five-tuple and roles, and the whole query."""
+    return (
+        tuple(axes),
+        index_carries_shape(shape, index),
+        shape_five_tuple(shape),
+        shape.declared_roles,
+        shape.optional_roles,
+        query.five_tuple,
+        tuple(sorted(query.slots.items())),
+        query.source,
+        query.role_keys,
+        query.open_role_keys,
+        query.scope,
+    )
 
 
 def _measure_family_partitions_uncached(

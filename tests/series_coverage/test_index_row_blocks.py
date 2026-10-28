@@ -10,11 +10,12 @@ import itertools
 import random
 from collections.abc import Iterable, Sequence
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
 
-from series_coverage.index import BoundRoles, CoverageIndex, Role, _key_values
+from series_coverage.index import BoundRoles, CoverageIndex, Role, _key_values, _run, _runs
 from series_coverage.schema import RoleNames
 from tests.series_coverage.support import coverage_table, with_repeated_dictionaries
 
@@ -174,3 +175,15 @@ def test_key_values_decodes_every_row_of_every_chunk() -> None:
     assert _key_values(column) == column.to_pylist()
     plain = pa.chunked_array([pa.array(["a", "b"]), pa.array(["c"])])
     assert _key_values(plain) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_the_rows_of_many_codes_are_their_runs_in_code_order(seed: int) -> None:
+    """One search for every code finds the rows a search per code finds."""
+    rng = random.Random(seed)
+    codes = np.sort(np.array([rng.randrange(30) for _ in range(200)], dtype=np.int32))
+    wanted = set(rng.sample(range(40), rng.randrange(0, 12)))
+
+    expected = [np.arange(*_run(codes, code)) for code in sorted(wanted)]
+
+    assert _runs(codes, wanted).tolist() == (np.concatenate(expected).tolist() if expected else [])

@@ -64,6 +64,7 @@ from origin_catalogue.families import (
     FamilyTables,
     ReleaseFamilies,
 )
+from origin_catalogue.frozen_arcs import ArcAnswers, FrozenArcs
 from origin_catalogue.origins import BASE, DFO, UN_ID_PREFIX, UN_SYSTEM, DataCommons
 from origin_catalogue.schema import CatalogueManifest, ScanLevel
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_MEMBERS
@@ -600,6 +601,12 @@ class Catalogue(Protocol):
         which is read from the graph."""
         ...
 
+    def arc_answer(self, dcid: str, rows: tuple[UnArc, ...]) -> FrozenArcs:
+        """`dcid`'s `->*` answer from `rows`, the arcs `held_arcs` or `un_variable` gives it
+        (`frozen_arcs.served_arcs`), built on the first read of those rows and served again
+        from this catalogue's build for every later one (`frozen_arcs.ArcAnswers`)."""
+        ...
+
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
         """The summary of every variable of family `key` the bound graph release holds, then
         the base arc table's and, with the UN origin on, the UN tables'
@@ -664,7 +671,8 @@ class CatalogueSnapshot:
     given with `arcs`.
     `un_system_enabled` gates UN admission; with it off, no UN provenance or
     candidate is admitted and the UN tables answer nothing.
-    `scope` narrows `admit_series` to a request's allowed provenances (`scoped`)."""
+    `scope` narrows `admit_series` to a request's allowed provenances (`scoped`).
+    `arc_answers` keeps the `->*` answer its tables give each dcid read (`arc_answer`)."""
 
     manifest: CatalogueManifest
     tables: CatalogueTables
@@ -674,6 +682,8 @@ class CatalogueSnapshot:
     un_system_enabled: bool = True
     scope: frozenset[str] | None = None
     base_families: Mapping[FamilyKey, FamilySummary] = field(default_factory=dict)
+    # `scoped` copies share it, so every request of the build reads one memo.
+    arc_answers: ArcAnswers = field(default_factory=ArcAnswers, compare=False, repr=False)
 
     @property
     def build_id(self) -> str:
@@ -785,6 +795,9 @@ class CatalogueSnapshot:
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
         return release_held_arcs(self.arcs, dcid)
+
+    def arc_answer(self, dcid: str, rows: tuple[UnArc, ...]) -> FrozenArcs:
+        return self.arc_answers.answer(dcid, rows)
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
         return release_held_family(

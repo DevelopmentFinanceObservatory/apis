@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tracemalloc
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, cast
 
 import numpy as np
@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import series_coverage.index as coverage_index_module
+from origin_catalogue import SeriesAdmission, bound_catalogue
 from series_coverage.coverage_types import ServedExtent
 from series_coverage.index import (
     BoundRoles,
@@ -24,6 +25,7 @@ from series_coverage.index import (
     elected_year,
 )
 from series_coverage.schema import FacetMetadata, RoleNames, YearHorizon
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 from tests.series_coverage.support import (
     _ROWS,
     BUILD_EPOCH_YEAR,
@@ -34,6 +36,7 @@ from tests.series_coverage.support import (
     FACET_PROJECTED,
     FRA,
     KEN,
+    ROLE_NAMES,
     UNICEF,
     V1,
     V2,
@@ -44,6 +47,8 @@ from tests.series_coverage.support import (
     slice_index,
     with_repeated_dictionaries,
 )
+
+_CRS_PROVENANCE = "provenance/OECDCreditorReportingSystem"
 
 
 @pytest.fixture
@@ -1848,3 +1853,39 @@ def test_series_years_or_each_series_facets(read, expected, kept) -> None:
         key: sum(1 << (year - epoch) for year in years) for key, years in expected.items()
     }
     assert found.variables == {_WINDOW_SV: kept}
+
+
+def test_a_scoped_read_keeps_the_admitted_provenances_facets_judging_each_provenance_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admission keeps each provenance of a series that the scope admits, so a scoped read
+    keeps every row whose facet's provenance is admitted and asks the catalogue once,
+    whatever the number of series."""
+    other = "provenance/Other"
+    table, horizon = coverage_table(_ROWS)
+    idx = CoverageIndex(
+        table,
+        ROLE_NAMES,
+        {
+            FACET_ACTUALS: FacetMetadata(provenance_id=_CRS_PROVENANCE, observation_period="P1Y"),
+            FACET_PROJECTED: FacetMetadata(provenance_id=other, observation_period="P1Y"),
+        },
+        horizon=horizon,
+    )
+    asked: list[tuple[str, ...]] = []
+    admit = FakeCatalogue.admit_series
+
+    def counted(self: FakeCatalogue, provenances: Iterable[str]) -> SeriesAdmission:
+        asked.append(tuple(provenances))
+        return admit(self, asked[-1])
+
+    monkeypatch.setattr(FakeCatalogue, "admit_series", counted)
+
+    with bound_catalogue(FakeCatalogue().scoped(frozenset({_CRS_PROVENANCE}))):
+        crs = idx.admitted_pairs(variable=V1)
+    with bound_catalogue(FakeCatalogue().scoped(frozenset({other}))):
+        projected = idx.admitted_pairs(variable=V1)
+
+    assert crs == {FACET_ACTUALS: frozenset({(FRA, KEN), (DEU, KEN), (FRA, ETH)})}
+    assert projected == {FACET_PROJECTED: frozenset({(FRA, KEN)})}
+    assert len(asked) == 2

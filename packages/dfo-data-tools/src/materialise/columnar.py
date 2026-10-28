@@ -8,6 +8,7 @@ from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
+from dfo_frame_grammar import array_kernel, scalar_kernel
 
 from dc_sdmx.errors import SdmxResponseError
 from dc_sdmx.results import ATTRIBUTE_COLUMNS, VALUE_COLUMN, VARIABLE_COLUMN, observed_value
@@ -86,6 +87,36 @@ def _map_dictionary_values(
         [map_value(value) for value in dict_array.dictionary.to_pylist()], type=result_type
     )
     return mapped_dictionary.take(dict_array.indices)
+
+
+def _distinct_combinations(
+    columns: Sequence[pa.Array | pa.ChunkedArray],
+) -> tuple[pa.Array, list[tuple[object, ...]]]:
+    """The distinct combinations of `columns`' values, and each row's position among them.
+    Each column joins by encoding the (combination so far, value) codes again, so a code
+    stays below the row count times the column's distinct values."""
+    positions: pa.Array | None = None
+    combinations: list[tuple[object, ...]] = [()]
+    for column in columns:
+        if not isinstance(column, pa.Array):
+            column = column.combine_chunks()
+        encoded = _as_dictionary_array(pc.dictionary_encode(column))
+        values = encoded.dictionary.to_pylist()
+        codes = encoded.indices.cast(pa.int64())
+        if positions is not None:
+            codes = array_kernel(
+                "add",
+                array_kernel("multiply", positions, pa.scalar(len(values), pa.int64())),
+                codes,
+            )
+        joined = _as_dictionary_array(pc.dictionary_encode(codes))
+        combinations = [
+            (*combinations[code // len(values)], values[code % len(values)])
+            for code in cast(list[int], joined.dictionary.to_pylist())
+        ]
+        positions = joined.indices.cast(pa.int64())
+    assert positions is not None
+    return positions, combinations
 
 
 def observed_values(values: pa.Array | pa.ChunkedArray) -> pa.Array:
@@ -289,24 +320,23 @@ def admission_mask(table: pa.Table, *, admission: RowAdmission) -> pa.BooleanArr
                     f"{missing} of {table.num_rows} SDMX rows carry no {column}, so their "
                     "scoped coverage admission cannot be checked"
                 )
-        facet_ids = table[_FACET_ID_COLUMN].to_pylist()
-        donor_values = (
-            table[admission.role_names.donor].to_pylist()
-            if admission.role_names.donor is not None
-            else [""] * table.num_rows
-        )
-        recipient_values = (
-            table[admission.role_names.recipient].to_pylist()
-            if admission.role_names.recipient is not None
-            else [""] * table.num_rows
-        )
-        admitted = [
-            (donor, recipient) in admission.pairs_by_facet.get(facet_id, frozenset())
-            for facet_id, donor, recipient in zip(
-                facet_ids, donor_values, recipient_values, strict=True
+        # Rows repeat a few (facet, donor, recipient) triples, so each distinct one is
+        # checked once. A role the shape lacks reads as "".
+        donor, recipient = admission.role_names.donor, admission.role_names.recipient
+        names = [_FACET_ID_COLUMN, *(name for name in (donor, recipient) if name is not None)]
+        positions, combinations = _distinct_combinations([table[name] for name in names])
+        admitted = []
+        for combination in combinations:
+            cells = dict(zip(names, combination, strict=True))
+            pair = (
+                "" if donor is None else cells[donor],
+                "" if recipient is None else cells[recipient],
             )
-        ]
-        return pa.array(admitted, type=pa.bool_())
+            admitted.append(
+                pair
+                in admission.pairs_by_facet.get(cast(str, cells[_FACET_ID_COLUMN]), frozenset())
+            )
+        return _as_boolean_array(pa.array(admitted, type=pa.bool_()).take(positions))
     for column in (_FACET_ID_COLUMN, _PLACE_COLUMN):
         missing = table[column].null_count
         if missing:
@@ -411,12 +441,19 @@ def served_year_bounds(table: pa.Table) -> tuple[int, int] | None:
 def dispatched_rows(
     batch: pa.RecordBatch, *, facet_ids: Sequence[str], admission: RowAdmission
 ) -> pa.RecordBatch:
-    """The rows of `batch` from one of `facet_ids`, the facets a member dispatched. A chunk
-    fetches the union of its members' facet ids, so a member's variable can come back under
-    an id only another member dispatched, such as a reissue of the shared facet that only
-    one member's probe reported. A row naming no facet is kept, and under `PlaceAdmission`
-    so is a row naming no `observationAbout`: `admission_mask` refuses both as malformed
-    there."""
+    """The rows of `batch` from one of `facet_ids`, the facets a member dispatched
+    (`dispatched_mask`)."""
+    return batch.filter(dispatched_mask(batch, facet_ids=facet_ids, admission=admission))
+
+
+def dispatched_mask(
+    batch: pa.RecordBatch, *, facet_ids: Sequence[str], admission: RowAdmission
+) -> pa.BooleanArray:
+    """Whether each row of `batch` is from one of `facet_ids`, the facets a member dispatched.
+    A chunk fetches the union of its members' facet ids, so a member's variable can come back
+    under an id only another member dispatched, such as a reissue of the shared facet that only
+    one member's probe reported. A row naming no facet is kept, and under `PlaceAdmission` so is
+    a row naming no `observationAbout`: `admission_mask` refuses both as malformed there."""
     facet = batch[_FACET_ID_COLUMN]
     keep = _as_boolean_array(
         pc.or_(
@@ -426,25 +463,52 @@ def dispatched_rows(
     )
     if isinstance(admission, PlaceAdmission) and _PLACE_COLUMN in batch.schema.names:
         keep = pc.or_(keep, pc.is_null(batch[_PLACE_COLUMN]))
-    return batch.filter(_as_boolean_array(keep))
+    return _as_boolean_array(keep)
 
 
-def split_by_variable(
-    batch: pa.RecordBatch, *, index_by_bare_stat_var: Mapping[str, int]
-) -> dict[int, pa.RecordBatch]:
-    """Routes rows by bare `variableMeasured`, stripping `dcid:` if present. Returns one
-    batch per distinct member index, including empty batches. Rows with unknown variables
-    are dropped."""
+def member_indices(batch: pa.RecordBatch, *, index_by_bare_stat_var: Mapping[str, int]) -> pa.Array:
+    """Each row's member index by its bare `variableMeasured`, stripping `dcid:` if present,
+    null for a variable no member measures."""
 
     def _member_index(value: str | None) -> int | None:
         if value is None:
             return None
         return index_by_bare_stat_var.get(value.removeprefix(_STAT_VAR_REF_PREFIX))
 
-    target_index = _map_dictionary_values(
+    return _map_dictionary_values(
         batch[VARIABLE_COLUMN], map_value=_member_index, result_type=pa.int64()
     )
+
+
+def split_by_variable(
+    batch: pa.RecordBatch, *, index_by_bare_stat_var: Mapping[str, int]
+) -> dict[int, pa.RecordBatch]:
+    """Routes rows by bare `variableMeasured` (`member_indices`). Returns one batch per
+    distinct member index, including empty batches. Rows with unknown variables are
+    dropped."""
+    target_index = member_indices(batch, index_by_bare_stat_var=index_by_bare_stat_var)
     return {
         member_index: batch.filter(pc.equal(target_index, pa.scalar(member_index, type=pa.int64())))
         for member_index in set(index_by_bare_stat_var.values())
     }
+
+
+def strictly_increasing(keys: Sequence[pa.Array]) -> bool:
+    """Whether each row's key, the tuple of `keys`' cells at that row, is lexicographically
+    greater than the previous row's. Arrow orders text by UTF-8 bytes, the code-point order
+    Python compares strings in."""
+    if not keys or len(keys[0]) < 2:
+        return True
+    count = len(keys[0])
+    increasing: pa.Array | None = None
+    for array in reversed(keys):
+        after, before = array.slice(1), array.slice(0, count - 1)
+        greater = array_kernel("greater", after, before)
+        increasing = (
+            greater
+            if increasing is None
+            else array_kernel(
+                "or", greater, array_kernel("and", array_kernel("equal", after, before), increasing)
+            )
+        )
+    return bool(scalar_kernel("all", increasing).as_py())

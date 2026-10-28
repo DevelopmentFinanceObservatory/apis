@@ -90,7 +90,7 @@ from origin_catalogue.context import (
     record_un_read_failure,
 )
 from origin_catalogue.origins import DFO, UN_ID_PREFIX, UN_SYSTEM
-from origin_catalogue.un_mirror import UnArc, import_added, wire_arcs
+from origin_catalogue.un_mirror import UnArc, wire_arcs
 
 UN_BASE_URL: Final[str] = "https://unsd-datacommons.gcp.un-icc.cloud/core/api"
 """The UN System Data Commons API root. It needs no token."""
@@ -131,22 +131,10 @@ class _Unmirrored(Enum):
 _LIVE: Final = _Unmirrored.LIVE
 _OMITTED: Final = _Unmirrored.OMITTED
 
-_CONSTRAINT_PROPERTIES: Final[str] = "constraintProperties"
 _SERIES_ARC: Final[str] = "populationType"
 _NAME_PROPERTIES: Final[tuple[str, str]] = ("name", "alternateName")
 _TOPIC_MEMBER_ARC: Final[str] = "relevantVariable"
 _TOPIC_TYPE: Final[str] = "Topic"
-
-
-def _wire(arcs: Iterable[UnArc]) -> dict:
-    """Table arc rows as `GraphClient.node_arcs_batch` returns them, without the
-    `import_added` targets, as the graph client leaves them out. The client keeps the
-    `constraintProperties` entry when it leaves out every target, and so does this."""
-    rows = tuple(arcs)
-    wire = wire_arcs(arc for arc in rows if not import_added(arc))
-    if any(arc.property == _CONSTRAINT_PROPERTIES for arc in rows):
-        wire.setdefault(_CONSTRAINT_PROPERTIES, {"nodes": []})
-    return wire
 
 
 def _topic_arcs(leaves: Iterable[tuple[str, list[str]]]) -> dict:
@@ -165,7 +153,8 @@ def _types(arcs: Iterable[UnArc]) -> list[str]:
 
 def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
     """A dcid's `->*` arcs from the catalogue's tables, as
-    `GraphClient.node_arcs_batch` returns them.
+    `GraphClient.node_arcs_batch` returns them, read-only and built once per catalogue build
+    (`Catalogue.arc_answer`).
 
     A UN variable's arcs are the ones the catalogue job copied, and a variable of an
     excluded series is absent, `None`. A node the arc tables hold has the arcs they hold, and
@@ -177,7 +166,7 @@ def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
     if is_un_dcid(dcid):
         variable = catalogue.un_variable(dcid)
         if variable is not None:
-            return _wire(variable.arcs)
+            return catalogue.arc_answer(dcid, variable.arcs)
         un_leaves = catalogue.un_topic_leaves(dcid)
         if un_leaves is not None:
             return _topic_arcs(
@@ -188,7 +177,7 @@ def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
         return None if catalogue.superseded_by(dcid) is not None else _LIVE
     held = catalogue.held_arcs(dcid)
     if held is not None:
-        return _wire(held) or None
+        return catalogue.arc_answer(dcid, held) or None
     leaves = catalogue.mixer_topic_leaves(dcid)
     if leaves is not None:
         return _topic_arcs((leaf, _types(catalogue.held_arcs(leaf) or ())) for leaf in leaves)

@@ -836,13 +836,6 @@ def assemble_region(
         all_extra_warnings, key=lambda w: (w.code, w.severity, w.message)
     )
     echo = echo if echo is not None else make_query_echo(query, extract_skipped=False)
-    diag = make_diagnostics(
-        engine_build,
-        envelope_warnings,
-        _shared_timing_by_step([region]),
-        now_ms() - start_ms,
-        llm_usage=llm_usage,
-    )
     part = _build_part(
         region,
         representative=region,
@@ -852,6 +845,14 @@ def assemble_region(
         include_skills=include_skills,
         skills_index=skills_index,
         envelope_warnings=envelope_warnings,
+    )
+    # Stamped once the part is built, so the total covers its assembly.
+    diag = make_diagnostics(
+        engine_build,
+        envelope_warnings,
+        _shared_timing_by_step([region]),
+        now_ms() - start_ms,
+        llm_usage=llm_usage,
     )
     return make_response(
         echo, diag, [part], include_skills=include_skills, skills_index=skills_index
@@ -932,13 +933,6 @@ def combine_regions(
     envelope_warnings = _dedupe_by(
         all_extra_warnings, key=lambda w: (w.code, w.severity, w.message)
     )
-    diag = make_diagnostics(
-        engine_build,
-        envelope_warnings,
-        _shared_timing_by_step(regions),
-        now_ms() - start_ms,
-        llm_usage=llm_usage,
-    )
     echo = echo if echo is not None else make_query_echo(query, extract_skipped=False)
 
     parts = [
@@ -954,6 +948,14 @@ def combine_regions(
         )
         for r in sorted(regions, key=lambda r: r.earliest_index)
     ]
+    # Stamped once the parts are built, so the total covers their assembly.
+    diag = make_diagnostics(
+        engine_build,
+        envelope_warnings,
+        _shared_timing_by_step(regions),
+        now_ms() - start_ms,
+        llm_usage=llm_usage,
+    )
     response = make_response(
         echo, diag, parts, include_skills=include_skills, skills_index=skills_index
     )

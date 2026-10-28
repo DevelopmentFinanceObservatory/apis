@@ -66,17 +66,18 @@ import re
 import sys
 import tempfile
 import zipfile
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cached_property
 from typing import IO, cast
 from urllib.parse import urlencode
 
 import pyarrow as pa
 import pyarrow.compute as pc
-from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256, widen_frame_table
 from pydantic import ValidationError
 
 from artifact_store import (
@@ -182,6 +183,14 @@ from materialise.formats import (
     write_parquet,
 )
 from materialise.frame_build import ParquetFrameChunks, build_frame, unit_cell_for_rebuild
+from materialise.groupby_columnar import (
+    ColumnarFoldOutcome,
+    GroupedTable,
+    decode_table,
+    fold_groupby_sum_table,
+    groupby_sum_table,
+    rows_table,
+)
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
     KIND_SUFFIX,
@@ -399,16 +408,18 @@ chunk can otherwise trigger a `to_pylist()` rebuild about 12 times larger than w
 
 
 def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
-    """Cuts Arrow frames into `_RESHAPE_CHUNK_ROWS`-row tuple tables counted from the first row,
-    joining the tables of short chunks, and other tables into tuple slices. A writer types its
+    """Yields `_FrameSlice`s of `_RESHAPE_CHUNK_ROWS` rows counted from the first row, cut from
+    Arrow frames with the tables of short chunks joined, and row-tuple tables of at most that
+    size cut from other tables. A writer types its
     columns from its first chunk, so the cut keeps a rendering's bytes independent of how the
     materialiser chunked the frame. An empty frame yields one empty table, since an empty
     materialisation can yield one. `_reshape_stream` applies the bound before each streaming
     path.
 
     The readers downstream (decode, enrichment, groupby and the long layout) each read `rows`,
-    and each `Frame.rows` access rebuilds the rows as Python objects, so every slice is converted
-    here once (`canonical_frame_rows`)."""
+    and each `Frame.rows` access rebuilds the rows as Python objects, so a frame slice
+    converts its rows once, on first read. The streamed groupby collapse reads
+    the slice's Arrow table and never builds them."""
     columns: tuple[str, ...] | None = None
     pending: list[pa.Table] = []
     pending_rows = 0
@@ -438,9 +449,22 @@ def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
         yield _frame_rows(columns, pa.concat_tables(pending))
 
 
+@dataclass(frozen=True)
+class _FrameSlice:
+    """A slice of a canonical frame: its Arrow `table`, and the tuple rows `Frame.rows` gives
+    built on first read of `rows`."""
+
+    columns: tuple[str, ...]
+    table: pa.Table
+
+    @cached_property
+    def rows(self) -> tuple[tuple[object, ...], ...]:
+        return tuple(canonical_frame_rows(self.table))
+
+
 def _frame_rows(columns: tuple[str, ...], table: pa.Table) -> Table:
-    """The canonical frame `table` as a tuple table of the rows `Frame.rows` gives."""
-    return cast(Table, ReshapeTable(columns=columns, rows=tuple(canonical_frame_rows(table))))
+    """The canonical frame `table` as a slice whose rows are those `Frame.rows` gives."""
+    return cast(Table, _FrameSlice(columns=columns, table=table))
 
 
 def _stream_first_axis_collapse(
@@ -452,10 +476,45 @@ def _stream_first_axis_collapse(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
-) -> tuple[GroupbySumChunksOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
-    """Decodes each chunk and folds it into `axis` in one pass, retaining one chunk plus per-group
-    accumulators. Collects distinct StatVars for the caller's collision check. `_reshape` checks
-    collisions before raising fold violations, matching whole-table error order."""
+) -> tuple[
+    GroupbySumChunksOutcome | ColumnarFoldOutcome,
+    frozenset[str],
+    tuple[MaterialisationWarning, ...],
+]:
+    """Decodes each chunk and folds it into `axis` in one pass. Collects distinct StatVars for
+    the caller's collision check. `_reshape` checks collisions before raising fold violations,
+    matching whole-table error order.
+
+    Frame slices (`_FrameSlice`) are decoded and folded as Arrow (`groupby_columnar`), holding
+    the whole decoded frame at once, and the outcome's table is Arrow when the sums need no row
+    fold. Other chunks fold row by row, one chunk at a time, retaining per-group accumulators.
+    Memory on either path grows with the frame. On spec_09ff's 488,979 rows, whose first axis
+    keeps one group a row, the Arrow fold peaks at about 1 KiB a row (430 MiB of Arrow above its
+    input and 75 MiB of Python), and the row fold at about 2.8 KiB a group (1.39 GiB, 1.9 KiB a
+    group of fold state before the final sort)."""
+    chunks = iter(frame_chunks)
+    first_chunk = next(chunks, None)
+    if isinstance(first_chunk, _FrameSlice):
+        slices: deque[_FrameSlice] = deque((first_chunk,))
+        for chunk in chunks:
+            if not isinstance(chunk, _FrameSlice):
+                frame_chunks = itertools.chain(_drained(slices), (chunk,), chunks)
+                break
+            slices.append(chunk)
+        else:
+            return _fold_frame_slices(
+                list(slices),
+                axis=axis,
+                classification=classification,
+                summable_axes=summable_axes,
+                missing_declared_as_zero=missing_declared_as_zero,
+                expected_population=expected_population,
+                decode_plan=decode_plan,
+            )
+    elif first_chunk is not None:
+        frame_chunks = itertools.chain((first_chunk,), chunks)
+    else:
+        frame_chunks = ()
     distinct_dcids: set[str] = set()
     stat_var_pos: list[int] = []
     warnings: list[MaterialisationWarning] = []
@@ -481,6 +540,50 @@ def _stream_first_axis_collapse(
 
     outcome = fold_groupby_sum_chunks(
         _decoded_chunks(),
+        axis=axis,
+        classification=classification,
+        summable_axes=summable_axes,
+        missing_declared_as_zero=missing_declared_as_zero,
+        expected_population=expected_population,
+    )
+    return outcome, frozenset(distinct_dcids), tuple(warnings)
+
+
+def _drained(slices: deque[_FrameSlice]) -> Iterator[_FrameSlice]:
+    """`slices` in order, each released once read, so a slice's rows are not kept after its
+    fold."""
+    while slices:
+        yield slices.popleft()
+
+
+def _fold_frame_slices(
+    slices: Sequence[_FrameSlice],
+    *,
+    axis: str,
+    classification: ColumnClassification,
+    summable_axes: frozenset[str],
+    missing_declared_as_zero: bool,
+    expected_population: ExpectedPopulation,
+    decode_plan: DecodePlan | None,
+) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
+    """`_stream_first_axis_collapse` over Arrow frame slices: each slice decoded as
+    `apply_reshapes` decodes it, with its warnings, then one fold over their rows in order. Unit
+    columns take the recipe layout, which keeps every cell, so slices of either layout join."""
+    distinct_dcids: set[str] = set()
+    warnings: list[MaterialisationWarning] = []
+    decoded_slices: list[pa.Table] = []
+    for frame_slice in slices:
+        decoded = widen_frame_table(frame_slice.table, recipe=True)
+        if decode_plan is not None:
+            decoded, decode_warnings = decode_table(
+                decoded, requests=decode_plan.requests, lookup=decode_plan.lookup
+            )
+            warnings.extend(decode_warnings)
+        stat_vars = decoded.column(decoded.column_names.index(_STAT_VAR_COLUMN))
+        distinct_dcids.update(cast("list[str]", pc.unique(stat_vars).drop_null().to_pylist()))
+        decoded_slices.append(decoded)
+    outcome = fold_groupby_sum_table(
+        pa.concat_tables(decoded_slices),
         axis=axis,
         classification=classification,
         summable_axes=summable_axes,
@@ -574,6 +677,8 @@ def _reshape_groupby_collapse(
         lookup=decode_lookup,
     )
     remaining_columns = population_columns
+    # Arrow from a fold over frame slices until the last axis sums, then tuple rows.
+    collapsed: GroupedTable = cast(ReshapeTable, current)
     for axis_index, axis in enumerate(collapse_columns):
         positions = tuple(population_columns.index(c) for c in remaining_columns)
         projected_members = frozenset(
@@ -620,11 +725,19 @@ def _reshape_groupby_collapse(
             if outcome.violation is not None:
                 raise outcome.violation
             assert outcome.table is not None
-            current = outcome.table
+            collapsed = outcome.table
             contributors = contributing_dcids(distinct_table)
+        elif isinstance(collapsed, pa.Table):
+            collapsed = groupby_sum_table(
+                collapsed,
+                axis=axis,
+                summable_axes=summable_columns,
+                missing_declared_as_zero=missing_declared_as_zero,
+                expected_population=axis_population,
+            )
         else:
-            current, _ = apply_reshapes(
-                current,
+            collapsed, _ = apply_reshapes(
+                collapsed,
                 plan=ReshapePlan(
                     groupby=GroupbyPlan(
                         axis=axis,
@@ -634,8 +747,8 @@ def _reshape_groupby_collapse(
                     )
                 ),
             )
-            current = cast(Table, current)
         remaining_columns = tuple(c for c in remaining_columns if c != axis)
+    current = cast(Table, rows_table(collapsed))
 
     if not grammar_frame:
         return current, decode_plan, None

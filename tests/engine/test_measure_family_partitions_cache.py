@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 
+from code_index.members import DatasetScope
 from code_index.shared import get_index, get_measure_index
+from search.engine.retrieval import bound_values
 from search.engine.retrieval.bound_values import (
     measure_family_cache_key,
     measure_family_partitions,
@@ -42,6 +45,37 @@ def test_a_cached_call_returns_the_same_partitions_as_the_uncached_one():
 
     assert cached_first == uncached
     assert cached_second == uncached
+
+
+def test_without_a_cache_the_index_keeps_each_family_until_an_input_differs(monkeypatch):
+    """Calls with equal inputs read the family once. A call under another dataset scope, or
+    over another index, reads it again."""
+    # A copy of its own, so no earlier call has filled the index's memo.
+    index = copy.copy(get_index())
+    axes = get_measure_index().axes
+    shape = _crs_shape()
+    reads: list[object] = []
+    uncached = bound_values._measure_family_partitions_uncached
+    monkeypatch.setattr(
+        bound_values,
+        "_measure_family_partitions_uncached",
+        lambda *args: reads.append(args[3]) or uncached(*args),
+    )
+    query = query_for(shape, {})
+    scoped = dataclasses.replace(
+        query, scope=DatasetScope(allowed=frozenset({"provenance/X"}), named=False)
+    )
+
+    first = measure_family_partitions(shape, index, axes, query)
+    again = measure_family_partitions(shape, index, axes, query_for(shape, {}))
+    in_scope = measure_family_partitions(shape, index, axes, scoped)
+    other_index = measure_family_partitions(shape, copy.copy(index), axes, query)
+
+    assert first
+    assert again is first
+    assert other_index == first
+    assert in_scope == uncached(shape, index, axes, scoped)
+    assert reads == [query, scoped, query]
 
 
 def test_a_second_call_for_the_same_key_is_served_from_the_cache_dict():

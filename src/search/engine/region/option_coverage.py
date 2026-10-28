@@ -24,8 +24,9 @@ from code_index.members import (
     option_families,
 )
 from code_index.shared import get_index
-from materialise import GraphReader, facet_axis_value, role_bearing_facet_candidates
+from materialise import GraphReader, facet_axis_value
 from materialise.enrichment import read_party_kinds
+from materialise.facets import role_bearing_facet_candidates_of
 from origin_catalogue import recording_un_blocked_places
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, Facet
@@ -1332,16 +1333,13 @@ def _observed_facets(
                 (sv, facet, n) for facet in by_sv[sv] if (n := points_in_years(facet, years))
             )
         return _ObservedFacets(by_sv, windowed)
-    for sv in sv_dcids:
-        facets = role_bearing_facet_candidates(
-            stat_var=sv,
-            role_bindings=probe_entities,
-            coverage=coverage,
-            first_year=year_window.start_year if year_window is not None else None,
-            last_year=year_window.end_year if year_window is not None else None,
-        )
-        if facets is None:
-            continue
+    for sv, facets in role_bearing_facet_candidates_of(
+        stat_vars=sv_dcids,
+        role_bindings=probe_entities,
+        coverage=coverage,
+        first_year=year_window.start_year if year_window is not None else None,
+        last_year=year_window.end_year if year_window is not None else None,
+    ).items():
         by_sv[sv] = published(datasets, sv, facets)
         windowed.extend((sv, facet, facet.obs_count) for facet in by_sv[sv])
     return _ObservedFacets(by_sv, windowed)

@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import math
 import threading
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+import time
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from functools import cache, partial
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
+from dfo_frame_grammar import array_kernel
 
 from dc_sdmx import (
     DEFAULT_PLANNING_LANES,
@@ -28,7 +30,9 @@ from dc_sdmx import (
     observation_columns,
     observation_schema,
 )
+from dc_sdmx.errors import SdmxResponseError
 from dfo_platform.executor import submit_with_context
+from dfo_platform.timings import phase, record_elapsed
 from materialise import columnar
 from materialise.ceiling import check_ceiling
 from materialise.content_version import stream_frame_sha256
@@ -1703,8 +1707,10 @@ def _generate_chunk(
     a role-bearing member with no dispatch IDs is skipped outright, since its
     mask keeps every row.
 
-    Non-latest batches filter per member. Exceeding the member's `_streaming_ceiling`
-    raises `OverCeilingError`, with up to one batch of overshoot; a selection a method
+    Batches are routed in runs (`_BatchRouter`), each run masked once for the masks its
+    members share (`_batch_survivors`), and non-latest members keep the rows
+    `columnar.survivor_mask` keeps. Exceeding the member's `_streaming_ceiling` raises
+    `OverCeilingError`, with up to one SDMX batch of overshoot; a selection a method
     continues counts its rows once the continuation filters them, and a conversion that omits
     rows after omission (`_streaming_ceiling`). Latest chunks are
     homogeneous. SDMX returns one row per series, then the caller's `_servable_rows`
@@ -1838,56 +1844,52 @@ def _generate_chunk(
             for i in chunk.member_indices:
                 _check_role_divergence(roles, member_requests[i])
             schema = observation_schema(roles)
-            for batch in sdmx_batches:
-                draw(batch)
-                routed = columnar.split_by_variable(
-                    batch, index_by_bare_stat_var=chunk.index_by_stat_var
-                )
-                for index, member_batch in routed.items():
-                    plan = plans[index]
-                    if not plan.dispatch_ids and isinstance(plan.admission, CoverageAdmission):
-                        # A role-bearing member dispatching no facet serves nothing. Its
-                        # admission mask keeps every row, so a row naming no facet would
-                        # otherwise pass on the group's shared `selections` alone.
-                        continue
-                    # The fetch filters on every member's ids, so a member's variable can
-                    # come back under an id only another member dispatched.
-                    member_batch = columnar.dispatched_rows(
-                        member_batch, facet_ids=plan.dispatch_ids, admission=plan.admission
+
+            def admit(index: int, member_batches: list[pa.RecordBatch]) -> None:
+                """Adds one member's survivors and checks its streaming ceiling."""
+                parts[index].extend(member_batches)
+                if index in latest_indices:
+                    # Raw, pre-reduction rows for a `"latest"` member:
+                    # bounded by the shared `raw_budget` draw alone.
+                    # The caller's `_servable_rows` reduces this buffer
+                    # to its single latest period and checks the
+                    # resulting coverage against `ceiling` afterward.
+                    return
+                survivor_counts[index] += sum(part.num_rows for part in member_batches)
+                member_ceiling = streaming_ceilings[index]
+                if member_ceiling is not None and survivor_counts[index] > member_ceiling:
+                    message, detail = _mid_stream_ceiling_message(
+                        member_requests[index].stat_var,
+                        chunk_size=len(chunk.member_indices),
+                        ceiling=ceiling,
                     )
-                    if index in latest_indices:
-                        # Raw, pre-reduction rows for a `"latest"` member:
-                        # bounded by the shared `raw_budget` draw above
-                        # only. The caller's `_servable_rows` reduces this buffer
-                        # to its single latest period and checks the
-                        # resulting coverage against `ceiling` afterward.
-                        parts[index].append(member_batch)
-                        continue
-                    request = member_requests[index]
-                    member_table = pa.Table.from_batches([member_batch], schema=schema)
-                    mask = columnar.survivor_mask(
-                        member_table,
-                        selections=plans[index].selections,
-                        window=request.window,
-                        admission=plans[index].admission,
+                    raise OverCeilingError(
+                        message,
+                        detail=detail,
+                        ceiling_kind="rows",
+                        count=survivor_counts[index],
+                        cap=ceiling,
                     )
-                    survivor_table = member_table.filter(mask)
-                    survivor_counts[index] += survivor_table.num_rows
-                    parts[index].extend(survivor_table.to_batches())
-                    member_ceiling = streaming_ceilings[index]
-                    if member_ceiling is not None and survivor_counts[index] > member_ceiling:
-                        message, detail = _mid_stream_ceiling_message(
-                            member_requests[index].stat_var,
-                            chunk_size=len(chunk.member_indices),
-                            ceiling=ceiling,
-                        )
-                        raise OverCeilingError(
-                            message,
-                            detail=detail,
-                            ceiling_kind="rows",
-                            count=survivor_counts[index],
-                            cap=ceiling,
-                        )
+
+            router = _BatchRouter(
+                partial(
+                    _batch_survivors,
+                    index_by_bare_stat_var=chunk.index_by_stat_var,
+                    plans=plans,
+                    requests=member_requests,
+                    latest=latest_indices,
+                    schema=schema,
+                ),
+                admit,
+                ceilings=[
+                    (index, member_ceiling)
+                    for index, member_ceiling in streaming_ceilings.items()
+                    if member_ceiling is not None and index not in latest_indices
+                ],
+                survivor_counts=survivor_counts,
+            )
+            router.route(sdmx_batches, draw=draw)
+            record_elapsed("chunk_route", router.seconds)
             result = {
                 i: _MemberFetchResult(
                     table=pa.Table.from_batches(parts[i], schema=schema),
@@ -1913,6 +1915,224 @@ def _generate_chunk(
         raise
 
     return result
+
+
+# Rows routed together (`_BatchRouter`). The SDMX parser yields one batch per 64 KiB read
+# block, about 240 rows, and routing pays a fixed cost per batch for each member's masks.
+# A larger read block (`dc_sdmx.client._STREAM_BATCH_BLOCK_SIZE`) would cut the batches too,
+# but the parser buffers 34 blocks before its first batch, 136 MiB at a 4 MiB block.
+_ROUTE_BATCH_ROWS = 1 << 14
+
+
+type _Survivors = Callable[[pa.RecordBatch], Iterable[tuple[int, list[pa.RecordBatch]]]]
+
+
+class _BatchRouter:
+    """Routes a chunk's SDMX batches in runs of up to `_ROUTE_BATCH_ROWS` rows, with the result
+    routing each batch on arrival gives: the same survivors, ceiling trip and refusal.
+
+    `survivors` gives each member's survivors of a batch (`_batch_survivors`), and `admit` adds
+    one member's survivors and raises on its streaming ceiling. A run is routed as one batch
+    only while its rows cannot carry a member in `ceilings` past its ceiling, since a member
+    survives at most a run's rows; a batch that could is routed alone, so a ceiling trips at
+    the batch and count it trips at batch by batch. A joined run's survivors are all computed
+    before any is admitted, so when the run refuses, its batches are routed again one at a
+    time and the refusal raised, with its counts, is the first refusing batch's. A read or draw
+    error routes the pending run first, as batch-by-batch routing met that run first."""
+
+    def __init__(
+        self,
+        survivors: _Survivors,
+        admit: Callable[[int, list[pa.RecordBatch]], None],
+        *,
+        ceilings: Sequence[tuple[int, int]],
+        survivor_counts: Mapping[int, int],
+    ) -> None:
+        self._survivors = survivors
+        self._admit = admit
+        self._ceilings = ceilings
+        self._survivor_counts = survivor_counts
+        self._pending: list[pa.RecordBatch] = []
+        self._pending_rows = 0
+        self.seconds = 0.0
+
+    def route(
+        self, batches: Iterable[pa.RecordBatch], *, draw: Callable[[pa.RecordBatch], None]
+    ) -> None:
+        """Routes every batch of `batches`, each drawn by `draw` first."""
+        batch_iter = iter(batches)
+        while True:
+            try:
+                batch = next(batch_iter, None)
+                if batch is not None:
+                    draw(batch)
+            except Exception as exc:
+                failure = exc
+            else:
+                failure = None
+            if failure is not None:
+                self._flush()
+                raise failure
+            if batch is None:
+                self._flush()
+                return
+            self._add(batch)
+
+    def _may_trip(self, rows: int) -> bool:
+        return any(
+            self._survivor_counts[index] + rows > ceiling for index, ceiling in self._ceilings
+        )
+
+    def _add(self, batch: pa.RecordBatch) -> None:
+        rows = self._pending_rows + batch.num_rows
+        if self._pending and (rows > _ROUTE_BATCH_ROWS or self._may_trip(rows)):
+            self._flush()
+        self._pending.append(batch)
+        self._pending_rows += batch.num_rows
+        if self._may_trip(self._pending_rows):
+            self._flush()
+
+    def _flush(self) -> None:
+        batches, self._pending, self._pending_rows = self._pending, [], 0
+        started = time.perf_counter()
+        try:
+            if len(batches) == 1:
+                self._admit_all(self._survivors(batches[0]))
+            elif batches:
+                (joined,) = pa.Table.from_batches(batches).combine_chunks().to_batches()
+                try:
+                    survivors = list(self._survivors(joined))
+                except (SdmxResponseError, ValueError, KeyError):
+                    for batch in batches:
+                        self._admit_all(self._survivors(batch))
+                    raise
+                self._admit_all(survivors)
+        finally:
+            self.seconds += time.perf_counter() - started
+
+    def _admit_all(self, survivors: Iterable[tuple[int, list[pa.RecordBatch]]]) -> None:
+        for index, member_batches in survivors:
+            self._admit(index, member_batches)
+
+
+def _batch_survivors(
+    batch: pa.RecordBatch,
+    *,
+    index_by_bare_stat_var: Mapping[str, int],
+    plans: Sequence[_MemberFetchPlan],
+    requests: Mapping[int, MaterialisationRequest],
+    latest: Collection[int],
+    schema: pa.Schema,
+) -> Iterator[tuple[int, list[pa.RecordBatch]]]:
+    """Each served member's rows of one SDMX `batch`, in `split_by_variable`'s member order:
+    the rows `_member_survivors` keeps. A role-bearing member dispatching no facet serves
+    nothing and is skipped: its admission mask keeps every row, so a row naming no facet would
+    otherwise pass on the group's shared `selections` alone.
+
+    The masks read each row alone, so the observed-value mask, and the selection and window
+    masks of each distinct selection and window, run once over the batch, and each member
+    filters the batch once for its rows and once for its survivors. The admission mask, which
+    refuses malformed rows, runs on the member's dispatched rows as `_member_survivors` runs it.
+    When any mask refuses, the members are masked one at a time instead, so the refusal, and
+    any ceiling the caller checks between members first, is the one a member-by-member pass
+    meets."""
+    served = [
+        index
+        for index in set(index_by_bare_stat_var.values())
+        if plans[index].dispatch_ids or not isinstance(plans[index].admission, CoverageAdmission)
+    ]
+    try:
+        survivors = _survivors_by_member(
+            batch,
+            members=served,
+            index_by_bare_stat_var=index_by_bare_stat_var,
+            plans=plans,
+            requests=requests,
+            latest=latest,
+            schema=schema,
+        )
+    except (SdmxResponseError, ValueError, KeyError):
+        routed = columnar.split_by_variable(batch, index_by_bare_stat_var=index_by_bare_stat_var)
+        for index in served:
+            yield (
+                index,
+                _member_survivors(
+                    routed[index],
+                    plan=plans[index],
+                    request=requests[index],
+                    latest=index in latest,
+                    schema=schema,
+                ),
+            )
+        return
+    yield from survivors.items()
+
+
+def _survivors_by_member(
+    batch: pa.RecordBatch,
+    *,
+    members: Sequence[int],
+    index_by_bare_stat_var: Mapping[str, int],
+    plans: Sequence[_MemberFetchPlan],
+    requests: Mapping[int, MaterialisationRequest],
+    latest: Collection[int],
+    schema: pa.Schema,
+) -> dict[int, list[pa.RecordBatch]]:
+    """`_batch_survivors` with the batch-wide masks, `members` in order."""
+    table = pa.Table.from_batches([batch], schema=schema)
+    targets = columnar.member_indices(batch, index_by_bare_stat_var=index_by_bare_stat_var)
+    observed: pa.BooleanArray | None = None
+    shared: list[tuple[tuple[object, ...], pa.BooleanArray]] = []
+    survivors: dict[int, list[pa.RecordBatch]] = {}
+    for index in members:
+        plan, request = plans[index], requests[index]
+        mine = array_kernel(
+            "fill_null", array_kernel("equal", targets, pa.scalar(index, pa.int64())), False
+        )
+        dispatched = columnar.dispatched_mask(
+            batch, facet_ids=plan.dispatch_ids, admission=plan.admission
+        )
+        selected = pc.and_(mine, dispatched)
+        rows = batch.filter(selected)
+        if index in latest:
+            survivors[index] = [rows]
+            continue
+        key = (plan.selections, request.window)
+        row_mask = next((mask for shared_key, mask in shared if shared_key == key), None)
+        if row_mask is None:
+            if observed is None:
+                observed = columnar.observed_mask(table)
+            row_mask = pc.and_(columnar.selection_mask(table, selections=plan.selections), observed)
+            if request.window.kind == "range":
+                row_mask = pc.and_(
+                    row_mask, columnar.range_window_mask(table, window=request.window)
+                )
+            shared.append((key, row_mask))
+        admitted = columnar.admission_mask(
+            pa.Table.from_batches([rows], schema=schema), admission=plan.admission
+        )
+        keep = pc.and_(row_mask.filter(selected), admitted)
+        survivors[index] = [rows.filter(keep)]
+    return survivors
+
+
+def _member_survivors(
+    rows: pa.RecordBatch,
+    *,
+    plan: _MemberFetchPlan,
+    request: MaterialisationRequest,
+    latest: bool,
+    schema: pa.Schema,
+) -> list[pa.RecordBatch]:
+    """The rows of `rows` a member with `plan` and `request` serves (`_batch_survivors`)."""
+    rows = columnar.dispatched_rows(rows, facet_ids=plan.dispatch_ids, admission=plan.admission)
+    if latest:
+        return [rows]
+    table = pa.Table.from_batches([rows], schema=schema)
+    mask = columnar.survivor_mask(
+        table, selections=plan.selections, window=request.window, admission=plan.admission
+    )
+    return table.filter(mask).to_batches()
 
 
 def _absent_stat_vars(
@@ -2347,18 +2567,23 @@ class _GroupRowStreamer:
         after every row chunk has closed). Keys its own returned dict, and
         reads `chunk.member_indices` in `dcid_requests`/`dcid_plans`'s own
         dcid-sorted position space, not `requests`' own.
+
+        Adds its worker time to the call's timings: `chunk_fetch` for the fetch, which holds
+        `chunk_route` (routing and masking each SDMX batch), and `chunk_convert` for the
+        per-series conversion. Workers run in parallel, so these sum past wall time.
         """
-        fetch_results = _generate_chunk(
-            chunk,
-            self._dcid_requests,
-            self._dcid_plans,
-            sdmx=self._sdmx,
-            graph=self._graph,
-            ceiling=self._ceiling,
-            raw_budget=self._raw_budget,
-            coverage=self._coverage_index,
-            deadline=self._deadline,
-        )
+        with phase("chunk_fetch"):
+            fetch_results = _generate_chunk(
+                chunk,
+                self._dcid_requests,
+                self._dcid_plans,
+                sdmx=self._sdmx,
+                graph=self._graph,
+                ceiling=self._ceiling,
+                raw_budget=self._raw_budget,
+                coverage=self._coverage_index,
+                deadline=self._deadline,
+            )
         outcomes: dict[int, _ConvertedMember] = {}
         for index, fetch_result in fetch_results.items():
             request = self._dcid_requests[index][1]
@@ -2404,9 +2629,10 @@ class _GroupRowStreamer:
                 conversion_plan=plan.conversion_plan,
                 ceiling=self._ceiling,
             )
-            table, conversion_record, series_conversions = _convert_by_series(
-                plan.conversion_plan, table, request=request, currencies=currencies
-            )
+            with phase("chunk_convert"):
+                table, conversion_record, series_conversions = _convert_by_series(
+                    plan.conversion_plan, table, request=request, currencies=currencies
+                )
             recipe_id = (
                 plan.conversion_plan.recipe.recipe_id
                 if plan.conversion_plan is not None and plan.conversion_plan.recipe is not None

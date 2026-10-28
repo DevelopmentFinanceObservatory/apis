@@ -804,6 +804,27 @@ def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
     assert client.stats() == before
 
 
+def test_a_table_answer_is_built_once_per_build_and_release_and_shared_read_only(
+    client: OriginGraphClient, bind_catalogue
+) -> None:
+    """Every read of a dcid the tables hold serves the answer the build's first read built,
+    the release's DFO arcs among them, until a release holding other rows binds."""
+    bind_catalogue(_catalogue(arcs=_ARCS))
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        first = client.node_arcs_batch([_CRS_VARIABLE, _GDP])
+        again = client.node_arcs_batch([_GDP, _CRS_VARIABLE])
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        released = client.node_arcs_batch([_CRS_VARIABLE, _GDP])
+
+    assert again[_CRS_VARIABLE] is first[_CRS_VARIABLE]
+    assert again[_GDP] is first[_GDP]
+    assert released[_GDP] is first[_GDP]
+    assert released[_CRS_VARIABLE] == first[_CRS_VARIABLE]
+    assert released[_CRS_VARIABLE] is not first[_CRS_VARIABLE]
+    with pytest.raises(TypeError):
+        first[_GDP]["typeOf"]["nodes"].append({"dcid": "Place"})
+
+
 def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_name(
     graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:

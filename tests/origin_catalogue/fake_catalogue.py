@@ -49,6 +49,7 @@ from origin_catalogue.families import (
     family_tables,
     summarise_table,
 )
+from origin_catalogue.frozen_arcs import FrozenArcs, served_arcs
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
@@ -195,6 +196,9 @@ class FakeCatalogue:
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
         return release_held_arcs(self.arcs, dcid)
+
+    def arc_answer(self, dcid: str, rows: tuple[UnArc, ...]) -> FrozenArcs:
+        return served_arcs(rows)
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
         return release_held_family(

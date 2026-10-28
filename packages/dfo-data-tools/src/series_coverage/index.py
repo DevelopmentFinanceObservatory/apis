@@ -233,6 +233,18 @@ def _run(codes: np.ndarray, code: int) -> tuple[int, int]:
     )
 
 
+def _runs(codes: np.ndarray, wanted: Collection[int]) -> np.ndarray:
+    """The positions every code of `wanted` occupies in `codes`, a non-decreasing code
+    array, in code order: `_run` of each code, found by one binary search for all of them."""
+    needles = np.fromiter(sorted(wanted), dtype=codes.dtype, count=len(wanted))
+    starts = np.searchsorted(codes, needles, side="left")
+    lengths = np.searchsorted(codes, needles, side="right") - starts
+    # Position `k` of the result lies in run `i` and is `starts[i]` plus its offset into
+    # the run, `k` less the lengths of the runs before it.
+    before = np.cumsum(lengths) - lengths
+    return np.arange(int(lengths.sum()), dtype=np.int64) + np.repeat(starts - before, lengths)
+
+
 def _code_lookup(column: pa.ChunkedArray) -> dict[str, int]:
     """Each value of a one-chunk dictionary column's dictionary -> its
     code. O(distinct values)."""
@@ -670,9 +682,8 @@ class CoverageIndex:
         bound roles over those rows, so the cost follows the variables'
         rows rather than the table. Unknown variables contribute no rows.
         """
-        codes = sorted({self._variable_codes[v] for v in variables if v in self._variable_codes})
-        blocks = [np.arange(*_run(self._variable_code_column, code)) for code in codes]
-        rows = self._table.take(np.concatenate(blocks) if blocks else np.empty(0, dtype=np.int64))
+        codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
+        rows = self._table.take(_runs(self._variable_code_column, codes))
         for role, column in _ROLE_COLUMNS.items():
             if role in bound:
                 rows = rows.filter(_key_is_in(rows[column], bound[role]))
@@ -686,19 +697,18 @@ class CoverageIndex:
         This deliberately skips per-series source admission, which remains a
         served-read concern in :meth:`_member_rows`.
         """
-        codes = sorted({self._variable_codes[v] for v in variables if v in self._variable_codes})
-        blocks = [np.arange(*_run(self._variable_code_column, code)) for code in codes]
-        rows = self._table.take(np.concatenate(blocks) if blocks else np.empty(0, dtype=np.int64))
+        codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
+        rows = self._table.take(_runs(self._variable_code_column, codes))
         for role, column in _ROLE_COLUMNS.items():
             if role in bound:
                 rows = rows.filter(_key_is_in(rows[column], bound[role]))
         catalogue = current_catalogue()
         admitted = [
-            (metadata := self._facet_metadata.get(facet_id)) is not None
-            and (metadata.provenance_id is None or catalogue.is_admitted(metadata.provenance_id))
-            for facet_id in _key_values(rows[FACET_COLUMN])
+            facet_id
+            for facet_id, metadata in self._facet_metadata.items()
+            if metadata.provenance_id is None or catalogue.is_admitted(metadata.provenance_id)
         ]
-        return rows.filter(pa.array(admitted, type=pa.bool_()))
+        return rows.filter(_key_is_in(rows[FACET_COLUMN], admitted))
 
     def _admit_scoped_rows(self, rows: pa.Table) -> pa.Table:
         """Keeps only facets the request's source-scoped catalogue admits per series.
@@ -709,41 +719,33 @@ class CoverageIndex:
         bound pairs.  Every provenance the scoped catalogue admits is kept,
         whichever origin it comes from, and the facet election chooses between
         DFO and base (`materialise.facets.dfo_precedence`).
+
+        A series' admission keeps each of its provenances that is in scope and admitted
+        (`Catalogue.admit_series`), whatever else the series holds, so a row survives
+        exactly when its facet's provenance is one the catalogue admits. The catalogue
+        judges the provenances of the index's facets once, and the rows are filtered by
+        facet in one pass.
         """
         if rows.num_rows == 0 or current_source_scope() is None:
             return rows
-
-        rows = rows.combine_chunks()
-        variables = _key_values(rows[VARIABLE_COLUMN])
-        recipients = _key_values(rows[RECIPIENT_COLUMN])
-        donors = _key_values(rows[DONOR_COLUMN])
-        facet_ids = _key_values(rows[FACET_COLUMN])
-        facets_by_series: dict[tuple[str, str, str], set[str]] = {}
-        for variable, recipient, donor, facet_id in zip(
-            variables, recipients, donors, facet_ids, strict=True
-        ):
-            facets_by_series.setdefault((variable, recipient, donor), set()).add(facet_id)
-
-        catalogue = current_catalogue()
-        admitted_by_series: dict[tuple[str, str, str], frozenset[str]] = {}
-        for series, series_facet_ids in facets_by_series.items():
-            provenances = [
-                metadata.provenance_id
-                for facet_id in series_facet_ids
-                if (metadata := self._facet_metadata.get(facet_id)) is not None
-                and metadata.provenance_id is not None
-            ]
-            admitted_by_series[series] = frozenset(catalogue.admit_series(provenances).admitted)
-        admitted = [
-            (
-                (metadata := self._facet_metadata.get(facet_id)) is not None
-                and metadata.provenance_id in admitted_by_series[(variable, recipient, donor)]
+        provenance_of = {
+            facet_id: metadata.provenance_id
+            for facet_id, metadata in self._facet_metadata.items()
+            if metadata.provenance_id is not None
+        }
+        admitted = frozenset(
+            current_catalogue().admit_series(dict.fromkeys(provenance_of.values())).admitted
+        )
+        return rows.filter(
+            _key_is_in(
+                rows[FACET_COLUMN],
+                [
+                    facet_id
+                    for facet_id, provenance in provenance_of.items()
+                    if provenance in admitted
+                ],
             )
-            for variable, recipient, donor, facet_id in zip(
-                variables, recipients, donors, facet_ids, strict=True
-            )
-        ]
-        return rows.filter(pa.array(admitted, type=pa.bool_()))
+        )
 
     def admitted_pairs(
         self, *, variable: str, bound: BoundRoles = _NO_BINDING
