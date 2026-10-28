@@ -1,6 +1,6 @@
 """How the live root source names and reads a root: its default enrichment, its mint options,
 its frame pair, a frame-layout file decoded, a root read summed by a groupby, and a stored
-recipe root it cannot read."""
+recipe root it cannot read, and a root under `latest` read in the rendering it records."""
 
 from __future__ import annotations
 
@@ -30,6 +30,15 @@ from ._deps_doubles import Unwired
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
 from .test_definition_door_groupby_collapse import _hierarchical_code_index
+from .test_refresh_door import (
+    _GROUPBY,
+    _MEMBER_A_ROW,
+    _MEMBER_B_ROW,
+    _PLAIN_MINT,
+    _SUMMED_MINT,
+    _move_to,
+    _one_contributor_rig,
+)
 from .test_serve_groupby_collapse import (
     _coverage_service,
     _graph,
@@ -227,3 +236,42 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
             enrichment_stamp=None,
         ).model_dump()
     )
+
+
+@pytest.mark.parametrize(
+    ("rendering", "summed"),
+    [
+        pytest.param({"columns": [], "groupby": _GROUPBY}, True, id="groupby"),
+        pytest.param({"columns": []}, False, id="plain"),
+    ],
+)
+def test_a_root_under_latest_follows_new_data_in_the_rendering_it_records(
+    rendering: dict, summed: bool
+) -> None:
+    """A root version recording its plain and summed renderings, while the sum is the plain
+    frame, follows new data that splits them in the rendering the root names."""
+    shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT)
+    _move_to(shared, _MEMBER_A_ROW, _MEMBER_B_ROW)
+    root = {
+        "spec_id": shared.spec_id,
+        "content_version": shared.base_content_version,
+        "rendering": rendering,
+    }
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": root},
+    }
+
+    resp = shared.rig.client.post("/api/datasets/analysis", json={"tree": tree, "latest": True})
+
+    assert resp.status_code == 200, resp.text
+    ((moved,),) = (member["roots"] for member in resp.json()["ref"]["members"])
+    new_head = shared.rig.head_store.head_for(shared.spec_id).content_version
+    assert new_head != shared.base_content_version
+    if summed:
+        assert shared.version_rows()[moved["content_version"]] == new_head
+        assert moved["rendering"]["groupby"] == _GROUPBY
+    else:
+        assert moved["content_version"] == new_head
+        assert "groupby" not in moved["rendering"]

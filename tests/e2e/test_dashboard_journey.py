@@ -375,14 +375,6 @@ def test_a_dashboard_from_analysis_to_share_to_unshare(journey: _Journey):
     assert int(exhausted.headers["retry-after"]) > 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LiveRootSource.resolve refreshes a root under `latest` by its version alone, so a root "
-        "version recording both its plain and summed renderings refuses 422 "
-        "rendering_not_recorded once they differ, though the recipe names the summed rendering"
-    ),
-)
 def test_a_derived_frame_over_a_sum_equal_to_its_plain_frame_follows_new_data(journey: _Journey):
     # While `MEMBER_B` holds no observations, `DATASET` summed by recipient is its plain frame,
     # so the root's version records both renderings.

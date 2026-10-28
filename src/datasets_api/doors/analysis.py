@@ -60,7 +60,6 @@ from datasets_api.codes_analysis import ANALYSIS_STATUSES
 from datasets_api.current import DefinitionDeps
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import SERVING_EXCEPTION_TYPES, _run_retrieval, definition_deps
-from datasets_api.doors.refresh import RefreshRebuildFailed, RenderingNotRecorded
 from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call
@@ -340,12 +339,10 @@ def build_analysis_door(*, deps: DepsCell) -> DoorContribution:
         router=router,
         registry_endpoints=route_registry_endpoints(router, "datasets.analysis"),
         classify=classify_analysis_exception,
-        # A Spec root is served as the definition door serves it, and a root under `latest`
-        # moves as the frame refresh moves it, so their refusals reach this route too.
+        # A Spec root, and a dataset root under `latest`, is served as the definition door
+        # serves it, so its refusals reach this route too.
         exception_types=(
             *SERVING_EXCEPTION_TYPES,
-            RenderingNotRecorded,
-            RefreshRebuildFailed,
             AnalysisRefused,
             SeveralMembers,
             RootNotStored,

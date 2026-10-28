@@ -26,9 +26,9 @@ group totals out of a sum or rank and to rank places at one level.
 
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
 newest version of the rendering, rebuilt when its head is stale. A dataset root under `latest`
-moves to its dataset's current frame of the same rendering as the frame refresh moves it
-(`doors.refresh`). A rebuild over the inline budget answers `AnalysisPending` naming its
-operation.
+is served the same way with the rendering it records, so it is read by its rendering and never
+by its version alone, which can record two renderings that the newest data splits. A rebuild
+over the inline budget answers `AnalysisPending` naming its operation.
 """
 
 from __future__ import annotations
@@ -73,7 +73,6 @@ from datasets_api.analysis import (
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
 from datasets_api.derived import root_rendering
 from datasets_api.doors.definition import serve_spec, served_spec
-from datasets_api.doors.refresh import FramePending, answer_frame_refresh
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
@@ -266,7 +265,18 @@ class LiveRootSource:
         self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
     ) -> ResolvedRoot:
         deps = self._deps
-        if isinstance(root, SpecRoot):
+        if (
+            isinstance(root, DatasetRoot)
+            and deps.snapshot_reader.read_version(root.spec_id, root.content_version) is None
+        ):
+            raise RootNotStored(
+                spec_id=root.spec_id,
+                content_version=root.content_version,
+                reason="no such version is stored",
+            )
+        if isinstance(root, SpecRoot) or latest:
+            # The newest data is read in the rendering the root names, as a fresh root of
+            # that rendering reads it, so a version recording two renderings stays readable.
             served = served_spec(spec_id=root.spec_id, deps=deps, trace_id=trace_id)
             options = mint_options(root.rendering, identity=served.identity)
             try:
@@ -286,17 +296,6 @@ class LiveRootSource:
                 manifest=manifest,
             )
         spec_id, content_version = root.spec_id, root.content_version
-        if latest:
-            answer = answer_frame_refresh(
-                spec_id=spec_id, content_version=content_version, deps=deps, trace_id=trace_id
-            )
-            if isinstance(answer, FramePending):
-                raise _pending(answer.operation_id)
-            spec_id, content_version = answer.frame.spec_id, answer.frame.content_version
-        if deps.snapshot_reader.read_version(spec_id, content_version) is None:
-            raise RootNotStored(
-                spec_id=spec_id, content_version=content_version, reason="no such version is stored"
-            )
         stored = load_stored(
             subject_id=spec_id, content_version=content_version, deps=deps, include_artifacts=False
         )
