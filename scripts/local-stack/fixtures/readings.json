@@ -1,0 +1,612 @@
+{
+ "_comment": "Seed readings for scripts/local-stack/seed.py. Each StatVar's arcs are the dev graph's, copied from tests/fixtures/graph_nodes.json; the population and GNI facets follow the World Development Indicators facets tests/fixtures/graph_obs.json records for Kenya (provenance, unit, first year). Every value and every facet id is synthesised at a realistic magnitude, since no recorded fixture holds these series' points.",
+ "places": {
+  "country/DEU": "Germany",
+  "country/KEN": "Kenya",
+  "country/GHA": "Ghana",
+  "country/NGA": "Nigeria",
+  "country/ETH": "Ethiopia",
+  "country/FRA": "France",
+  "country/GBR": "United Kingdom",
+  "country/USA": "United States",
+  "country/JPN": "Japan"
+ },
+ "labels": {
+  "provenance/OECDDAC2A": "OECD DAC2a",
+  "dc/base/WorldDevelopmentIndicators": "World Development Indicators",
+  "CurrencyUSD": "US dollar",
+  "InternationalDollar": "International dollar",
+  "DAC2aAidType206": "official development assistance",
+  "Disbursement": "disbursement",
+  "Gross": "gross"
+ },
+ "stat_vars": {
+  "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal": {
+   "arcs": {
+    "measurementQualifier": [
+     "Nominal"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "measuredProperty": [
+     "amount"
+    ],
+    "name": [
+     "Official development assistance (gross disbursements)"
+    ],
+    "nettingBasis": [
+     "Gross"
+    ],
+    "observationProperties": [
+     "financingProvider",
+     "financingRecipient"
+    ],
+    "populationType": [
+     "FinancialFlow"
+    ],
+    "constraintProperties": [
+     "dac2aAidType",
+     "financialFlowType",
+     "nettingBasis"
+    ],
+    "dac2aAidType": [
+     "DAC2aAidType206"
+    ],
+    "financialFlowType": [
+     "Disbursement"
+    ]
+   },
+   "label": "Official development assistance (gross disbursements)",
+   "roles": {
+    "donor": "financingProvider",
+    "recipient": "financingRecipient"
+   }
+  },
+  "Count_Person": {
+   "arcs": {
+    "measuredProperty": [
+     "count"
+    ],
+    "memberOf": [
+     "dc/g/Demographics"
+    ],
+    "name": [
+     "Total population"
+    ],
+    "populationType": [
+     "Person"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "definition": [
+     "mp=count,pt=Person"
+    ],
+    "description": [
+     "The total number of people in a population."
+    ]
+   },
+   "label": "Total population",
+   "roles": null
+  },
+  "Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity": {
+   "arcs": {
+    "measuredProperty": [
+     "amount"
+    ],
+    "activitySource": [
+     "GrossNationalIncome"
+    ],
+    "constraintProperties": [
+     "activitySource"
+    ],
+    "statType": [
+     "measuredValue"
+    ],
+    "typeOf": [
+     "StatisticalVariable"
+    ],
+    "definition": [
+     "mq=PurchasingPowerParity,mp=amount,pt=EconomicActivity,activitySource=GrossNationalIncome"
+    ],
+    "memberOf": [
+     "dc/g/EconomicActivity_ActivitySource-GrossNationalIncome"
+    ],
+    "measurementQualifier": [
+     "PurchasingPowerParity"
+    ],
+    "populationType": [
+     "EconomicActivity"
+    ],
+    "name": [
+     "Gross National Income Based on Purchasing Power Parity"
+    ]
+   },
+   "label": "Gross National Income Based on Purchasing Power Parity",
+   "roles": null
+  }
+ },
+ "readings": [
+  {
+   "name": "oda_germany_to_kenya_ghana_nigeria",
+   "stat_var": "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+   "scope": {
+    "entities": {
+     "financingProvider": [
+      "country/DEU"
+     ],
+     "financingRecipient": [
+      "country/KEN",
+      "country/GHA",
+      "country/NGA"
+     ]
+    }
+   },
+   "series": [
+    {
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       182400000
+      ],
+      [
+       "2019",
+       201700000
+      ],
+      [
+       "2020",
+       263900000
+      ],
+      [
+       "2021",
+       301200000
+      ],
+      [
+       "2022",
+       284600000
+      ],
+      [
+       "2023",
+       312800000
+      ]
+     ]
+    },
+    {
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/GHA"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       109300000
+      ],
+      [
+       "2019",
+       121500000
+      ],
+      [
+       "2020",
+       148200000
+      ],
+      [
+       "2021",
+       171000000
+      ],
+      [
+       "2022",
+       158400000
+      ],
+      [
+       "2023",
+       149900000
+      ]
+     ]
+    },
+    {
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/NGA"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       168700000
+      ],
+      [
+       "2019",
+       197300000
+      ],
+      [
+       "2020",
+       231600000
+      ],
+      [
+       "2021",
+       262400000
+      ],
+      [
+       "2022",
+       289100000
+      ],
+      [
+       "2023",
+       271500000
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "oda_to_ethiopia_by_donor",
+   "stat_var": "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
+   "scope": {
+    "entities": {
+     "financingProvider": [
+      "country/DEU",
+      "country/FRA",
+      "country/GBR",
+      "country/JPN",
+      "country/USA"
+     ],
+     "financingRecipient": [
+      "country/ETH"
+     ]
+    }
+   },
+   "series": [
+    {
+     "entities": {
+      "financingProvider": "country/DEU",
+      "financingRecipient": "country/ETH"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       231500000
+      ],
+      [
+       "2019",
+       248900000
+      ],
+      [
+       "2020",
+       297400000
+      ],
+      [
+       "2021",
+       276300000
+      ],
+      [
+       "2022",
+       301800000
+      ],
+      [
+       "2023",
+       289000000
+      ]
+     ]
+    },
+    {
+     "entities": {
+      "financingProvider": "country/FRA",
+      "financingRecipient": "country/ETH"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       61200000
+      ],
+      [
+       "2019",
+       74800000
+      ],
+      [
+       "2020",
+       118600000
+      ],
+      [
+       "2021",
+       96400000
+      ],
+      [
+       "2022",
+       88100000
+      ],
+      [
+       "2023",
+       103700000
+      ]
+     ]
+    },
+    {
+     "entities": {
+      "financingProvider": "country/GBR",
+      "financingRecipient": "country/ETH"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       364900000
+      ],
+      [
+       "2019",
+       341200000
+      ],
+      [
+       "2020",
+       298700000
+      ],
+      [
+       "2021",
+       186500000
+      ],
+      [
+       "2022",
+       151300000
+      ],
+      [
+       "2023",
+       139800000
+      ]
+     ]
+    },
+    {
+     "entities": {
+      "financingProvider": "country/JPN",
+      "financingRecipient": "country/ETH"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       63400000
+      ],
+      [
+       "2019",
+       71900000
+      ],
+      [
+       "2020",
+       98200000
+      ],
+      [
+       "2021",
+       84600000
+      ],
+      [
+       "2022",
+       77000000
+      ],
+      [
+       "2023",
+       69500000
+      ]
+     ]
+    },
+    {
+     "entities": {
+      "financingProvider": "country/USA",
+      "financingRecipient": "country/ETH"
+     },
+     "facet": {
+      "facet_id": "7266186404530934612",
+      "provenance": "provenance/OECDDAC2A",
+      "method": null,
+      "unit": "CurrencyUSD"
+     },
+     "points": [
+      [
+       "2018",
+       1001300000
+      ],
+      [
+       "2019",
+       1123800000
+      ],
+      [
+       "2020",
+       1350600000
+      ],
+      [
+       "2021",
+       1624900000
+      ],
+      [
+       "2022",
+       1913200000
+      ],
+      [
+       "2023",
+       1287400000
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kenya_population",
+   "stat_var": "Count_Person",
+   "scope": {
+    "entities": {
+     "observationAbout": [
+      "country/KEN"
+     ]
+    }
+   },
+   "series": [
+    {
+     "entities": {
+      "observationAbout": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "2176550201",
+      "provenance": "dc/base/WorldDevelopmentIndicators",
+      "method": null,
+      "unit": null
+     },
+     "points": [
+      [
+       "2015",
+       46851488
+      ],
+      [
+       "2016",
+       47894670
+      ],
+      [
+       "2017",
+       48948137
+      ],
+      [
+       "2018",
+       50005031
+      ],
+      [
+       "2019",
+       51051761
+      ],
+      [
+       "2020",
+       51985780
+      ],
+      [
+       "2021",
+       53005614
+      ],
+      [
+       "2022",
+       54027487
+      ],
+      [
+       "2023",
+       55100586
+      ],
+      [
+       "2024",
+       56203030
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "kenya_gni",
+   "stat_var": "Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity",
+   "scope": {
+    "entities": {
+     "observationAbout": [
+      "country/KEN"
+     ]
+    }
+   },
+   "series": [
+    {
+     "entities": {
+      "observationAbout": "country/KEN"
+     },
+     "facet": {
+      "facet_id": "3981252704",
+      "provenance": "dc/base/WorldDevelopmentIndicators",
+      "method": null,
+      "unit": "InternationalDollar"
+     },
+     "points": [
+      [
+       "2015",
+       196200000000
+      ],
+      [
+       "2016",
+       210800000000
+      ],
+      [
+       "2017",
+       224900000000
+      ],
+      [
+       "2018",
+       243100000000
+      ],
+      [
+       "2019",
+       259700000000
+      ],
+      [
+       "2020",
+       257600000000
+      ],
+      [
+       "2021",
+       290900000000
+      ],
+      [
+       "2022",
+       323800000000
+      ],
+      [
+       "2023",
+       350100000000
+      ],
+      [
+       "2024",
+       374600000000
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}

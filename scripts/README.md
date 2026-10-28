@@ -139,6 +139,21 @@ uv run python scripts/ladder.py report <cell-id> --against <ceiling-cell-id>
 
 Run by `just ladder-capture`, `just ladder-run <rung>`, `just ladder-report`.
 
+## `local-stack/stack.sh`
+
+Runs dfo-apis locally with no Google Cloud: Postgres 18 and fake-gcs-server in Docker, both stores migrated, and the Datasets and Presentation surfaces on `http://127.0.0.1:58083`. `seed` mints four readings from `local-stack/fixtures/readings.json` through the mint door, and `smoke` checks each one's versions, manifest, observations and download links over HTTP.
+
+```bash
+just local-stack up
+just local-stack seed
+just local-stack smoke
+just local-stack down
+```
+
+Needs Docker, `uv` and `curl`. `local-stack/README.md` lists the settings it uses and what it leaves out.
+
+Run by hand. `tests/scripts/test_local_stack_seed.py` mints the same readings over in-memory stores in the default suite.
+
 ## `measure_corpus_latency.py`
 
 Runs every case whose `why` states a timing claim through the live engine `--runs` times each and reports which ones exceed the claimed deadline.
