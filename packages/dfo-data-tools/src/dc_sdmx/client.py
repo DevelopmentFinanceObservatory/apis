@@ -127,7 +127,8 @@ _DEFAULT_TOTAL_CONCURRENCY = 8
 DATA_HEDGE_AFTER_SECONDS = 0.5
 """When a `/data` request still has no response headers, the client sends it once more
 (`SdmxClient(hedge_after=...)`). A 2xx SDMX-CSV response wins, a 4xx other than 401, 403, 408
-and 429 ends the read, and every other outcome waits for the other send. Dev's mixer answers
+and 429 ends the read, and once a duplicate is in flight every other outcome waits for the other
+send; a request that fails before the duplicate is sent ends the read. Dev's mixer answers
 `/data` in 0.09 s at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so
 half a second hedges about one request in twenty and cuts the tail beyond it."""
 
@@ -576,8 +577,10 @@ class SdmxClient:
 
     With `hedge_after`, a `/data` request that has no response headers after that many seconds
     is sent once more and the first 2xx SDMX-CSV response, or the first client error other than
-    401, 403, 408 and 429, decides the race (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). Both
-    requests run on their own threads, so a slow loser holds no caller's thread. The request
+    401, 403, 408 and 429, decides the race (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). Once
+    the duplicate is in flight, a send that fails otherwise (401, 403, 408, 429, 5xx, a transport
+    error, or 2xx with another content type) waits for the other send; a request that fails
+    before the duplicate is sent, or with none sent, ends the read. Both requests run on their own threads, so a slow loser holds no caller's thread. The request
     holds its read's total-concurrency slot and the duplicate a loser place; a request that
     loses a decided race trades its slot for the winner's place, so the total limit governs
     live reads and the loser cap the sends left running. The sends running at once never
@@ -1616,9 +1619,11 @@ class SdmxClient:
         `_HEDGE_SLOTS` races are undecided. The duplicate's timeout is the time left.
 
         A 2xx SDMX-CSV response decides the race, and so does a client error other than 401,
-        403, 408 and 429, which the other send would repeat. A send that raises, answers 401,
-        403, 408, 429 or 5xx, or answers 2xx with another content type loses to the other
-        one; only when both fail does the request's own outcome reach the caller. Every wait
+        403, 408 and 429, which the other send would repeat. Once the duplicate is in flight, a
+        send that raises, answers 401, 403, 408, 429 or 5xx, or answers 2xx with another content
+        type loses to the other one; only when both fail does the request's own outcome reach
+        the caller. A request that fails before the duplicate is sent, or with none sent, ends
+        the read with its own outcome. Every wait
         for the request, with or without a duplicate, ends with `TimeoutError` when the
         read's deadline passes and with `_ReadStoppedError` when the read is stopped. The
         race leaves the undecided count as soon as it ends.
@@ -1682,13 +1687,18 @@ class SdmxClient:
         caller frees when its block exits. `winner` is None when the read gave up on every
         send. When a duplicate wins while `primary` still runs, the read's own lease covers
         the duplicate, so `primary` gives back its slot and takes over the duplicate's loser
-        place, keeping the loser count within its cap."""
-        if winner is not None and winner is not primary and not primary.done():
-            primary_lease, _ = holds[primary]
+        place, keeping the loser count within its cap. When `primary` has settled, no send
+        takes the place over and it is freed here, so a winner holds no loser place while its
+        body is read."""
+        if winner is not None and winner is not primary:
             holds[winner] = (None, False)
-            holds[primary] = (None, True)
-            if primary_lease is not None:
-                primary_lease.release()
+            if primary.done():
+                self._free_loser_place()
+            else:
+                primary_lease, _ = holds[primary]
+                holds[primary] = (None, True)
+                if primary_lease is not None:
+                    primary_lease.release()
         for sent, (lease, place) in holds.items():
             if sent is winner:
                 continue
@@ -2223,7 +2233,9 @@ def _decides(sent: Future[httpx.Response]) -> bool:
 def _close_sent_response(sent: Future[httpx.Response]) -> None:
     """Close a settled send's response, if it has one."""
     if sent.exception() is None:
-        with suppress(OSError, httpx.HTTPError):
+        # The set `_DeadlineGuard._abort` expects from `close()`; this runs in Future
+        # done-callbacks, where an escaping error is only logged.
+        with suppress(OSError, httpx.HTTPError, RuntimeError, ValueError):
             sent.result().close()
 
 

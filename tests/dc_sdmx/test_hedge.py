@@ -18,6 +18,7 @@ from dc_sdmx.client import (
     _HEDGE_LOSER_CAP,
     _HEDGE_SLOTS,
     SdmxClient,
+    _close_sent_response,
     _DeadlineGuard,
     _race,
     _ReadStoppedError,
@@ -714,3 +715,59 @@ def test_a_losing_response_is_closed_unread_while_the_winners_body_is_still_read
         winner_stream.gate.set()
         assert read.result(timeout=5) == "2"
     assert transport.requests["V0"] == 2
+
+
+def test_a_duplicate_that_wins_after_its_request_ended_holds_no_loser_place_while_its_body_is_read():
+    """The request answers 503 after the duplicate was sent, and the duplicate answers later.
+    No send is left running, so the winner's slow body read counts against no loser place."""
+    winner_stream = _GatedStream(_body("V0", "2"))
+    duplicate_sent = threading.Event()
+    lock = threading.Lock()
+    sent = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal sent
+        with lock:
+            sent += 1
+            first = sent == 1
+        if first:
+            assert duplicate_sent.wait(timeout=5)
+            return httpx.Response(503)
+        duplicate_sent.set()
+        time.sleep(4 * _HEDGE_AFTER)
+        return httpx.Response(200, headers={"content-type": _CONTENT_TYPE}, stream=winner_stream)
+
+    client = SdmxClient(
+        base_url=_BASE_URL, transport=httpx.MockTransport(handler), hedge_after=_HEDGE_AFTER
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        read = pool.submit(_value, client, "V0")
+        assert winner_stream.reading.wait(timeout=5)
+        assert client._running_losers == 0
+        winner_stream.gate.set()
+        assert read.result(timeout=5) == "2"
+    assert client._running_losers == 0
+
+
+class _RaisingCloseStream(httpx.SyncByteStream):
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield b""
+
+    def close(self) -> None:
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError("reset"), httpx.ReadError("reset"), RuntimeError("closed"), ValueError("closed")],
+    ids=type,
+)
+def test_closing_a_settled_send_whose_close_raises_leaves_no_error_for_the_callback(error):
+    sent: Future[httpx.Response] = Future()
+    sent.set_result(httpx.Response(200, stream=_RaisingCloseStream(error)))
+
+    _close_sent_response(sent)
