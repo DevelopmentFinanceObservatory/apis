@@ -26,7 +26,12 @@ from typing import TYPE_CHECKING
 
 from code_index.members import identity_family_query, query_family
 from code_index.query import CodeIndex
-from code_index.scope_conventions import OPTION_LABELS, SECTOR_GROUPINGS, SectorGrouping
+from code_index.scope_conventions import (
+    OPTION_LABELS,
+    SECTOR_GROUPINGS,
+    SectorGrouping,
+    grouping_of,
+)
 from search.models import (
     BaseIdentity,
     Entry,
@@ -36,6 +41,7 @@ from search.models import (
     OptionAvailability,
     SlotBinding,
 )
+from search.render.labels import join_labels
 from search.scope.composite import table_document
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import AxisTable, ScopeFacts, allowed_values
@@ -236,6 +242,25 @@ def sector_rule(
         rules={held: GROUPING_RULE if grouping is not None else CODE_RULE},
         concept=grouping.concept if grouping is not None else None,
     )
+
+
+def sector_concept(base: BaseIdentity, index: CodeIndex) -> str | None:
+    """What the sector codes `base` binds name, in a reader's words with no codes: the
+    concept of the declared grouping whose codes it binds together ("health" for CRS 120
+    and 130), else each code's label, joined ("health" for CRS 120 alone, "basic health and
+    education" for CRS 122 and 110). None when `base` binds no sector code, or a code the
+    index holds no label for, since the concept names no code."""
+    bound = _sector_binding(base)
+    if bound is None:
+        return None
+    prop, codes = bound
+    grouping = grouping_of(prop, codes)
+    if grouping is not None:
+        return grouping.concept
+    rows = [index.code_by_dcid(code) for code in codes]
+    if any(row is None for row in rows):
+        return None
+    return join_labels([row.label for row in rows if row is not None])
 
 
 def _sector_binding(base: BaseIdentity) -> tuple[str, tuple[str, ...]] | None:

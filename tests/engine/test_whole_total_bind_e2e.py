@@ -233,6 +233,9 @@ _OFFICIAL_GROUP = {
     "whole_of": ["official"],
 }
 _CRS_NAMED = [{"ref": CRS_PROVENANCE}]
+# DAC2a and DAC2b both publish IDA, a multilateral, as a donor in the fixture index, so the
+# official donors' population served from either holds a multilateral.
+_OFFICIAL_SERVED = {**_OFFICIAL_GROUP, "holds_multilaterals": True}
 
 
 @pytest.mark.parametrize(
@@ -309,7 +312,7 @@ def test_a_totalled_or_whole_named_donor_side_binds_the_official_donors_total(
     assert _origin(spec) == [_OFFICIAL]
     assert spec.definition.identity.entities["destination"] == [_ETH]
     assert spec.definition.identity.open_roles is None
-    assert _group(spec, "origin") == _OFFICIAL_GROUP
+    assert _group(spec, "origin") == _OFFICIAL_SERVED
     assert _whole_read(answer) == ("origin:", asked)
     assert [
         departure.asked
@@ -493,7 +496,7 @@ def test_official_donors_read_the_official_total_where_the_crs_holds_private_don
     spec = answer.spec
     assert [source.ref for source in spec.resolved.trace.resolved_sources] == [_DAC2A]
     assert _origin(spec) == [_OFFICIAL]
-    assert _group(spec, "origin") == _OFFICIAL_GROUP
+    assert _group(spec, "origin") == _OFFICIAL_SERVED
     assert _whole_read(answer) == ("origin:", "official donors")
 
 
@@ -517,6 +520,7 @@ def test_all_donors_binds_both_totals(monkeypatch: pytest.MonkeyPatch, text: str
         "label": "all donors including private",
         "side_classes": ["official", "private", "residual"],
         "whole_of": ["official", "private"],
+        "holds_multilaterals": True,
     }
     assert "group_read_as_members" not in [
         departure.code for departure in response.parts[0].departures
@@ -2450,10 +2454,10 @@ def test_the_official_donors_total_names_private_donors_where_its_dataset_holds_
         (text,) = [d.text for d in answer.departures if d.code == "whole_total_read"]
         return text
 
-    assert _group(dac2a.spec, "origin") == _OFFICIAL_GROUP
+    assert _group(dac2a.spec, "origin") == _OFFICIAL_SERVED
     assert "Private donors are outside it." in read(dac2a)
     assert _group(dac2b.spec, "origin") == {
-        **_OFFICIAL_GROUP,
+        **_OFFICIAL_SERVED,
         "side_classes": ["official", "residual"],
     }
     assert "Private donors" not in read(dac2b)
@@ -2502,7 +2506,7 @@ def test_a_resubmit_restores_the_whole_population_from_the_identity(
 
     answer = _part(response)
     assert answer.spec.spec_id == first.spec_id
-    assert _group(answer.spec, "origin") == _OFFICIAL_GROUP
+    assert _group(answer.spec, "origin") == _OFFICIAL_SERVED
     (departure,) = [d for d in answer.departures if d.code == "whole_total_read"]
     assert departure.asked is None
     assert departure.text.startswith(f"This shows {_OFFICIAL_SHOWN}")
@@ -2709,7 +2713,7 @@ def test_a_named_whole_population_leaves_the_other_side_without_a_total(
 
     spec = answer.spec
     assert spec.definition.identity.entities == {"origin": [_OFFICIAL]}
-    assert _group(spec, "origin") == _OFFICIAL_GROUP
+    assert _group(spec, "origin") == _OFFICIAL_SERVED
     assert _group(spec, "destination") is None
     assert _whole_read(answer) == ("origin:", "official donors")
 

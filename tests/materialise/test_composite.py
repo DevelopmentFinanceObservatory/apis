@@ -17,7 +17,8 @@ from dfo_frame_grammar import (
     stream_frame_sha256,
 )
 
-from code_index.declarations import COMPOSITES
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import COMPOSITES, CRS_INCLUSIVE
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import MaterialisationRequest, MaterialisationResult
 from materialise.composite import ComponentResult, compose_components
@@ -39,7 +40,8 @@ _DONOR = "country/USA"
 _CRS = "provenance/OECDCreditorReportingSystem"
 _IMPUTED = "provenance/ONEImputedMultilateralSectors"
 _DAC1 = "provenance/OECDDAC1"
-_STACKED, _SPLICED = COMPOSITES
+_STACKED = DECLARED_COMPOSITES[CRS_INCLUSIVE]
+_SPLICED = next(c for c in COMPOSITES if c.kind == "spliced")
 _ENRICHMENT = EnrichmentLookup(FakeGraphReader(), parties=lambda: {})
 
 # CRS and imputed members of one sector. The imputed dcid sorts before the CRS one, so the

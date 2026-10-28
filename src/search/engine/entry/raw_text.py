@@ -108,7 +108,7 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
-from search.engine.stated_scope import part_scope_intakes
+from search.engine.stated_scope import part_scope_intakes, without_scope_phrases
 from search.engine.surface_resolution import corrected_surfaces, is_surface, named_dcids
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
@@ -1021,13 +1021,24 @@ def _prepare_extraction(
     ]
 
     # A dropped phrase that only names a source is applied by its mention and raises no
-    # warning.
+    # warning. The words of a phrase stating a provider scope are its scope entry's
+    # (`stated_scope.without_scope_phrases`), so where a part's words state that entry they
+    # leave the dropped phrases and narrow no measure. A dropped phrase is in no part's
+    # text, so only a request of one part, whose intake read the whole message, states the
+    # entry it reads; on a request of several the phrase stays and warns.
+    intakes = part_scope_intakes(message=query, part_texts=unique)
+    reading = intakes[0] if len(intakes) == 1 else None
     dropped = list(
         dict.fromkeys(
-            qualifier.strip() for qualifier in extraction.dropped_qualifiers if qualifier.strip()
+            phrase
+            for qualifier in extraction.dropped_qualifiers
+            if (phrase := without_scope_phrases(qualifier.strip(), reading))
         )
     )
-    narrowing = [_narrowing_words(v) for v in unique]
+    narrowing = [
+        _narrowing_words(without_scope_phrases(v, intake))
+        for v, intake in zip(unique, intakes, strict=True)
+    ]
     per_variable_dropped_phrases = [
         tuple(
             phrase
@@ -1147,7 +1158,7 @@ def _prepare_extraction(
         per_variable_source_scopes=per_variable_source_scopes,
         per_variable_source_codes=per_variable_source_codes,
         per_variable_compiled_codes=per_variable_compiled_codes,
-        per_variable_scope_intakes=part_scope_intakes(message=query, part_texts=unique),
+        per_variable_scope_intakes=intakes,
         name_corrections=name_corrections,
     )
 

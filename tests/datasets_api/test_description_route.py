@@ -116,7 +116,7 @@ def _record(
     return DescriptionRecord(
         id=subject_id,
         content_version=content_version,
-        schema_version=1,
+        schema_version=2,
         basis="mint" if is_spec else "publish",
         index_stamp=CodeIndexStamp(
             content_hash="seeded", exported_at="2026-10-11", graph_endpoint="exemplar"

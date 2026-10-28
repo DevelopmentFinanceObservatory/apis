@@ -22,7 +22,7 @@ from .labels import (
     _already_named_in,
     _binding_labels,
     _humanize,
-    _join_labels,
+    join_labels,
 )
 
 if TYPE_CHECKING:
@@ -117,7 +117,7 @@ def _lower_first_word(text: str) -> str:
 def breakdown_phrase(slot_labels: Sequence[str]) -> str:
     """The slots an answer breaks a series down by, as a phrase inside a sentence: each
     label's first word lowered (`_lower_first_word`), joined ("sex and age")."""
-    return _join_labels([_lower_first_word(label) for label in slot_labels])
+    return join_labels([_lower_first_word(label) for label in slot_labels])
 
 
 def _label_head(text: str) -> str:
@@ -198,7 +198,7 @@ def _names_every_adjectival_how_value(sv_text: str, slots: list[Slot]) -> bool:
         if slot.key.axis != "how" or not _is_adjectival(slot):
             continue
         labels = _binding_labels(slot.binding)
-        if labels and not _already_named_in(_join_labels(labels), sv_text):
+        if labels and not _already_named_in(join_labels(labels), sv_text):
             return False
     return True
 

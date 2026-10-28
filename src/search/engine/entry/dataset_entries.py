@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Sequence
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
@@ -36,7 +38,10 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.state import EngineOptions
+from search.engine.region.whole_totals import with_containing_total
 from search.models import (
+    BaseIdentity,
+    Entry,
     ResubmitCandidate,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
@@ -44,7 +49,25 @@ from search.models import (
     ResubmitParsedEntry,
     Warning,
 )
+from search.scope.provider import without_uncounted_inclusive
+from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
+
+
+def served_posted_identity(
+    identity: BaseIdentity, entries: Sequence[Entry] | None, *, coverage: CoverageSnapshot
+) -> tuple[BaseIdentity, Sequence[Entry] | None]:
+    """A posted `identity` and its scope `entries` as a fresh search of the identity would
+    serve them, read alike for identity and candidate entries: each flow side the identity
+    leaves open binds its dataset's containing total where a fresh search would
+    (`whole_totals.with_containing_total`), and an inclusive composite whose providers a
+    fresh search would not offer the inclusive scope serves its bilateral line, with that
+    scope a carried entry (`scope.provider.without_uncounted_inclusive`). Reads coverage
+    and scans families, so callers run it off the event loop."""
+    bound = with_containing_total(identity, coverage=coverage.index)
+    return without_uncounted_inclusive(
+        bound, entries, facts=ScopeFacts(index=get_index(), coverage=coverage)
+    )
 
 
 def spec_resubmit_input_for_identity(entry: ResubmitIdentityEntry) -> ResubmitIdentityPayload:
@@ -251,27 +274,30 @@ async def resolve_candidates_entry(
     the configured candidate cap before scheduling this coroutine.
     """
 
+    def _promote(candidate: ResubmitCandidate) -> RegionResult:
+        # A candidate carries no scope entries, so the carried entry a served bilateral line
+        # would report has no scope to state it.
+        identity, _ = served_posted_identity(candidate.identity, None, coverage=coverage)
+        return resolve_spec_resubmit(
+            inp=ResubmitIdentityPayload(identity=identity, entity_groups=candidate.entity_groups),
+            graph=graph,
+            sdmx=sdmx,
+            coverage=coverage,
+            options=EngineOptions(
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                population_memo=population_memo,
+                place_options_pool=place_options_pool,
+                deadline=deadline,
+            ),
+            full_read_deadline=full_read_deadline,
+        )
+
     async def _promote_one(candidate_index: int, candidate: ResubmitCandidate) -> RegionResult:
         async with sem:
             try:
-                return await asyncio.to_thread(
-                    resolve_spec_resubmit,
-                    inp=ResubmitIdentityPayload(
-                        identity=candidate.identity, entity_groups=candidate.entity_groups
-                    ),
-                    graph=graph,
-                    sdmx=sdmx,
-                    coverage=coverage,
-                    options=EngineOptions(
-                        materialise_graph=materialise_graph,
-                        materialise_sdmx=materialise_sdmx,
-                        rate_cache=rate_cache,
-                        population_memo=population_memo,
-                        place_options_pool=place_options_pool,
-                        deadline=deadline,
-                    ),
-                    full_read_deadline=full_read_deadline,
-                )
+                return await asyncio.to_thread(_promote, candidate)
             except EngineInputError as exc:
                 raise _rewrite_candidate_pointer(
                     exc, index=index, candidate_index=candidate_index

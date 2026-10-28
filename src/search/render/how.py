@@ -19,7 +19,7 @@ from .labels import (
     _already_named_in,
     _binding_values,
     _humanize_ref,
-    _join_labels,
+    join_labels,
 )
 
 # A public-sector debtor's debt is public, so "public or publicly guaranteed" says nothing
@@ -171,7 +171,7 @@ def how_values(
                 is not None
             ]
             if member_texts:
-                phrase = _join_labels(member_texts)
+                phrase = join_labels(member_texts)
                 connective = connective_for_phrase(prop_dcid, phrase, wording)
                 value = HowValue(prop_dcid, phrase, connective, slot)
             else:
@@ -316,7 +316,7 @@ def _adjectival_fold_text(
         if text is None:
             return ""
         labels.append(text)
-    return _join_labels(labels)
+    return join_labels(labels)
 
 
 def _shared_constraint_values(

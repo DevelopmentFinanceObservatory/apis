@@ -36,8 +36,14 @@ from description.stored import (
 )
 from dfo_platform.roles import FlowFamily
 
-SCHEMA_VERSION = 1
-"""The `schema_version` of the records this module defines."""
+SchemaVersion = Literal[1, 2]
+"""A record's schema version. Version 2 adds `DimensionFacts.within_set`."""
+
+SCHEMA_VERSION: SchemaVersion = 2
+"""The latest `schema_version` of the records this module defines. A record is stamped the
+lowest version that describes it (`lowest_schema_version`), so an image of an earlier version
+reads every record that holds nothing that version lacks. A version 1 record reads here as
+version 2 with `within_set` unset (`datasets_api.description_store.upgraded_record`)."""
 
 Basis = Literal["mint", "publish", "backfill"]
 """What wrote a record or filled a late field: a mint, a publish, or the backfill of a version
@@ -83,14 +89,36 @@ class DimensionFacts(Stored):
     its length. It is `None` when nothing recorded them, as for a role on a backfilled
     version whose series statistics are not held. `partial` is true when a variable with data
     has left the code index since the version was made, so the survivors no longer give the
-    whole count. `within` is the code the definition narrows the dimension to.
+    whole count. `within` is the code the definition narrows the dimension to, and
+    `within_set` the codes, two or more, a definition binding a set narrows it to, sorted; a
+    record written before sets were recorded holds neither for a set. A dimension narrows to
+    one or the other.
     """
 
     property: Text
     within: Text | None
+    within_set: list[Text] | MISSING = MISSING
     values: list[DimensionValue] | None
     undeclared_variables: Count
     partial: StrictBool
+
+    @model_validator(mode="after")
+    def _one_narrowing(self) -> Self:
+        if self.within_set is not MISSING and (
+            self.within is not None
+            or len(self.within_set) < 2
+            or self.within_set != sorted(set(self.within_set))
+        ):
+            raise ValueError("a set narrows a dimension without `within`, to two sorted codes")
+        return self
+
+    @property
+    def narrowed_to(self) -> list[str]:
+        """The codes the definition narrows the dimension to: `within`, else `within_set`,
+        else none."""
+        if self.within is not None:
+            return [self.within]
+        return [] if self.within_set is MISSING else self.within_set
 
 
 class VariableFacts(Stored):
@@ -120,6 +148,16 @@ class VariableFacts(Stored):
     admitted_from: Literal["family_member_count", "resolved_variables"]
     with_data: Count | None
     family: FlowFamily | None = None
+
+
+def lowest_schema_version(variables: VariableFacts | None) -> SchemaVersion:
+    """The lowest schema version that describes a record holding `variables`: 2 when a
+    dimension is narrowed to a set (`DimensionFacts.within_set`), else 1."""
+    if variables is not None and any(
+        dimension.within_set is not MISSING for dimension in variables.dimensions or ()
+    ):
+        return 2
+    return 1
 
 
 class ComposedVariable(Stored):
@@ -329,12 +367,14 @@ class DescriptionRecord(Stored):
     holds the steps known to follow steps that are unknown, such as the sum of a collapse whose
     base version's steps are unknown, and is set only while `steps` is `None`. A caveat's
     `step` names one of the record's steps. `late_fields` notes each field filled after the
-    record was written.
+    record was written. `schema_version` is at least the lowest version that describes the
+    record (`lowest_schema_version`): a writer stamps that version, and a read lifts an
+    earlier version's row to this one.
     """
 
     id: VersionId
     content_version: ContentVersion
-    schema_version: Literal[1]
+    schema_version: SchemaVersion
     basis: Basis
     index_stamp: CodeIndexStamp | None
     variables: VariableFacts | None
@@ -392,6 +432,8 @@ class DescriptionRecord(Stored):
         late = [late.field for late in self.late_fields]
         if len(late) != len(set(late)):
             raise ValueError("a late field is filled once")
+        if self.schema_version < lowest_schema_version(self.variables):
+            raise ValueError("a record narrowing a dimension to a set is of schema version 2")
         return self
 
 

@@ -99,7 +99,9 @@ def test_bound_destination_open_origin_publishes_a_role_axis_fact(monkeypatch):
     )
 
     assert facts == [
-        RoleAxisFact(role="origin", member_count=2, members_available=True),
+        RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        ),
     ]
 
 
@@ -187,7 +189,11 @@ def test_both_axes_open_derives_the_same_fact_from_role_index_by_sv(monkeypatch)
     facts = _role_axis_facts(
         [RoleAxisFactInput(role="origin", member_dcids=members)], parties={}, datasets=()
     )
-    assert facts == [RoleAxisFact(role="origin", member_count=2, members_available=True)]
+    assert facts == [
+        RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        )
+    ]
 
 
 # Role-axis facts adapter.
@@ -208,7 +214,9 @@ def test_role_axis_facts_reports_both_roles_when_both_open():
     )
     assert facts == [
         RoleAxisFact(role="destination", member_count=1, members_available=True),
-        RoleAxisFact(role="origin", member_count=0, members_available=True),
+        RoleAxisFact(
+            role="origin", member_count=0, members_available=True, holds_multilaterals=False
+        ),
     ]
 
 
@@ -248,4 +256,8 @@ def test_role_axis_facts_count_parties_beside_totals(members, datasets, count):
         parties=_PARTIES,
         datasets=datasets,
     )
-    assert facts == [RoleAxisFact(role="origin", member_count=count, members_available=True)]
+    assert facts == [
+        RoleAxisFact(
+            role="origin", member_count=count, members_available=True, holds_multilaterals=False
+        )
+    ]

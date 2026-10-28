@@ -101,10 +101,14 @@ from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
 from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
-from search.scope.basis import identity_basis_record
+from search.scope.basis import basis_dataset, identity_basis_record, unbound_basis_record
 from search.scope.build import build_part_scope
 from search.scope.composite import assemble_composite
-from search.scope.provider import settle_provider
+from search.scope.provider import (
+    settle_provider,
+    with_summed_provider,
+    without_unoffered_multilateral,
+)
 from search.scope.state import ScopeIntake, ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -564,16 +568,23 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
-    and, on a part whose binders settled some axis, the provider scope settled over the
-    answer's identity (`provider.settle_provider`). Only the entries a binder applied
+    and the provider scope settled over the answer's identity (`provider.settle_provider`),
+    after words summing the bilateral and multilateral lines are read as the answer's
+    dataset sums them (`provider.with_summed_provider`) and words naming multilateral ODA
+    are dropped where that dataset offers no such option
+    (`provider.without_unoffered_multilateral`). Only the entries a binder applied
     compile (`AxisRecord.entry`), so every choice states the option the answer serves. The
     other entries that attach to the part (`ScopeState.attached`: those on an axis a binder
     settled, for the concept it was asked for, and the stated ones on an axis the part
-    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite, or
-    whose pass settled no axis, states none, and so does one whose answer the recorded axes
-    do not reach, as a region read at its published total. The scope is built in memory,
+    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite
+    states none, and so does one whose answer the recorded axes do not reach, as a region
+    read at its published total. The scope is built in memory,
     and the rules read the bound release's code index, the request's coverage snapshot and
-    the part's operations, groups and served datasets (`scope_facts`). A fresh search does
+    the part's operations, groups and served datasets (`scope_facts`). A part whose binders
+    settled no axis, such as one naming no place, states the scope of its served identity
+    where the measure-basis axis applies to it, with the stated or carried basis that
+    identity holds applied (`basis.unbound_basis_record`), so it states what a resubmit
+    of that identity with the part's entries states. A fresh search does
     not refuse its scope (`build_part_scope` with `refuse` false). Only a dataset_resubmit's
     posted `scope_entries` refuse 422.
 
@@ -581,12 +592,26 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     headline per year), the scope's base is the composite, and the answer is restated as it
     (`composite.assemble_composite`)."""
     selection = state.scope_selection
-    if result.status != "definite" or not selection.records:
+    if result.status != "definite":
         return result
     spec = result.spec
+    identity = spec.definition.identity
+    records = dict(selection.records)
+    if not records:
+        # No binder settled an axis, as on a part naming no place. Where the basis axis
+        # applies to the served identity, the scope reads it and the part's entries.
+        if basis_dataset(identity, get_index()) is None:
+            return result
+        stated = selection.entries_on("measure_basis")
+        if (basis := unbound_basis_record(identity, get_index(), stated)) is not None:
+            records[basis.axis] = basis
     facts = scope_facts(spec, operations=state.operations, coverage=state.coverage)
-    settled = ScopeState(entries=selection.entries, records=dict(selection.records))
-    provider = settle_provider(spec.definition.identity, selection, facts)
+    # Words summing the bilateral and multilateral lines ask for the dataset's own sum.
+    selection = with_summed_provider(identity, selection, facts)
+    # "Multilateral ODA" names DAC1's row only on a dataset that publishes it.
+    selection = without_unoffered_multilateral(identity, selection, facts)
+    settled = ScopeState(entries=selection.entries, records=records)
+    provider = settle_provider(identity, selection, facts)
     if provider is not None:
         settled.write(provider)
     built = build_part_scope(

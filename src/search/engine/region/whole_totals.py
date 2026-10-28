@@ -26,6 +26,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from code_index.declarations import CONTAINING_TOTALS
 from code_index.shared import get_index
 from code_index.types import (
     POPULATION_CLASS,
@@ -35,13 +36,22 @@ from code_index.types import (
     WholeTotalSet,
 )
 from dfo_platform.roles import role_key_axis
+from entity_resolution.shared import shared_membership_policy
 from search.engine.extract import DateRequest
 from search.engine.region.codes import WHOLE_TOTAL_AVAILABLE
 from search.engine.region.coverage_series import series_held
-from search.engine.retrieval.bound_values import identity_dataset
+from search.engine.retrieval.bound_values import identity_dataset, served_members
 from search.engine.spec_build import NamedGroup
 from search.heading.departure_fact import DepartureFact
-from search.models import IdentityWindow, RoleAxis, Spec, TimeWindow, Warning, role_ref
+from search.models import (
+    BaseIdentity,
+    IdentityWindow,
+    RoleAxis,
+    Spec,
+    TimeWindow,
+    Warning,
+    role_ref,
+)
 from search.render.departures import (
     WHOLE_MEMBER_NOUNS,
     private_outside,
@@ -60,7 +70,9 @@ class WholeReading:
     `members` are the parties the side binds: one whole total, or the members of one whole
     total set. `total` is the one whole total, `None` for a set. `label` names the population:
     the total's graph label, or the set's phrase. `whole_of` is the classes of party the
-    population covers, sorted: the total's marker's, or the union of the set members'.
+    population covers, sorted: the total's marker's, or the union of the set members'. A
+    containing total (`containing_reading`) covers no class: `whole_of` is empty and
+    `group_id` names the membership registry's group the total holds.
     """
 
     axis: RoleAxis
@@ -68,6 +80,7 @@ class WholeReading:
     total: str | None
     label: str
     whole_of: tuple[PartyClass, ...]
+    group_id: str | None = None
 
     def named_group(self) -> NamedGroup:
         """The group a Spec carries for the side (`spec_build.role_entity_groups`): a single
@@ -78,6 +91,7 @@ class WholeReading:
             dcid=None,
             member_dcids=frozenset() if self.total is not None else frozenset(self.members),
             total=self.total,
+            group_id=self.group_id,
             whole_of=self.whole_of,
         )
 
@@ -173,6 +187,85 @@ def whole_reading(
         label=first.label or first.dcid,
         whole_of=tuple(sorted(covered)),
     )
+
+
+def containing_reading(dcid: str, *, datasets: Sequence[str]) -> WholeReading | None:
+    """The side `dcid` holds when every one of `datasets` serves it as the containing total of
+    its flow axis (`code_index.declarations.CONTAINING_TOTALS`), or `None`. The reading names
+    the registry group the total holds (`PartyRow.totals`) where the membership policy lists
+    that group, and covers no class."""
+    row = get_index().parties.get(dcid)
+    if row is None or not datasets or len(row.axes) != 1:
+        return None
+    axis = row.axes[0]
+    if any(
+        (held := CONTAINING_TOTALS.get((dataset, axis))) is None or held.total != dcid
+        for dataset in datasets
+    ):
+        return None
+    membership = shared_membership_policy()
+    return WholeReading(
+        axis=axis,
+        members=(dcid,),
+        total=dcid,
+        label=row.label or dcid,
+        whole_of=(),
+        group_id=row.totals if row.totals is not None and row.totals in membership else None,
+    )
+
+
+def containing_totals(axes: Collection[RoleAxis]) -> tuple[str, ...]:
+    """The containing totals some dataset serves on one of `axes`, by dcid
+    (`code_index.declarations.CONTAINING_TOTALS`)."""
+    return tuple(
+        sorted({held.total for (_, axis), held in CONTAINING_TOTALS.items() if axis in axes})
+    )
+
+
+_FLOW_AXES: tuple[RoleAxis, ...] = ("origin", "destination")
+
+
+def with_containing_total(identity: BaseIdentity, *, coverage: CoverageIndex) -> BaseIdentity:
+    """`identity` with the containing total of its dataset (`containing_reading`) bound on
+    each flow side the identity leaves open, binding no entity there and not asking for every
+    member (`BaseIdentity.open_roles`), where `coverage` holds a series of the variables the
+    identity serves (`bound_values.served_members`) at the total beside its other places. A
+    resubmit reads its posted identity so (`entry.dataset_resubmit`), as a fresh search binds
+    the total on a side the part totals (`place_roles.whole_total_candidates`), so a no-op
+    resubmit of a fresh answer answers the same Spec. Any other identity is returned as it
+    is."""
+    dataset = identity_dataset(identity)
+    if dataset is None:
+        return identity
+    open_roles = set(identity.open_roles or ())
+    # Entity keys keep the caller's spelling (`creditor`), so a side is read by its axis.
+    bound: dict[RoleAxis, Collection[str]] = {
+        axis: dcids
+        for role, dcids in identity.entities.items()
+        if (axis := role_key_axis(role)) is not None
+    }
+    unbound = {axis for axis in _FLOW_AXES if axis not in bound and axis not in open_roles}
+    totals = {
+        reading.axis: dcid
+        for dcid in containing_totals(unbound)
+        if (reading := containing_reading(dcid, datasets=(dataset,))) is not None
+        and reading.axis in unbound
+    }
+    if not totals:
+        return identity
+    variables = served_members(identity)
+    if not variables:
+        return identity
+    window = _identity_window(identity.requested_window)
+    entities = dict(identity.entities)
+    for axis, total in totals.items():
+        if series_held(
+            coverage, variables=variables, bound={**bound, axis: [total]}, window=window
+        ):
+            entities[axis] = [total]
+    if entities == identity.entities:
+        return identity
+    return identity.model_copy(update={"entities": dict(sorted(entities.items()))})
 
 
 def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bool:

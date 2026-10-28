@@ -93,7 +93,7 @@ from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
-from code_index.types import PartyRow, level_axes, summable_axes
+from code_index.types import CompositeDeclaration, PartyRow, level_axes, summable_axes
 from dataset_store.snapshot import StoredArtifactLocation, select_servable_locations
 from datasets_api.adapter import pinned_member_ref, shape_measurement_qualifier
 from datasets_api.artifact_delivery import (
@@ -118,6 +118,7 @@ from datasets_api.groupby import (
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
     roll_up_levels,
+    sums_components,
     sums_stat_vars,
     unsummed_axes,
     yields_grammar_frame,
@@ -727,7 +728,7 @@ def _reshape_groupby_collapse(
     # was served from, which is the elected one for an index-resolved family, or the
     # composite its components were composed into.
     dataset = next(iter(set(provenance_refs)), None)
-    composite = code_index.composite(dataset) if dataset is not None else None
+    composite = _frame_composite(code_index, provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
     if frame_chunks is None:
         if decode_plan is not None:
@@ -962,7 +963,10 @@ def _reshape_groupby(
         decoded_code_systems=decoded_code_systems,
         declarations=code_index.declarations,
     )
-    if axes_to_collapse or levels:
+    components = sums_components(
+        by=options.groupby.by, composite=_frame_composite(code_index, provenance_refs)
+    )
+    if axes_to_collapse or levels or components:
         kept = kept_axes(
             by=options.groupby.by,
             decoded_code_systems=decoded_code_systems,
@@ -977,6 +981,7 @@ def _reshape_groupby(
                 decoded_code_systems=decoded_code_systems,
                 declarations=code_index.declarations,
                 lookup=decode_plan.lookup if decode_plan is not None else {},
+                components=components,
             ),
             kept=kept,
             decoded_code_systems=decoded_code_systems,
@@ -2571,6 +2576,7 @@ def _probe_groupby_collapse(
     options: MintOptions,
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
+    provenance_refs: Sequence[str],
 ) -> tuple[bool, DecodePlan | None]:
     """Whether `options.groupby` sums the `stat_var` of the frame whose first chunk is
     `first_chunk`, so a render folds it across chunks (`sums_stat_vars`), and the chunk's
@@ -2585,8 +2591,18 @@ def _probe_groupby_collapse(
         levels=options.groupby.levels,
         decoded_code_systems=_decoded_code_systems(decode_plan),
         declarations=code_index.declarations,
+        composite=_frame_composite(code_index, provenance_refs),
     )
     return sums, decode_plan
+
+
+def _frame_composite(
+    code_index: CodeIndex, provenance_refs: Sequence[str]
+) -> CompositeDeclaration | None:
+    """The declared composite a frame's rows carry as their one provenance, or `None` for a
+    frame of a dataset or of several provenances."""
+    distinct = set(provenance_refs)
+    return code_index.composite(next(iter(distinct))) if len(distinct) == 1 else None
 
 
 def _decoded_code_systems(decode_plan: DecodePlan | None) -> tuple[str, ...]:
@@ -2619,6 +2635,7 @@ def groupby_collapse_sha256(
         options=options,
         code_index=code_index,
         resolved_stat_var_refs=resolved_stat_var_refs,
+        provenance_refs=provenance_refs,
     )
     if not sums:
         return None
@@ -2697,6 +2714,7 @@ def _reshape_stream(
             options=options,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
+            provenance_refs=provenance_refs,
         )
         if first_chunk is not None
         else (False, None)
