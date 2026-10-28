@@ -64,8 +64,12 @@ series a step of the tree dropped for a data gap (`left_out_of`), which the deri
 
 Bounds: a tree holds at most `max_nodes` nodes after expansion, its root frames at most
 `max_root_rows` rows together, and a `join` writes at most `max_join_rows`. Every other verb
-writes no more rows than its `data` side holds, so these bound every intermediate frame. The
-door bounds the run's time.
+writes no more rows than its `data` side holds, so these bound every intermediate frame. The root
+rows are checked against the counts the roots' versions record before any frame is read, and
+against the rows read so far after each read. The computed frame holds at most the rows the
+publish door stores (`PUBLISH_MAX_ROWS`), checked as soon as the tree's top step has computed
+it, before it is digested or stored. Each refuses `over_ceiling`. The door bounds the run's
+time.
 """
 
 from __future__ import annotations
@@ -94,7 +98,11 @@ from pydantic import (
 from artifact_store import ArtifactStore
 from dataset_store.clock import Clock
 from dataset_store.snapshot import SnapshotReader, select_servable_locations
-from datasets_api.doors.publish import publish_built_frame, write_frame_recipe
+from datasets_api.doors.publish import (
+    PUBLISH_MAX_ROWS,
+    publish_built_frame,
+    write_frame_recipe,
+)
 from datasets_api.mint_models import GroupbyOptions
 from datasets_api.output_digest import output_digest
 from datasets_api.publish_models import (
@@ -112,7 +120,13 @@ from description.steps import Step
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
 from dfo_analysis_engine.call_steps import shed_coverage
 from dfo_analysis_engine.calls import admit
-from dfo_analysis_engine.evaluate import Evaluation, Policy, RootFrame, evaluate
+from dfo_analysis_engine.evaluate import (
+    Evaluation,
+    Policy,
+    RootFrame,
+    evaluate,
+    latest_period_of,
+)
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.op_spec import Populations, Verb
 from dfo_analysis_engine.recipe import (
@@ -132,7 +146,6 @@ from dfo_analysis_engine.rolling import (
     PopulationLevelColumnMissingError,
     anchor_populations,
     canonical_populations,
-    rolling_roots,
 )
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Refusal
@@ -443,7 +456,7 @@ def recorded_dataset_root(record: Mapping[str, Any]) -> DatasetRoot:
 
 
 class AnalysisTooLarge(Refusal):
-    """A tree or its root frames pass a bound. Maps to `over_ceiling` (422)."""
+    """A tree, its root frames or its output pass a bound. Maps to `over_ceiling` (422)."""
 
     code = "over_ceiling"
 
@@ -451,8 +464,32 @@ class AnalysisTooLarge(Refusal):
         self.ceiling_kind = ceiling_kind
         self.count = count
         self.cap = cap
-        noun = "nodes" if ceiling_kind == "analysis_nodes" else "root rows"
+        noun = _CEILING_NOUNS[ceiling_kind]
         super().__init__(f"the analysis holds {count} {noun}, over the ceiling of {cap}")
+
+
+_CEILING_NOUNS = {
+    "analysis_nodes": "nodes",
+    "analysis_root_rows": "root rows",
+    "analysis_output_rows": "output rows",
+}
+
+
+class AnalysisStoreDiverges(Refusal):
+    """The pair a run computed already holds a recipe, a replay key or frame bytes that differ
+    from the run's own. The pair is minted from the run's inputs, so this is a fault of the
+    runner or the stores, never of the request. Maps to non-retryable `internal_error` (500),
+    logged with both identities."""
+
+    code = "internal_error"
+
+    def __init__(self, *, spec_id: str, content_version: str) -> None:
+        self.spec_id = spec_id
+        self.content_version = content_version
+        super().__init__(
+            f"spec_id {spec_id!r} content_version {content_version!r} already holds a stored "
+            "frame or recipe that differs from this run's own"
+        )
 
 
 class AnalysisPending(Exception):
@@ -475,12 +512,14 @@ class ResolvedRoot:
     `frame` is the pair the op-specs name the frame by: the dataset pair for the stored frame,
     else the pair `analysis_roots.frame_ref_for` derives from its columns. `record` is the mint
     record a recipe's `roots` holds for it (`dataset`, `options`, and the rest).
-    `rendering` is the ref format 2 root's rendering. `source` is the reader's own handle."""
+    `rendering` is the ref format 2 root's rendering. `rows` is the frame's row count as its
+    version records it, `None` where the reader has none. `source` is the reader's own handle."""
 
     frame: FrameRef
     dataset: FrameRef
     record: Mapping[str, Any]
     rendering: Mapping[str, Any]
+    rows: int | None = None
     source: object = field(default=None, compare=False)
 
 
@@ -964,33 +1003,6 @@ def _fill_populations(
 _POPULATIONS: TypeAdapter[Populations] = TypeAdapter(Populations)
 
 
-def _anchor_of(
-    tree: Mapping[str, Any], frames: Sequence[Frame], resolved: Sequence[ResolvedRoot]
-) -> ResolvedPeriods:
-    """The latest period of `tree`'s rolling roots, or of its anchor roots where it names
-    them, as `evaluate` takes it."""
-    stated = next(
-        node["op_spec"]["parameters"][_ROLLING]["population"]
-        for node in derived_nodes(tree)
-        if isinstance(node["op_spec"]["parameters"].get(_ROLLING), Mapping)
-    )
-    try:
-        populations = _POPULATIONS.validate_python(canonical_populations(stated))
-    except (ValidationError, ValueError, KeyError, TypeError) as exc:
-        raise AnalysisRefused(
-            EngineRefusal.op_spec_invalid(detail=f"rolling.population: {exc}")
-        ) from exc
-    reached: dict[int, tuple[str, Any]] = {}
-    anchors = [root for node in derived_nodes(tree) for root in node.get(_ANCHOR_ROOTS, ())]
-    for node in anchors or rolling_roots(tree):
-        index = node["root"]
-        ref = resolved[index].frame
-        reached.setdefault(
-            index, (ref.spec_id, admit(frames[index], content_version=ref.content_version))
-        )
-    return latest_period(populations, list(reached.values()))
-
-
 def _fill_literals(tree: Mapping[str, Any], period: str) -> None:
     """Set each period left to fill to the latest `period` at its reference's offset."""
 
@@ -1216,9 +1228,64 @@ def _store(
     trace_id: str | None,
 ) -> tuple[str, bool]:
     """Store the evaluated frame and its recipe, and return the digest of the stored frame
-    file, the file a ref names, and whether this call published the frame."""
+    file, the file a ref names, and whether this call published the frame.
+
+    Raises:
+        AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
+    """
     ref = evaluation.ref
     recipe = _recipe(evaluation, roots)
+    try:
+        return _stored(evaluation, roots, recipe, stores, trace_id=trace_id)
+    except Refusal as refused:
+        if refused.code != _CONFLICT:
+            raise
+        _log_divergence(
+            refused, recipe, stores, spec_id=ref.spec_id, content_version=ref.content_version
+        )
+        raise AnalysisStoreDiverges(
+            spec_id=ref.spec_id, content_version=ref.content_version
+        ) from refused
+
+
+_CONFLICT = "publish_conflict"
+
+
+def _log_divergence(
+    refused: Refusal,
+    recipe: Recipe,
+    stores: AnalysisStores,
+    *,
+    spec_id: str,
+    content_version: str,
+) -> None:
+    """Log a store's refusal of a run's frame or recipe with the run's identity and the stored
+    one."""
+    stored = stores.recipe_store.read_recipe(spec_id=spec_id, content_version=content_version)
+    logger.error(
+        "an analysis run diverges from the frame stored under its pair spec_id=%s "
+        "content_version=%s constraint_id=%s run_normal_form_hash=%s run_replay_key=%s "
+        "stored_normal_form_hash=%s stored_replay_key=%s detail=%s",
+        spec_id,
+        content_version,
+        getattr(refused, "constraint_id", None),
+        recipe.normal_form_hash,
+        recipe.replay_key,
+        None if stored is None else stored.normal_form_hash,
+        None if stored is None else stored.replay_key,
+        refused,
+    )
+
+
+def _stored(
+    evaluation: Evaluation,
+    roots: Sequence[ResolvedRoot],
+    recipe: Recipe,
+    stores: AnalysisStores,
+    *,
+    trace_id: str | None,
+) -> tuple[str, bool]:
+    ref = evaluation.ref
     held = _stored_file_digest(stores, spec_id=ref.spec_id, content_version=ref.content_version)
     if held is not None:
         write_frame_recipe(
@@ -1316,6 +1383,28 @@ class Computed:
     output_digest: str
 
 
+def _read_roots(resolved: Sequence[ResolvedRoot], *, source: RootSource, cap: int) -> list[Frame]:
+    """The frames of `resolved`, read in turn. The rows the roots' versions record are summed
+    before the first read, and the rows read so far after each, so a run over `cap` root rows
+    refuses before it reads past it.
+
+    Raises:
+        AnalysisTooLarge: The roots hold more than `cap` rows.
+    """
+    recorded = sum(root.rows or 0 for root in resolved)
+    if recorded > cap:
+        raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=recorded, cap=cap)
+    frames: list[Frame] = []
+    read = 0
+    for root in resolved:
+        frame = source.read(root)
+        read += frame.num_rows
+        if read > cap:
+            raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=read, cap=cap)
+        frames.append(frame)
+    return frames
+
+
 def _evaluated(
     working: dict[str, Any],
     resolved: Sequence[ResolvedRoot],
@@ -1325,28 +1414,35 @@ def _evaluated(
     latest: bool,
 ) -> Computed:
     """Read the resolved roots and evaluate the working tree over them. The caller holds the
-    run's materialise permit."""
-    frames = [source.read(root) for root in resolved]
-    root_rows = sum(frame.num_rows for frame in frames)
-    if root_rows > bounds.max_root_rows:
-        raise AnalysisTooLarge(
-            ceiling_kind="analysis_root_rows", count=root_rows, cap=bounds.max_root_rows
-        )
+    run's materialise permit.
+
+    Raises:
+        AnalysisTooLarge: The roots pass `bounds.max_root_rows`, or the frame passes the rows
+            the publish door stores (`PUBLISH_MAX_ROWS`), refused before it is digested.
+    """
+    frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
     engine = _Engine(frames=frames, resolved=resolved)
     tree, order = _renumbered(engine.tree(working), len(resolved))
     ordered = [resolved[index] for index in order]
     frames = [frames[index] for index in order]
     _fill_populations(tree, [root.record for root in ordered], frames)
+    inputs = {
+        index: RootFrame(ref=root.frame, frame=frame)
+        for index, (root, frame) in enumerate(zip(ordered, frames, strict=True))
+    }
     if engine.lifted:
-        _fill_literals(tree, _anchor_of(tree, frames, ordered).period)
+        anchor = latest_period_of(tree, inputs)
+        # A lifted reference sets a rolling overlay, so the tree has a latest period.
+        assert anchor is not None
+        _fill_literals(tree, anchor.period)
     evaluation = evaluate(
-        tree,
-        {
-            index: RootFrame(ref=root.frame, frame=frame)
-            for index, (root, frame) in enumerate(zip(ordered, frames, strict=True))
-        },
-        policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows),
+        tree, inputs, policy=Policy(latest=latest, max_frame_rows=bounds.max_join_rows)
     )
+    rows = evaluation.frame.num_rows
+    if rows > PUBLISH_MAX_ROWS:
+        raise AnalysisTooLarge(
+            ceiling_kind="analysis_output_rows", count=rows, cap=PUBLISH_MAX_ROWS
+        )
     return Computed(
         evaluation=evaluation, roots=tuple(ordered), output_digest=output_digest(evaluation.frame)
     )
@@ -1466,6 +1562,7 @@ __all__ = [
     "AnalysisPending",
     "AnalysisRequest",
     "AnalysisResult",
+    "AnalysisStoreDiverges",
     "AnalysisStores",
     "AnalysisTooLarge",
     "AnchorRequest",

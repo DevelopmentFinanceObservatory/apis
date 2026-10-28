@@ -98,9 +98,8 @@ from materialise.frame_build import build_frame, unit_cell_for_rebuild
 # The bare frame-layout Parquet data-mcp mints a frame with.
 _BASE_OPTIONS: Mapping[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
 KIND_COLUMNS: tuple[str, ...] = ("party_kind", "party_class", "party_whole")
-FLOW_ENRICHMENT_COLUMNS: tuple[str, ...] = (
-    *sorted(type_column(role) for role in PARTY_ROLES),
-    *KIND_COLUMNS,
+FLOW_ENRICHMENT_COLUMNS: tuple[str, ...] = tuple(
+    sorted({*(type_column(role) for role in PARTY_ROLES), *KIND_COLUMNS})
 )
 _RESERVED_COLUMNS = frozenset(
     {"stat_var", "time_period", "value", "unit", "measurementMethod", "provenance", "status"}
@@ -149,13 +148,17 @@ def frame_ref_for(
 
 
 def mint_options(rendering: RootRendering, *, identity: Mapping[str, Any]) -> dict[str, Any]:
-    """The mint `options` a root of `rendering` is read with, as its record keeps them."""
+    """The mint `options` a root of `rendering` is read with, as its record keeps them.
+
+    `columns` are sorted and each listed once, the order `frame_ref_for` names the frame by, so
+    the frame pair, the frame-layout file, the record and the recipe's normal form all see one
+    order, and two roots that list the same columns in another order are one root."""
     columns = (
         enrichment_columns(identity) if rendering.columns is None else tuple(rendering.columns)
     )
     options: dict[str, Any] = dict(_BASE_OPTIONS)
     if columns:
-        options["columns"] = list(columns)
+        options["columns"] = sorted(set(columns))
     if rendering.without_party_totals:
         options["without_party_totals"] = True
     if rendering.groupby is not None:
@@ -353,6 +356,7 @@ class LiveRootSource:
             dataset=dataset,
             record=record,
             rendering=root_rendering(options),
+            rows=manifest.coverage.rows,
             source=_Handle(artifact=artifact),
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 
 import pytest
 from starlette.requests import Request
@@ -146,14 +147,36 @@ def test_the_principal_without_one_well_formed_caller_refuses_400(callers: list[
         (_PRINCIPAL, ["not-the-secret"]),
         (_PRINCIPAL, [_PRINCIPAL, _PRINCIPAL]),
         ("", [""]),
+        ("", [_PRINCIPAL]),
     ],
-    ids=["wrong-secret", "repeated-secret", "none-configured"],
+    ids=["wrong-secret", "repeated-secret", "empty-none-configured", "none-configured"],
 )
-def test_an_unvouched_caller_header_is_ignored(configured: str, presented: list[str]):
+def test_a_principal_that_does_not_match_refuses_503_and_logs_neither_value(
+    configured: str, presented: list[str], caplog: pytest.LogCaptureFixture
+):
+    """Falling back to the address would count every website client as the website."""
     request = _request(
         ("x-forwarded-for", "3.3.3.3"),
         *(("x-dfo-caller-principal", value) for value in presented),
         ("x-dfo-caller", _NAMED),
     )
 
-    assert resolve_caller(request, _settings(principal=configured)).key == _digest("3.3.3.3")
+    with (
+        caplog.at_level(logging.ERROR, logger="dfo_platform.caller"),
+        pytest.raises(CallerUnresolved) as refused,
+    ):
+        resolve_caller(request, _settings(principal=configured))
+
+    assert refused.value.code == "service_unavailable"
+    (record,) = caplog.records
+    assert record.levelno == logging.ERROR
+    assert "DFO_CALLER_PRINCIPAL" in record.getMessage()
+    for value in {*presented, configured} - {""}:
+        assert value not in caplog.text
+        assert value not in str(refused.value)
+
+
+def test_a_caller_header_without_a_principal_is_ignored():
+    request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _NAMED))
+
+    assert resolve_caller(request, _settings()).key == _digest("3.3.3.3")

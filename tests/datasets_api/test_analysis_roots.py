@@ -23,6 +23,7 @@ from datasets_api.analysis_roots import (
     frame_ref_for,
     mint_options,
 )
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 
@@ -236,6 +237,46 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
             enrichment_stamp=None,
         ).model_dump()
     )
+
+
+def test_a_live_root_s_recorded_rows_refuse_a_run_before_its_frame_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+        settings=DatasetsBuildSettings(analysis_max_root_rows=1),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    minted = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)
+    assert minted["coverage"]["rows"] > 1
+
+    def unread(self, root):
+        raise AssertionError("a root past the row bound was read")
+
+    monkeypatch.setattr(LiveRootSource, "read", unread)
+    root = {"spec_id": spec_id, "content_version": minted["content_version"]}
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": {**root, "rendering": {"columns": []}}},
+    }
+    response = client.post("/api/datasets/analysis", json={"tree": tree})
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "over_ceiling"
+    assert body["fix"] == {
+        "ceiling_kind": "analysis_root_rows",
+        "count": minted["coverage"]["rows"],
+        "cap": 1,
+    }
 
 
 @pytest.mark.parametrize(

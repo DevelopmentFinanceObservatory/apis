@@ -9,6 +9,7 @@ failures, and the definition route's pointer-free form of a materialisation refu
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -363,7 +364,7 @@ CASES: tuple[tuple[str, BaseException], ...] = (
         ),
     ),
     ("pin", PinBackpressure()),
-    ("pin", PinBudgetExhausted(pinned=0, limit=0)),
+    ("pin", PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC))),
     ("pin", DatasetsStoreUnavailable("exemplar")),
     ("publish", PublishFrameInvalid(category="schema_violation", message="exemplar")),
     ("publish", PublishBodyTooLarge(content_length=1, limit=1)),
@@ -564,6 +565,14 @@ _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
         "that writer's insert silently failed to land -- retrying will refuse identically under "
         "the same wiring",
     },
+}
+
+
+# The pin budget is a UTC day's, so it waits for the next UTC midnight, a day after the
+# exemplar's midnight.
+_DELIBERATE_DIFFS["pin-98-PinBudgetExhausted"] = {
+    "detail": "the pin door has reached its daily pin budget; retry after the next UTC midnight",
+    "headers": {"Retry-After": "86400"},
 }
 
 

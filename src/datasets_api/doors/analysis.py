@@ -6,6 +6,8 @@
   the top step's `summary` (`dfo_analysis_engine.calls.VerbCall.summary`) and the shape facts
   it holds, the execution identity, and each period the recipe states relative to the latest;
 - 202 `AnalysisPendingBody` with `Retry-After`, when a root's dataset is still building;
+- 500 `internal_error` when the pair the run computed already holds a different recipe or frame
+  (`analysis.AnalysisStoreDiverges`), a fault this service logs with both identities;
 - a problem document otherwise. An engine refusal, `several_members`, `over_ceiling` and a root
   the runner cannot read (`snapshot_not_found`, `artifact_expired`, `recipe_not_found`,
   `rendering_not_recorded`) carry `retry_mode` and `fix` beside the code, as the engine's refusal body
@@ -41,6 +43,7 @@ from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisPending,
     AnalysisRequest,
+    AnalysisStoreDiverges,
     AnalysisStores,
     AnalysisTooLarge,
     AnchorRequest,
@@ -350,6 +353,7 @@ def build_analysis_door(*, deps: DepsCell) -> DoorContribution:
             RootRecipeMissing,
             RootRenderingUnreadable,
             AnalysisTooLarge,
+            AnalysisStoreDiverges,
             AnalysisBackpressure,
             CallerHeaderInvalid,
         ),
@@ -365,6 +369,7 @@ def build_analysis_door(*, deps: DepsCell) -> DoorContribution:
                 spec_id="spec_exemplar", content_version="cv_exemplar", reason="a groupby"
             ),
             AnalysisTooLarge(ceiling_kind="analysis_nodes", count=65, cap=64),
+            AnalysisStoreDiverges(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             AnalysisBackpressure(),
             CallerHeaderInvalid(),
         ),

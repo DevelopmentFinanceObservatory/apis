@@ -35,7 +35,7 @@ from dataset_store.snapshot import (
     SnapshotRevoked,
     VersionFactsMissing,
 )
-from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger
+from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger, Spend
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.doors.pin import pin_artifact
@@ -58,7 +58,7 @@ from datasets_api.versions import (
     SubjectHead,
     VersionRecord,
 )
-from dfo_platform.caller import ADDRESS_KEY_PREFIX, Caller
+from dfo_platform.caller import Caller
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -67,6 +67,7 @@ from spec_registry import (
     SpecRegistryStoreError,
     recompute_identity,
 )
+from tests.datasets_api._app_factories import offline_allowances
 from tests.datasets_api._legacy_conversion_trace import (
     LEGACY_CONVERSION,
     LEGACY_DEFLATED_CONVERSION,
@@ -568,7 +569,7 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
             snapshot_reader=LiveSnapshotReader(store=live_store),
             artifact_store=_RerenderDuringCopy(),
             reference_writer=LiveArtifactReferenceWriter(store=live_store),
-            daily_max=1_000_000,
+            allowances=offline_allowances(),
             now=lambda: pinned_at,
         )
 
@@ -2232,16 +2233,25 @@ def test_artifact_reference_upsert_repeat_pin_of_a_live_row_keeps_the_original_c
     assert row["removed_at"] is None
 
 
-def test_concurrent_allowance_spends_stop_at_the_limit(live_store):
-    """Spends racing on one caller's day pass the limit by none, under Postgres row locking."""
+@pytest.mark.parametrize("together", [False, True], ids=["allowance", "budget-and-allowance"])
+def test_concurrent_allowance_spends_stop_at_the_limit(live_store, together: bool):
+    """Spends racing on one caller's day pass the limit by none, under Postgres row locking. A
+    pin's budget and allowance spent together stop at the tighter limit, and a refused pin
+    spends neither."""
     caller = Caller(kind="address", key="ip:" + uuid4().hex)
-    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.pin: 3})
+    budget = Spend(f"test-budget-{uuid4().hex}", AllowanceKind.open_pin_budget)
+    ledger = LiveAllowanceLedger(
+        store=live_store, limits={AllowanceKind.pin: 3, AllowanceKind.open_pin_budget: 3}
+    )
     now = datetime.now(UTC)
     outcomes: list[str] = []
 
     def spend() -> None:
         try:
-            ledger.spend(caller, AllowanceKind.pin, now)
+            if together:
+                ledger.spend_together([budget, Spend(caller.key, AllowanceKind.pin)], now)
+            else:
+                ledger.spend(caller, AllowanceKind.pin, now)
             outcomes.append("spent")
         except AllowanceExhausted:
             outcomes.append("refused")
@@ -2259,96 +2269,13 @@ def test_concurrent_allowance_spends_stop_at_the_limit(live_store):
             (caller.key,),
         )
     assert row == {"day": now.date(), "count": 3}
-
-
-def test_the_open_pin_count_reads_only_references_a_caller_key_holds(live_store):
-    """`principal_prefix` selects the copies whose `pin` reference names a caller key."""
-    now = datetime.now(UTC)
-    writer = LiveArtifactReferenceWriter(store=live_store)
-    suffix = uuid4().hex
-
-    def open_count() -> int:
-        return writer.count_pinned_copies_since(
-            reference_kind=PIN_REFERENCE_KIND,
-            since=now - timedelta(hours=24),
-            principal_prefix=ADDRESS_KEY_PREFIX,
-        )
-
-    baseline = open_count()
-    for name, principal in (("open", "ip:" + suffix[:32]), ("granted", "secret-sha256:x")):
-        digest = f"sha256:test-live-open-count-{name}-{suffix}"
-        subject_id = f"spec:test-live-open-count-{name}-{suffix}"
-        _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
-        writer.record_reference(
-            principal=principal,
-            artifact_digest=digest,
-            subject_id=subject_id,
-            content_version="cv1",
-            reference_kind=PIN_REFERENCE_KIND,
-            now=now,
-        )
+    if together:
         with live_store.transaction() as tx:
-            tx.execute(
-                "INSERT INTO datasets.artifact_location "
-                "(artifact_digest, tier, bucket, object_name, stored_at) "
-                "VALUES (%s, 'pinned', 'b', %s, %s)",
-                (digest, digest, now - timedelta(hours=1)),
+            spent = tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s",
+                (budget.key,),
             )
-
-    assert open_count() == baseline + 1
-
-
-def test_pinned_copy_count_counts_each_pin_door_promotion_once(live_store):
-    """The pin budget reads this count. Two `pin` references to one pinned copy add one, and so
-    does a copy whose only `pin` reference was removed, since unpinning leaves the copy stored. A
-    working copy, a pinned copy older than the window, and a frame-store pin add nothing."""
-    now = datetime.now(UTC)
-    since = now - timedelta(hours=24)
-    writer = LiveArtifactReferenceWriter(store=live_store)
-
-    def count() -> int:
-        return writer.count_pinned_copies_since(reference_kind=PIN_REFERENCE_KIND, since=since)
-
-    baseline = count()
-    suffix = uuid4().hex
-    seeds = {
-        "shared": ("pinned", now - timedelta(hours=1), PIN_REFERENCE_KIND),
-        "removed": ("pinned", now - timedelta(hours=1), PIN_REFERENCE_KIND),
-        "working": ("working", now, PIN_REFERENCE_KIND),
-        "old": ("pinned", now - timedelta(hours=25), PIN_REFERENCE_KIND),
-        "frame": ("pinned", now - timedelta(hours=1), "presentation_draft"),
-    }
-    subjects = (f"spec:test-live-pinned-count-{suffix}", f"col_test_live_count_{suffix}")
-    for name, (tier, stored_at, kind) in seeds.items():
-        digest = f"sha256:test-live-pinned-count-{name}-{suffix}"
-        for subject_id in subjects if name == "shared" else subjects[:1]:
-            _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
-            writer.record_reference(
-                principal="first-party",
-                artifact_digest=digest,
-                subject_id=subject_id,
-                content_version="cv1",
-                reference_kind=kind,
-                now=now,
-            )
-            if name == "removed":
-                writer.remove_reference(
-                    principal="first-party",
-                    artifact_digest=digest,
-                    subject_id=subject_id,
-                    content_version="cv1",
-                    reference_kind=kind,
-                    now=now,
-                )
-        with live_store.transaction() as tx:
-            tx.execute(
-                "INSERT INTO datasets.artifact_location "
-                "(artifact_digest, tier, bucket, object_name, stored_at) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (digest, tier, "bucket", digest, stored_at),
-            )
-
-    assert count() == baseline + 2
+        assert spent == {"count": 3}
 
 
 def test_artifact_reference_upsert_reactivates_a_soft_deleted_row(live_store):

@@ -27,9 +27,12 @@ these fields.
 (`fold_address`), under `DFO_CALLER_HMAC_KEY`. The website computes the same key for the
 callers it forwards (its `src/lib/proxy/caller.ts`), so a client has one key on either path
 and no raw address is stored. A request whose `x-dfo-caller-principal` matches
-`DFO_CALLER_PRINCIPAL` comes from the website, which names its client in `x-dfo-caller`; any
-other request is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places from the
-right, the entry the proxies in front of this service appended. `request.client` is never read:
+`DFO_CALLER_PRINCIPAL` comes from the website, which names its client in `x-dfo-caller`. A
+request that carries `x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL`
+is unset, refuses 503 `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
+address would put every client of the website on the website's own allowance. A request with no
+`x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
+from the right, the entry the proxies in front of this service appended. `request.client` is never read:
 `ProxyHeadersMiddleware` sets it from the leftmost entry, which the client writes.
 """
 
@@ -70,6 +73,7 @@ _MAX_CREDENTIAL_LENGTH = 4096
 and decoding it would let a crafted payload exhaust the JSON parser's recursion limit."""
 
 _log = logging.getLogger("dfo_platform.request")
+_caller_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,9 +221,10 @@ class CallerHeaderInvalid(Refusal):
 
 
 class CallerUnresolved(Refusal):
-    """This service cannot name a direct caller: `DFO_CALLER_HMAC_KEY` is unset, or the
-    X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` names is missing or not an address. Either is a
-    deployment fault, so it answers a 503 a retry does not clear, and is logged."""
+    """This service cannot name a caller: a presented `x-dfo-caller-principal` does not match
+    `DFO_CALLER_PRINCIPAL`, `DFO_CALLER_HMAC_KEY` is unset, or the X-Forwarded-For entry
+    `DFO_TRUSTED_PROXY_HOPS` names is missing or not an address. Each is a deployment fault, so
+    it answers a 503 a retry does not clear, and is logged."""
 
     code = "service_unavailable"
 
@@ -256,7 +261,8 @@ def _single(request: Request, header: str) -> str | None:
 
 
 def _vouched(request: Request, settings: CallerSettings) -> bool:
-    """Whether `request` carries the configured caller principal, compared in constant time."""
+    """Whether `request` carries the configured caller principal once, compared in constant
+    time."""
     secret = settings.caller_principal.get_secret_value()
     presented = _single(request, CALLER_PRINCIPAL_HEADER)
     return (
@@ -266,16 +272,33 @@ def _vouched(request: Request, settings: CallerSettings) -> bool:
     )
 
 
+def _principal_mismatch(settings: CallerSettings) -> CallerUnresolved:
+    """Log a presented caller principal this service does not accept, naming neither value, and
+    return its refusal."""
+    configured = bool(settings.caller_principal.get_secret_value())
+    reason = (
+        f"{CALLER_PRINCIPAL_HEADER} does not match DFO_CALLER_PRINCIPAL"
+        if configured
+        else f"{CALLER_PRINCIPAL_HEADER} is present and DFO_CALLER_PRINCIPAL is unset"
+    )
+    _caller_log.error("caller principal refused: %s", reason)
+    return CallerUnresolved(reason)
+
+
 def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
     """Name the caller of `request` for an allowance. See the module docstring.
 
     Raises:
         CallerHeaderInvalid: The caller principal matches, and `x-dfo-caller` is missing,
             repeated or malformed.
-        CallerUnresolved: The request is named by address, and `DFO_CALLER_HMAC_KEY` is unset
-            or the trusted X-Forwarded-For entry is missing or not an IP address.
+        CallerUnresolved: `x-dfo-caller-principal` is present and does not match a configured
+            `DFO_CALLER_PRINCIPAL`, or the request is named by address, and
+            `DFO_CALLER_HMAC_KEY` is unset or the trusted X-Forwarded-For entry is missing or not
+            an IP address.
     """
-    if _vouched(request, settings):
+    if request.headers.getlist(CALLER_PRINCIPAL_HEADER):
+        if not _vouched(request, settings):
+            raise _principal_mismatch(settings)
         named = _single(request, CALLER_HEADER)
         if named is None or not _ADDRESS_KEY.fullmatch(named):
             raise CallerHeaderInvalid()

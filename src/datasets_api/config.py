@@ -133,14 +133,15 @@ class DatasetsBuildSettings(BaseSettings):
     # Maximum head age before rebuilding. Catches count- and date-invariant value corrections.
     head_max_age_seconds: int = Field(default=86_400, ge=1)
 
-    # New pinned copies allowed per trailing 24 hours, counted from `pin` references. A repin of
-    # an already pinned artifact is exempt. 0 refuses every new pinned copy.
+    # New pinned copies of named artifacts the pin door makes per UTC day, a budget spent as an
+    # allowance is (`datasets_api.allowance`). A repin of an already pinned artifact and a
+    # serving-frame copy spend none. 0 refuses every new pinned copy.
     pin_daily_max: int = Field(default=500, ge=0)
 
-    # New pinned copies callers without the pin grant may make together per trailing 24 hours,
-    # counted as `pin_daily_max` counts, over the copies whose `pin` reference names a caller key
-    # (`dfo_platform.caller.ADDRESS_KEY_PREFIX`). They count toward `pin_daily_max` as well, so
-    # open callers leave the pin grant's holders at least `pin_daily_max` minus this.
+    # New pinned copies callers without the pin grant may make together per UTC day, spent with
+    # `pin_daily_max` and the caller's `pin_daily_allowance` in one transaction. Their copies
+    # spend `pin_daily_max` as well, so open callers leave the pin grant's holders at least
+    # `pin_daily_max` minus this.
     pin_open_daily_max: int = Field(default=200, ge=0)
 
     # New pinned copies one caller without the pin grant may make per UTC day

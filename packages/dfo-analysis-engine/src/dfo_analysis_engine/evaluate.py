@@ -32,7 +32,7 @@ Every refusal is raised as `refusal.AnalysisRefused`.
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,7 +59,7 @@ from dfo_analysis_engine.refusal import AnalysisRefused, CompositeComponent, Ref
 from dfo_analysis_engine.rolling import canonical_populations, rolling_roots
 from dfo_analysis_engine.steps import Step
 
-__all__ = ["EvaluatedStep", "Evaluation", "Policy", "RootFrame", "evaluate"]
+__all__ = ["EvaluatedStep", "Evaluation", "Policy", "RootFrame", "evaluate", "latest_period_of"]
 
 _ROLLING = "rolling"
 _ANCHOR_ROOTS = "anchor_roots"
@@ -154,7 +154,7 @@ def evaluate(
     """
     if "root" in recipe:
         raise ValueError("a recipe tree's top node is derived")
-    roots = _admitted_roots(recipe, input_frames)
+    roots = _admitted_roots(_root_indices(recipe), input_frames)
     periods = _latest_period(recipe, roots)
     walk = _Walk(roots=roots, periods=periods, policy=policy)
     call, tree = walk.derived(recipe)
@@ -189,12 +189,27 @@ def _anchor_roots(tree: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [root for node in derived_nodes(tree) for root in node.get(_ANCHOR_ROOTS, ())]
 
 
-def _admitted_roots(
+def latest_period_of(
     tree: Mapping[str, Any], input_frames: Mapping[int, RootFrame]
+) -> ResolvedPeriods | None:
+    """The latest period `evaluate` counts the rolling op-specs of `tree` from, `None` for a
+    tree of fixed periods. Only the roots the period is taken over are admitted.
+
+    Raises:
+        AnalysisRefused: `rolling_populations_differ`, `op_spec_invalid` for populations that
+            do not parse, or the anchor's own refusals.
+        ValueError: A root the period is taken over has no frame.
+    """
+    reached = (node["root"] for node in _anchor_roots(tree) or rolling_roots(tree))
+    return _latest_period(tree, _admitted_roots(reached, input_frames))
+
+
+def _admitted_roots(
+    indices: Iterable[int], input_frames: Mapping[int, RootFrame]
 ) -> dict[int, _Root]:
-    """Every root of `tree`, admitted, by index."""
+    """The roots at `indices`, admitted once each, by index."""
     admitted: dict[int, _Root] = {}
-    for index in _root_indices(tree):
+    for index in indices:
         if index in admitted:
             continue
         if index not in input_frames:

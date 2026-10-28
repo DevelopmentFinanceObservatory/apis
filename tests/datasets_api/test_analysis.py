@@ -5,6 +5,7 @@ the bounds."""
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 from importlib.resources import files
 
@@ -17,12 +18,14 @@ from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisPending,
     AnalysisRequest,
+    AnalysisStoreDiverges,
     AnalysisTooLarge,
     RootRecipeMissing,
     SeveralMembers,
     column_for,
     run_analysis,
 )
+from datasets_api.doors.analysis import classify_analysis_exception
 from datasets_api.output_digest import output_digest
 from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
@@ -233,6 +236,47 @@ def test_a_rerun_stores_nothing_new() -> None:
     assert stores.version_count() == versions
 
 
+def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> None:
+    """The frame pair sorts a root's columns, so its record and normal form must as well, or the
+    second run's recipe diverges from the one stored under the same pair."""
+    stores = Stores()
+
+    def summed(columns: list[str]) -> dict:
+        root = {**dataset(AID, AID_V1), "rendering": {"columns": columns}}
+        return step("aggregate", root, aggregation="sum", group_by=["destination"])
+
+    first = _run(stores, summed(["party_kind", "financingRecipient_type", "party_kind"]))
+    again = _run(stores, summed(["financingRecipient_type", "party_kind"]))
+
+    assert not again.created
+    assert again.ref() == first.ref()
+    (root,) = first.ref()["members"][0]["roots"]
+    assert root["rendering"]["columns"] == ["financingRecipient_type", "party_kind"]
+
+
+def test_a_pair_holding_another_recipe_answers_500_logged_with_both_identities(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    stores = Stores()
+    ref = _run(stores, _PER_PERSON).evaluation.ref
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.frame_recipe SET normal_form_hash = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            ("rnf_" + "0" * 32, ref.spec_id, ref.content_version),
+        )
+
+    with caplog.at_level(logging.ERROR), pytest.raises(AnalysisStoreDiverges) as raised:
+        _run(stores, _PER_PERSON)
+
+    spec = classify_analysis_exception(raised.value)
+    assert spec is not None
+    assert (spec.status, spec.code) == (500, "internal_error")
+    (record,) = [r for r in caplog.records if r.name == "datasets_api.analysis"]
+    assert "stored_normal_form_hash=rnf_" + "0" * 32 in record.getMessage()
+    assert "run_normal_form_hash=rnf_" in record.getMessage()
+
+
 def test_the_artifact_digest_does_not_depend_on_the_time_of_publish() -> None:
     """The frame file holds no publish time, so one tree published on another day names the
     same file."""
@@ -439,6 +483,40 @@ def test_a_tree_past_a_bound_refuses_before_it_computes(
     with pytest.raises(AnalysisTooLarge) as raised:
         _run(stores, _PER_PERSON, bounds=bounds)
     assert raised.value.ceiling_kind == ceiling_kind
+    assert stores.version_count() == 0
+
+
+@pytest.mark.parametrize(
+    ("recorded", "cap", "reads"),
+    [
+        pytest.param(True, 7, 0, id="recorded-counts-refuse-before-any-read"),
+        pytest.param(False, 3, 1, id="unrecorded-counts-stop-at-the-first-frame-past"),
+    ],
+)
+def test_root_rows_past_the_bound_refuse_before_reading_past_it(
+    recorded: bool, cap: int, reads: int
+) -> None:
+    """Each root holds 4 rows."""
+    stores = Stores()
+    roots = source(stores, recorded_rows=recorded)
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON, root_source=roots, bounds=AnalysisBounds(max_root_rows=cap))
+
+    assert raised.value.ceiling_kind == "analysis_root_rows"
+    assert roots.reads == reads
+
+
+def test_a_frame_past_the_publish_rows_refuses_before_it_is_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    monkeypatch.setattr(analysis, "PUBLISH_MAX_ROWS", 1)
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON)
+
+    assert (raised.value.ceiling_kind, raised.value.cap) == ("analysis_output_rows", 1)
     assert stores.version_count() == 0
 
 

@@ -44,6 +44,7 @@ from tests.code_index.aid_identity import (
     imputed_education_aid_identity,
 )
 
+from ._app_factories import offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps, fake_deps_cell
 from ._snapshot_doubles import (
@@ -215,7 +216,7 @@ def _pin(reader: FakeSnapshotReader, store, location, references) -> None:
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=references,
-        daily_max=1,
+        allowances=offline_allowances(),
         now=lambda: _NOW,
     )
 
@@ -430,7 +431,7 @@ def _outcome(door: str, *, spec_store: FakeDatasetStore, recorded_under: str) ->
                 snapshot_reader=reader,
                 artifact_store=store,
                 reference_writer=FakeArtifactReferenceWriter(),
-                daily_max=1,
+                allowances=offline_allowances(),
                 now=lambda: _NOW,
             )
         else:

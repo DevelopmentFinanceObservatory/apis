@@ -43,8 +43,8 @@ from artifact_store import ArtifactStore
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import SnapshotReader
-from datasets_api.allowance import AllowanceLedger
+from dataset_store.snapshot import ArtifactReferenceWriter, SnapshotReader
+from datasets_api.allowance import SharedAllowanceLedger
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell, DepsOverrides, open_deps
@@ -77,7 +77,6 @@ from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
 from datasets_api.recipe_store import RecipeStore
-from datasets_api.reference_store import PinReferenceWriter
 from datasets_api.routing import build_id_grammar_refusal_router
 from datasets_api.store_errors import classify_store_exception
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
@@ -127,8 +126,8 @@ def datasets_surface(
     operation_store: OperationStore | None = None,
     recipe_store: RecipeStore | None = None,
     description_store: LiveDescriptionStore | None = None,
-    reference_writer: PinReferenceWriter | None = None,
-    allowances: AllowanceLedger | None = None,
+    reference_writer: ArtifactReferenceWriter | None = None,
+    allowances: SharedAllowanceLedger | None = None,
     graph: GraphReader | None = None,
     sdmx: SdmxClient | None = None,
     artifact_store: ArtifactStore | None = None,

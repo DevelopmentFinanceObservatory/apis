@@ -32,9 +32,9 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
+from dataset_store.snapshot import ArtifactReferenceWriter, LiveSnapshotReader, SnapshotReader
 from datasets_api.admission import MaterialisePermits, RebuildFlights
-from datasets_api.allowance import AllowanceLedger, LiveAllowanceLedger, allowance_limits
+from datasets_api.allowance import LiveAllowanceLedger, SharedAllowanceLedger, allowance_limits
 from datasets_api.config import DatasetsBuildSettings, DatasetsSettings
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.door_executor import DoorExecutor, build_door_executor
@@ -52,7 +52,7 @@ from datasets_api.operations.task_client import (
 from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS
 from datasets_api.recipe_store import LiveRecipeStore, RecipeStore
-from datasets_api.reference_store import LiveArtifactReferenceWriter, PinReferenceWriter
+from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
@@ -89,9 +89,9 @@ class Deps:
     operation_store: OperationStore
     recipe_store: RecipeStore
     description_store: LiveDescriptionStore
-    reference_writer: PinReferenceWriter
+    reference_writer: ArtifactReferenceWriter
     # The daily allowances of callers without a grant (`datasets_api.allowance`).
-    allowances: AllowanceLedger
+    allowances: SharedAllowanceLedger
     graph: GraphReader
     sdmx: SdmxClient
     artifact_store: ArtifactStore
@@ -171,8 +171,8 @@ class DepsOverrides:
     operation_store: OperationStore | None = None
     recipe_store: RecipeStore | None = None
     description_store: LiveDescriptionStore | None = None
-    reference_writer: PinReferenceWriter | None = None
-    allowances: AllowanceLedger | None = None
+    reference_writer: ArtifactReferenceWriter | None = None
+    allowances: SharedAllowanceLedger | None = None
     graph: GraphReader | None = None
     sdmx: SdmxClient | None = None
     artifact_store: ArtifactStore | None = None

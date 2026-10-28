@@ -41,6 +41,7 @@ from tests.fixtures import FakeGraph
 from tests.materialise._canonical_frame import canonical_frame_of_frame1
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
+from ._app_factories import offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
@@ -996,7 +997,7 @@ def test_a_version_pinned_then_read_31_days_later_returns_its_observations():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=FakeArtifactReferenceWriter(),
-        daily_max=1_000_000,
+        allowances=offline_allowances(),
         now=lambda: _NOW,
     )
     world.now = _NOW + timedelta(days=31)

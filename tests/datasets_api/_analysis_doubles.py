@@ -21,6 +21,7 @@ from datasets_api.analysis import (
     SpecRoot,
     recorded_dataset_root,
 )
+from datasets_api.analysis_roots import mint_options
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionRecordWriter
 from dfo_analysis_engine.frame_ref import FrameRef
@@ -84,16 +85,11 @@ def population_frame(*, years: tuple[str, ...] = ("2021", "2022")) -> Frame:
 
 
 def _options(rendering: RootRendering) -> dict[str, Any]:
-    """The mint options a root of `rendering` is read with, as `analysis_roots.mint_options`
-    states them, with no enrichment columns where `rendering` names none."""
-    options: dict[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
-    if rendering.columns:
-        options["columns"] = list(rendering.columns)
-    if rendering.without_party_totals:
-        options["without_party_totals"] = True
-    if rendering.groupby is not None:
-        options["groupby"] = rendering.groupby.model_dump(mode="json", exclude_none=True)
-    return options
+    """The mint options a root of `rendering` is read with (`analysis_roots.mint_options`), with
+    no enrichment columns where `rendering` names none."""
+    if rendering.columns is None:
+        rendering = rendering.model_copy(update={"columns": ()})
+    return mint_options(rendering, identity={})
 
 
 def _record(dataset: FrameRef, options: Mapping[str, Any]) -> dict[str, Any]:
@@ -109,7 +105,8 @@ def _record(dataset: FrameRef, options: Mapping[str, Any]) -> dict[str, Any]:
 class FakeRootSource:
     """Frames by `(spec_id, content_version)`, the newest version of each dataset, and the
     recipes of the stores' derived frames. `pending` names datasets whose newest version is
-    still building. Every resolve is recorded."""
+    still building. A root's version records its frame's rows unless `recorded_rows` is false.
+    Every resolve is recorded."""
 
     def __init__(
         self,
@@ -118,8 +115,10 @@ class FakeRootSource:
         newest: Mapping[str, str],
         recipes: LiveRecipeStore | None = None,
         pending: Mapping[str, str] | None = None,
+        recorded_rows: bool = True,
     ) -> None:
         self.frames = dict(frames)
+        self.recorded_rows = recorded_rows
         self.newest = dict(newest)
         self.recipes = recipes
         self.pending = dict(pending or {})
@@ -140,8 +139,13 @@ class FakeRootSource:
             )
         dataset = FrameRef(spec_id=root.spec_id, content_version=content_version)
         options = _options(root.rendering)
+        frame = self.frames[(root.spec_id, content_version)]
         return ResolvedRoot(
-            frame=dataset, dataset=dataset, record=_record(dataset, options), rendering=options
+            frame=dataset,
+            dataset=dataset,
+            record=_record(dataset, options),
+            rendering=options,
+            rows=frame.num_rows if self.recorded_rows else None,
         )
 
     def read(self, root: ResolvedRoot) -> Frame:

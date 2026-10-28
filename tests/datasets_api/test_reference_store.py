@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
@@ -219,82 +219,6 @@ def test_record_reference_unless_revoked_refuses_a_digest_the_version_no_longer_
     with store.transaction() as tx:
         rows = tx.fetch_all("SELECT * FROM datasets.artifact_reference")
     assert rows == []
-
-
-_STANDALONE = ("first-party-key", _SUBJECT_ID)
-_MEMBER = ("first-party-key", "col_member")
-
-
-@pytest.mark.parametrize(
-    ("tier", "age", "references", "counted", "removed"),
-    [
-        pytest.param("pinned", timedelta(hours=1), [(_STANDALONE, "pin")], 1, False, id="door-pin"),
-        pytest.param(
-            "pinned",
-            timedelta(hours=1),
-            [(_STANDALONE, "pin"), (_MEMBER, "pin")],
-            1,
-            False,
-            id="shared-digest-counts-once",
-        ),
-        # Unpinning leaves the copy stored, so it still spends the budget.
-        pytest.param(
-            "pinned",
-            timedelta(hours=1),
-            [(_STANDALONE, "pin")],
-            1,
-            True,
-            id="removed-reference-still-counts",
-        ),
-        pytest.param("pinned", timedelta(hours=25), [(_STANDALONE, "pin")], 0, False, id="older"),
-        pytest.param("working", timedelta(hours=1), [(_STANDALONE, "pin")], 0, False, id="working"),
-        pytest.param(
-            "pinned",
-            timedelta(hours=1),
-            [(("presentation:cmp_a", _SUBJECT_ID), "presentation_draft")],
-            0,
-            False,
-            id="frame-store-pin",
-        ),
-    ],
-)
-def test_count_pinned_copies_since_counts_the_kinds_promotions(
-    store, tier: str, age: timedelta, references, counted: int, removed: bool
-):
-    """One pinned copy in the window counts once for the kind that references it, however many
-    references it holds and whether or not they were removed."""
-    with store.transaction() as tx:
-        tx.execute(
-            "INSERT INTO datasets.artifact_location "
-            "(artifact_digest, tier, bucket, object_name, stored_at) VALUES (%s, %s, %s, %s, %s)",
-            (_DIGEST, tier, "bucket", _DIGEST, _LATER - age),
-        )
-    writer = LiveArtifactReferenceWriter(store=store)
-    for (principal, subject_id), kind in references:
-        writer.record_reference(
-            principal=principal,
-            artifact_digest=_DIGEST,
-            subject_id=subject_id,
-            content_version=_CONTENT_VERSION,
-            reference_kind=kind,
-            now=_LATER,
-        )
-        if removed:
-            writer.remove_reference(
-                principal=principal,
-                artifact_digest=_DIGEST,
-                subject_id=subject_id,
-                content_version=_CONTENT_VERSION,
-                reference_kind=kind,
-                now=_LATER,
-            )
-
-    assert (
-        writer.count_pinned_copies_since(
-            reference_kind=PIN_REFERENCE_KIND, since=_LATER - timedelta(hours=24)
-        )
-        == counted
-    )
 
 
 def test_a_driver_failure_raises_datasets_store_unavailable_with_no_leaked_context():

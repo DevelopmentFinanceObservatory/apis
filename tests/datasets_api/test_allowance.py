@@ -7,7 +7,13 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceExhausted,
+    AllowanceKind,
+    LiveAllowanceLedger,
+    Spend,
+)
 from dfo_platform.caller import Caller
 
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -68,3 +74,23 @@ def test_a_zero_limit_refuses_the_first_spend():
 
     with pytest.raises(AllowanceExhausted):
         ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+
+
+def test_spends_together_take_every_unit_or_none():
+    """A pin spends the shared budget and the caller's allowance together, so a caller past its
+    allowance takes nothing from the budget every caller shares."""
+    store = FakeVersionRecordDatasetStore()
+    ledger = LiveAllowanceLedger(
+        store=store, limits={AllowanceKind.open_pin_budget: 2, AllowanceKind.pin: 1}
+    )
+    budget = Spend(BUDGET_KEY, AllowanceKind.open_pin_budget)
+
+    ledger.spend_together([budget, Spend(_ALICE.key, AllowanceKind.pin)], _NOON)
+    with pytest.raises(AllowanceExhausted) as refused:
+        ledger.spend_together([budget, Spend(_ALICE.key, AllowanceKind.pin)], _NOON)
+    ledger.spend_together([budget, Spend(_BOB.key, AllowanceKind.pin)], _NOON)
+
+    assert refused.value.kind is AllowanceKind.pin
+    with pytest.raises(AllowanceExhausted) as spent_out:
+        ledger.spend_together([budget], _NOON)
+    assert spent_out.value.kind is AllowanceKind.open_pin_budget

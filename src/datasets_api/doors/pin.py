@@ -10,14 +10,14 @@ secret is never stored or logged. Pinning is irreversible on this surface.
 
 Every other caller is an open caller, named by `dfo_platform.caller.resolve_caller` before the
 pin runs, and its reference names it by its caller key (`ip:<digest>`). A new pinned copy for an
-open caller also needs room under `DATASETS_PIN_OPEN_DAILY_MAX` (default 200), counted as the
-daily budget is but over the copies whose `pin` reference names a caller key, and refuses the
-same retryable 503 with `Retry-After` past it, so open callers cannot spend the budget the
-grant's holders draw on. It then spends one unit of the caller's `pin` allowance
-(`DATASETS_PIN_DAILY_ALLOWANCE`, default 50 a UTC day, `datasets_api.allowance`), refusing 429
-`allowance_exhausted` once it is spent. The budget is checked first and the allowance spent
-last, so a budget refusal spends no allowance; a unit stays spent when the copy then fails.
-A repeat pin of an artifact that already has a pinned copy spends neither.
+open caller also spends one unit of the open callers' budget (`DATASETS_PIN_OPEN_DAILY_MAX`,
+default 200 a UTC day), refusing the daily budget's retryable 503 past it, so open callers
+cannot spend the budget the grant's holders draw on, and one unit of the caller's `pin`
+allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 50 a UTC day), refusing 429
+`allowance_exhausted` once it is spent. A pin spends its units of the daily budget, the open
+budget and the allowance together (`allowance.SharedAllowanceLedger.spend_together`), so a
+refusal by one spends none of the others; a unit stays spent when the copy then fails. A repeat
+pin of an artifact that already has a pinned copy spends nothing.
 
 The door checks the spec, then the version, its revocation and its base version's, and the
 digest's link in one `read_servable_version` transaction, before copying. The path id resolves
@@ -50,21 +50,16 @@ call, including a repeat pin of an artifact that is already pinned, so a retry o
 a version whose frame is still working-tier. A frame whose bytes are gone is skipped and the walk
 moves to the next serving frame. One pinned serving frame keeps the version fetchable in every
 format and reporting `retention.pinned`. A version none of whose serving frames survives pins the
-named artifact alone. A frame copy skips the budget check. It holds a `pin` reference, so it
-counts toward later calls. A pin can add two pinned copies to the count (the named artifact and
-one serving frame), and only the first waits on the budget.
+named artifact alone. A frame copy spends no budget.
 
-A daily budget bounds the pinned copies this door creates. Before a copy, the
-door counts pinned-tier locations stored in the trailing 24 hours whose digest
-holds a `pin` reference, and refuses retryable 503 `service_unavailable` with
-`Retry-After` once the count reaches `DATASETS_PIN_DAILY_MAX` (default 500).
-Presentation pins hold another reference kind and spend none of it. A reference
-to an artifact that already has a pinned copy skips the budget and adds nothing
-to the count, so a repeat call that repairs a missing reference, or a second
-subject sharing the digest, always succeeds. The count runs before the copy,
-which cannot hold a pooled connection, so pins admitted together can overshoot
-the budget by at most the pins in flight, at most `DATASETS_READ_MAX_CONCURRENCY`
-per instance.
+A daily budget bounds the pinned copies this door creates. Before it copies a named artifact,
+the door spends one unit of `DATASETS_PIN_DAILY_MAX` (default 500 a UTC day,
+`datasets_api.allowance`), and refuses retryable 503 `service_unavailable` with `Retry-After`
+counting the seconds to the next UTC midnight once the day's budget is spent. Each spend is one
+conditional upsert, so pins admitted together cannot pass the budget. Presentation pins spend
+none of it, and neither does a serving-frame copy. A reference to an artifact that already has a
+pinned copy skips the budget, so a repeat call that repairs a missing reference, or a second
+subject sharing the digest, always succeeds.
 
 Pin calls run on the surface's read executor (`datasets_api.deps`). Full capacity
 returns retryable 503 `PinBackpressure`. Shutdown rejection maps to the same
@@ -76,8 +71,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import MappingProxyType
 
 from fastapi import APIRouter, Request
@@ -94,7 +88,14 @@ from dataset_store.snapshot import (
     read_servable_version,
 )
 from datasets_api import routing  # noqa: F401 -- registers dfo_spec_id before route construction
-from datasets_api.allowance import AllowanceExhausted, AllowanceKind, AllowanceLedger
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceExhausted,
+    AllowanceKind,
+    SharedAllowanceLedger,
+    Spend,
+    seconds_to_reset,
+)
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
@@ -114,7 +115,6 @@ from datasets_api.recorded_rendering import serving_frames
 from datasets_api.reference_store import (
     ARTIFACT_REFERENCE_WRITE_FAILED_MARKER,
     PIN_REFERENCE_KIND,
-    PinReferenceWriter,
 )
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.retention import retained_frame_location
@@ -122,7 +122,6 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
 from dfo_platform.caller import (
-    ADDRESS_KEY_PREFIX,
     Caller,
     CallerHeaderInvalid,
     CallerUnresolved,
@@ -135,12 +134,6 @@ from spec_registry.reader import SpecReader
 
 logger = logging.getLogger(__name__)
 
-PIN_BUDGET_WINDOW = timedelta(hours=24)
-
-# The oldest counted pin leaves the window within a day. An hour lets a client
-# retry while the budget frees up without polling.
-_PIN_BUDGET_RETRY_AFTER_SECONDS = 3_600
-
 
 class PinBackpressure(Backpressure):
     """A full pin semaphore maps to retryable `service_unavailable` (503)."""
@@ -151,49 +144,44 @@ class PinBackpressure(Backpressure):
 
 
 class PinBudgetExhausted(Refusal):
-    """The trailing-window pin count is at `DATASETS_PIN_DAILY_MAX`. Maps to retryable 503."""
+    """The day's `DATASETS_PIN_DAILY_MAX` new pinned copies are made. Maps to retryable 503 with
+    `Retry-After` counting the seconds to the next UTC midnight."""
 
     code = "service_unavailable"
     retryable = True
-    detail = "the pin door has reached its daily pin budget; retry later"
-    headers = MappingProxyType({"Retry-After": str(_PIN_BUDGET_RETRY_AFTER_SECONDS)})
+    detail = "the pin door has reached its daily pin budget; retry after the next UTC midnight"
 
-    def __init__(self, *, pinned: int, limit: int) -> None:
-        self.pinned = pinned
+    def __init__(self, *, limit: int, now: datetime) -> None:
         self.limit = limit
-        super().__init__(
-            f"{pinned} pinned copies made in the last 24 hours, at or above the daily pin "
-            f"budget of {limit}"
-        )
+        self.headers = MappingProxyType({"Retry-After": str(seconds_to_reset(now))})
+        super().__init__(f"the pin door has made today's budget of {limit} new pinned copies")
 
 
 class OpenPinBudgetExhausted(Refusal):
-    """The trailing-window count of open callers' pinned copies is at
-    `DATASETS_PIN_OPEN_DAILY_MAX`. Maps to retryable 503."""
+    """The day's `DATASETS_PIN_OPEN_DAILY_MAX` new pinned copies for callers without the pin
+    grant are made. Maps to retryable 503 with `Retry-After` counting the seconds to the next
+    UTC midnight."""
 
     code = "service_unavailable"
     retryable = True
-    detail = "the pin door has reached its daily pin budget for open callers; retry later"
-    headers = MappingProxyType({"Retry-After": str(_PIN_BUDGET_RETRY_AFTER_SECONDS)})
+    detail = (
+        "the pin door has reached its daily pin budget for open callers; retry after the next "
+        "UTC midnight"
+    )
 
-    def __init__(self, *, pinned: int, limit: int) -> None:
-        self.pinned = pinned
+    def __init__(self, *, limit: int, now: datetime) -> None:
         self.limit = limit
+        self.headers = MappingProxyType({"Retry-After": str(seconds_to_reset(now))})
         super().__init__(
-            f"{pinned} pinned copies made for open callers in the last 24 hours, at or above "
-            f"their daily pin budget of {limit}"
+            f"the pin door has made today's budget of {limit} new pinned copies for callers "
+            "without the pin grant"
         )
 
 
-@dataclass(frozen=True)
-class OpenPin:
-    """What a pin by a caller without the pin grant spends: `caller`'s `pin` allowance in
-    `allowances`, inside `ceiling` new pinned copies for every open caller per trailing 24 hours.
-    """
-
-    caller: Caller
-    allowances: AllowanceLedger
-    ceiling: int
+_BUDGET_REFUSALS = {
+    AllowanceKind.pin_budget: PinBudgetExhausted,
+    AllowanceKind.open_pin_budget: OpenPinBudgetExhausted,
+}
 
 
 def classify_pin_exception(exc: BaseException) -> ProblemSpec | None:
@@ -209,21 +197,19 @@ def pin_artifact(
     spec_reader: SpecReader,
     snapshot_reader: SnapshotReader,
     artifact_store: ArtifactStore,
-    reference_writer: PinReferenceWriter,
-    daily_max: int,
+    reference_writer: ArtifactReferenceWriter,
+    allowances: SharedAllowanceLedger,
     now: Clock,
-    open_pin: OpenPin | None = None,
+    caller: Caller | None = None,
 ) -> datetime:
     """Pin an artifact and the first serving frame of the version that ends up pinned, and return
     the named artifact's reference `created_at` as `pinned_at`.
 
-    A new pinned copy first needs room in the budget: fewer than `daily_max`
-    pinned copies of `pin`-referenced digests stored within `PIN_BUDGET_WINDOW`,
-    else `PinBudgetExhausted` before any copy. For an open caller (`open_pin`), it then needs
-    fewer than `open_pin.ceiling` such copies whose reference names a caller key, else
-    `OpenPinBudgetExhausted`, and spends one unit of the caller's `pin` allowance, which raises
-    `AllowanceExhausted` once it is spent. An artifact that already has a pinned copy skips
-    all three.
+    A new pinned copy first spends one unit of the day's pin budget in `allowances`, and for an
+    open caller (`caller` set) one unit of the open callers' budget and one of `caller`'s `pin`
+    allowance, all together before any copy. A spent budget refuses `PinBudgetExhausted` or
+    `OpenPinBudgetExhausted`, a spent allowance `AllowanceExhausted`, and a refusal spends none
+    of the others. An artifact that already has a pinned copy spends nothing.
 
     The refusals concern the named artifact alone. A serving frame is retained after the named
     artifact's reference is recorded. The serving frames are walked in order, each the frame the
@@ -257,20 +243,7 @@ def pin_artifact(
 
     already_pinned = named.tier == "pinned"
     if not already_pinned:
-        pinned = reference_writer.count_pinned_copies_since(
-            reference_kind=PIN_REFERENCE_KIND, since=read_at - PIN_BUDGET_WINDOW
-        )
-        if pinned >= daily_max:
-            raise PinBudgetExhausted(pinned=pinned, limit=daily_max)
-        if open_pin is not None:
-            open_pinned = reference_writer.count_pinned_copies_since(
-                reference_kind=PIN_REFERENCE_KIND,
-                since=read_at - PIN_BUDGET_WINDOW,
-                principal_prefix=ADDRESS_KEY_PREFIX,
-            )
-            if open_pinned >= open_pin.ceiling:
-                raise OpenPinBudgetExhausted(pinned=open_pinned, limit=open_pin.ceiling)
-            open_pin.allowances.spend(open_pin.caller, AllowanceKind.pin, read_at)
+        _spend_new_copy(allowances, caller=caller, now=read_at)
         try:
             with phase("copy"):
                 artifact_store.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
@@ -331,6 +304,25 @@ def pin_artifact(
         )
         break
     return pinned_at
+
+
+def _spend_new_copy(
+    allowances: SharedAllowanceLedger, *, caller: Caller | None, now: datetime
+) -> None:
+    """Spend the units one new pinned copy takes. See `pin_artifact`."""
+    spends = [Spend(BUDGET_KEY, AllowanceKind.pin_budget)]
+    if caller is not None:
+        spends += [
+            Spend(BUDGET_KEY, AllowanceKind.open_pin_budget),
+            Spend(caller.key, AllowanceKind.pin),
+        ]
+    try:
+        allowances.spend_together(spends, now)
+    except AllowanceExhausted as exhausted:
+        budget = _BUDGET_REFUSALS.get(exhausted.kind)
+        if budget is None:
+            raise
+        raise budget(limit=exhausted.limit, now=now) from None
 
 
 def _record_pin_reference(
@@ -406,10 +398,9 @@ def build_pin_door(
             "its base version's frame. Every format then stays fetchable and the version "
             "reports `retention.pinned`. When no such frame's bytes survive, the named artifact "
             "still pins, and `retention` keeps the frames' `held_until`. Only the named "
-            "artifact's copy waits on the daily pin budget; the frame copy skips it and counts "
-            "toward later calls, so one pin can add up to two copies to the count. A caller "
+            "artifact's copy spends the daily pin budget; the frame copy spends none. A caller "
             "without the pin grant also spends one unit of its daily pin allowance on a new "
-            "copy, within a daily ceiling shared by every such caller; a repeat pin of an "
+            "copy, within a daily budget shared by every such caller; a repeat pin of an "
             "artifact already pinned spends nothing."
         ),
     )
@@ -418,7 +409,7 @@ def build_pin_door(
     ) -> JSONResponse:
         current = deps.get()
         granted: Principal = request.state.principal
-        open_pin: OpenPin | None = None
+        caller: Caller | None = None
         if Grant.pin in granted.grants:
             # A grant is held only by a presented value, so the label is set.
             assert granted.label is not None
@@ -426,11 +417,6 @@ def build_pin_door(
         else:
             caller = resolve_caller(request, current.settings.caller)
             principal = caller.key
-            open_pin = OpenPin(
-                caller=caller,
-                allowances=current.allowances,
-                ceiling=current.settings.pin_open_daily_max,
-            )
         with door_call("pin", logger=logger) as call:
             pinned_at = await current.read_executor.run(
                 functools.partial(
@@ -445,9 +431,9 @@ def build_pin_door(
                     snapshot_reader=current.snapshot_reader,
                     artifact_store=current.artifact_store,
                     reference_writer=current.reference_writer,
-                    daily_max=current.settings.pin_daily_max,
+                    allowances=current.allowances,
                     now=current.now,
-                    open_pin=open_pin,
+                    caller=caller,
                 ),
                 refuse=PinBackpressure,
             )
@@ -498,8 +484,8 @@ def build_pin_door(
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
             PinBackpressure(),
-            PinBudgetExhausted(pinned=0, limit=0),
-            OpenPinBudgetExhausted(pinned=0, limit=0),
+            PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+            OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
             AllowanceExhausted(
                 kind=AllowanceKind.pin, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
             ),

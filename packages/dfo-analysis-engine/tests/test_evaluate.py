@@ -18,7 +18,7 @@ from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.engine.aggregate import run_aggregate
 from dfo_analysis_engine.engine.paired import run_paired_compare
 from dfo_analysis_engine.engine.rank import run_rank
-from dfo_analysis_engine.evaluate import Policy, RootFrame, evaluate
+from dfo_analysis_engine.evaluate import Policy, RootFrame, evaluate, latest_period_of
 from dfo_analysis_engine.execution_identity import current_execution_identity
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.identity import (
@@ -340,6 +340,19 @@ def test_a_rolling_tree_counts_from_the_latest_period_of_its_roots() -> None:
         "left_out": [],
     }
     assert evaluation.summary["parameters"]["window_start"] == "2022"
+
+
+def test_latest_period_of_is_the_period_evaluate_counts_from_without_a_tree_of_literals() -> None:
+    """The runner fills literals left `None` from it, so it reads populations alone."""
+    tree = _rolling_growth(_ROOT.spec_id, window_start="2022", window_end="2024")
+    unfilled = _rolling_growth(_ROOT.spec_id, window_start="2022", window_end="2024")
+    unfilled["op_spec"]["parameters"].update(window_start=None, window_end=None)
+
+    anchor = latest_period_of(unfilled, _SERIES)
+
+    assert anchor == evaluate(tree, _SERIES).resolved_periods
+    del tree["op_spec"]["parameters"]["rolling"]
+    assert latest_period_of(tree, {}) is None
 
 
 def test_an_exact_rolling_literal_off_the_latest_period_is_refused() -> None:

@@ -17,7 +17,7 @@ from datasets_api.doors import pin as pin_door
 from dfo_platform.caller import address_key
 from spec_registry import LiveSpecRegistry
 
-from ._app_factories import make_client
+from ._app_factories import make_client, offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._snapshot_doubles import (
@@ -139,6 +139,7 @@ def test_pin_door_env_fallback_reads_its_own_constant() -> None:
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=FakeArtifactReferenceWriter(),
+            allowances=offline_allowances(settings),
             now=lambda: _NOW,
         ),
         settings=settings,
