@@ -435,22 +435,35 @@ class ShareRetentionModel(BaseModel):
 
 
 class ShareServedModel(BaseModel):
-    """One frame a share's slot served."""
+    """One entry of what a share's slot showed: a frame it served, or no card."""
 
     model_config = ConfigDict(extra="forbid")
 
-    slot: int = Field(description="the slot that served it, from 1")
-    component_id: str = Field(description="the card the slot showed")
-    revision: int = Field(description="the card revision the slot showed")
-    frame: ShareFrameModel = Field(description="the frame served")
+    slot: int = Field(description="the slot, from 1")
+    component_id: str | None = Field(
+        description="the card the slot showed, null when a replace left the slot empty"
+    )
+    revision: int | None = Field(
+        description="the card revision the slot showed, null when the slot was empty"
+    )
+    frame: ShareFrameModel | None = Field(
+        description="the frame served, null when the slot was empty"
+    )
     rendering: dict[str, object] | None = Field(
-        description="the rendering the card revision recorded for its frame, null when unrecorded"
+        description="the rendering the card revision recorded for its frame, null when "
+        "unrecorded or when the slot was empty"
     )
-    first_served_at: str = Field(description="when a read first served it, ISO 8601")
+    first_served_at: str = Field(
+        description="when the slot began to show this, ISO 8601: the write or the first read "
+        "that served it"
+    )
     retention: ShareRetentionModel | None = Field(
-        description="the frame's retention, null when DFO holds no record of it"
+        description="the frame's retention, null when DFO holds no record of it or the slot "
+        "was empty"
     )
-    fetchable: bool = Field(description="whether the frame's retention still holds")
+    fetchable: bool = Field(
+        description="whether the frame's retention still holds; false when the slot was empty"
+    )
 
 
 class ShareHistoryResponse(BaseModel):
@@ -459,7 +472,9 @@ class ShareHistoryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(description="the share's id")
-    served: list[ShareServedModel] = Field(description="every frame served, newest first")
+    served: list[ShareServedModel] = Field(
+        description="what each slot showed, newest first, an entry each time it changed"
+    )
 
 
 # -- meta (presentation_api.doors.meta) -------------------------------------

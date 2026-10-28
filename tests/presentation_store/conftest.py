@@ -427,18 +427,25 @@ class FakeTransaction:
             }
             return []
 
+        if sql.startswith("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE"):
+            (share_id,) = params
+            return [{"?column?": 1}] if share_id in s.shares else []
+
         if sql.startswith("INSERT INTO presentation.served_frame ("):
-            assert sql.endswith("ON CONFLICT DO NOTHING")
-            share_id, slot, component_id, revision, spec_id, cv, rendering = params
+            share_id, slot, component_id, revision, spec_id, cv, rendering, *newest_of = params
+            shown = (component_id, revision, spec_id, cv)
+            assert newest_of == [share_id, slot, *shown]
             if share_id not in s.shares:
                 raise _foreign_key_violation("served_frame_share_id_fkey")
-            key = (share_id, slot, component_id, revision, spec_id, cv)
-            if any(
-                tuple(row[name] for name in _SERVED_FRAME_KEY) == key for row in s.served_frames
-            ):
+            # Rows are appended in time order, so the slot's newest entry is its last one.
+            newest = [
+                row for row in s.served_frames if (row["share_id"], row["slot"]) == (share_id, slot)
+            ]
+            if newest and tuple(newest[-1][name] for name in _SERVED_FRAME_SHOWN) == shown:
                 return []
             s.served_frames.append(
                 {
+                    "id": len(s.served_frames) + 1,
                     "share_id": share_id,
                     "slot": slot,
                     "component_id": component_id,
@@ -459,7 +466,8 @@ class FakeTransaction:
         ):
             (share_id,) = params
             rows = [row for row in s.served_frames if row["share_id"] == share_id]
-            # ORDER BY first_served_at DESC, slot: a stable sort by slot first, then by time.
+            # ORDER BY first_served_at DESC, slot, id DESC: stable sorts from the last key.
+            rows.sort(key=lambda row: row["id"], reverse=True)
             rows.sort(key=lambda row: row["slot"])
             rows.sort(key=lambda row: row["first_served_at"], reverse=True)
             return [dict(row) for row in rows]
@@ -467,9 +475,7 @@ class FakeTransaction:
         return None
 
 
-_SERVED_FRAME_KEY = (
-    "share_id",
-    "slot",
+_SERVED_FRAME_SHOWN = (
     "component_id",
     "component_revision",
     "frame_spec_id",

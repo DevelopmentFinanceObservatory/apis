@@ -37,7 +37,8 @@ rendering.
 The history lists those records newest first, each with the retention of its frame counted
 from when DFO stored it (`presentation_api.retention.stated_retention`) and whether that
 retention still holds: pinned, or held past now. A frame with no version record states no
-retention and is not fetchable.
+retention and is not fetchable. An entry for a slot a replace left empty has no card, frame,
+rendering or retention, and is not fetchable.
 """
 
 from __future__ import annotations
@@ -353,20 +354,27 @@ def _etag(media_type: str, body: bytes) -> str:
 def history_document(
     *, share_id: str, served: Sequence[ServedFrame], deps: SharesDeps
 ) -> dict[str, object]:
-    """The history route's body: every frame `served`, in the order given, with its retention."""
+    """The history route's body: every entry `served`, in the order given, each frame with its
+    retention."""
     now = deps.now()
     entries: list[dict[str, object]] = []
     for entry in served:
-        retention = stated_retention(entry.frame, snapshot_reader=deps.snapshot_reader)
+        frame = entry.frame
+        retention = (
+            stated_retention(frame, snapshot_reader=deps.snapshot_reader)
+            if frame is not None
+            else None
+        )
         entries.append(
             {
                 "slot": entry.slot,
                 "component_id": entry.component_id,
                 "revision": entry.revision,
-                "frame": {
-                    "spec_id": entry.frame.spec_id,
-                    "content_version": entry.frame.content_version,
-                },
+                "frame": (
+                    {"spec_id": frame.spec_id, "content_version": frame.content_version}
+                    if frame is not None
+                    else None
+                ),
                 "rendering": dict(entry.rendering) if entry.rendering is not None else None,
                 "first_served_at": entry.first_served_at.isoformat(),
                 "retention": retention,

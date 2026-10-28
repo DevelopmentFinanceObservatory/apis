@@ -65,7 +65,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 | `presentation.share`                | `id`                         | One row per share: `kind` (`card`, `canvas`, `search`, `conversation`), `mode` (`live`, `snapshot`), `title`, the nullable `write_token_sha256` digest, `owner` (left NULL), website-owned `payload` JSONB, `created_at`, and `deleted_at` once taken down. |
 | `presentation.share_revision`       | `(share_id, revision)`       | Append-only revision log of a share, from 1, with `created_at`. |
 | `presentation.share_slot`           | `(share_id, revision, slot)` | Every slot of one share revision, from 1: the card revision it shows (`component_id`, `component_revision`, both NULL for an empty slot) and the frame that revision draws (`frame_spec_id`, `frame_content_version`, NULL for a card with none or an imported slot whose frame was not recorded). |
-| `presentation.served_frame`         | `(share_id, slot, component_id, component_revision, frame_spec_id, frame_content_version)` | Every frame a share's slot served, with its nullable `rendering` JSONB and `first_served_at`. |
+| `presentation.served_frame`         | `id`                         | A timeline of what each share slot showed: an entry each time the slot's card revision and frame (`component_id`, `component_revision`, `frame_spec_id`, `frame_content_version`) differ from its newest entry, with the nullable `rendering` JSONB and `first_served_at`. An entry for a slot a replace left empty holds all five NULL. |
 | `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, the minting release's `formatter_profile` JSONB, and the nullable `frame_rendering` JSONB of the frame the revision draws. |
 
 ### Migration Sequence
@@ -82,6 +82,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 - `0010_revision_formatter_profile.sql`: Adds the `formatter_profile` JSONB column to `component_revision`, fills it with the 2026.8.0 profile on rows stamped `2026.8.0`, and makes it NOT NULL with that profile as its default. Any row stamped with another release fails the migration.
 - `0011_revision_frame_rendering.sql`: Adds the nullable `frame_rendering` JSONB column to `component_revision`, with no backfill.
 - `0012_share.sql`: Creates the `share`, `share_revision`, `share_slot`, and `served_frame` tables.
+- `0017_served_frame_timeline.sql`: Replaces `served_frame`'s natural key with an identity `id`, lets its card and frame columns hold NULL together for an emptied slot, and indexes each slot's newest entry.
 
 ### Running Migrations
 

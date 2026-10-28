@@ -67,11 +67,13 @@ answers the slot's card as `GET /api/presentation/components/{component_id}` rea
 its stored read. A slot number the share has not had, or an empty slot, answers 404
 `not_found`.
 
-`GET /api/presentation/shares/{share_id}/history` is public and allows any origin: every frame
-the share's slots served, newest first, each with its retention counted from when DFO stored it
-and whether it is still fetchable (`share_slots.history_document`). A create, replace or
-snapshot conversion records each slot's frame as served at the write, as a read does, so the
-history lists what a share shows before any read.
+`GET /api/presentation/shares/{share_id}/history` is public and allows any origin: a timeline
+of what each slot showed, newest first, each frame with its retention counted from when DFO
+stored it and whether it is still fetchable (`share_slots.history_document`). A create, replace
+or snapshot conversion records each slot's frame as served at the write, as a read does, so the
+history lists what a share shows before any read. A slot a replace leaves empty records an
+entry with `component_id`, `revision`, `frame`, `rendering` and `retention` null and
+`fetchable` false, and a slot records an entry only when what it shows changes.
 
 A share id that names no share, or one taken down, answers 404 `not_found` on every route. A
 card's frame that is gone answers 404 `frame_unavailable`, and a frame read that fails answers
@@ -467,13 +469,16 @@ def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
 
 
 def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
-    """Record the frame each slot of `share` shows as served, with its card revision's recorded
-    rendering, as a slot read records it, so the share's history lists from the write on what
-    it shows."""
+    """Record what each slot of `share` shows: the frame its card draws, with the card
+    revision's recorded rendering, as a slot read records it, or no card for a slot a replace
+    left empty. The share's history then lists from the write on what it shows."""
     renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
     for slot in share.slots:
         card = slot.card
-        if card is None or card.frame is None:
+        if card is None:
+            deps.share_store.record_emptied(share_id=share.id, slot=slot.slot)
+            continue
+        if card.frame is None:
             continue
         key = (card.component_id, card.revision)
         if key not in renderings:
@@ -1037,9 +1042,10 @@ def build_shares_door(
         read_share_history,
         methods=["GET"],
         response_model=ShareHistoryResponse,
-        description="Every frame the share's slots served, newest first, each with its "
-        "retention counted from when DFO stored it and whether it is still fetchable. Any "
-        "origin may read it.",
+        description="What each of the share's slots showed, newest first: every frame it "
+        "served, with its retention counted from when DFO stored it and whether it is still "
+        "fetchable, and an entry with a null card and frame from when a replace left the slot "
+        "empty. Any origin may read it.",
     )
     router.add_api_route(
         SHARE_SLOT_PATH,

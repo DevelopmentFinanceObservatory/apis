@@ -354,19 +354,25 @@ def test_a_slots_first_check_is_claimed_once_as_pending_with_no_check_time():
     )
 
 
-def test_a_served_frame_is_recorded_once_and_read_newest_first():
+def test_a_slot_records_what_it_shows_each_time_it_changes_read_newest_first():
     store = LiveShareStore(store=FakePresentationStore())
     share = _create(store, _card("a"))
     rendering = {"without_party_totals": False}
 
-    for frame in (_FRAME, _NEWER, _FRAME):
+    for frame in (_FRAME, _FRAME, _NEWER, _FRAME):
         store.record_served(
             share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=rendering
         )
+    store.record_emptied(share_id=share.id, slot=1)
+    store.record_emptied(share_id=share.id, slot=1)
 
     served = store.served_frames(share_id=share.id)
-    assert [entry.frame for entry in served] == [_NEWER, _FRAME]
-    assert served[0].rendering == rendering
+    assert [(entry.component_id, entry.frame, entry.rendering) for entry in served] == [
+        (None, None, None),
+        ("cmp_a", _FRAME, rendering),
+        ("cmp_a", _NEWER, rendering),
+        ("cmp_a", _FRAME, rendering),
+    ]
     assert served[0].first_served_at >= served[1].first_served_at
     store.delete_share(share_id=share.id)
     with pytest.raises(ShareNotFound):

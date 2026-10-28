@@ -21,8 +21,12 @@ serves, its freshness, when the check ran and when the next one is due. `claim_s
 claims a due check in one statement, so of two reads finding it due only one runs the check. The
 claim moves only the due time, to when the claim expires, and leaves the frame, freshness and
 check time of the last check for the reads that lose it. A slot's first claim inserts its row as
-`pending` on the card's own frame with no check time. Each frame a read serves is recorded once
-in `served_frame` (`record_served`), which `served_frames` reads newest first.
+`pending` on the card's own frame with no check time. `served_frame` (migrations 0012 and 0017)
+is a timeline of what each slot showed: `record_served` records the frame a slot serves, and
+`record_emptied` a slot left with no card, each only when it differs from the slot's newest
+entry, so a slot that goes back to an earlier frame records it again and repeated reads record
+nothing new. Both lock the share row first, so concurrent reads of one slot record one entry.
+`served_frames` reads the timeline newest first.
 
 `create_share` mints the id (`ids.mint_share_id`) and inserts it with `ON CONFLICT DO NOTHING`,
 minting again while the id is taken, by a share made here or one imported from the website,
@@ -212,13 +216,15 @@ class SlotCheck:
 
 @dataclass(frozen=True)
 class ServedFrame:
-    """One frame a share's slot served: the card revision, the frame, the rendering the card
-    revision recorded (`None` when unrecorded), and when a read first served it."""
+    """One entry of what a share's slot showed: the card revision, the frame, the rendering the
+    card revision recorded (`None` when unrecorded), and when the slot began to show it. An
+    entry for a slot left with no card has `component_id`, `revision`, `frame` and `rendering`
+    all `None`."""
 
     slot: int
-    component_id: str
-    revision: int
-    frame: FrameRef
+    component_id: str | None
+    revision: int | None
+    frame: FrameRef | None
     rendering: Mapping[str, object] | None
     first_served_at: datetime
 
@@ -354,8 +360,17 @@ class ShareStore(Protocol):
         frame: FrameRef,
         rendering: Mapping[str, object] | None,
     ) -> None:
-        """Record that `slot` served `frame` for `card`, once: a frame served again keeps its
-        first record.
+        """Record that `slot` shows `frame` for `card` from now, unless the slot's newest entry
+        already shows it.
+
+        Raises:
+            PresentationStoreUnavailable: The store failed.
+        """
+        ...
+
+    def record_emptied(self, *, share_id: str, slot: int) -> None:
+        """Record that `slot` shows no card from now, unless the slot's newest entry already
+        shows none.
 
         Raises:
             PresentationStoreUnavailable: The store failed.
@@ -363,7 +378,7 @@ class ShareStore(Protocol):
         ...
 
     def served_frames(self, *, share_id: str) -> tuple[ServedFrame, ...]:
-        """Every frame the share's slots served, newest first.
+        """Every entry of what the share's slots showed, newest first.
 
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
@@ -628,23 +643,24 @@ class LiveShareStore:
         frame: FrameRef,
         rendering: Mapping[str, object] | None,
     ) -> None:
-        def write(tx: Transaction) -> None:
-            tx.execute(
-                "INSERT INTO presentation.served_frame (share_id, slot, component_id, "
-                "component_revision, frame_spec_id, frame_content_version, rendering) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (
-                    share_id,
-                    slot,
-                    card.component_id,
-                    card.revision,
-                    frame.spec_id,
-                    frame.content_version,
-                    _json_param(rendering),
-                ),
-            )
+        self._in_transaction(
+            f"recording a frame share {share_id!r} served",
+            lambda tx: _record_shown(
+                tx,
+                share_id=share_id,
+                slot=slot,
+                shown=(card.component_id, card.revision, frame.spec_id, frame.content_version),
+                rendering=rendering,
+            ),
+        )
 
-        self._in_transaction(f"recording a frame share {share_id!r} served", write)
+    def record_emptied(self, *, share_id: str, slot: int) -> None:
+        self._in_transaction(
+            f"recording slot {slot} of share {share_id!r} emptied",
+            lambda tx: _record_shown(
+                tx, share_id=share_id, slot=slot, shown=(None, None, None, None), rendering=None
+            ),
+        )
 
     def served_frames(self, *, share_id: str) -> tuple[ServedFrame, ...]:
         def read(tx: Transaction) -> tuple[ServedFrame, ...]:
@@ -653,23 +669,10 @@ class LiveShareStore:
                 "SELECT slot, component_id, component_revision, frame_spec_id, "
                 "frame_content_version, rendering, first_served_at "
                 "FROM presentation.served_frame WHERE share_id = %s "
-                "ORDER BY first_served_at DESC, slot",
+                "ORDER BY first_served_at DESC, slot, id DESC",
                 (share_id,),
             )
-            return tuple(
-                ServedFrame(
-                    slot=cast(int, row["slot"]),
-                    component_id=cast(str, row["component_id"]),
-                    revision=cast(int, row["component_revision"]),
-                    frame=FrameRef(
-                        spec_id=cast(str, row["frame_spec_id"]),
-                        content_version=cast(str, row["frame_content_version"]),
-                    ),
-                    rendering=cast("Mapping[str, object] | None", row["rendering"]),
-                    first_served_at=cast(datetime, row["first_served_at"]),
-                )
-                for row in rows
-            )
+            return tuple(_served(row) for row in rows)
 
         return self._in_transaction(f"reading what share {share_id!r} served", read)
 
@@ -828,6 +831,49 @@ def _read(tx: Transaction, *, share_id: str, for_update: bool) -> ShareRecord:
         revision=number,
         revised_at=cast(datetime, revision["created_at"]),
         slots=tuple(_slot(row) for row in slot_rows),
+    )
+
+
+def _record_shown(
+    tx: Transaction,
+    *,
+    share_id: str,
+    slot: int,
+    shown: tuple[str | None, int | None, str | None, str | None],
+    rendering: Mapping[str, object] | None,
+) -> None:
+    """Record that `slot` shows `shown` (component id, component revision, frame spec id, frame
+    content version; all `None` for no card) from now, unless the slot's newest entry already
+    shows it. The share row lock serialises the check and the insert across readers of one
+    share, and `clock_timestamp()` dates the entry after any entry the lock waited on."""
+    tx.execute("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE", (share_id,))
+    tx.execute(
+        "INSERT INTO presentation.served_frame (share_id, slot, component_id, "
+        "component_revision, frame_spec_id, frame_content_version, rendering, first_served_at) "
+        "SELECT %s, %s, %s::text, %s::int, %s::text, %s::text, %s::jsonb, clock_timestamp() "
+        "WHERE NOT EXISTS (SELECT 1 FROM (SELECT component_id, component_revision, "
+        "frame_spec_id, frame_content_version FROM presentation.served_frame "
+        "WHERE share_id = %s AND slot = %s ORDER BY first_served_at DESC, id DESC LIMIT 1) "
+        "AS newest WHERE (newest.component_id, newest.component_revision, newest.frame_spec_id, "
+        "newest.frame_content_version) IS NOT DISTINCT FROM (%s::text, %s::int, %s::text, "
+        "%s::text))",
+        (share_id, slot, *shown, _json_param(rendering), share_id, slot, *shown),
+    )
+
+
+def _served(row: Mapping[str, object]) -> ServedFrame:
+    spec_id = cast("str | None", row["frame_spec_id"])
+    return ServedFrame(
+        slot=cast(int, row["slot"]),
+        component_id=cast("str | None", row["component_id"]),
+        revision=cast("int | None", row["component_revision"]),
+        frame=(
+            FrameRef(spec_id=spec_id, content_version=cast(str, row["frame_content_version"]))
+            if spec_id is not None
+            else None
+        ),
+        rendering=cast("Mapping[str, object] | None", row["rendering"]),
+        first_served_at=cast(datetime, row["first_served_at"]),
     )
 
 

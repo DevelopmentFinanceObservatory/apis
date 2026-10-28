@@ -139,6 +139,9 @@ _PRESENTATION_STORE = {
     "0016_share_slot_check_claim.sql": (
         "1b59cb708b9acedc7ade57cebde3210accc38be5fc7adb2014512e4fbd705d8c"
     ),
+    "0017_served_frame_timeline.sql": (
+        "2200d61d92e1b9d02a88c43c525f96c90a404caa23967b6388de2ca1c70282a1"
+    ),
 }
 
 

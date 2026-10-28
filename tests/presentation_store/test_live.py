@@ -728,7 +728,10 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         shares.claim_slot_check(share_id=share.id, slot=1, card=card, now=now, claim_until=until)
         for now in (at + timedelta(seconds=29), later, later)
     ]
-    for frame in (newer, newer, stored):
+    for frame in (newer, newer, stored, None, None, stored):
+        if frame is None:
+            shares.record_emptied(share_id=share.id, slot=1)
+            continue
         shares.record_served(
             share_id=share.id, slot=1, card=card, frame=frame, rendering={"columns": ["a"]}
         )
@@ -747,5 +750,10 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         frame=stored, freshness="pending", checked_at=None, next_check_at=until
     )
     served = shares.served_frames(share_id=share.id)
-    assert [entry.frame for entry in served] == [stored, newer]
-    assert served[0].rendering == {"columns": ["a"]}
+    assert [(entry.component_id, entry.frame) for entry in served] == [
+        (card.component_id, stored),
+        (None, None),
+        (card.component_id, stored),
+        (card.component_id, newer),
+    ]
+    assert [entry.rendering for entry in served[:2]] == [{"columns": ["a"]}, None]

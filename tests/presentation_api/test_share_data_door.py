@@ -696,6 +696,48 @@ def test_a_create_and_a_replace_record_what_the_slots_show_before_any_read(door:
     assert door.newest.asked == []
 
 
+def test_the_history_records_a_slot_a_replace_empties_and_refills(door: _Door):
+    cards = [door.card(), door.card(), door.card()]
+    share = door.share(*cards, latest=True)
+    share_path = f"/api/presentation/shares/{share['id']}"
+
+    def replace(*shown: str) -> None:
+        resp = door.client.put(
+            share_path,
+            json={"cards": [{"component_id": card, "revision": 1} for card in shown]},
+            headers={_TOKEN: share["write_token"]},
+        )
+        assert resp.status_code == 200, resp.text
+
+    def timeline(slot: int) -> list[str | None]:
+        served = door.client.get(f"{share_path}/history").json()["served"]
+        return [entry["component_id"] for entry in reversed(served) if entry["slot"] == slot]
+
+    replace(cards[0])
+    replace(cards[0])
+    emptied = door.client.get(f"{share_path}/history").json()["served"]
+    replace(*cards)
+
+    assert [timeline(slot) for slot in (1, 2, 3)] == [
+        [cards[0]],
+        [cards[1], None, cards[1]],
+        [cards[2], None, cards[2]],
+    ]
+    assert [entry for entry in emptied if entry["component_id"] is None] == [
+        {
+            "slot": slot,
+            "component_id": None,
+            "revision": None,
+            "frame": None,
+            "rendering": None,
+            "first_served_at": entry["first_served_at"],
+            "retention": None,
+            "fetchable": False,
+        }
+        for slot, entry in ((3, emptied[0]), (2, emptied[1]))
+    ]
+
+
 def test_a_retried_create_records_what_the_first_create_failed_to_record(
     door: _Door, monkeypatch: pytest.MonkeyPatch
 ):

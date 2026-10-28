@@ -50,6 +50,7 @@ def test_presentation_store_migrations_apply_in_order_and_are_idempotent():
         "0014_share_slot_next_check.sql",
         "0015_share_create_token.sql",
         "0016_share_slot_check_claim.sql",
+        "0017_served_frame_timeline.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert statements[0] == "CREATE SCHEMA IF NOT EXISTS presentation"
