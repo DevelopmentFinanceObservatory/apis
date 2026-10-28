@@ -32,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import get_args
 
 from code_index.composites import (
@@ -61,6 +62,8 @@ from search.models import (
     IdentityBindingValue,
     IdentityFacetValueRequest,
     IdentityShapeSchema,
+    IdentityWindow,
+    IdentityWindowLatest,
     IdentityWindowRange,
     Option,
     OptionAvailability,
@@ -74,7 +77,7 @@ from search.models import (
 from search.scope.basis import held_measure, identity_part_shape
 from search.scope.composite import component_years, donor_years, served_components
 from search.scope.edits import INCLUSIVE_PROVENANCE, applies_in_pass, apply_binding
-from search.scope.region import policy_members
+from search.scope.region import policy_members, policy_members_between
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import AxisTable, ScopeFacts
 from search.scope.vocabulary import provider_option_id
@@ -292,8 +295,17 @@ def _sibling_option(
     total in a year places no demand on it. The option is available when every year the
     answer holds is covered, partial over the covered years when those are fewer, with
     their latest run as the window a switch reads (`SlotBinding.window`) and the years its
-    label states, and unavailable when none is. Each reason is `option_not_covered`."""
+    label states, and unavailable when none is. Where no donor holds a year of its own
+    total, the answer holds no year to measure against, so the option is available where
+    every donor holds the sibling in the window, and unavailable otherwise. Each reason is
+    `option_not_covered`."""
     asked = frozenset[int]().union(*own)
+    if not asked:
+        return (
+            _option(scope, binding=binding)
+            if all(held)
+            else _option(scope, _unavailable("option_not_covered"), binding=binding)
+        )
     covered = frozenset(
         year
         for year in asked
@@ -328,13 +340,15 @@ def _latest_sibling_option(
     in, the donors holding their own total in `own_year` (every donor when it is None),
     and a switch reads that one year (`SlotBinding.window`). The option is available when
     that year is `own_year`, partial over it, stated in its label, when it is another, and
-    unavailable when the donors share no year. Each reason is `option_not_covered`."""
+    unavailable when the donors share no year, or when no donor holds its own total in
+    `own_year`, which the series count and the donor scan can disagree on. Each reason is
+    `option_not_covered`."""
     demanded = [
         theirs
         for ours, theirs in zip(own, held, strict=True)
         if own_year is None or own_year in ours
     ]
-    shared = frozenset[int].intersection(*demanded)
+    shared = frozenset[int].intersection(*demanded) if demanded else frozenset[int]()
     year = elected_year({y: n for y, n in counts.items() if y in shared})
     if year is None:
         return _option(scope, _unavailable("option_not_covered"), binding=binding)
@@ -428,7 +442,9 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
     institutions' own aid, and a switch from bilateral ODA would reach that total, so such a
     pool has no record: every scope a record would hold or offer for it is either one it
     double counts or one a switch leaves for one it double counts. A pool of the EU
-    institutions and a donor outside the EU counts no contribution twice."""
+    institutions and a donor outside the EU counts no contribution twice. Membership is
+    read over the part's window, so the United Kingdom counts as a member over any window
+    holding a year before it left in 2020."""
     bound = {
         (slot.property, slot.binding.ref)
         for slot in identity.slots
@@ -438,7 +454,7 @@ def _published_row(identity: BaseIdentity, facts: ScopeFacts) -> PublishedProvid
     providers = identity.entities.get("origin") or []
     if not rows or not providers:
         return None
-    if _pools_funder(providers, facts.index) or not all(
+    if _pools_funder(providers, identity.requested_window, facts.index) or not all(
         _counts_as_donor(provider, facts.index) for provider in providers
     ):
         return None
@@ -473,20 +489,39 @@ def _members(party: str, index: CodeIndex) -> frozenset[str]:
     return policy_members(row.totals)
 
 
-def _pools_funder(providers: Collection[str], index: CodeIndex) -> bool:
+def _pools_funder(providers: Collection[str], window: IdentityWindow, index: CodeIndex) -> bool:
     """Whether `providers` pool a redistributed provider (`REDISTRIBUTED_PROVIDERS`) with a
-    member of the group that funds it, or a total that sums one (`_members`): the EU
-    institutions with an EU member state, or with the G7. A published total counts such a
-    pool's core contributions to the provider twice. Where the policy holds no members for
-    the funding group, any pool with the provider counts as one."""
+    member of the group that funds it on any day of `window` (`_window_days`), or a total
+    that sums one (`_members`): the EU institutions with an EU member state, or with the G7.
+    A published total counts such a pool's core contributions to the provider twice. Where
+    the policy holds no members for the funding group, any pool with the provider counts as
+    one."""
+    first, last = _window_days(window)
     for row in REDISTRIBUTED_PROVIDERS:
         if row.provider not in providers:
             continue
-        funders = policy_members(row.funders)
+        funders = policy_members_between(row.funders, first, last)
         others = (provider for provider in providers if provider != row.provider)
         if any(not funders or funders & _members(other, index) for other in others):
             return True
     return False
+
+
+def _window_days(window: IdentityWindow) -> tuple[date, date]:
+    """The first and last days `window` reads: a range's years, open where it states no
+    bound, every day for every year, and today for the latest year, which reads under
+    today's memberships."""
+    match window:
+        case IdentityWindowRange(start_year=start, end_year=end):
+            return (
+                date.min if start is None else date(start, 1, 1),
+                date.max if end is None else date(end, 12, 31),
+            )
+        case IdentityWindowLatest():
+            today = date.today()
+            return today, today
+        case _:
+            return date.min, date.max
 
 
 def _pools_redistributed(providers: Collection[str]) -> bool:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Final
 
 from code_index.query import CodeIndex
@@ -30,6 +31,7 @@ from code_index.scope_conventions import (
     RegionReading,
 )
 from code_index.types import PartyRow
+from entity_resolution.membership import COUNTRY_CLASS
 from entity_resolution.shared import shared_membership_policy
 from search.models import (
     BaseIdentity,
@@ -117,6 +119,22 @@ def policy_members(ref: str) -> frozenset[str]:
         return frozenset()
     held = policy.members(ref).members
     return frozenset(held) if isinstance(held, tuple) else frozenset()
+
+
+def policy_members_between(ref: str, first: date, last: date) -> frozenset[str]:
+    """The countries the membership policy holds for group or region `ref` on any day from
+    `first` to `last`, empty when it holds none: a country that joined or left inside those
+    days counts. An undated membership holds its members on every day."""
+    policy = shared_membership_policy()
+    if ref not in policy:
+        return frozenset()
+    return frozenset(
+        row.member
+        for row in policy.get(ref).rows
+        if row.member_class == COUNTRY_CLASS
+        and (row.valid_from is None or row.valid_from <= last)
+        and (row.valid_until is None or first < row.valid_until)
+    )
 
 
 def counts_oecd_region(total: PartyRow, *, datasets: Collection[str], index: CodeIndex) -> bool:

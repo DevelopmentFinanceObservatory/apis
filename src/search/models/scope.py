@@ -97,9 +97,11 @@ class SlotBinding(StrictModel):
         default=None,
         description=(
             "the years the option sets as the requested window, first and last: on a "
-            "published donor total, the latest run of years every donor holds the other "
-            "total in, when they hold fewer than the part asks for; None when the option "
-            "keeps the part's window"
+            "published donor total over a range or every year, the latest run of years "
+            "every donor holds the other total in, when they hold fewer than the part "
+            "asks for; on one asking for the latest year, the one year the pool's read of "
+            "the other total elects, whether or not it is the part's own; None when the "
+            "option keeps the part's window"
         ),
     )
 

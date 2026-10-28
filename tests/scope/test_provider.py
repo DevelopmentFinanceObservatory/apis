@@ -47,6 +47,7 @@ from search.models import (
     SlotBinding,
     Spec,
 )
+from search.scope import provider
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
 from search.scope.edits import ScopeTableError, apply_binding
@@ -1380,6 +1381,16 @@ def test_a_partial_dac1_sibling_option_serves_the_years_the_part_holds_over_thei
             _partial((2018, 2020)),
             id="a-donor-holding-part-of-its-run",
         ),
+        # With no year of the part's own total held, the other total is available only
+        # where every donor holds it in the window.
+        pytest.param(
+            {},
+            {_USA: (2015, 2020), _DEU: (2019, 2019)},
+            _COVERED,
+            id="no-own-year-every-donor-holds-the-other",
+        ),
+        pytest.param({}, {_USA: (2015, 2020)}, _NOT_COVERED, id="no-own-year-one-donor-holds"),
+        pytest.param({}, {}, _NOT_COVERED, id="no-own-year-no-donor-holds"),
     ],
 )
 def test_a_dac1_sibling_option_is_measured_against_the_years_any_donor_of_the_pool_holds(
@@ -1420,6 +1431,55 @@ def test_a_dac1_sibling_option_is_measured_against_the_years_any_donor_of_the_po
         (first, last) = availability.years[-1]
         years = str(first) if first == last else f"{first} to {last}"
         assert option.label == f"{label}, {years}"
+
+
+@pytest.mark.parametrize("row", PUBLISHED_PROVIDER_SCOPES, ids=lambda row: row.code)
+def test_a_latest_dac1_sibling_option_no_donor_demands_is_unavailable(monkeypatch, row):
+    """Where the series count elects a year for the part's latest read and the donor scan
+    finds no donor holding its own total in it, no donor demands the year, and the other
+    DAC1 aid type is unavailable with `option_not_covered`."""
+    (sibling,) = (other for other in PUBLISHED_PROVIDER_SCOPES if other is not row)
+    facts = _dac1_facts(row.code, sibling.code)
+    monkeypatch.setattr(provider, "donor_years", lambda table, *, facts: {})
+
+    table = provider_rule(_dac1_identity(row.code, (_USA,), window=None), None, facts)
+
+    assert table is not None
+    option = table.option(f"provider:{sibling.scope}")
+    assert option is not None
+    availability = option.availability
+    assert (availability.status, availability.code, availability.years) == _NOT_COVERED
+
+
+_GBR = "country/GBR"
+
+
+@pytest.mark.parametrize(
+    ("window", "kept"),
+    [
+        pytest.param((2010, 2019), False, id="member-throughout"),
+        pytest.param((2015, 2022), False, id="member-in-part"),
+        pytest.param((2021, 2024), True, id="after-leaving"),
+    ],
+)
+def test_a_pool_of_the_eu_institutions_reads_eu_membership_over_its_window(
+    window: tuple[int, int], kept: bool
+):
+    """The United Kingdom funded the EU institutions until it left the EU in 2020, so a
+    pool of the two counts its core contributions twice in total ODA over any window
+    holding a year of its membership, and has no provider record there. A window after it
+    left keeps the record."""
+    extra = [
+        (member, _GBR, _ALL_YEARS)
+        for code in (_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA)
+        for member in _DAC1_MEMBERS_BY_CODE[code]
+    ]
+    facts = _dac1_facts(_DAC1_TOTAL_ODA, _DAC1_BILATERAL_ODA, extra=extra)
+    identity = _dac1_identity(_DAC1_TOTAL_ODA, (_GBR, _EU_INSTITUTIONS), window=window)
+
+    record = settle_provider(identity, ScopeState(), facts)
+
+    assert (record is not None) == kept
 
 
 def test_a_convention_the_pass_cannot_serve_leaves_the_part_on_the_option_it_holds():
