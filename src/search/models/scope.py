@@ -93,6 +93,17 @@ class SlotBinding(StrictModel):
     slot: str = Field(description="the slot's constraint property dcid")
     state: Literal["value", "set"] = Field(description="one code, or a set of codes")
     refs: list[str] = Field(min_length=1, description="the bound code dcids, sorted")
+    window: YearSpan | None = Field(
+        default=None,
+        description=(
+            "the years the option sets as the requested window, first and last: on a "
+            "published donor total over a range or every year, the latest run of years "
+            "every donor holds the other total in, when they hold fewer than the part "
+            "asks for; on one asking for the latest year, the one year the pool's read of "
+            "the other total elects, whether or not it is the part's own; None when the "
+            "option keeps the part's window"
+        ),
+    )
 
 
 class EntitiesBinding(StrictModel):
@@ -127,7 +138,12 @@ class ProviderBinding(StrictModel):
     """An option that sets whose spending the answer counts."""
 
     kind: Literal["provider"] = "provider"
-    scope: ProviderScope = Field(description="bilateral flows alone, or with imputed shares")
+    scope: ProviderScope = Field(
+        description=(
+            "bilateral flows alone, with imputed shares of multilateral spending, or with core "
+            "contributions to multilaterals as a published donor total counts them"
+        )
+    )
     window: YearSpan | None = Field(
         default=None,
         description=(
@@ -160,7 +176,8 @@ class OptionAvailability(StrictModel):
         default_factory=dict,
         description=(
             "the code's parameters: `why` for provider_not_offered, `dataset` for "
-            "basis_not_published, `entry` and `cause` for conflicts_with"
+            "basis_not_published and contributions_counted, "
+            "`entry` and `cause` for conflicts_with"
         ),
     )
 

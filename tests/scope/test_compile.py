@@ -343,16 +343,17 @@ def test_a_switch_edits_only_the_members_its_axis_binds():
         pytest.param({"preference": ("measure_basis:commitments",)}, id="unknown-preference"),
         pytest.param({"held": "measure_basis:commitments"}, id="unknown-held"),
         pytest.param({"axis": "region"}, id="options-of-another-axis"),
+        pytest.param({"rules": {}}, id="no-rule-for-held"),
     ],
 )
 def test_an_axis_table_refuses_what_compile_cannot_read(change):
     basis = tables()[2]
     fields = {
         "axis": basis.axis,
-        "rule": basis.rule,
         "options": basis.options,
         "preference": basis.preference,
         "held": basis.held,
+        "rules": basis.rules,
     }
 
     with pytest.raises(ScopeTableError):

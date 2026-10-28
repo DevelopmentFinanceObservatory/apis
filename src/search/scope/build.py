@@ -17,18 +17,17 @@ from search.models import (
     Entry,
     EntryProvenance,
     IdentityBindingValue,
-    OptionBinding,
+    Option,
     PartScope,
     ProviderBinding,
     ScopeAxis,
-    ShapeBinding,
     SpecDefinition,
 )
 from search.scope import rules as scope_rules
 from search.scope.basis import SERVED_DIFFERS_RULE
 from search.scope.compile import Compiled, Refusal, compile
 from search.scope.composite import composite_components
-from search.scope.edits import apply_binding
+from search.scope.edits import applies_in_pass, apply_binding
 from search.scope.provider import elect_latest_window
 from search.scope.rules import AxisRule
 from search.scope.state import AxisRecord
@@ -63,9 +62,12 @@ def build_part_scope(
     `carried_choice_not_applied`) with the cause `_not_served` gives. With
     `refuse` false an entry compile refuses is dropped and reported the same way with the
     refusal's cause, and the rest compile without it, so the result is always a
-    `PartScope`. A composite option a binder settled over the identity it resolved (the
-    inclusive provider scope, the OECD headline per year) is applied to `base` first
-    (`_with_recorded_composites`), so the scope's base is the composite the answer serves.
+    `PartScope`. An explicit entry is judged on `base` with the other explicit entries'
+    edits applied (`_requested_tables`), so a request switching several axes compiles as
+    the same switches one after the other. An option a binder settled over the identity
+    it resolved that sets its source (the inclusive or bilateral provider scope, the OECD
+    headline per year) is applied to `base` first (`_with_recorded_composites`), so the
+    scope's base is the identity the answer serves.
     A composite asking for the latest year compiles to the one year its tables both cover
     (`provider.elect_latest_window`), while the base keeps the `latest` window. The scope's
     id is the base identity's spec_id. The server keeps no ledger, so the scope's is []."""
@@ -94,8 +96,17 @@ def build_part_scope(
         for n, entry in enumerate(read)
         if entry not in applied and entry not in read[:n]
     ]
-    facts_read = CompileFacts(axes=tuple(tables.values()), conflicts=conflicts)
-    while isinstance(compiled := compile(base, compiling, facts_read), Refusal):
+    while isinstance(
+        compiled := compile(
+            base,
+            compiling,
+            CompileFacts(
+                axes=_requested_tables(base, compiling, tables, records, facts, rules, conflicts),
+                conflicts=conflicts,
+            ),
+        ),
+        Refusal,
+    ):
         if refuse:
             return compiled
         entry = compiling.pop(compiled.entry)
@@ -129,32 +140,79 @@ def _tables(
     }
 
 
+def _requested_tables(
+    base: BaseIdentity,
+    entries: Sequence[Entry],
+    tables: Mapping[ScopeAxis, AxisTable],
+    records: Mapping[ScopeAxis, AxisRecord],
+    facts: ScopeFacts,
+    rules: Mapping[ScopeAxis, AxisRule],
+    conflicts: Sequence[Conflict],
+) -> tuple[AxisTable, ...]:
+    """`tables` in order, the table of each axis an explicit entry names read off `base`
+    with the edits of the explicit entries on the other axes applied, so each requested
+    option is judged on the identity the other requested edits produce, and several edits
+    in one request compile as they do one after the other. An entry edits `base` where its
+    axis's table offers its option, `base` does not hold it, it is not unavailable, and it
+    conflicts with no other explicit entry's option (`conflicts`), so compile's conflict
+    rule decides such a pair on the tables of `base`. An axis whose rule reads no table off
+    the edited identity keeps the table of `base`."""
+    explicit = [entry for entry in entries if entry.provenance == "explicit"]
+    pairs = {frozenset((c.first, c.second)) for c in conflicts}
+    edits: dict[ScopeAxis, Option] = {}
+    for entry in explicit:
+        table = tables.get(entry.axis)
+        if table is None or entry.axis in edits:
+            continue
+        option = table.option(entry.option_id)
+        if (
+            option is not None
+            and option.option_id != table.held
+            and option.availability.status != "unavailable"
+            and not any(frozenset((option.option_id, e.option_id)) in pairs for e in explicit)
+        ):
+            edits[entry.axis] = option
+    requested = dict(tables)
+    for axis in {entry.axis for entry in explicit}:
+        if axis not in tables or not edits.keys() - {axis}:
+            continue
+        edited = base
+        for other, table in tables.items():
+            if other != axis and (option := edits.get(other)) is not None:
+                edited = apply_binding(edited, option.binding, [o.binding for o in table.options])
+        if (table := rules[axis](edited, records.get(axis), facts)) is not None:
+            requested[axis] = table
+    return tuple(requested.values())
+
+
 def _with_recorded_composites(
     base: BaseIdentity,
     records: Mapping[ScopeAxis, AxisRecord],
     tables: Mapping[ScopeAxis, AxisTable],
 ) -> tuple[BaseIdentity, dict[ScopeAxis, AxisRecord]]:
-    """`base` binding the source of each composite option a binder settled over it and
-    `base` does not hold yet (the inclusive provider scope, `provider.settle_provider`, or
-    the OECD headline per year, `phase_election._record_basis`), with the records it then
-    holds. The base keeps its own window: an option's window is applied when the scope
-    compiles (`provider.elect_latest_window`). An option the part cannot serve
+    """`base` with the source each option a binder settled over it and `base` does not
+    hold yet sets (`edits.applies_in_pass`): the inclusive or bilateral provider scope
+    (`provider.settle_provider`), or the OECD headline per year
+    (`phase_election._record_basis`), with the records it then holds. The base keeps its
+    own window: an option's window is applied when the scope compiles
+    (`provider.elect_latest_window`). An option the part cannot serve
     (`OptionAvailability.status` not `available`) is not applied. Its axis keeps the option
-    the base holds, settled by default, under `SERVED_DIFFERS_RULE` on the measure basis,
-    since the served basis is then not the convention's. The scope's base is then the
-    identity whose options the answer serves, so a resubmit of it keeps them."""
+    the base holds, settled by default, under that option's own rule (`AxisTable.rule_of`),
+    or `SERVED_DIFFERS_RULE` on the measure basis, since the served basis is then not the
+    convention's. The scope's base is then the identity whose options the answer serves, so
+    a resubmit of it keeps them."""
     settled = dict(records)
     for axis, table in tables.items():
         record = records.get(axis)
         if record is None or record.active == table.held:
             continue
         option = table.option(record.active)
-        if option is None or not _binds_composite(option.binding):
+        if option is None or not applies_in_pass(option.binding):
             continue
         if option.availability.status != "available":
             settled[axis] = AxisRecord(
                 axis=axis,
-                rule=SERVED_DIFFERS_RULE if axis == "measure_basis" else record.rule,
+                rule=SERVED_DIFFERS_RULE if axis == "measure_basis" else table.rule_of(table.held),
                 active=table.held,
                 provenance="default",
             )
@@ -164,13 +222,6 @@ def _with_recorded_composites(
             binding = binding.model_copy(update={"window": None})
         base = apply_binding(base, binding, [o.binding for o in table.options])
     return base, settled
-
-
-def _binds_composite(binding: OptionBinding) -> bool:
-    """Whether `binding` binds a composite as the identity's source."""
-    return (isinstance(binding, ShapeBinding) and binding.provenance is not None) or (
-        isinstance(binding, ProviderBinding) and binding.scope == "inclusive"
-    )
 
 
 def _with_concept(entry: Entry, tables: Mapping[ScopeAxis, AxisTable]) -> Entry:

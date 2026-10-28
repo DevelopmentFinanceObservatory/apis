@@ -107,9 +107,9 @@ class ScopeState:
         concept on an axis the part has no record of. An entry on another axis the part does
         not have, or for another concept ("health" on an education part, or on a recipient's
         total with no sector axis), is not the part's, so it neither applies nor is reported
-        as dropped. A stated word with no concept on an axis the part lacks ("bilateral aid"
-        from a donor's DAC1 total, which has no provider axis) is the part's own, which serves
-        no option for it, so it is reported."""
+        as dropped. A stated word with no concept on an axis the part lacks ("net" on a part
+        no basis rule reads) is the part's own, which serves no option for it, so it is
+        reported."""
         return tuple(
             entry
             for entry in self.entries

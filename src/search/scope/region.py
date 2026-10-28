@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Final
 
 from code_index.query import CodeIndex
@@ -30,6 +31,7 @@ from code_index.scope_conventions import (
     RegionReading,
 )
 from code_index.types import PartyRow
+from entity_resolution.membership import COUNTRY_CLASS
 from entity_resolution.shared import shared_membership_policy
 from search.models import (
     BaseIdentity,
@@ -108,7 +110,7 @@ def oecd_region_reading(region: str) -> RegionReading | None:
 
 
 @functools.cache
-def _policy_members(ref: str) -> frozenset[str]:
+def policy_members(ref: str) -> frozenset[str]:
     """The members the membership policy holds for group or region `ref`, empty when it
     holds none. Cached by ref, since the policy is the process's
     (`shared_membership_policy`)."""
@@ -117,6 +119,22 @@ def _policy_members(ref: str) -> frozenset[str]:
         return frozenset()
     held = policy.members(ref).members
     return frozenset(held) if isinstance(held, tuple) else frozenset()
+
+
+def policy_members_between(ref: str, first: date, last: date) -> frozenset[str]:
+    """The countries the membership policy holds for group or region `ref` on any day from
+    `first` to `last`, empty when it holds none. A country that joined or left inside those
+    days counts. An undated membership holds its members on every day."""
+    policy = shared_membership_policy()
+    if ref not in policy:
+        return frozenset()
+    return frozenset(
+        row.member
+        for row in policy.get(ref).rows
+        if row.member_class == COUNTRY_CLASS
+        and (row.valid_from is None or row.valid_from <= last)
+        and (row.valid_until is None or first < row.valid_until)
+    )
 
 
 def counts_oecd_region(total: PartyRow, *, datasets: Collection[str], index: CodeIndex) -> bool:
@@ -150,7 +168,7 @@ def region_total(
             if (
                 total is not None
                 and total.totals is not None
-                and members in (_policy_members(row.region), _policy_members(total.totals))
+                and members in (policy_members(row.region), policy_members(total.totals))
             ):
                 return total
     held_set = set(held)
@@ -187,9 +205,9 @@ def region_groups(
     if total is None or total.totals is None:
         return dict(groups)
     members = frozenset(without_residuals(identity.entities.get(REGION_ROLE, ()), index))
-    if members == _policy_members(total.totals) and group.group_id != total.totals:
+    if members == policy_members(total.totals) and group.group_id != total.totals:
         restated = EntityGroup(label=group.label, group_id=total.totals)
-    elif members == _policy_members(reading.region) and group.ref != reading.region:
+    elif members == policy_members(reading.region) and group.ref != reading.region:
         restated = EntityGroup(ref=reading.region, label=group.label)
     else:
         return dict(groups)
@@ -294,7 +312,6 @@ def region_rule(
     held_id = readings.held
     return AxisTable(
         axis="region",
-        rule=REGION_RULE,
         options=(with_residuals, members_only),
         preference=(
             (
@@ -305,6 +322,7 @@ def region_rule(
             else (REGION_MEMBERS_ONLY,)
         ),
         held=held_id,
+        rules={held_id: REGION_RULE},
     )
 
 
@@ -338,8 +356,8 @@ def _oecd_readings(
     region when it binds a residual (`binds_residuals`) or the OECD's members where they
     differ from the graph's (`held_members`). None when the membership policy holds either
     group empty, or both readings bind the same places."""
-    oecd = _policy_members(total.totals) if total.totals is not None else frozenset()
-    place = _policy_members(reading.region)
+    oecd = policy_members(total.totals) if total.totals is not None else frozenset()
+    place = policy_members(reading.region)
     if not oecd or not place:
         return None
     as_oecd = [*sorted(oecd - place), *residuals]

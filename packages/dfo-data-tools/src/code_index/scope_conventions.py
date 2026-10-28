@@ -4,12 +4,16 @@
 `MEASURE_BASIS_CONVENTIONS` names the measure basis each part shape and window defaults to,
 `BASIS_MEASURES` what each basis binds in an identity, and `BASIS_RESTRICTIONS` the code
 systems besides the sector whose admitted code makes a part a restricted one.
-`PROVIDER_CONVENTIONS` names whose spending a part counts by default, and
-`REDISTRIBUTED_PROVIDERS` the providers no pool takes the inclusive scope with. `OPTION_LABELS`
-words the options the rules build from code and group labels, and `REGION_READINGS` names
-the graph regions a DAC dataset counts as the OECD's region. `search.scope`
-reads them all, and `graph_release.declarations` hashes the tables beside the other
-declarations, so a change to one moves the declarations hash and the scope rule version.
+`PROVIDER_CONVENTIONS` names whose spending a part counts by default,
+`PROVIDER_SCOPE_RULES` the rule each provider scope names where no convention settles it,
+`REDISTRIBUTED_PROVIDERS` the providers no pool takes a scope counting multilateral aid with,
+and the group whose members fund each, `PUBLISHED_PROVIDER_SCOPES` the provider scope a
+published donor total counts, and `DONOR_ORGANISATIONS` the organisations a published donor
+total counts as donors. `OPTION_LABELS` words the options the rules build from code and group
+labels, and `REGION_READINGS` names the graph regions a DAC dataset counts as the OECD's
+region. `search.scope` reads them all, and `graph_release.declarations` hashes the tables
+beside the other declarations, so a change to one moves the declarations hash and the scope
+rule version.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ from code_index.declarations import (
     CRS_PURPOSE_RECONSTRUCTION_RELIEF,
     CRS_PURPOSE_REPRODUCTIVE_HEALTH,
     DAC1,
+    DAC1_BILATERAL_ODA,
+    DAC1_TOTAL_ODA,
     DAC2A,
 )
 
@@ -34,9 +40,10 @@ MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_
 basis per year: net flows to 2017 and grant equivalents from 2018, as two period
 components."""
 
-ProviderScope = Literal["bilateral", "inclusive"]
-"""Whose spending a part counts: the donor's bilateral flows, or those plus its imputed share
-of multilateral spending."""
+ProviderScope = Literal["bilateral", "inclusive", "contributions"]
+"""Whose spending a part counts: the donor's bilateral flows, those plus its imputed share of
+multilateral spending, or those plus its core contributions to multilateral organisations, as
+a published donor total counts them (`PUBLISHED_PROVIDER_SCOPES`)."""
 
 PartShape = Literal["donor_only", "recipient_all_sectors", "sector_or_restriction"]
 """The part shapes the basis conventions distinguish. `donor_only` names a donor and no
@@ -85,6 +92,45 @@ class ProviderConvention:
     names_donor: bool
     asks_total: bool
     note: str
+
+
+@dataclass(frozen=True)
+class PublishedProviderScope:
+    """The provider scope a published donor total counts.
+
+    A part counts `scope` when its identity is served from `dataset`, binds `code` on
+    `code_system`, and names donors alone: countries, `DONOR_ORGANISATIONS`, or totals of a
+    group made only of countries. `rule` names the row on the scope choice it settles, and
+    `note` says what the total counts."""
+
+    dataset: str
+    code_system: str
+    code: str
+    scope: ProviderScope
+    rule: str
+    note: str
+
+
+@dataclass(frozen=True)
+class ProviderScopeRule:
+    """The rule a provider option of `scope` names where no convention
+    (`PROVIDER_CONVENTIONS`) or published total (`PUBLISHED_PROVIDER_SCOPES`) settles it.
+    `note` says what the scope counts."""
+
+    scope: ProviderScope
+    rule: str
+    note: str
+
+
+@dataclass(frozen=True)
+class RedistributedProvider:
+    """A multilateral that reports as a provider and whose own outflows a scope counting
+    multilateral aid also counts inside its funders' shares. `provider` is its dcid, and
+    `funders` the group (a membership policy ref) whose members fund it with core
+    contributions."""
+
+    provider: str
+    funders: str
 
 
 @dataclass(frozen=True)
@@ -180,10 +226,10 @@ class OptionLabels:
     its `words` (`BasisMeasure.words`), the `prices` of the identity's price basis
     ("current", "constant 2024") and its `currency` ("USD", "donor currency"), and
     `measure_basis_unpriced` from its words alone, for an identity that states no price
-    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral` and
-    `provider_inclusive` name the two provider scopes, and `provider_inclusive_years` the
-    inclusive scope over the `years` both of its tables cover ("2011 to 2024", "2023"), when
-    they set the part's window."""
+    basis. `oecd_headline` names the OECD's headline basis per year. `provider_bilateral`,
+    `provider_inclusive` and `provider_contributions` name the three provider scopes, and
+    `provider_years` a scope's `label` followed by the `years` its option serves ("2011 to
+    2024", "2023") where they set the part's window."""
 
     sector_code: str
     sector_code_alone: str
@@ -194,9 +240,10 @@ class OptionLabels:
     oecd_headline: str
     provider_bilateral: str
     provider_inclusive: str
-    provider_inclusive_years: str
+    provider_years: str
     region_as_oecd_counts: str
     region_place_members: str
+    provider_contributions: str
 
 
 OPTION_LABELS = OptionLabels(
@@ -209,10 +256,11 @@ OPTION_LABELS = OptionLabels(
     oecd_headline="OECD headline (net flows to 2017, grant equivalents from 2018)",
     provider_bilateral="bilateral flows only",
     provider_inclusive="bilateral plus imputed multilateral",
-    provider_inclusive_years="bilateral plus imputed multilateral, {years}",
+    provider_years="{label}, {years}",
     region_as_oecd_counts="{region} as the OECD counts it, {count} countries incl. regional and "
     "unspecified amounts",
     region_place_members="{region_of} {count} countries (UN regions)",
+    provider_contributions="bilateral plus core contributions to multilaterals",
 )
 
 CONVENTION_CURRENCY = "USD"
@@ -347,18 +395,71 @@ PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
     ),
 )
 
+_EU_INSTITUTIONS = "EuropeanUnionInstitutions"
+_EUROPEAN_UNION = "EuropeanUnion"
+
 # The providers the imputed multilateral table carries rows for that are themselves
 # multilaterals whose own outflows its rows attribute to other providers. The EU institutions
 # report to the CRS as a provider and hold an imputed share of the multilaterals they fund, and
 # ONE's method attributes their own spending to the EU member states that fund them. A pool
 # naming one of them beside another provider counts those outflows twice, as the multilateral's
-# own flows and inside its funders' imputed shares, so it takes no inclusive scope. The graph
-# types every multilateral an `Organization`, as it types a private foundation, and the code
-# index marks none, so this table is the only record of the grouping.
-REDISTRIBUTED_PROVIDERS: tuple[str, ...] = ("EuropeanUnionInstitutions",)
+# own flows and inside its funders' imputed shares, so it takes no inclusive scope. DAC1's
+# total ODA counts the same outflows twice for a pool of the EU institutions and an EU member
+# state, as the EU institutions' own aid and inside the member's core contributions to them,
+# so such a pool has no provider record there. A donor outside the European Union funds the
+# institutions with no core contribution. The graph types every multilateral an
+# `Organization`, as it types a private foundation, and the code index marks none, so this
+# table is the only record of the grouping.
+REDISTRIBUTED_PROVIDERS: tuple[RedistributedProvider, ...] = (
+    RedistributedProvider(provider=_EU_INSTITUTIONS, funders=_EUROPEAN_UNION),
+)
 
-PROVIDER_DEFAULT_RULE = "bilateral_flows"
-"""The rule of a part no provider convention settles. It counts the donor's bilateral flows."""
+# The rule each provider scope names on a part no convention or published row settles: the
+# bilateral default, or a scope an entry or a posted identity chose.
+PROVIDER_SCOPE_RULES: tuple[ProviderScopeRule, ...] = (
+    ProviderScopeRule(
+        scope="bilateral",
+        rule="bilateral_flows",
+        note="the donor's bilateral flows alone",
+    ),
+    ProviderScopeRule(
+        scope="inclusive",
+        rule="bilateral_plus_imputed",
+        note="the donor's bilateral flows plus its imputed share of multilateral spending",
+    ),
+)
+
+# The provider scope each DAC1 aid type counts for a bilateral donor. Total ODA counts the
+# donor's bilateral flows and its core contributions to the multilateral organisations, in the
+# year it pays them. The imputed multilateral table attributes the multilaterals' own
+# spending back to their funders, so the two differ in what they count, in timing and in
+# amount. Bilateral ODA counts the bilateral flows alone. A part reading one row is offered
+# every other row of its dataset and code system as an option that binds that row's code.
+PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
+    PublishedProviderScope(
+        dataset=DAC1,
+        code_system="dac1AidType",
+        code=DAC1_TOTAL_ODA,
+        scope="contributions",
+        rule="contribution_total",
+        note="DAC1 total ODA counts bilateral flows plus core contributions to multilaterals",
+    ),
+    PublishedProviderScope(
+        dataset=DAC1,
+        code_system="dac1AidType",
+        code=DAC1_BILATERAL_ODA,
+        scope="bilateral",
+        rule="bilateral_total",
+        note="DAC1 bilateral ODA counts bilateral flows alone",
+    ),
+)
+
+# The organisations a row of `PUBLISHED_PROVIDER_SCOPES` reads as donors, beside countries
+# and totals of a group made only of countries. The EU institutions are a DAC member and report
+# their own aid to DAC1 as a donor does. Any other organisation or total a part names, the
+# DAC's total of the multilaterals among them, counts multilateral outflows, so the part has
+# no provider record.
+DONOR_ORGANISATIONS: tuple[str, ...] = (_EU_INSTITUTIONS,)
 
 ODA_FLOW_SYSTEM = "crsTypeOfFlow"
 """The code system an ODA flow binding binds."""

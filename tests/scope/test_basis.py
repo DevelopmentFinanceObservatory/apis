@@ -196,7 +196,7 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
     """Series for the United States over 2005 to 2024 in every DAC2a and CRS member and in
-    the DAC1 members `dac1`."""
+    the DAC1 members `dac1`, which may hold members of other DAC1 aid types."""
     donor_only = RoleNames(donor="financingProvider", recipient=None)
     flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
@@ -207,7 +207,7 @@ def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
             *((dcid, "crs", _USA, _KEN, _YEARS) for dcid in _CRS_MEMBERS),
         ],
         role_names={
-            **dict.fromkeys(_DAC1_MEMBERS, donor_only),
+            **dict.fromkeys((*_DAC1_MEMBERS, *dac1), donor_only),
             **dict.fromkeys((*_DAC2A_MEMBERS, *_CRS_MEMBERS), flow),
         },
         facet_metadata={
@@ -754,22 +754,6 @@ def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
     assert "provenance" not in (spec.definition.identity.facets or {})
     assert _served_basis(spec) == _NET_DAC1
     assert scope.compiled.spec_id == spec.spec_id == scope.base.spec_id
-
-
-def test_a_stated_bilateral_on_a_donor_total_with_no_provider_axis_is_reported():
-    """A donor's DAC1 total has no provider axis, so a typed "bilateral" is reported as not
-    applied."""
-    spec = _ask("aid", time="2019", recipient=False, message="bilateral aid from the US in 2019")
-    scope = spec.resolved.scope_choices
-    assert scope is not None
-
-    assert all(choice.axis != "provider" for choice in scope.choices)
-    (dropped,) = (d for d in scope.dropped_entries if d.entry.axis == "provider")
-    assert (dropped.entry.option_id, dropped.code, dropped.cause) == (
-        "provider:bilateral",
-        "stated_choice_not_applied",
-        "axis_absent",
-    )
 
 
 @pytest.mark.parametrize(

@@ -485,13 +485,13 @@ def basis_rule(
         )
     return AxisTable(
         axis="measure_basis",
-        rule=BASIS_RULE if record is None or record.active != held_id else record.rule,
         options=tuple(options),
         preference=(
             held_id,
             *(option.option_id for option in options if option.option_id != held_id),
         ),
         held=held_id,
+        rules={held_id: BASIS_RULE if record is None or record.active != held_id else record.rule},
     )
 
 

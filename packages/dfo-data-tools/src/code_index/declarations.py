@@ -87,6 +87,12 @@ CRS_PURPOSE_REPRODUCTIVE_HEALTH = "CRSPurposeCode130"
 CRS_PURPOSE_EMERGENCY_RESPONSE = "CRSPurposeCode720"
 CRS_PURPOSE_RECONSTRUCTION_RELIEF = "CRSPurposeCode730"
 CRS_FLOW_PRIVATE_SECTOR_INSTRUMENTS = "CRSTypeOfFlow60"
+DAC1_TOTAL_ODA = "DAC1AidType1010"
+DAC1_BILATERAL_ODA = "DAC1AidType1015"
+
+# The DAC's published total of the multilateral organisations' own outflows, a provider of DAC1,
+# DAC2a and DAC2b.
+DAC_MULTILATERALS = "DACMultilaterals"
 
 # Datasets whose StatVars declare no code system, so no code read reaches them. The export lists
 # their StatVars from the coverage build into `listed_statvars` (`listed_dcids`).
@@ -186,7 +192,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         plain_name="aid type",
         # A DAC1 question that names no aid type asks about total ODA.
         default=DeclaredDefault(
-            code="DAC1AidType1010",
+            code=DAC1_TOTAL_ODA,
             when_bound_under=(),
             when_open=True,
             note="The answer covers official development assistance of every aid type.",
@@ -246,7 +252,7 @@ _MULTILATERAL_PROVIDER = PartyWord(
     word="multilateral",
     measured_property="amount",
     axis="origin",
-    party="DACMultilaterals",
+    party=DAC_MULTILATERALS,
     where={"destination": "country"},
 )
 DATASETS: tuple[DatasetDeclaration, ...] = (
@@ -937,7 +943,7 @@ MEASURE_WORD_SYNONYMS_KEPT: frozenset[str] = frozenset(
 CONCEPT_GROUPS: tuple[tuple[tuple[str, str], ...], ...] = (
     (
         ("crsTypeOfFlow", "CRSTypeOfFlow10"),
-        ("dac1AidType", "DAC1AidType1010"),
+        ("dac1AidType", DAC1_TOTAL_ODA),
         ("dac2aAidType", "DAC2aAidType206"),
     ),
     (

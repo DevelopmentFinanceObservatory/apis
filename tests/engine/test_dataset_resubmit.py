@@ -2177,7 +2177,6 @@ def _activity_source_rule(base, record, facts) -> AxisTable:
     on its first option."""
     return AxisTable(
         axis="sector",
-        rule="test_activity_source",
         options=tuple(
             Option(
                 option_id=option_id,
@@ -2189,6 +2188,7 @@ def _activity_source_rule(base, record, facts) -> AxisTable:
         ),
         preference=(_SOURCE_A, _SOURCE_B),
         held=_SOURCE_A,
+        rules={_SOURCE_A: "test_activity_source"},
     )
 
 

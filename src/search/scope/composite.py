@@ -110,6 +110,48 @@ def _component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Ye
     return YearCounts(counts=counts, latest=latest)
 
 
+def donor_years(
+    identity: Mapping[str, object], *, facts: ScopeFacts
+) -> Mapping[str, frozenset[int]]:
+    """The years of its window in which each donor `identity` names holds a series of the
+    family it reads, as `component_years` counts them, by donor, from one scan of the
+    family's rows in `facts`' coverage snapshot. A donor holding no series is absent. Read
+    once per identity for one `facts`."""
+    key = "donor_years:" + json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return facts.remembered(key, lambda: _donor_years(identity, facts=facts))
+
+
+def _donor_years(
+    identity: Mapping[str, object], *, facts: ScopeFacts
+) -> Mapping[str, frozenset[int]]:
+    index, coverage = facts.index, facts.coverage.index
+    try:
+        family = index_family(index, identity_family_query(index, identity))
+    except SourceNotInFamily:
+        family = None
+    if family is None or not family.rows:
+        return {}
+    window = cast("Mapping[str, object]", identity.get("requested_window") or {"kind": "all"})
+    first, last = _years_asked(window, coverage)
+    if first > last:
+        return {}
+    found = coverage.series_years(
+        variables=[row.dcid for row in family.rows],
+        bound=_bound(identity),
+        first_year=first,
+        last_year=last,
+    )
+    if found is None:
+        return {}
+    epoch = coverage.horizon.epoch_year
+    held: dict[str, set[int]] = {}
+    for (_variable, _recipient, donor), bits in zip(found.keys(), found.year_bits(), strict=True):
+        held.setdefault(donor, set()).update(
+            epoch + offset for offset in range(bits.bit_length()) if bits >> offset & 1
+        )
+    return {donor: frozenset(years) for donor, years in held.items()}
+
+
 def _years_asked(window: Mapping[str, object], coverage: CoverageIndex) -> tuple[int, int]:
     """The first and last year `window` asks for, inside the years `coverage` represents and
     not after its build year."""

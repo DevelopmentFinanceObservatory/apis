@@ -9,7 +9,7 @@ from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
 from search.models import EntityGroup, Operation, Option, ScopeAxis
-from search.scope.edits import AXIS_BINDING, ScopeTableError
+from search.scope.edits import AXIS_BINDING, PUBLISHED_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
 
 
@@ -20,32 +20,54 @@ class AxisTable:
     `options` are the axis's options in declared order, each with its binding and its
     intrinsic availability (what the part's own data and constraints allow, before any
     other entry is weighed). `preference` is the order a default is derived in: the first
-    option no entry blocks. `held` is the option the base identity holds. `rule` names the
-    declared rule, and `concept` the concept the axis was asked for, None when it has none.
+    option no entry blocks. `held` is the option the base identity holds. `rules` names the
+    declared rule an option names when the part holds it, `held`'s among them (`rule`,
+    `rule_of`). `concept` is the concept the axis was asked for, None when it has none.
+    `published` says the part counts a published total, whose options may also bind the code
+    of another total (`PUBLISHED_BINDING`).
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
-    axis or binding kind, or a `preference` or `held` naming no option."""
+    axis or binding kind, a `preference`, `held` or `rules` naming no option, or `rules`
+    naming no rule for `held`."""
 
     axis: ScopeAxis
-    rule: str
     options: tuple[Option, ...]
     preference: tuple[str, ...]
     held: str
+    rules: Mapping[str, str]
     concept: str | None = None
+    published: bool = False
 
     def __post_init__(self) -> None:
         ids = [option.option_id for option in self.options]
+        kinds = {AXIS_BINDING[self.axis]}
+        if self.published and self.axis in PUBLISHED_BINDING:
+            kinds.add(PUBLISHED_BINDING[self.axis])
         if not ids or len(set(ids)) != len(ids):
             raise ScopeTableError(f"{self.axis!r} needs distinct options, got {ids}")
         for option in self.options:
             if option.option_id.partition(":")[0] != self.axis:
                 raise ScopeTableError(f"{option.option_id!r} is not an option of {self.axis!r}")
-            if option.binding.kind != AXIS_BINDING[self.axis]:
+            if option.binding.kind not in kinds:
                 raise ScopeTableError(f"{option.option_id!r} carries a {option.binding.kind!r}")
         if not self.preference or not set(self.preference) <= set(ids):
             raise ScopeTableError(f"{self.axis!r} preference {self.preference} names no option")
         if self.held not in ids:
             raise ScopeTableError(f"{self.axis!r} holds {self.held!r}, which it does not offer")
+        if not set(self.rules) <= set(ids):
+            raise ScopeTableError(f"{self.axis!r} rules {sorted(self.rules)} name no option")
+        if self.held not in self.rules:
+            raise ScopeTableError(f"{self.axis!r} names no rule for {self.held!r}")
+
+    @property
+    def rule(self) -> str:
+        """The declared rule of the option the part holds."""
+        return self.rules[self.held]
+
+    def rule_of(self, option_id: str) -> str:
+        """The rule the axis names when the part holds `option_id`: its entry in `rules`,
+        else `rule`."""
+        return self.rules.get(option_id, self.rule)
 
     def option(self, option_id: str) -> Option | None:
         """The option `option_id`, None when the axis offers none."""

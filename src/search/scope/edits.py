@@ -31,6 +31,7 @@ from search.models import (
     ScopeAxis,
     ShapeBinding,
     SlotBinding,
+    YearSpan,
 )
 
 BindingKind = Literal["slot", "entities", "shape", "provider"]
@@ -65,6 +66,10 @@ AXIS_BINDING: Mapping[ScopeAxis, BindingKind] = {
     "provider": "provider",
 }
 """The binding kind every option of an axis carries."""
+PUBLISHED_BINDING: Mapping[ScopeAxis, BindingKind] = {"provider": "slot"}
+"""The binding kind an option of an axis may carry beside `AXIS_BINDING`'s on a part that
+counts a published total (`tables.AxisTable.published`): a provider option on a published donor
+total binds the code of the total that counts its scope (`provider._published_table`)."""
 
 
 def _with_slot(identity: BaseIdentity, slot: IdentitySlot) -> list[IdentitySlot]:
@@ -76,7 +81,8 @@ def _with_slot(identity: BaseIdentity, slot: IdentitySlot) -> list[IdentitySlot]
 def _edit_slot(
     identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
 ) -> BaseIdentity:
-    """Bind the option's slot to its code or code set."""
+    """Bind the option's slot to its code or code set, over the option's window when it
+    sets one (`SlotBinding.window`)."""
     assert isinstance(binding, SlotBinding)
     bound = (
         IdentityBindingValue(ref=binding.refs[0])
@@ -84,7 +90,8 @@ def _edit_slot(
         else IdentityBindingSet(refs=list(binding.refs))
     )
     slot = IdentitySlot(property=binding.slot, binding=bound)
-    return identity.model_copy(update={"slots": _with_slot(identity, slot)})
+    edited = identity.model_copy(update={"slots": _with_slot(identity, slot)})
+    return _with_window(edited, binding.window)
 
 
 def _edit_entities(
@@ -131,15 +138,24 @@ def _edit_provider(
     """Bind the stacked composite of bilateral and imputed multilateral spending as the
     identity's source for the inclusive scope, with the option's window when it sets one
     (`ProviderBinding.window`), or remove that composite for the bilateral scope, leaving the
-    window as it is. The two are inverses on an identity that binds no other provenance."""
+    window as it is. The two are inverses on an identity that binds no other provenance. The
+    contributions scope is the one a published donor total holds, so it leaves the identity
+    as it is."""
     assert isinstance(binding, ProviderBinding)
+    if binding.scope == "contributions":
+        return identity
     if binding.scope == "bilateral":
         return _with_source(identity, None, kind="stacked")
     edited = _with_source(identity, INCLUSIVE_PROVENANCE, kind="stacked")
-    if binding.window is None:
-        return edited
-    first, last = binding.window
-    return edited.model_copy(
+    return _with_window(edited, binding.window)
+
+
+def _with_window(identity: BaseIdentity, window: YearSpan | None) -> BaseIdentity:
+    """`identity` asking for the years `window` spans, or as it is when `window` is None."""
+    if window is None:
+        return identity
+    first, last = window
+    return identity.model_copy(
         update={"requested_window": IdentityWindowRange(start_year=first, end_year=last)}
     )
 
@@ -166,12 +182,23 @@ def _with_source(
 
 
 EDITS: Mapping[BindingKind, Edit] = {
-    "slot": Edit(members=frozenset({"slots"}), apply=_edit_slot),
+    "slot": Edit(members=frozenset({"slots", "requested_window"}), apply=_edit_slot),
     "entities": Edit(members=frozenset({"entities"}), apply=_edit_entities),
     "shape": Edit(members=frozenset({"shape", "slots", "facets"}), apply=_edit_shape),
     "provider": Edit(members=frozenset({"facets", "requested_window"}), apply=_edit_provider),
 }
 """The edit of each binding kind."""
+
+
+def applies_in_pass(binding: OptionBinding) -> bool:
+    """Whether a fresh search applies an option binding `binding` to the identity it
+    resolved: it binds a declared composite as the identity's source, the OECD headline
+    basis (`ShapeBinding.provenance`) or the inclusive provider scope, or it sets a provider
+    scope on the identity's source, as the bilateral scope removes the inclusive composite.
+    Any other option reads another identity, which a switch or resubmit serves."""
+    return isinstance(binding, ProviderBinding) or (
+        isinstance(binding, ShapeBinding) and binding.provenance is not None
+    )
 
 
 def apply_binding(
