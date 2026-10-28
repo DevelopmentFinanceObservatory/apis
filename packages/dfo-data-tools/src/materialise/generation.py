@@ -2474,15 +2474,15 @@ class _GroupRowStreamer:
         chunk completes. A slow chunk therefore holds one worker. Dispatch
         stays within `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency`
         chunks of the oldest chunk not yet consumed, so a stalled chunk
-        lets the pool run that far ahead and no further. Completed chunks wait in `ready` until every
-        chunk before them has been consumed, so results are consumed in
-        chunk order whatever order the fetches finish in, and the first
-        failed chunk in that order is what raises. Every pass of the
-        dispatch loop first moves each finished fetch out of the in-flight
-        set without blocking, so a finished fetch frees its worker for the
-        submissions of that pass and a failure is seen before them: once any
-        chunk has failed, no further chunk is submitted, even while the head
-        chunk is already waiting in `ready`.
+        lets the pool run that far ahead and no further. Completed chunks
+        wait in `ready` until every chunk before them has been consumed, so
+        results are consumed in chunk order whatever order the fetches
+        finish in, and the first failed chunk in that order is what raises.
+        Every pass of the dispatch loop first moves each finished fetch out
+        of the in-flight set without blocking, so a finished fetch frees its
+        worker for the submissions of that pass and a failure is seen before
+        them: once any chunk has failed, no further chunk is submitted, even
+        while the head chunk is already waiting in `ready`.
 
         Each consumed chunk's own member outcomes are recorded into
         `pending_members`, keyed by dcid position, and `cursor` then walks

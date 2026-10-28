@@ -125,10 +125,11 @@ _DEFAULT_CHUNK_CONCURRENCY = 8
 _DEFAULT_TOTAL_CONCURRENCY = 8
 
 DATA_HEDGE_AFTER_SECONDS = 0.5
-"""When a `/data` request still has no response headers, the client sends it once more and takes
-whichever answers 2xx first (`SdmxClient(hedge_after=...)`). Dev's mixer answers `/data` in 0.09 s
-at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so half a second
-hedges about one request in twenty and cuts the tail beyond it."""
+"""When a `/data` request still has no response headers, the client sends it once more
+(`SdmxClient(hedge_after=...)`). A 2xx SDMX-CSV response wins, a 4xx other than 401, 403, 408
+and 429 ends the read, and every other outcome waits for the other send. Dev's mixer answers
+`/data` in 0.09 s at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so
+half a second hedges about one request in twenty and cuts the tail beyond it."""
 
 # A mixer slow on every request would see each one sent twice. Two undecided races per client
 # cover the 3% tail across a mint's four fetch workers and cap the extra load.
@@ -589,7 +590,8 @@ class SdmxClient:
     `hedge_after` left; a request that cannot hedge waits for its own answer. Every wait ends
     when its read's deadline passes or the read is stopped. A read counts the duplicates it
     sends as `sdmx_hedges` and those whose 2xx SDMX-CSV response wins as `sdmx_hedge_wins`
-    (`dfo_platform.timings.count`); `sdmx_requests` counts the duplicates too. `/availability` requests are sent once.
+    (`dfo_platform.timings.count`); `sdmx_requests` counts the duplicates too. `/availability`
+    requests are sent once.
     """
 
     def __init__(
@@ -605,6 +607,8 @@ class SdmxClient:
         total_concurrency: int | threading.BoundedSemaphore = _DEFAULT_TOTAL_CONCURRENCY,
         hedge_after: float | None = None,
     ) -> None:
+        if hedge_after is not None and hedge_after <= 0:
+            raise ValueError(f"hedge_after must be positive or None, got {hedge_after}")
         headers = {"User-Agent": user_agent}
         if token:
             headers[_TOKEN_HEADER] = token
@@ -1231,9 +1235,10 @@ class SdmxClient:
         to this chunk. Merge callers pass the remaining budget, while buffered
         workers cap each body at the caller's full `max_bytes`.
 
-        `slot` is the coordinator's lease on the concurrency slot for this GET. With `expected_roles`, the header must match the supplied role
-        set. A mismatch raises `SdmxResponseError` naming the variables and
-        roles. Otherwise the header is unchecked against an expected set.
+        `slot` is the coordinator's lease on the concurrency slot for this GET.
+        With `expected_roles`, the header must match the supplied role set. A
+        mismatch raises `SdmxResponseError` naming the variables and roles.
+        Otherwise the header is unchecked against an expected set.
         """
         with self._open_data_response(
             variables=variables,
@@ -1612,11 +1617,11 @@ class SdmxClient:
 
         A 2xx SDMX-CSV response decides the race, and so does a client error other than 401,
         403, 408 and 429, which the other send would repeat. A send that raises, answers 401,
-        403, 408, 429 or 5xx, or answers 2xx with another content type loses to the other one; only when both
-        fail does the request's own outcome reach the caller. Every wait for the request, with
-        or without a duplicate, ends with `TimeoutError` when the read's deadline passes and
-        with `_ReadStoppedError` when the read is stopped. The race leaves the undecided count
-        as soon as it ends.
+        403, 408, 429 or 5xx, or answers 2xx with another content type loses to the other
+        one; only when both fail does the request's own outcome reach the caller. Every wait
+        for the request, with or without a duplicate, ends with `TimeoutError` when the
+        read's deadline passes and with `_ReadStoppedError` when the read is stopped. The
+        race leaves the undecided count as soon as it ends.
 
         Each send runs on its own thread and holds a place until it settles: the request holds
         a lease on the read's total-concurrency slot (`slot`), and the duplicate a loser place
@@ -1922,7 +1927,8 @@ class SdmxClient:
         the full body before returning.
 
         By default it acquires the GET slot itself. With `slot`, the
-        coordinator's lease holds the slot until the worker settles. A guard bounds slot acquisition and the request deadline.
+        coordinator's lease holds the slot until the worker settles. A guard
+        bounds slot acquisition and the request deadline.
         """
         params = {"c[variableMeasured]": _or_list("variableMeasured", variables)}
         if filters:

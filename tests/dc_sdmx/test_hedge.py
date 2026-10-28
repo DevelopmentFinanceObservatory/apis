@@ -107,6 +107,12 @@ def _total_slots_free(client: SdmxClient, slots: int) -> bool:
     return all(taken)
 
 
+@pytest.mark.parametrize("hedge_after", [0.0, -0.5])
+def test_a_hedge_delay_that_is_not_positive_is_refused(hedge_after):
+    with pytest.raises(ValueError, match="hedge_after"):
+        SdmxClient(base_url=_BASE_URL, hedge_after=hedge_after)
+
+
 def test_a_stalled_request_is_answered_by_its_duplicate_and_the_loser_frees_its_slot_at_once():
     transport = _StalledFirstRequest()
     hedged = [f"V{i}" for i in range(_HEDGE_SLOTS + 1)]
