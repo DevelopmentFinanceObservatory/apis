@@ -80,6 +80,8 @@ def _render_digest(chunks, *, options: MintOptions, store: FakeArtifactStore) ->
         entity_columns=("recipient",),
         enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         resolved_stat_var_refs=(),
     )
     return rendered.artifact.artifact_digest

@@ -26,6 +26,7 @@ import pyarrow.compute as pc
 from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
 from dc_sdmx import DEFAULT_PLANNING_LANES, plan_request_chunks
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.roles import RoleAxis
 from materialise.roles import axis_for_role
 from origin_catalogue.context import current_catalogue, current_source_scope
@@ -65,6 +66,10 @@ _CURRENCY_UNIT = re.compile(r"Currency([A-Z]{3})")
 # The calendar years `Headline.recent_years` counts and `elected_year` elects among, the
 # latest year with data included.
 _HEADLINE_YEARS = 3
+# How many admitted facet sets (`CoverageIndex._admitted_facets`) an index keeps, one per
+# distinct set of provenances a catalogue admits: the unscoped catalogue's and one per source
+# scope requests name. Each holds at most the index's facet ids.
+_ADMITTED_FACET_SETS = 64
 
 
 def elected_year(series_by_year: Mapping[int, int]) -> int | None:
@@ -276,13 +281,13 @@ def _key_values(column: pa.ChunkedArray) -> list[str]:
     return values
 
 
-def _key_is_in(column: pa.ChunkedArray, values: Iterable[str]) -> pa.ChunkedArray:
+def _key_is_in(column: pa.ChunkedArray, values: Iterable[str] | pa.Array) -> pa.ChunkedArray:
     """Returns a row mask for `values`, testing dictionary entries once per code.
 
     On 1.78M rows, this takes 3 ms without allocation. `pc.is_in` on the
     dictionary column takes 20 ms and 135 MB because it decodes every row.
     """
-    value_set = pa.array(list(values), type=pa.string())
+    value_set = values if isinstance(values, pa.Array) else pa.array(list(values), pa.string())
     chunks = []
     for chunk in column.chunks:
         if pa.types.is_dictionary(chunk.type):
@@ -553,6 +558,13 @@ class CoverageIndex:
         self._facet_summary = CoverageSummary(
             self._table, variable_codes=self._variable_codes, facet_metadata=self._facet_metadata
         )
+        facets_by_provenance: dict[str | None, list[str]] = {}
+        for facet_id, metadata in self._facet_metadata.items():
+            facets_by_provenance.setdefault(metadata.provenance_id, []).append(facet_id)
+        self._facets_by_provenance = facets_by_provenance
+        self._admitted_facet_sets: LruMemo[tuple[bool, frozenset[str]], pa.Array] = LruMemo(
+            _ADMITTED_FACET_SETS
+        )
 
     @property
     def build_year(self) -> int | None:
@@ -702,13 +714,33 @@ class CoverageIndex:
         for role, column in _ROLE_COLUMNS.items():
             if role in bound:
                 rows = rows.filter(_key_is_in(rows[column], bound[role]))
-        catalogue = current_catalogue()
-        admitted = [
-            facet_id
-            for facet_id, metadata in self._facet_metadata.items()
-            if metadata.provenance_id is None or catalogue.is_admitted(metadata.provenance_id)
-        ]
+        admitted = self._admitted_facets(current_catalogue().is_admitted, unattributed=True)
         return rows.filter(_key_is_in(rows[FACET_COLUMN], admitted))
+
+    def _admitted_facets(self, admits: Callable[[str], bool], *, unattributed: bool) -> pa.Array:
+        """The ids of the facets whose provenance `admits` admits, and, with `unattributed`,
+        of those with no provenance. The catalogue judges each of the index's provenances
+        once a call, and the ids of each distinct admitted set are kept
+        (`_ADMITTED_FACET_SETS`)."""
+        admitted = frozenset(
+            provenance
+            for provenance in self._facets_by_provenance
+            if provenance is not None and admits(provenance)
+        )
+        key = (unattributed, admitted)
+        found = self._admitted_facet_sets.get(key)
+        if found is None:
+            kept = (*admitted, None) if unattributed else admitted
+            found = pa.array(
+                [
+                    facet_id
+                    for provenance in kept
+                    for facet_id in self._facets_by_provenance.get(provenance, ())
+                ],
+                type=pa.string(),
+            )
+            self._admitted_facet_sets.put(key, found)
+        return found
 
     def _admit_scoped_rows(self, rows: pa.Table) -> pa.Table:
         """Keeps only facets the request's source-scoped catalogue admits per series.
@@ -720,32 +752,15 @@ class CoverageIndex:
         whichever origin it comes from, and the facet election chooses between
         DFO and base (`materialise.facets.dfo_precedence`).
 
-        A series' admission keeps each of its provenances that is in scope and admitted
-        (`Catalogue.admit_series`), whatever else the series holds, so a row survives
-        exactly when its facet's provenance is one the catalogue admits. The catalogue
-        judges the provenances of the index's facets once, and the rows are filtered by
-        facet in one pass.
+        A series' admission judges each of its provenances alone
+        (`Catalogue.admits_in_scope`), so a row survives exactly when its facet has a
+        provenance the catalogue admits in scope, and the rows are filtered by facet in one
+        pass (`_admitted_facets`).
         """
         if rows.num_rows == 0 or current_source_scope() is None:
             return rows
-        provenance_of = {
-            facet_id: metadata.provenance_id
-            for facet_id, metadata in self._facet_metadata.items()
-            if metadata.provenance_id is not None
-        }
-        admitted = frozenset(
-            current_catalogue().admit_series(dict.fromkeys(provenance_of.values())).admitted
-        )
-        return rows.filter(
-            _key_is_in(
-                rows[FACET_COLUMN],
-                [
-                    facet_id
-                    for facet_id, provenance in provenance_of.items()
-                    if provenance in admitted
-                ],
-            )
-        )
+        admitted = self._admitted_facets(current_catalogue().admits_in_scope, unattributed=False)
+        return rows.filter(_key_is_in(rows[FACET_COLUMN], admitted))
 
     def admitted_pairs(
         self, *, variable: str, bound: BoundRoles = _NO_BINDING

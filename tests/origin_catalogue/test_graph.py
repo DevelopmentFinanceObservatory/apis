@@ -36,6 +36,7 @@ from origin_catalogue import (
     ProvenanceRow,
     SourceRef,
     bound_catalogue,
+    frozen_arcs,
     recording_un_blocked_places,
 )
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
@@ -823,6 +824,31 @@ def test_a_table_answer_is_built_once_per_build_and_release_and_shared_read_only
     assert released[_CRS_VARIABLE] is not first[_CRS_VARIABLE]
     with pytest.raises(TypeError):
         first[_GDP]["typeOf"]["nodes"].append({"dcid": "Place"})
+
+
+def test_an_existence_check_builds_no_answer_and_agrees_with_the_arc_read(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`exists`, `exists_batch` and `arcs_complete` read the rows the tables hold without
+    building an answer, so they keep none in the build's memo, and each says of a held node,
+    an empty one, a UN variable, an excluded one and a topic what the arc read says."""
+    bind_catalogue(_catalogue(arcs=_ARCS))
+    built: list[object] = []
+    build = frozen_arcs.served_arcs
+    monkeypatch.setattr(frozen_arcs, "served_arcs", lambda rows: built.append(rows) or build(rows))
+    dcids = [_CRS_VARIABLE, _GDP, _POPULATION, _UN_MORTALITY, _UN_AID, _UN_TOPIC, _OUR_TOPIC]
+
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        found = client.exists_batch(dcids)
+        each = {dcid for dcid in dcids if client.exists(dcid)}
+        complete = [dcid for dcid in dcids if client.arcs_complete(dcid)]
+        assert built == []
+        arcs = client.node_arcs_batch(dcids)
+
+    assert found == each == {dcid for dcid, answer in arcs.items() if answer is not None}
+    assert found == {_CRS_VARIABLE, _GDP, _UN_MORTALITY, _UN_TOPIC, _OUR_TOPIC}
+    assert complete == dcids
+    assert graph.requests == []
 
 
 def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_name(

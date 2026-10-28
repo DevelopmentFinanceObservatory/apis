@@ -198,3 +198,48 @@ def test_disagreeing_members_publish_none_without_ever_populating_the_cache():
     # ahead of ever calling measure_family_partitions -- the cache stays
     # untouched.
     assert cache == {}
+
+
+def test_the_index_memo_keeps_the_most_recently_read_families(monkeypatch):
+    """A family read again outlives one read once before it."""
+    monkeypatch.setattr(bound_values, "_MEASURE_FAMILY_MEMO_ENTRIES", 2)
+    index = copy.copy(get_index())
+    axes = get_measure_index().axes
+    shape = _crs_shape()
+    reads: list[object] = []
+    uncached = bound_values._measure_family_partitions_uncached
+    monkeypatch.setattr(
+        bound_values,
+        "_measure_family_partitions_uncached",
+        lambda *args: reads.append(args[3]) or uncached(*args),
+    )
+    first, second, third = (
+        dataclasses.replace(
+            query_for(shape, {}), scope=DatasetScope(allowed=frozenset({name}), named=False)
+        )
+        for name in ("provenance/A", "provenance/B", "provenance/C")
+    )
+
+    for query in (first, second, first, third, first, second):
+        measure_family_partitions(shape, index, axes, query)
+
+    assert reads == [first, second, third, second]
+
+
+def test_a_shape_of_index_rows_reads_no_members_constraint_properties(monkeypatch):
+    """Whether the index carries a shape, which keys every read of the index memo, reads a
+    member's constraint properties only for a member that is no index row of its family."""
+    index = get_index()
+    shape = _crs_shape()
+    family = bound_values.shape_family(shape, index)
+    assert family is not None
+    members = dataclasses.replace(shape, sv_arc_facts={row.dcid: {} for row in family.rows[:500]})
+    parsed: list[str] = []
+    dcids_for = bound_values._dcids_for
+    monkeypatch.setattr(
+        bound_values, "_dcids_for", lambda arcs, prop: parsed.append(prop) or dcids_for(arcs, prop)
+    )
+
+    assert bound_values.index_carries_shape(members, index)
+    assert bound_values.shape_family(members, index) is family
+    assert parsed == []

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tracemalloc
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import numpy as np
@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import series_coverage.index as coverage_index_module
-from origin_catalogue import SeriesAdmission, bound_catalogue
+from origin_catalogue import bound_catalogue
 from series_coverage.coverage_types import ServedExtent
 from series_coverage.index import (
     BoundRoles,
@@ -1858,9 +1858,10 @@ def test_series_years_or_each_series_facets(read, expected, kept) -> None:
 def test_a_scoped_read_keeps_the_admitted_provenances_facets_judging_each_provenance_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Admission keeps each provenance of a series that the scope admits, so a scoped read
-    keeps every row whose facet's provenance is admitted and asks the catalogue once,
-    whatever the number of series."""
+    """Admission judges each provenance alone, so a scoped read keeps every row whose
+    facet's provenance the scope admits, asks the catalogue once per provenance, whatever
+    the number of series, and builds the facet set of each admitted set of provenances
+    once."""
     other = "provenance/Other"
     table, horizon = coverage_table(_ROWS)
     idx = CoverageIndex(
@@ -1872,20 +1873,28 @@ def test_a_scoped_read_keeps_the_admitted_provenances_facets_judging_each_proven
         },
         horizon=horizon,
     )
-    asked: list[tuple[str, ...]] = []
-    admit = FakeCatalogue.admit_series
+    asked: list[str] = []
+    admits = FakeCatalogue.admits_in_scope
 
-    def counted(self: FakeCatalogue, provenances: Iterable[str]) -> SeriesAdmission:
-        asked.append(tuple(provenances))
-        return admit(self, asked[-1])
+    def counted(self: FakeCatalogue, provenance: str) -> bool:
+        asked.append(provenance)
+        return admits(self, provenance)
 
-    monkeypatch.setattr(FakeCatalogue, "admit_series", counted)
+    monkeypatch.setattr(FakeCatalogue, "admits_in_scope", counted)
+    built: list[object] = []
+    array = coverage_index_module.pa.array
+    monkeypatch.setattr(
+        coverage_index_module.pa, "array", lambda *a, **k: built.append(a[0]) or array(*a, **k)
+    )
 
     with bound_catalogue(FakeCatalogue().scoped(frozenset({_CRS_PROVENANCE}))):
         crs = idx.admitted_pairs(variable=V1)
+    with bound_catalogue(FakeCatalogue().scoped(frozenset({_CRS_PROVENANCE}))):
+        again = idx.admitted_pairs(variable=V1)
     with bound_catalogue(FakeCatalogue().scoped(frozenset({other}))):
         projected = idx.admitted_pairs(variable=V1)
 
-    assert crs == {FACET_ACTUALS: frozenset({(FRA, KEN), (DEU, KEN), (FRA, ETH)})}
+    assert crs == again == {FACET_ACTUALS: frozenset({(FRA, KEN), (DEU, KEN), (FRA, ETH)})}
     assert projected == {FACET_PROJECTED: frozenset({(FRA, KEN)})}
-    assert len(asked) == 2
+    assert sorted(asked) == sorted([_CRS_PROVENANCE, other] * 3)
+    assert built == [[FACET_ACTUALS], [FACET_PROJECTED]]

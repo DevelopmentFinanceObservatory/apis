@@ -97,11 +97,11 @@ class ManifestFacts:
     `series_coverage_stamp` are `None` on a version minted before the manifest carried them.
     `output_profile` is the version's `OutputProfile` JSON, `None` on a version minted before
     versions stored it. `series_conversions` holds one conversion record per converted series,
-    `None` on an unconverted version and on a derived one. It is the object
-    `materialise.series_conversion.pack_series_conversions` gives, or on a version stored before
-    it a list of per-series entries. `default_scope_plural` says whether the mint's default
-    place scope held more than one place, `None` on a collapse and on a version minted before
-    versions stored it.
+    `None` on an unconverted version and on a derived one. Otherwise it is the object
+    `materialise.series_conversion.pack_series_conversions` gives, or a list of per-series
+    entries, which some stored versions hold (`decode_series_conversion_entries` reads both).
+    `default_scope_plural` says whether the mint's default place scope held more than one place,
+    `None` on a collapse and on a version minted before versions stored it.
     """
 
     prepared_at: datetime

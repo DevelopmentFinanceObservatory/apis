@@ -42,6 +42,7 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps.async_max_rows == _SETTINGS.async_max_rows
         assert caps.async_max_requests == _SETTINGS.async_max_requests
         assert caps.pivot_max_output_cells == _SETTINGS.pivot_max_output_cells
+        assert caps.groupby_fold_max_rows == _SETTINGS.groupby_fold_max_rows
         assert caps.operation_retention_days == WORKING_TIER_RETENTION.days
 
     def test_operation_envelope_is_active(self):

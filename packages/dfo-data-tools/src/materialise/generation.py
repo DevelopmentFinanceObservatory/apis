@@ -1717,9 +1717,9 @@ def _generate_chunk(
     reduces to the member's global latest period and checks its coverage.
 
     `raw_budget` is shared by every group chunk. Each stream
-    uses `raw_budget.total` as `max_rows`, while each arriving batch draws
-    from the shared total. A batch can overshoot that total before the check
-    raises `OverCeilingError`. An SDMX cap error raises the same error. A `latest`
+    uses `raw_budget.total` as `max_rows`, while each batch draws from the
+    shared total when `_BatchRouter` routes it. A batch can overshoot that
+    total before the check raises `OverCeilingError`. An SDMX cap error raises the same error. A `latest`
     member read again at the year it elected (`_MemberFetchResult.read_year`) is one more
     request naming that member alone, and its rows draw on the same total.
 
@@ -1919,8 +1919,6 @@ def _generate_chunk(
 
 # Rows routed together (`_BatchRouter`). The SDMX parser yields one batch per 64 KiB read
 # block, about 240 rows, and routing pays a fixed cost per batch for each member's masks.
-# A larger read block (`dc_sdmx.client._STREAM_BATCH_BLOCK_SIZE`) would cut the batches too,
-# but the parser buffers 34 blocks before its first batch, 136 MiB at a 4 MiB block.
 _ROUTE_BATCH_ROWS = 1 << 14
 
 
@@ -1929,16 +1927,19 @@ type _Survivors = Callable[[pa.RecordBatch], Iterable[tuple[int, list[pa.RecordB
 
 class _BatchRouter:
     """Routes a chunk's SDMX batches in runs of up to `_ROUTE_BATCH_ROWS` rows, with the result
-    routing each batch on arrival gives: the same survivors, ceiling trip and refusal.
+    routing each batch on arrival gives: the same survivors, draws, ceiling trip and refusal.
 
     `survivors` gives each member's survivors of a batch (`_batch_survivors`), and `admit` adds
     one member's survivors and raises on its streaming ceiling. A run is routed as one batch
     only while its rows cannot carry a member in `ceilings` past its ceiling, since a member
     survives at most a run's rows; a batch that could is routed alone, so a ceiling trips at
-    the batch and count it trips at batch by batch. A joined run's survivors are all computed
-    before any is admitted, so when the run refuses, its batches are routed again one at a
-    time and the refusal raised, with its counts, is the first refusing batch's. A read or draw
-    error routes the pending run first, as batch-by-batch routing met that run first."""
+    the batch and count it trips at batch by batch. Each batch is drawn when its run is routed,
+    so the shared budget holds up to a run of rows a draw has not counted yet. A joined run's
+    survivors are computed before any of its batches is drawn or admitted, so when the run
+    refuses (`SdmxResponseError`), its batches are drawn and routed again one at a time and the
+    refusal raised, with its counts, is the first refusing batch's, and no later batch of the
+    run draws. A run holding no row is routed batch by batch. A read error routes the pending
+    run first, as batch-by-batch routing met that run first."""
 
     def __init__(
         self,
@@ -1959,54 +1960,52 @@ class _BatchRouter:
     def route(
         self, batches: Iterable[pa.RecordBatch], *, draw: Callable[[pa.RecordBatch], None]
     ) -> None:
-        """Routes every batch of `batches`, each drawn by `draw` first."""
+        """Routes every batch of `batches`, each drawn by `draw` just before it is routed."""
         batch_iter = iter(batches)
         while True:
             try:
                 batch = next(batch_iter, None)
-                if batch is not None:
-                    draw(batch)
-            except Exception as exc:
-                failure = exc
-            else:
-                failure = None
-            if failure is not None:
-                self._flush()
-                raise failure
+            except Exception:
+                self._flush(draw)
+                raise
             if batch is None:
-                self._flush()
+                self._flush(draw)
                 return
-            self._add(batch)
+            self._add(batch, draw)
 
     def _may_trip(self, rows: int) -> bool:
         return any(
             self._survivor_counts[index] + rows > ceiling for index, ceiling in self._ceilings
         )
 
-    def _add(self, batch: pa.RecordBatch) -> None:
+    def _add(self, batch: pa.RecordBatch, draw: Callable[[pa.RecordBatch], None]) -> None:
         rows = self._pending_rows + batch.num_rows
         if self._pending and (rows > _ROUTE_BATCH_ROWS or self._may_trip(rows)):
-            self._flush()
+            self._flush(draw)
         self._pending.append(batch)
         self._pending_rows += batch.num_rows
         if self._may_trip(self._pending_rows):
-            self._flush()
+            self._flush(draw)
 
-    def _flush(self) -> None:
-        batches, self._pending, self._pending_rows = self._pending, [], 0
+    def _flush(self, draw: Callable[[pa.RecordBatch], None]) -> None:
+        batches, rows = self._pending, self._pending_rows
+        self._pending, self._pending_rows = [], 0
         started = time.perf_counter()
         try:
-            if len(batches) == 1:
-                self._admit_all(self._survivors(batches[0]))
-            elif batches:
+            if len(batches) > 1 and rows:
                 (joined,) = pa.Table.from_batches(batches).combine_chunks().to_batches()
                 try:
                     survivors = list(self._survivors(joined))
-                except (SdmxResponseError, ValueError, KeyError):
+                except SdmxResponseError:
+                    pass
+                else:
                     for batch in batches:
-                        self._admit_all(self._survivors(batch))
-                    raise
-                self._admit_all(survivors)
+                        draw(batch)
+                    self._admit_all(survivors)
+                    return
+            for batch in batches:
+                draw(batch)
+                self._admit_all(self._survivors(batch))
         finally:
             self.seconds += time.perf_counter() - started
 
@@ -2051,7 +2050,7 @@ def _batch_survivors(
             latest=latest,
             schema=schema,
         )
-    except (SdmxResponseError, ValueError, KeyError):
+    except SdmxResponseError:
         routed = columnar.split_by_variable(batch, index_by_bare_stat_var=index_by_bare_stat_var)
         for index in served:
             yield (
@@ -2102,11 +2101,9 @@ def _survivors_by_member(
         if row_mask is None:
             if observed is None:
                 observed = columnar.observed_mask(table)
-            row_mask = pc.and_(columnar.selection_mask(table, selections=plan.selections), observed)
-            if request.window.kind == "range":
-                row_mask = pc.and_(
-                    row_mask, columnar.range_window_mask(table, window=request.window)
-                )
+            row_mask = columnar.selected_mask(
+                table, selections=plan.selections, window=request.window, observed=observed
+            )
             shared.append((key, row_mask))
         admitted = columnar.admission_mask(
             pa.Table.from_batches([rows], schema=schema), admission=plan.admission

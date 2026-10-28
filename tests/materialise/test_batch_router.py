@@ -82,18 +82,19 @@ def test_a_run_of_batches_is_routed_as_one(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("sizes", "refusing", "draw_fails_at"),
+    ("sizes", "refusing", "draw_fails_at", "draws"),
     [
-        pytest.param((100,) * 10, None, None, id="ceiling"),
-        pytest.param((40, 40, 40, 40), 2, None, id="refusal"),
-        pytest.param((40, 40, 40, 40), 1, 3, id="refusal-before-a-draw-error"),
+        pytest.param((100,) * 10, None, None, 3, id="ceiling"),
+        pytest.param((40, 40, 40, 40), 2, None, 3, id="refusal"),
+        pytest.param((40, 40, 40, 40), 1, 3, 2, id="refusal-before-a-draw-error"),
     ],
 )
 def test_a_run_meets_the_ceiling_or_refusal_routing_each_batch_meets(
-    monkeypatch, sizes, refusing, draw_fails_at
+    monkeypatch, sizes, refusing, draw_fails_at, draws
 ):
     """A ceiling trips at the batch and count it trips at batch by batch. A refusal names the
-    refusing batch's rows, and comes before a later batch's draw error."""
+    refusing batch's rows, and comes before a later batch's draw error. No batch after the one
+    that trips or refuses draws on the shared budget."""
     drawn: list[int] = []
 
     def draw(batch: pa.RecordBatch) -> None:
@@ -117,5 +118,57 @@ def test_a_run_meets_the_ceiling_or_refusal_routing_each_batch_meets(
 
     assert joined == alone
     assert alone[0] is not type(None)
-    if refusing is None:
-        assert drawn == drawn_alone
+    assert drawn == drawn_alone == list(sizes[:draws])
+
+
+def test_a_run_of_empty_batches_routes_each_alone(monkeypatch):
+    """A run holding no row is routed batch by batch, so it is drawn and admits nothing."""
+    drawn: list[int] = []
+    member, error = _route(
+        _batches(0, 0),
+        route_rows=100_000,
+        monkeypatch=monkeypatch,
+        draw=lambda batch: drawn.append(batch.num_rows),
+    )
+
+    assert error is None
+    assert member.routed == [0, 0]
+    assert drawn == [0, 0]
+    assert member.rows == []
+
+
+@pytest.mark.parametrize(
+    ("error_type", "expected"),
+    [
+        pytest.param(SdmxResponseError, None, id="refusal-replayed"),
+        pytest.param(ValueError, ValueError, id="other-error-raised"),
+    ],
+)
+def test_a_joined_run_replays_only_a_refusal(monkeypatch, error_type, expected):
+    """A joined run whose survivors raise a refusal is routed again batch by batch, which
+    stands when no batch refuses alone. Any other error is raised from the joined run."""
+    member = _Member()
+
+    def survivors(batch: pa.RecordBatch) -> Iterator[tuple[int, list[pa.RecordBatch]]]:
+        member.routed.append(batch.num_rows)
+        if batch.num_rows > 60:
+            raise error_type("joined")
+        yield 0, [batch]
+
+    monkeypatch.setattr(generation_module, "_ROUTE_BATCH_ROWS", 100_000)
+    router = generation_module._BatchRouter(
+        survivors, member.admit, ceilings=[(0, _CEILING)], survivor_counts=member.counts
+    )
+    try:
+        router.route(_batches(60, 60), draw=lambda _batch: None)
+    except ValueError as error:
+        raised = type(error)
+    else:
+        raised = None
+
+    assert raised is expected
+    if expected is None:
+        assert member.routed == [120, 60, 60]
+        assert member.rows == [f"r{row}" for row in range(120)]
+    else:
+        assert member.routed == [120]

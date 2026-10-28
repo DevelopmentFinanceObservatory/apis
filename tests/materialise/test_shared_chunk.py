@@ -12,6 +12,7 @@ import pyarrow as pa
 import pytest
 
 from dc_sdmx import SdmxClient, SdmxIncompatibleVariablesError
+from dc_sdmx.errors import SdmxResponseError
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_group
 from materialise import generation as generation_module
 from materialise.errors import MembersNotHeldError, OverCeilingError
@@ -363,8 +364,13 @@ _ROUTING_CELLS = [
     "third_admission",
     [
         pytest.param(CoverageAdmission(), id="masks-pass"),
+        # The member's rows naming no facet refuse its scoped admission.
         pytest.param(
-            CoverageAdmission(pairs_by_facet={"f2": frozenset()}, role_names=None), id="refused"
+            CoverageAdmission(
+                pairs_by_facet={"f2": frozenset()},
+                role_names=RoleNames(donor=None, recipient="recipient"),
+            ),
+            id="refused",
         ),
     ],
 )
@@ -399,7 +405,7 @@ def test_a_batch_is_masked_once_for_what_its_members_share(monkeypatch, third_ad
                 (index, pa.Table.from_batches(rows, schema=table.schema).to_pylist())
                 for index, rows in rows_of()
             ]
-        except ValueError as error:
+        except SdmxResponseError as error:
             return error.args
 
     routed = generation_module.columnar.split_by_variable(batch, index_by_bare_stat_var=index_by)
@@ -439,3 +445,33 @@ def test_a_batch_is_masked_once_for_what_its_members_share(monkeypatch, third_ad
     if third_admission.pairs_by_facet is None:
         assert sorted(calls) == ["observed_mask", "range_window_mask", "selection_mask"]
         assert [len(rows) for _index, rows in batched] == [2, 3, 2]
+    else:
+        assert "facetId" in batched[0]
+
+
+def test_a_batch_error_that_is_no_refusal_is_raised_unmasked(monkeypatch):
+    """Only a refusal sends a batch to member-by-member masking. Any other error of the
+    batch-wide masks is raised as it is."""
+    table = table_from_cells(_ROUTING_CELLS, roles=("recipient",))
+    batch = table.combine_chunks().to_batches()[0]
+
+    def broken(*_args, **_kwargs):
+        raise ValueError("batch-wide masks broke")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("masked member by member")
+
+    monkeypatch.setattr(generation_module, "_survivors_by_member", broken)
+    monkeypatch.setattr(generation_module, "_member_survivors", unexpected)
+
+    with pytest.raises(ValueError, match="batch-wide masks broke"):
+        list(
+            generation_module._batch_survivors(
+                batch,
+                index_by_bare_stat_var={bare: index for index, bare in enumerate(_ROUTING_BARE)},
+                plans=[_routing_plan((f"f{index}",)) for index in range(4)],
+                requests={},
+                latest=(),
+                schema=table.schema,
+            )
+        )

@@ -175,6 +175,8 @@ def _render_crs(*, graph: FakeMintGraphReader | None = None) -> dict[str, bytes]
             graph or FakeMintGraphReader(arcs=_GRAPH_ARCS), parties=lambda: {}
         ),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         code_index=get_index(),
         resolved_stat_var_refs=(),
     )
@@ -334,6 +336,8 @@ def test_a_crs_bundle_prints_the_site_link_only_for_a_replayable_identity(
         entity_columns=("financingProvider", "financingRecipient"),
         enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS), parties=lambda: {}),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         resolved_stat_var_refs=(),
     )
     files = _unzip(store.fetch(rendered.artifact.url))
@@ -474,6 +478,8 @@ def test_a_pivot_heading_a_spreadsheet_escapes_is_documented_by_its_written_name
         entity_columns=("observationAbout",),
         enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS), parties=lambda: {}),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         code_index=_age_index(f"{trigger}5 to 0"),
         resolved_stat_var_refs=(),
     )

@@ -161,10 +161,13 @@ class FakeCatalogue:
     def is_admitted(self, provenance_id: str) -> bool:
         return True
 
+    def admits_in_scope(self, provenance_id: str) -> bool:
+        return self.scope is None or provenance_id in self.scope
+
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
         present = dict.fromkeys(provenance_ids)
         return SeriesAdmission(
-            admitted=tuple(pid for pid in present if self.scope is None or pid in self.scope),
+            admitted=tuple(pid for pid in present if self.admits_in_scope(pid)),
             withheld=(),
         )
 

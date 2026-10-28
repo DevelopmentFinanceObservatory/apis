@@ -370,10 +370,26 @@ def survivor_mask(
     window: RequestedWindow,
     admission: RowAdmission,
 ) -> pa.BooleanArray:
-    """Combines facet selection, admission and observed-value masks, adding a year-range mask
-    only for `window.kind == "range"`."""
-    mask = pc.and_(selection_mask(table, selections=selections), observed_mask(table))
-    mask = pc.and_(mask, admission_mask(table, admission=admission))
+    """Combines `selected_mask` with the admission mask."""
+    return pc.and_(
+        selected_mask(table, selections=selections, window=window),
+        admission_mask(table, admission=admission),
+    )
+
+
+def selected_mask(
+    table: pa.Table,
+    *,
+    selections: Mapping[str, FacetSelection],
+    window: RequestedWindow,
+    observed: pa.BooleanArray | None = None,
+) -> pa.BooleanArray:
+    """Combines facet selection and observed-value masks, adding a year-range mask only for
+    `window.kind == "range"`. Each mask reads a row alone. `observed` is `observed_mask(table)`,
+    computed here when not given."""
+    if observed is None:
+        observed = observed_mask(table)
+    mask = pc.and_(selection_mask(table, selections=selections), observed)
     if window.kind == "range":
         mask = pc.and_(mask, range_window_mask(table, window=window))
     return mask

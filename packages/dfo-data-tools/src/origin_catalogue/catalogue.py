@@ -540,11 +540,18 @@ class Catalogue(Protocol):
 
     def is_admitted(self, provenance_id: str) -> bool: ...
 
+    def admits_in_scope(self, provenance_id: str) -> bool:
+        """Whether `admit_series` admits `provenance_id`: it lies in `scope` and is admitted
+        (`is_admitted`). The answer is the provenance's alone, whatever other provenances a
+        series holds."""
+        ...
+
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
         """Admission for the facets of one variable at one place: every admitted provenance
         (`is_admitted`) in `scope`, whichever origin it comes from. The facet election chooses
         between DFO and base (`materialise.facets.dfo_precedence`). A provenance outside
-        `scope` is left out of both `admitted` and `withheld`."""
+        `scope` is left out of both `admitted` and `withheld`. `admitted` holds exactly the
+        provenances `admits_in_scope` admits, each judged alone."""
         ...
 
     def admit_candidate(self, dcid: str) -> DataCommons | None:
@@ -734,11 +741,16 @@ class CatalogueSnapshot:
         scope = allowed if self.scope is None else self.scope & allowed
         return replace(self, scope=scope)
 
+    def admits_in_scope(self, provenance_id: str) -> bool:
+        return (self.scope is None or provenance_id in self.scope) and self.is_admitted(
+            provenance_id
+        )
+
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
         present = tuple(dict.fromkeys(provenance_ids))
         if self.scope is not None:
             present = tuple(pid for pid in present if pid in self.scope)
-        admitted = [pid for pid in present if self.is_admitted(pid)]
+        admitted = [pid for pid in present if self.admits_in_scope(pid)]
         kept = set(admitted)
         return SeriesAdmission(
             admitted=tuple(admitted), withheld=tuple(pid for pid in present if pid not in kept)

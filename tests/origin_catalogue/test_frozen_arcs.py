@@ -9,8 +9,9 @@ import pickle
 
 import pytest
 
+from dc_graph import IMPORT_ADDED_CONSTRAINT_PROPERTIES
 from origin_catalogue import frozen_arcs
-from origin_catalogue.frozen_arcs import ArcAnswers, FrozenArcs, served_arcs
+from origin_catalogue.frozen_arcs import ArcAnswers, FrozenArcs, served_arcs, serves_arcs
 from origin_catalogue.un_mirror import UnArc, wire_arcs
 from search.engine.retrieval import facts
 
@@ -58,6 +59,20 @@ def test_the_memo_keeps_the_most_recently_read_answers(monkeypatch):
 
     assert answers.answer("a", _ROWS) is not first_a
     assert len(built) == 5
+
+
+_IMPORT_ADDED = UnArc(
+    property="constraintProperties", dcid=next(iter(IMPORT_ADDED_CONSTRAINT_PROPERTIES))
+)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [(), _ROWS, (_IMPORT_ADDED,), (UnArc(property="name", value="Gross ODA"),)],
+    ids=["none", "held", "import-added", "name"],
+)
+def test_serves_arcs_says_whether_the_answer_holds_an_arc(rows):
+    assert serves_arcs(rows) is bool(served_arcs(rows))
 
 
 def test_an_answer_reads_as_the_wire_answer_and_refuses_every_mutation():

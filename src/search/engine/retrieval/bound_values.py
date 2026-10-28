@@ -88,6 +88,7 @@ from code_index.types import (
     summable_axes,
 )
 from dc_graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.named import cut, named_capped
 from graph_release.context import served_origin_key
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
@@ -898,34 +899,16 @@ def measure_family_partitions(
 
 
 _MEASURE_FAMILY_MEMO_ENTRIES = 256
-"""How many measure families `_index_measure_families` keeps per index. The wide CRS
-family's partitions hold about 6,300 member dcids."""
-
-
-class _BoundedMemo[K, V]:
-    """A memo that keeps its latest `size` entries, safe to share between threads."""
-
-    def __init__(self, size: int) -> None:
-        self._size = size
-        self._entries: dict[K, V] = {}
-        self._lock = threading.Lock()
-
-    def get(self, key: K) -> V | None:
-        return self._entries.get(key)
-
-    def put(self, key: K, value: V) -> None:
-        with self._lock:
-            self._entries[key] = value
-            while len(self._entries) > self._size:
-                del self._entries[next(iter(self._entries))]
+"""How many measure families `_index_measure_families` keeps per index, the most recently
+read. The fixture index's CRS family holds 12,771 rows, whose partitions name each once."""
 
 
 @per_index
 def _index_measure_families(
     _index: CodeIndex,
-) -> _BoundedMemo[Hashable, tuple[MeasurePartition, ...]]:
+) -> LruMemo[Hashable, tuple[MeasurePartition, ...]]:
     """The measure families `measure_family_partitions` read from one index."""
-    return _BoundedMemo(_MEASURE_FAMILY_MEMO_ENTRIES)
+    return LruMemo(_MEASURE_FAMILY_MEMO_ENTRIES)
 
 
 def _measure_family_memo_key(
@@ -2093,16 +2076,15 @@ def shape_family(shape: ShapeDraft, index: CodeIndex | None = None) -> IndexFami
     A shape with no recalled member reads the family its slot properties select
     (`CodeIndex.family_of`)."""
     index = index or get_index()
-    five_tuple = shape_five_tuple(shape)
+    member_five_tuple = _member_five_tuple(shape_five_tuple(shape))
     if not shape.sv_arc_facts:
-        return index.family_of(_member_five_tuple(five_tuple), shape_slot_properties(shape))
+        return index.family_of(member_five_tuple, shape_slot_properties(shape))
     families = {
         id(family): family
         for dcid, arcs in shape.sv_arc_facts.items()
         if (
-            family := member_family(
-                dcid, five_tuple, _dcids_for(arcs, "constraintProperties"), index
-            )
+            family := _row_family(dcid, member_five_tuple, index)
+            or _covering_family(member_five_tuple, _dcids_for(arcs, "constraintProperties"), index)
         )
         is not None
     }
@@ -2664,7 +2646,9 @@ joins (`served_origin_key`), and the family."""
 # leaves about 1.7 GiB for everything else, and a smaller one evicts a family a menu reads
 # beside another. A request holds each family it reads until it ends, and requests share one
 # decode through `_held_decodes`, so six concurrent BLS questions hold one copy of each family
-# where they would otherwise hold six, about 830 MB. A family no request holds is freed.
+# where they would otherwise hold six, about 830 MB. A family no request holds is freed. A
+# decode's arcs are the catalogue's shared answers (`Catalogue.arc_answer`), so it keeps each
+# member's answer alive after the catalogue's memo drops it (`frozen_arcs.ARC_ANSWERS_HELD`).
 _held_family_memo: ContextVar[dict[_HeldKey, _HeldMembers] | None] = ContextVar(
     "search_held_family_memo", default=None
 )
@@ -3778,9 +3762,24 @@ def member_family(
     family."""
     index = index or get_index()
     member_five_tuple = _member_five_tuple(five_tuple)
+    return _row_family(dcid, member_five_tuple, index) or _covering_family(
+        member_five_tuple, constraint_properties, index
+    )
+
+
+def _row_family(
+    dcid: str, member_five_tuple: MemberFiveTuple, index: CodeIndex
+) -> IndexFamily | None:
+    """The family `member_family` reads for an index row of `member_five_tuple`."""
     family = index.family_by_dcid.get(dcid)
-    if family is not None and family.five_tuple == member_five_tuple:
-        return family
+    return family if family is not None and family.five_tuple == member_five_tuple else None
+
+
+def _covering_family(
+    member_five_tuple: MemberFiveTuple, constraint_properties: Collection[str], index: CodeIndex
+) -> IndexFamily | None:
+    """The family `member_family` reads for a StatVar that is no index row of
+    `member_five_tuple`, from its `constraint_properties`."""
     keys = frozenset(constraint_properties)
     family = index.family_of(member_five_tuple, keys)
     return family if family is not None and family.covers(keys) else None

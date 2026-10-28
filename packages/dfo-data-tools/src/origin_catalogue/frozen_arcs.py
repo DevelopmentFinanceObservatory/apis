@@ -16,11 +16,10 @@ refuses every mutation, since one answer is shared by every request of its snaps
 
 from __future__ import annotations
 
-import threading
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Final, NoReturn, Self
 
+from dfo_platform.lru_memo import LruMemo
 from origin_catalogue.un_mirror import UnArc, import_added, wire_arcs
 
 _CONSTRAINT_PROPERTIES: Final[str] = "constraintProperties"
@@ -120,10 +119,18 @@ def served_arcs(rows: Iterable[UnArc]) -> FrozenArcs:
     return frozen_arcs(wire)
 
 
+def serves_arcs(rows: Iterable[UnArc]) -> bool:
+    """Whether `served_arcs(rows)` holds an arc, read without building it."""
+    return any(not import_added(arc) or arc.property == _CONSTRAINT_PROPERTIES for arc in rows)
+
+
 ARC_ANSWERS_HELD: Final[int] = 8_192
-"""How many answers `ArcAnswers` keeps, the most recently read. An answer of a CRS variable
-holds about 10 KB with what its readers derive from it, so the memo holds at most about
-90 MB; the widest CRS total reads 6,310 members, which fit."""
+"""How many answers `ArcAnswers` keeps, the most recently read. A CRS variable's answer holds
+about 10 KB with the facts its readers derive from it (10.2 KB on average over 3,000 CRS
+variables of the eval fixture catalogue), so the memo itself holds about 85 MB; the widest
+CRS total reads 6,310 members, which fit. An answer the memo drops lives on while a reader
+still holds it: a held family's decode (`search.engine.retrieval.bound_values._held_decodes`)
+keeps each of its members' answers for as long as a request holds the decode."""
 
 
 class ArcAnswers:
@@ -136,23 +143,15 @@ class ArcAnswers:
     between threads."""
 
     def __init__(self, held: int = ARC_ANSWERS_HELD) -> None:
-        self._held = held
-        self._answers: OrderedDict[str, tuple[tuple[UnArc, ...], FrozenArcs]] = OrderedDict()
-        self._lock = threading.Lock()
+        self._answers: LruMemo[str, tuple[tuple[UnArc, ...], FrozenArcs]] = LruMemo(held)
 
     def answer(self, dcid: str, rows: tuple[UnArc, ...]) -> FrozenArcs:
         """`served_arcs(rows)`, `dcid`'s answer, built once for `rows`."""
-        with self._lock:
-            kept = self._answers.get(dcid)
-            if kept is not None and kept[0] is rows:
-                self._answers.move_to_end(dcid)
-                return kept[1]
+        kept = self._answers.get(dcid)
+        if kept is not None and kept[0] is rows:
+            return kept[1]
         built = served_arcs(rows)
-        with self._lock:
-            self._answers[dcid] = (rows, built)
-            self._answers.move_to_end(dcid)
-            while len(self._answers) > self._held:
-                self._answers.popitem(last=False)
+        self._answers.put(dcid, (rows, built))
         return built
 
 
@@ -163,4 +162,5 @@ __all__ = [
     "FrozenList",
     "frozen_arcs",
     "served_arcs",
+    "serves_arcs",
 ]

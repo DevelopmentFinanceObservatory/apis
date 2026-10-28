@@ -65,9 +65,8 @@ def pack_series_conversions(
     appearance over the series sorted by key, a record as a JSON object of its fields. `series`
     holds one `[stat_var, roles, record]` triple of list positions per series, sorted by key.
 
-    A mint's series mostly share one record, so the object grows by a few bytes a series. The
-    per-series entry list that earlier versions stored repeated every field.
-    `decode_series_conversion_entries` reads both forms."""
+    A mint's series mostly share one record, so the object grows by a few bytes a series where
+    a per-series entry would repeat every field of its record."""
     positions: dict[str, dict[object, int]] = {"stat_vars": {}, "roles": {}, "records": {}}
 
     def position(kind: str, value: object) -> int:
@@ -121,9 +120,9 @@ def _record(entry: Mapping[str, object]) -> SeriesConversion:
 def decode_series_conversion_entries(
     entries: list[Mapping[str, object]] | dict[str, object],
 ) -> dict[SeriesKey, SeriesConversion]:
-    """The inverse of `pack_series_conversions` for its object, and the records of a list of
-    per-series entries, the form earlier versions stored. Each entry holds a record's fields
-    with the series' `stat_var` and `roles`."""
+    """The records `entries` holds. `entries` is the object `pack_series_conversions` gives, or
+    a list of per-series entries, which some stored versions hold, each a record's fields with
+    the series' `stat_var` and `roles`."""
     if isinstance(entries, list):
         return {
             (str(entry["stat_var"]), _pairs(entry["roles"])): _record(entry) for entry in entries
