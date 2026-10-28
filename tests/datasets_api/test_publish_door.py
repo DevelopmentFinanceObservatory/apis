@@ -48,7 +48,7 @@ from datasets_api.publish_models import (
 )
 from datasets_api.render import (
     CANONICAL_FRAME_RENDERING,
-    FRAME_FILE_RENDERING,
+    frame_file_rendering,
     render_and_store_canonical_frame,
 )
 from datasets_api.version_store import LiveVersionRecordWriter
@@ -67,6 +67,7 @@ from tests.artifact_store.conftest import FakeGCSClient
 
 from ._deps_doubles import fake_deps_cell
 from ._frame_doubles import canonical_frame_digest
+from ._render_inputs import ENRICHMENT, PREPARED_AT, SITE
 from ._snapshot_doubles import make_client_for_door
 from ._version_facts import facts_from_body, golden_cases
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -170,6 +171,9 @@ class _Deps:
             snapshot_reader=self.snapshot_reader,
             version_writer=self.version_writer,
             **kwargs,
+            file_enrichment=ENRICHMENT,
+            site=SITE,
+            prepared_at=PREPARED_AT,
         )
 
 
@@ -185,7 +189,7 @@ def _canonical_frames(deps: _Deps):
 
 def _frame_files(deps: _Deps):
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    return [loc for loc in locations if loc.rendering == FRAME_FILE_RENDERING]
+    return [loc for loc in locations if loc.rendering == frame_file_rendering(SITE)]
 
 
 def test_fresh_publish_records_version_row_and_its_parquet_canonical_frame(deps: _Deps) -> None:
@@ -208,7 +212,7 @@ def test_fresh_publish_records_version_row_and_its_parquet_canonical_frame(deps:
     ) == sorted(
         [
             (CANONICAL_FRAME_RENDERING, CANONICAL_FRAME_MEDIA_TYPE, "working"),
-            (FRAME_FILE_RENDERING, CANONICAL_FRAME_MEDIA_TYPE, "working"),
+            (frame_file_rendering(SITE), CANONICAL_FRAME_MEDIA_TYPE, "working"),
         ],
         key=str,
     )
@@ -643,6 +647,9 @@ def test_verify_phase_catches_a_concurrent_publish_with_different_lineage(deps: 
             artifact_store=deps.artifact_store,
             snapshot_reader=blind_reader,
             version_writer=deps.version_writer,
+            file_enrichment=ENRICHMENT,
+            site=SITE,
+            prepared_at=PREPARED_AT,
         )
 
     assert excinfo.value.spec_id == _SPEC_ID
@@ -672,6 +679,9 @@ def test_verify_phase_derives_created_from_the_insert_not_from_reaching_it(deps:
         artifact_store=deps.artifact_store,
         snapshot_reader=blind_reader,
         version_writer=deps.version_writer,
+        file_enrichment=ENRICHMENT,
+        site=SITE,
+        prepared_at=PREPARED_AT,
     )
 
     assert result.created is False
@@ -699,6 +709,9 @@ def test_verify_phase_answers_the_digest_a_concurrent_publish_linked(deps: _Deps
         artifact_store=deps.artifact_store,
         snapshot_reader=_CheckBlindSnapshotReader(deps.snapshot_reader),
         version_writer=deps.version_writer,
+        file_enrichment=ENRICHMENT,
+        site=SITE,
+        prepared_at=PREPARED_AT,
     )
 
     assert result.created is False
@@ -724,6 +737,9 @@ def test_verify_phase_catches_a_revocation_landing_between_check_and_verify(deps
             artifact_store=deps.artifact_store,
             snapshot_reader=blind_reader,
             version_writer=deps.version_writer,
+            file_enrichment=ENRICHMENT,
+            site=SITE,
+            prepared_at=PREPARED_AT,
         )
 
     assert excinfo.value.id == _SPEC_ID
@@ -746,6 +762,9 @@ def test_publish_composed_with_a_null_version_writer_raises_publish_record_missi
             artifact_store=deps.artifact_store,
             snapshot_reader=deps.snapshot_reader,
             version_writer=NullVersionRecordWriter(),
+            file_enrichment=ENRICHMENT,
+            site=SITE,
+            prepared_at=PREPARED_AT,
         )
 
     assert excinfo.value.spec_id == _SPEC_ID

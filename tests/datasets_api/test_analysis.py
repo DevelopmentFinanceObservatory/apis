@@ -5,6 +5,7 @@ the bounds."""
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from importlib.resources import files
 
 import jsonschema
@@ -152,6 +153,18 @@ def test_a_rerun_stores_nothing_new() -> None:
     assert again.artifact_digest == first.artifact_digest
     assert again.ref() == first.ref()
     assert stores.version_count() == versions
+
+
+def test_the_artifact_digest_does_not_depend_on_the_time_of_publish() -> None:
+    """The frame file holds no publish time, so one tree published on another day names the
+    same file."""
+    first = _run(Stores(), _PER_PERSON)
+    later = Stores()
+    later.now = later.now + timedelta(days=400)
+
+    again = _run(later, _PER_PERSON)
+
+    assert again.artifact_digest == first.artifact_digest
 
 
 def test_a_derived_root_runs_as_the_chain_it_was_computed_by() -> None:

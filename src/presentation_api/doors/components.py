@@ -285,15 +285,20 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
 
 def _schema_invalid_spec(exc: SchemaInvalid) -> ProblemSpec:
     """`minimal_intent` and `legal_fields` are mutually exclusive. Minimal intents go in
-    `detail`, and legal fields become `alternatives`. A missing field can be corrected and
-    retried. An illegal field cannot.
+    `detail`, and legal fields become `alternatives`. A missing field is fixed by changing the
+    request, so `retryable` comes from `retryable_for`, as for every other refusal. An illegal
+    field is never retryable.
     """
     if exc.minimal_intent is not None:
         detail = (
             f"{exc.detail} minimal legal intent: {json.dumps(exc.minimal_intent, sort_keys=True)}"
         )
         return ProblemSpec(
-            status=400, code="schema_invalid", detail=detail, pointer=exc.pointer, retryable=True
+            status=400,
+            code="schema_invalid",
+            detail=detail,
+            pointer=exc.pointer,
+            retryable=retryable_for("schema_invalid"),
         )
     legal_fields = cast(tuple[str, ...], exc.legal_fields)
     return ProblemSpec(

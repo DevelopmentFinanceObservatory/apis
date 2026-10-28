@@ -65,6 +65,7 @@ from datasets_api.render import (
 )
 from datasets_api.retention import version_retention
 from dfo_platform.config import PublicSiteSettings
+from materialise import EnrichmentLookup
 from materialise.bundle import (
     ArtifactEntry,
     BundleContext,
@@ -102,6 +103,7 @@ class DerivedReads:
     snapshot_reader: SnapshotReader
     artifact_store: ArtifactStore
     recipe_reader: RecipeReader
+    enrichment: EnrichmentLookup
     now: Clock
 
 
@@ -298,11 +300,16 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
 
 
 def _frame_file(
-    frame: _StoredFrame, *, spec_id: str, content_version: str, reads: DerivedReads
+    frame: _StoredFrame,
+    *,
+    spec_id: str,
+    content_version: str,
+    reads: DerivedReads,
+    site: PublicSiteSettings,
 ) -> tuple[bytes, str]:
     """The bytes and media type of the derived version's frame file: the stored one, else one
     rendered again from `frame` (`render.render_and_store_frame_file`), the same bytes."""
-    location = frame_file_location(frame.servable)
+    location = frame_file_location(frame.servable, site=site)
     if location is not None:
         try:
             data = reads.artifact_store.get(
@@ -316,7 +323,10 @@ def _frame_file(
         frame_chunks=lambda: iter((frame.table,)),
         subject_id=spec_id,
         content_version=content_version,
+        prepared_at=frame.stored_on,
+        site=site,
         artifact_store=reads.artifact_store,
+        enrichment=reads.enrichment,
     )
     data = reads.artifact_store.get(artifact_digest=rendered.artifact_digest, tier=Tier.working)
     return data, rendered.media_type
@@ -361,7 +371,7 @@ def render_derived_file(
     if not options.bundle:
         if options.format == "parquet":
             data, media_type = _frame_file(
-                frame, spec_id=spec_id, content_version=content_version, reads=reads
+                frame, spec_id=spec_id, content_version=content_version, reads=reads, site=site
             )
         else:
             buffer = io.BytesIO()

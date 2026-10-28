@@ -25,6 +25,7 @@ from dfo_analysis_engine.frame_ref import FrameRef
 from materialise.frame_build import build_frame
 from tests.artifact_store.conftest import FakeGCSClient
 
+from ._render_inputs import ENRICHMENT, SITE
 from ._version_record_store import FakeVersionRecordDatasetStore
 
 AID = "spec_" + "a" * 32
@@ -166,6 +167,8 @@ class Stores:
             version_writer=self.version_writer,
             artifact_store=self.artifact_store,
             recipe_store=self.recipe_store,
+            enrichment=ENRICHMENT,
+            site=SITE,
             now=lambda: self.now,
         )
 

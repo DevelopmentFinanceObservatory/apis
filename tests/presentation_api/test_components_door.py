@@ -536,8 +536,9 @@ def test_a_missing_type_on_create_is_schema_invalid_and_names_the_legal_types(cl
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "schema_invalid"
-    # The missing type returns the legal union members as `minimal_intent`.
-    assert body["retryable"] is True
+    # The missing type returns the legal union members as `minimal_intent`. The request must
+    # change before the write can succeed, so a client must not resend it.
+    assert body["retryable"] is False
     assert "minimal legal intent" in body["detail"]
 
 
@@ -549,7 +550,7 @@ def test_a_create_missing_select_is_schema_invalid_with_the_minimal_intent(clien
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "schema_invalid"
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert "minimal legal intent" in body["detail"]
 
 

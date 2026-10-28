@@ -120,8 +120,10 @@ from dfo_analysis_engine.rolling import (
     canonical_populations,
     rolling_roots,
 )
+from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Refusal
 from dfo_platform.roles import role_key_axis
+from materialise import EnrichmentLookup
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +503,8 @@ class AnalysisStores:
     version_writer: VersionRecordWriter
     artifact_store: ArtifactStore
     recipe_store: RecipeStore
+    enrichment: EnrichmentLookup
+    site: PublicSiteSettings
     now: Clock
 
 
@@ -1080,7 +1084,9 @@ def _stored_file_digest(
     if stores.snapshot_reader.read_version(spec_id, content_version) is None:
         return None
     locations = stores.snapshot_reader.read_artifact_locations(spec_id, content_version)
-    location = frame_file_location(select_servable_locations(locations, now=stores.now()))
+    location = frame_file_location(
+        select_servable_locations(locations, now=stores.now()), site=stores.site
+    )
     return None if location is None else location.artifact_digest
 
 
@@ -1115,6 +1121,9 @@ def _store(
         trace_id=trace_id,
         recipe=recipe,
         recipe_store=stores.recipe_store,
+        file_enrichment=stores.enrichment,
+        site=stores.site,
+        prepared_at=stores.now(),
     )
     return published.artifact_digest, published.created
 

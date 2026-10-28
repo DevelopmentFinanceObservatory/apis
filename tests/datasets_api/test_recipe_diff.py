@@ -28,6 +28,7 @@ from ._analysis_doubles import (
     source,
     step,
 )
+from ._render_inputs import ENRICHMENT, PREPARED_AT, SITE
 
 _PER_PERSON = step(
     "quotient_of",
@@ -49,6 +50,9 @@ def _store_root(stores: Stores, spec_id: str, content_version: str, frame: Frame
         artifact_store=stores.artifact_store,
         snapshot_reader=stores.snapshot_reader,
         version_writer=stores.version_writer,
+        file_enrichment=ENRICHMENT,
+        site=SITE,
+        prepared_at=PREPARED_AT,
     )
 
 

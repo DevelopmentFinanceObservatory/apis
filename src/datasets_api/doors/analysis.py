@@ -206,6 +206,8 @@ def analysis_stores(current: Deps) -> AnalysisStores:
         version_writer=current.version_writer,
         artifact_store=current.artifact_store,
         recipe_store=current.recipe_store,
+        enrichment=current.enrichment,
+        site=current.settings.site,
         now=current.now,
     )
 

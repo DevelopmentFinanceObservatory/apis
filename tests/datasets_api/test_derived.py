@@ -41,6 +41,7 @@ from ._analysis_doubles import (
     step,
 )
 from ._app_factories import make_client
+from ._render_inputs import SITE
 from .conftest import FakeDatasetStore
 
 
@@ -257,7 +258,7 @@ def test_a_frame_file_whose_bytes_are_gone_renders_again_to_the_ref_digest(
     canonical frame and gives the bytes the ref's digest names."""
     stores = Stores()
     member = _stored(stores)
-    frame_file = frame_file_location(_locations(stores, member))
+    frame_file = frame_file_location(_locations(stores, member), site=SITE)
     assert frame_file is not None and frame_file.artifact_digest == member["artifact"]["digest"]
     hex_digest = frame_file.artifact_digest.removeprefix("sha256:")
     deleted = 0

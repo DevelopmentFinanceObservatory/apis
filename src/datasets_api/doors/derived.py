@@ -131,6 +131,7 @@ def _reads(current: Deps) -> DerivedReads:
         snapshot_reader=current.snapshot_reader,
         artifact_store=current.artifact_store,
         recipe_reader=current.recipe_store,
+        enrichment=current.enrichment,
         now=current.now,
     )
 

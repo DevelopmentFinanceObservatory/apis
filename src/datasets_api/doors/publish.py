@@ -131,6 +131,7 @@ import zlib
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from concurrent.futures import BrokenExecutor, Future
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from dfo_frame_grammar import (
@@ -193,6 +194,7 @@ from datasets_api.version_store import recorded_frame_sha256
 from datasets_api.versions import DescriptionDiverges, VersionRecord, VersionRecordWriter
 from description.steps import Step
 from dfo_platform import ProblemSpec
+from dfo_platform.config import PublicSiteSettings
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
 from dfo_platform.trace import get_trace_id
@@ -477,6 +479,9 @@ def publish_frame(
     recipe_store: RecipeStore | None = None,
     steps: Sequence[Step] | None = None,
     enrichment: EnrichmentLookup | None = None,
+    file_enrichment: EnrichmentLookup,
+    site: PublicSiteSettings,
+    prepared_at: datetime,
 ) -> PublishResult:
     """Publish one frame synchronously and verify the stored version.
 
@@ -504,6 +509,10 @@ def publish_frame(
     `PublishLineageDiverge` at `/steps` before anything is linked, and a publish without steps
     leaves recorded steps as they are. `enrichment` reads the labels the record names; `None`
     reads none.
+
+    `file_enrichment`, `site` and `prepared_at` are what the frame file renders with
+    (`render.render_and_store_frame_file`). None reaches the file's bytes, so the same frame
+    stores the same digest whenever and wherever it is published.
     """
     if recipe is not None and recipe_store is None:
         raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)
@@ -544,6 +553,9 @@ def publish_frame(
         recipe_store=recipe_store,
         steps=steps,
         enrichment=enrichment,
+        file_enrichment=file_enrichment,
+        site=site,
+        prepared_at=prepared_at,
     )
 
 
@@ -562,6 +574,9 @@ def publish_built_frame(
     recipe_store: RecipeStore | None = None,
     steps: Sequence[Step] | None = None,
     enrichment: EnrichmentLookup | None = None,
+    file_enrichment: EnrichmentLookup,
+    site: PublicSiteSettings,
+    prepared_at: datetime,
 ) -> PublishResult:
     """`publish_frame` for a frame already built, as the analysis runner holds one
     (`datasets_api.analysis`). Every check after the build is `publish_frame`'s: the row
@@ -608,7 +623,10 @@ def publish_built_frame(
         frame_chunks=lambda: iter((frame,)),
         subject_id=spec_id,
         content_version=content_version,
+        prepared_at=prepared_at,
+        site=site,
         artifact_store=artifact_store,
+        enrichment=file_enrichment,
     )
 
     published_frame_sha256 = frame_sha256(frame)
@@ -984,6 +1002,9 @@ async def _post_publish_impl(
             recipe_store=deps.recipe_store,
             steps=body.steps,
             enrichment=deps.enrichment,
+            file_enrichment=deps.enrichment,
+            site=deps.settings.site,
+            prepared_at=deps.now(),
         )
     response = PublishFrameResponse(
         published=PublishedFrameCoordinates(

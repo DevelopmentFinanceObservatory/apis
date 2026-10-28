@@ -26,6 +26,7 @@ from ._analysis_doubles import (
     source,
     step,
 )
+from ._render_inputs import ENRICHMENT, PREPARED_AT, SITE
 
 _CASES = cases(Path(__file__).parents[1] / "fixtures" / "analysis_golden")
 
@@ -58,6 +59,9 @@ def test_a_recorded_recipe_replays_to_its_stored_output(
             artifact_store=stores.artifact_store,
             snapshot_reader=stores.snapshot_reader,
             version_writer=stores.version_writer,
+            file_enrichment=ENRICHMENT,
+            site=SITE,
+            prepared_at=PREPARED_AT,
         )
     tree = step(
         "quotient_of",
