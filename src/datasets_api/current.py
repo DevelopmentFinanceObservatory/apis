@@ -39,11 +39,12 @@ executor and hands every other call to the work executor.
 Each serve sets the `trigger` and `served_from` labels of the call's `datasets.timings` line, the
 `rebuild_reason` label of a rebuild, and starts the counts the clients, the store, the signer and
 the permit wait add to (`dfo_platform.timings.count`): `sdmx_requests`, `graph_requests`,
-`db_transactions`, `sign_blob_calls` and `permit_wait_ms`. `sdmx_requests` includes hedge
-duplicates, which a hedged read also counts as `sdmx_hedges`; `sdmx_hedge_wins` counts those
-whose 2xx CSV response won the race. The reason is the fingerprint members
-that differed, joined by commas (`dependency_changes`), `schema` for a head with no readable
-fingerprint, `max_age`, `no_head`, or `unservable` for a current head that cannot answer the call.
+`db_transactions`, `sign_blob_calls` and `permit_wait_ms`. `sdmx_requests` counts every SDMX
+request sent, hedge duplicates included. A read that hedges also counts `sdmx_hedges`, the
+duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response won
+(`SdmxClient`). The reason is the fingerprint members that differed, joined by commas
+(`dependency_changes`), `schema` for a head with no readable fingerprint, `max_age`, `no_head`,
+or `unservable` for a current head that cannot answer the call.
 """
 
 from __future__ import annotations

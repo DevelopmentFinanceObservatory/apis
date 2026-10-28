@@ -55,7 +55,7 @@ class _ClosingStream(httpx.SyncByteStream):
 
 
 class _StalledFirstRequest(httpx.BaseTransport):
-    """The first request for each variable waits for `release` and answers 1; every later
+    """The first request for each variable waits for `release` and answers 1. Every later
     one answers 2 at once. Variables in `stall_every` stall on every request, and a variable
     in `gates` waits for its own event in place of `release`."""
 

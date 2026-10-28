@@ -487,7 +487,7 @@ class _StagedChunks:
     submits and blocks on, so a test can time a chunk's end against the loop's own steps.
 
     Chunk `n` is the group's `n`th member, which sits alone in its chunk. A held chunk waits
-    for `release`; a failing chunk raises once released. `on_submit[n]` runs on the calling
+    for `release`, and a failing chunk raises once released. `on_submit[n]` runs on the calling
     thread right after chunk `n` is submitted. `on_collected[n]` runs right after a `wait`
     returns chunk `n`'s future. Each hook fires once."""
 
@@ -617,7 +617,7 @@ def test_no_chunk_is_submitted_after_a_failure_that_ended_while_the_head_was_rea
 def test_finished_fetches_free_their_workers_before_the_next_chunks_are_submitted(monkeypatch):
     """Three workers, chunks 2 and 3 held until chunk 0 is collected, then both finish.
     With the head ready, the loop refills before blocking: chunks 4 and 5 go out back to back
-    with no wait between them, though chunks 2 and 3 were never collected by a blocking wait."""
+    with no wait between them, and no blocking wait collected chunks 2 and 3."""
     staged = _StagedChunks(monkeypatch, held={0, 2, 3})
     staged.on_submit[3] = lambda: staged.release(0)
     staged.on_collected[0] = lambda: staged.finish(2, 3)

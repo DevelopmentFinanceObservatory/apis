@@ -102,7 +102,7 @@ def _sdmx_builder(events: _Events) -> Callable[..., _RecordingClient]:
 
 
 def _hedging(events: _Events) -> dict[str, float | None]:
-    """Each SDMX client's `hedge_after`, by base URL; only the mint's client on our mixer
+    """Each SDMX client's `hedge_after`, by base URL. Only the mint's client on our mixer
     hedges."""
     return {
         client.kwargs["base_url"]: client.kwargs.get("hedge_after")

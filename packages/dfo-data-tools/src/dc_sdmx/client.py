@@ -125,12 +125,10 @@ _DEFAULT_CHUNK_CONCURRENCY = 8
 _DEFAULT_TOTAL_CONCURRENCY = 8
 
 DATA_HEDGE_AFTER_SECONDS = 0.5
-"""When a `/data` request still has no response headers, the client sends it once more
-(`SdmxClient(hedge_after=...)`). A 2xx SDMX-CSV response wins, a 4xx other than 401, 403, 408
-and 429 ends the read, and once a duplicate is in flight every other outcome waits for the other
-send; a request that fails before the duplicate is sent ends the read. Dev's mixer answers
-`/data` in 0.09 s at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so
-half a second hedges about one request in twenty and cuts the tail beyond it."""
+"""Seconds after which a `/data` request with no response headers is sent once more
+(`SdmxClient(hedge_after=...)`, whose docstring gives the rule). Dev's mixer answers `/data`
+in 0.09 s at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1 s, so half a
+second hedges about one request in twenty and cuts the tail beyond it."""
 
 # A mixer slow on every request would see each one sent twice. Two undecided races per client
 # cover the 3% tail across a mint's four fetch workers and cap the extra load.
@@ -576,25 +574,28 @@ class SdmxClient:
     (`dfo_platform.cloud_run_auth`).
 
     With `hedge_after`, a `/data` request that has no response headers after that many seconds
-    is sent once more and the first 2xx SDMX-CSV response, or the first client error other than
-    401, 403, 408 and 429, decides the race (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). Once
-    the duplicate is in flight, a send that fails otherwise (401, 403, 408, 429, 5xx, a transport
-    error, or 2xx with another content type) waits for the other send; a request that fails
-    before the duplicate is sent, or with none sent, ends the read. Both requests run on their own threads, so a slow loser holds no caller's thread. The request
-    holds its read's total-concurrency slot and the duplicate a loser place; a request that
-    loses a decided race trades its slot for the winner's place, so the total limit governs
-    live reads and the loser cap the sends left running. The sends running at once never
-    exceed the slots plus `_HEDGE_LOSER_CAP`. A loser ends at
-    its httpx timeout, which a guarded read caps at the time its deadline left when the request
-    was sent, and its response is closed unread. Each send counts as an active request, so
-    `close()` waits for a loser to settle. At most `_HEDGE_SLOTS` races are undecided per
-    instance, no duplicate is sent while `_HEDGE_LOSER_CAP` sends are still running after
-    their reads returned or raised, and none is sent when the read's deadline has less than
-    `hedge_after` left; a request that cannot hedge waits for its own answer. Every wait ends
-    when its read's deadline passes or the read is stopped. A read counts the duplicates it
-    sends as `sdmx_hedges` and those whose 2xx SDMX-CSV response wins as `sdmx_hedge_wins`
-    (`dfo_platform.timings.count`); `sdmx_requests` counts the duplicates too. `/availability`
-    requests are sent once.
+    is sent once more (`DATA_HEDGE_AFTER_SECONDS` is the mint's value). The first 2xx SDMX-CSV
+    response, or the first client error other than 401, 403, 408 and 429, decides the race.
+    Once the duplicate is in flight, any other outcome (401, 403, 408, 429, 5xx, a transport
+    error, or 2xx with another content type) waits for the other send. A request that fails
+    before the duplicate is sent, or with none sent, ends the read. Every wait ends when its
+    read's deadline passes or the read is stopped.
+
+    Both requests run on their own threads, so a slow loser holds no caller's thread. The
+    request holds its read's total-concurrency slot and the duplicate a loser place. A request
+    that loses a decided race trades its slot for the winner's place, so the total limit
+    governs live reads and the loser cap the sends left running. The sends running at once
+    never exceed the slots plus `_HEDGE_LOSER_CAP`. A loser ends at its httpx timeout, which a
+    guarded read caps at the time its deadline left when the request was sent, and its
+    response is closed unread. Each send counts as an active request, so `close()` waits for
+    a loser to settle.
+
+    At most `_HEDGE_SLOTS` races are undecided per instance. No duplicate is sent while
+    `_HEDGE_LOSER_CAP` sends are still running after their reads returned or raised, or when
+    the read's deadline has less than `hedge_after` left, and a request that cannot hedge
+    waits for its own answer. A read counts the duplicates it sends as `sdmx_hedges` and those
+    whose 2xx SDMX-CSV response wins as `sdmx_hedge_wins` (`dfo_platform.timings.count`), and
+    `sdmx_requests` counts the duplicates too. `/availability` requests are sent once.
     """
 
     def __init__(
@@ -1618,27 +1619,23 @@ class SdmxClient:
         least that long left, fewer than `_HEDGE_LOSER_CAP` losers are running, and fewer than
         `_HEDGE_SLOTS` races are undecided. The duplicate's timeout is the time left.
 
-        A 2xx SDMX-CSV response decides the race, and so does a client error other than 401,
-        403, 408 and 429, which the other send would repeat. Once the duplicate is in flight, a
-        send that raises, answers 401, 403, 408, 429 or 5xx, or answers 2xx with another content
-        type loses to the other one; only when both fail does the request's own outcome reach
-        the caller. A request that fails before the duplicate is sent, or with none sent, ends
-        the read with its own outcome. Every wait
-        for the request, with or without a duplicate, ends with `TimeoutError` when the
-        read's deadline passes and with `_ReadStoppedError` when the read is stopped. The
-        race leaves the undecided count as soon as it ends.
+        What decides the race, and what waits for the other send, is the rule in the
+        `SdmxClient` docstring. When both sends fail, the request's own outcome reaches the
+        caller. Every wait for the request, with or without a duplicate, ends with
+        `TimeoutError` when the read's deadline passes and with `_ReadStoppedError` when the
+        read is stopped. The race leaves the undecided count as soon as it ends.
 
-        Each send runs on its own thread and holds a place until it settles: the request holds
+        Each send runs on its own thread and holds a place until it settles. The request holds
         a lease on the read's total-concurrency slot (`slot`), and the duplicate a loser place
         reserved when it launches. When the duplicate wins while the request still runs, the
         request releases its lease and takes over the winner's place, so a straggler holds no
-        slot a live read could use; the read's own lease covers the winner. A request still
+        slot a live read could use, and the read's own lease covers the winner. A request still
         running when its read gave up on it keeps its lease and also takes a loser place, which
-        stops new duplicates while it runs. A send settles when it fails, when
-        its response arrives after it lost or was abandoned (the response is closed unread, even
-        while the caller still reads the winner's body), or, for the winner, when this block
-        exits. So the sends running against the mixer never
-        exceed the total-concurrency slots plus `_HEDGE_LOSER_CAP`.
+        stops new duplicates while it runs. A send settles when it fails, when its response
+        arrives after it lost or was abandoned (the response is closed unread, even while the
+        caller still reads the winner's body), or, for the winner, when this block exits. So
+        the sends running against the mixer never exceed the total-concurrency slots plus
+        `_HEDGE_LOSER_CAP`.
 
         When no thread can be started for the request, it is sent on the caller's thread and
         not hedged. When none can be started for the duplicate, the read waits on the request.
@@ -1685,11 +1682,10 @@ class SdmxClient:
         """Have each send in `holds` other than `winner` settle as soon as it ends, holding a
         loser place while it runs, and return the winner's slot lease and place, which the
         caller frees when its block exits. `winner` is None when the read gave up on every
-        send. When a duplicate wins while `primary` still runs, the read's own lease covers
-        the duplicate, so `primary` gives back its slot and takes over the duplicate's loser
-        place, keeping the loser count within its cap. When `primary` has settled, no send
-        takes the place over and it is freed here, so a winner holds no loser place while its
-        body is read."""
+        send. The slot and loser-place accounting is described in `_hedged_send`. When a
+        duplicate wins while `primary` still runs, `primary` gives back its slot and takes
+        over the duplicate's loser place. When `primary` has settled, the place is freed here,
+        so a winner holds no loser place while its body is read."""
         if winner is not None and winner is not primary:
             holds[winner] = (None, False)
             if primary.done():
@@ -1728,7 +1724,7 @@ class SdmxClient:
             try:
                 hedge = self._send_on_own_thread(partial(send, hedge_timeout))
             except RuntimeError:
-                # No thread for the duplicate: the read waits on its request alone.
+                # With no thread for the duplicate, the read waits on its request alone.
                 self._free_loser_place()
             except BaseException:
                 self._free_loser_place()
@@ -2233,7 +2229,7 @@ def _decides(sent: Future[httpx.Response]) -> bool:
 def _close_sent_response(sent: Future[httpx.Response]) -> None:
     """Close a settled send's response, if it has one."""
     if sent.exception() is None:
-        # The set `_DeadlineGuard._abort` expects from `close()`; this runs in Future
+        # The set `_DeadlineGuard._abort` expects from `close()`. This runs in Future
         # done-callbacks, where an escaping error is only logged.
         with suppress(OSError, httpx.HTTPError, RuntimeError, ValueError):
             sent.result().close()

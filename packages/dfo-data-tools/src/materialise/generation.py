@@ -2504,12 +2504,12 @@ class _GroupRowStreamer:
         members wait in `pending_members` until the chunk of every lower
         position has been consumed.
 
-        Peak memory is the sum of three parts: `ready`, at most
+        Peak memory is the sum of three parts. `ready` holds at most
         `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency - 1` completed
-        chunks ahead of the oldest
-        one not yet consumed; `pending_members`, empty for a one-batch
-        group and up to every member of the consumed chunks for a
-        multi-batch group; and the one row chunk being assembled.
+        chunks ahead of the oldest one not yet consumed. `pending_members`
+        is empty for a one-batch group and holds up to every member of the
+        consumed chunks for a multi-batch group. The third part is the one
+        row chunk being assembled.
 
         `finally: pool.shutdown(wait=True, cancel_futures=True)` blocks for
         every already-submitted chunk's own fetch to finish, past whichever
