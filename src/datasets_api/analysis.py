@@ -77,7 +77,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal, Protocol
 
-from dfo_descriptions import StepsError, check_steps
+from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
 from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN
 from pydantic import (
@@ -110,6 +110,7 @@ from datasets_api.render import frame_file_location
 from datasets_api.versions import VersionRecordWriter
 from description.steps import Step
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
+from dfo_analysis_engine.call_steps import shed_coverage
 from dfo_analysis_engine.calls import admit
 from dfo_analysis_engine.evaluate import Evaluation, Policy, RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
@@ -1121,7 +1122,9 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
     step (`EvaluatedStep.step`), each once, after the steps of the frames it reads, in the
     order a depth-first walk of the inputs first finishes them. Steps are numbered `s1`,
     `s2`, ..., and each input names the step of the frame in that role. A list over the kit's
-    bounds (`MAX_STEPS`, `MAX_STEPS_BYTES`) is logged and gives `None`, which publishes the
+    byte bound (`MAX_STEPS_BYTES`) sheds coverage members until it fits
+    (`dfo_analysis_engine.call_steps.shed_coverage`). A list over `MAX_STEPS`, or still over
+    the kit's bounds with no coverage left, is logged and gives `None`, which publishes the
     frame without steps."""
     calls = iter(evaluation.steps)
     ids: dict[tuple[str, str], str] = {}
@@ -1165,15 +1168,26 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
         return emit(node["frame"], step)
 
     walk(evaluation.tree)
+    ref = evaluation.ref
     try:
         if len(steps) > MAX_STEPS:
             raise ValueError(f"{len(steps)} steps, over MAX_STEPS={MAX_STEPS}")
+        size = steps_bytes(steps)
+        if size > MAX_STEPS_BYTES:
+            steps, shed = shed_coverage(steps, size=size, max_bytes=MAX_STEPS_BYTES)
+            logger.info(
+                "The steps of %s %s over the %d-byte bound shed %d coverage member(s)",
+                ref.spec_id,
+                ref.content_version,
+                MAX_STEPS_BYTES,
+                shed,
+            )
         check_steps(steps)
     except (StepsError, ValueError):
         logger.warning(
             "The steps of %s %s pass the kit's bounds; publishing it without steps",
-            evaluation.ref.spec_id,
-            evaluation.ref.content_version,
+            ref.spec_id,
+            ref.content_version,
             exc_info=True,
         )
         return None

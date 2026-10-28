@@ -21,9 +21,11 @@ the two never serve different frames. It draws the read on the frame the check c
 that fails on a newer frame it records the slot `stale` on the card's own frame and draws there.
 
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
-unbundled), on the served frame as a target when it is not the frame the card revision is
-stored on. `format=json` turns the Parquet export into a JSON document of rows, and `csv` and
-`parquet` serve the export's bytes. The card (`serve_slot_card`) is the components door's read
+the one the components door's data route serves), on the served frame as a target when it is
+not the frame the card revision is stored on. `format=json` turns the unbundled Parquet export
+into a JSON document of rows, and `csv`, `xlsx` and `parquet` serve the export's bytes, as a
+bundle when asked. An `xlsx` refusal of a cell's characters is the request's, so it answers as
+it is and leaves the slot's check alone. The card (`serve_slot_card`) is the components door's read
 of the card revision, drawn on the served frame (`assembler.pipeline.render_component`) when it
 is not the frame the revision is stored on, with that frame's retention and the freshness
 beside it. A note draws no frame, so its card is its stored read, `current`. Every read of a
@@ -58,6 +60,7 @@ from assembler.pipeline.export_component import (
 )
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, RevisionRecord
+from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
@@ -81,7 +84,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-type SlotFormat = Literal["json", "csv", "parquet"]
+type SlotFormat = Literal["json", "csv", "xlsx", "parquet"]
 
 _JSON_MEDIA_TYPE = "application/json"
 
@@ -175,6 +178,9 @@ def serve_on_slot_frame[T](
         check = _live_check(share=share, slot=slot, card=card, deps=deps)
         try:
             drawn = draw(check.frame)
+        except ExcelIllegalCharacterError:
+            # The format refuses the rows, whatever frame they come from.
+            raise
         except Exception:
             if check.frame == card.frame:
                 raise
@@ -198,14 +204,18 @@ def serve_on_slot_frame[T](
     return SlotServed(drawn=drawn, frame=frame, freshness=freshness, checked_at=checked_at)
 
 
-def serve_slot(*, share: ShareRecord, slot: int, format: SlotFormat, deps: SharesDeps) -> SlotData:
-    """Serve slot `slot` of `share` in `format` and record the frame served.
+def serve_slot(
+    *, share: ShareRecord, slot: int, format: SlotFormat, bundle: bool, deps: SharesDeps
+) -> SlotData:
+    """Serve slot `slot` of `share` in `format`, as the export's bundle when `bundle` is set,
+    and record the frame served. `bundle` must be false for `json`.
 
     Raises:
         ShareSlotEmpty: No such slot, or it holds no card.
         ComponentHoldsNoData: The card is a note or shows no data values.
         Any refusal of the card's export on the frame it serves.
     """
+    assert not (bundle and format == "json")
     card = slot_card(share, slot)
     record = read_stored_revision(
         component_id=card.component_id, revision=card.revision, revision_store=deps.revision_store
@@ -222,7 +232,9 @@ def serve_slot(*, share: ShareRecord, slot: int, format: SlotFormat, deps: Share
         card=card,
         record=record,
         deps=deps,
-        draw=lambda frame: _export(card, frame=frame, record=record, format=format, deps=deps),
+        draw=lambda frame: _export(
+            card, frame=frame, record=record, format=format, bundle=bundle, deps=deps
+        ),
     )
     if format == "json":
         body = _json_document(
@@ -419,16 +431,17 @@ def _export(
     frame: FrameRef,
     record: RevisionRecord,
     format: SlotFormat,
+    bundle: bool,
     deps: SharesDeps,
 ) -> ComponentExportFile:
-    """The card's unbundled export on `frame`, which is a target unless the card revision is
-    stored on it. JSON reads the Parquet export."""
+    """The card's export on `frame`, which is a target unless the card revision is stored on
+    it, bundled when `bundle` is set. JSON reads the unbundled Parquet export."""
     target = None if record.stored_intent.get("frame_ref") == _frame_body(frame) else frame
     return export_component_data(
         component_id=card.component_id,
         revision=card.revision,
         format="parquet" if format == "json" else format,
-        bundle=False,
+        bundle=bundle,
         revision_store=deps.revision_store,
         frame_store=deps.frame_store,
         site_url=deps.site.public_site_url,

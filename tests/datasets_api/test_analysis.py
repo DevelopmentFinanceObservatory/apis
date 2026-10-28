@@ -10,7 +10,9 @@ from importlib.resources import files
 
 import jsonschema
 import pytest
+import rfc8785
 
+from datasets_api import analysis
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisPending,
@@ -152,6 +154,35 @@ def test_a_derived_record_names_each_step_and_the_inputs_its_roots_retrieve() ->
         (AID, AID_V1),
         (POPULATION, POPULATION_V1),
     ]
+
+
+def _stored_steps(stores: Stores, result) -> list[dict] | None:
+    record = read_record(
+        stores.store,
+        subject_id=result.evaluation.ref.spec_id,
+        content_version=result.evaluation.ref.content_version,
+    )
+    assert record is not None
+    if record.steps is None:
+        return None
+    return [step.model_dump(mode="json", exclude_unset=True) for step in record.steps]
+
+
+def test_a_step_list_over_the_byte_bound_publishes_with_its_coverage_shed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    whole_stores = Stores()
+    whole = _stored_steps(whole_stores, _run(whole_stores, _PER_PERSON))
+    assert whole is not None and "period_coverage" in whole[-1]
+    bound = len(rfc8785.dumps(whole)) - 1
+    monkeypatch.setattr(analysis, "MAX_STEPS_BYTES", bound)
+    stores = Stores()
+
+    steps = _stored_steps(stores, _run(stores, _PER_PERSON))
+
+    shed = {name: value for name, value in whole[-1].items() if name != "period_coverage"}
+    assert steps == [*whole[:-1], shed]
+    assert len(rfc8785.dumps(steps)) <= bound
 
 
 def test_compare_gives_data_minus_other() -> None:

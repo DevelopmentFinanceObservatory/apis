@@ -4,10 +4,13 @@ conversion."""
 
 from __future__ import annotations
 
+import csv
 import io
+import zipfile
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 
+import openpyxl
 import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
@@ -273,6 +276,54 @@ def test_csv_and_parquet_serve_the_same_rows_as_files(door: _Door):
     assert len({csv.headers["etag"], parquet.headers["etag"]}) == 2
 
 
+@pytest.mark.parametrize(
+    ("latest", "served", "cache_control"),
+    [(True, _MOVED, "no-cache"), (False, _STORED, "public, max-age=300")],
+    ids=["live-moved", "snapshot"],
+)
+def test_bundles_and_xlsx_serve_the_rows_of_the_frame_the_slot_serves(
+    door: _Door, latest: bool, served: FrameRef, cache_control: str
+):
+    share = door.share(door.card(), latest=latest)
+    door.newest.answer = _MOVED
+    rows = door.data(share["id"])
+    values = _values(rows.json())
+
+    bundled = door.data(share["id"], format="csv", bundle="true")
+    xlsx_bundle = door.data(share["id"], format="xlsx", bundle="true")
+    xlsx = door.data(share["id"], format="xlsx")
+    again = door.client.get(
+        f"/api/presentation/shares/{share['id']}/slots/1/data",
+        params={"bundle": "true", "format": "csv"},
+        headers={"if-none-match": bundled.headers["etag"]},
+    )
+
+    archive = zipfile.ZipFile(io.BytesIO(bundled.content))
+    (data_file,) = (
+        name for name in archive.namelist() if name.startswith("data/") and name != "data/codes.csv"
+    )
+    bundled_rows = list(csv.DictReader(io.StringIO(archive.read(data_file).decode())))
+    xlsx_archive = zipfile.ZipFile(io.BytesIO(xlsx_bundle.content))
+    sheet = openpyxl.load_workbook(io.BytesIO(xlsx.content)).active
+    assert sheet is not None
+    header, *cells = sheet.iter_rows(values_only=True)
+    for resp in (bundled, xlsx_bundle, xlsx):
+        assert resp.status_code == 200
+        assert resp.headers["x-dfo-freshness"] == "current"
+        assert resp.headers["cache-control"] == cache_control
+        assert resp.headers["access-control-allow-origin"] == "*"
+        assert "attachment" in resp.headers["content-disposition"]
+    assert bundled.headers["content-type"] == xlsx_bundle.headers["content-type"]
+    assert bundled.headers["content-type"] == "application/zip"
+    assert {"datapackage.json", "CITATION.cff", "README.md"} <= set(archive.namelist())
+    assert [float(row["value"]) for row in bundled_rows] == values
+    assert any(name.endswith(".xlsx") for name in xlsx_archive.namelist())
+    assert [row[header.index("value")] for row in cells] == values
+    assert len({bundled.headers["etag"], xlsx_bundle.headers["etag"], xlsx.headers["etag"]}) == 3
+    assert again.status_code == 304
+    assert _stated(rows)[1] == served.content_version
+
+
 def test_a_live_slot_checks_for_newer_data_at_most_once_per_fifteen_minutes(door: _Door):
     share = door.share(door.card(), latest=True)
 
@@ -413,9 +464,10 @@ def test_a_replacement_puts_a_new_card_in_the_slot_with_no_check(door: _Door):
     [
         ("slots/2/data", 404, "not_found"),
         ("slots/0/data", 400, "request_invalid"),
-        ("slots/1/data?format=xlsx", 400, "request_invalid"),
+        ("slots/1/data?format=zip", 400, "request_invalid"),
+        ("slots/1/data?bundle=true", 400, "request_invalid"),
     ],
-    ids=["no-such-slot", "slot-zero", "unknown-format"],
+    ids=["no-such-slot", "slot-zero", "unknown-format", "json-bundle"],
 )
 def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: int, code: str):
     share = door.share(door.card(), latest=True)

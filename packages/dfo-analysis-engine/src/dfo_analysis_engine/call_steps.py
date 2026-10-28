@@ -10,13 +10,18 @@ input's, since their sides keep their own units.
 `compare` and `sum_of` paired member by member (`engine.paired`) record the periods both sides
 match, the paired keys, and the keys either side holds that the other does not match or holds
 in no shared period, as entities.
+
+A step list over a byte bound sheds its coverage members, largest first, until it fits
+(`shed_coverage`), as dfo-ai's publisher sheds the list it sends.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
+import rfc8785
 from pydantic import JsonValue
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -57,7 +62,7 @@ from dfo_analysis_engine.steps import (
 )
 from dfo_analysis_engine.unit_refs import PERCENT_UNIT
 
-__all__ = ["VERB_POLICIES", "call_step"]
+__all__ = ["COVERAGE_MEMBERS", "VERB_POLICIES", "call_step", "shed_coverage"]
 
 VERB_POLICIES: Mapping[str, str] = {
     "aggregate": "aggregate_skip_absent_grain_cells",
@@ -71,6 +76,10 @@ VERB_POLICIES: Mapping[str, str] = {
     "join": "join_inner",
 }
 """Each verb's one fixed policy, as dfo-ai's verb tools name it on a trace."""
+
+COVERAGE_MEMBERS = ("entity_coverage", "period_coverage")
+"""The step members a list over its byte bound sheds, in the order it sheds them. A coverage
+member restates per entity or per period what `kept` counts."""
 
 
 @dataclass
@@ -140,6 +149,35 @@ def call_step(
             return _join(op_spec, result, trace=trace, ratio=sides_ratio)
         case _:
             raise TypeError(f"no step for {op_spec.verb} giving {type(result).__name__}")
+
+
+def shed_coverage(
+    steps: Sequence[Mapping[str, Any]], *, size: int, max_bytes: int
+) -> tuple[list[dict[str, Any]], int]:
+    """`steps`, which take `size` bytes as JCS (RFC 8785) UTF-8 JSON, less the coverage members
+    it sheds to fit `max_bytes`, with how many it shed.
+
+    The list sheds each step's `entity_coverage`, then each step's `period_coverage`, the
+    largest of a kind first, until it fits. No other member is ever shed, so a list still over
+    the bound with no coverage left stays over it. `steps` itself is left as it is.
+    """
+    fitted = [dict(step) for step in steps]
+    shed = 0
+    for member in COVERAGE_MEMBERS:
+        # A member's bytes in its step: `"name":value` and the comma before it, since no step
+        # holds it alone.
+        sizes = {
+            index: len(rfc8785.dumps({member: step[member]})) - 1
+            for index, step in enumerate(fitted)
+            if member in step
+        }
+        for index in sorted(sizes, key=sizes.__getitem__, reverse=True):
+            if size <= max_bytes:
+                return fitted, shed
+            del fitted[index][member]
+            size -= sizes[index]
+            shed += 1
+    return fitted, shed
 
 
 def _two(first: FrameRef, second: FrameRef | None) -> tuple[FrameRef, FrameRef]:

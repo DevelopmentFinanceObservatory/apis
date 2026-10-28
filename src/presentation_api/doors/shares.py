@@ -42,13 +42,16 @@ replaced meanwhile refuses 409 `edit_conflict`. No route turns a snapshot live.
 `GET /api/presentation/shares/{share_id}` is public and allows any origin: kind, mode, title,
 revision, slots, the website's payload and created_at, never the token.
 
-`GET /api/presentation/shares/{share_id}/slots/{slot}/data?format=json|csv|parquet` is public
-and allows any origin. It serves the rows behind the slot's card, JSON by default, on the frame
+`GET /api/presentation/shares/{share_id}/slots/{slot}/data?format=json|csv|xlsx|parquet&bundle=`
+is public and allows any origin. It serves the rows behind the slot's card, JSON by default, on
+the frame
 `presentation_api.share_slots` chooses: a snapshot's recorded frame, or a live slot's newest
 data, checked again once the last check is due: after `newest_frames.FRESHNESS_WINDOW`, or
 sooner for a `pending` check, after the retry time the refresh or the run gave. The JSON body and the
 `x-dfo-freshness` header state `current`, `stale` or `pending`; a live slot's
-`x-dfo-checked-at` says when the check ran. The reply carries a strong `ETag` over its bytes and
+`x-dfo-checked-at` says when the check ran. `csv`, `xlsx` and `parquet` are the card's data
+file as the components door's data route serves it, unbundled by default; `bundle=true` serves
+that route's zip, and with `json` refuses 400 `request_invalid`. The reply carries a strong `ETag` over its bytes and
 answers `If-None-Match` with 304. A live slot's reply is `no-cache`, so a cache revalidates it;
 a snapshot's is `public, max-age=300`. A slot number the share has not had, or a slot a
 replacement left empty, answers 404 `not_found`, and so does a note's slot.
@@ -149,12 +152,16 @@ from dfo_platform.caller import CallerHeaderInvalid, CallerUnresolved, resolve_c
 from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.state import StateSlot
+from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import (
     PRESENTATION_COMPONENTS_MAX_CONCURRENCY,
     PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
     PresentationSettings,
 )
-from presentation_api.doors.component_data import classify_component_data_exception
+from presentation_api.doors.component_data import (
+    COMPONENT_DATA_MEDIA_TYPES,
+    classify_component_data_exception,
+)
 from presentation_api.doors.components import WRITE_TOKEN_HEADER, classify_components_exception
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import (
@@ -740,13 +747,25 @@ async def read_share_slot_data(
     deps: SharesDepsDep,
     slot: Annotated[int, Path(ge=1)],
     format_: Annotated[SlotFormat, Query(alias="format")] = "json",
+    bundle: Annotated[bool, Query()] = False,
     if_none_match: Annotated[str | None, Header()] = None,
 ) -> Response:
     require_share_id(share_id)
+    if bundle and format_ == "json":
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("query", "bundle"),
+                    "msg": "a bundle holds a csv, xlsx or parquet file; json rows have none",
+                    "input": "true",
+                }
+            ]
+        )
 
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
-        data = serve_slot(share=share, slot=slot, format=format_, deps=deps)
+        data = serve_slot(share=share, slot=slot, format=format_, bundle=bundle, deps=deps)
         return _slot_response(data, share=share, if_none_match=if_none_match)
 
     return await _run(deps, job)
@@ -1014,15 +1033,13 @@ def build_shares_door(
         responses={
             200: {
                 "description": "The rows behind the slot's card. JSON (the default) states "
-                "the slot, its card and frame and the freshness beside the rows; csv and "
-                "parquet are the card's data file. x-dfo-freshness states current, stale or "
+                "the slot, its card and frame and the freshness beside the rows; csv, xlsx and "
+                "parquet are the card's data file, and bundle=true serves the components data "
+                "route's zip around it. x-dfo-freshness states current, stale or "
                 "pending, and a live slot's x-dfo-checked-at when DFO last checked for newer "
                 "data. A strong ETag answers If-None-Match with 304. Any origin may read it.",
                 "model": ShareSlotDataResponse,
-                "content": {
-                    "text/csv": {},
-                    "application/vnd.apache.parquet": {},
-                },
+                "content": {media_type: {} for media_type in COMPONENT_DATA_MEDIA_TYPES},
             },
             304: {"description": "The If-None-Match ETag still names these rows."},
         },
@@ -1043,6 +1060,7 @@ def build_shares_door(
             SharePayloadTooLarge,
             ComponentHoldsNoData,
             ComponentExportMismatch,
+            ExcelIllegalCharacterError,
             SchemaInvalid,
             BindingInvalid,
             ConstraintViolation,
@@ -1082,6 +1100,7 @@ def build_shares_door(
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
             GeneratedIdCollision(subject_kind="share"),
+            ExcelIllegalCharacterError("exemplar", row=0, column=0),
         ),
         lifespan=lifespan,
     )
