@@ -245,13 +245,11 @@ def test_two_requests_with_different_role_name_pairs_sum_as_two_groups():
 
 
 def test_more_than_the_lane_target_splits_into_several_requests():
-    """A group of `3 * lanes + 1` variables splits into multiple requests under the shared planner.
+    """A group of 13 variables splits into four requests of at most four members, the lane
+    floor (`generation.dispatch_lanes`) applying while the group is under 32 members.
 
     The bound DEU/KEN filter and shared role pair keep this below the URL budget."""
-    import math
-
-    lanes = _SETTINGS.mint_member_max_concurrency
-    member_count = 3 * lanes + 1
+    member_count = 13
     stat_vars = [f"Amount_Crs_Cap{i}" for i in range(member_count)]
     index = build_coverage_index(
         [(sv, "facet1", "country/DEU", "country/KEN", [2020]) for sv in stat_vars],
@@ -264,9 +262,7 @@ def test_more_than_the_lane_target_splits_into_several_requests():
         requests, index=index, member_concurrency=_SETTINGS.mint_member_max_concurrency
     )
     assert estimate.rows == member_count
-    target = max(1, math.ceil(member_count / lanes))
-    assert estimate.requests == math.ceil(member_count / target)
-    assert estimate.requests > 1
+    assert estimate.requests == 4
 
 
 def test_requests_with_different_bindings_are_never_merged_into_one_group():

@@ -15,6 +15,8 @@ from code_index.composites import (
     CompositeProvenanceRead,
     component_identities,
     component_of,
+    composite_digest,
+    declared_composite_digest,
 )
 from code_index.declarations import COMPOSITES
 from code_index.loader import parse_index
@@ -284,3 +286,44 @@ def test_a_composite_identity_its_components_cannot_serve_is_refused(edit, point
 def test_a_provenance_pin_read_as_a_dataset_refuses_a_composite():
     with pytest.raises(CompositeProvenanceRead):
         pinned_refs(education_aid_identity(source=_STACKED.provenance)["facets"])
+
+
+def _first_component(composite, **changes):
+    first, *rest = composite.components
+    return dataclasses.replace(composite, components=(dataclasses.replace(first, **changes), *rest))
+
+
+@pytest.mark.parametrize(
+    ("composite", "changed"),
+    [
+        pytest.param(
+            _STACKED,
+            lambda c: _first_component(c, zero_absent=not c.components[0].zero_absent),
+            id="zero-absent",
+        ),
+        pytest.param(
+            _STACKED,
+            lambda c: _first_component(c, periods=YearPeriod(first=2000, last=None)),
+            id="periods",
+        ),
+        pytest.param(_STACKED, lambda c: _first_component(c, bind={"x": "y"}), id="bind"),
+        pytest.param(
+            _STACKED,
+            lambda c: _first_component(c, drop_unbound=frozenset({"x"})),
+            id="drop-unbound",
+        ),
+        pytest.param(
+            _SPLICED, lambda c: _first_component(c, basis=("amount", "Gross")), id="basis"
+        ),
+        pytest.param(
+            _STACKED, lambda c: dataclasses.replace(c, components=c.components[:1]), id="components"
+        ),
+    ],
+)
+def test_the_composite_digest_moves_with_what_a_run_composes_by(composite, changed):
+    assert composite_digest(changed(composite)) != composite_digest(composite)
+    assert composite_digest(composite) == declared_composite_digest(composite.provenance)
+
+
+def test_a_provenance_no_composite_declares_has_no_declared_digest():
+    assert declared_composite_digest("provenance/NotAComposite") is None

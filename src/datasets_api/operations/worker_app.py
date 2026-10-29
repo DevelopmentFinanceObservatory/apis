@@ -300,6 +300,7 @@ def build_worker_app(
                         token=_settings.graph_token,
                         timeout=_settings.sdmx_timeout_seconds,
                         hedge_after=DATA_HEDGE_AFTER_SECONDS,
+                        total_concurrency=_settings.mint_member_max_concurrency,
                     )
                     artifact_store = LiveArtifactStore(
                         buckets={

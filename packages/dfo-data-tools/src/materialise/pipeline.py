@@ -63,8 +63,12 @@ if TYPE_CHECKING:
     # Keep the optional coverage index lazy because it imports NumPy, absent from pure installs.
     from series_coverage.index import CoverageIndex
 
-# Deployment code supplies its configured bound; this is the package fallback.
-DEFAULT_MEMBER_CONCURRENCY = 4
+# Deployment code supplies its configured bound; this is the package fallback. The mixer
+# answers a `/data` request in about 0.09 s whatever its size, so a mint's fetch is bound by
+# round trips: 16 workers cut the total-ODA composite's 248 requests from 15.7 s to about 7 s
+# against 4, with no slower server time. Each worker's look-ahead holds about 16 member tables
+# (`generation._DISPATCH_CHUNK_TARGET_MEMBERS`).
+DEFAULT_MEMBER_CONCURRENCY = 16
 
 
 @dataclass(frozen=True)
@@ -368,6 +372,8 @@ def materialise_group(
                 provenance_refresh=outcome.provenance_refresh,
                 conversion_records=(outcome.conversion_record,),
                 latest_years=outcome.latest_years,
+                candidate_provenances=outcome.candidate_provenances,
+                scope_settled=outcome.default_scope.settled,
             ),
         )
 
@@ -403,6 +409,8 @@ def materialise_group(
             provenance_refresh=outcome.provenance_refresh,
             conversion_records=outcome.member_conversion_records.values(),
             latest_years=outcome.latest_years,
+            candidate_provenances=outcome.candidate_provenances,
+            scope_settled=outcome.default_scope.settled,
         ),
     )
 

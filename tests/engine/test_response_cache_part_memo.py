@@ -301,7 +301,11 @@ def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run(caplog):
 
     assert any(w.code == "binding_folded" for w in warm.parts[1].warnings)
     assert _without_timing(warm) == _without_timing(fresh)
-    assert set(warm.parts[0].timing_ms.by_step or {}) == {"response_cache_part_memo"}
+    # The scope compile runs before the memo lookup, since it names the key the hit reads.
+    assert set(warm.parts[0].timing_ms.by_step or {}) == {
+        "response_cache_part_memo",
+        "served_entry",
+    }
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("resolve ")]
     logged = json.loads(line.removeprefix("resolve "))
     assert (logged["memo_hits"], logged["memo_misses"]) == (1, 1)

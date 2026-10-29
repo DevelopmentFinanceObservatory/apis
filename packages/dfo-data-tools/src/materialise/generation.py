@@ -376,6 +376,7 @@ class _MemberOutcome:
     (`_convert_by_series`). `probe_empty` is true when the member's probe returned no
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` holds
     the dispatched provenance's refresh dates, read before the fetch (`_dispatch_refresh`).
+    `candidate_provenances` holds the provenance of every candidate its election ranked.
     `coverage_gaps` holds the places a national-currency unit binding serves no row at
     (`_national_currency_probe`). `latest_years` holds the member's year under a `latest`
     window (`_latest_years`), and `read_series` the series its read holds under any window.
@@ -392,6 +393,7 @@ class _MemberOutcome:
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    candidate_provenances: frozenset[str | None] = frozenset()
     coverage_gaps: tuple[CoverageGap, ...] = ()
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
@@ -413,7 +415,8 @@ class _GroupOutcome:
     `out_of_window_members` and `unserved_members` are `_GroupPlan`'s. `probe_empty` is true
     when no member's probe returned a candidate, and the outcome then holds no row and no
     selection. `provenance_refresh` is
-    `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
+    `_MemberOutcome.provenance_refresh` for the group's shared selection, and
+    `candidate_provenances` every member's as `_MemberOutcome.candidate_provenances` holds it. `method_periods`
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
     hold (`frame_build.fold_method_periods`). `latest_years` holds each member's year under
     a `latest` window (`_latest_years`), and `read_series` the series each member's read
@@ -438,6 +441,7 @@ class _GroupOutcome:
     unserved_members: tuple[str, ...] = ()
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    candidate_provenances: frozenset[str | None] = frozenset()
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
@@ -1416,6 +1420,7 @@ def _generate_member(
     return replace(
         outcome,
         provenance_refresh=provenance_refresh,
+        candidate_provenances=frozenset(c.provenance_id for c in probe.candidates),
         coverage_gaps=coverage_gaps,
         latest_years=_latest_years(
             request, elected=year, applied_window=outcome.applied_window, read=read
@@ -2242,13 +2247,21 @@ _DISPATCH_CHUNK_TARGET_MEMBERS = 8
 
 With one shared entity scope, using only `member_concurrency` lanes would
 place the whole group in its first dispatch wave and defeat row coalescing.
-`lanes = max(member_concurrency, ceil(request_count / 8))` bounds each
-chunk to about eight members. With the dispatch look-ahead
-(`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1` completed
-chunks wait ahead of the oldest one not yet consumed, so resident member
-tables reach about `(2 * member_concurrency - 1) * 8`, plus the members held
-in `pending_members` for a multi-batch group (`_GroupRowStreamer.stream_rows`).
-Kenya-scale fetches use about 35 requests instead of 110."""
+`dispatch_lanes` bounds each chunk to about eight members. With the dispatch
+look-ahead (`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1`
+completed chunks wait ahead of the oldest one not yet consumed, so resident
+member tables reach about `(2 * member_concurrency - 1) * 8`, plus the members
+held in `pending_members` for a multi-batch group
+(`_GroupRowStreamer.stream_rows`). Kenya-scale fetches use about 35 requests
+instead of 110."""
+
+_DISPATCH_LANE_FLOOR = 4
+"""A group splits into at least this many requests, or `member_concurrency` when that is
+fewer, so a small group still spreads over the fetch workers. The floor stays apart from the
+worker count: the mixer answers a request of two members and one of eight in about the same
+0.09 s, and 16 workers send every chunk of a group under 128 members in one wave whatever the
+floor, so a floor that rose with the workers would only add requests, and with them the sync
+estimate (`datasets_api.admission.sync_estimate`) that decides whether a mint runs inline."""
 
 _DISPATCH_LOOK_AHEAD_POOLS = 2
 """A group fetch dispatches chunks only within two pools' worth of the oldest chunk not yet
@@ -2257,12 +2270,17 @@ ahead and the completed chunks waiting on it stay bounded."""
 
 
 def dispatch_lanes(member_concurrency: int, request_count: int) -> int:
-    """Returns the lane count used by group fetches.
+    """Returns the lane count used by group fetches: chunks of about
+    `_DISPATCH_CHUNK_TARGET_MEMBERS` members, and at least `_DISPATCH_LANE_FLOOR` of them, or
+    `member_concurrency` when that is fewer.
 
     Admission estimates use the same formula so predicted and dispatched
     request counts agree.
     """
-    return max(member_concurrency, math.ceil(request_count / _DISPATCH_CHUNK_TARGET_MEMBERS))
+    return max(
+        min(member_concurrency, _DISPATCH_LANE_FLOOR),
+        math.ceil(request_count / _DISPATCH_CHUNK_TARGET_MEMBERS),
+    )
 
 
 class _PooledCoverageTotals:
@@ -3009,7 +3027,13 @@ def _generate_group(
         unserved_members=group_plan.unserved_members,
         probe_empty=probe_empty,
     )
-    return replace(outcome, provenance_refresh=provenance_refresh)
+    return replace(
+        outcome,
+        provenance_refresh=provenance_refresh,
+        candidate_provenances=frozenset(
+            candidate.provenance_id for member in probed for candidate in member.candidates
+        ),
+    )
 
 
 def _merge_latest_windows(windows: Sequence[AppliedWindow | None]) -> AppliedWindow | None:

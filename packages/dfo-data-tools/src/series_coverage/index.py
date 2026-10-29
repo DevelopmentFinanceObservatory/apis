@@ -141,6 +141,62 @@ def _mask_matrix(table: pa.Table, horizon: YearHorizon) -> np.ndarray:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _PairYears:
+    """The years each `(variable, facet_id)` pair of an index holds, in the index's row order:
+    `masks` its `(pairs, mask_words)` uint64 year masks, `variable_codes` (non-decreasing) and
+    `facet_codes` its codes in the index's key dictionaries (`CoverageIndex.years_held`)."""
+
+    masks: np.ndarray
+    variable_codes: np.ndarray
+    facet_codes: np.ndarray
+
+
+def _pair_year_masks(table: pa.Table, horizon: YearHorizon) -> _PairYears:
+    """The years each `(variable, facet_id)` pair of one-chunk `table` holds (`_PairYears`),
+    OR-ed over the pair's rows. `table`'s rows sort by `(variable, facet_id)` codes
+    (`_group_rows`), so each pair's rows form one run, and one `bitwise_or.reduceat` per mask
+    word reads every row once."""
+    if table.num_rows == 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return _PairYears(np.zeros((0, horizon.mask_words), dtype=np.uint64), empty, empty)
+    variables = _codes(table[VARIABLE_COLUMN])
+    facets = _codes(table[FACET_COLUMN])
+    starts = np.flatnonzero(
+        np.r_[True, (variables[1:] != variables[:-1]) | (facets[1:] != facets[:-1])]
+    )
+    masks = np.column_stack(
+        [
+            np.bitwise_or.reduceat(
+                table[name].to_numpy(zero_copy_only=False).astype(np.uint64, copy=False), starts
+            )
+            for name in horizon.mask_columns
+        ]
+    )
+    return _PairYears(masks, variables[starts], facets[starts])
+
+
+def _years_of(words: Sequence[int], horizon: YearHorizon) -> frozenset[int]:
+    """The years whose bits `words`, one year mask on `horizon`, sets."""
+    years: list[int] = []
+    for word, value in enumerate(words):
+        start = horizon.epoch_year + MASK_WORD_BITS * word
+        while value:
+            low = value & -value
+            years.append(start + low.bit_length() - 1)
+            value ^= low
+    return frozenset(years)
+
+
+def _series_holding(masks: np.ndarray, year: int, horizon: YearHorizon) -> int:
+    """How many rows of `(rows, mask_words)` year masks hold `year`; zero for a year outside
+    `horizon`. Reads one word column, so no row copy is made."""
+    if not horizon.epoch_year <= year <= horizon.max_year:
+        return 0
+    word, bit = divmod(year - horizon.epoch_year, MASK_WORD_BITS)
+    return int(np.count_nonzero(masks[:, word] & (np.uint64(1) << np.uint64(bit))))
+
+
 def _window_words(
     horizon: YearHorizon, *, first_year: int | None, last_year: int | None
 ) -> np.ndarray:
@@ -521,7 +577,8 @@ class CoverageIndex:
         horizon: YearHorizon,
         build_year: int | None = None,
     ) -> None:
-        """Dictionary-encodes key columns and sorts rows by `(variable, facet_id)`.
+        """Dictionary-encodes key columns, sorts rows by `(variable, facet_id)` and ORs each
+        pair's year masks into one (`_pair_year_masks`), which `years_held` reads.
 
         `build_year` is the calendar year the coverage was read in, the last year a
         `latest` read elects (`elected_years`). None sets no last year.
@@ -543,6 +600,8 @@ class CoverageIndex:
         # Non-decreasing after `_group_rows`, so `_run` finds a variable's rows.
         self._variable_code_column = _codes(self._table[VARIABLE_COLUMN])
         self._facet_codes = _code_lookup(self._table[FACET_COLUMN])
+        self._facet_ids = cast("pa.DictionaryArray", self._table[FACET_COLUMN].chunk(0)).dictionary
+        self._pair_years = _pair_year_masks(self._table, horizon)
         distinct = self._table.group_by(list(_SERIES_KEY_COLUMNS)).aggregate([]).num_rows
         if distinct != self._table.num_rows:
             raise ValueError(
@@ -1435,7 +1494,7 @@ class CoverageIndex:
             newest = int(_year_bounds(held[None, :], self._horizon)[1][0])
             year = elected_year(
                 {
-                    year: int(self._year_only(masks, year).any(axis=1).sum())
+                    year: _series_holding(masks, year, self._horizon)
                     for year in range(newest, newest - _HEADLINE_YEARS, -1)
                 }
             )
@@ -1460,10 +1519,33 @@ class CoverageIndex:
         found = self.series_years(
             variables=variables, bound=bound, served=served, excluded=excluded
         )
-        return {
-            year: 0 if found is None else int(self._year_only(found.masks, year).any(axis=1).sum())
-            for year in range(first_year, last_year + 1)
-        }
+        counts = dict.fromkeys(range(first_year, last_year + 1), 0)
+        if found is None:
+            return counts
+        held = _years_of(np.bitwise_or.reduce(found.masks, axis=0).tolist(), self._horizon)
+        for year in held.intersection(counts):
+            counts[year] = _series_holding(found.masks, year, self._horizon)
+        return counts
+
+    def years_held(self, *, variables: Iterable[str]) -> frozenset[int]:
+        """The years any row of `variables` holds, under every place: the years
+        `series_by_year` counts a series in over the whole horizon, with no binding,
+        `served` or `excluded`, and the source-scope admission every read applies
+        (`_admit_scoped_rows`). Read from the per-pair year masks the index builds once
+        (`_pair_year_masks`), so the cost follows the variables' facets, not their rows."""
+        codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
+        if not codes:
+            return frozenset()
+        pairs = self._pair_years
+        selected = _runs(pairs.variable_codes, codes)
+        if current_source_scope() is not None:
+            admitted = self._admitted_facets(
+                current_catalogue().admits_in_scope, unattributed=False
+            )
+            kept = pc.is_in(self._facet_ids, value_set=admitted).to_numpy(zero_copy_only=False)
+            selected = selected[kept[pairs.facet_codes[selected]]]
+        held = np.bitwise_or.reduce(pairs.masks[selected], axis=0)
+        return _years_of(held.tolist(), self._horizon)
 
     def covers(self, variable: str) -> bool:
         """Whether the index holds any row of `variable`."""
