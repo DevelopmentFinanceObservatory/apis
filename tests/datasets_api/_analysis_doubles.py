@@ -171,12 +171,13 @@ class Stores:
         self.gcs = FakeGCSClient()
         self.artifact_store = LiveArtifactStore(
             buckets={Tier.working: "working-bucket", Tier.pinned: "pinned-bucket"},
-            inventory=LiveArtifactInventory(store=self.store),
+            inventory=LiveArtifactInventory(store=self.store, now=lambda: self.now),
             client=self.gcs,
+            now=lambda: self.now,
         )
         self.snapshot_reader = LiveSnapshotReader(store=self.store)
         self.version_writer = LiveVersionRecordWriter(store=self.store, now=lambda: self.now)
-        self.recipe_store = LiveRecipeStore(store=self.store)
+        self.recipe_store = LiveRecipeStore(store=self.store, now=lambda: self.now)
 
     def analysis(self) -> AnalysisStores:
         return AnalysisStores(

@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 import datasets_api.doors.analysis as analysis_door
 from datasets_api.analysis import ResolvedRoot, RootExpired
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from spec_registry import LiveSpecRegistry
 
@@ -56,8 +55,9 @@ def _client(
         artifact_store=stores.artifact_store,
         snapshot_reader=stores.snapshot_reader,
         version_writer=stores.version_writer,
-        recipe_store=LiveRecipeStore(store=stores.store),
+        recipe_store=stores.recipe_store,
         version_lister=LiveVersionLister(store=stores.store),
+        now=lambda: stores.now,
     )
 
 

@@ -23,7 +23,6 @@ from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.derived import roots_citation
-from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.render import frame_file_location, stored_frame_location
 from datasets_api.version_store import LiveVersionLister
 from materialise.formats import canonical_frame_document, read_canonical_frame_table
@@ -129,7 +128,7 @@ def _client(stores: Stores, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         artifact_store=stores.artifact_store,
         snapshot_reader=stores.snapshot_reader,
         version_writer=stores.version_writer,
-        recipe_store=LiveRecipeStore(store=stores.store),
+        recipe_store=stores.recipe_store,
         version_lister=LiveVersionLister(store=stores.store),
         now=lambda: stores.now,
     )
