@@ -4,7 +4,8 @@ dataset whose data a test can move.
 `compose()` builds `dfo_platform.app.create_app` over both surfaces, as `dfo_apis.app` composes
 them: the Presentation surface checks a live share slot for newer data through the Datasets
 surface's dependency cell (`presentation_api.newest_frames.DatasetsNewestFrames`), and the share
-routes spend the caller allowances the pin door spends, from one ledger. The live stores
+routes and the share pins spend the caller allowances and pin budgets the pin door spends,
+from one ledger. The live stores
 (`LiveVersionRecordWriter`, `LiveSnapshotReader`, `LiveHeadStore`, `LiveRecipeStore`,
 `LiveDescriptionStore`, `LiveVersionLister`, `LiveArtifactInventory`, `LiveArtifactReferenceWriter`,
 `LiveOperationStore`, `LiveArtifactStore`, `LiveFrameStore`, `LiveAllowanceLedger`, `LiveShareStore`)
@@ -938,6 +939,7 @@ def compose(
         spec_reader=spec_reader,
         recipe_reader=recipe_store,
         description_reader=description_store,
+        allowances=allowances,
         code_index=code_index,
     )
 

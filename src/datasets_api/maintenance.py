@@ -139,8 +139,9 @@ line it cannot place gets one `presentation_share_import_refused` `ERROR` line n
 database settings and the settings `sweep` reads.
 
 `normalise-recipes [--dry-run]` runs by hand once, after `import-shares`. For each recipe in
-`datasets.frame_recipe` whose root `options.columns` are not sorted and listed once, as
-`analysis_roots.mint_options` writes them, it sorts them, recomputes `normal_form_hash` and
+`datasets.frame_recipe` whose root `options.columns` are not sorted and listed once, or whose
+root `options.groupby.by` is not sorted, as `analysis_roots.mint_options` writes them, it sorts
+them, recomputes `normal_form_hash` and
 `replay_key` as the analysis route does, moves the card revisions drawing that frame from the
 old hash to the new one in the Presentation database
 (`presentation_store.store.rehash_derived_rendering`), then rewrites the recipe row. Each
@@ -150,6 +151,15 @@ one whose new replay key another frame's recipe holds (`RecipeSkip`), with one
 `datasets_recipe_normalise_skipped` line each. It writes one `datasets_recipes_normalised` line
 with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
 second run changes nothing. It reads the runtime database settings of both stores.
+
+`take-down-share SHARE_ID` runs by hand to take a share down for its owner, as for the ids the
+website's `share_cleanup` table holds. It takes the share down as the owner's delete with its
+write token does (`ShareStore.delete_share`) and needs no token. It writes one
+`presentation_share_taken_down` line, or `presentation_share_take_down_not_found` when no share
+is up at the id, as for one taken down already, and exits 0 for both, so a re-run changes
+nothing. An id that is not a share id gets one `presentation_share_take_down_refused` `ERROR`
+line and exits 1 without opening the store. It reads the Presentation store's runtime database
+settings.
 
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
@@ -166,7 +176,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import Any, TextIO, cast
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
 import pg8000.exceptions
 import pyarrow as pa
@@ -266,6 +276,9 @@ from materialise.statistics import (
     SeriesFigures,
     SeriesStatisticsSink,
 )
+
+if TYPE_CHECKING:
+    from presentation_store import ShareStore
 
 
 class MaintenanceSettings(BaseSettings):
@@ -1274,7 +1287,7 @@ def _run_import_shares(
 
 
 class RecipeSkip(StrEnum):
-    """Why `normalise-recipes` leaves a recipe whose root columns are out of order as it is."""
+    """Why `normalise-recipes` leaves a recipe whose root options are out of order as it is."""
 
     # The stored hashes differ from those the analysis route computes from the stored recipe,
     # as for a tree whose frames different engine builds computed.
@@ -1299,14 +1312,19 @@ def _recipe_hashes(recipe: Mapping[str, Any]) -> tuple[str, str]:
     return normal_hash, key
 
 
-def _with_sorted_columns(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
-    """`recipe` with each root's `options.columns` sorted and listed once, as
-    `analysis_roots.mint_options` writes them, or `None` when every root's already are."""
+def _with_sorted_options(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`recipe` with each root's `options.columns` sorted and listed once and its
+    `options.groupby.by` sorted, as `analysis_roots.mint_options` writes them, or `None` when
+    every root's already are."""
     roots: list[Mapping[str, Any]] = []
     for root in recipe["roots"]:
-        columns = root.get("options", {}).get("columns")
-        if columns is not None and columns != sorted(set(columns)):
-            root = {**root, "options": {**root["options"], "columns": sorted(set(columns))}}
+        options = dict(root.get("options", {}))
+        if (columns := options.get("columns")) is not None:
+            options["columns"] = sorted(set(columns))
+        if (groupby := options.get("groupby")) is not None:
+            options["groupby"] = {**groupby, "by": sorted(groupby["by"])}
+        if options != root.get("options", {}):
+            root = {**root, "options": options}
         roots.append(root)
     if roots == recipe["roots"]:
         return None
@@ -1316,8 +1334,9 @@ def _with_sorted_columns(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
 def run_normalise_recipes(
     *, datasets: DatasetStore, presentation: DatasetStore, dry_run: bool = False
 ) -> int:
-    """Sort the root columns of every stored recipe that lists them out of order, recompute its
-    two hashes, and move the card revisions drawing its frame to the new `normal_form_hash`.
+    """Sort the root columns and `groupby.by` of every stored recipe that lists them out of
+    order, recompute its two hashes, and move the card revisions drawing its frame to the new
+    `normal_form_hash`.
     Return how many recipes it skipped (`RecipeSkip`).
 
     The revisions move first, in the Presentation database, then the recipe row, in the
@@ -1336,7 +1355,7 @@ def run_normalise_recipes(
     for row in rows:
         spec_id, content_version = str(row["subject_id"]), str(row["content_version"])
         stored = cast(Mapping[str, Any], row["recipe"])
-        sorted_recipe = _with_sorted_columns(stored)
+        sorted_recipe = _with_sorted_options(stored)
         if sorted_recipe is None:
             continue
         old_hash, old_key = str(row["normal_form_hash"]), str(row["replay_key"])
@@ -1418,6 +1437,40 @@ def _normalise_recipes(dry_run: bool) -> int:
     return 1 if skipped else 0
 
 
+def run_take_down_share(*, share_store: ShareStore, share_id: str) -> None:
+    """Take the share `share_id` down as its owner's delete does, and log whether one was up."""
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store import ShareNotFound
+
+    try:
+        share_store.delete_share(share_id=share_id)
+    except ShareNotFound:
+        emit("presentation_share_take_down_not_found", share_id=share_id)
+        return
+    emit("presentation_share_taken_down", share_id=share_id)
+
+
+def _take_down_share(share_id: str) -> int:
+    from presentation_store import LiveShareStore
+    from presentation_store import provider as presentation_provider
+    from presentation_store.ids import SHARE_ID_PATTERN
+
+    if not SHARE_ID_PATTERN.fullmatch(share_id):
+        emit(
+            "presentation_share_take_down_refused",
+            severity="ERROR",
+            share_id=share_id,
+            reason=f"not a share id ({SHARE_ID_PATTERN.pattern})",
+        )
+        return 1
+    presentation = LiveDatasetStore(connections=presentation_provider.shared_pool())
+    try:
+        run_take_down_share(share_store=LiveShareStore(store=presentation), share_id=share_id)
+    finally:
+        presentation_provider.close_shared_pool()
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datasets-maintenance")
     tasks = parser.add_subparsers(dest="task", required=True)
@@ -1469,6 +1522,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     normalise.add_argument("--dry-run", action="store_true")
     normalise.set_defaults(run=_normalise_recipes)
+    take_down = tasks.add_parser(
+        "take-down-share", help="take a share down as its owner's delete does, with no token"
+    )
+    take_down.add_argument("share_id")
+    take_down.set_defaults(run=_take_down_share)
     args = parser.parse_args(argv)
     options = {key: value for key, value in vars(args).items() if key not in ("task", "run")}
     return args.run(**options)

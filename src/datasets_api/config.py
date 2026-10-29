@@ -160,8 +160,9 @@ class DatasetsBuildSettings(BaseSettings):
     pin_open_daily_max: int = Field(default=200, ge=0)
 
     # New pinned copies one caller without the pin grant may make per UTC day
-    # (`datasets_api.allowance`). A repin of an already pinned artifact spends none.
-    pin_daily_allowance: int = Field(default=50, ge=0)
+    # (`datasets_api.allowance`), through the pin door or a share's pins
+    # (`datasets_api.retention_admission`). A repin of an already pinned artifact spends none.
+    pin_daily_allowance: int = Field(default=200, ge=0)
 
     # Shares one caller may write per UTC day (`datasets_api.allowance`).
     share_daily_allowance: int = Field(default=10, ge=0)

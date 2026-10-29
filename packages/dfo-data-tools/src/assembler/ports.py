@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 from assembler.catalogue import CatalogueRelease
 from description.facts import DescriptionRecord
 from description.vocabulary import SourceDocumentFacts, Vocabulary
+from dfo_platform.caller import Caller
 from materialise.continued_series import ContinuedSeries
 
 __all__ = [
@@ -192,8 +193,11 @@ class FrameUnavailable(Exception):
 class FrameStore(Protocol):
     def load(self, *, frame_ref: FrameRef) -> ResolvedFrame: ...
     # `True` means created or reactivated. `False` means already active.
-    # `None` leaves the change status unknown.
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool | None: ...
+    # `None` leaves the change status unknown. A new pinned copy spends the pin budgets, and an
+    # open `caller`'s `pin` allowance too (`datasets_api.retention_admission`).
+    def pin(
+        self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None
+    ) -> bool | None: ...
 
 
 @dataclass(frozen=True)

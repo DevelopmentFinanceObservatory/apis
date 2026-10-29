@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -211,6 +211,8 @@ def import_share_file(
         artifacts=artifact_store,
         graph=None,
         reference_writer=LiveArtifactReferenceWriter(store=dataset_store),
+        # An operator's import pins without spending the open callers' budgets.
+        allowances=None,
         recipe_reader=LiveRecipeStore(store=dataset_store),
     )
     presentation = LiveDatasetStore(connections=shared_pool())
@@ -260,7 +262,12 @@ def _parse(text: str) -> _ExportLine:
 
 
 def _share(line: _ExportLine, *, revision_store: RevisionStore) -> ImportedShare:
-    """The share `line` stores, with no token yet, each slot's frame resolved."""
+    """The share `line` stores, with no token yet, each slot's frame resolved and the rendering
+    each card revision recorded."""
+    read = [
+        _card(slot, index=index, revision_store=revision_store)
+        for index, slot in enumerate(line.slots)
+    ]
     return ImportedShare(
         id=line.id,
         kind=line.kind,
@@ -270,10 +277,8 @@ def _share(line: _ExportLine, *, revision_store: RevisionStore) -> ImportedShare
         payload=line.payload,
         created_at=line.created_at,
         write_token_sha256=None,
-        cards=tuple(
-            _card(slot, index=index, revision_store=revision_store)
-            for index, slot in enumerate(line.slots)
-        ),
+        cards=tuple(card for card, _ in read),
+        renderings={(card.component_id, card.revision): rendering for card, rendering in read},
     )
 
 
@@ -301,9 +306,11 @@ def _pin(
         raise _Refused(f"a frame it shows cannot be pinned: {exc}") from None
 
 
-def _card(slot: _ExportSlot, *, index: int, revision_store: RevisionStore) -> ShareCard:
+def _card(
+    slot: _ExportSlot, *, index: int, revision_store: RevisionStore
+) -> tuple[ShareCard, Mapping[str, object] | None]:
     """The card of the export's slot `index`, its frame the card revision's when the export
-    names none."""
+    names none, and the rendering the card revision recorded."""
     try:
         record = read_stored_revision(
             component_id=slot.component_id, revision=slot.revision, revision_store=revision_store
@@ -323,4 +330,7 @@ def _card(slot: _ExportSlot, *, index: int, revision_store: RevisionStore) -> Sh
                 f"{slot.revision} draws none"
             )
         frame = FrameRef(**cast("dict[str, str]", stored))
-    return ShareCard(component_id=slot.component_id, revision=slot.revision, frame=frame)
+    return (
+        ShareCard(component_id=slot.component_id, revision=slot.revision, frame=frame),
+        record.frame_rendering,
+    )

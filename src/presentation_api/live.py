@@ -1,6 +1,8 @@
-"""Build the live `FrameStore` shared by the components and frames doors, with the snapshot,
-recipe and description readers it reads through. The render routes decide whether a target frame may stand
-in for a stored one from those two readers.
+"""Build the live `FrameStore` shared by the components, frames and shares doors, with the
+snapshot, recipe and description readers it reads through, and the allowance ledger its pins
+spend from (`datasets_api.retention_admission`), with `DatasetsBuildSettings`' limits. The
+render routes decide whether a target frame may stand in for a stored one from the snapshot and
+recipe readers.
 Each door borrows the ref-counted dataset pool independently. This function closes the pool
 borrow and graph client if construction fails.
 """
@@ -14,6 +16,8 @@ from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
 from dataset_store import shared_pool as dataset_shared_pool
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
+from datasets_api.allowance import LiveAllowanceLedger, allowance_limits
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.recipe_store import LiveRecipeStore, RecipeReader
 from datasets_api.reference_store import LiveArtifactReferenceWriter
@@ -72,6 +76,9 @@ def build_live_frame_store(*, settings: PresentationSettings) -> LiveFrames:
             spec_reader=LiveSpecReader(store=store),
             recipe_reader=recipe_reader,
             description_reader=description_reader,
+            allowances=LiveAllowanceLedger(
+                store=store, limits=allowance_limits(DatasetsBuildSettings.from_env())
+            ),
             # Both doors call `load()`, so the shorter wait bounds its graph reads.
             read_budget_seconds=min(
                 PRESENTATION_COMPONENTS_TIMEOUT_SECONDS, PRESENTATION_FRAMES_TIMEOUT_SECONDS

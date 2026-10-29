@@ -82,7 +82,7 @@ both name a client by one key. Unset, the service starts, and an open pin
 refuses `service_unavailable` (503) unless the website vouches for its caller.
 `DFO_TRUSTED_PROXY_HOPS` (default `0`) counts the X-Forwarded-For entries the
 proxies in front of this service append after the client's.
-`DATASETS_PIN_DAILY_ALLOWANCE` (default `50`), `DATASETS_PIN_OPEN_DAILY_MAX`
+`DATASETS_PIN_DAILY_ALLOWANCE` (default `200`), `DATASETS_PIN_OPEN_DAILY_MAX`
 (default `200`), `DATASETS_SHARE_DAILY_ALLOWANCE` (default `10`) and
 `DATASETS_CARD_DAILY_ALLOWANCE` (default `500`) bound what such callers write
 (`src/datasets_api/README.md`).

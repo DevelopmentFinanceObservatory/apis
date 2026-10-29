@@ -29,7 +29,9 @@ from materialise.formats import (
     write_frame1,
 )
 from materialise.frame_build import build_frame
+from presentation_store import LiveShareStore, ShareNotFound, provider
 from tests.artifact_store.conftest import FakeGCSClient
+from tests.presentation_store.conftest import FakePresentationStore
 
 from ._artifact_doubles import FakeArtifactStore
 from ._operation_store import FakeOperationDatasetStore
@@ -529,3 +531,42 @@ def test_backfill_exits_non_zero_when_a_version_cannot_be_converted(monkeypatch,
         store.close()
 
     assert _backfill_counts(capsys) == [(1, 0), (0, 1)]
+
+
+def test_a_share_taken_down_twice_is_logged_once_taken_down_and_once_not_found(capsys):
+    store = LiveShareStore(store=FakePresentationStore())
+    share = store.create_share(
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
+    )
+
+    maintenance.run_take_down_share(share_store=store, share_id=share.id)
+    maintenance.run_take_down_share(share_store=store, share_id=share.id)
+
+    with pytest.raises(ShareNotFound):
+        store.read_share(share_id=share.id)
+    assert [
+        (line["event"], line["share_id"])
+        for line in map(json.loads, capsys.readouterr().out.splitlines())
+    ] == [
+        ("presentation_share_taken_down", share.id),
+        ("presentation_share_take_down_not_found", share.id),
+    ]
+
+
+@pytest.mark.parametrize("share_id", ["short", "k3Qx8vT/", "k3Qx8vTa9"])
+def test_take_down_share_refuses_an_id_that_is_not_a_share_id_before_opening_a_store(
+    capsys, monkeypatch, share_id
+):
+    def no_pool():
+        raise AssertionError("the store was opened")
+
+    monkeypatch.setattr(provider, "shared_pool", no_pool)
+
+    assert maintenance.main(["take-down-share", share_id]) == 1
+
+    [line] = map(json.loads, capsys.readouterr().out.splitlines())
+    assert (line["event"], line["severity"], line["share_id"]) == (
+        "presentation_share_take_down_refused",
+        "ERROR",
+        share_id,
+    )

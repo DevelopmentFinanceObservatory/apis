@@ -672,7 +672,7 @@ def test_a_live_share_converts_to_a_snapshot_keeping_the_frames_its_slots_serve(
         shares.snapshot_share(share_id=other.id, revision=1, frames={}, renderings={})
 
 
-def test_an_import_keeps_its_id_and_time_once_and_refuses_an_id_holding_another_share(
+def test_an_import_keeps_its_id_time_and_history_once_and_refuses_an_id_holding_another_share(
     live_store,
 ):
     _apply()
@@ -680,14 +680,15 @@ def test_an_import_keeps_its_id_and_time_once_and_refuses_an_id_holding_another_
     at = datetime(2026, 9, 1, 10, 0, 0, 1, tzinfo=UTC)
     imported = ImportedShare(
         id="Im" + secrets.token_hex(3),
-        kind="search",
+        kind="card",
         mode="live",
         title="Aid",
         owner="user_1",
-        payload={"query": "aid", "parts": []},
+        payload={"held": True},
         created_at=at,
         write_token_sha256=None,
-        cards=(),
+        cards=(_share_card("cmp_a"),),
+        renderings={("cmp_a", 1): {"without_party_totals": True}},
     )
 
     assert shares.import_share(imported) is True
@@ -701,6 +702,10 @@ def test_an_import_keeps_its_id_and_time_once_and_refuses_an_id_holding_another_
         at,
         at,
     )
+    assert [
+        (entry.slot, entry.component_id, entry.rendering, entry.first_served_at)
+        for entry in shares.served_frames(share_id=imported.id, limit=10).entries
+    ] == [(1, "cmp_a", {"without_party_totals": True}, at)]
 
 
 def test_a_slot_check_claim_and_served_frames_round_trip(live_store):

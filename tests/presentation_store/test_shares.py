@@ -279,6 +279,7 @@ _IMPORTED = ImportedShare(
     created_at=_AT,
     write_token_sha256=b"t" * 32,
     cards=(_card("a"),),
+    renderings={},
 )
 
 

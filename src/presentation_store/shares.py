@@ -209,7 +209,8 @@ class PriorShareCreate:
 
 @dataclass(frozen=True)
 class ImportedShare:
-    """A website share as `import_share` stores it, at revision 1 with one slot per card."""
+    """A website share as `import_share` stores it, at revision 1 with one slot per card, and
+    the rendering each card revision recorded."""
 
     id: str
     kind: ShareKind
@@ -220,6 +221,7 @@ class ImportedShare:
     created_at: datetime
     write_token_sha256: bytes | None
     cards: tuple[ShareCard, ...]
+    renderings: Renderings
 
 
 @dataclass(frozen=True)
@@ -355,8 +357,9 @@ class ShareStore(Protocol):
     def import_share(
         self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
     ) -> bool:
-        """Store a website share under its own id, calling `on_stored` after its rows are
-        written and before they commit, so a failure of `on_stored` stores nothing. Returns
+        """Store a website share under its own id at revision 1 and record what each slot
+        shows from its `created_at`, calling `on_stored` after its rows are written and before
+        they commit, so a failure of `on_stored` stores nothing. Returns
         `False`, changing nothing and calling nothing, when the id already holds a share of the
         same kind and `created_at`, which an earlier import stored.
 
@@ -601,8 +604,16 @@ class LiveShareStore:
             slots = tuple(
                 ShareSlot(slot=n, card=card) for n, card in enumerate(share.cards, start=1)
             )
-            _insert_revision(
+            at = _insert_revision(
                 tx, share_id=share.id, revision=1, slots=slots, created_at=share.created_at
+            )
+            _record_revision(
+                tx,
+                share_id=share.id,
+                mode=share.mode,
+                slots=slots,
+                renderings=share.renderings,
+                at=at,
             )
             if on_stored is not None:
                 on_stored()

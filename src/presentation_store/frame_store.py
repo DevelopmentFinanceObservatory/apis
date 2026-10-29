@@ -140,6 +140,9 @@ recipe reader, has none.
 `pin()` records a presentation reference and promotes working artifacts to pinned. A derived
 frame pins with the root versions its recipe names, and theirs in turn, by the rule
 `LiveFrameStore.pin` states: the frame itself must pin, and each root pins while it is held.
+Each new pinned copy, the frame's or a root's, is admitted by
+`datasets_api.retention_admission.copy_to_pinned` against the store's allowance ledger, and a
+copy skipped because its frame is pinned already spends nothing.
 """
 
 from __future__ import annotations
@@ -199,6 +202,7 @@ from dataset_store.snapshot import (
     StoredVersion,
     read_servable_version,
 )
+from datasets_api.allowance import AllowanceExhausted, SharedAllowanceLedger
 from datasets_api.codes_snapshot import SpecNotFound
 from datasets_api.derived import recipe_citation
 from datasets_api.description_record import composed_variables, title_named
@@ -213,6 +217,11 @@ from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
 from datasets_api.render import servable_frame_location
+from datasets_api.retention_admission import (
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    copy_to_pinned,
+)
 from datasets_api.subject_ids import served_subject_ids
 from dc_graph import label_or_self_name
 from description.citation import figures_processed
@@ -222,6 +231,7 @@ from description.steps import Step
 from description.steps_text import bound_entities, composed_names, step_output_names
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from description.world_bank import WORLD_BANK_NAMESPACE
+from dfo_platform.caller import Caller
 from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
 from materialise.formats import (
@@ -664,7 +674,9 @@ class LiveFrameStore:
     required.
     `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
     without one. `description_reader` supplies each version's description record, and `None`
-    loads every frame without one.
+    loads every frame without one. `allowances` is the ledger each new pinned copy `pin()` makes
+    spends from. It has no default: `None` pins without spending, for an operator's import, and
+    must be passed as such.
     `code_index` and `measure_index` are fixed when given. Left out, each read takes the
     indexes the request reads (`get_index`, `get_measure_index`), which can change between
     requests. `now` supplies the clock for expiry checks and reference timestamps.
@@ -682,6 +694,7 @@ class LiveFrameStore:
         artifacts: ArtifactStore,
         graph: GraphReader | None,
         reference_writer: ArtifactReferenceWriter,
+        allowances: SharedAllowanceLedger | None,
         spec_reader: SpecReader | None = None,
         recipe_reader: RecipeReader | None = None,
         description_reader: DescriptionReader | None = None,
@@ -699,6 +712,7 @@ class LiveFrameStore:
         self._spec_reader = spec_reader
         self._recipe_reader = recipe_reader
         self._description_reader = description_reader
+        self._allowances = allowances
         self._given_code_index = code_index
         self._given_measure_index = measure_index
         self._now = now
@@ -1219,10 +1233,15 @@ class LiveFrameStore:
         citation = recipe_citation(self._snapshots, record)
         return citation if citation.sources else None
 
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
         """Pin `frame_ref` for `component_id`, and, for a derived frame, each root version its
         recipe names, through every derived root down to the datasets. Returns whether any
         reference was created or reactivated.
+
+        Each frame or root not pinned yet is copied through
+        `retention_admission.copy_to_pinned`, spending the pin budget and, for an open `caller`,
+        the open callers' budget and its `pin` allowance. A spent budget or allowance refuses
+        the call at the copy it stops, and the copies made before it stand with their units.
 
         The frame `frame_ref` names is what the card draws, so it must pin or the call refuses.
         Its roots pin so the data it was computed from stays fetchable, and the frame is held
@@ -1239,12 +1258,15 @@ class LiveFrameStore:
         Raises:
             FrameUnavailable: The frame cannot be pinned, its roots cannot be named, or a
                 root's pin failed on I/O.
+            PinBudgetExhausted: The day's pin budget is spent.
+            OpenPinBudgetExhausted: The open callers' pin budget is spent.
+            AllowanceExhausted: `caller`'s `pin` allowance is spent.
         """
         roots = self._root_closure(frame_ref)
-        changed = self._pin_frame(frame_ref, component_id=component_id)
+        changed = self._pin_frame(frame_ref, component_id=component_id, caller=caller)
         for root in roots:
             try:
-                changed = self._pin_frame(root, component_id=component_id) or changed
+                changed = self._pin_frame(root, component_id=component_id, caller=caller) or changed
             except FrameUnavailable as exc:
                 if exc.reason == "io":
                     raise
@@ -1321,15 +1343,21 @@ class LiveFrameStore:
             roots.append(FrameRef(spec_id=spec_id, content_version=content_version))
         return roots
 
-    def _pin_frame(self, frame_ref: FrameRef, *, component_id: str) -> bool:
+    def _pin_frame(self, frame_ref: FrameRef, *, component_id: str, caller: Caller | None) -> bool:
         # The read and the write-time recheck honour revocations under the same ids.
         revoked_under = self._revoked_under(frame_ref.spec_id)
         _, canonical = self._resolve_canonical_location(frame_ref, revoked_under=revoked_under)
         if canonical.tier != Tier.pinned.value:
             try:
-                self._artifacts.copy(
-                    canonical.artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+                copy_to_pinned(
+                    self._artifacts,
+                    canonical.artifact_digest,
+                    allowances=self._allowances,
+                    caller=caller,
+                    now=self._now(),
                 )
+            except (PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted):
+                raise
             except ArtifactNotFoundError as exc:
                 raise FrameUnavailable(
                     reason="expired",
@@ -1339,7 +1367,7 @@ class LiveFrameStore:
                     ),
                 ) from exc
             except Exception as exc:
-                # Copy-side write or inventory failure -- see `_io_failure`.
+                # Ledger, copy-side write or inventory failure -- see `_io_failure`.
                 raise _io_failure(
                     action="pinning", digest=canonical.artifact_digest, exc=exc
                 ) from None

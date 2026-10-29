@@ -13,6 +13,7 @@ import pytest
 from assembler.errors import FrameUnavailable
 from assembler.ports import DraftNotFound, FrameRef, RevisionRecord
 from assembler.write_token import write_token_digest
+from dfo_platform.caller import Caller
 from presentation_store.share_import import ImportCounts, import_shares
 from presentation_store.shares import MAX_SHARE_PAYLOAD_BYTES, LiveShareStore, ShareNotFound
 from presentation_store.store_errors import PresentationStoreUnavailable
@@ -25,9 +26,14 @@ _DERIVED = FrameRef(spec_id="ops_" + "d" * 32, content_version="ocv_" + "e" * 32
 _UNPINNABLE = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "f" * 32)
 
 
+def _rendering(component_id: str, revision: int) -> dict[str, object]:
+    return {"rendered": f"{component_id}@{revision}"}
+
+
 class _Revisions:
     """The card revisions the service holds: `cmp_chart` 1 and 2 on `_DATASET`, `cmp_derived` 1
-    on `_DERIVED`, and `cmp_note` 1, which draws no frame."""
+    on `_DERIVED`, each with the rendering `_rendering` names, and `cmp_note` 1, which draws no
+    frame."""
 
     _FRAMES: ClassVar[dict[tuple[str, int], FrameRef]] = {
         ("cmp_chart", 1): _DATASET,
@@ -36,6 +42,7 @@ class _Revisions:
     }
 
     def read_revision(self, *, component_id: str, revision: int) -> RevisionRecord | None:
+        rendering = None
         if (component_id, revision) == ("cmp_note", 1):
             intent: dict[str, object] = {"type": "note_narration", "text": "Aid rose."}
         elif (frame := self._FRAMES.get((component_id, revision))) is not None:
@@ -43,6 +50,7 @@ class _Revisions:
                 "type": "line_chart",
                 "frame_ref": {"spec_id": frame.spec_id, "content_version": frame.content_version},
             }
+            rendering = _rendering(component_id, revision)
         else:
             return None
         return RevisionRecord(
@@ -54,6 +62,7 @@ class _Revisions:
             schema_version=1,
             formatter_profile={},
             created_at=datetime(2026, 8, 1, tzinfo=UTC),
+            frame_rendering=rendering,
         )
 
     def read_current(self, *, component_id: str) -> RevisionRecord | None:
@@ -68,7 +77,7 @@ class _Pins:
     def __init__(self) -> None:
         self.pins: list[tuple[FrameRef, str]] = []
 
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
         if frame_ref == _UNPINNABLE:
             raise FrameUnavailable(reason="expired", detail=f"{frame_ref} is gone")
         self.pins.append((frame_ref, component_id))
@@ -185,6 +194,26 @@ def test_every_exported_case_imports_under_its_id_and_a_second_run_changes_nothi
         assert share.revision == 1
     assert [slot.slot for slot in after_first["canvLive"].slots] == [1, 2]
     assert after_first["srchLive"].slots == after_first["canvNoRf"].slots == ()
+    # Each slot's history holds one entry from the share's creation, with its card's rendering.
+    for share_id, share in after_first.items():
+        entries = store.served_frames(share_id=share_id, limit=100).entries
+        assert [
+            (entry.slot, entry.component_id, entry.revision, entry.rendering)
+            for entry in reversed(entries)
+        ] == [
+            (
+                slot.slot,
+                card.component_id,
+                card.revision,
+                _rendering(card.component_id, card.revision),
+            )
+            for slot in share.slots
+            if (card := slot.card) is not None
+        ]
+        assert {entry.first_served_at for entry in entries} <= {share.created_at}
+    assert [
+        entry.frame for entry in store.served_frames(share_id="canvLive", limit=100).entries
+    ] == [_DERIVED, _DATASET]
 
 
 def test_a_signed_in_users_share_gets_a_token_the_report_holds_and_a_guests_gets_none():

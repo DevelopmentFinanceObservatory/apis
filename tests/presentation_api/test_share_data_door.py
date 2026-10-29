@@ -190,7 +190,7 @@ def _serve_door(
         newest_frames=newest,
     )
     app = create_app([surface], cors_origins=cors_origins)
-    with TestClient(app, raise_server_exceptions=False) as client:
+    with TestClient(app, raise_server_exceptions=False, headers=_HEADERS) as client:
         yield _Door(client, frame_store=frame_store, newest=newest, presentation=presentation)
 
 
@@ -562,7 +562,9 @@ def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(
         allowances=_Allowances(limit=50),
         caller_settings=CallerSettings(caller_hmac_key=SecretStr("share-data-test-key")),
     )
-    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+    with TestClient(
+        create_app([surface]), raise_server_exceptions=False, headers=_HEADERS
+    ) as client:
         door = _Door(client, frame_store=frame_store, newest=_Newest(), presentation=presentation)
         share = door.share(door.card(), latest=True)
 

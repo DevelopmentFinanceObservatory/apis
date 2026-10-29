@@ -119,6 +119,7 @@ def deployment(release: CatalogueRelease) -> Iterator[_Deployment]:
                 }
             ),
             reference_writer=_FakeReferenceWriter(),
+            allowances=None,
             description_reader=LiveDescriptionStore(store=store),
         ),
         revision_store=FakeRevisionStore(),

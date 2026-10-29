@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -17,12 +17,16 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from artifact_store import Tier
 from assembler.errors import FrameUnavailable
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef
+from assembler.testing import malaria_ethiopia_resolved_frame
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
-from datasets_api.allowance import AllowanceExhausted, AllowanceKind
+from datasets_api import maintenance
+from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger
 from datasets_api.principals import Grant, Principals
+from datasets_api.retention_admission import copy_to_pinned
 from dfo_platform import ProblemDetails
 from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
@@ -33,6 +37,8 @@ from presentation_api.config import PRESENTATION_COMPONENTS_MAX_CONCURRENCY
 from presentation_api.doors import shares as shares_door
 from presentation_api.doors.shares import MAX_SHARE_PAYLOAD_BYTES, build_shares_door
 from presentation_store import LiveShareStore, ShareCard, ShareRecord
+from tests.datasets_api._artifact_doubles import FakeArtifactStore
+from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.presentation_store.conftest import FakePresentationStore
 
 _SITE = "https://site.example"
@@ -108,7 +114,7 @@ class _Door:
         return self.client.put(
             f"/api/presentation/shares/{share_id}",
             json={"cards": [{"component_id": self.cards[name], "revision": 1} for name in names]},
-            headers={_TOKEN_HEADER: token} if token is not None else {},
+            headers=_HEADERS | ({_TOKEN_HEADER: token} if token is not None else {}),
         )
 
     def unshare(self, share_id: str, *, token: str | None):
@@ -480,6 +486,88 @@ def test_a_replace_pins_the_cards_the_share_did_not_show(door: _Door, frame_ref:
     assert door.frame_store.pins == ((frame_ref, door.cards["cmp_b"]),)
 
 
+class _CopyingFrameStore(FakeFrameStore):
+    """Pins each card's frame as an artifact of its own through `copy_to_pinned`, spending from
+    `ledger`, so distinct cards make distinct copies and a card pinned before makes none.
+    `callers` lists the caller each pin named."""
+
+    def __init__(self, ledger: LiveAllowanceLedger) -> None:
+        super().__init__()
+        self.put(resolved_frame=malaria_ethiopia_resolved_frame())
+        self.ledger = ledger
+        self.artifacts = FakeArtifactStore()
+        self.callers: list[Caller | None] = []
+
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
+        self.callers.append(caller)
+        digest = self.artifacts.put(component_id.encode(), tier=Tier.working).digest
+        if digest not in self.artifacts.list(tier=Tier.pinned):
+            copy_to_pinned(
+                self.artifacts, digest, allowances=self.ledger, caller=caller, now=datetime.now(UTC)
+            )
+        return super().pin(frame_ref=frame_ref, component_id=component_id)
+
+
+@pytest.mark.parametrize(
+    ("limit", "status", "code", "retryable"),
+    [
+        (AllowanceKind.pin, 429, "allowance_exhausted", False),
+        (AllowanceKind.open_pin_budget, 503, "service_unavailable", True),
+        (AllowanceKind.pin_budget, 503, "service_unavailable", True),
+    ],
+    ids=["caller-allowance", "open-budget", "daily-budget"],
+)
+def test_replacing_a_share_with_new_cards_spends_a_pin_unit_per_copy_until_refused(
+    release_registry: FakeReleaseRegistry,
+    limit: AllowanceKind,
+    status: int,
+    code: str,
+    retryable: bool,
+):
+    """Each replace pins one card not pinned before. The fourth copy finds three units spent and
+    is refused, and a replace back to a card pinned already spends nothing and succeeds."""
+    ledger = LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={
+            AllowanceKind.pin_budget: 500,
+            AllowanceKind.open_pin_budget: 500,
+            AllowanceKind.pin: 500,
+        }
+        | {limit: 3},
+    )
+    frame_store = _CopyingFrameStore(ledger)
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=FakeRevisionStore(),
+        release_registry=release_registry,
+        share_store=LiveShareStore(store=FakePresentationStore()),
+        allowances=_Allowances(limit=50),
+        caller_settings=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+        door = _Door(client, share_store=None, allowances=None, frame_store=frame_store)
+        created = door.share(["cmp_a"], latest=True).json()
+        token = created["write_token"]
+        replaced = [door.replace(created["id"], [name], token=token) for name in ("cmp_b", "cmp_c")]
+        refused = door.replace(created["id"], ["cmp_d"], token=token)
+        back = door.replace(created["id"], ["cmp_a"], token=token)
+        snapshot = client.post(
+            f"/api/presentation/shares/{created['id']}/snapshot",
+            headers=_HEADERS | {_TOKEN_HEADER: token},
+        )
+
+    assert [resp.status_code for resp in replaced] == [200, 200]
+    body = _assert_refused(refused, status=status, code=code)
+    assert body["retryable"] is retryable
+    assert refused.headers["retry-after"].isdigit()
+    assert (back.status_code, snapshot.status_code) == (200, 200)
+    with ledger._store.transaction() as tx:
+        counts = tx.fetch_all("SELECT kind, count FROM datasets.caller_allowance")
+    assert {row["kind"]: row["count"] for row in counts}[limit.value] == 3
+    caller_key = address_key(_ADDRESS, hmac_key=_HMAC_KEY)
+    assert {caller.key if caller else None for caller in frame_store.callers} == {caller_key}
+
+
 def test_a_create_spends_one_share_allowance_unit_of_the_forwarded_caller(door: _Door):
     door.share(["cmp_a"], latest=True)
 
@@ -762,13 +850,20 @@ def test_a_malformed_share_id_refuses_request_invalid(door: _Door, share_id: str
     _assert_refused(door.read(share_id), status=400, code="request_invalid")
 
 
-def test_a_deleted_share_answers_not_found_on_every_route_but_its_holders_delete(door: _Door):
+@pytest.mark.parametrize("by", ["owner", "operator"])
+def test_a_deleted_share_answers_not_found_on_every_route_but_its_holders_delete(
+    door: _Door, by: str
+):
     """A retried delete by the token's holder answers 204 again, so a lost 204 is safe to
-    retry; any other delete of the taken-down share answers as a share that never was."""
+    retry; any other delete of the taken-down share answers as a share that never was. The
+    operator's `take-down-share` leaves the share as the owner's delete does."""
     created = door.share(["cmp_a"], latest=True).json()
     share_id, token = created["id"], created["write_token"]
     other = door.share(["cmp_b"], latest=True).json()
-    assert door.unshare(share_id, token=token).status_code == 204
+    if by == "owner":
+        assert door.unshare(share_id, token=token).status_code == 204
+    else:
+        maintenance.run_take_down_share(share_store=door.share_store, share_id=share_id)
 
     _assert_refused(door.read(share_id), status=404, code="not_found")
     _assert_refused(door.replace(share_id, ["cmp_b"], token=token), status=404, code="not_found")

@@ -59,9 +59,16 @@ from dataset_store.snapshot import (
     VersionFacts,
     VersionState,
 )
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceExhausted,
+    AllowanceKind,
+    LiveAllowanceLedger,
+)
 from datasets_api.manifest import version_document
 from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import ReferenceWrite
+from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from description.citation import citation_line
 from description.facts import (
@@ -78,6 +85,7 @@ from description.facts import (
 )
 from description.steps import Step
 from description.vocabulary import SourceDocumentFacts
+from dfo_platform.caller import Caller
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
@@ -102,6 +110,7 @@ from spec_registry.errors import (
 )
 from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
+from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.graph_release.support import release_at_revision
 from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
@@ -578,6 +587,7 @@ def _store(
     artifacts: _FakeArtifactStore | None = None,
     graph=None,
     reference_writer: _FakeReferenceWriter | None = None,
+    allowances: LiveAllowanceLedger | None = None,
     now: Callable[[], datetime] = lambda: _NOW,
     **kwargs,
 ) -> LiveFrameStore:
@@ -588,6 +598,7 @@ def _store(
         reference_writer=reference_writer
         if reference_writer is not None
         else _FakeReferenceWriter(),
+        allowances=allowances,
         now=now,
         **kwargs,
     )
@@ -3692,6 +3703,7 @@ def test_cache_evicts_oldest_insertion_once_over_the_byte_budget():
         artifacts=artifacts,
         graph=None,
         reference_writer=_FakeReferenceWriter(),
+        allowances=None,
         now=lambda: _NOW,
         cache_max_bytes=entry_bytes + entry_bytes // 2,
     )
@@ -4286,6 +4298,129 @@ def test_pin_maps_a_write_time_refusal_to_frame_unavailable(
 
     assert excinfo.value.reason == reason
     assert reference_writer.records == {}
+
+
+_OPEN_CALLER = Caller(kind="address", key="ip:" + "0" * 32)
+
+
+def _ledger(**limits: int) -> LiveAllowanceLedger:
+    """A ledger over a fresh store, 500 of each pin kind unless `limits` names it."""
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={
+            kind: limits.get(kind.value, 500)
+            for kind in (AllowanceKind.pin_budget, AllowanceKind.open_pin_budget, AllowanceKind.pin)
+        },
+    )
+
+
+def _units(ledger: LiveAllowanceLedger) -> dict[tuple[str, str], int]:
+    """Each `(key, kind)` the ledger holds a count for, with the count."""
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
+    return {
+        (cast(str, row["caller_key"]), cast(str, row["kind"])): cast(int, row["count"])
+        for row in rows
+    }
+
+
+def _derived_store(ledger: LiveAllowanceLedger):
+    """A store spending from `ledger` over a derived frame and its one root, both working-tier,
+    with `_derived_over_a_root`'s fixtures."""
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, recipe_reader=recipes, allowances=ledger
+    )
+    return store, snapshots, artifacts, frame_ref, digest, root_ref, root_digest
+
+
+def _set_of_units(caller: Caller | None, count: int) -> dict[tuple[str, str], int]:
+    units = {(BUDGET_KEY, AllowanceKind.pin_budget.value): count}
+    if caller is not None:
+        units[(BUDGET_KEY, AllowanceKind.open_pin_budget.value)] = count
+        units[(caller.key, AllowanceKind.pin.value)] = count
+    return units
+
+
+@pytest.mark.parametrize("caller", [_OPEN_CALLER, None], ids=["open-caller", "no-caller"])
+@pytest.mark.parametrize("reads_pinned", [True, False], ids=["reads-pinned", "races-to-a-copy"])
+def test_pin_spends_one_set_of_units_per_new_copy_and_none_for_a_frame_already_pinned(
+    caller: Caller | None, reads_pinned: bool
+):
+    """The derived frame and its root are two new copies. A second pin spends nothing, whether
+    it reads both pinned or still reads them working and finds the pinned bytes made."""
+    ledger = _ledger()
+    store, snapshots, _, frame_ref, _, root_ref, _ = _derived_store(ledger)
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=caller)
+    assert _units(ledger) == _set_of_units(caller, 2)
+    if reads_pinned:
+        for ref in (frame_ref, root_ref):
+            key = (ref.spec_id, ref.content_version)
+            snapshots.locations[key] = [
+                dataclasses.replace(location, tier=Tier.pinned.value)
+                for location in snapshots.locations[key]
+            ]
+    store.pin(frame_ref=frame_ref, component_id="cmp_b", caller=caller)
+
+    assert _units(ledger) == _set_of_units(caller, 2)
+
+
+@pytest.mark.parametrize(
+    ("limit", "refusal"),
+    [
+        ("pin", AllowanceExhausted),
+        ("open_pin_budget", OpenPinBudgetExhausted),
+        ("pin_budget", PinBudgetExhausted),
+    ],
+)
+def test_pin_refuses_at_the_root_a_spent_budget_stops_and_the_frames_copy_keeps_its_units(
+    limit: str, refusal: type[Exception]
+):
+    ledger = _ledger(**{limit: 1})
+    store, _, artifacts, frame_ref, digest, _, root_digest = _derived_store(ledger)
+
+    with pytest.raises(refusal):
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert (Tier.pinned, root_digest) not in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_keeps_the_units_of_a_copy_whose_reference_write_then_fails():
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    ledger = _ledger()
+    reference_writer = _FakeReferenceWriter(
+        revoked={(frame_ref.spec_id, frame_ref.content_version)}
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        allowances=ledger,
+    )
+
+    with pytest.raises(FrameUnavailable):
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_gives_back_the_units_of_a_copy_whose_working_bytes_are_gone():
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    del artifacts.objects[(Tier.working, digest)]
+    ledger = _ledger()
+    store = _store(snapshots=snapshots, artifacts=artifacts, allowances=ledger)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert excinfo.value.reason == "expired"
+    assert _units(ledger) == {}
 
 
 def test_pin_refuses_a_collapsed_frame_whose_base_version_is_revoked():

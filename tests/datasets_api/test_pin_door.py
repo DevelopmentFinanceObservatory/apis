@@ -537,20 +537,18 @@ def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(
     }
 
 
-def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired():
-    """The working copy aged out after the location was read, so the copy finds no object."""
+def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired_and_spends_nothing():
+    """The working copy aged out after the location was read, so the copy finds no object, and
+    the units spent for it go back."""
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
     del store._objects[(parquet.artifact_digest, Tier.working.value)]
-    reader = FakeSnapshotReader(
-        versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): [parquet]}
-    )
-    writer = FakeArtifactReferenceWriter()
+    ledger = _ledger()
 
     with pytest.raises(ArtifactExpired):
-        _pin_parquet(reader, store, writer, parquet.artifact_digest)
+        _pin_named(store, parquet, ledger, caller=_OPEN_CALLER)
 
-    assert not writer.records
+    assert _spent(ledger) == {}
 
 
 class _CopyForbiddenArtifactStore(FakeArtifactStore):

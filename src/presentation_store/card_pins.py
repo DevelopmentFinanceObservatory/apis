@@ -14,6 +14,7 @@ from typing import cast
 
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, RevisionStore
+from dfo_platform.caller import Caller
 
 __all__ = ["pin_card_frames"]
 
@@ -24,9 +25,11 @@ def pin_card_frames(
     revision: int,
     revision_store: RevisionStore,
     frame_store: FrameStore,
+    caller: Caller | None = None,
 ) -> bool | None:
     """Pin the frame revision `revision` of `component_id` draws, with a derived frame's
-    roots. A note draws no frame and pins nothing.
+    roots, each new pinned copy spending `caller`'s units (`FrameStore.pin`). A note draws no
+    frame and pins nothing.
 
     Returns:
         `frame_store.pin`'s answer: whether a reference was created or reactivated, `None`
@@ -44,4 +47,4 @@ def pin_card_frames(
     body = cast("Mapping[str, str] | None", record.stored_intent.get("frame_ref"))
     if body is None:
         return False
-    return frame_store.pin(frame_ref=FrameRef(**body), component_id=component_id)
+    return frame_store.pin(frame_ref=FrameRef(**body), component_id=component_id, caller=caller)

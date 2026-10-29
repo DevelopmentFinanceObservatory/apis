@@ -55,7 +55,12 @@ if TYPE_CHECKING:
 _SHARES = "/api/presentation/shares"
 _TOKEN = "x-dfo-write-token"
 _CALLER = {"x-forwarded-for": "203.0.113.7"}
-_PIN_ALLOWANCE = 2
+# The share's create copies the derived frame and its two roots, and its snapshot conversion the
+# moved frame and the moved root, each spending a unit of the caller's pin allowance. The door's
+# open pins then spend the rest.
+_SHARE_COPIES = 5
+_DOOR_PINS = 2
+_PIN_ALLOWANCE = _SHARE_COPIES + _DOOR_PINS
 _START = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
 _KENYA = "country/KEN"
 _MOVED_LOAN = 4321.0
@@ -129,7 +134,7 @@ class _Journey:
         return self.client.put(
             f"{_SHARES}/{share_id}",
             json={"cards": [{"component_id": component_id, "revision": 1}]},
-            headers={_TOKEN: token},
+            headers=_CALLER | {_TOKEN: token},
         )
 
     def pin(self, frame: Pair, digest: str) -> Response:
@@ -330,7 +335,9 @@ def test_a_dashboard_from_analysis_to_share_to_unshare(journey: _Journey):
 
     # A snapshot keeps the frame the slot serves, pins it with its roots, and refuses a later
     # replacement.
-    converted = journey.client.post(f"{_SHARES}/{share_id}/snapshot", headers={_TOKEN: token})
+    converted = journey.client.post(
+        f"{_SHARES}/{share_id}/snapshot", headers=_CALLER | {_TOKEN: token}
+    )
     assert converted.status_code == 200, converted.text
     assert (converted.json()["latest"], converted.json()["data_urls"]) == (
         False,
@@ -358,8 +365,9 @@ def test_a_dashboard_from_analysis_to_share_to_unshare(journey: _Journey):
         gone = journey.client.get(f"{_SHARES}/{share_id}{path}")
         assert (gone.status_code, gone.json()["code"]) == (404, "not_found"), path
 
-    # An open caller's pins copy unpinned artifacts until its allowance answers 429: the
-    # statistics both first versions share, and both files of `DATASET`'s moved version.
+    # An open caller's pins copy unpinned artifacts until the allowance the share's copies left
+    # answers 429: the statistics both first versions share, and both files of `DATASET`'s
+    # moved version.
     current = journey.mint(DATASET)
     assert current["content_version"] != dataset["content_version"]
     (statistics,) = [a for a in dataset["artifacts"] if "statistics" in a["rendering"]]
@@ -370,15 +378,15 @@ def test_a_dashboard_from_analysis_to_share_to_unshare(journey: _Journey):
             for artifact in current["artifacts"]
         ),
     ]
-    assert len({digest for _, digest in unpinned}) == _PIN_ALLOWANCE + 1, unpinned
+    assert len({digest for _, digest in unpinned}) == _DOOR_PINS + 1, unpinned
     answers = [
         journey.pin({"spec_id": DATASET, "content_version": version}, digest)
         for version, digest in unpinned
     ]
-    assert [resp.status_code for resp in answers[:_PIN_ALLOWANCE]] == [200] * _PIN_ALLOWANCE, [
+    assert [resp.status_code for resp in answers[:_DOOR_PINS]] == [200] * _DOOR_PINS, [
         resp.text for resp in answers
     ]
-    exhausted = answers[_PIN_ALLOWANCE]
+    exhausted = answers[_DOOR_PINS]
     assert (exhausted.status_code, exhausted.json()["code"]) == (429, "allowance_exhausted")
     assert exhausted.json()["retryable"] is False
     assert int(exhausted.headers["retry-after"]) > 0

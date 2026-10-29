@@ -45,6 +45,15 @@ newest-data check, else its card's own frame). The door pins those frames, then 
 share's next revision with them and the snapshot mode. A snapshot answers as it is, and a share
 replaced meanwhile refuses 409 `edit_conflict`. No route turns a snapshot live.
 
+The create, replace and snapshot conversion pin as the pin door does for a caller without the
+pin grant: each new pinned copy, a card's frame or a derived frame's root, spends one unit of the
+daily pin budget, of the open callers' budget and of the caller's `pin` allowance
+(`datasets_api.retention_admission.copy_to_pinned`), and a frame pinned already spends nothing.
+A spent budget refuses 503 `service_unavailable`, retryable, and a spent allowance 429
+`allowance_exhausted`, each with `Retry-After` naming the next UTC midnight. A copy made before
+the refusal, or before any later failure of the write, keeps its units, since the pinned bytes
+stay and a retry finds them pinned.
+
 `GET /api/presentation/shares/{share_id}` is public and allows any origin. It returns kind,
 mode, title, revision, slots, the website's payload and created_at, and omits the token.
 
@@ -174,10 +183,11 @@ from datasets_api.allowance import (
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.door_executor import DoorExecutor, build_door_executor
+from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import ProblemSpec
-from dfo_platform.caller import CallerHeaderInvalid, CallerUnresolved, resolve_caller
+from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.state import StateSlot
@@ -226,6 +236,7 @@ from presentation_store import (
     LivePresentationStore,
     LiveShareStore,
     PresentationStoreUnavailable,
+    Renderings,
     ShareCard,
     ShareNotFound,
     ShareNotReplaceable,
@@ -481,7 +492,7 @@ def authorise_share_write(share: ShareRecord, *, presented: str | None) -> None:
 
 def _read_cards(
     cards: Iterable[ShareCardBody], *, revision_store: RevisionStore
-) -> tuple[list[ShareCard], dict[tuple[str, int], Mapping[str, object] | None]]:
+) -> tuple[list[ShareCard], Renderings]:
     """The stored card revisions `cards` name, each with the frame it draws, and the rendering
     each recorded.
 
@@ -531,20 +542,20 @@ def _require_live_data_cards(cards: Iterable[ShareCard]) -> None:
         )
 
 
-def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
-    """Pin the frame each distinct card revision in `cards` draws."""
+def _pin(cards: Iterable[ShareCard], *, caller: Caller, deps: SharesDeps) -> None:
+    """Pin the frame each distinct card revision in `cards` draws, each new pinned copy
+    spending `caller`'s units."""
     for component_id, revision in dict.fromkeys((c.component_id, c.revision) for c in cards):
         pin_card_frames(
             component_id=component_id,
             revision=revision,
             revision_store=deps.revision_store,
             frame_store=deps.frame_store,
+            caller=caller,
         )
 
 
-def _renderings(
-    share: ShareRecord, *, revision_store: RevisionStore
-) -> dict[tuple[str, int], Mapping[str, object] | None]:
+def _renderings(share: ShareRecord, *, revision_store: RevisionStore) -> Renderings:
     """The rendering each data card revision `share` shows recorded."""
     keys = (
         (slot.card.component_id, slot.card.revision)
@@ -673,7 +684,7 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
             _require_live_data_cards(cards)
         try:
             with spending(deps.allowances, caller, AllowanceKind.share, deps.now()):
-                _pin(cards, deps=deps)
+                _pin(cards, caller=caller, deps=deps)
                 share = deps.share_store.create_share(
                     kind=body.kind,
                     mode="live" if body.latest else "snapshot",
@@ -704,6 +715,7 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
 async def replace_share(
     share_id: str,
     body: ShareCardsBody,
+    request: Request,
     deps: SharesDepsDep,
     write_token: WriteTokenHeader = None,
 ) -> Response:
@@ -714,6 +726,7 @@ async def replace_share(
         authorise_share_write(current, presented=write_token)
         if current.mode == "snapshot":
             raise ShareNotReplaceable(share_id)
+        caller = resolve_caller(request, deps.caller)
         if refusal := _card_count_refusal(current.kind, len(body.cards)):
             raise RequestValidationError(
                 [{"type": "value_error", "loc": ("body", "cards"), "msg": refusal, "input": None}]
@@ -725,7 +738,11 @@ async def replace_share(
             for slot in current.slots
             if slot.card is not None
         }
-        _pin((card for card in cards if (card.component_id, card.revision) not in shown), deps=deps)
+        _pin(
+            (card for card in cards if (card.component_id, card.revision) not in shown),
+            caller=caller,
+            deps=deps,
+        )
         share = deps.share_store.replace_share(
             share_id=share_id, revision=current.revision, cards=cards, renderings=renderings
         )
@@ -774,7 +791,7 @@ async def read_share(share_id: str, deps: SharesDepsDep) -> Response:
 
 
 async def post_share_snapshot(
-    share_id: str, deps: SharesDepsDep, write_token: WriteTokenHeader = None
+    share_id: str, request: Request, deps: SharesDepsDep, write_token: WriteTokenHeader = None
 ) -> Response:
     require_share_id(share_id)
 
@@ -782,6 +799,7 @@ async def post_share_snapshot(
         current = deps.share_store.read_share(share_id=share_id)
         authorise_share_write(current, presented=write_token)
         if current.mode == "live":
+            caller = resolve_caller(request, deps.caller)
             frames: dict[int, FrameRef] = {}
             pins: dict[tuple[str, FrameRef], None] = {}
             for slot in current.slots:
@@ -791,7 +809,7 @@ async def post_share_snapshot(
                 frames[slot.slot] = frame
                 pins[(slot.card.component_id, frame)] = None
             for component_id, frame in pins:
-                deps.frame_store.pin(frame_ref=frame, component_id=component_id)
+                deps.frame_store.pin(frame_ref=frame, component_id=component_id, caller=caller)
             current = deps.share_store.snapshot_share(
                 share_id=share_id,
                 revision=current.revision,
@@ -1061,6 +1079,14 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=exc.retryable,
             headers=exc.headers,
         )
+    if isinstance(exc, PinBudgetExhausted | OpenPinBudgetExhausted):
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail=str(exc),
+            retryable=True,
+            headers=exc.headers,
+        )
     if isinstance(exc, CallerHeaderInvalid):
         return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
     if isinstance(exc, CallerUnresolved):
@@ -1212,7 +1238,8 @@ def build_shares_door(
         description="Publish cards as a share: one slot per card, a live link (latest=true) "
         "that follows new data or a snapshot (latest=false) that keeps the versions its cards "
         "draw now. Every card's frame is pinned. Spends one unit of the caller's daily share "
-        "allowance. The reply's write_token grants replacing and deleting the share.",
+        "allowance, and one unit of its daily pin allowance and of the shared pin budgets for "
+        "each new pinned copy. The reply's write_token grants replacing and deleting the share.",
     )
     router.add_api_route(
         SHARE_PATH,
@@ -1229,7 +1256,9 @@ def build_shares_door(
         response_model=ShareWriteResponse,
         description="Give a live share new cards under the same URLs, as its next revision. "
         "Slot n shows the nth card, and slots past the last card stay empty. Needs the share's "
-        "write token in x-dfo-write-token. A snapshot refuses share_not_replaceable.",
+        "write token in x-dfo-write-token. A snapshot refuses share_not_replaceable. Each new "
+        "pinned copy spends one unit of the caller's daily pin allowance and of the shared pin "
+        "budgets.",
     )
     router.add_api_route(
         SHARE_PATH,
@@ -1246,7 +1275,8 @@ def build_shares_door(
         response_model=ShareWriteResponse,
         description="Turn a live share into a snapshot under the same URLs. Each slot keeps "
         "the frame it serves now, pinned. Needs the share's write token in x-dfo-write-token. "
-        "A snapshot answers as it is. No route turns a snapshot live.",
+        "A snapshot answers as it is. No route turns a snapshot live. Each new pinned copy "
+        "spends one unit of the caller's daily pin allowance and of the shared pin budgets.",
     )
     router.add_api_route(
         SHARE_HISTORY_PATH,
@@ -1325,6 +1355,8 @@ def build_shares_door(
             ReleaseMismatch,
             SharesUnavailable,
             AllowanceExhausted,
+            PinBudgetExhausted,
+            OpenPinBudgetExhausted,
             CreateRequestInvalid,
             CallerHeaderInvalid,
             CallerUnresolved,
@@ -1353,6 +1385,8 @@ def build_shares_door(
             AllowanceExhausted(
                 kind=AllowanceKind.share, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
             ),
+            PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+            OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
             CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
