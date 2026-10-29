@@ -731,6 +731,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_newest_frame",
+    "operation_id": "presentation_get_newest_frame",
+    "path": "/api/presentation/frames/{spec_id}",
+    "summary": "Get Newest Frame",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_frame",
     "operation_id": "presentation_get_frame",
     "path": "/api/presentation/frames/{spec_id}/{content_version}",

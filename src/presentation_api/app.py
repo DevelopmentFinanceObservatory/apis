@@ -94,7 +94,9 @@ def presentation_surface(
     (`DatasetsBuildSettings`' by default). The shares door mounts with a share store given or with no `revision_store` given, and builds
     whichever of the three is left out. `newest_frames` answers a live share slot's check for
     newer data (`presentation_api.newest_frames`); with none, every live slot serves its card's
-    own frame and states it stale.
+    own frame and states it stale. The frames door's bare `spec_id` route and a component create
+    whose `frame_ref` names a dataset id alone resolve through it too, and refuse
+    `frame_unavailable` without one.
 
     Each request binds the origin catalogue's loaded snapshot and the release service's served
     graph release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup.
@@ -127,8 +129,9 @@ def presentation_surface(
             allowances=allowances,
             caller=caller_settings,
             principals=principals,
+            newest=newest_frames,
         ),
-        build_frames_door(frame_store=frame_store),
+        build_frames_door(frame_store=frame_store, newest=newest_frames),
         build_release_door(release_registry=effective_release_registry),
     )
     if share_store is not None or revision_store is None:

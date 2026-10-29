@@ -27,6 +27,10 @@ __all__ = [
     "FrameFilteredViewResponse",
     "FrameStructuralViewResponse",
     "FrameViewResponse",
+    "NewestFrameDimensionValuesResponse",
+    "NewestFrameFilteredViewResponse",
+    "NewestFrameStructuralViewResponse",
+    "NewestFrameViewResponse",
     "ReleaseDocumentResponse",
     "ShareCardModel",
     "ShareFrameModel",
@@ -590,6 +594,36 @@ class FrameFilteredViewResponse(BaseModel):
 
 FrameViewResponse = (
     FrameStructuralViewResponse | FrameDimensionValuesResponse | FrameFilteredViewResponse
+)
+
+
+class _NewestFrame(BaseModel):
+    spec_id: str = Field(
+        description="the served id of the dataset read, which differs from the requested id "
+        "when that id now serves under another"
+    )
+    content_version: str = Field(description="the version of the dataset read, its newest")
+
+
+class NewestFrameStructuralViewResponse(FrameStructuralViewResponse, _NewestFrame):
+    """`GET /api/presentation/frames/{spec_id}`'s body with neither `dimension` nor `query`
+    given: the structural view of the frame it resolved, and that frame's pair."""
+
+
+class NewestFrameDimensionValuesResponse(FrameDimensionValuesResponse, _NewestFrame):
+    """`GET /api/presentation/frames/{spec_id}?dimension=`'s body: one dimension's values in
+    the frame it resolved, and that frame's pair."""
+
+
+class NewestFrameFilteredViewResponse(FrameFilteredViewResponse, _NewestFrame):
+    """`GET /api/presentation/frames/{spec_id}?query=`'s body: the filtered view of the frame
+    it resolved, and that frame's pair."""
+
+
+NewestFrameViewResponse = (
+    NewestFrameStructuralViewResponse
+    | NewestFrameDimensionValuesResponse
+    | NewestFrameFilteredViewResponse
 )
 
 

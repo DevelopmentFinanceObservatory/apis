@@ -1,7 +1,8 @@
 """Checks `DatasetsNewestFrames` sends a dataset frame through the frame refresh under the
 rendering its card recorded, and a derived frame through the analysis door's keyed path as a
 bare derived root with `latest=true`: a stored answer computes nothing, and a key another check
-is computing joins it. Both pending answers read as `NewestPending`."""
+is computing joins it. Both pending answers read as `NewestPending`. A bare dataset id reads the
+dataset version the runner's Spec root of it reads."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import pytest
 
 import presentation_api.newest_frames as newest_frames
 from assembler.ports import FrameRef
-from datasets_api.analysis import AnalysisPending, AnalysisRequest, DerivedRoot
+from datasets_api.analysis import AnalysisPending, AnalysisRequest, DerivedRoot, SpecRoot
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.refresh import FrameMoved, FramePair, FramePending, StoredRendering
@@ -156,3 +157,42 @@ def test_a_rebuild_over_budget_is_pending_with_its_retry_time_on_either_path(cal
 
     assert newest.newest(_DATASET, rendering=None) == NewestPending(retry_after_s=2.0)
     assert newest.newest(_DERIVED, rendering=None) == NewestPending(retry_after_s=3.5)
+
+
+class _SpecRoots:
+    """`LiveRootSource` resolving every root to `answer`'s dataset, or raising `answer`."""
+
+    def __init__(self, answer: FrameRef | Exception) -> None:
+        self.answer = answer
+        self.resolved: list[tuple[object, bool]] = []
+
+    def resolve(self, root: object, *, latest: bool, trace_id: object) -> Any:
+        self.resolved.append((root, latest))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return SimpleNamespace(dataset=self.answer)
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        pytest.param(_DATASET_NOW, _DATASET_NOW, id="served"),
+        pytest.param(
+            AnalysisPending(operations=["op_3"], retry_after_s=2.0),
+            NewestPending(retry_after_s=2.0),
+            id="building",
+        ),
+    ],
+)
+def test_a_bare_spec_id_reads_the_dataset_the_runner_reads_for_its_spec_root(
+    calls: _Calls,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: FrameRef | Exception,
+    expected: FrameRef | NewestPending,
+):
+    """The runner's Spec root of the id in its default rendering, its dataset version named."""
+    roots = _SpecRoots(answer)
+    monkeypatch.setattr(newest_frames, "LiveRootSource", lambda **_: roots)
+
+    assert _newest().newest_of_spec(_DATASET.spec_id) == expected
+    assert roots.resolved == [(SpecRoot(spec_id=_DATASET.spec_id), False)]

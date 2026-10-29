@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -21,6 +22,7 @@ from assembler.mint import DescribedRevision, stamp_envelope
 from assembler.pipeline.candidate import _build_candidate
 from assembler.ports import (
     CompositionAppend,
+    FrameRef,
     FrameStore,
     PriorCreate,
     ReleaseRegistry,
@@ -84,6 +86,33 @@ def _series_coordinates_equal(
 # -- write_component -----------------------------------------------------
 
 
+BARE_SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
+"""A dataset id a bare `frame_ref` may name, the id a Spec root of the analysis runner takes."""
+
+
+def bare_frame_ref(intent: Mapping[str, object]) -> str | None:
+    """The dataset id of `intent`'s `frame_ref` when it names that id alone, else `None`."""
+    frame_ref = intent.get("frame_ref")
+    if not isinstance(frame_ref, Mapping) or frame_ref.keys() != {"spec_id"}:
+        return None
+    spec_id = cast("Mapping[str, object]", frame_ref)["spec_id"]
+    return spec_id if isinstance(spec_id, str) and BARE_SPEC_ID.fullmatch(spec_id) else None
+
+
+def _with_resolved_frame_ref(
+    intent: Mapping[str, object], *, resolve_spec: Callable[[str], FrameRef]
+) -> Mapping[str, object]:
+    """`intent` with a bare `frame_ref` replaced by the pair `resolve_spec` gives."""
+    spec_id = bare_frame_ref(intent)
+    if spec_id is None:
+        return intent
+    frame = resolve_spec(spec_id)
+    return {
+        **intent,
+        "frame_ref": {"spec_id": frame.spec_id, "content_version": frame.content_version},
+    }
+
+
 def write_component(
     *,
     intent: Mapping[str, object],
@@ -95,6 +124,7 @@ def write_component(
     revision_store: RevisionStore,
     release_registry: ReleaseRegistry,
     vocabulary_source: VocabularySource | None = None,
+    resolve_spec: Callable[[str], FrameRef] | None = None,
     clock: Callable[[], datetime.datetime] = _utc_now,
 ) -> WriteReply:
     """Create a component, or revise the one at `component_id`.
@@ -129,7 +159,14 @@ def write_component(
 
     A revise whose head was minted under a newer catalogue release than this deployment's
     raises `ReleaseMismatch` before any frame work, and again if a concurrent write moves the
-    head to a newer release before this one commits."""
+    head to a newer release before this one commits.
+
+    `resolve_spec` names the frame a create intent's bare `frame_ref`, `{"spec_id"}` with a
+    dataset id alone, stands for (`bare_frame_ref`), after the replay check. The revision stores
+    the pair it names, and the request hash covers the intent as sent, so a create retried with
+    its `cmw_` token replays without resolving again. With no `resolve_spec`, a bare `frame_ref`
+    is checked as any other and refused for its missing `content_version`. A revise keeps its
+    component's frame, so it resolves nothing."""
     _check_intent_size(intent=intent)
     release = release_registry.pinned()
     is_create = component_id is None
@@ -167,6 +204,8 @@ def write_component(
                 client_create=client_create,
                 revision_store=revision_store,
             )
+    if is_create and resolve_spec is not None:
+        intent = _with_resolved_frame_ref(intent, resolve_spec=resolve_spec)
     if not is_create:
         new_write_token = None
     elif client_create is not None:

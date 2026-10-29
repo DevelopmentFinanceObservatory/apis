@@ -24,8 +24,10 @@ from assembler.testing import (
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
+from presentation_api.newest_frames import NewestPending
 from presentation_store import GeneratedIdCollision, PresentationStoreUnavailable
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
+from tests.presentation_api.conftest import BARE_SPEC_ID, FakeNewestSpecs
 from tests.presentation_store.test_frame_store import _FakeSpecReader, _store
 
 
@@ -1152,3 +1154,59 @@ def test_the_components_door_refuses_to_start_without_the_public_site_url(
 
     with pytest.raises(ValueError, match="DFO_PUBLIC_SITE_URL"), TestClient(app):
         pass
+
+
+# -- a create naming its frame by dataset id alone ---------------------------
+
+
+def _bare(intent: dict) -> dict:
+    return {**intent, "frame_ref": {"spec_id": BARE_SPEC_ID}}
+
+
+def test_a_create_naming_a_dataset_id_alone_stores_the_pair_it_resolved(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, frame_ref: FrameRef
+):
+    resp = _create(newest_client, intent=_bare(_LINE_CHART_INTENT))
+
+    assert resp.status_code == 201, resp.text
+    pair = {"spec_id": frame_ref.spec_id, "content_version": frame_ref.content_version}
+    assert resp.json()["resolved_payload"]["provenance"]["inputs"] == [pair]
+    read = newest_client.get(f"/api/presentation/components/{resp.json()['component_id']}")
+    assert read.json()["stored_intent"]["frame_ref"] == pair
+    assert newest_specs.asked == [BARE_SPEC_ID]
+
+
+def test_a_retried_bare_create_replays_its_first_reply_without_resolving_again(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs
+):
+    """The request hash covers the intent as sent, so newer data arriving between the two
+    calls cannot turn the retry into a different request."""
+    body = {"intent": _bare(_LINE_CHART_INTENT), "write_token": "cmw_" + "r" * 22}
+
+    first = newest_client.post("/api/presentation/components", json=body)
+    newest_specs.answer = FrameRef(spec_id="spec_" + "e" * 32, content_version="cv_" + "f" * 32)
+    again = newest_client.post("/api/presentation/components", json=body)
+
+    assert first.status_code == 201, first.text
+    assert again.json() == first.json()
+    assert newest_specs.asked == [BARE_SPEC_ID]
+
+
+def test_a_bare_create_whose_dataset_is_building_is_frame_unavailable_and_stores_nothing(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, revision_store: FakeRevisionStore
+):
+    newest_specs.answer = NewestPending(retry_after_s=2.0)
+
+    resp = _create(newest_client, intent=_bare(_LINE_CHART_INTENT))
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["code"] == "frame_unavailable"
+    assert resp.json()["retryable"] is True
+    assert revision_store._revisions == {}
+
+
+def test_a_bare_create_without_a_datasets_surface_is_frame_unavailable(client: TestClient):
+    resp = _create(client, intent=_bare(_LINE_CHART_INTENT))
+
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["code"] == "frame_unavailable"

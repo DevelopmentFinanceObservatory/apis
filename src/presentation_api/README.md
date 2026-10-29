@@ -48,11 +48,14 @@ Inspects underlying observation frames (`get_frame_view` / `describe_frame`) acr
 | Method | Endpoint                                               | Description                                                                   |
 | :----- | :----------------------------------------------------- | :---------------------------------------------------------------------------- |
 | `GET`  | `/api/presentation/frames/{spec_id}/{content_version}` | Returns structural dimension summaries, full facet lists, or filtered values. |
+| `GET`  | `/api/presentation/frames/{spec_id}`                   | The same views of a dataset's newest version, with the `spec_id` and `content_version` read. |
 
 Query parameters:
 
 - `dimension`: Isolates a single dimension and returns its complete list of permissible values.
 - `query`: Filters dimension values across all facets by substring match.
+
+`GET /api/presentation/frames/{spec_id}` names a dataset by its `spec_` id alone (`spec_` and 32 lowercase hex digits; any other id refuses 400 `request_invalid`). It reads the version the analysis runner reads for a Spec root `{spec_id}` (`datasets_api.analysis_roots.LiveRootSource.resolve`): the served definition's newest version in its default enrichment, rebuilt when its head is stale. It takes the same `dimension` and `query` and answers the pair route's body with two more fields, `spec_id`, the served id it read (another id when the one sent now serves under it), and `content_version`. A version still building refuses 503 `frame_unavailable`, retryable. Any other Datasets refusal refuses 404 `frame_unavailable`, not retryable, with the Datasets code in its `detail`. An app that does not mount the Datasets surface resolves no bare id and refuses 404 `frame_unavailable`.
 
 Each dimension lists its non-null values in `values`, counted by `total_count`. `plural` says whether the frame's series hold more than one value of the dimension, a null counting as one, so a `unit` dimension holding `USDollar` on some series and null on others is plural with one listed value. A series its source's estimates continue holds the method of the rows it continues (`assembler.frame_view.series_keys`), so on a frame whose only other method is that continuation `measurementMethod` is not plural, and its continuing method stays listed as a value a select binds to draw the estimates alone.
 
@@ -68,6 +71,8 @@ Handles creation, revision, and readback of visual components and layout composi
 | `GET`   | `/api/presentation/components/{component_id}/revisions/{revision}/data[?format&bundle]`                                | Downloads the frame rows behind every value one revision shows, as CSV, XLSX, or Parquet, in a zip bundle by default (`README.md`, the data file, `data/codes.csv`, `SOURCES.md`, `CITATION.cff`, `datapackage.json`). The download is named `dfo_<card-title-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip`. |
 | `POST`  | `/api/presentation/components/{component_id}/revisions/{revision}/render`                                              | Draws one stored revision on another frame for a live share. Live-refresh principal only.                                                                                                                                                                                                                   |
 | `GET`   | `/api/presentation/components/{component_id}/revisions/{revision}/render/data?spec_id&content_version[&format&bundle]` | Downloads the rows behind that drawing. Live-refresh principal only.                                                                                                                                                                                                                                        |
+
+A create's `intent.frame_ref` may name a dataset id alone, `{"spec_id": "spec_..."}`. The create resolves it as the bare frames route does, draws that version, and stores the pair, so a read's `stored_intent.frame_ref` and the reply's `resolved_payload.provenance.inputs` name it. A create retried with its `write_token` replays the first reply and resolves nothing again. The bare frames route's refusals apply. A revise keeps its component's frame.
 
 ### 5. Shares Door
 

@@ -59,6 +59,7 @@ Gated by `DFO_PRESENTATION_SURFACE=true` (or `1`). Reads from `presentation_stor
 | Method  | Endpoint                                               | Description                                                                       |
 | :------ | :----------------------------------------------------- | :-------------------------------------------------------------------------------- |
 | `GET`   | `/api/presentation/frames/{spec_id}/{content_version}` | Retrieves assembled presentation frame data for a rendered dataset specification. |
+| `GET`   | `/api/presentation/frames/{spec_id}`                   | The same frame data for a dataset's newest version, naming the version read.      |
 | `POST`  | `/api/presentation/components`                         | Creates a presentation component record and returns its write token once.         |
 | `GET`   | `/api/presentation/components/{component_id}`          | Retrieves a stored presentation component record.                                 |
 | `PATCH` | `/api/presentation/components/{component_id}`          | Modifies component layout, properties, or bindings. Needs `x-dfo-write-token`.    |

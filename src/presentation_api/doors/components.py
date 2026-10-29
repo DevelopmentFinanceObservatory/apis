@@ -6,6 +6,12 @@ composition needs that composition's token in the same header. A create may carr
 token in the body's `write_token`; a retry with the same token and request returns the first
 create's reply and spends no card allowance. These routes take no session.
 
+A create's `intent.frame_ref` may name a dataset id alone, `{"spec_id": "spec_..."}`. The create
+draws the version the analysis runner reads for a Spec root of that id
+(`presentation_api.newest_frames.resolve_bare_spec`) and stores that pair, which the reply's
+`resolved_payload.provenance.inputs` and a read's `stored_intent.frame_ref` name. A revise
+keeps its component's frame.
+
 A create or a revise spends one unit of its caller's daily `card` allowance
 (`datasets_api.allowance`, `DATASETS_CARD_DAILY_ALLOWANCE`, default 500), the caller named by
 `dfo_platform.caller.resolve_caller` as the share create names it, and refuses 429
@@ -111,6 +117,7 @@ from presentation_api.doors.render import (
 )
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import ComponentReadResponse, CreateReplyResponse, WriteReplyResponse
+from presentation_api.newest_frames import NewestFrames, resolve_bare_spec
 from presentation_api.path_params import PathParamInvalid, require_component_id
 from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
@@ -387,6 +394,7 @@ def build_components_door(
     allowances: AllowanceLedger | None = None,
     caller: CallerSettings | None = None,
     principals: Principals | None = None,
+    newest: NewestFrames | None = None,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
 ) -> DoorContribution:
@@ -405,6 +413,10 @@ def build_components_door(
     out from `DatasetsBuildSettings`: the ledger over the datasets pool, `caller`, and
     `principals`, whose `publish` grant spends none. Over injected stores with no `allowances`,
     writes spend nothing.
+
+    `newest` resolves a create intent's `frame_ref` that names a dataset id alone
+    (`presentation_api.newest_frames.resolve_bare_spec`); with none, such a create refuses
+    `frame_unavailable`.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     effective_pool_size = (
@@ -562,8 +574,9 @@ def build_components_door(
                     revision_store=deps.revision_store,
                     release_registry=deps.release_registry,
                     vocabulary_source=deps.vocabulary_source,
+                    resolve_spec=lambda spec_id: resolve_bare_spec(spec_id, newest=newest),
                 )
-            retention = _frame_ref_retention(body.intent.get("frame_ref"))
+            retention = _frame_ref_retention(reply.frame_ref)
             return JSONResponse(
                 {**serialize_create_reply(reply), "retention": retention}, status_code=201
             )

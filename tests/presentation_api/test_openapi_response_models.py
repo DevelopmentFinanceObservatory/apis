@@ -16,6 +16,7 @@ _MODELED_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
         ("/api/presentation/components/{component_id}/revisions/{revision}/render", "post"),
         ("/api/presentation/healthz", "get"),
         ("/api/presentation/capabilities", "get"),
+        ("/api/presentation/frames/{spec_id}", "get"),
         ("/api/presentation/frames/{spec_id}/{content_version}", "get"),
         ("/api/presentation/release", "get"),
     }

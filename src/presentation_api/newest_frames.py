@@ -23,6 +23,12 @@ Either answers `NewestPending` while a rebuild runs over its inline budget, with
 the refresh or the runner asks the caller to wait. Any refusal or failure raises, and the read
 states the slot `stale`.
 
+`NewestFrames.newest_of_spec` answers a bare `spec_` id, which the frames door and a component
+create accept in place of a pair, with the dataset version the analysis runner reads
+for a Spec root `{spec_id}` (`datasets_api.analysis_roots.LiveRootSource.resolve`): the served
+definition's newest version in the root's default rendering, rebuilt when its head is stale.
+`resolve_bare_spec` turns its refusals into the `frame_unavailable` the presentation doors serve.
+
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
 that mounts that surface (`dfo_apis.app` passes the cell and the `RunningAnalyses` to both).
 The work runs on the share door's executor thread under the Presentation request's bound catalogue and release, holding
@@ -31,22 +37,25 @@ the materialise permits Datasets' own reads hold.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Protocol
 
-from assembler.ports import FrameRef
+from assembler.ports import FrameRef, FrameUnavailable
 from datasets_api.analysis import (
     AnalysisPending,
     AnalysisRequest,
     DerivedRoot,
+    SpecRoot,
     prepare_analysis,
     run_prepared,
     stored_answer,
 )
 from datasets_api.analysis_roots import LiveRootSource
+from datasets_api.app import classify_datasets_exception
 from datasets_api.current import DefinitionDeps
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.analysis import (
@@ -57,9 +66,16 @@ from datasets_api.doors.analysis import (
 )
 from datasets_api.doors.definition import definition_deps
 from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
+from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.trace import get_trace_id
 
-__all__ = ["FRESHNESS_WINDOW", "DatasetsNewestFrames", "NewestFrames", "NewestPending"]
+__all__ = [
+    "FRESHNESS_WINDOW",
+    "DatasetsNewestFrames",
+    "NewestFrames",
+    "NewestPending",
+    "resolve_bare_spec",
+]
 
 FRESHNESS_WINDOW = timedelta(minutes=15)
 """How long a live slot serves a `current` or `stale` check's answer before it asks for newer
@@ -87,6 +103,15 @@ class NewestFrames(Protocol):
 
         Raises:
             Exception: Any refusal or failure of the refresh or the run.
+        """
+        ...
+
+    def newest_of_spec(self, spec_id: str) -> FrameRef | NewestPending:
+        """The dataset version a Spec root `{spec_id}` reads, named by the served id it is
+        recorded under, or `NewestPending` while it builds.
+
+        Raises:
+            Exception: Any refusal or failure of the serve.
         """
         ...
 
@@ -129,6 +154,16 @@ class DatasetsNewestFrames:
             spec_id=refreshed.frame.spec_id, content_version=refreshed.frame.content_version
         )
 
+    def newest_of_spec(self, spec_id: str) -> FrameRef | NewestPending:
+        current = self._cell.get()
+        deps = definition_deps(current, deadline=time.monotonic() + self._budget_seconds)
+        source = LiveRootSource(deps=deps, recipes=current.recipe_store)
+        try:
+            root = source.resolve(SpecRoot(spec_id=spec_id), latest=False, trace_id=get_trace_id())
+        except AnalysisPending as pending:
+            return NewestPending(retry_after_s=pending.retry_after_s)
+        return FrameRef(spec_id=root.dataset.spec_id, content_version=root.dataset.content_version)
+
     def _derived_answer(
         self, frame: FrameRef, *, current: Deps, deps: DefinitionDeps, trace_id: str | None
     ) -> dict[str, Any]:
@@ -158,3 +193,49 @@ class DatasetsNewestFrames:
                 permit=analysis_permit(current, deps),
                 trace_id=trace_id,
             ).body()
+
+
+def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
+    """The frame a bare `spec_id` names (`NewestFrames.newest_of_spec`).
+
+    Raises:
+        FrameUnavailable: `io` (503, retryable) while the version builds or for a refusal a
+            retry may clear; `quarantined` for a quarantined identity; `unknown` (404) for any
+            other refusal below status 500, the Datasets code and detail in its detail; and
+            `unknown` when no Datasets surface is mounted beside this one, so no bare id
+            resolves.
+        Exception: A Datasets refusal the Datasets surface answers at 500 or above that no
+            retry clears, or a failure it does not classify, unchanged.
+    """
+    if newest is None:
+        raise FrameUnavailable(
+            reason="unknown",
+            detail=f"this deployment resolves no bare spec_id; name {spec_id}'s content_version",
+        )
+    try:
+        resolved = newest.newest_of_spec(spec_id)
+    except Exception as exc:
+        # The resolve is the analysis runner's, so its refusals classify as that door's do.
+        with bound_registry_endpoint("datasets.analysis"):
+            problem = classify_datasets_exception(exc)
+        if problem is None or problem.status >= 500:
+            # A server fault stays one; the surface answers it `internal_error`.
+            raise
+        if problem.retryable:
+            reason = "io"
+        elif problem.code == "identity_quarantined":
+            reason = "quarantined"
+        else:
+            reason = "unknown"
+        raise FrameUnavailable(
+            reason=reason,
+            detail=f"the newest version of {spec_id} cannot be served: {problem.code}: "
+            f"{problem.detail}",
+        ) from exc
+    if isinstance(resolved, NewestPending):
+        raise FrameUnavailable(
+            reason="io",
+            detail=f"the newest version of {spec_id} is building; retry in "
+            f"{math.ceil(resolved.retry_after_s)} s",
+        )
+    return resolved
