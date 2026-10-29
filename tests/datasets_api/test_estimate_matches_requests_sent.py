@@ -161,13 +161,64 @@ def _run_group(stat_vars: list[str]) -> tuple[int, int]:
 
 
 def test_group_dispatch_requests_equals_admitted_requests_past_the_dispatch_chunk_target():
-    """Thirty-three members exceed four lanes of eight, so they split into five chunks.
+    """Sixty-five members exceed four lanes of sixteen, so they split into five chunks.
     Actual dispatch and admission must report the same request count."""
-    member_count = 4 * 8 + 1
+    member_count = 4 * 16 + 1
     stat_vars = [f"dcid:LanesProofVar{i}" for i in range(member_count)]
     requests_sent, estimate_requests = _run_group(stat_vars)
     assert requests_sent == estimate_requests
     assert requests_sent == 5
+
+
+def test_members_with_no_dispatch_facet_ride_in_no_request_and_leave_the_estimate_equal():
+    """Twenty of forty interleaved members hold coverage only at another recipient, so their
+    probes find no facet under the bound one. They ride in no request: the twenty members that
+    fetch spread over four lanes of five, where packing all forty would put idle StatVars in
+    every request. Admission prices the same four, and each idle member still reports zero
+    observations."""
+    fetching = [f"dcid:IdleProofVar{i:02d}" for i in range(0, 40, 2)]
+    idle = [f"dcid:IdleProofVar{i:02d}" for i in range(1, 40, 2)]
+    bodies = {
+        sv.removeprefix("dcid:"): _csv_body(stat_var=sv.removeprefix("dcid:"), num_rows=2)
+        for sv in fetching
+    }
+    sent: list[httpx.Request] = []
+    sdmx = SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(bodies, sent))
+    coverage = _coverage_index(
+        [(sv, _RECIPIENT) for sv in fetching] + [(sv, "country/UGA") for sv in idle]
+    )
+    graph = FakeGraphReader(
+        facets={(sv.removeprefix("dcid:"), _RECIPIENT): [_FACET] for sv in fetching}
+    )
+    member_requests = [
+        _aggregate_ceiling_request(stat_var=sv, recipient=_RECIPIENT)
+        for sv in sorted(fetching + idle)
+    ]
+
+    estimate = sync_estimate(
+        member_requests, index=coverage, member_concurrency=_SETTINGS.mint_member_max_concurrency
+    )
+    result = materialise_group(
+        member_requests,
+        sdmx=sdmx,
+        graph=graph,
+        ceiling=1_000_000,
+        materialiser_build="test-build",
+        capability_version="cap-v1",
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        member_concurrency=_SETTINGS.mint_member_max_concurrency,
+        coverage=coverage,
+    )
+
+    named = [
+        f"dcid:{sv}"
+        for request in sent
+        for sv in str(request.url.params["c[variableMeasured]"]).split(",")
+    ]
+    assert sorted(named) == fetching
+    assert len(sent) == estimate.requests == 4
+    counts = {entry["ref"]: entry["observation_count"] for entry in result.trace.resolved_stat_vars}
+    assert {sv: counts[sv] for sv in idle} == dict.fromkeys(idle, 0)
 
 
 _UNBOUND_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")
@@ -441,7 +492,7 @@ def test_an_unbound_group_prices_every_request_its_fetch_sends_outside_the_windo
 ):
     """Ninety-six StatVars cover 250 donors in 2010 and the window asks for 2020. The fetch
     still names every StatVar beside the 250-donor list, which leaves room for three
-    288-character dcids a request, so each of its twelve chunks of eight sends three. Admission
+    288-character dcids a request, so each of its six chunks of sixteen sends six. Admission
     prices all 36 while its row count follows the window."""
     bare_stat_vars = [f"EstimateProofOutsideWindow{i:02d}{'x' * 260}" for i in range(96)]
     sent, estimate_requests, estimate_rows, served = _run_windowed_role_bearing_group(
