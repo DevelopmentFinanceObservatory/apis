@@ -1367,7 +1367,7 @@ def run_normalise_recipes(
             with datasets.transaction() as tx:
                 holder = tx.fetch_one(
                     "SELECT subject_id, content_version FROM datasets.frame_recipe "
-                    "WHERE replay_key = %s",
+                    "WHERE replay_key = %s AND superseded_at IS NULL",
                     (new_key,),
                 )
             if holder is not None:

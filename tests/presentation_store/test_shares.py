@@ -478,7 +478,7 @@ def test_a_slot_read_records_what_it_shows_each_time_it_changes_read_newest_firs
 
     for frame in (_FRAME, _NEWER, _NEWER, _FRAME):
         store.record_served(
-            share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=rendering
+            share_id=share.id, revision=1, slot=1, card=_card("a"), frame=frame, rendering=rendering
         )
 
     served = store.served_frames(share_id=share.id, limit=10).entries
@@ -493,15 +493,25 @@ def test_a_slot_read_records_what_it_shows_each_time_it_changes_read_newest_firs
         store.served_frames(share_id=share.id, limit=10)
 
 
-def test_a_read_of_a_card_a_replace_has_moved_out_of_its_slot_records_nothing():
+@pytest.mark.parametrize(
+    ("write", "served", "written"),
+    [("replace", _NEWER, (1, "cmp_b", _FRAME)), ("snapshot", _FRAME, (1, "cmp_a", _NEWER))],
+)
+def test_a_read_of_a_revision_a_later_write_has_moved_past_records_nothing(
+    write: str, served: FrameRef, written: tuple[int, str, FrameRef]
+):
+    """A snapshot conversion keeps the card in its slot, so the read is fenced on the revision
+    it served, not on the card."""
     store = LiveShareStore(store=FakePresentationStore())
     share = _create(store, _card("a"))
-    store.replace_share(share_id=share.id, revision=1, cards=[_card("b")], renderings={})
+    _write(store, share.id, write)
 
-    # The read loaded revision 1 before the replace committed, and records after it.
-    store.record_served(share_id=share.id, slot=1, card=_card("a"), frame=_NEWER, rendering=None)
+    # The read loaded revision 1 before the write committed, and records after it.
+    store.record_served(
+        share_id=share.id, revision=1, slot=1, card=_card("a"), frame=served, rendering=None
+    )
 
-    assert _timeline(store, share.id) == [(1, "cmp_a", _FRAME), (1, "cmp_b", _FRAME)]
+    assert _timeline(store, share.id) == [(1, "cmp_a", _FRAME), written]
 
 
 def test_a_slot_read_locks_the_share_only_when_what_the_slot_shows_changes():
@@ -511,7 +521,9 @@ def test_a_slot_read_locks_the_share_only_when_what_the_slot_shows_changes():
 
     def locks_taken(frame: FrameRef) -> int:
         fake.statement_log.clear()
-        store.record_served(share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=None)
+        store.record_served(
+            share_id=share.id, revision=1, slot=1, card=_card("a"), frame=frame, rendering=None
+        )
         return sum("FOR NO KEY UPDATE" in sql for sql in fake.statement_log)
 
     assert [locks_taken(frame) for frame in (_FRAME, _NEWER, _NEWER, _FRAME)] == [0, 1, 0, 1]

@@ -49,7 +49,13 @@ from datasets_api.operations import worker as worker_module
 from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.worker import OperationSuperseded, run_operation
 from datasets_api.principals import Principal
-from datasets_api.recipe_store import AnswerRecord, LiveRecipeStore
+from datasets_api.recipe_store import (
+    AnswerRecord,
+    LiveRecipeStore,
+    RecipeRecord,
+    ReplayedFrame,
+    ReplayKeyHeld,
+)
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
@@ -846,6 +852,43 @@ def test_an_analysis_answer_is_replaced_under_its_key_and_names_a_stored_version
                 body={},
             )
         )
+
+
+def test_a_superseded_recipe_gives_its_replay_key_to_another_pair(live_store):
+    """The replay index holds the key once among recipes not superseded, so a second pair
+    takes it only after the first gives it up, and the first keeps its recipe."""
+    old, new = f"ops_{uuid4().hex}", f"ops_{uuid4().hex}"
+    with live_store.transaction() as tx:
+        for subject_id in (old, new):
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+                (subject_id, "spec", "ocv1", 1, {"prepared_at": "2026-01-01T00:00:00Z"}),
+            )
+    recipes = LiveRecipeStore(store=live_store)
+    replay_key = f"rpk_{uuid4().hex}"
+
+    def record(subject_id: str) -> RecipeRecord:
+        return RecipeRecord(
+            spec_id=subject_id,
+            content_version="ocv1",
+            normal_form_hash="rnf_" + "0" * 32,
+            replay_key=replay_key,
+            body={"replay_key": replay_key},
+        )
+
+    assert recipes.write_recipe(record(old))
+    with pytest.raises(ReplayKeyHeld):
+        recipes.write_recipe(record(new))
+    recipes.supersede_replay(replay_key=replay_key, spec_id=old, content_version="ocv1")
+
+    assert recipes.write_recipe(record(new))
+    assert not recipes.write_recipe(record(old))
+    assert recipes.read_replay(replay_key=replay_key) == ReplayedFrame(
+        spec_id=new, content_version="ocv1"
+    )
+    assert recipes.read_recipe(spec_id=old, content_version="ocv1") == record(old)
 
 
 def test_subject_head_table_exists_after_migration(live_store):

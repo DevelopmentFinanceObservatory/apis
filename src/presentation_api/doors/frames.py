@@ -137,7 +137,8 @@ def build_frames_door(
         try:
             if frame_store is None:
                 settings = PresentationSettings.from_env()
-                live = build_live_frame_store(settings=settings)
+                # No frames route pins.
+                live = build_live_frame_store(settings=settings, allowances=None)
                 opened_dataset_pool = True
                 owned_graph = live.graph
                 deps.frame_store = live.frame_store

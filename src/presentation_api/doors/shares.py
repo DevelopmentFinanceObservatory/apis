@@ -177,6 +177,7 @@ from datasets_api.allowance import (
     AllowanceKind,
     AllowanceLedger,
     LiveAllowanceLedger,
+    SharedAllowanceLedger,
     allowance_limits,
     spending,
 )
@@ -1119,7 +1120,7 @@ def build_shares_door(
     snapshot_reader: SnapshotReader | None = None,
     newest: NewestFrames | None = None,
     vocabulary_source: VocabularySource | None = None,
-    allowances: AllowanceLedger | None = None,
+    allowances: SharedAllowanceLedger | None = None,
     caller: CallerSettings | None = None,
     now: Callable[[], datetime] | None = None,
     pool_size: int | None = None,
@@ -1128,6 +1129,7 @@ def build_shares_door(
     """Build the shares door. The lifespan builds each store left out over the live pools: the
     share and revision stores over the presentation pool, the frame store over the datasets
     pool, and the allowance ledger over the datasets pool with `DatasetsBuildSettings`' limits.
+    The share unit and a frame store built here spend from one ledger, `allowances` when given.
     A frame store built here brings its snapshot reader; with one given, `snapshot_reader` is
     the history's, and left out the history states no retention. `newest` answers live slots'
     newer-data checks; left out, every live slot serves its card's frame as stale.
@@ -1168,14 +1170,6 @@ def build_shares_door(
             if share_store is None or revision_store is None:
                 presentation_db = LiveDatasetStore(connections=presentation_shared_pool())
                 opened_presentation_pool = True
-            effective_frame_store = frame_store
-            effective_snapshot_reader = snapshot_reader
-            if effective_frame_store is None:
-                live = build_live_frame_store(settings=PresentationSettings.from_env())
-                dataset_borrows += 1
-                owned_graph = live.graph
-                effective_frame_store = live.frame_store
-                effective_snapshot_reader = live.snapshot_reader
             effective_allowances = allowances
             effective_caller = caller
             if effective_caller is None:
@@ -1188,6 +1182,16 @@ def build_shares_door(
                     limits=allowance_limits(build_settings),
                 )
                 dataset_borrows += 1
+            effective_frame_store = frame_store
+            effective_snapshot_reader = snapshot_reader
+            if effective_frame_store is None:
+                live = build_live_frame_store(
+                    settings=PresentationSettings.from_env(), allowances=effective_allowances
+                )
+                dataset_borrows += 1
+                owned_graph = live.graph
+                effective_frame_store = live.frame_store
+                effective_snapshot_reader = live.snapshot_reader
             deps = SharesDeps(
                 share_store=(
                     share_store

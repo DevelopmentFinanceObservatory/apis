@@ -571,7 +571,7 @@ _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
 # The pin budget is a UTC day's, so it resets at the next UTC midnight, a day after the
 # exemplar's midnight. The refusal stays retryable and names the wait.
 _DELIBERATE_DIFFS["pin-98-PinBudgetExhausted"] = {
-    "detail": "the pin door has reached its daily pin budget; it resets at the next UTC midnight",
+    "detail": "today's budget of new pinned copies is spent; it resets at the next UTC midnight",
     "headers": {"Retry-After": "86400"},
 }
 

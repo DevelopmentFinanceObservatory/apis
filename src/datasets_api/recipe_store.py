@@ -12,7 +12,9 @@ two writers of one frame can differ in display text the hashes leave out. A diff
 
 `replay_key` hashes the recipe's normal form, its root dataset versions, and the execution
 identity. Two instances replaying one card mint the same frame pair, so one key names one
-frame. A write naming a key another pair holds raises `ReplayKeyHeld`.
+frame. A write naming a key another pair holds raises `ReplayKeyHeld`. `supersede_replay`
+releases a pair's key, so a frame of the same computation stored under another pair can take
+it; the released recipe is still read by its pair.
 
 An analysis answer (`AnswerRecord`) is the 200 body of `POST /api/datasets/analysis`, kept in
 `datasets.analysis_answer` under the run's request key (`datasets_api.analysis.request_key`)
@@ -159,7 +161,12 @@ class RecipeStore(RecipeReader, Protocol):
         ...
 
     def read_replay(self, *, replay_key: str) -> ReplayedFrame | None:
-        """Return the frame stored under `replay_key`, or `None` when no recipe carries it."""
+        """Return the frame stored under `replay_key`, or `None` when no recipe holds it."""
+        ...
+
+    def supersede_replay(self, *, replay_key: str, spec_id: str, content_version: str) -> None:
+        """Release `replay_key` from the pair's recipe, which keeps its row. Changes nothing
+        when the pair no longer holds the key."""
         ...
 
     def read_answer(self, *, request_key: str) -> AnswerRecord | None:
@@ -203,7 +210,8 @@ def _write_recipe(tx: Transaction, record: RecipeRecord, *, recorded_at: datetim
     )
     if stored is None:
         holder = tx.fetch_one(
-            "SELECT subject_id, content_version FROM datasets.frame_recipe WHERE replay_key = %s",
+            "SELECT subject_id, content_version FROM datasets.frame_recipe "
+            "WHERE replay_key = %s AND superseded_at IS NULL",
             (record.replay_key,),
         )
         if holder is None:
@@ -272,7 +280,8 @@ class LiveRecipeStore:
 
     def read_replay(self, *, replay_key: str) -> ReplayedFrame | None:
         row = self._fetch_one(
-            "SELECT subject_id, content_version FROM datasets.frame_recipe WHERE replay_key = %s",
+            "SELECT subject_id, content_version FROM datasets.frame_recipe "
+            "WHERE replay_key = %s AND superseded_at IS NULL",
             (replay_key,),
             reading=f"replay_key {replay_key!r}",
         )
@@ -282,6 +291,26 @@ class LiveRecipeStore:
             spec_id=cast(str, row["subject_id"]),
             content_version=cast(str, row["content_version"]),
         )
+
+    def supersede_replay(self, *, replay_key: str, spec_id: str, content_version: str) -> None:
+        failure: str | None = None
+        sqlstate: str | None = None
+        try:
+            with self._store.transaction() as tx:
+                tx.execute(
+                    "UPDATE datasets.frame_recipe SET superseded_at = %s "
+                    "WHERE subject_id = %s AND content_version = %s AND replay_key = %s "
+                    "AND superseded_at IS NULL",
+                    (self._now(), spec_id, content_version, replay_key),
+                )
+        except Exception as exc:
+            failure = (
+                f"superseding replay_key {replay_key!r} of spec_id {spec_id!r} "
+                f"content_version {content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
 
     def read_answer(self, *, request_key: str) -> AnswerRecord | None:
         row = self._fetch_one(

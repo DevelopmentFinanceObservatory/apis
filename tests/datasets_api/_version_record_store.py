@@ -103,11 +103,14 @@ CREATE TABLE datasets.frame_recipe (
     subject_id TEXT NOT NULL,
     content_version TEXT NOT NULL,
     normal_form_hash TEXT NOT NULL,
-    replay_key TEXT NOT NULL UNIQUE,
+    replay_key TEXT NOT NULL,
     recipe TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
+    superseded_at TEXT,
     PRIMARY KEY (subject_id, content_version)
 );
+CREATE UNIQUE INDEX datasets.frame_recipe_replay_key_idx
+    ON frame_recipe (replay_key) WHERE superseded_at IS NULL;
 CREATE TABLE datasets.analysis_answer (
     request_key TEXT PRIMARY KEY,
     subject_id TEXT NOT NULL,

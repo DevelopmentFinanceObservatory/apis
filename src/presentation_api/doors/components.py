@@ -454,7 +454,8 @@ def build_components_door(
                 )
             if frame_store is None:
                 settings = PresentationSettings.from_env()
-                live = build_live_frame_store(settings=settings)
+                # No components route pins.
+                live = build_live_frame_store(settings=settings, allowances=None)
                 dataset_borrows += 1
                 owned_graph = live.graph
                 deps.frame_store = live.frame_store

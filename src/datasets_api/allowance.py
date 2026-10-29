@@ -3,17 +3,18 @@
 A caller (`dfo_platform.caller.Caller`) holds one allowance of each caller kind per UTC day:
 `share` (`DATASETS_SHARE_DAILY_ALLOWANCE`, default 10) for share writes, `card`
 (`DATASETS_CARD_DAILY_ALLOWANCE`, default 500) for Presentation card creates and revisions, and
-`pin` (`DATASETS_PIN_DAILY_ALLOWANCE`, default 200) for the pins of callers without the pin
+`pin` (`DATASETS_PIN_DAILY_ALLOWANCE`, default 100) for the pins of callers without the pin
 grant. Two budgets every caller shares are kept the same way, under `BUDGET_KEY`: `pin_budget`
-(`DATASETS_PIN_DAILY_MAX`, default 500), the new pinned copies the pin door makes, and
-`open_pin_budget` (`DATASETS_PIN_OPEN_DAILY_MAX`, default 200), those it makes for callers
-without the pin grant. `AllowanceLedger.spend` takes one unit, or refuses `AllowanceExhausted`
+(`DATASETS_PIN_DAILY_MAX`, default 2,500), the new pinned copies the pin door and the share routes
+make (`datasets_api.retention_admission`), and `open_pin_budget` (`DATASETS_PIN_OPEN_DAILY_MAX`,
+default 2,000), those they make for callers without the pin grant. `AllowanceLedger.spend` takes one unit, or refuses `AllowanceExhausted`
 (429 `allowance_exhausted`) with `Retry-After` counting the seconds to the next UTC midnight,
 when every allowance and budget resets. `SharedAllowanceLedger.spend_together` takes one unit
 of each of several, all or none, and refuses naming the first spent out. `AllowanceLedger.refund`
 gives one unit back, `SharedAllowanceLedger.refund_together` gives back one of each of several,
 all or none, and `spending` spends one around a write and refunds it when the write
-fails, so a failed write costs its caller nothing. A pin's units stay spent when its copy fails.
+fails, so a failed write costs its caller nothing. A pin's units stay spent when its copy
+stands and a later step fails.
 
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
 it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
@@ -229,8 +230,7 @@ class LiveAllowanceLedger:
                 for spend in spends:
                     params = (spend.key, spend.kind.value, _utc_day(now))
                     # The row holds a positive count, so the last unit deletes it. The lock
-                    # holds the count read here until commit, so a spend racing the refund
-                    # waits for it rather than leaving it to match no row.
+                    # holds the count read here until commit, so a racing spend waits.
                     row = tx.fetch_one(
                         "SELECT count FROM datasets.caller_allowance "
                         "WHERE caller_key = %s AND kind = %s AND day = %s FOR UPDATE",

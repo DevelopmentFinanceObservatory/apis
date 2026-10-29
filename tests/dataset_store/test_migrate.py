@@ -402,6 +402,7 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0040_caller_allowance_budgets.sql",
         "0041_analysis_answer.sql",
         "0042_caller_allowance_card.sql",
+        "0043_frame_recipe_superseded.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)

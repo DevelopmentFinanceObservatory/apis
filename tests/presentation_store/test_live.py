@@ -745,11 +745,18 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
     ]
     for frame in (newer, newer, stored):
         shares.record_served(
-            share_id=share.id, slot=1, card=card, frame=frame, rendering={"columns": ["a"]}
+            share_id=share.id,
+            revision=1,
+            slot=1,
+            card=card,
+            frame=frame,
+            rendering={"columns": ["a"]},
         )
     shares.replace_share(share_id=share.id, revision=1, cards=[], renderings={})
     # A read that loaded revision 1 before the replace records nothing after it.
-    shares.record_served(share_id=share.id, slot=1, card=card, frame=newer, rendering=None)
+    shares.record_served(
+        share_id=share.id, revision=1, slot=1, card=card, frame=newer, rendering=None
+    )
 
     first_claims = [
         shares.claim_slot_check(share_id=share.id, slot=2, card=card, now=at, claim_until=until)

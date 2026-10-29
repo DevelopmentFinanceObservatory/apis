@@ -148,21 +148,22 @@ class DatasetsBuildSettings(BaseSettings):
     # Maximum head age before rebuilding. Catches count- and date-invariant value corrections.
     head_max_age_seconds: int = Field(default=86_400, ge=1)
 
-    # New pinned copies of named artifacts the pin door makes per UTC day, a budget spent as an
-    # allowance is (`datasets_api.allowance`). A repin of an already pinned artifact and a
-    # serving-frame copy spend none. 0 refuses every new pinned copy.
-    pin_daily_max: int = Field(default=500, ge=0)
+    # New pinned copies the pin door and the share routes make per UTC day
+    # (`datasets_api.retention_admission`), a budget spent as an allowance is
+    # (`datasets_api.allowance`). A repin of an already pinned artifact and a serving-frame copy
+    # spend none. 0 refuses every new pinned copy.
+    pin_daily_max: int = Field(default=2_500, ge=0)
 
     # New pinned copies callers without the pin grant may make together per UTC day, spent with
     # `pin_daily_max` and the caller's `pin_daily_allowance` in one transaction. Their copies
     # spend `pin_daily_max` as well, so open callers leave the pin grant's holders at least
     # `pin_daily_max` minus this.
-    pin_open_daily_max: int = Field(default=200, ge=0)
+    pin_open_daily_max: int = Field(default=2_000, ge=0)
 
     # New pinned copies one caller without the pin grant may make per UTC day
     # (`datasets_api.allowance`), through the pin door or a share's pins
     # (`datasets_api.retention_admission`). A repin of an already pinned artifact spends none.
-    pin_daily_allowance: int = Field(default=200, ge=0)
+    pin_daily_allowance: int = Field(default=100, ge=0)
 
     # Shares one caller may write per UTC day (`datasets_api.allowance`).
     share_daily_allowance: int = Field(default=10, ge=0)

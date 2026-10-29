@@ -232,7 +232,12 @@ def serve_on_slot_frame[T](
             drawn = draw(card.frame)
         frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
     deps.share_store.record_served(
-        share_id=share.id, slot=slot, card=card, frame=frame, rendering=record.frame_rendering
+        share_id=share.id,
+        revision=share.revision,
+        slot=slot,
+        card=card,
+        frame=frame,
+        rendering=record.frame_rendering,
     )
     return SlotServed(drawn=drawn, frame=frame, freshness=freshness, checked_at=checked_at)
 

@@ -5,6 +5,7 @@ spends on create and revise."""
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import Iterator
@@ -13,6 +14,7 @@ from typing import Any
 
 import pytest
 from dfo_client_contract import rule
+from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -36,6 +38,7 @@ from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_COMPONENTS_MAX_CONCURRENCY
 from presentation_api.doors import shares as shares_door
 from presentation_api.doors.shares import MAX_SHARE_PAYLOAD_BYTES, build_shares_door
+from presentation_api.live import LiveFrames
 from presentation_store import LiveShareStore, ShareCard, ShareRecord
 from tests.datasets_api._artifact_doubles import FakeArtifactStore
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
@@ -886,6 +889,41 @@ def test_a_surface_over_test_doubles_without_a_share_store_mounts_no_share_route
 
     assert not surface.registry_endpoints
     assert not [r for r in surface.router.routes if isinstance(r, APIRoute) and "/shares" in r.path]
+
+
+def test_a_frame_store_the_door_builds_pins_through_the_door_s_ledger(
+    monkeypatch: pytest.MonkeyPatch, frame_store: FakeFrameStore
+):
+    allowances = _Allowances(limit=50)
+    given: list[object] = []
+
+    class _Graph:
+        def close(self) -> None:
+            pass
+
+    def built(*, settings, allowances):
+        given.append(allowances)
+        return LiveFrames(
+            frame_store=frame_store, graph=_Graph(), snapshot_reader=None, recipe_reader=None
+        )
+
+    monkeypatch.setattr(shares_door, "build_live_frame_store", built)
+    monkeypatch.setattr(shares_door.PresentationSettings, "from_env", classmethod(lambda cls: None))
+    door = build_shares_door(
+        share_store=LiveShareStore(store=FakePresentationStore()),
+        revision_store=FakeRevisionStore(),
+        allowances=allowances,
+        caller=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
+    )
+    assert door.lifespan is not None
+
+    async def enter() -> None:
+        async with door.lifespan(FastAPI()):
+            pass
+
+    asyncio.run(enter())
+
+    assert given == [allowances]
 
 
 def test_every_share_route_handler_is_a_module_level_function():

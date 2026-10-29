@@ -1,8 +1,9 @@
 """Admission of new pinned copies against the daily pin budgets.
 
-Every copy into the pinned tier goes through `copy_to_pinned`: the pin door's named artifact,
-and each frame and derived root a share's create, replace or snapshot conversion pins
-(`presentation_store.LiveFrameStore.pin`). A copy spends one unit of the day's pin budget
+Every new pinned copy a caller asks for goes through `copy_to_pinned`: the pin door's named
+artifact, and each frame and derived root a share's create, replace or snapshot conversion pins
+(`presentation_store.LiveFrameStore.pin`). The serving-frame copies a pin makes (`doors.pin`)
+and the canonical frames `maintenance` renders again copy without it and spend nothing. A copy spends one unit of the day's pin budget
 (`AllowanceKind.pin_budget`, `DATASETS_PIN_DAILY_MAX`) and, for an open caller, one unit of the
 open callers' budget (`AllowanceKind.open_pin_budget`, `DATASETS_PIN_OPEN_DAILY_MAX`) and one of
 the caller's `pin` allowance (`DATASETS_PIN_DAILY_ALLOWANCE`), all together before the copy
@@ -48,12 +49,12 @@ class PinBudgetExhausted(Refusal):
 
     code = "service_unavailable"
     retryable = True
-    detail = "the pin door has reached its daily pin budget; it resets at the next UTC midnight"
+    detail = "today's budget of new pinned copies is spent; it resets at the next UTC midnight"
 
     def __init__(self, *, limit: int, now: datetime) -> None:
         self.limit = limit
         self.headers = MappingProxyType({"Retry-After": str(seconds_to_reset(now))})
-        super().__init__(f"the pin door has made today's budget of {limit} new pinned copies")
+        super().__init__(f"today's budget of {limit} new pinned copies is spent")
 
 
 class OpenPinBudgetExhausted(Refusal):
@@ -64,7 +65,7 @@ class OpenPinBudgetExhausted(Refusal):
     code = "service_unavailable"
     retryable = True
     detail = (
-        "the pin door has reached its daily pin budget for open callers; it resets at the next "
+        "today's budget of new pinned copies for open callers is spent; it resets at the next "
         "UTC midnight"
     )
 
@@ -72,8 +73,8 @@ class OpenPinBudgetExhausted(Refusal):
         self.limit = limit
         self.headers = MappingProxyType({"Retry-After": str(seconds_to_reset(now))})
         super().__init__(
-            f"the pin door has made today's budget of {limit} new pinned copies for callers "
-            "without the pin grant"
+            f"today's budget of {limit} new pinned copies for callers without the pin grant "
+            "is spent"
         )
 
 

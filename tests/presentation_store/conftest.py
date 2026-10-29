@@ -458,21 +458,6 @@ class FakeTransaction:
             # Rows are appended in time order, so the slot's newest entry is its last one.
             return [{name: entries[-1][name] for name in _SERVED_FRAME_SHOWN}] if entries else []
 
-        if sql.startswith(
-            "SELECT 1 FROM presentation.share_slot WHERE share_id = %s AND slot = %s"
-        ):
-            share_id, slot, component_id, component_revision, _ = params
-            revisions = s.share_revisions.get(cast(str, share_id), [])
-            if not revisions:
-                return []
-            latest = max(row["revision"] for row in revisions)
-            held = any(
-                (row["slot"], row["component_id"], row["component_revision"])
-                == (slot, component_id, component_revision)
-                for row in s.share_slots.get((cast(str, share_id), latest), [])
-            )
-            return [{"?column?": 1}] if held else []
-
         if sql.startswith("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE"):
             (share_id,) = params
             return [{"?column?": 1}] if share_id in s.shares else []

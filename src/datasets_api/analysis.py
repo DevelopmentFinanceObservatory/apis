@@ -96,6 +96,7 @@ from typing import Annotated, Any, Literal, Protocol, Self
 import rfc8785
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
 from dfo_frame_grammar import Frame, FrameError, RollingError, shift_period
+from dfo_frame_grammar.content_version import mint_content_version
 from dfo_frame_grammar.grammar import TIME_PERIOD_COLUMN
 from pydantic import (
     BaseModel,
@@ -131,6 +132,7 @@ from datasets_api.publish_models import (
 )
 from datasets_api.recipe_store import AnswerRecord, RecipeStore
 from datasets_api.render import frame_file_location
+from datasets_api.version_store import recorded_frame_sha256
 from datasets_api.versions import VersionRecordWriter
 from description.steps import Step
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
@@ -1339,11 +1341,18 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
     return _STEPS.validate_python(steps)
 
 
-def _stored_file_digest(
-    stores: AnalysisStores, *, spec_id: str, content_version: str
-) -> str | None:
-    """The digest of the servable frame file (`render.frame_file_location`) of a recorded pair,
-    or `None`. Servability is the derived read's (`read_servable_version`).
+@dataclass(frozen=True)
+class _HeldFile:
+    """A recorded pair's servable frame file: its digest, and the frame-grammar `cv_` of the
+    frame hash its version records, `None` when it records none (`recorded_frame_sha256`)."""
+
+    artifact_digest: str
+    frame_content_version: str | None
+
+
+def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
+    """The servable frame file (`render.frame_file_location`) of the recorded pair `ref`, or
+    `None`. Servability is the derived read's (`read_servable_version`).
 
     Raises:
         SnapshotRevoked: The pair is taken down.
@@ -1351,14 +1360,47 @@ def _stored_file_digest(
     try:
         stored = read_servable_version(
             stores.snapshot_reader,
-            subject_id=spec_id,
-            content_version=content_version,
+            subject_id=ref.spec_id,
+            content_version=ref.content_version,
             now=stores.now(),
         )
     except SnapshotNotFound:
         return None
     location = frame_file_location(stored.servable, site=stores.site)
-    return None if location is None else location.artifact_digest
+    if location is None:
+        return None
+    recorded = recorded_frame_sha256(
+        stored.version.frame_sha256, [*stored.servable, *stored.aged_out]
+    )
+    return _HeldFile(
+        artifact_digest=location.artifact_digest,
+        frame_content_version=(
+            None if recorded is None else mint_content_version(frame_sha256=recorded)
+        ),
+    )
+
+
+def _stored_file_digest(
+    stores: AnalysisStores, *, spec_id: str, content_version: str
+) -> str | None:
+    """The digest of `_held_file` of a recorded pair, or `None`.
+
+    Raises:
+        SnapshotRevoked: The pair is taken down.
+    """
+    held = _held_file(stores, FrameRef(spec_id=spec_id, content_version=content_version))
+    return None if held is None else held.artifact_digest
+
+
+@dataclass(frozen=True)
+class _StoredFrame:
+    """The frame a run answers: its pair, its frame file's digest, its frame-grammar `cv_`, and
+    whether the run published it."""
+
+    ref: FrameRef
+    artifact_digest: str
+    frame_content_version: str
+    created: bool
 
 
 def _store(
@@ -1367,31 +1409,71 @@ def _store(
     stores: AnalysisStores,
     *,
     trace_id: str | None,
-) -> tuple[FrameRef, str, bool]:
-    """Store the evaluated frame and its recipe, and return the pair it is stored under, the
-    digest of the stored frame file, the file a ref names, and whether this call published the
-    frame. The pair is `evaluation.ref`, or the pair a frame of the same replay key is stored
-    under (`_stored_pair`).
+) -> _StoredFrame:
+    """Store the evaluated frame and its recipe, and return the frame a ref names: the frame
+    at `evaluation.ref` when its file is servable, else the servable frame a recipe of the same
+    replay key is stored under (`_replayed`), else the evaluated frame published at
+    `evaluation.ref`. A frame stored already gains the recipe, which the store keeps once.
 
     Raises:
         AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
+        SnapshotRevoked: The pair answered is taken down.
     """
     recipe = _recipe(evaluation, roots)
-    stored, held = _stored_pair(evaluation.ref, recipe, stores)
+    ref = evaluation.ref
+    frame_content_version = str(evaluation.summary["frame_content_version"])
+    held = _held_file(stores, ref)
+    artifact_digest = None if held is None else held.artifact_digest
+    if held is None and (replayed := _replayed(ref, recipe, stores)) is not None:
+        ref, artifact_digest, frame_content_version = replayed
     try:
-        digest, created = _stored(
-            evaluation, stored, held, roots, recipe, stores, trace_id=trace_id
+        if artifact_digest is not None:
+            write_frame_recipe(
+                recipe_store=stores.recipe_store,
+                spec_id=ref.spec_id,
+                content_version=ref.content_version,
+                recipe=recipe,
+            )
+            return _StoredFrame(
+                ref=ref,
+                artifact_digest=artifact_digest,
+                frame_content_version=frame_content_version,
+                created=False,
+            )
+        published = publish_built_frame(
+            frame=evaluation.frame,
+            spec_id=ref.spec_id,
+            content_version=ref.content_version,
+            input_content_versions=list(
+                dict.fromkeys(root.dataset.content_version for root in roots)
+            ),
+            artifact_store=stores.artifact_store,
+            snapshot_reader=stores.snapshot_reader,
+            version_writer=stores.version_writer,
+            trace_id=trace_id,
+            recipe=recipe,
+            recipe_store=stores.recipe_store,
+            steps=described_steps(evaluation, roots),
+            enrichment=stores.enrichment,
+            file_enrichment=stores.enrichment,
+            site=stores.site,
+            prepared_at=stores.now(),
         )
     except Refusal as refused:
         if refused.code != _CONFLICT:
             raise
         _log_divergence(
-            refused, recipe, stores, spec_id=stored.spec_id, content_version=stored.content_version
+            refused, recipe, stores, spec_id=ref.spec_id, content_version=ref.content_version
         )
         raise AnalysisStoreDiverges(
-            spec_id=stored.spec_id, content_version=stored.content_version
+            spec_id=ref.spec_id, content_version=ref.content_version
         ) from refused
-    return stored, digest, created
+    return _StoredFrame(
+        ref=ref,
+        artifact_digest=published.artifact_digest,
+        frame_content_version=frame_content_version,
+        created=published.created,
+    )
 
 
 _CONFLICT = "publish_conflict"
@@ -1423,71 +1505,36 @@ def _log_divergence(
     )
 
 
-def _stored_pair(
+def _replayed(
     computed: FrameRef, recipe: Recipe, stores: AnalysisStores
-) -> tuple[FrameRef, str | None]:
-    """The pair a run stores under, and the digest of the frame file it holds, `None` for
-    none. A run whose own pair `computed` holds no frame answers the pair a recipe of its
-    replay key is stored under, when there is one. The replay key names the computation over
+) -> tuple[FrameRef, str, str] | None:
+    """The pair a recipe of `recipe`'s replay key is stored under, its servable frame file's
+    digest and its frame's `cv_`, for a run whose own pair `computed` holds no frame file. The replay key names the computation over
     its root versions, and the pair also hashes the root frames' pairs, which differ for one
     computation when a stored run named a root's pair under an earlier derivation of
-    `analysis_roots.frame_ref_for`.
+    `analysis_roots.frame_ref_for`, as dfo-ai's data-mcp does.
+
+    A pair that serves no frame file, or records no frame hash to name its frame by, gives up
+    the key (`RecipeStore.supersede_replay`) and answers `None`, so the run publishes at
+    `computed`, whose recipe then takes the key. Its new bytes can differ from the stored
+    frame's, since a minting step's rows name its own pair.
 
     Raises:
-        SnapshotRevoked: The pair is taken down.
+        SnapshotRevoked: The replayed pair is taken down.
     """
-    held = _stored_file_digest(
-        stores, spec_id=computed.spec_id, content_version=computed.content_version
-    )
-    if held is not None:
-        return computed, held
     replayed = stores.recipe_store.read_replay(replay_key=recipe.replay_key)
     if replayed is None:
-        return computed, None
-    stored = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
-    return stored, _stored_file_digest(
-        stores, spec_id=stored.spec_id, content_version=stored.content_version
+        return None
+    ref = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
+    if ref == computed:
+        return None
+    held = _held_file(stores, ref)
+    if held is not None and held.frame_content_version is not None:
+        return ref, held.artifact_digest, held.frame_content_version
+    stores.recipe_store.supersede_replay(
+        replay_key=recipe.replay_key, spec_id=ref.spec_id, content_version=ref.content_version
     )
-
-
-def _stored(
-    evaluation: Evaluation,
-    stored: FrameRef,
-    held: str | None,
-    roots: Sequence[ResolvedRoot],
-    recipe: Recipe,
-    stores: AnalysisStores,
-    *,
-    trace_id: str | None,
-) -> tuple[str, bool]:
-    """`_store` past the pair: the recipe written beside the frame file `held` at `stored`, or
-    the frame published there."""
-    if held is not None:
-        write_frame_recipe(
-            recipe_store=stores.recipe_store,
-            spec_id=stored.spec_id,
-            content_version=stored.content_version,
-            recipe=recipe,
-        )
-        return held, False
-    published = publish_built_frame(
-        frame=evaluation.frame,
-        spec_id=stored.spec_id,
-        content_version=stored.content_version,
-        input_content_versions=list(dict.fromkeys(root.dataset.content_version for root in roots)),
-        artifact_store=stores.artifact_store,
-        snapshot_reader=stores.snapshot_reader,
-        version_writer=stores.version_writer,
-        trace_id=trace_id,
-        recipe=recipe,
-        recipe_store=stores.recipe_store,
-        steps=described_steps(evaluation, roots),
-        enrichment=stores.enrichment,
-        file_enrichment=stores.enrichment,
-        site=stores.site,
-        prepared_at=stores.now(),
-    )
-    return published.artifact_digest, published.created
+    return None
 
 
 # --- The run -------------------------------------------------------------------------------------
@@ -1754,25 +1801,28 @@ def run_prepared(
             bounds=bounds,
             latest=prepared.latest,
         )
-        stored, artifact_digest, created = _store(
-            computed.evaluation, computed.roots, stores, trace_id=trace_id
-        )
+        stored = _store(computed.evaluation, computed.roots, stores, trace_id=trace_id)
         evaluation = replace(
             computed.evaluation,
-            ref=stored,
-            tree={**computed.evaluation.tree, "frame": pair(stored)},
+            ref=stored.ref,
+            tree={**computed.evaluation.tree, "frame": pair(stored.ref)},
+            summary={
+                **computed.evaluation.summary,
+                **pair(stored.ref),
+                "frame_content_version": stored.frame_content_version,
+            },
         )
     result = AnalysisResult(
         evaluation=evaluation,
-        frame_content_version=evaluation.summary["frame_content_version"],
+        frame_content_version=stored.frame_content_version,
         output_digest=computed.output_digest,
-        artifact_digest=artifact_digest,
+        artifact_digest=stored.artifact_digest,
         roots=computed.roots,
         resolved_periods=resolved_periods(
             evaluation.tree,
             rule=None if evaluation.resolved_periods is None else evaluation.resolved_periods.rule,
         ),
-        created=created,
+        created=stored.created,
     )
     stores.recipe_store.write_answer(
         AnswerRecord(

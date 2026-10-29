@@ -35,6 +35,7 @@ from datasets_api.analysis import (
 )
 from datasets_api.doors.analysis import classify_analysis_exception
 from datasets_api.output_digest import output_digest
+from datasets_api.recipe_store import ReplayedFrame
 from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import pair
@@ -310,9 +311,13 @@ def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> Non
     assert root["rendering"]["columns"] == ["financingRecipient_type", "party_kind"]
 
 
+_MOVED_FRAME_CV = "cv_" + "f" * 32
+
+
 def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
     """Make every later run compute `ref`, as one does whose root pairs a later derivation of
-    `analysis_roots.frame_ref_for` names apart from the stored run's."""
+    `analysis_roots.frame_ref_for` names apart from the stored run's. Its summary names `ref`
+    and `_MOVED_FRAME_CV`, as the engine's does for a minting step, whose rows name its pair."""
     evaluated = analysis._evaluated
 
     def elsewhere(*args, **kwargs):
@@ -321,6 +326,11 @@ def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
             computed.evaluation,
             ref=ref,
             tree={**computed.evaluation.tree, "frame": pair(ref)},
+            summary={
+                **computed.evaluation.summary,
+                **pair(ref),
+                "frame_content_version": _MOVED_FRAME_CV,
+            },
         )
         return dataclasses.replace(computed, evaluation=moved)
 
@@ -330,11 +340,12 @@ def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
 _ELSEWHERE = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
 
 
-def test_a_run_of_a_stored_replay_key_names_the_stored_pair_in_its_ref_and_tree(
+def test_a_run_of_a_stored_replay_key_answers_the_stored_frame_in_every_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stores = Stores()
-    stored = _run(stores, _PER_PERSON).evaluation.ref
+    first = _run(stores, _PER_PERSON)
+    stored = first.evaluation.ref
     _computed_under(monkeypatch, _ELSEWHERE)
 
     again = _run(stores, _PER_PERSON)
@@ -342,6 +353,48 @@ def test_a_run_of_a_stored_replay_key_names_the_stored_pair_in_its_ref_and_tree(
     assert not again.created
     assert again.evaluation.ref == stored
     assert again.evaluation.tree["frame"] == pair(stored)
+    body = again.body()
+    assert body["ref"] == first.ref()
+    assert body["frame_content_version"] == first.frame_content_version != _MOVED_FRAME_CV
+    assert body["summary"] == first.body()["summary"]
+    prepared = prepare_analysis(
+        AnalysisRequest.model_validate({"tree": _PER_PERSON}), source=source(stores)
+    )
+    answer = stores.analysis().recipe_store.read_answer(request_key=prepared.key)
+    assert answer is not None
+    assert (answer.spec_id, answer.content_version, answer.body) == (
+        stored.spec_id,
+        stored.content_version,
+        body,
+    )
+
+
+def test_a_run_whose_replayed_frame_file_aged_out_publishes_its_own_pair_and_takes_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored frame's bytes can differ from the run's, so the run publishes under its own
+    pair, and the stored recipe gives up its replay key to it."""
+    stores = Stores()
+    first = _run(stores, _PER_PERSON)
+    stored = first.evaluation.ref
+    replay_key = first.ref()["members"][0]["spec"]["recipe"]["replay_key"]
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s", ("2020-01-01T00:00:00+00:00",)
+        )
+    _computed_under(monkeypatch, _ELSEWHERE)
+
+    moved = _run(stores, _PER_PERSON)
+    again = _run(stores, _PER_PERSON)
+
+    recipes = stores.analysis().recipe_store
+    assert moved.created
+    assert moved.evaluation.ref == again.evaluation.ref == _ELSEWHERE
+    assert not again.created
+    assert recipes.read_replay(replay_key=replay_key) == ReplayedFrame(**pair(_ELSEWHERE))
+    kept = recipes.read_recipe(spec_id=stored.spec_id, content_version=stored.content_version)
+    assert kept is not None
+    assert kept.replay_key == replay_key
 
 
 @pytest.mark.parametrize("computed", [None, _ELSEWHERE], ids=["own_pair", "replayed_pair"])

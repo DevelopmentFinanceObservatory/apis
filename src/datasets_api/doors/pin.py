@@ -11,9 +11,9 @@ secret is never stored or logged. Pinning is irreversible on this surface.
 Every other caller is an open caller, named by `dfo_platform.caller.resolve_caller` before the
 pin runs, and its reference names it by its caller key (`ip:<digest>`). A new pinned copy for an
 open caller also spends one unit of the open callers' budget (`DATASETS_PIN_OPEN_DAILY_MAX`,
-default 200 a UTC day), refusing the daily budget's 503 past it, so open callers
+default 2,000 a UTC day), refusing the daily budget's 503 past it, so open callers
 cannot spend the budget the grant's holders draw on, and one unit of the caller's `pin`
-allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 200 a UTC day), refusing 429
+allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 100 a UTC day), refusing 429
 `allowance_exhausted` once it is spent. The copy goes through `retention_admission.copy_to_pinned`,
 which a share's pins go through too, so they draw on the same budgets. It spends the daily
 budget, the open budget and the allowance together, so a refusal by one spends none of the
@@ -56,7 +56,7 @@ format and reporting `retention.pinned`. A version none of whose serving frames 
 named artifact alone. A frame copy spends no budget.
 
 A daily budget bounds the pinned copies this door and the share routes create. Before it copies
-a named artifact, the door spends one unit of `DATASETS_PIN_DAILY_MAX` (default 500 a UTC day,
+a named artifact, the door spends one unit of `DATASETS_PIN_DAILY_MAX` (default 2,500 a UTC day,
 `datasets_api.allowance`), and refuses 503 `service_unavailable` once the day's budget is
 spent, with `retryable: true` and `Retry-After` naming the reset at the next UTC midnight. Each
 spend is one conditional upsert, so pins admitted together cannot pass the budget. A

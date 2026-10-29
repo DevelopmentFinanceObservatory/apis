@@ -32,7 +32,7 @@ from fastapi import FastAPI
 from assembler.catalogue import BakedReleaseRegistry
 from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, VocabularySource
 from dataset_store.snapshot import SnapshotReader
-from datasets_api.allowance import AllowanceLedger
+from datasets_api.allowance import SharedAllowanceLedger
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.principals import Principals
 from datasets_api.recipe_store import RecipeReader
@@ -70,7 +70,7 @@ def presentation_surface(
     vocabulary_source: VocabularySource | None = None,
     live_refresh: LiveRefreshPrincipal | None = None,
     share_store: ShareStore | None = None,
-    allowances: AllowanceLedger | None = None,
+    allowances: SharedAllowanceLedger | None = None,
     caller_settings: CallerSettings | None = None,
     principals: Principals | None = None,
     newest_frames: NewestFrames | None = None,

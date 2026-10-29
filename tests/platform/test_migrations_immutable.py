@@ -107,6 +107,9 @@ _DATASET_STORE = {
     "0042_caller_allowance_card.sql": (
         "7f335403d0d671153813264b2c08db2d068d4d95d238e352f0c1c0dbf58ddb06"
     ),
+    "0043_frame_recipe_superseded.sql": (
+        "843d61b2c7134461b4846f3add608461b22e6cb7368452cbfe23b16be919d9f2"
+    ),
 }
 
 _PRESENTATION_STORE = {

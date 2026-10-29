@@ -14,8 +14,7 @@ append-only. A delete sets `deleted_at`, after which every read and write answer
 A snapshot conversion (`snapshot_share`) writes the next revision with the frame each slot
 serves and sets the share's mode to `snapshot`, so its slots keep those frames for good.
 `import_share` stores a share exported from the website under its own id, `created_at`, owner
-and payload, and finds a share it imported before by its id, kind and `created_at`. It records
-no timeline entries; each slot's first read records what it serves.
+and payload, and finds a share it imported before by its id, kind and `created_at`.
 
 A live slot's data read keeps one `SlotCheck` per slot and card revision: the frame the slot
 serves, its freshness, when the check ran and when the next one is due. `claim_slot_check`
@@ -34,10 +33,10 @@ whose card kept its place is its last check's frame. The revision's `clock_times
 while the write holds the share row lock, so entries and revisions of one share are dated in
 commit order, and a write that cannot record its entries commits nothing. `record_served`
 records the frame a slot read serves. It reads the slot's newest entry first and, only when it
-shows something else, locks the share row, checks that the latest revision still shows the card
-in that slot, and checks the newest entry again under the lock, so concurrent reads of one slot
-record one entry, a read of an unchanged slot takes no lock, and a read that served a revision a
-replace has since moved past records nothing.
+shows something else, locks the share row, checks that the revision the read served is still the
+latest, and checks the newest entry again under the lock, so concurrent reads of one slot record
+one entry, a read of an unchanged slot takes no lock, and a read that served a revision a replace
+or snapshot conversion has since moved past records nothing.
 `served_frames` reads the timeline a page at a time, newest first by `first_served_at` and then
 `id`, by keyset from a `ServedPosition` (migration 0018's index), reading one row past the page
 to learn whether another follows.
@@ -404,13 +403,15 @@ class ShareStore(Protocol):
         self,
         *,
         share_id: str,
+        revision: int,
         slot: int,
         card: ShareCard,
         frame: FrameRef,
         rendering: Mapping[str, object] | None,
     ) -> None:
-        """Record that `slot` shows `frame` for `card` from now, unless the slot's newest entry
-        already shows it or the share's latest revision no longer shows `card` in `slot`.
+        """Record that `slot` of the share at `revision` shows `frame` for `card` from now,
+        unless the slot's newest entry already shows it or `revision` is no longer the share's
+        latest.
 
         Raises:
             PresentationStoreUnavailable: The store failed.
@@ -688,6 +689,7 @@ class LiveShareStore:
         self,
         *,
         share_id: str,
+        revision: int,
         slot: int,
         card: ShareCard,
         frame: FrameRef,
@@ -707,13 +709,12 @@ class LiveShareStore:
             tx.execute(
                 "SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE", (share_id,)
             )
-            held = tx.fetch_one(
-                "SELECT 1 FROM presentation.share_slot WHERE share_id = %s AND slot = %s "
-                "AND component_id = %s AND component_revision = %s AND revision = "
-                "(SELECT max(revision) FROM presentation.share_revision WHERE share_id = %s)",
-                (share_id, slot, card.component_id, card.revision, share_id),
+            latest = tx.fetch_one(
+                "SELECT revision, created_at FROM presentation.share_revision "
+                "WHERE share_id = %s ORDER BY revision DESC LIMIT 1",
+                (share_id,),
             )
-            if held is None:
+            if latest is None or latest["revision"] != revision:
                 return
             _record_shown(
                 tx, share_id=share_id, slot=slot, shown=shown, rendering=rendering, at=None
