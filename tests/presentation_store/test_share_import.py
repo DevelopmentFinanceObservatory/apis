@@ -88,6 +88,13 @@ class _Pins:
         return True
 
 
+class _NoPins:
+    """A frame store an import must not pin through."""
+
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
+        raise AssertionError(f"{component_id} pinned {frame_ref}")
+
+
 def _slot(component_id: str, revision: int, frame: FrameRef | None) -> dict[str, object]:
     return {
         "component_id": component_id,
@@ -164,7 +171,9 @@ _CASES = {
 }
 
 
-def _import(store: LiveShareStore, line: dict[str, object], *, pins: _Pins | None = None) -> bool:
+def _import(
+    store: LiveShareStore, line: dict[str, object], *, pins: _Pins | _NoPins | None = None
+) -> bool:
     body = {key: value for key, value in line.items() if key != "id"}
     return import_website_share(
         str(line["id"]),
@@ -180,7 +189,11 @@ def test_every_exported_case_imports_under_its_id_and_a_second_run_changes_nothi
 
     first = [_import(store, line) for line in _CASES.values()]
     after_first = {share_id: store.read_share(share_id=share_id) for share_id in _CASES}
-    again = [_import(store, line) for line in _CASES.values()]
+    # The first import wins: a re-run stating other content still finds it, and pins nothing.
+    again = [
+        _import(store, {**line, "title": "Changed", "payload": None}, pins=_NoPins())
+        for line in _CASES.values()
+    ]
 
     assert (first, again) == ([True] * 8, [False] * 8)
     assert {share_id: store.read_share(share_id=share_id) for share_id in _CASES} == after_first
@@ -313,10 +326,11 @@ def test_a_share_the_import_cannot_place_is_refused_and_stores_nothing(
         ({**_CASES["cardLive"], "kind": "canvas"}, False),
         ({**_CASES["cardLive"], "write_token_sha256": "0" * 64}, True),
         ({**_CASES["cardLive"], "owner": None, "write_token_sha256": None}, True),
+        ({**_CASES["guestSnp"], "owner": "user_1", "write_token_sha256": _DIGEST}, True),
     ],
-    ids=["made-here", "other-kind", "other-digest", "no-digest"],
+    ids=["made-here", "other-kind", "other-digest", "no-digest", "digest-held-elsewhere"],
 )
-def test_an_id_holding_another_share_or_another_digest_refuses(
+def test_an_id_holding_another_share_or_another_digest_refuses_and_pins_nothing(
     held: str | dict[str, object], token_differs: bool
 ):
     fake = FakePresentationStore()
@@ -327,13 +341,43 @@ def test_an_id_holding_another_share_or_another_digest_refuses(
     else:
         assert isinstance(held, dict)
         _import(LiveShareStore(store=fake), held)
-    stored = LiveShareStore(store=fake).read_share(share_id="cardLive")
+    stored = _stored(LiveShareStore(store=fake), "cardLive")
 
     with pytest.raises(ShareIdTaken) as refused:
-        _import(LiveShareStore(store=fake), _CASES["cardLive"])
+        _import(LiveShareStore(store=fake), _CASES["cardLive"], pins=_NoPins())
 
     assert refused.value.token_differs is token_differs
-    assert LiveShareStore(store=fake).read_share(share_id="cardLive") == stored
+    assert _stored(LiveShareStore(store=fake), "cardLive") == stored
+
+
+def _stored(store: LiveShareStore, share_id: str) -> object:
+    """The share at `share_id`, or `None` when none is."""
+    try:
+        return store.read_share(share_id=share_id)
+    except ShareNotFound:
+        return None
+
+
+class _RacingShareStore(LiveShareStore):
+    """A share store whose `held_import` found the id and digest free, as it would for an
+    import that another one overtook before its write."""
+
+    def held_import(self, **_: object) -> bool:
+        return False
+
+
+def test_an_import_overtaken_by_one_taking_its_digest_refuses_in_the_write():
+    fake = FakePresentationStore()
+    _import(
+        LiveShareStore(store=fake),
+        {**_CASES["guestSnp"], "owner": "user_1", "write_token_sha256": _DIGEST},
+    )
+
+    with pytest.raises(ShareIdTaken) as refused:
+        _import(_RacingShareStore(store=fake), _CASES["cardLive"])
+
+    assert refused.value.token_differs is True
+    assert _stored(LiveShareStore(store=fake), "cardLive") is None
 
 
 @pytest.mark.parametrize("case", ["canvLive", "canvSnap"])

@@ -63,8 +63,9 @@ is read; another caller, and every caller while the principal is unset, refuses 
 guest's share. It pins the frames the share shows as an operator's import does, spending no
 allowance or budget. It answers 201 `{id, imported: true}` when it stores the share and 200 with
 `imported` false when an earlier import stored it, with the same kind, `created_at` and digest,
-taken down since or not. An id holding another share, or this one under another digest, refuses
-409 `share_id_taken`. A body that is not such a line refuses 400 `request_invalid`, a card
+taken down since or not; the first import wins, so other content answers 200 too. An id holding
+another share, or this one under another digest, and a digest another share holds, refuse 409
+`share_id_taken`. Neither pins anything. A body that is not such a line refuses 400 `request_invalid`, a card
 revision this service does not hold 404 `not_found`, and a frame that cannot be pinned
 `frame_unavailable`, as a create does.
 

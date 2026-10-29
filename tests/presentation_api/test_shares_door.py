@@ -905,10 +905,13 @@ def test_an_import_answers_201_then_200_and_the_websites_token_changes_the_share
     door.frame_store._pins.clear()
 
     first = door.import_share("k3Qx8vTa", body)
-    again = door.import_share("k3Qx8vTa", body)
+    pinned = door.frame_store.pins
+    # The first import wins: a re-run stating another title finds it and pins nothing.
+    again = door.import_share("k3Qx8vTa", body | {"title": "Changed"})
 
     assert (first.status_code, first.json()) == (201, {"id": "k3Qx8vTa", "imported": True})
     assert (again.status_code, again.json()) == (200, {"id": "k3Qx8vTa", "imported": False})
+    assert door.frame_store.pins == pinned
     read = door.read("k3Qx8vTa").json()
     assert (read["kind"], read["mode"], read["title"], read["payload"], read["revision"]) == (
         "card",
@@ -962,6 +965,7 @@ def test_the_import_admits_its_principal_alone(
         ("made-here", {}, 409, "share_id_taken"),
         ("other-digest", {}, 409, "share_id_taken"),
         ("guest", {}, 409, "share_id_taken"),
+        ("digest-elsewhere", {}, 409, "share_id_taken"),
         (None, {"owner": None}, 400, "request_invalid"),
         (None, {"write_token_sha256": "A" * 64}, 400, "request_invalid"),
         (None, {"id": "k3Qx8vTa"}, 400, "request_invalid"),
@@ -977,6 +981,7 @@ def test_the_import_admits_its_principal_alone(
         "id-holds-a-share-made-here",
         "id-holds-it-under-another-digest",
         "id-holds-it-with-no-digest",
+        "digest-held-by-another-share",
         "digest-without-owner",
         "uppercase-digest",
         "id-in-the-body",
@@ -997,6 +1002,8 @@ def test_an_import_it_cannot_place_is_refused_and_changes_nothing(
         assert door.import_share("k3Qx8vTa", _import_body(door, token=other)).status_code == 201
     elif held == "guest":
         assert door.import_share("k3Qx8vTa", _import_body(door, token=None)).status_code == 201
+    elif held == "digest-elsewhere":
+        assert door.import_share("Zz9yXw8v", _import_body(door, token=token)).status_code == 201
     before = _stored(door.read("k3Qx8vTa"))
     if changes == "note":
         note = door.client.post(
@@ -1006,6 +1013,7 @@ def test_an_import_it_cannot_place_is_refused_and_changes_nothing(
         ).json()["component_id"]
         changes = {"slots": [{"component_id": note, "revision": 1, "frame": None}]}
     assert isinstance(changes, dict)
+    door.frame_store._pins.clear()
 
     resp = door.import_share("k3Qx8vTa", _import_body(door, token=token, **changes))
 
@@ -1013,6 +1021,7 @@ def test_an_import_it_cannot_place_is_refused_and_changes_nothing(
     if held is None and changes.get("slots") and code == "request_invalid":
         assert problem["pointer"] == "/slots/0/frame"
     assert _stored(door.read("k3Qx8vTa")) == before
+    assert door.frame_store.pins == ()
 
 
 @pytest.mark.parametrize("share_id", ["k3Qx8vT", "k3Qx8vTa9", "k3Qx-vTa"])

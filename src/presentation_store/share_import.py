@@ -18,10 +18,13 @@ slot's frame, as a snapshot conversion does, so no slot's frame leaves the worki
 signed-in user's share, and null for a guest's share, which nobody can then change or delete.
 The token itself never reaches this service. A digest needs an `owner`.
 
-The import is idempotent. A share whose id already holds a share of the same kind, `created_at`
-and digest was imported before and is left as it is, taken down since or not. An id holding
-another share, or this one under another digest, refuses (`ShareIdTaken`). A share is refused
-before anything is stored when it is not a share as the export defines it, its payload is over
+The import is idempotent, and the first import of an id wins. A share is the same share as one
+the id holds when its kind, `created_at` and digest match. It was imported before and is left
+as it is, taken down since or not, even when its owner, mode, title, slots or payload now
+differ, and the import reads nothing else and pins nothing. An id holding another share, or
+this one under another digest, and a digest another share holds, refuse (`ShareIdTaken`)
+before anything is pinned; the write checks again, for an import racing this one. A share is
+refused before anything is stored when it is not a share as the export defines it, its payload is over
 `MAX_SHARE_PAYLOAD_BYTES` as a create's would be, it is a live conversation or a search or
 conversation share with slots, a slot names a card revision this service does not hold or one
 drawing no frame, or a frame cannot be pinned. The website's export puts no note in a slot (a
@@ -120,16 +123,25 @@ def import_website_share(
     frame_store: FrameStore,
 ) -> bool:
     """Store `share` under `share_id`, pinning the frames it shows first. Returns `True` when
-    it stored the share and `False` when an earlier import had.
+    it stored the share and `False`, reading no card and pinning nothing, when an earlier
+    import had.
 
     Raises:
         DraftNotFound, RevisionNotFound: A slot names a card revision this service does not
             hold.
         SlotDrawsNoFrame: A slot names no frame, and its card revision draws none.
         FrameUnavailable: A frame the share shows cannot be pinned.
-        ShareIdTaken: The id holds another share, or this one under another digest.
+        ShareIdTaken: The id holds another share, or this one under another digest, or another
+            share holds the digest.
         PresentationStoreUnavailable: The store failed.
     """
+    digest = (
+        bytes.fromhex(share.write_token_sha256) if share.write_token_sha256 is not None else None
+    )
+    if share_store.held_import(
+        share_id=share_id, kind=share.kind, created_at=share.created_at, write_token_sha256=digest
+    ):
+        return False
     read = [
         _card(slot, index=index, revision_store=revision_store)
         for index, slot in enumerate(share.slots)
@@ -145,11 +157,7 @@ def import_website_share(
             owner=share.owner,
             payload=share.payload,
             created_at=share.created_at,
-            write_token_sha256=(
-                bytes.fromhex(share.write_token_sha256)
-                if share.write_token_sha256 is not None
-                else None
-            ),
+            write_token_sha256=digest,
             cards=cards,
             renderings={(card.component_id, card.revision): rendering for card, rendering in read},
         )
