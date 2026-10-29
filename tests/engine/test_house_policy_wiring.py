@@ -26,10 +26,10 @@ from search.engine.bind import (
 )
 from search.engine.binders import BindRequest, BindResult, GeminiBinder, JevBinder
 from search.engine.binders.base import PolicyContractError
+from search.engine.binders.election import reelect
 from search.engine.binders.gemini import (
     RATED_POOL_FRACTION,
     rated_pool,
-    reelect,
     shape_ratings,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool

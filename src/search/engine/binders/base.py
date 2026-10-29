@@ -153,8 +153,11 @@ class StatedWordsRequest:
     `BindRequest.nominated_words`, the final bindings, and the bind call's result. `served`
     names the members the read served (`phase_rank_bind.served_member_names`), and is
     empty before a read; the binder names them only when they differ from the shape's
-    label (`stated_words_read.serves_beyond_label`). `part` and `pool` join a binder's log
-    lines to the part's, as on `QuantityRequest`."""
+    label (`stated_words_read.serves_beyond_label`). `on_bind_menu` says the binder read
+    the shape at `shape_index` in the bind call; a basis sibling the house policies moved
+    the election to sits after that menu (`phase_rank_bind._answer_on_basis_sibling`), and
+    the bind rated none of its words. `part` and `pool` join a binder's log lines to the
+    part's, as on `QuantityRequest`."""
 
     variable: str
     shape: ShapeDraft
@@ -163,6 +166,7 @@ class StatedWordsRequest:
     bindings: tuple[SlotBindingDraft, ...]
     decision: BindResult | None
     served: tuple[str, ...] = ()
+    on_bind_menu: bool = True
     part: int | None = None
     pool: Pool | None = None
 

@@ -38,11 +38,13 @@ from search.engine.bind import (
     validate_requested_all_bindings,
 )
 from search.engine.binders.base import BindResult
-from search.engine.binders.gemini import (
-    RATED_POOL_FRACTION,
+from search.engine.binders.election import (
     holds_drafted_values,
     holds_requested_slots,
     mentioned_drafts,
+)
+from search.engine.binders.gemini import (
+    RATED_POOL_FRACTION,
     near_best,
     nominated_near_best,
 )
@@ -287,7 +289,7 @@ def span_round(
     """The second round of a bind over `menu`, from the first round's `answers`.
 
     The pool is the one the election leaves before the house policies run (`_pool`). Each
-    pool shape whose slots draft values the phrase names (`gemini.mentioned_drafts`) on two
+    pool shape whose slots draft values the phrase names (`election.mentioned_drafts`) on two
     or more properties is contended, and the round asks which words name each such value,
     keyed by slot and value so the ids do not depend on the shape (`jev_request.span_id`),
     and which name the measure of the pool's pick. A bind with no contended shape, and one
@@ -661,16 +663,16 @@ def _holds(
     """Whether each `pool` shape holds the constraints Jev recognised on `pick`, as
     `pick`'s slots bind them at the thresholds once the span rule has run
     (`_shape_drafts`, given as `on_pick`), the drafts `assemble` binds: the value and set drafts the phrase
-    names (`gemini.mentioned_drafts`), and the slots it validly asks for in full.
+    names (`election.mentioned_drafts`), and the slots it validly asks for in full.
 
     A shape holds a named value when it holds it on its own slot as `pick` does
-    (`gemini.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
+    (`election.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
     that shape that `pick` lacks: one dataset's taxonomy then states the constraint
     another's states on `pick`, as DAC2a's type of finance states the CRS's loans. Each
     such value stands for one constraint of `pick`, so a shape holds the named values only
     when it states at least as many of them in its own taxonomy as it lacks on `pick`'s
     slots, and "health loans" keeps the CRS sector DAC2a has no slot for. A slot asked for
-    in full it holds as the Gemini binder reads one (`gemini.holds_requested_slots`), so
+    in full it holds as the Gemini binder reads one (`election.holds_requested_slots`), so
     "across all sectors" keeps every sector."""
     shapes = menu.request.shapes
 
@@ -946,7 +948,7 @@ def _span_owned(
 ) -> list[SlotBindingDraft]:
     """The drafts of `slots` with each stretch of the phrase paying for one value.
 
-    The values the phrase names (`gemini.mentioned_drafts`) on two or more properties
+    The values the phrase names (`election.mentioned_drafts`) on two or more properties
     contend; with fewer the drafts stand as drafted. ``sole_option`` drafts take no part:
     the phrase names none of their values, and the engine unbinds one the members do not
     all share before any requirement is judged.

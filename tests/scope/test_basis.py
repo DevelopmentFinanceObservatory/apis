@@ -14,6 +14,7 @@ elect the basis.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Sequence
 from typing import NamedTuple
@@ -23,6 +24,7 @@ import pytest
 from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import JevBinder, StatedWordsRequest
 from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
 from search.engine.spec_id import identity_spec_id
@@ -54,7 +56,7 @@ from search.scope.basis import (
 )
 from search.scope.edits import apply_binding
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
-from tests.engine._binders import elected_reply
+from tests.engine._binders import FakeAsk, MenuRecordingBinder, elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
@@ -174,19 +176,17 @@ _MENU_SIZE = re.compile(r"CANDIDATE SHAPES \((\d+) total\)")
 class _PickingLLM:
     """Picks menu shape `pick` (the last when the menu holds fewer) and nominates every other
     shape, so the whole menu is the house policies' pool; reads no quantity and rates no
-    word. It drafts `bindings` on its pick, and `menus` holds each bind prompt it answered."""
+    word. It drafts `bindings` on its pick."""
 
     def __init__(self, pick: int = 0, bindings: Sequence[SlotBindingDraft] = ()) -> None:
         self.pick = pick
         self.bindings = bindings
-        self.menus: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
         if schema is StatedWordsOutput:
             return NO_RATING
-        self.menus.append(prompt)
         match = _MENU_SIZE.search(prompt)
         assert match is not None, prompt[:400]
         size = int(match.group(1))
@@ -382,42 +382,103 @@ def test_neither_the_wording_nor_the_binders_pick_moves_the_basis(
 
 
 _GE_DEFAULT = ("measure_basis:grant_equivalent", "default", None)
-_GROSS_DRAFTED = (
-    SlotBindingDraft(
-        axis="how",
-        property_dcid="nettingBasis",
-        kind="value",
-        value_dcids=["Gross"],
-        evidence="mentioned",
-    ),
+_AMOUNTS = tuple(m for m in _DAC1_MEMBERS if m.startswith("Amount_"))
+_TOTAL = "DAC1AidType1010"
+_TOTAL_READ = (_TOTAL, "text_recognized")
+_TOTAL_DEFAULTED = (_TOTAL, "declared_default")
+_BILATERAL_ODA = "DAC1AidType1015"
+_BILATERAL = (
+    "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1015_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1015_Nominal",
 )
 
 
-@pytest.mark.parametrize(
-    ("variable", "time", "message", "drafts", "basis", "choice"),
-    [
-        pytest.param("ODA", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="oda-2019"),
-        pytest.param("Total ODA", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="total-oda"),
-        pytest.param(
-            "official development assistance", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="words"
+def _drafted(prop: str, value: str) -> tuple[SlotBindingDraft, ...]:
+    return (
+        SlotBindingDraft(
+            axis="how", property_dcid=prop, kind="value", value_dcids=[value], evidence="mentioned"
         ),
-        pytest.param("aid", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="aid"),
+    )
+
+
+def _bound(spec: Spec, prop: str) -> tuple[str, str] | None:
+    """The value the spec binds on `prop` and the provenance of the binding, None when it
+    binds none."""
+    return next(
+        (
+            (ref.ref, slot_filter.provenance)
+            for slot_filter in spec.resolved.trace.slot_filters
+            if slot_filter.key.property is not None
+            and slot_filter.key.property.ref == prop
+            and slot_filter.binding_kind == "value"
+            for ref in slot_filter.refs
+        ),
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("variable", "time", "message", "recalled", "drafts", "basis", "choice", "aid_type"),
+    [
+        pytest.param(
+            "ODA", "2019", None, _AMOUNTS, (), _GE_DAC1, _GE_DEFAULT, _TOTAL_READ, id="oda-2019"
+        ),
+        pytest.param(
+            "Total ODA",
+            "2019",
+            None,
+            _AMOUNTS,
+            (),
+            _GE_DAC1,
+            _GE_DEFAULT,
+            _TOTAL_READ,
+            id="total-oda",
+        ),
+        pytest.param(
+            "official development assistance",
+            "2019",
+            None,
+            _AMOUNTS,
+            (),
+            _GE_DAC1,
+            _GE_DEFAULT,
+            _TOTAL_READ,
+            id="words",
+        ),
+        pytest.param(
+            "aid", "2019", None, _AMOUNTS, (), _GE_DAC1, _GE_DEFAULT, _TOTAL_DEFAULTED, id="aid"
+        ),
         pytest.param(
             "net ODA",
             "2022",
             "net ODA from the United States in 2022",
+            _AMOUNTS,
             (),
             _NET_DAC1,
             ("measure_basis:net", "explicit", "net"),
+            _TOTAL_READ,
             id="net-oda-2022",
+        ),
+        pytest.param(
+            "bilateral ODA",
+            "2019",
+            None,
+            _BILATERAL,
+            _drafted("dac1AidType", _BILATERAL_ODA),
+            _GE_DAC1,
+            _GE_DEFAULT,
+            (_BILATERAL_ODA, "text_recognized"),
+            id="bilateral-oda-2019",
         ),
         pytest.param(
             "ODA",
             "2019",
             None,
-            _GROSS_DRAFTED,
+            _AMOUNTS,
+            _drafted("nettingBasis", "Gross"),
             _Basis("amount", "Gross", _DAC1),
             ("measure_basis:gross", "default", None),
+            _TOTAL_READ,
             id="a-drafted-value-the-sibling-lacks",
         ),
     ],
@@ -426,28 +487,37 @@ def test_a_donor_total_recalling_only_amounts_is_counted_on_the_convention_basis
     variable: str,
     time: str,
     message: str | None,
+    recalled: tuple[str, ...],
     drafts: tuple[SlotBindingDraft, ...],
     basis: _Basis,
     choice: tuple[str, str, str | None],
+    aid_type: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
     search_settings,
 ):
     """Recall finds DAC1's ODA amounts and none of its grant equivalents for these words;
     recall adds the grant-equivalent family (`clients.graph.with_rival_families`), which
-    stays off the bind menu and joins the house policies' pool beside the amounts, so the
-    convention still elects the headline basis for a window from 2018 and a stated basis
-    still wins. A value the binder drafts on the amounts that the grant equivalents have no
-    slot for keeps them out of the pool, as it keeps out a menu shape lacking it."""
+    the binder does not read and which joins the house policies' pool beside the amounts,
+    so the convention still elects the headline basis for a window from 2018, a stated
+    basis still wins, and a code the words name stays bound on the grant equivalents. A
+    value the binder drafts on the amounts that the grant equivalents have no slot for
+    keeps them out of the pool, as it keeps out a menu shape lacking it."""
     search_settings(qualifier_coverage="log")
-    amounts = tuple(m for m in _DAC1_MEMBERS if m.startswith("Amount_"))
+    members = (
+        *_DAC1_MEMBERS,
+        *_BILATERAL,
+        "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1015_Nominal",
+    )
+    _cover(monkeypatch, members)
     graph = FakeGraph(
         nodes={
             _USA: {"label": "United States", "type": "Country"},
-            **{dcid: _member_node(dcid) for dcid in _DAC1_MEMBERS},
+            **{dcid: _member_node(dcid) for dcid in members},
         },
-        detect={variable: {"svs": list(amounts), "cosine_scores": [0.9] * len(amounts)}},
+        detect={variable: {"svs": list(recalled), "cosine_scores": [0.9] * len(recalled)}},
         resolve={"United States": _USA},
     )
-    llm = _PickingLLM(0, drafts)
+    binder = MenuRecordingBinder()
     response = offline_resolve(
         ResolveRequest(
             input=ParsedInput(
@@ -462,7 +532,8 @@ def test_a_donor_total_recalling_only_amounts_is_counted_on_the_convention_basis
             )
         ),
         graph=graph,
-        llm=llm,
+        llm=_PickingLLM(0, drafts),
+        binder=binder,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     assert isinstance(response, Resolution), response
@@ -471,8 +542,84 @@ def test_a_donor_total_recalling_only_amounts_is_counted_on_the_convention_basis
 
     assert _served_basis(part.spec) == basis
     assert _basis_choice(part.spec) == choice
-    assert llm.menus
-    assert not any(_DAC1_MEMBERS[2] in menu for menu in llm.menus)
+    assert _bound(part.spec, "dac1AidType") == aid_type
+    assert binder.menus
+    assert not any(
+        member.startswith("GrantEquivalent_")
+        for menu in binder.menus
+        for shape in menu
+        for member in shape
+    )
+
+
+class _JevRatingBinder(MenuRecordingBinder):
+    """The menu-recording binder whose bind rates every nominated word of each menu shape at
+    0.95, as Jev's bind does (`BindResult.stated_words`), and whose stated-words read is
+    Jev's over `ask`, recording each request with the ratings it gave."""
+
+    def __init__(self, ask: FakeAsk) -> None:
+        super().__init__()
+        self.jev = JevBinder(ask=ask)
+        self.stated: list[tuple[StatedWordsRequest, dict[str, float]]] = []
+
+    async def bind(self, request, *, llm):
+        result, usage = await super().bind(request, llm=llm)
+        rated = {(i, w): 0.95 for i, words in enumerate(request.nominated_words) for w in words}
+        return dataclasses.replace(result, stated_words=rated), usage
+
+    async def rate_words_stated(self, request, *, llm):
+        ratings, usage = await self.jev.rate_words_stated(request, llm=llm)
+        self.stated.append((request, dict(ratings)))
+        return ratings, usage
+
+
+def test_jev_rates_the_words_afresh_on_a_basis_sibling_the_policies_move_to(
+    monkeypatch: pytest.MonkeyPatch, search_settings
+):
+    """The bind rated "foreign" on the amounts, the menu's one shape. The house policies move
+    the election to the grant equivalents, which take the seat after the menu, so Jev rates
+    the word on them in a request of its own: the amounts' rating does not carry over."""
+    search_settings(qualifier_coverage="log")
+    variable = "foreign assistance"
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            **{dcid: _member_node(dcid) for dcid in _DAC1_MEMBERS},
+        },
+        detect={variable: {"svs": list(_AMOUNTS), "cosine_scores": [0.9] * len(_AMOUNTS)}},
+        resolve={"United States": _USA},
+    )
+    ask = FakeAsk({}, stated={"foreign": 0.3})
+    binder = _JevRatingBinder(ask)
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable,
+                        entities=[ParsedEntity(text="United States", role_text="from")],
+                        time_text="2019",
+                    )
+                ]
+            )
+        ),
+        graph=graph,
+        llm=_PickingLLM(),
+        binder=binder,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+
+    assert _served_basis(part.spec) == _GE_DAC1
+    (menu,) = binder.menus
+    ((request, ratings),) = binder.stated
+    assert request.shape_index == len(menu)
+    members = request.shape.sv_arc_facts or ()
+    assert members and all(m.startswith("GrantEquivalent_") for m in members)
+    assert [list(questions) for _state, questions in ask.requests] == [[f"unread|{len(menu)}|0"]]
+    assert ratings == {"foreign": 0.3}
 
 
 def _emissions_node(dcid: str) -> dict:
@@ -494,11 +641,9 @@ def _emissions_node(dcid: str) -> dict:
 
 def test_a_low_scoring_dac1_hit_puts_no_grant_equivalent_family_on_the_bind_menu():
     """ "Greenhouse gas emissions" recalls DAC1's ODA amounts at the tail of its cut. Recall
-    adds their grant-equivalent family for the basis conventions, which joins the house
-    policies' pool only beside the amounts and never takes a menu seat, so the menu the
-    binder reads is the one recall gave."""
+    adds their grant-equivalent family for the basis conventions, which the binder does not
+    read beside the amounts, so the menu the binder reads is the one recall gave."""
     emissions = "Annual_Emissions_GreenhouseGas"
-    amounts = tuple(m for m in _DAC1_MEMBERS if m.startswith("Amount_"))
     variable = "greenhouse gas emissions"
     graph = FakeGraph(
         nodes={
@@ -508,13 +653,13 @@ def test_a_low_scoring_dac1_hit_puts_no_grant_equivalent_family_on_the_bind_menu
         },
         detect={
             variable: {
-                "svs": [emissions, *amounts],
-                "cosine_scores": [0.9, *[0.586] * len(amounts)],
+                "svs": [emissions, *_AMOUNTS],
+                "cosine_scores": [0.9, *[0.586] * len(_AMOUNTS)],
             }
         },
         resolve={"United States": _USA},
     )
-    llm = _PickingLLM(0)
+    binder = MenuRecordingBinder()
     offline_resolve(
         ResolveRequest(
             input=ParsedInput(
@@ -526,13 +671,13 @@ def test_a_low_scoring_dac1_hit_puts_no_grant_equivalent_family_on_the_bind_menu
             )
         ),
         graph=graph,
-        llm=llm,
+        llm=_PickingLLM(0),
+        binder=binder,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
 
-    assert llm.menus
-    assert all(amounts[0] in menu for menu in llm.menus)
-    assert not any(_DAC1_MEMBERS[2] in menu for menu in llm.menus)
+    (menu,) = binder.menus
+    assert [set(shape) for shape in menu] == [{emissions}, set(_AMOUNTS)]
 
 
 @pytest.mark.parametrize(

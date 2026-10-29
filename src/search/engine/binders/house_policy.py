@@ -60,7 +60,7 @@ probability or rating reads as 0.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from operator import attrgetter
 from typing import Literal, get_args
@@ -424,6 +424,7 @@ def apply_house_policies(
     chosen: int,
     ratings: Mapping[int, float] | None = None,
     holds: Mapping[int, bool] | None = None,
+    reported: Collection[int] | None = None,
 ) -> PolicyChoice:
     """The pool shape the house policies and the tie-break elect.
 
@@ -432,7 +433,9 @@ def apply_house_policies(
     probability. `holds` says, per pool shape, whether it holds every constraint the binder
     recognised on `chosen`. The policies run over `chosen` and the shapes that hold, and
     set the rest aside. A pool shape `holds` leaves out does not hold, and None holds them
-    all. Raises `ValueError` when `chosen` or a pool shape's facts are missing.
+    all. The choice states the facts of the pool shapes among `reported`, and as fired the
+    policies that set one of them aside; every pool shape when `reported` is None. Raises
+    `ValueError` when `chosen` or a pool shape's facts are missing.
     """
     if chosen not in pool.measuring:
         raise ValueError(f"chosen shape {chosen} is not in the pool {pool.measuring}")
@@ -449,7 +452,8 @@ def apply_house_policies(
     fired: list[PolicyName] = []
     for policy in POLICY_ORDER:
         kept = apply_policy(policy, candidates, context)
-        if len(kept) < len(candidates):
+        set_aside = {s.index for s in candidates} - {s.index for s in kept}
+        if set_aside if reported is None else not set_aside.isdisjoint(reported):
             fired.append(policy)
         candidates = kept
 
@@ -458,7 +462,7 @@ def apply_house_policies(
         survivor=_tie_break(survivors, pool, chosen, ratings),
         fired=tuple(fired),
         dropped=frozenset(pool.measuring) - frozenset(survivors),
-        facts=pooled,
+        facts=tuple(f for f in pooled if reported is None or f.index in reported),
     )
 
 

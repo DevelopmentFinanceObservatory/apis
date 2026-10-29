@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import dataclasses
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import StrEnum
@@ -67,9 +67,10 @@ class DetectedSV:
     sentence: str | None  # candidate.metadata.sentence, carried for diagnostics and labels.
     # A row `with_rival_families` adds for its five-tuple, which the resolve did not return.
     rival: bool = False
-    # A rival row of a family measuring another convention basis of a recalled family
-    # (`with_rival_families`), whose shape joins only the house policies' pool.
-    basis_sibling: bool = False
+    # On a rival row of a family measuring another convention basis of recalled families
+    # (`with_rival_families`), those families (`family_ref`). Its shape joins the house
+    # policies' pool only beside one of them.
+    basis_of: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,10 +215,11 @@ def with_rival_families(
     from the part's shape and window, so its family must reach the house policies whatever
     words recalled the other. "ODA" from the United States, for example, recalls DAC1's ODA
     amounts and none of its grant equivalents, the headline basis from 2018. A row added
-    this way is marked `DetectedSV.rival` and `DetectedSV.basis_sibling` and takes its hit
-    family's best score. A basis is a scope choice of the reading the binder elects, so its
-    shape takes no bind-menu seat and joins the policies' pool only beside a family it is a
-    sibling of (`phase_rank_bind._HousePolicyStep`): DAC1's ODA amounts at the tail of the
+    this way is marked `DetectedSV.rival`, names the recalled families it measures another
+    basis of (`DetectedSV.basis_of`) and takes their best score. A basis is a scope choice
+    of the reading the binder elects, so the binder does not read its shape while one of
+    those families stands on the menu, and the shape joins the policies' pool only beside
+    one of them (`phase_rank_bind._HousePolicyStep`): DAC1's ODA amounts at the tail of the
     cut for "greenhouse gas emissions" put no grant equivalents before the binder."""
     scope = catalogue.scope
     best: dict[FiveTuple, float] = {}
@@ -265,7 +267,7 @@ def with_rival_families(
                         rival=True,
                     )
                 )
-    for sibling, score in _basis_siblings(recalled, best, index=index):
+    for sibling, sources in _basis_siblings(recalled, index=index):
         if id(sibling) in held:
             continue
         row = _broadest_admitted_row(sibling, catalogue=catalogue, index=index)
@@ -274,11 +276,11 @@ def with_rival_families(
             rivals.append(
                 DetectedSV(
                     dcid=row.dcid,
-                    score=score,
+                    score=max(best[source.five_tuple] for source in sources),
                     type_of="StatisticalVariable",
                     sentence=None,
                     rival=True,
-                    basis_sibling=True,
+                    basis_of=frozenset(family_ref(source) for source in sources),
                 )
             )
     if not rivals:
@@ -295,14 +297,20 @@ def _broadest_admitted_row(
     return next((r for r in rows if catalogue.admit_candidate(r.dcid) is not None), None)
 
 
+def family_ref(family: IndexFamily) -> str:
+    """The dcid that names `family`: its first row in index order, which belongs to no
+    other family."""
+    return family.rows[0].dcid
+
+
 def _basis_siblings(
-    recalled: Sequence[IndexFamily], best: Mapping[FiveTuple, float], *, index: CodeIndex
-) -> list[tuple[IndexFamily, float]]:
+    recalled: Sequence[IndexFamily], *, index: CodeIndex
+) -> list[tuple[IndexFamily, list[IndexFamily]]]:
     """The families measuring a convention basis that `recalled`, the families among the
-    hits, leave out, each with the best score (`best`) of the recalled family it is a
-    sibling of (`with_rival_families`), in recalled order and each once."""
+    hits, leave out, each with the recalled families it is a sibling of
+    (`with_rival_families`), in recalled order and each once."""
     measured = {(dataset, family.five_tuple) for family in recalled for dataset in family.datasets}
-    found: dict[int, tuple[IndexFamily, float]] = {}
+    found: dict[int, tuple[IndexFamily, list[IndexFamily]]] = {}
     for family in recalled:
         five_tuple = family.five_tuple
         for dataset in family.datasets:
@@ -317,8 +325,11 @@ def _basis_siblings(
                 if (dataset, sibling) in measured:
                     continue
                 for candidate in index.families_by_five_tuple.get(sibling, ()):
-                    if dataset in candidate.datasets and id(candidate) not in found:
-                        found[id(candidate)] = (candidate, best[five_tuple])
+                    if dataset not in candidate.datasets:
+                        continue
+                    sources = found.setdefault(id(candidate), (candidate, []))[1]
+                    if all(source is not family for source in sources):
+                        sources.append(family)
     return list(found.values())
 
 

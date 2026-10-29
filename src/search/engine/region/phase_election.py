@@ -1320,7 +1320,9 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
-    for the word or answering it both ways. The request names every member the read served
+    for the word or answering it both ways. A shape seated after the menu the binder read
+    (`ResolveState.bind_menu`) is off it (`StatedWordsRequest.on_bind_menu`), and the bind
+    rated none of its words. The request names every member the read served
     (`served_member_names`), and the binder rates the words on them wherever they differ
     from the shape's label (`stated_words_read.serves_beyond_label`), so a word one of them
     does not state reads as narrower than the answer. Where a served member has no name,
@@ -1340,21 +1342,23 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
         if len(named) == len(names) and not _serves_the_labelled_series(answer, served_names)
         else ()
     )
+    index = next(
+        (
+            index
+            for index, menu_shape in enumerate(state.capped_shapes)
+            if menu_shape.shape_id == shape.shape_id
+        ),
+        None,
+    )
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
-        shape_index=next(
-            (
-                index
-                for index, menu_shape in enumerate(state.capped_shapes)
-                if menu_shape.shape_id == shape.shape_id
-            ),
-            None,
-        ),
+        shape_index=index,
         words=words,
         bindings=tuple(answer.bindings),
         decision=state.bind_decision,
         served=served,
+        on_bind_menu=index is None or state.bind_menu is None or index < state.bind_menu,
         part=state.variable_index,
         pool=state.pool,
     )
