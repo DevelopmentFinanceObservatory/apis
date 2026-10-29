@@ -68,7 +68,9 @@ request key (`request_key`) taken, a hash of the working tree as sent, each reso
 record, `latest`, the engine's execution identity and the answer format (`ANSWER_FORMAT`). The
 run (`run_prepared`) stores its 200 body under that key (`RecipeStore.write_answer`) once its
 frame is stored, so a later request with the same key answers the stored body
-(`stored_answer`) while the frame file it names is still served, reading no frame.
+(`stored_answer`) while the frame file it names is still served, reading no frame. A taken-down
+output pair refuses `snapshot_revoked` on both paths, a stored answer and a run that would reuse
+the stored frame, as a derived read of the pair does.
 
 Bounds: a tree holds at most `max_nodes` nodes after expansion, its root frames at most
 `max_root_rows` rows together, and a `join` writes at most `max_join_rows`. Every other verb
@@ -109,7 +111,7 @@ from pydantic import (
 
 from artifact_store import ArtifactStore
 from dataset_store.clock import Clock
-from dataset_store.snapshot import SnapshotReader, select_servable_locations
+from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, read_servable_version
 from datasets_api.doors.publish import (
     PUBLISH_MAX_ROWS,
     publish_built_frame,
@@ -1340,13 +1342,21 @@ def _stored_file_digest(
     stores: AnalysisStores, *, spec_id: str, content_version: str
 ) -> str | None:
     """The digest of the servable frame file (`render.frame_file_location`) of a recorded pair,
-    or `None`."""
-    if stores.snapshot_reader.read_version(spec_id, content_version) is None:
+    or `None`. Servability is the derived read's (`read_servable_version`).
+
+    Raises:
+        SnapshotRevoked: The pair is taken down.
+    """
+    try:
+        stored = read_servable_version(
+            stores.snapshot_reader,
+            subject_id=spec_id,
+            content_version=content_version,
+            now=stores.now(),
+        )
+    except SnapshotNotFound:
         return None
-    locations = stores.snapshot_reader.read_artifact_locations(spec_id, content_version)
-    location = frame_file_location(
-        select_servable_locations(locations, now=stores.now()), site=stores.site
-    )
+    location = frame_file_location(stored.servable, site=stores.site)
     return None if location is None else location.artifact_digest
 
 
@@ -1668,7 +1678,11 @@ def prepare_analysis(
 
 def stored_answer(prepared: PreparedAnalysis, *, stores: AnalysisStores) -> dict[str, Any] | None:
     """The body stored under `prepared`'s key while its frame file is still served at the
-    digest the body's ref names, else `None`."""
+    digest the body's ref names, else `None`.
+
+    Raises:
+        SnapshotRevoked: The pair the body names is taken down.
+    """
     stored = stores.recipe_store.read_answer(request_key=prepared.key)
     if stored is None:
         return None
@@ -1695,6 +1709,7 @@ def run_prepared(
     Raises:
         AnalysisRefused: The engine refuses the tree.
         AnalysisTooLarge, AnalysisStoreDiverges: As their docstrings say.
+        SnapshotRevoked: The pair the tree computes is taken down.
     """
     with permit():
         computed = _evaluated(

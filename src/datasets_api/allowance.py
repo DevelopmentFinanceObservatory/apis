@@ -18,8 +18,9 @@ fails, so a failed write costs its caller nothing. A pin's units stay spent when
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
 it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
 upserts in one transaction and rolls them all back when one finds its row at the limit. A
-refund takes one from the day's row, or deletes the row it would leave at zero, and
-`refund_together` runs its refunds in one transaction.
+refund locks the day's row, then takes one from it or deletes the row it would leave at zero, so
+a spend racing the refund waits for its commit. `refund_together` runs its refunds in one
+transaction.
 """
 
 from __future__ import annotations
@@ -227,17 +228,26 @@ class LiveAllowanceLedger:
             with self._store.transaction() as tx:
                 for spend in spends:
                     params = (spend.key, spend.kind.value, _utc_day(now))
-                    # The row holds a positive count, so the last unit deletes it.
+                    # The row holds a positive count, so the last unit deletes it. The lock
+                    # holds the count read here until commit, so a spend racing the refund
+                    # waits for it rather than leaving it to match no row.
                     row = tx.fetch_one(
-                        "UPDATE datasets.caller_allowance SET count = count - 1 "
-                        "WHERE caller_key = %s AND kind = %s AND day = %s AND count > 1 "
-                        "RETURNING count",
+                        "SELECT count FROM datasets.caller_allowance "
+                        "WHERE caller_key = %s AND kind = %s AND day = %s FOR UPDATE",
                         params,
                     )
                     if row is None:
+                        continue
+                    if row["count"] == 1:
                         tx.execute(
                             "DELETE FROM datasets.caller_allowance "
-                            "WHERE caller_key = %s AND kind = %s AND day = %s AND count = 1",
+                            "WHERE caller_key = %s AND kind = %s AND day = %s",
+                            params,
+                        )
+                    else:
+                        tx.execute(
+                            "UPDATE datasets.caller_allowance SET count = count - 1 "
+                            "WHERE caller_key = %s AND kind = %s AND day = %s",
                             params,
                         )
         except Exception as exc:

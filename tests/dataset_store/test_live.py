@@ -2344,6 +2344,59 @@ def test_a_card_unit_refund_takes_one_back_and_deletes_a_day_left_at_zero(live_s
     assert held() is None
 
 
+def test_a_refund_racing_a_spend_takes_its_unit_back(live_store):
+    """A refund that reads the day's last unit while a spend holds the row uncommitted waits for
+    the spend, then takes one from the count the spend leaves."""
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    limits = {AllowanceKind.card: 5}
+    now = datetime.now(UTC)
+    LiveAllowanceLedger(store=live_store, limits=limits).spend(caller, AllowanceKind.card, now)
+    spend_pool = _pool(size=1)
+    refund_pool = _pool(size=1)
+    try:
+        holder = _HoldBeforeCommitStore(
+            LiveDatasetStore(connections=spend_pool),
+            hold_when=lambda sql: sql.startswith("INSERT INTO datasets.caller_allowance"),
+        )
+        spender = LiveAllowanceLedger(store=holder, limits=limits)
+        refunder = LiveAllowanceLedger(
+            store=LiveDatasetStore(connections=refund_pool), limits=limits
+        )
+
+        spend = _Call(lambda: spender.spend(caller, AllowanceKind.card, now))
+        assert holder.held.wait(timeout=5), "the spend never reached its commit"
+        refund = _Call(lambda: refunder.refund(caller, AllowanceKind.card, now))
+        deadline = time.monotonic() + 5
+        while not _waits_on_a_lock(live_store, table="datasets.caller_allowance"):
+            assert time.monotonic() < deadline, "the refund never waited on the spend's row"
+            time.sleep(0.02)
+        holder.release.set()
+        spend.join()
+        refund.join()
+    finally:
+        spend_pool.close_all()
+        refund_pool.close_all()
+
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+            (caller.key, AllowanceKind.card.value),
+        )
+    assert row == {"count": 1}
+
+
+def _waits_on_a_lock(store, *, table: str) -> bool:
+    """Whether another session waits on a lock in a statement naming `table`."""
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
+            "AND pid <> pg_backend_pid()",
+            (table,),
+        )
+    return row is not None and row["n"] > 0
+
+
 def test_artifact_reference_upsert_reactivates_a_soft_deleted_row(live_store):
     digest = "sha256:test-live-reference-upsert-reactivate"
     subject_id = "spec:test-live-reference-upsert-reactivate"

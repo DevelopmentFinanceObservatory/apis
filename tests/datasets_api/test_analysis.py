@@ -14,6 +14,7 @@ import jsonschema
 import pytest
 import rfc8785
 
+from dataset_store.snapshot import SnapshotRevoked
 from datasets_api import analysis, publish_models
 from datasets_api.analysis import (
     AnalysisBounds,
@@ -102,10 +103,7 @@ def test_a_two_sided_tree_pairs_roles_by_column_and_stores_its_frame() -> None:
         },
     )
     assert result.evaluation.ref == expected.ref
-    named = {
-        expected.ref.spec_id: '{"denominator_frame_ref":["dcid:Count_Person"],'
-        '"frame_ref":["dcid:Amount_ODA"],"verb":"quotient_of"}'
-    }
+    named = {expected.ref.spec_id: "mv_d355e59c50ff8cf07e86a4da12b64297"}
     assert result.output_digest == output_digest(expected.frame, named)
     assert result.created
     jsonschema.validate(result.ref(), _REF_SCHEMA)
@@ -266,6 +264,31 @@ def test_a_stored_answer_stands_while_its_frame_file_is_served_and_is_recomputed
     again = run_prepared(prepared, source=roots, stores=stores.analysis())
     assert roots.reads > reads
     assert stored_answer(prepared, stores=stores.analysis()) == again.body()
+
+
+def test_a_revoked_output_refuses_its_stored_answer_and_a_run_that_reuses_it() -> None:
+    stores = Stores()
+    roots = source(stores)
+    request = AnalysisRequest.model_validate({"tree": _PER_PERSON})
+    first = run_analysis(request, source=roots, stores=stores.analysis())
+    ref = first.evaluation.ref
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_revocation (subject_id, content_version, revoked_at) "
+            "VALUES (%s, %s, %s)",
+            (ref.spec_id, ref.content_version, stores.now.isoformat()),
+        )
+    prepared = prepare_analysis(request, source=roots)
+
+    with pytest.raises(SnapshotRevoked) as cached:
+        stored_answer(prepared, stores=stores.analysis())
+    with pytest.raises(SnapshotRevoked) as recomputed:
+        run_prepared(prepared, source=roots, stores=stores.analysis())
+
+    for refused in (cached.value, recomputed.value):
+        spec = classify_analysis_exception(refused)
+        assert spec is not None
+        assert (spec.code, spec.status) == ("snapshot_revoked", 410)
 
 
 def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> None:

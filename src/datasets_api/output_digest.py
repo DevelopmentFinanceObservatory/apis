@@ -17,12 +17,14 @@ outputs.
 `compare`, `sum_of`, `share_of` and `quotient_of` write their rows under a variable of their
 own, spelt `dcid:` and the step's `ops_` id, which hashes the versions the step read and the
 engine that ran it. The digest reads that variable under a name built from what was computed
-(`minted_variable_names`): the JCS text of `{"verb": ..., <slot>: [...]}`, each frame slot
-of the step holding the sorted names of the variables its input carries. A root carries its
-frame's `stat_var` values, `filter`, `aggregate`, `rank` and `growth` carry their input's, and
-`join` the union of its inputs'. So equal computations over equal variables share a digest
-across recipes, engine releases and upstream rebuilds that move no number, and a step with its
-sides swapped holds another.
+(`minted_variable_names`): `mv_` and the first 32 hex digits of the SHA-256 of the JCS form
+of `{"verb": ..., <slot>: [...]}`, each frame slot of the step holding the sorted names of the
+variables its input carries. A root carries its frame's `stat_var` values, `filter`,
+`aggregate`, `rank` and `growth` carry their input's, `join` the union of its inputs', and a
+minting step its own name. So equal computations over equal variables share a digest across
+recipes, engine releases and upstream rebuilds that move no number, and a step with its sides
+swapped holds another. A name is 35 characters at any depth, since a nested step's document
+holds its inputs' names and not their documents.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ _RECIPE_KEY = "recipe"
 _COMPOSED_PARTS = ("numerator", "denominator")
 _DCID_PREFIX = "dcid:"
 _MINTING_VERBS = frozenset({"compare", "sum_of", "share_of", "quotient_of"})
+_MINTED_PREFIX = "mv_"
 
 
 def stat_vars(frame: Frame) -> frozenset[str]:
@@ -76,9 +79,10 @@ def minted_variable_names(
         verb = str(node["op_spec"]["verb"])
         if verb not in _MINTING_VERBS:
             return frozenset().union(*inputs.values())
-        name = rfc8785.dumps(
+        document = rfc8785.dumps(
             {"verb": verb, **{slot: sorted(held) for slot, held in inputs.items()}}
-        ).decode()
+        )
+        name = _MINTED_PREFIX + hashlib.sha256(document).hexdigest()[:_DIGEST_HEX_LENGTH]
         names[node["frame"]["spec_id"]] = name
         return frozenset({name})
 

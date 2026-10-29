@@ -165,6 +165,8 @@ def _role_columns(output_profile: str | None) -> str | None:
 
 def _to_sqlite(sql: str) -> str:
     sql = sql.replace(_ROLE_COLUMNS_SQL, "role_columns(output_profile) AS role_columns")
+    # SQLite runs one writer at a time, so a row lock has nothing to add.
+    sql = sql.removesuffix(" FOR UPDATE")
     return _to_sqlite_paramstyle(sql)
 
 

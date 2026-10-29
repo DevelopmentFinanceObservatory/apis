@@ -5,6 +5,7 @@ runner's operations write."""
 from __future__ import annotations
 
 import json
+import re
 from importlib.resources import files
 from typing import Any
 
@@ -57,6 +58,36 @@ def test_each_vector_frame_digests_to_its_document_and_digest(vector: dict[str, 
     for row in rows:
         row[0] = names.get(row[0].removeprefix("dcid:"), row[0])
     assert digest_document(role_columns=roles, rows=rows).decode() == vector["document"]
+
+
+def test_a_quotient_names_its_variable_as_the_contract_vector_does() -> None:
+    (vector,) = (vector for vector in _VECTORS if vector["name"] == "quotient-of-variable-named")
+    ((spec_id, name),) = vector["variables"].items()
+    tree = {
+        "frame": {"spec_id": spec_id},
+        "op_spec": {"verb": "quotient_of"},
+        "inputs": {"frame_ref": {"root": 0}, "denominator_frame_ref": {"root": 1}},
+    }
+
+    assert minted_variable_names(tree, {0: ["dcid:Amount_ODA"], 1: ["dcid:Count_Person"]}) == {
+        spec_id: name
+    }
+
+
+def test_a_deep_chain_of_minting_steps_names_each_variable_in_35_characters() -> None:
+    # 32 steps fit the 64-node bound. A name that held its inputs' names as text would double
+    # with each step and pass gigabytes here.
+    tree: object = dataset(AID, AID_V1)
+    for _ in range(32):
+        tree = step("share_of", tree)
+
+    computed = compute_analysis(
+        AnalysisRequest.model_validate({"tree": tree}), source=source(Stores())
+    )
+    names = minted_variable_names(computed.evaluation.tree, computed.root_variables)
+
+    assert len(set(names.values())) == 32
+    assert all(re.fullmatch(r"mv_[0-9a-f]{32}", name) for name in names.values())
 
 
 def _digest(tree: dict, *, frames: dict | None = None) -> str:
