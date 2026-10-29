@@ -120,8 +120,9 @@ def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
     record's last step through the inputs its rows come from, a `rank` over each period on its
     own (`per_period`) with a `limit` is reached, which keeps each period's top or bottom
     entities. A step's one `input` supplies its rows, and of several `inputs` the roles
-    `_ROW_SOURCE_ROLES` names, with a keyed denominator (`_keyed_denominator`). A `rank` without a `limit` keeps every entity, and one over the
-    whole window writes a single period. A frame without a description record, or whose
+    `_ROW_SOURCE_ROLES` names, with a keyed denominator (`_keyed_denominator`). A `rank`
+    without a `limit` keeps every entity, and one over the whole window writes a single
+    period. A frame without a description record, or whose
     record holds no steps, keeps none."""
     record = resolved_frame.description_record
     known = record.known_steps if record is not None else []
