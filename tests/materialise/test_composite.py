@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import (
     FRAME_GRAMMAR_VERSION,
+    Frame,
     derive_columns,
     frame_sha256,
     stream_frame_sha256,
@@ -823,3 +824,38 @@ def test_composed_chunks_keep_each_member_whole_and_hash_as_one_frame(target_row
     assert pq.read_table(io.BytesIO(chunked.series_statistics.data)).equals(
         pq.read_table(io.BytesIO(whole.series_statistics.data))
     )
+
+
+_RECIPE_UNIT = {"currency": "USD", "prices": "constant", "base_year": 2020, "recipe": "recipe-1"}
+
+
+def test_a_chunk_joins_a_member_with_recipe_unit_cells_and_one_without():
+    """A member whose cells carry a conversion recipe has a wider `unit` struct than one
+    without. Joined in one chunk, the members share the recipe layout, and the frame hashes as
+    the two members do as chunks of their own."""
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", 2012, 10.0)],
+        provenance=_CRS,
+        members=[_B],
+        units={"country/KEN": _RECIPE_UNIT},
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", 2012, 2.0)],
+        provenance=_IMPUTED,
+        members=[_I],
+    )
+
+    result = _compose([bilateral, imputed])
+
+    (chunk,) = result.frame_chunks()
+    assert chunk.table["stat_var"].to_pylist() == [_B, _I]
+    per_member = [
+        Frame.from_table(columns=chunk.columns, table=chunk.table.slice(position, 1))
+        for position in range(chunk.num_rows)
+    ]
+    assert per_member[0].table.schema != per_member[1].table.schema
+    assert result.content_version == mint_version_from_chunks(per_member)

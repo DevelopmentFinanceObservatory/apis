@@ -49,6 +49,7 @@ from dfo_frame_grammar import (
     TIME_PERIOD_COLUMN,
     VALUE_COLUMN,
     Frame,
+    widen_frame_table,
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 
@@ -108,8 +109,9 @@ is (`generation._FRAME_CHUNK_TARGET_ROWS`). Every pass over a chunk (its frame b
 statistics, profile and Parquet write) has a fixed Arrow cost of about 4 ms, and a composite
 like total ODA composes some 600 members of about 76 rows each, so a chunk per member spends
 most of the pass on that fixed cost. A member stays whole, so a series never spans two chunks,
-as `statistics.SeriesStatisticsSink` requires. Every member's table has the frame grammar's one
-column schema, so members of any component join."""
+as `statistics.SeriesStatisticsSink` requires. A member whose cells carry a conversion recipe has
+a wider `unit` struct than one without, so each member's table is widened to the recipe layout
+(`widen_frame_table`) before the members join."""
 
 type _Cell = tuple[tuple[str, ...], str]
 """A row's role values and period."""
@@ -571,6 +573,7 @@ def _composed_chunks(
     for _stat_var, table in heapq.merge(*streams, key=lambda run: run[0]):
         if table.num_rows == 0:
             continue
+        table = widen_frame_table(table, recipe=True)
         table = table.set_column(
             table.schema.get_field_index(PROVENANCE_COLUMN),
             PROVENANCE_COLUMN,
