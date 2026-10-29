@@ -287,10 +287,12 @@ def check_share(client: httpx.Client, component_id: str) -> str:
     if {key: share[key] for key in expected} != expected or not token.startswith("shw_"):
         raise SmokeFailure(f"share create answered {share}")
     path = f"{SHARES_ROUTE}/{share_id}"
-    replaced = client.put(path, json=cards, headers={WRITE_TOKEN: token})
+    # A replace names its caller too: the frames it pins spend that caller's pin allowance.
+    caller = {"X-Forwarded-For": "127.0.0.1"}
+    replaced = client.put(path, json=cards, headers={WRITE_TOKEN: token, **caller})
     if replaced.status_code != 200 or replaced.json()["revision"] != 2:
         raise SmokeFailure(f"PUT {path} answered {replaced.status_code}: {replaced.text}")
-    refused = client.put(path, json=cards, headers={WRITE_TOKEN: "shw_" + "0" * 22})
+    refused = client.put(path, json=cards, headers={WRITE_TOKEN: "shw_" + "0" * 22, **caller})
     if refused.status_code != 403 or refused.json()["code"] != "write_token_invalid":
         raise SmokeFailure(f"PUT {path} with a wrong token answered {refused.status_code}")
     deleted = client.delete(path, headers={WRITE_TOKEN: token})
