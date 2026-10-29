@@ -161,13 +161,13 @@ def _run_group(stat_vars: list[str]) -> tuple[int, int]:
 
 
 def test_group_dispatch_requests_equals_admitted_requests_past_the_dispatch_chunk_target():
-    """Thirty-three members exceed the four-lane, eight-member chunk target. Actual dispatch
-    and admission must report the same request count."""
+    """Thirty-three members exceed four lanes of eight, so they split into five chunks.
+    Actual dispatch and admission must report the same request count."""
     member_count = 4 * 8 + 1
     stat_vars = [f"dcid:LanesProofVar{i}" for i in range(member_count)]
     requests_sent, estimate_requests = _run_group(stat_vars)
     assert requests_sent == estimate_requests
-    assert requests_sent > _SETTINGS.mint_member_max_concurrency
+    assert requests_sent == 5
 
 
 _UNBOUND_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")

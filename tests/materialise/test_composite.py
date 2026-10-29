@@ -6,12 +6,15 @@ tests prove the composition rules over years and cells, not any recorded figure.
 
 from __future__ import annotations
 
+import io
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import (
     FRAME_GRAMMAR_VERSION,
+    Frame,
     derive_columns,
     frame_sha256,
     stream_frame_sha256,
@@ -21,6 +24,7 @@ from code_index.composites import DECLARED_COMPOSITES, composite_digest
 from code_index.declarations import COMPOSITES, CRS_INCLUSIVE
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import MaterialisationRequest, MaterialisationResult
+from materialise import composite as composite_module
 from materialise.composite import ComponentResult, compose_components
 from materialise.content_version import mint_version_from_chunks
 from materialise.dependencies import Dependencies
@@ -795,7 +799,9 @@ def test_the_frame_is_composed_once_and_every_later_pass_reads_the_same_rows():
         [frame.table for frame in chunks] == [frame.table for frame in passes[0]]
         for chunks in passes
     )
-    assert [frame.table["stat_var"].to_pylist()[0] for frame in passes[0]] == [
+    # Every member fits one chunk under `_COMPOSED_CHUNK_TARGET_ROWS`.
+    assert len(passes[0]) == 1
+    assert list(dict.fromkeys(passes[0][0].table["stat_var"].to_pylist())) == [
         *members_b,
         *members_i,
     ]
@@ -807,3 +813,85 @@ def test_the_frame_is_composed_once_and_every_later_pass_reads_the_same_rows():
     for frame in passes[0]:
         statistics.write(compute_series_statistics_table(frame))
     assert result.series_statistics.data == statistics.finish().data
+
+
+@pytest.mark.parametrize("target_rows", [1, 5])
+def test_composed_chunks_keep_each_member_whole_and_hash_as_one_frame(target_rows, monkeypatch):
+    """A chunk closes before the member that would take it past the row target, so a member
+    larger than the target is a chunk of its own, and the frame hashes, counts and folds its
+    statistics the same however its rows are chunked."""
+    members_b = [f"dcid:Amount_Health_{i}" for i in range(3)]
+    members_i = [f"dcid:AttributedAmount_Health_{i}" for i in range(2)]
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [
+            (member, recipient, year, float(position + year - 2000))
+            for position, member in enumerate(members_b)
+            for recipient in ("country/KEN", "country/GHA")
+            for year in (2011, 2012)
+        ],
+        provenance=_CRS,
+        members=members_b,
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(members_i[0], "country/GHA", 2012, 2.0)],
+        provenance=_IMPUTED,
+        members=members_i,
+        covered=(2011, 2012),
+    )
+    whole = _compose([bilateral, imputed])
+    monkeypatch.setattr(composite_module, "_COMPOSED_CHUNK_TARGET_ROWS", target_rows)
+
+    chunked = _compose([bilateral, imputed])
+
+    chunks = [frame.table["stat_var"].to_pylist() for frame in chunked.frame_chunks()]
+    members = [member for chunk in chunks for member in dict.fromkeys(chunk)]
+    assert len(chunks) > 1
+    assert members == sorted(set(members))
+    assert all(len(chunk) <= target_rows or len(set(chunk)) == 1 for chunk in chunks)
+    assert chunked.content_version == whole.content_version
+    assert _rows(chunked) == _rows(whole)
+    assert chunked.coverage == whole.coverage
+    assert chunked.output_profile == whole.output_profile
+    assert chunked.series_statistics.figures == whole.series_statistics.figures
+    assert pq.read_table(io.BytesIO(chunked.series_statistics.data)).equals(
+        pq.read_table(io.BytesIO(whole.series_statistics.data))
+    )
+
+
+_RECIPE_UNIT = {"currency": "USD", "prices": "constant", "base_year": 2020, "recipe": "recipe-1"}
+
+
+def test_a_chunk_joins_a_member_with_recipe_unit_cells_and_one_without():
+    """A member whose cells carry a conversion recipe has a wider `unit` struct than one
+    without. Joined in one chunk, the members share the recipe layout, and the frame hashes as
+    the two members do as chunks of their own."""
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", 2012, 10.0)],
+        provenance=_CRS,
+        members=[_B],
+        units={"country/KEN": _RECIPE_UNIT},
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", 2012, 2.0)],
+        provenance=_IMPUTED,
+        members=[_I],
+    )
+
+    result = _compose([bilateral, imputed])
+
+    (chunk,) = result.frame_chunks()
+    assert chunk.table["stat_var"].to_pylist() == [_B, _I]
+    per_member = [
+        Frame.from_table(columns=chunk.columns, table=chunk.table.slice(position, 1))
+        for position in range(chunk.num_rows)
+    ]
+    assert per_member[0].table.schema != per_member[1].table.schema
+    assert result.content_version == mint_version_from_chunks(per_member)

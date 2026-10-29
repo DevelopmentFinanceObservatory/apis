@@ -50,8 +50,8 @@ _SETTINGS_ENV = {
 
 
 class _RecordingClient:
-    """Recording stand-in for the SDMX client. Accepts `timeout` and `hedge_after` as
-    `SdmxClient` does."""
+    """Recording stand-in for the SDMX client. Accepts `timeout`, `hedge_after` and
+    `total_concurrency` as `SdmxClient` does."""
 
     created: ClassVar[list[_RecordingClient]] = []
 
@@ -62,11 +62,13 @@ class _RecordingClient:
         token: str | None = None,
         timeout: float | None = None,
         hedge_after: float | None = None,
+        total_concurrency: int | None = None,
     ) -> None:
         self.base_url = base_url
         self.token = token
         self.timeout = timeout
         self.hedge_after = hedge_after
+        self.total_concurrency = total_concurrency
         self.closed = False
         self.closed_at: float | None = None
         type(self).created.append(self)
@@ -246,14 +248,18 @@ def test_live_clients_take_the_sdmx_timeout_and_searchs_graph_cache_sizes(
 ) -> None:
     _open_and_close(
         _overrides(**_every_store_injected(), task_client=FakeTaskClient()),
-        settings=DatasetsBuildSettings(sdmx_timeout_seconds=42),
+        settings=DatasetsBuildSettings(sdmx_timeout_seconds=42, mint_member_max_concurrency=12),
     )
 
     assert [client.timeout for client in _RecordingSdmxClient.created] == [42, 42]
-    # Only the mint's client on our mixer hedges its data reads.
-    assert {client.base_url: client.hedge_after for client in _RecordingSdmxClient.created} == {
-        _SETTINGS_ENV["DATASETS_SDMX_BASE_URL"]: DATA_HEDGE_AFTER_SECONDS,
-        UN_BASE_URL: None,
+    # Only the mint's client on our mixer hedges its data reads, and it allows as many GETs
+    # in flight as a mint has fetch workers.
+    assert {
+        client.base_url: (client.hedge_after, client.total_concurrency)
+        for client in _RecordingSdmxClient.created
+    } == {
+        _SETTINGS_ENV["DATASETS_SDMX_BASE_URL"]: (DATA_HEDGE_AFTER_SECONDS, 12),
+        UN_BASE_URL: (None, None),
     }
     (graph,) = _RecordingGraphReader.created
     assert graph.cache_sizes == {

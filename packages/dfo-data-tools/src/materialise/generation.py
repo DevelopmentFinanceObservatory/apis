@@ -2247,13 +2247,21 @@ _DISPATCH_CHUNK_TARGET_MEMBERS = 8
 
 With one shared entity scope, using only `member_concurrency` lanes would
 place the whole group in its first dispatch wave and defeat row coalescing.
-`lanes = max(member_concurrency, ceil(request_count / 8))` bounds each
-chunk to about eight members. With the dispatch look-ahead
-(`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1` completed
-chunks wait ahead of the oldest one not yet consumed, so resident member
-tables reach about `(2 * member_concurrency - 1) * 8`, plus the members held
-in `pending_members` for a multi-batch group (`_GroupRowStreamer.stream_rows`).
-Kenya-scale fetches use about 35 requests instead of 110."""
+`dispatch_lanes` bounds each chunk to about eight members. With the dispatch
+look-ahead (`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1`
+completed chunks wait ahead of the oldest one not yet consumed, so resident
+member tables reach about `(2 * member_concurrency - 1) * 8`, plus the members
+held in `pending_members` for a multi-batch group
+(`_GroupRowStreamer.stream_rows`). Kenya-scale fetches use about 35 requests
+instead of 110."""
+
+_DISPATCH_LANE_FLOOR = 4
+"""A group splits into at least this many requests, or `member_concurrency` when that is
+fewer, so a small group still spreads over the fetch workers. The floor stays apart from the
+worker count: the mixer answers a request of two members and one of eight in about the same
+0.09 s, and 16 workers send every chunk of a group under 128 members in one wave whatever the
+floor, so a floor that rose with the workers would only add requests, and with them the sync
+estimate (`datasets_api.admission.sync_estimate`) that decides whether a mint runs inline."""
 
 _DISPATCH_LOOK_AHEAD_POOLS = 2
 """A group fetch dispatches chunks only within two pools' worth of the oldest chunk not yet
@@ -2262,12 +2270,17 @@ ahead and the completed chunks waiting on it stay bounded."""
 
 
 def dispatch_lanes(member_concurrency: int, request_count: int) -> int:
-    """Returns the lane count used by group fetches.
+    """Returns the lane count used by group fetches: chunks of about
+    `_DISPATCH_CHUNK_TARGET_MEMBERS` members, and at least `_DISPATCH_LANE_FLOOR` of them, or
+    `member_concurrency` when that is fewer.
 
     Admission estimates use the same formula so predicted and dispatched
     request counts agree.
     """
-    return max(member_concurrency, math.ceil(request_count / _DISPATCH_CHUNK_TARGET_MEMBERS))
+    return max(
+        min(member_concurrency, _DISPATCH_LANE_FLOOR),
+        math.ceil(request_count / _DISPATCH_CHUNK_TARGET_MEMBERS),
+    )
 
 
 class _PooledCoverageTotals:
