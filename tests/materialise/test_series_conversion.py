@@ -1,4 +1,4 @@
-"""Stores per-series conversion records once per distinct record and reads both stored forms."""
+"""Stores per-series conversion records as one entry a series and reads both stored forms."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import json
 from materialise.series_conversion import (
     SeriesConversion,
     decode_series_conversion_entries,
-    pack_series_conversions,
+    encode_series_conversions,
     series_key,
 )
 
-from ._legacy_series_conversions import legacy_series_conversion_entries
+from ._packed_series_conversions import pack_series_conversions
 
 _SHARED = SeriesConversion(
     recipe_id="ConversionRecipeDAC",
@@ -53,24 +53,18 @@ def _stored(value: object) -> object:
     return json.loads(json.dumps(value))
 
 
-def test_packed_records_read_back_as_every_series_record():
+def test_written_entries_read_back_as_every_series_record():
+    entries = encode_series_conversions(_CONVERSIONS)
+
+    assert isinstance(entries, list)
+    assert len(entries) == len(_CONVERSIONS)
+    assert decode_series_conversion_entries(_stored(entries)) == _CONVERSIONS
+
+
+def test_a_packed_object_reads_back_as_every_series_record():
     packed = pack_series_conversions(_CONVERSIONS)
 
     assert decode_series_conversion_entries(_stored(packed)) == _CONVERSIONS
     assert len(packed["records"]) == 2
     assert len(packed["stat_vars"]) == 40
     assert len(packed["roles"]) == 2 * 25 + 1
-
-
-def test_a_version_stored_before_packing_reads_its_entry_list():
-    entries = legacy_series_conversion_entries(_CONVERSIONS)
-
-    assert decode_series_conversion_entries(_stored(entries)) == _CONVERSIONS
-
-
-def test_packing_stores_a_few_bytes_a_series():
-    """The 2,001 series take about 15 bytes each packed, against about 375 as entries."""
-    packed = len(json.dumps(pack_series_conversions(_CONVERSIONS)))
-    entries = len(json.dumps(legacy_series_conversion_entries(_CONVERSIONS)))
-
-    assert packed * 10 < entries
