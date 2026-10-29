@@ -770,7 +770,8 @@ class MemberProbe:
     one bound place carries it as a `PendingBreadth` (`read_variable_breadths`), read only
     when a tie needs it, and every other probe carries None. `by_place` holds a subject-only
     probe's own facets at each probed place (`subject_probe`), and is empty for every other
-    probe."""
+    probe. `settled` is false when `places` are a countries fallback this request alone took
+    (`place_scope.DefaultPlaceScope.settled`)."""
 
     candidates: tuple[Facet, ...]
     admission: RowAdmission
@@ -779,6 +780,7 @@ class MemberProbe:
     breadth: SeriesBreadth | None = field(default=None, compare=False)
     variable_breadth: VariableBreadth = field(default=None, compare=False)
     by_place: Mapping[str, tuple[Facet, ...]] = field(default_factory=dict, compare=False)
+    settled: bool = field(default=True, compare=False)
 
     def breadth_in(self, window: RequestedWindow | None) -> Mapping[str, int] | None:
         """Each facet id's series count under `window`, or None when the probe counts none."""
@@ -786,8 +788,11 @@ class MemberProbe:
 
     @property
     def scope(self) -> DefaultPlaceScope:
-        """`places` and `every_place` as the default place scope that resolved them."""
-        return DefaultPlaceScope(places=self.places, every_place=self.every_place)
+        """`places`, `every_place` and `settled` as the default place scope that resolved
+        them."""
+        return DefaultPlaceScope(
+            places=self.places, every_place=self.every_place, settled=self.settled
+        )
 
 
 # A subject-only member the probe read nothing for. It has no candidate and admits no row.
@@ -1075,6 +1080,7 @@ def _scoped_probe(
         subject_probe(by_entity, scope.places),
         places=scope.places,
         every_place=scope.every_place,
+        settled=scope.settled,
     )
 
 
@@ -1192,12 +1198,13 @@ def fetch_role_bindings(
 def default_scope_of(members: Sequence[MemberProbe]) -> DefaultPlaceScope:
     """The places a request binding no place is fetched at, across `members`, in the order
     Search states a default scope's places (`place_scope.scope_places`), and whether they are
-    every place with data, which holds only when each member's are. Empty when every member
-    binds a place."""
-    return scope_of_places(
+    every place with data, which holds only when each member's are, and settled only when
+    each member's is. Empty when every member binds a place."""
+    scope = scope_of_places(
         (place for member in members for place in member.places),
         every_place=all(member.every_place for member in members),
     )
+    return replace(scope, settled=all(member.settled for member in members))
 
 
 def merge_facets(facets: Sequence[Facet]) -> Facet:

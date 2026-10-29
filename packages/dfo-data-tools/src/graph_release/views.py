@@ -21,6 +21,7 @@ the index does.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -34,7 +35,7 @@ from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from dfo_platform.roles import RoleAxis
 from graph_release.coverage import HORIZON, coverage_rows, role_map
-from graph_release.format import LoadedRelease, Manifest
+from graph_release.format import PLATFORM, LoadedRelease, Manifest
 from graph_release.platform import PlatformRefusal
 from series_coverage.index import CoverageIndex
 from series_coverage.loader import CoverageArtifactError, checked_index
@@ -168,6 +169,33 @@ def release_code_indexes(loaded: LoadedRelease) -> tuple[CodeIndex, MeasureIndex
     return code_indexes(document)
 
 
+def imported_data_digest(loaded: LoadedRelease) -> str:
+    """`sha256:` and the hex digest of what a mint reads from `loaded` that only an import or a
+    serving-view change moves: the import execution id, the hashes of the platform parts (the
+    copy of Spanner the import left), the `code_index_blocks` part's hash (the code index,
+    which carries composites, parties and families), and of the `declarations` part the role
+    axes and build year the coverage view takes (`release_coverage_index`). The DC serving
+    revision, the builder and declarations hashes, the rest of the `declarations` part and the
+    `base_parties` part, which reaches a mint only through the code index, stay out. Raises
+    `ViewRefused` for a release that lacks the `code_index_blocks` or `declarations` part."""
+    manifest = loaded.manifest
+    code_index = [ref.sha256 for ref in manifest.parts if ref.name == CODE_INDEX_PART]
+    declarations = loaded.blobs.get(DECLARATIONS_PART)
+    if not code_index or declarations is None:
+        raise ViewRefused(
+            f"the release holds no {CODE_INDEX_PART} or {DECLARATIONS_PART} part to key on"
+        )
+    payload = {
+        "import_execution_id": manifest.import_execution_id,
+        "platform_parts": sorted(ref.sha256 for ref in manifest.parts if ref.layer == PLATFORM),
+        "code_index_blocks": code_index,
+        "role_axes": dict(declared_role_axes(declarations)),
+        "build_year": _read_at(manifest).year,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def _read_at(manifest: Manifest) -> datetime:
     return datetime.fromisoformat(manifest.read_timestamp).astimezone(UTC)
 
@@ -179,6 +207,7 @@ __all__ = [
     "code_indexes",
     "coverage_index",
     "declared_role_axes",
+    "imported_data_digest",
     "read_document",
     "release_code_indexes",
     "release_coverage_index",
