@@ -740,13 +740,13 @@ def _build_merged_slots(
     """Build merged slots from a roster union or the union of one differing binding.
 
     A ``None`` key unions unbound slots after the base roster. Otherwise every
-    member must bind the differing slot, a value as a set of one and a set only off the
-    where axis. Members binding different sets must share no ref, and the sets must
-    union to at least two distinct refs. Each ref nested under another drops
+    member must bind the differing slot to graph refs, a value as a set of one and a set
+    only off the where axis. Members binding different sets must share no ref, and the
+    sets must union to at least two distinct refs. Each ref nested under another drops
     (`_simplify_merged_union`). One ref left binds a ``BindingValue``, more bind a
-    ``BindingSet``.
-    ``set_ref_for`` labels only what/how sets because ``isPartOf`` also
-    represents geographic containment.
+    ``BindingSet``. The set keeps the ``set_ref`` of a member whose set it equals, else
+    ``set_ref_for`` labels it, on what/how only because ``isPartOf`` also represents
+    geographic containment.
     """
     if diff_key is None:
         merged_slots = list(base_spec.resolved.slots)
@@ -759,32 +759,34 @@ def _build_merged_slots(
                     merged_slots.append(sl)
         return merged_slots
 
-    member_values: list[list[SlotValue]] = []
+    bindings: list[BindingValue | BindingSet] = []
     for r in group:
         s = next((sl for sl in r.spec.resolved.slots if _slot_key_t(sl) == diff_key), None)
         if s is None or isinstance(s.binding, BindingUnbound):
             raise _RefuseMerge
-        if isinstance(s.binding, BindingValue):
-            member_values.append([s.binding.value])
-        elif diff_key[0] == "where":
+        if isinstance(s.binding, BindingSet) and diff_key[0] == "where":
             # A place set reads a region, and this merge reads no containment of places.
             raise _RefuseMerge
-        else:
-            member_values.append(s.binding.values)
+        bindings.append(s.binding)
+    member_values = [[b.value] if isinstance(b, BindingValue) else b.values for b in bindings]
+    member_refs = [[value.ref for value in values if value.ref] for values in member_values]
+    if any(
+        len(refs) < len(values) for refs, values in zip(member_refs, member_values, strict=True)
+    ):
+        # A literal or a window names no code to union.
+        raise _RefuseMerge
+    member_codes = [frozenset(ref.ref for ref in refs) for refs in member_refs]
     # Members that share a code would count it in two parts of one answer.
-    member_codes = {
-        frozenset(value.ref.ref for value in values if value.ref) for values in member_values
-    }
-    if sum(len(codes) for codes in member_codes) != len(frozenset().union(*member_codes)):
+    distinct_codes = set(member_codes)
+    if sum(len(codes) for codes in distinct_codes) != len(frozenset().union(*distinct_codes)):
         raise _RefuseMerge
 
     diff_refs: list[GraphRef] = []
     seen_dcids: set[str] = set()
-    for values in member_values:
-        for value in values:
-            if value.ref and value.ref.ref not in seen_dcids:
-                seen_dcids.add(value.ref.ref)
-                diff_refs.append(value.ref)
+    for ref in (ref for refs in member_refs for ref in refs):
+        if ref.ref not in seen_dcids:
+            seen_dcids.add(ref.ref)
+            diff_refs.append(ref)
     if len(diff_refs) < 2:
         raise _RefuseMerge
     diff_refs = _simplify_merged_union(diff_refs)
@@ -796,8 +798,17 @@ def _build_merged_slots(
     if len(values) == 1:
         binding = BindingValue(value=values[0])
     else:
-        merged_set_ref: GraphRef | None = None
-        if diff_key[0] in ("what", "how") and set_ref_for is not None:
+        # A member whose set the merge leaves whole keeps naming its group.
+        merged_codes = frozenset(ref.ref for ref in diff_refs)
+        merged_set_ref = next(
+            (
+                b.set_ref
+                for b, codes in zip(bindings, member_codes, strict=True)
+                if isinstance(b, BindingSet) and b.set_ref is not None and codes == merged_codes
+            ),
+            None,
+        )
+        if merged_set_ref is None and diff_key[0] in ("what", "how") and set_ref_for is not None:
             merged_set_ref = set_ref_for([r.ref for r in diff_refs])
         binding = BindingSet(values=values, set_ref=merged_set_ref)
     return [
@@ -958,21 +969,26 @@ def _merge_slot_filter_properties(
 
     Query-recognized properties outrank measure elections, which outrank
     defaults. Subtraction keeps each property in one set, as ``build_spec``
-    requires. A property a member's sector concept bound to its declared grouping is
-    grouped on the merge, and text-recognised too, as ``build_spec`` requires.
+    requires. A property every member that names it binds by a sector concept's declared
+    grouping is grouped on the merge, and text-recognised too, as ``build_spec`` requires.
+    A slot filter states one provenance, so a property one member grouped and another
+    named by its code ("health and education") is text-recognised alone, which holds for
+    every value it binds.
     """
-    grouped = frozenset(
+    grouped_somewhere = frozenset(
         sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
         if sf.provenance == "declared_grouping" and sf.key.property is not None
     )
-    text_recognized = grouped | frozenset(
+    named_somewhere = frozenset(
         sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
         if sf.provenance == "text_recognized" and sf.key.property is not None
     )
+    grouped = grouped_somewhere - named_somewhere
+    text_recognized = grouped_somewhere | named_somewhere
     measure_elected = (
         frozenset(
             sf.key.property.ref

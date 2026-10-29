@@ -391,8 +391,8 @@ _HEALTH_GROUP = (_HEALTH, _POPULATION)
 def _purpose_region(
     code: str | tuple[str, ...], index: int, *qualifiers: ResolvedQualifier
 ) -> RegionResult:
-    """A definite region binding one CRS purpose code, or a tuple of codes as a set, with its
-    qualifier records."""
+    """A definite region naming one CRS purpose code, or binding a tuple of codes as a
+    sector concept's declared grouping, with its qualifier records."""
     slot = (
         _cv_slot("crsPurpose", code)
         if isinstance(code, str)
@@ -403,6 +403,8 @@ def _purpose_region(
         measure_elected_properties=frozenset(),
         shape=_ECON_SHAPE,
         slots=[slot],
+        text_recognized_properties=frozenset({"crsPurpose"}),
+        grouped_properties=frozenset() if isinstance(code, str) else frozenset({"crsPurpose"}),
         stat_vars=[
             StatVar(
                 ref=_gr("sv"),
@@ -489,6 +491,10 @@ def test_collapse_same_shape_drops_a_merged_value_nested_under_another(
     else:
         assert isinstance(binding, BindingSet)
         assert sorted(ref_dcid(v.ref) for v in binding.values) == sorted(expected)
+    # A slot filter states one provenance: grouped only when every part grouped.
+    (purpose,) = merged.spec.resolved.trace.slot_filters
+    both_grouped = not isinstance(first, str) and not isinstance(second, str)
+    assert purpose.provenance == ("declared_grouping" if both_grouped else "text_recognized")
 
 
 def _first_code(code: str | tuple[str, ...]) -> str:
