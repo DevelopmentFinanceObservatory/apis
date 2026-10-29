@@ -122,21 +122,16 @@ def table_years(
     index: CodeIndex, coverage: CoverageIndex, identity: Mapping[str, object]
 ) -> frozenset[int]:
     """The years the table a component `identity` reads covers: those any series of its
-    index family (`code_index.members.index_family`) holds in `coverage`, under any place.
-    Empty for a family the index does not decide, or one its named dataset does not
-    publish."""
+    index family (`code_index.members.index_family`) holds in `coverage`, under any place
+    (`CoverageIndex.years_held`). Empty for a family the index does not decide, or one its
+    named dataset does not publish."""
     try:
         family = index_family(index, identity_family_query(index, identity))
     except SourceNotInFamily:
         return frozenset()
     if family is None or not family.rows:
         return frozenset()
-    counts = coverage.series_by_year(
-        variables=[row.dcid for row in family.rows],
-        first_year=coverage.horizon.epoch_year,
-        last_year=coverage.horizon.max_year,
-    )
-    return frozenset(year for year, count in counts.items() if count)
+    return coverage.years_held(variables=[row.dcid for row in family.rows])
 
 
 def stacked_years(covered: Iterable[frozenset[int]]) -> frozenset[int]:
