@@ -1111,7 +1111,7 @@ def test_the_house_policies_weigh_the_drafts_the_span_rule_leaves():
     shape without a debtor slot holds every value the bind keeps."""
     seen: list[Mapping[int, bool] | None] = []
 
-    def recording(pool, *, ratings=None, holds=None):
+    def recording(pool, *, ratings=None, holds=None, drafts=None):
         seen.append(holds)
         return PolicyChoice(survivor=pool.measuring[0], fired=(), dropped=frozenset(), facts=())
 

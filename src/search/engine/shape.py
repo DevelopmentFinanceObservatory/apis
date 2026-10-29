@@ -186,6 +186,12 @@ class ShapeDraft:
     # cut (`clients.graph.with_rival_families`). Such a shape displaces only shapes of its
     # own five-tuple (`place_roles.without_unasked_axes`).
     rival: bool = field(default=False, compare=False)
+    # When every confirmed member is a row recall added for another convention basis of
+    # recalled families (`clients.graph.with_rival_families`), those families
+    # (`clients.graph.family_ref`). The binder does not read such a shape while a shape of
+    # one of them stands on the menu, and the house policies' pool takes it only beside one
+    # (`phase_rank_bind._HousePolicyStep`).
+    basis_of: frozenset[str] = field(default=frozenset(), compare=False)
     # The resolver whose recall reached the shape (`Pool`). A variable our resolver recalls
     # under a superseded dcid derives as its UN successor and stays in our pool.
     pool: Pool = field(default="ours", compare=False)

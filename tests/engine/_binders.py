@@ -71,6 +71,7 @@ def keep_the_pick(
     *,
     ratings: Mapping[int, float] | None = None,
     holds: Mapping[int, bool] | None = None,
+    drafts: Sequence[SlotBindingDraft] | None = None,
 ) -> PolicyChoice:
     """A house-policy step that elects the binder's pick, the pool's first index."""
     return PolicyChoice(survivor=pool.measuring[0], fired=(), dropped=frozenset(), facts=())

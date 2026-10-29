@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -45,6 +45,7 @@ from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
 from search.engine.errors import LLMInfraError
 
 if TYPE_CHECKING:
+    from search.engine.bind import SlotBindingDraft
     from search.engine.binders.base import Binder
     from search.engine.binders.jev import JevBinder
     from search.engine.clients.llm import SupportsLLM
@@ -153,10 +154,11 @@ class FallbackBinder:
             *,
             ratings: Mapping[int, float] | None = None,
             holds: Mapping[int, bool] | None = None,
+            drafts: Sequence[SlotBindingDraft] | None = None,
         ) -> PolicyChoice:
             nonlocal policies_ran
             policies_ran = True
-            return request.apply_policies(pool, ratings=ratings, holds=holds)
+            return request.apply_policies(pool, ratings=ratings, holds=holds, drafts=drafts)
 
         step: ApplyPolicies = apply_policies
         failure = self._earlier_failure(request.part)
