@@ -58,7 +58,9 @@ if TYPE_CHECKING:
 
 DEPENDENCIES_SCHEMA = 1
 """The version of `Dependencies.as_json`'s shape. A stored fingerprint of another schema
-compares as changed (`dependency_changes`)."""
+compares as changed (`dependency_changes`). A deploy that changes what the materialiser writes
+for unchanged inputs bumps it, since no member moves for a code change and a head keyed on an
+import otherwise serves the old frame until the next import or its maximum age."""
 
 # The JSON list fields of `Dependencies.as_json`, each with its entry's key and value names.
 _PAIR_FIELDS: tuple[tuple[str, str, str], ...] = (
