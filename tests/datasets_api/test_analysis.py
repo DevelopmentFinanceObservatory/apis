@@ -37,6 +37,7 @@ from datasets_api.doors.analysis import classify_analysis_exception
 from datasets_api.output_digest import output_digest
 from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
+from dfo_analysis_engine.recipe import pair
 from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode
 
 from ._analysis_doubles import (
@@ -309,11 +310,49 @@ def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> Non
     assert root["rendering"]["columns"] == ["financingRecipient_type", "party_kind"]
 
 
-def test_a_pair_holding_another_recipe_answers_500_logged_with_both_identities(
-    caplog: pytest.LogCaptureFixture,
+def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
+    """Make every later run compute `ref`, as one does whose root pairs a later derivation of
+    `analysis_roots.frame_ref_for` names apart from the stored run's."""
+    evaluated = analysis._evaluated
+
+    def elsewhere(*args, **kwargs):
+        computed = evaluated(*args, **kwargs)
+        moved = dataclasses.replace(
+            computed.evaluation,
+            ref=ref,
+            tree={**computed.evaluation.tree, "frame": pair(ref)},
+        )
+        return dataclasses.replace(computed, evaluation=moved)
+
+    monkeypatch.setattr(analysis, "_evaluated", elsewhere)
+
+
+_ELSEWHERE = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
+
+
+def test_a_run_of_a_stored_replay_key_names_the_stored_pair_in_its_ref_and_tree(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stores = Stores()
+    stored = _run(stores, _PER_PERSON).evaluation.ref
+    _computed_under(monkeypatch, _ELSEWHERE)
+
+    again = _run(stores, _PER_PERSON)
+
+    assert not again.created
+    assert again.evaluation.ref == stored
+    assert again.evaluation.tree["frame"] == pair(stored)
+
+
+@pytest.mark.parametrize("computed", [None, _ELSEWHERE], ids=["own_pair", "replayed_pair"])
+def test_a_pair_holding_another_recipe_answers_500_logged_with_both_identities(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, computed: FrameRef | None
+) -> None:
+    """A run diverging at the pair its replay key names is logged under that pair."""
+    stores = Stores()
     ref = _run(stores, _PER_PERSON).evaluation.ref
+    if computed is not None:
+        _computed_under(monkeypatch, computed)
     with stores.store.transaction() as tx:
         tx.execute(
             "UPDATE datasets.frame_recipe SET normal_form_hash = %s "
@@ -328,6 +367,11 @@ def test_a_pair_holding_another_recipe_answers_500_logged_with_both_identities(
     assert spec is not None
     assert (spec.status, spec.code) == (500, "internal_error")
     (record,) = [r for r in caplog.records if r.name == "datasets_api.analysis"]
+    assert (raised.value.spec_id, raised.value.content_version) == (
+        ref.spec_id,
+        ref.content_version,
+    )
+    assert f"spec_id={ref.spec_id} content_version={ref.content_version} " in record.getMessage()
     assert "stored_normal_form_hash=rnf_" + "0" * 32 in record.getMessage()
     assert "run_normal_form_hash=rnf_" in record.getMessage()
 

@@ -17,8 +17,8 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
   empty enrichment cell reads `untyped`, and a text `unit` cell holds a unit ref or the JCS text
   of a converted unit.
 
-The frame is named by the pair `frame_ref_for` derives from the columns and the groupby, as
-data-mcp names it, so two renderings of one version are two frames.
+The frame is named by the pair `frame_ref_for` derives from the columns, the groupby and the
+party-totals cut, as data-mcp names it, so two renderings of one version are two frames.
 
 `enrichment_columns` gives the default `columns`, every flow party's type and kind columns for a
 dataset whose identity names a flow role, else the place type, which the verbs read to keep
@@ -131,18 +131,26 @@ def frame_ref_for(
     content_version: str,
     columns: Sequence[str],
     groupby: Mapping[str, Any] | None = None,
+    without_party_totals: bool = False,
     enrichment_stamp: str | None,
 ) -> FrameRef:
-    """The pair a frame of `columns` and `groupby` read from the version `{spec_id,
-    content_version}` is named by: the version's own pair with neither, else `cv_` and 32 hex
-    digits of the SHA-256 of the RFC 8785 form of `{"columns": sorted, "content_version"}`,
-    with `groupby` when set and the `enrichment_stamp` of its file when the columns ask for
-    kinds. data-mcp's `frame_materialisation.frame_ref_for` names frames the same way."""
-    if not columns and groupby is None:
+    """The pair a frame of `columns`, `groupby` and the party-totals cut read from the version
+    `{spec_id, content_version}` is named by: the version's own pair with none of them, else
+    `cv_` and 32 hex digits of the SHA-256 of the RFC 8785 form of `{"columns": sorted,
+    "content_version"}`, with `groupby` when set, its `by` sorted, `"without_party_totals":
+    true` when the cut is asked for, and the `enrichment_stamp` of its file when the columns
+    ask for kinds. data-mcp's `frame_materialisation.frame_ref_for` names frames the same way.
+
+    The pair names what a recipe replays: a cut that leaves nothing out serves its base
+    version, and the frame read with it is still named apart from the frame read without it,
+    since the two replay differently once the data holds party totals."""
+    if not columns and groupby is None and not without_party_totals:
         return FrameRef(spec_id=spec_id, content_version=content_version)
     preimage: dict[str, Any] = {"columns": sorted(columns), "content_version": content_version}
     if groupby is not None:
-        preimage["groupby"] = dict(groupby)
+        preimage["groupby"] = {**groupby, "by": sorted(groupby["by"])}
+    if without_party_totals:
+        preimage["without_party_totals"] = True
     if enrichment_stamp is not None and requests_kinds(columns):
         preimage["enrichment_stamp"] = enrichment_stamp
     digest = hashlib.sha256(rfc8785.dumps(preimage)).hexdigest()[:32]
@@ -154,7 +162,8 @@ def mint_options(rendering: RootRendering, *, identity: Mapping[str, Any]) -> di
 
     `columns` are sorted and each listed once, the order `frame_ref_for` names the frame by, so
     the frame pair, the frame-layout file, the record and the recipe's normal form all see one
-    order, and two roots that list the same columns in another order are one root."""
+    order, and two roots that list the same columns in another order are one root. `groupby.by`
+    is sorted for the same reason."""
     columns = (
         enrichment_columns(identity) if rendering.columns is None else tuple(rendering.columns)
     )
@@ -164,7 +173,8 @@ def mint_options(rendering: RootRendering, *, identity: Mapping[str, Any]) -> di
     if rendering.without_party_totals:
         options["without_party_totals"] = True
     if rendering.groupby is not None:
-        options["groupby"] = rendering.groupby.model_dump(mode="json", exclude_none=True)
+        groupby = rendering.groupby.model_dump(mode="json", exclude_none=True)
+        options["groupby"] = {**groupby, "by": sorted(groupby["by"])}
     return options
 
 
@@ -346,6 +356,7 @@ class LiveRootSource:
             content_version=content_version,
             columns=columns,
             groupby=options.get("groupby"),
+            without_party_totals=options.get("without_party_totals") is True,
             enrichment_stamp=stamp,
         )
         dataset = FrameRef(spec_id=spec_id, content_version=content_version)

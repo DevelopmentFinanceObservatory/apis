@@ -7,7 +7,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from collections.abc import Mapping, Sequence
 from types import SimpleNamespace
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -30,6 +32,7 @@ from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
+from dfo_analysis_engine.frame_ref import FrameRef
 
 from ._deps_doubles import Unwired
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -78,7 +81,7 @@ def test_a_root_takes_the_enrichment_its_roles_need(identity: dict, columns: tup
     assert enrichment_columns(identity) == columns
 
 
-def test_mint_options_are_the_frame_layout_with_the_root_s_columns_and_cut() -> None:
+def test_mint_options_name_the_root_s_columns_cut_and_sorted_groupby() -> None:
     flow = {"entities": {"origin": ["country/DEU"]}}
 
     assert mint_options(RootRendering(columns=()), identity=flow) == {
@@ -94,12 +97,13 @@ def test_mint_options_are_the_frame_layout_with_the_root_s_columns_and_cut() -> 
         "without_party_totals": True,
     }
     assert mint_options(
-        RootRendering(columns=(), groupby={"by": ["time_period"], "op": "sum"}), identity=flow
+        RootRendering(columns=(), groupby={"by": ["time_period", "origin"], "op": "sum"}),
+        identity=flow,
     ) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
-        "groupby": {"by": ["time_period"], "op": "sum"},
+        "groupby": {"by": ["origin", "time_period"], "op": "sum"},
     }
 
 
@@ -130,6 +134,35 @@ def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
         "groupby": {"by": ["time_period"], "op": "sum"},
     }
     assert summed.content_version == "cv_" + hashlib.sha256(rfc8785.dumps(grouped)).hexdigest()[:32]
+
+
+# data-mcp's `test_frame_materialisation` pins the same pair for the same rendering, so the two
+# producers of a root frame's pair cannot drift apart.
+_SHARED_PAIR = "cv_bb722d06259f357e6961a081f1c1f141"
+
+
+@pytest.mark.parametrize("by", [["origin", "time_period"], ["time_period", "origin"]])
+def test_a_frame_cut_of_party_totals_is_named_by_the_cut_and_its_groupby_in_any_order(
+    by: list[str],
+) -> None:
+    ref = frame_ref_for(
+        spec_id=_SPEC,
+        content_version=_CV,
+        columns=("party_kind",),
+        groupby={"by": by, "op": "sum"},
+        without_party_totals=True,
+        enrichment_stamp=None,
+    )
+    bare = frame_ref_for(
+        spec_id=_SPEC,
+        content_version=_CV,
+        columns=(),
+        without_party_totals=True,
+        enrichment_stamp=None,
+    )
+
+    assert ref.content_version == _SHARED_PAIR
+    assert bare.content_version.startswith("cv_") and bare.content_version != _CV
 
 
 def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:
@@ -220,7 +253,8 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
     from_summed = run(summed["content_version"], {"columns": [], "groupby": groupby})
 
     assert from_summed == from_raw
-    rendering = {**_BARE, "groupby": groupby}
+    # The roots read `by` sorted, whatever order the mint sent.
+    rendering = {**_BARE, "groupby": {**groupby, "by": sorted(groupby["by"])}}
     assert from_raw["roots"] == [
         {"spec_id": spec_id, "content_version": summed["content_version"], "rendering": rendering}
     ]
@@ -242,6 +276,113 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
             enrichment_stamp=None,
         ).model_dump()
     )
+
+
+def _summed_stat_vars(client, data: dict, *, latest: bool = False) -> dict:
+    """The ref member of a sum over `data`'s StatVars, which must answer."""
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": data},
+    }
+    response = client.post("/api/datasets/analysis", json={"tree": tree, "latest": latest})
+    assert response.status_code == 200, response.text
+    return response.json()["ref"]["members"][0]
+
+
+def _minted_without_party_roles():
+    """A client over a dataset whose frame holds no party role, so the party-totals cut leaves
+    nothing out, and the dataset's `{spec_id, content_version}`."""
+    store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    raw = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)["content_version"]
+    return client, {"spec_id": spec_id, "content_version": raw}
+
+
+def test_a_cut_that_leaves_nothing_out_names_a_frame_apart_and_replays_with_the_cut() -> None:
+    """Over a dataset without party roles the cut serves the base version, and a root read
+    with it and one read without it both answer, each under a pair of its own over the same
+    bytes, and the cut frame replays with the cut its caller asked for."""
+    client, root = _minted_without_party_roles()
+    spec_id, raw = root["spec_id"], root["content_version"]
+
+    def run(data: dict, *, latest: bool = False) -> dict:
+        return _summed_stat_vars(client, data, latest=latest)
+
+    plain = run({**root, "rendering": {"columns": []}})
+    cut = run({**root, "rendering": {"columns": [], "without_party_totals": True}})
+
+    assert cut["content_version"] != plain["content_version"]
+    assert cut["output_digest"] == plain["output_digest"]
+    assert cut["roots"] == [
+        {
+            "spec_id": spec_id,
+            "content_version": raw,
+            "rendering": {**_BARE, "without_party_totals": True},
+        }
+    ]
+    derived = {"spec_id": cut["spec"]["spec_id"], "content_version": cut["content_version"]}
+    replayed = client.get(
+        f"/api/datasets/derived/{derived['spec_id']}/{derived['content_version']}"
+    )
+    (record,) = replayed.json()["recipe"]["roots"]
+    assert record["options"] == {**_BARE, "without_party_totals": True}
+    assert (
+        record["frame"]
+        == frame_ref_for(
+            spec_id=spec_id,
+            content_version=raw,
+            columns=(),
+            without_party_totals=True,
+            enrichment_stamp=None,
+        ).model_dump()
+    )
+    assert run(derived, latest=True)["roots"] == cut["roots"]
+
+
+def test_a_frame_stored_before_its_root_pair_named_the_cut_answers_a_run_of_its_replay_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A frame computed while a cut root's pair left the cut out is stored under an output
+    pair the run no longer computes. A run of the same tree misses the answer cache, since
+    its root pair differs, and answers the stored frame its replay key names."""
+    client, root = _minted_without_party_roles()
+    data = {**root, "rendering": {"columns": [], "without_party_totals": True}}
+    named = analysis_roots.frame_ref_for
+
+    def unnamed_cut(
+        *,
+        spec_id: str,
+        content_version: str,
+        columns: Sequence[str],
+        groupby: Mapping[str, Any] | None = None,
+        without_party_totals: bool = False,
+        enrichment_stamp: str | None,
+    ) -> FrameRef:
+        return named(
+            spec_id=spec_id,
+            content_version=content_version,
+            columns=columns,
+            groupby=groupby,
+            enrichment_stamp=enrichment_stamp,
+        )
+
+    monkeypatch.setattr(analysis_roots, "frame_ref_for", unnamed_cut)
+    stored = _summed_stat_vars(client, data)
+    monkeypatch.setattr(analysis_roots, "frame_ref_for", named)
+
+    again = _summed_stat_vars(client, data)
+
+    assert again == stored
 
 
 def test_a_live_root_s_recorded_rows_refuse_a_run_before_its_frame_is_read(

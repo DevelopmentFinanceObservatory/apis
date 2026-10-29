@@ -1,4 +1,5 @@
-"""`maintenance normalise-recipes`: a recipe stored with its root columns out of order gets the
+"""`maintenance normalise-recipes`: a recipe stored with its root columns or `groupby.by` out of
+order gets the
 recipe and hashes the analysis route stores for the same tree, and the card revisions drawing
 its frame move to the new `normal_form_hash`, over the SQLite dataset store double and the
 Presentation store fake."""
@@ -18,12 +19,19 @@ from tests.presentation_store.conftest import FakePresentationStore
 from ._analysis_doubles import AID, AID_V1, Stores, dataset, source, step
 
 _COLUMNS = ["party_kind", "financingRecipient_type"]
-_SUMMED = step(
-    "aggregate",
-    {**dataset(AID, AID_V1), "rendering": {"columns": _COLUMNS}},
-    aggregation="sum",
-    group_by=["destination"],
-)
+_BY = ["time_period", "origin"]
+
+
+def _summed(rendering: dict[str, Any]) -> dict[str, Any]:
+    return step(
+        "aggregate",
+        {**dataset(AID, AID_V1), "rendering": rendering},
+        aggregation="sum",
+        group_by=["destination"],
+    )
+
+
+_SUMMED = _summed({"columns": _COLUMNS})
 
 
 def _stored(stores: Stores) -> list[dict[str, Any]]:
@@ -50,10 +58,15 @@ def _hashes(recipe: dict[str, Any]) -> tuple[str, str]:
 
 
 def _unsorted(recipe: dict[str, Any]) -> dict[str, Any]:
-    """`recipe` as data-mcp stored it: its root columns in the order a client sent them."""
+    """`recipe` as data-mcp stored it: its root columns and any `groupby.by` in the order a
+    client sent them."""
     (root,) = recipe["roots"]
     assert root["options"]["columns"] == sorted(_COLUMNS)
-    old = {**recipe, "roots": [{**root, "options": {**root["options"], "columns": _COLUMNS}}]}
+    options: dict[str, Any] = {**root["options"], "columns": _COLUMNS}
+    if "groupby" in options:
+        assert options["groupby"]["by"] == sorted(_BY)
+        options = {**options, "groupby": {**options["groupby"], "by": _BY}}
+    old = {**recipe, "roots": [{**root, "options": options}]}
     normal, key = _hashes(old)
     return {**old, "normal_form_hash": normal, "replay_key": key}
 
@@ -79,10 +92,10 @@ def _store_recipe(stores: Stores, spec_id: str, content_version: str, recipe: di
         )
 
 
-def _analysed(stores: Stores) -> dict[str, Any]:
-    """The recipe row the analysis route stores for `_SUMMED`."""
+def _analysed(stores: Stores, tree: dict[str, Any] = _SUMMED) -> dict[str, Any]:
+    """The recipe row the analysis route stores for `tree`."""
     run_analysis(
-        AnalysisRequest.model_validate({"tree": _SUMMED}),
+        AnalysisRequest.model_validate({"tree": tree}),
         source=source(stores),
         stores=stores.analysis(),
     )
@@ -107,11 +120,16 @@ def _summary(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize(
+    "rendering",
+    [{"columns": _COLUMNS}, {"columns": _COLUMNS, "groupby": {"by": _BY, "op": "sum"}}],
+    ids=["columns", "groupby"],
+)
 def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_follow(
-    capsys: pytest.CaptureFixture[str],
+    capsys: pytest.CaptureFixture[str], rendering: dict[str, Any]
 ):
     stores = Stores()
-    analysed = _analysed(stores)
+    analysed = _analysed(stores, _summed(rendering))
     spec_id, content_version = analysed["subject_id"], analysed["content_version"]
     old = _unsorted(analysed["recipe"])
     _store_recipe(stores, spec_id, content_version, old)

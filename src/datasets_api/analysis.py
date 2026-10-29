@@ -90,7 +90,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Literal, Protocol, Self
 
 import rfc8785
@@ -151,6 +151,7 @@ from dfo_analysis_engine.recipe import (
     derived_nodes,
     normal_form,
     normal_form_hash,
+    pair,
     replay_key,
     rolling_literals,
     root_identity,
@@ -540,7 +541,7 @@ class ResolvedRoot:
     """A root at the version it is read at.
 
     `frame` is the pair the op-specs name the frame by: the dataset pair for the stored frame,
-    else the pair `analysis_roots.frame_ref_for` derives from its columns. `record` is the mint
+    else the pair `analysis_roots.frame_ref_for` derives from its rendering. `record` is the mint
     record a recipe's `roots` holds for it (`dataset`, `options`, and the rest).
     `rendering` is the ref format 2 root's rendering. `rows` is the frame's row count as its
     version records it, `None` where the reader has none. `source` is the reader's own handle."""
@@ -1366,26 +1367,31 @@ def _store(
     stores: AnalysisStores,
     *,
     trace_id: str | None,
-) -> tuple[str, bool]:
-    """Store the evaluated frame and its recipe, and return the digest of the stored frame
-    file, the file a ref names, and whether this call published the frame.
+) -> tuple[FrameRef, str, bool]:
+    """Store the evaluated frame and its recipe, and return the pair it is stored under, the
+    digest of the stored frame file, the file a ref names, and whether this call published the
+    frame. The pair is `evaluation.ref`, or the pair a frame of the same replay key is stored
+    under (`_stored_pair`).
 
     Raises:
         AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
     """
-    ref = evaluation.ref
     recipe = _recipe(evaluation, roots)
+    stored, held = _stored_pair(evaluation.ref, recipe, stores)
     try:
-        return _stored(evaluation, roots, recipe, stores, trace_id=trace_id)
+        digest, created = _stored(
+            evaluation, stored, held, roots, recipe, stores, trace_id=trace_id
+        )
     except Refusal as refused:
         if refused.code != _CONFLICT:
             raise
         _log_divergence(
-            refused, recipe, stores, spec_id=ref.spec_id, content_version=ref.content_version
+            refused, recipe, stores, spec_id=stored.spec_id, content_version=stored.content_version
         )
         raise AnalysisStoreDiverges(
-            spec_id=ref.spec_id, content_version=ref.content_version
+            spec_id=stored.spec_id, content_version=stored.content_version
         ) from refused
+    return stored, digest, created
 
 
 _CONFLICT = "publish_conflict"
@@ -1417,28 +1423,57 @@ def _log_divergence(
     )
 
 
+def _stored_pair(
+    computed: FrameRef, recipe: Recipe, stores: AnalysisStores
+) -> tuple[FrameRef, str | None]:
+    """The pair a run stores under, and the digest of the frame file it holds, `None` for
+    none. A run whose own pair `computed` holds no frame answers the pair a recipe of its
+    replay key is stored under, when there is one. The replay key names the computation over
+    its root versions, and the pair also hashes the root frames' pairs, which differ for one
+    computation when a stored run named a root's pair under an earlier derivation of
+    `analysis_roots.frame_ref_for`.
+
+    Raises:
+        SnapshotRevoked: The pair is taken down.
+    """
+    held = _stored_file_digest(
+        stores, spec_id=computed.spec_id, content_version=computed.content_version
+    )
+    if held is not None:
+        return computed, held
+    replayed = stores.recipe_store.read_replay(replay_key=recipe.replay_key)
+    if replayed is None:
+        return computed, None
+    stored = FrameRef(spec_id=replayed.spec_id, content_version=replayed.content_version)
+    return stored, _stored_file_digest(
+        stores, spec_id=stored.spec_id, content_version=stored.content_version
+    )
+
+
 def _stored(
     evaluation: Evaluation,
+    stored: FrameRef,
+    held: str | None,
     roots: Sequence[ResolvedRoot],
     recipe: Recipe,
     stores: AnalysisStores,
     *,
     trace_id: str | None,
 ) -> tuple[str, bool]:
-    ref = evaluation.ref
-    held = _stored_file_digest(stores, spec_id=ref.spec_id, content_version=ref.content_version)
+    """`_store` past the pair: the recipe written beside the frame file `held` at `stored`, or
+    the frame published there."""
     if held is not None:
         write_frame_recipe(
             recipe_store=stores.recipe_store,
-            spec_id=ref.spec_id,
-            content_version=ref.content_version,
+            spec_id=stored.spec_id,
+            content_version=stored.content_version,
             recipe=recipe,
         )
         return held, False
     published = publish_built_frame(
         frame=evaluation.frame,
-        spec_id=ref.spec_id,
-        content_version=ref.content_version,
+        spec_id=stored.spec_id,
+        content_version=stored.content_version,
         input_content_versions=list(dict.fromkeys(root.dataset.content_version for root in roots)),
         artifact_store=stores.artifact_store,
         snapshot_reader=stores.snapshot_reader,
@@ -1719,8 +1754,14 @@ def run_prepared(
             bounds=bounds,
             latest=prepared.latest,
         )
-        evaluation = computed.evaluation
-        artifact_digest, created = _store(evaluation, computed.roots, stores, trace_id=trace_id)
+        stored, artifact_digest, created = _store(
+            computed.evaluation, computed.roots, stores, trace_id=trace_id
+        )
+        evaluation = replace(
+            computed.evaluation,
+            ref=stored,
+            tree={**computed.evaluation.tree, "frame": pair(stored)},
+        )
     result = AnalysisResult(
         evaluation=evaluation,
         frame_content_version=evaluation.summary["frame_content_version"],
