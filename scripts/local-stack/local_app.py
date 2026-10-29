@@ -3,8 +3,8 @@ Cloud Tasks, and with download links for the GCS emulator.
 
 `dfo_apis.app.create_app` always mounts Search, whose startup checks the Gemini key against
 Gemini and reads the live graph, so this factory mounts Datasets and Presentation alone, the
-latter from `dfo_apis.app.build_presentation_surface` over the Datasets surface's dependency
-cell, so live share slots check for newer data in process. Serve it with
+latter from `dfo_apis.app.build_presentation_surface` over the Datasets surface's link (its
+dependency cell and running analyses), so live share slots check for newer data in process. Serve it with
 `uvicorn --factory local_app:create_app --app-dir scripts/local-stack`.
 
 The Datasets surface reads its graph, SDMX endpoint and coverage index from the doubles
@@ -38,9 +38,8 @@ from upstream import coverage, graph_nodes, graph_reader, load_fixture, node_rep
 
 from artifact_store.signing import STORAGE_EMULATOR_ENV, emulator_media_path
 from datasets_api.app import datasets_surface
-from datasets_api.deps import DepsCell
 from datasets_api.operations.task_client import NullTaskClient
-from dfo_apis.app import build_presentation_surface
+from dfo_apis.app import build_presentation_surface, datasets_link
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.config import parse_cors_origins
 from graph_release.context import bound_served_release
@@ -56,7 +55,7 @@ def create_app() -> FastAPI:
             f"{STORAGE_EMULATOR_ENV} is unset; the local stack serves the GCS emulator"
         )
     rate_cache = RateTableCache()
-    datasets_cell = DepsCell()
+    datasets = datasets_link()
     fixture = load_fixture()
     # The coverage index reads the code index of the release the stack serves.
     with bound_served_release(get_release_service()):
@@ -69,9 +68,10 @@ def create_app() -> FastAPI:
             catalogue=fake_catalogue_service(),
             rate_cache=rate_cache,
             task_client=NullTaskClient(),
-            deps_cell=datasets_cell,
+            deps_cell=datasets.cell,
+            running_analyses=datasets.running_analyses,
         ),
-        build_presentation_surface(rate_cache, datasets_cell=datasets_cell),
+        build_presentation_surface(rate_cache, datasets=datasets),
     ]
     app = platform_create_app(
         surfaces, cors_origins=parse_cors_origins(), title="DFO APIs (local stack)", version="1.0"
