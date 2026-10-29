@@ -161,21 +161,27 @@ ROWS = [
         confirm="01",
         blocks=True,
     ),
-    # A degraded base sample is no baseline: each base round votes over the samples that
-    # were not degraded, and one with none is base inconclusive.
+    # A degraded base pass is no baseline to regress from; a degraded base failure still
+    # shows the base fails.
     row("base degraded on every sample", Outcome.BASE_INCONCLUSIVE, head="FFF", base="DDD"),
-    row("degraded base failures", Outcome.BASE_INCONCLUSIVE, head="FFF", base="EDE"),
-    row("base judged on undegraded samples", Outcome.NEEDS_CONFIRM, head="FFF", base="PPE"),
-    row("undegraded base failure", Outcome.PRE_EXISTING, head="FFF", base="DFD"),
     row(
-        "regression on undegraded samples",
-        Outcome.REGRESSION,
+        "degraded passes beside an unreached sample",
+        Outcome.BASE_INCONCLUSIVE,
         head="FFF",
-        base="PDE",
-        confirm="FP",
-        blocks=True,
+        base="DD~",
     ),
-    row("degraded confirm base", Outcome.BASE_INCONCLUSIVE, head="FFF", base="PPP", confirm="FD"),
+    row("one degraded pass among passes", Outcome.BASE_INCONCLUSIVE, head="FFF", base="PDP"),
+    row("degraded base failures", Outcome.PRE_EXISTING, head="FFF", base="EEE"),
+    row("a degraded failure beside passes", Outcome.PRE_EXISTING, head="FFF", base="PDE"),
+    row(
+        "degraded confirm base pass",
+        Outcome.BASE_INCONCLUSIVE,
+        head="FFF",
+        base="PPP",
+        confirm="FD",
+    ),
+    row("degraded confirm base failure", Outcome.UNSTABLE, head="FFF", base="PPP", confirm="FE"),
+    row("confirm head pass settles first", Outcome.UNSTABLE, head="FFF", base="PPP", confirm="PD"),
     row("rejected at base is U", Outcome.UNVERIFIABLE_AT_BASE, head="FFF", base="PPR", blocks=True),
     row("rejected at head is scored", Outcome.PASS, head="RRR"),
     row("infra outranks a known failure", Outcome.INFRA, head="I", known=True),

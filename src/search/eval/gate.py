@@ -20,20 +20,21 @@ The rows, in the order they apply:
 - no head sample passes and the case is new or changed: new-case failure, blocking;
 - no head pass on ``structural``: structural failure, blocking;
 - a base sample is infra: infra;
-- every base sample stayed degraded after its retries (``Observation.degraded``): base
-  inconclusive, which counts as infra. A degraded answer is a partial one, so it gives no
-  baseline to pass or regress against. The rows below read the base samples that were not
-  degraded;
 - every base sample is unreached, or a reached base sample fails: pre-existing;
 - a reached base sample is unverifiable and none fails: unverifiable at base, blocking
   until an override releases it;
 - every reached base sample passes ``disposition`` or ``answer`` on a wrong answer (see
   below): wrong answer at base, which does not block;
+- every reached base sample passes and one of them stayed degraded after its retries
+  (``Observation.degraded``): base inconclusive, which counts as infra. A degraded answer
+  is a partial one, so its pass is no baseline to regress from, while its failure still
+  shows the base fails;
 - every reached base sample passes: the confirm round decides. Infra in it is infra as
-  above, and a degraded confirm base sample is base inconclusive. A confirm head sample that fails or is unverifiable is a regression when the
-  confirm base sample passes and unverifiable at base when it is unverifiable; anything
-  else, an unreached sample on either side included, is unstable. A base with one right
-  sample regresses through the confirm round whatever its confirm base sample answers.
+  above. A confirm head sample that passes or is unreached is unstable. Otherwise a
+  confirm base sample that passes is a regression, or base inconclusive when it stayed
+  degraded, and one that is unverifiable is unverifiable at base; anything else, an
+  unreached confirm base sample included, is unstable. A base with one right sample
+  regresses through the confirm round whatever its confirm base sample answers.
 
 ``scripts/eval_paired.py`` hands in a head sample whose run failed as a failed
 ``task_outcome`` sample with no infra flag, so a head-side ``"run"`` failure in the first row
@@ -225,12 +226,9 @@ def judge(
     read += base
     if any(o.infra for o in base):
         return verdict(Outcome.INFRA)
-    judged = [o for o in base if not o.degraded]
-    if not judged:
-        return verdict(Outcome.BASE_INCONCLUSIVE)
     failed = _failed_parts(head)
     reached_base = [
-        (o, v) for o in judged if (v := _effective(o, "base", failed=failed)) != Verdict.UNREACHED
+        (o, v) for o in base if (v := _effective(o, "base", failed=failed)) != Verdict.UNREACHED
     ]
     base_v = [v for _, v in reached_base]
     if not base_v or Verdict.FAIL in base_v:
@@ -239,6 +237,8 @@ def judge(
         return verdict(Outcome.UNVERIFIABLE_AT_BASE)
     if all(_wrong_answer(o, check=check, failed=failed) for o, _ in reached_base):
         return verdict(Outcome.WRONG_ANSWER_AT_BASE)
+    if any(o.degraded for o, _ in reached_base):
+        return verdict(Outcome.BASE_INCONCLUSIVE)
     if confirm is None:
         return verdict(Outcome.NEEDS_CONFIRM)
     read += confirm
@@ -246,11 +246,11 @@ def judge(
         return verdict(head_infra)
     if confirm[1].infra:
         return verdict(Outcome.INFRA)
-    if confirm[1].degraded:
-        return verdict(Outcome.BASE_INCONCLUSIVE)
     if _effective(confirm[0], "head") in (Verdict.PASS, Verdict.UNREACHED):
         return verdict(Outcome.UNSTABLE)
     match _effective(confirm[1], "base", failed=_failed_parts(confirm[:1])):
+        case Verdict.PASS if confirm[1].degraded:
+            return verdict(Outcome.BASE_INCONCLUSIVE)
         case Verdict.PASS:
             return verdict(Outcome.REGRESSION)
         case Verdict.UNVERIFIABLE:

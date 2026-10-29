@@ -347,8 +347,8 @@ def test_base_infra_costs_only_the_checks_that_sent_the_case_to_base(corpus, tmp
 
 def test_a_base_degraded_on_every_sample_is_base_inconclusive(corpus, tmp_path):
     """The base app times out its own leg on every attempt of every sample, as the slow base
-    of synth-ghg-emissions-nigeria did, and answers right. A degraded answer is no baseline,
-    so the head's failure is neither a regression nor a pass: the run exits 3 and the
+    of synth-ghg-emissions-nigeria did, and answers right. A degraded pass is no baseline,
+    so the head's failure is neither a regression nor pre-existing: the run exits 3 and the
     summary names the case."""
 
     def degraded(query: str, n: int) -> tuple[int, dict]:
@@ -365,8 +365,8 @@ def test_a_base_degraded_on_every_sample_is_base_inconclusive(corpus, tmp_path):
     # Each base sample retried twice and stayed degraded; no confirm round ran.
     assert base_posts[REGRESSING] == 9
     summary = (tmp_path / "summary.md").read_text()
-    assert "had only degraded base samples (exit 3)" in summary
-    assert "- `eth-health` entities: every base sample stayed degraded" in summary
+    assert "had a degraded base pass (exit 3)" in summary
+    assert "- `eth-health` entities: a base pass was degraded" in summary
 
 
 def test_a_head_500_against_a_base_200_is_a_regression(corpus, tmp_path):

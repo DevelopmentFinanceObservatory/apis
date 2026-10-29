@@ -1,12 +1,12 @@
 """Render the eval driver's JSON report as a Markdown summary or terminal text.
 
 ``paired_markdown`` lists the blocking verdicts first, then the checks it could not judge
-(infrastructure failures, and base-inconclusive checks whose base samples all stayed
-degraded), then the checks base passed on a wrong answer, then what the change did to the
-case set against base. ``single_text``
-prints, case by case, every check that did not pass on every sample. ``single_markdown`` is its Markdown form for a job summary. All three read
-the report ``scripts/eval_paired.py`` writes. Both Markdown forms name the report's shard,
-and say so when the selection holds no eligible case.
+(infrastructure failures, and base-inconclusive checks, where a base pass was degraded),
+then the checks base passed on a wrong answer, then what the change did to the case set
+against base. ``single_text`` prints, case by case, every check that did not pass on every
+sample. ``single_markdown`` is its Markdown form for a job summary. All three read the
+report ``scripts/eval_paired.py`` writes. Both Markdown forms name the report's shard, and
+say so when the selection holds no eligible case.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def paired_markdown(report: Report) -> str:
     cases: Mapping[str, Any] = report["cases"]
     checks = list(_checks(cases))
     blocking = [(c, n, e) for c, n, e in checks if e["blocks"]]
-    infra = [(c, n, e) for c, n, e in checks if e["verdict"] == "infra"]
+    infra = [(c, n, e) for c, n, e in checks if e["verdict"] == Outcome.INFRA]
     inconclusive = [(c, n) for c, n, e in checks if e["verdict"] == Outcome.BASE_INCONCLUSIVE]
     tally = Counter(e["verdict"] for _, _, e in checks)
 
@@ -70,7 +70,7 @@ def paired_markdown(report: Report) -> str:
         )
     lines += _section(
         "Base inconclusive",
-        [f"`{c}` {n}: every base sample stayed degraded" for c, n in inconclusive],
+        [f"`{c}` {n}: a base pass was degraded" for c, n in inconclusive],
     )
     lines += _section(
         "Wrong answers at base",
@@ -184,9 +184,7 @@ def _checks(cases: Mapping[str, Any]) -> Iterator[tuple[str, str, Mapping[str, A
             yield case_id, name, entry
 
 
-def _result_line(
-    code: int, blocking: Sequence, infra: Sequence, inconclusive: Sequence = ()
-) -> str:
+def _result_line(code: int, blocking: Sequence, infra: Sequence, inconclusive: Sequence) -> str:
     if code == 1:
         return f"**Blocked:** {_count(len(blocking), 'blocking verdict')} (exit 1)."
     if code == 3:
@@ -194,7 +192,7 @@ def _result_line(
         if infra or not inconclusive:
             why.append(f"{_count(len(infra), 'check')} hit infrastructure failures")
         if inconclusive:
-            why.append(f"{_count(len(inconclusive), 'check')} had only degraded base samples")
+            why.append(f"{_count(len(inconclusive), 'check')} had a degraded base pass")
         return f"**Not judged:** {'; '.join(why)} (exit 3)."
     return "**Passed:** nothing blocks (exit 0)."
 
