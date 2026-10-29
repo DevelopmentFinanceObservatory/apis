@@ -7,6 +7,9 @@ series coordinates. `unit` comes from the rows: a unit dcid becomes its label,
 a converted unit passes through, and a composed unit binds side by side, a
 StatVar side becoming `{stat_var, label}`. Labels use `ResolvedFrame.labels`
 with the raw ref as fallback, and a unit label is cut to 200 characters.
+
+A table over a frame that keeps a selection in each period lists only the points that
+selection kept (`without_unselected_points`).
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from __future__ import annotations
 import calendar
 import datetime
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 from dfo_frame_grammar import (
@@ -27,6 +30,7 @@ from dfo_frame_grammar import (
     parse_time_period,
 )
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from pydantic.experimental.missing_sentinel import MISSING
 
 from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
@@ -37,10 +41,12 @@ __all__ = [
     "BoundSeries",
     "bind_all",
     "bind_series",
-    "count_held_points",
     "count_periods",
+    "count_selected_points",
     "frame_periods",
     "role_columns",
+    "selects_per_period",
+    "without_unselected_points",
 ]
 
 _PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS names this axis
@@ -95,18 +101,59 @@ def bind_series(
     )
 
 
-def count_held_points(
+def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
+    """Whether a step that computed the frame keeps a selection of entities in each period: a
+    `rank` over each period on its own (`per_period`) with a `limit`, which keeps each
+    period's top or bottom entities. A `rank` without a `limit` keeps every entity, and one
+    over the whole window writes a single period. A frame without a description record, or
+    whose record holds no steps, keeps none."""
+    record = resolved_frame.description_record
+    return record is not None and any(
+        step.op == "rank"
+        and step.params is not MISSING
+        and step.params.get("per_period") is True
+        and "limit" in step.params
+        for step in record.known_steps
+    )
+
+
+def count_selected_points(
     *, resolved_frame: ResolvedFrame, series: Sequence[ResolvedSeries], window: Mapping[str, object]
 ) -> int:
-    """Counts the points `bind_series` binds from a row of each of `series`: each series'
-    distinct periods among the window's.
-
-    The pipeline counts a table over a frame keeping each period's selection this way, since
-    its table lists only those points (`assembler.mint.builders.selects_per_period`)."""
+    """Counts the points `without_unselected_points` keeps of `series` bound over `window`:
+    each series' periods in the window that it holds a row in or that the frame holds no row
+    in."""
     periods = frozenset(_window_periods(resolved_frame=resolved_frame, window=window))
+    gaps = len(periods - frame_periods(resolved_frame=resolved_frame))
     return sum(
-        len(periods.intersection(row[TIME_PERIOD_COLUMN] for row in one.rows)) for one in series
+        len(periods.intersection(row[TIME_PERIOD_COLUMN] for row in one.rows)) + gaps
+        for one in series
     )
+
+
+def without_unselected_points(
+    *,
+    resolved_frame: ResolvedFrame,
+    series: Sequence[ResolvedSeries],
+    bound_series: Sequence[BoundSeries],
+) -> tuple[tuple[ResolvedSeries, ...], tuple[BoundSeries, ...]]:
+    """`series` and `bound_series` without the missing points a per-period selection left
+    out, and without each series that keeps no point.
+
+    A frame that keeps a selection in each period (`selects_per_period`) holds no row for a
+    series in a period where it holds a row for another, because the series was not chosen
+    there, so that point is dropped. A period where the frame holds no row at all is a gap
+    in the data, and its missing point stays."""
+    held = frame_periods(resolved_frame=resolved_frame)
+    kept: list[tuple[ResolvedSeries, BoundSeries]] = []
+    for one, bound in zip(series, bound_series, strict=True):
+        own = {row[TIME_PERIOD_COLUMN] for row in one.rows}
+        points = tuple(
+            point for point in bound.points if point["period"] in own or point["period"] not in held
+        )
+        if points:
+            kept.append((one, replace(bound, points=points)))
+    return tuple(one for one, _ in kept), tuple(bound for _, bound in kept)
 
 
 def _window_periods(

@@ -40,9 +40,11 @@ from dfo_frame_grammar import UNIT_COLUMN
 from assembler.bind import (
     BoundSeries,
     bind_all,
-    count_held_points,
     count_periods,
+    count_selected_points,
     frame_periods,
+    selects_per_period,
+    without_unselected_points,
 )
 from assembler.catalogue import CatalogueRelease
 from assembler.errors import (
@@ -69,7 +71,6 @@ from assembler.mint import (
     mint_component,
     with_card_description,
 )
-from assembler.mint.builders import selects_per_period
 from assembler.mint.provenance import LeftOut, _with_left_out_warning
 from assembler.ports import FrameRef, FrameStore, NamedSeries, ResolvedFrame, RevisionRecord
 from assembler.resolve import ResolvedSeries, resolve_selectors
@@ -289,14 +290,16 @@ def _build_candidate(
                 f"maximum of {MAX_POINTS_PER_SERIES} points per series"
             ),
         )
+    # A table over a frame keeping a selection in each period lists only the points the
+    # selection kept (`without_unselected_points`), counted before a single row is built.
+    # Any other table lists one row per (resolved coordinate, period in the window).
+    selected = member == "table" and selects_per_period(resolved_frame=resolved_frame)
     if member == "table":
-        # `bind.py` emits exactly one point per (resolved coordinate, period
-        # in the window), and the table lists every one, so its row count is the
-        # product, known before a single row is built. A table over a frame keeping
-        # each period's selection lists only the points a row binds.
         row_count = (
-            count_held_points(resolved_frame=resolved_frame, series=series, window=effective_window)
-            if selects_per_period(resolved_frame=resolved_frame)
+            count_selected_points(
+                resolved_frame=resolved_frame, series=series, window=effective_window
+            )
+            if selected
             else len(series) * period_count
         )
         if row_count > MAX_TABLE_ROWS:
@@ -309,6 +312,12 @@ def _build_candidate(
                 ),
             )
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=effective_window)
+    if selected:
+        # `resolve_selectors` refuses a window no selected series holds a row in, and a
+        # series keeps every point it holds a row at, so at least one series remains.
+        series, bound = without_unselected_points(
+            resolved_frame=resolved_frame, series=series, bound_series=bound
+        )
 
     left_out: LeftOut | None = None
     if rolling is not None:

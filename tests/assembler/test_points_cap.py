@@ -70,9 +70,12 @@ def test_wide_day_grain_window_refuses_resource_exhausted_without_materializing_
     assert excinfo.value.limit_name == "MAX_POINTS_PER_SERIES"
 
 
-def _wide_table_frame(*, frame_ref):
-    """Five recipients, one of them in each year from 2020 to 2429 in turn: 410 rows, the
-    shape of a per-period top one."""
+_YEARS = range(2020, 2430)
+
+
+def _wide_table_frame(*, frame_ref, years=_YEARS):
+    """Five recipients, one of them in each of `years` in turn, by default 2020 to 2429: 410
+    rows, the shape of a per-period top one."""
     return build_resolved_frame(
         frame_ref=frame_ref,
         role_keys=("recipient",),
@@ -86,12 +89,30 @@ def _wide_table_frame(*, frame_ref):
                 "measurementMethod": None,
                 "provenance": "src_a",
             }
-            for year in range(2020, 2430)
+            for year in years
         ],
     )
 
 
 _TOP_ONE_FRAME = FrameRef(spec_id="ops_" + "6" * 32, content_version="ocv_" + "6" * 32)
+
+
+def _top_one(frame):
+    """`frame` with the record of a per-period top one."""
+    return dataclasses.replace(
+        frame,
+        description_record=computed_record(
+            frame_ref=_TOP_ONE_FRAME,
+            steps=[
+                {
+                    "id": "s2",
+                    "op": "rank",
+                    "input": "s1",
+                    "params": {"limit": 1, "order": "descending", "per_period": True},
+                }
+            ],
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -105,22 +126,14 @@ _TOP_ONE_FRAME = FrameRef(spec_id="ops_" + "6" * 32, content_version="ocv_" + "6
             id="padded",
         ),
         pytest.param(
-            dataclasses.replace(
-                _wide_table_frame(frame_ref=_TOP_ONE_FRAME),
-                description_record=computed_record(
-                    frame_ref=_TOP_ONE_FRAME,
-                    steps=[
-                        {
-                            "id": "s2",
-                            "op": "rank",
-                            "input": "s1",
-                            "params": {"limit": 1, "order": "descending", "per_period": True},
-                        }
-                    ],
-                ),
-            ),
+            _top_one(_wide_table_frame(frame_ref=_TOP_ONE_FRAME)),
             410,
             id="per-period-selection",
+        ),
+        pytest.param(
+            _top_one(_wide_table_frame(frame_ref=_TOP_ONE_FRAME, years=range(2020, 2030))),
+            None,
+            id="per-period-selection-over-years-no-row-holds",
         ),
     ],
 )
@@ -129,7 +142,9 @@ def test_table_row_cap_counts_the_rows_the_table_lists(
 ):
     """Five recipients across 410 years pad to 2,050 rows, above the 2,000-row cap, so the
     table refuses before `bind_all` runs. A frame keeping each period's selection lists only
-    the rows it holds, 410 here, and the cap counts those."""
+    the rows it holds where some recipient holds one, 410 here, and the cap counts those. A
+    year no recipient holds is a gap that keeps a missing row per recipient: 10 rows and 400
+    gap years of five pad to 2,010 rows, and the cap counts those too."""
     import assembler.pipeline.candidate as candidate_module
 
     if row_count is None:

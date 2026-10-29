@@ -70,7 +70,7 @@ from description.vocabulary import (
     vocabulary_revision,
 )
 
-from ._pipeline_support import _malaria_intent
+from ._pipeline_support import _malaria_intent, computed_record
 
 _CRS = "provenance/OECDCreditorReportingSystem"
 _CRS_NAME = "OECD Creditor Reporting System (CRS)"
@@ -1058,6 +1058,226 @@ def test_a_cards_description_counts_the_series_it_draws(
     assert [(source["ref"], source["series"]) for source in description["sources"]] == [
         (_CRS, len(drawn))
     ]
+
+
+_TOP_DONOR_FRAME = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
+_IDA = "InternationalDevelopmentAssociation"
+_USA = "country/USA"
+_IDA_NAME = "International Development Association"
+_USA_NAME = "United States of America"
+# Each year's top donor of net ODA to Kenya, as the deployed per-period rank kept it.
+_TOP_DONOR_BY_YEAR = (
+    ("2018", _USA, 829_231_420.0),
+    ("2019", _IDA, 1_357_452_310.0),
+    ("2020", _IDA, 1_570_237_409.0),
+    ("2021", _IDA, 1_151_749_460.0),
+    ("2022", _IDA, 938_795_140.0),
+)
+_TOP_ONE = {
+    "id": "s2",
+    "op": "rank",
+    "input": "s1",
+    "policy": "rank_what_is_present",
+    "params": {
+        "aggregation": "sum",
+        "limit": 1,
+        "order": "descending",
+        "per_period": True,
+        "rank_by": ["financingProvider"],
+    },
+}
+# The table of a frame that selects nothing in each period: both donors in every year, a
+# year a donor holds no row in reading `missing`.
+_PADDED = sorted(
+    [(year, _IDA_NAME, "missing") for year, provider, _ in _TOP_DONOR_BY_YEAR if provider != _IDA]
+    + [(year, _USA_NAME, "missing") for year, provider, _ in _TOP_DONOR_BY_YEAR if provider != _USA]
+    + [
+        (year, _IDA_NAME if provider == _IDA else _USA_NAME, value)
+        for year, provider, value in _TOP_DONOR_BY_YEAR
+    ]
+)
+_VALUE_FILTER = {
+    "id": "s2",
+    "op": "filter",
+    "input": "s1",
+    "params": {"predicates": [{"column": "value", "op": "gt", "operand": 8e8}]},
+}
+
+
+def _top_donor_table(
+    frame_store,
+    revision_store,
+    release_registry,
+    *,
+    steps: Sequence[Mapping[str, object]] | None,
+    years: Sequence[str] = tuple(year for year, _, _ in _TOP_DONOR_BY_YEAR),
+    window: Mapping[str, str],
+) -> WriteReply:
+    """A table naming both donors over `window`, from a frame holding each year's top donor
+    to Kenya in `years`, computed by `steps` after its retrieve, or with no description record
+    when `steps` is `None`."""
+    frame = _described(
+        build_resolved_frame(
+            frame_ref=_TOP_DONOR_FRAME,
+            role_keys=("financingProvider",),
+            rows=[
+                {
+                    "stat_var": "dcid:MalariaGrantDisbursements",
+                    "financingProvider": provider,
+                    "time_period": year,
+                    "value": value,
+                    "unit": "CurrencyUSD",
+                    "measurementMethod": None,
+                    "provenance": None,
+                }
+                for year, provider, value in _TOP_DONOR_BY_YEAR
+                if year in years
+            ],
+            labels={_IDA: _IDA_NAME, _USA: _USA_NAME},
+        ),
+        None if steps is None else computed_record(frame_ref=_TOP_DONOR_FRAME, steps=steps),
+    )
+    frame_store.put(resolved_frame=frame)
+    return _write(
+        _intent(
+            frame,
+            "table",
+            select={
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "financingProvider": [_IDA, _USA],
+            },
+            window=window,
+        ),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+
+def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]:
+    """Each table row as `(period, donor, value or status)`, sorted."""
+    rows = cast("list[dict[str, Any]]", cast("dict[str, Any]", payload["component"])["rows"])
+    return sorted(
+        (
+            row["period"],
+            row["dimensions"]["financingProvider"],
+            row["value"] if "value" in row else row["status"],
+        )
+        for row in rows
+    )
+
+
+@pytest.mark.parametrize(
+    ("steps", "years", "cells"),
+    [
+        pytest.param(
+            [_TOP_ONE],
+            ("2018", "2019", "2020", "2021", "2022"),
+            [
+                ("2018", _USA_NAME, 829_231_420.0),
+                ("2019", _IDA_NAME, 1_357_452_310.0),
+                ("2020", _IDA_NAME, 1_570_237_409.0),
+                ("2021", _IDA_NAME, 1_151_749_460.0),
+                ("2022", _IDA_NAME, 938_795_140.0),
+            ],
+            id="top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE],
+            ("2018", "2019", "2021", "2022"),
+            [
+                ("2018", _USA_NAME, 829_231_420.0),
+                ("2019", _IDA_NAME, 1_357_452_310.0),
+                ("2020", _IDA_NAME, "missing"),
+                ("2020", _USA_NAME, "missing"),
+                ("2021", _IDA_NAME, 1_151_749_460.0),
+                ("2022", _IDA_NAME, 938_795_140.0),
+            ],
+            id="top-one-over-a-year-no-donor-holds",
+        ),
+        pytest.param(
+            [_VALUE_FILTER],
+            ("2018", "2020", "2022"),
+            [
+                ("2018", _IDA_NAME, "missing"),
+                ("2018", _USA_NAME, 829_231_420.0),
+                ("2019", _IDA_NAME, "missing"),
+                ("2019", _USA_NAME, "missing"),
+                ("2020", _IDA_NAME, 1_570_237_409.0),
+                ("2020", _USA_NAME, "missing"),
+                ("2021", _IDA_NAME, "missing"),
+                ("2021", _USA_NAME, "missing"),
+                ("2022", _IDA_NAME, 938_795_140.0),
+                ("2022", _USA_NAME, "missing"),
+            ],
+            id="value-filter",
+        ),
+        pytest.param(None, ("2018", "2019", "2020", "2021", "2022"), _PADDED, id="no-record"),
+        pytest.param([], ("2018", "2019", "2020", "2021", "2022"), _PADDED, id="retrieve-only"),
+        pytest.param(
+            [
+                {
+                    **_TOP_ONE,
+                    "params": {k: v for k, v in _TOP_ONE["params"].items() if k != "limit"},
+                }
+            ],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _PADDED,
+            id="per-period-rank-without-a-limit",
+        ),
+        pytest.param(
+            [{**_TOP_ONE, "params": {**_TOP_ONE["params"], "per_period": False}}],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _PADDED,
+            id="whole-window-rank",
+        ),
+    ],
+)
+def test_a_table_over_a_per_period_top_one_lists_the_donors_each_year_kept(
+    frame_store, revision_store, release_registry, steps, years, cells
+):
+    """A per-period top one leaves a donor out of a year another donor holds, so the table
+    lists only the frame's rows there. A year no donor holds is a gap in the data and keeps a
+    missing row per donor. A frame that selects nothing in each period, whether a filter, a
+    retrieve alone, a rank without a limit or over the whole window computed it, or whose
+    steps are unknown, pads every absent year."""
+    created = _top_donor_table(
+        frame_store,
+        revision_store,
+        release_registry,
+        steps=steps,
+        years=years,
+        window={"start": "2018", "end": "2022"},
+    )
+    assert _table_cells(created.resolved_payload) == cells
+
+
+def test_a_table_over_a_per_period_top_one_describes_only_the_donors_it_lists(
+    frame_store, revision_store, release_registry
+):
+    """From 2019 to 2022 the top donor is the International Development Association each
+    year, so the table lists four of its rows, and its fact summary and description count
+    and name that one donor."""
+    created = _top_donor_table(
+        frame_store,
+        revision_store,
+        release_registry,
+        steps=[_TOP_ONE],
+        window={"start": "2019", "end": "2022"},
+    )
+    payload = created.resolved_payload
+    description = _description(payload)
+
+    assert [cell[:2] for cell in _table_cells(payload)] == [
+        (year, _IDA_NAME) for year in ("2019", "2020", "2021", "2022")
+    ]
+    assert [one["label"] for one in created.fact_summary["series"]] == [_IDA_NAME]
+    _, select_step = _step(description, "select")
+    assert select_step["params"]["coordinates"]["financingProvider"] == [_IDA]
+    assert select_step["params"]["window"] == {"start": "2019", "end": "2022"}
+    assert select_step["kept"] == {"series": 1}
+    assert description["about"]["drawn"]["series"] == 1
 
 
 _MALARIA_CONTROL = "CRSPurposeCode12262"

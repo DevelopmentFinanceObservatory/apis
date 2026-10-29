@@ -5,11 +5,6 @@ unbounded. Stat-card change periods must be observed. The default derivation
 is `difference`. A stat card with a change shows its headline at the change's
 end period, and one without at its latest observed period.
 
-A table lists one row per series and window period, a period the series holds no row in
-reading `status: "missing"`. A table over a frame whose steps keep each period's selection
-(`_keeps_a_selection`) lists only the rows the frame holds, since a series it left out of a
-period was not chosen there.
-
 The builders read period labels. `assembler.rolling` resolves an intent's
 relative periods before the builders see it.
 
@@ -22,7 +17,6 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, UNIT_COLUMN, VALUE_COLUMN
-from pydantic.experimental.missing_sentinel import MISSING
 
 from assembler.bind import BoundSeries, role_columns, series_label_parts
 from assembler.errors import BindingInvalid, ConstraintViolation
@@ -31,7 +25,6 @@ from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from assembler.select import has_arrayed_dimension
-from description.steps import Step
 from dfo_platform.columns import column_title
 from materialise.unit_cells import composed_unit_words
 
@@ -527,7 +520,6 @@ def _build_table(
         columns=tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
     )
     extra_role_names = tuple(name for name in frame_role_names if name not in dimension_names)
-    selected = selects_per_period(resolved_frame=resolved_frame)
 
     rows: list[dict[str, object]] = []
     for resolved, bound in zip(series, bound_series, strict=True):
@@ -551,10 +543,7 @@ def _build_table(
         for point in bound.points:
             # A series continued by its source's estimates holds rows under two methods, so a
             # row labels a dimension by its own cell where that differs from the series'.
-            cells = cells_by_period.get(point["period"])
-            if cells is None and selected:
-                continue
-            cells = cells or {}
+            cells = cells_by_period.get(point["period"], {})
             own = {
                 name: _coordinate_label(
                     labels=resolved_frame.labels, value=cast("str | None", cells[name])
@@ -585,26 +574,6 @@ def _build_table(
         "rows": rows,
     }
     return component, observed_periods
-
-
-def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
-    """Whether a step that computed the frame keeps each period's selection, so a series
-    without a row in a period was left out of it by design. A frame without a description
-    record, or whose record holds no steps, keeps none. The pipeline's table row cap reads it
-    too, so the cap counts the rows `_build_table` lists."""
-    record = resolved_frame.description_record
-    return record is not None and any(_keeps_a_selection(step) for step in record.known_steps)
-
-
-def _keeps_a_selection(step: Step) -> bool:
-    """A `filter`, which keeps the rows whose values meet its predicates, or a `rank` over
-    each period on its own (`per_period`) with a `limit`, which keeps each period's top or
-    bottom entities. A `rank` without a `limit` keeps every entity, and one over the whole
-    window writes a single period."""
-    if step.op == "filter":
-        return True
-    params = step.params if step.params is not MISSING else {}
-    return step.op == "rank" and params.get("per_period") is True and "limit" in params
 
 
 def _build_stat_card(
