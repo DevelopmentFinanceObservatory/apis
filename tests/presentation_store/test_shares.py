@@ -293,7 +293,7 @@ def test_an_import_keeps_the_website_id_owner_and_creation_time_and_a_second_cha
 
     assert store.import_share(_imported()) is True
     stored = store.read_share(share_id="k3Qx8vTa")
-    assert store.import_share(_imported(write_token_sha256=b"u" * 32, title="Other")) is False
+    assert store.import_share(_imported(title="Other")) is False
 
     assert store.read_share(share_id="k3Qx8vTa") == stored
     assert (stored.owner, stored.created_at, stored.revised_at) == ("user_1", _AT, _AT)
@@ -310,8 +310,10 @@ def test_an_import_keeps_the_website_id_owner_and_creation_time_and_a_second_cha
     [
         {"kind": "card"},
         {"created_at": _AT + timedelta(microseconds=1)},
+        {"write_token_sha256": b"u" * 32},
+        {"write_token_sha256": None},
     ],
-    ids=["other-kind", "other-creation-time"],
+    ids=["other-kind", "other-creation-time", "other-digest", "no-digest"],
 )
 def test_an_import_onto_an_id_holding_another_share_refuses(held: dict[str, Any]):
     store = LiveShareStore(store=FakePresentationStore())

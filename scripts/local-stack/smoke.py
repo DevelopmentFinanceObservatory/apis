@@ -20,7 +20,10 @@ For each reading `seed.py` recorded in `$LOCAL_STACK_SEEDED`:
   ref's order, and a stat card, whose title and series label it prints;
 - `POST /api/presentation/shares` makes a live share of the card with its page, embed and data
   URLs and a `shw_` token, which replaces it; a wrong token refuses 403, a delete takes it
-  down, and the delete retried with the token answers 204 again.
+  down, and the delete retried with the token answers 204 again;
+- `PUT /api/presentation/shares/{id}/import` stores a share of the card under an id the website
+  chose, 201 and then 200 on a re-run, refuses a caller without the import principal 403, and
+  the token whose digest it stored replaces the share.
 
 Exits 1 on the first failed check.
 
@@ -34,6 +37,8 @@ import io
 import json
 import math
 import os
+import secrets
+import string
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -46,6 +51,7 @@ from upstream import Reading, load_fixture
 ANALYSIS_ROUTE = "/api/datasets/analysis"
 SHARES_ROUTE = "/api/presentation/shares"
 WRITE_TOKEN = "x-dfo-write-token"
+PRINCIPAL = "x-dfo-principal"
 ODA_READING = "oda_germany_to_kenya_ghana_nigeria"
 POPULATION_READING = "kenya_population"
 
@@ -310,6 +316,47 @@ def check_share(client: httpx.Client, component_id: str) -> str:
     )
 
 
+def check_share_import(client: httpx.Client, component_id: str) -> str:
+    """Import a share of the card under an id the website chose, import it again, refuse a
+    caller without the import principal, and replace it with the token whose digest it holds."""
+    share_id = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+    token = "shw_" + secrets.token_urlsafe(16)
+    path = f"{SHARES_ROUTE}/{share_id}/import"
+    body = {
+        "kind": "card",
+        "mode": "live",
+        "owner": "local-user",
+        "created_at": "2026-09-01T10:00:00Z",
+        "title": "Imported",
+        "slots": [{"component_id": component_id, "revision": 1, "frame": None}],
+        "payload": None,
+        "write_token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+    }
+    principal = {PRINCIPAL: os.environ["PRESENTATION_SHARE_IMPORT_PRINCIPAL"]}
+    refused = client.put(path, json=body, headers={PRINCIPAL: "local-refresh-principal"})
+    if refused.status_code != 403 or refused.json()["code"] != "share_import_not_permitted":
+        raise SmokeFailure(f"PUT {path} as another principal answered {refused.status_code}")
+    for status in (201, 200):
+        answer = client.put(path, json=body, headers=principal)
+        if answer.status_code != status or answer.json() != {
+            "id": share_id,
+            "imported": status == 201,
+        }:
+            raise SmokeFailure(f"PUT {path} answered {answer.status_code}: {answer.text}")
+    cards = {"cards": [{"component_id": component_id, "revision": 1}]}
+    replaced = client.put(
+        f"{SHARES_ROUTE}/{share_id}",
+        json=cards,
+        headers={WRITE_TOKEN: token, "X-Forwarded-For": "127.0.0.1"},
+    )
+    if replaced.status_code != 200 or replaced.json()["revision"] != 2:
+        raise SmokeFailure(f"a replace of the imported share answered {replaced.status_code}")
+    return (
+        f"share import {share_id}: another principal refused 403, imported 201, again 200, "
+        "and its website token replaced it"
+    )
+
+
 def analysis_step(
     client: httpx.Client,
     seeded: Mapping[str, Mapping[str, object]],
@@ -329,6 +376,7 @@ def analysis_step(
         f"card: {component_id} on the derived frame, describing its roots as its sources",
         stat_card(client, derived),
         check_share(client, component_id),
+        check_share_import(client, component_id),
     ]
 
 

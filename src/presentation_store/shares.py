@@ -13,8 +13,8 @@ append-only. A delete sets `deleted_at`, after which every read and write answer
 
 A snapshot conversion (`snapshot_share`) writes the next revision with the frame each slot
 serves and sets the share's mode to `snapshot`, so its slots keep those frames for good.
-`import_share` stores a share exported from the website under its own id, `created_at`, owner
-and payload, and finds a share it imported before by its id, kind and `created_at`.
+`import_share` stores a website share under its own id, `created_at`, owner, payload and write
+token digest, and finds a share it imported before by its id, kind, `created_at` and digest.
 
 A live slot's data read keeps one `SlotCheck` per slot and card revision: the frame the slot
 serves, its freshness, when the check ran and when the next one is due. `claim_slot_check`
@@ -154,11 +154,16 @@ class ShareWriteTokenInUse(Exception):
 
 class ShareIdTaken(Exception):
     """An imported share's id holds another share, either one made here or a website share of
-    another kind or creation time."""
+    another kind or creation time, or holds this share with another write token digest."""
 
-    def __init__(self, share_id: str) -> None:
+    def __init__(self, share_id: str, *, token_differs: bool = False) -> None:
         self.share_id = share_id
-        super().__init__(f"share id {share_id!r} already holds another share")
+        self.token_differs = token_differs
+        super().__init__(
+            f"share id {share_id!r} holds this share under another write token digest"
+            if token_differs
+            else f"share id {share_id!r} already holds another share"
+        )
 
 
 @dataclass(frozen=True)
@@ -353,17 +358,14 @@ class ShareStore(Protocol):
         """
         ...
 
-    def import_share(
-        self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
-    ) -> bool:
+    def import_share(self, share: ImportedShare) -> bool:
         """Store a website share under its own id at revision 1 and record what each slot
-        shows from its `created_at`, calling `on_stored` after its rows are written and before
-        they commit, so a failure of `on_stored` stores nothing. Returns
-        `False`, changing nothing and calling nothing, when the id already holds a share of the
-        same kind and `created_at`, which an earlier import stored.
+        shows from its `created_at`. Returns `False`, changing nothing, when the id already
+        holds a share of the same kind, `created_at` and write token digest, which an earlier
+        import stored, taken down since or not.
 
         Raises:
-            ShareIdTaken: The id holds another share.
+            ShareIdTaken: The id holds another share, or this one under another digest.
             PresentationStoreUnavailable: The store failed.
         """
         ...
@@ -573,9 +575,7 @@ class LiveShareStore:
 
         return self._in_transaction(f"turning share {share_id!r} into a snapshot", write)
 
-    def import_share(
-        self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
-    ) -> bool:
+    def import_share(self, share: ImportedShare) -> bool:
         def write(tx: Transaction) -> bool:
             row = tx.fetch_one(
                 "INSERT INTO presentation.share (id, kind, mode, title, write_token_sha256, "
@@ -594,13 +594,17 @@ class LiveShareStore:
             )
             if row is None:
                 held = tx.fetch_one(
-                    "SELECT kind, created_at FROM presentation.share WHERE id = %s", (share.id,)
+                    "SELECT kind, created_at, write_token_sha256 FROM presentation.share "
+                    "WHERE id = %s",
+                    (share.id,),
                 )
                 if held is None or (held["kind"], held["created_at"]) != (
                     share.kind,
                     share.created_at,
                 ):
                     raise ShareIdTaken(share.id)
+                if held["write_token_sha256"] != share.write_token_sha256:
+                    raise ShareIdTaken(share.id, token_differs=True)
                 return False
             slots = tuple(
                 ShareSlot(slot=n, card=card) for n, card in enumerate(share.cards, start=1)
@@ -616,8 +620,6 @@ class LiveShareStore:
                 renderings=share.renderings,
                 at=at,
             )
-            if on_stored is not None:
-                on_stored()
             return True
 
         return self._in_transaction(f"importing share {share.id!r}", write)

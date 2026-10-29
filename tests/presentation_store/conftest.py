@@ -320,10 +320,22 @@ class FakeTransaction:
                 if row["write_token_sha256"] == write_token_sha256
             ]
 
-        if sql.startswith("SELECT kind, created_at FROM presentation.share WHERE id = %s"):
+        if sql.startswith(
+            "SELECT kind, created_at, write_token_sha256 FROM presentation.share WHERE id = %s"
+        ):
             (share_id,) = params
             row = s.shares.get(share_id)
-            return [] if row is None else [{"kind": row["kind"], "created_at": row["created_at"]}]
+            return (
+                []
+                if row is None
+                else [
+                    {
+                        "kind": row["kind"],
+                        "created_at": row["created_at"],
+                        "write_token_sha256": row["write_token_sha256"],
+                    }
+                ]
+            )
 
         if sql.startswith("UPDATE presentation.share SET mode = 'snapshot' WHERE id = %s"):
             (share_id,) = params

@@ -119,21 +119,25 @@ def build_presentation_surface(
     rate_cache: RateTableCache, *, datasets: DatasetsLink | None = None
 ) -> Surface:
     """Build the Presentation surface `create_app` mounts under `DFO_PRESENTATION_SURFACE`,
-    with its render routes admitting the Datasets live-refresh principal from the environment.
+    with its render routes admitting the Datasets live-refresh principal and its share import
+    route the share import principal, both from the environment.
     `datasets` is the mounted Datasets surface's link, which live share slots check for newer
     data through; without one they serve their cards' own frames as stale.
     Presentation reads no rate tables, so `rate_cache` is taken only to fit the gated-surface
     factory signature."""
     from datasets_api.config import DatasetsBuildSettings
     from datasets_api.live_refresh import LiveRefreshPrincipal
+    from datasets_api.principals import Principals
     from presentation_api.app import presentation_surface
     from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
     from presentation_api.newest_frames import DatasetsNewestFrames
 
     # The render routes admit the principal the Datasets frame refresh admits, read from the
     # same settings, whether or not the Datasets surface is mounted.
+    settings = DatasetsBuildSettings.from_env()
     return presentation_surface(
-        live_refresh=LiveRefreshPrincipal.resolve(settings=DatasetsBuildSettings.from_env()),
+        live_refresh=LiveRefreshPrincipal.resolve(settings=settings),
+        principals=Principals.resolve(settings=settings),
         newest_frames=(
             # Half the share route's wait goes to the check, leaving the rest to draw the card.
             DatasetsNewestFrames(

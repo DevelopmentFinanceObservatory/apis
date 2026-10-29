@@ -198,6 +198,13 @@ class DatasetsBuildSettings(BaseSettings):
     # the same secret under. Empty denies all. It opens no publish, recipe, or pin route.
     live_refresh_principal: str = Field(default="", validation_alias="live_refresh_principal")
 
+    # Sole principal of the Presentation share import route, the website's share migration
+    # job. Read from `PRESENTATION_SHARE_IMPORT_PRINCIPAL`. Empty denies all. It opens no other
+    # route.
+    presentation_share_import_principal: str = Field(
+        default="", validation_alias="presentation_share_import_principal"
+    )
+
     # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
     # (3). The worker marks the operation failed on its final transient attempt.
     operation_max_attempts: int = Field(default=3, ge=1)

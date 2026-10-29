@@ -1,14 +1,16 @@
 """The shares door: every publication rule vector over HTTP, the share allowance and its refund,
-the live share's data-card limit, pinning on create and replace, ids kept from the website,
-take-down, and a burst of reads over its executor. Also the card allowance the components door
+the live share's data-card limit, pinning on create and replace, ids kept from the website, the
+share import and its principal, take-down, and a burst of reads over its executor. Also the card allowance the components door
 spends on create and revise."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -50,6 +52,12 @@ _ADDRESS = "203.0.113.7"
 _HEADERS = {"x-forwarded-for": _ADDRESS}
 _TOKEN_HEADER = "x-dfo-write-token"
 _CARD_NAMES = ("cmp_a", "cmp_b", "cmp_c", "cmp_d", "cmp_e")
+_PRINCIPAL_HEADER = "x-dfo-principal"
+_IMPORT_PRINCIPAL = "site-share-import"
+_PRINCIPALS = Principals(
+    header=_PRINCIPAL_HEADER,
+    secrets=(("ai-publish", Grant.publish), (_IMPORT_PRINCIPAL, Grant.share_import)),
+)
 
 
 class _Allowances:
@@ -129,6 +137,15 @@ class _Door:
     def read(self, share_id: str):
         return self.client.get(f"/api/presentation/shares/{share_id}")
 
+    def import_share(
+        self, share_id: str, body: dict[str, object], *, principal: str | None = _IMPORT_PRINCIPAL
+    ):
+        return self.client.put(
+            f"/api/presentation/shares/{share_id}/import",
+            json=body,
+            headers={_PRINCIPAL_HEADER: principal} if principal is not None else {},
+        )
+
     def shown(self, share_id: str) -> dict[str, object]:
         """The share as a publication vector states it, read back over HTTP."""
         resp = self.read(share_id)
@@ -147,8 +164,13 @@ class _Door:
         }
 
 
-@pytest.fixture
-def door(release_registry: FakeReleaseRegistry, frame_store: FakeFrameStore) -> Iterator[_Door]:
+@contextmanager
+def _serving(
+    release_registry: FakeReleaseRegistry,
+    frame_store: FakeFrameStore,
+    *,
+    principals: Principals | None,
+) -> Iterator[_Door]:
     share_store = LiveShareStore(store=FakePresentationStore())
     allowances = _Allowances(limit=50)
     surface = presentation_surface(
@@ -158,9 +180,16 @@ def door(release_registry: FakeReleaseRegistry, frame_store: FakeFrameStore) -> 
         share_store=share_store,
         allowances=allowances,
         caller_settings=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
+        principals=principals,
     )
     with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
         yield _Door(client, share_store=share_store, allowances=allowances, frame_store=frame_store)
+
+
+@pytest.fixture
+def door(release_registry: FakeReleaseRegistry, frame_store: FakeFrameStore) -> Iterator[_Door]:
+    with _serving(release_registry, frame_store, principals=_PRINCIPALS) as served:
+        yield served
 
 
 def _assert_refused(resp, *, status: int, code: str) -> dict:
@@ -848,6 +877,144 @@ def test_a_share_kept_from_the_website_reads_and_refuses_every_token(door: _Door
     _assert_refused(door.read("K3QX8VTA"), status=404, code="not_found")
 
 
+def _import_body(door: _Door, *, token: str | None, **changes: object) -> dict[str, object]:
+    """A website share as its export line states it, less the id, with the digest of `token`."""
+    body: dict[str, object] = {
+        "kind": "card",
+        "mode": "live",
+        "owner": "user_1" if token is not None else None,
+        "created_at": "2026-09-01T10:00:00.000001Z",
+        "title": "Imported",
+        "slots": [{"component_id": door.cards["cmp_a"], "revision": 1, "frame": None}],
+        "payload": {"held": True},
+        "write_token_sha256": (
+            hashlib.sha256(token.encode()).hexdigest() if token is not None else None
+        ),
+    }
+    return body | changes
+
+
+def _stored(read) -> tuple[int, object]:
+    """A share read's status and body, or its refusal's code."""
+    return read.status_code, read.json() if read.status_code == 200 else read.json()["code"]
+
+
+def test_an_import_answers_201_then_200_and_the_websites_token_changes_the_share(door: _Door):
+    token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+    body = _import_body(door, token=token)
+    door.frame_store._pins.clear()
+
+    first = door.import_share("k3Qx8vTa", body)
+    again = door.import_share("k3Qx8vTa", body)
+
+    assert (first.status_code, first.json()) == (201, {"id": "k3Qx8vTa", "imported": True})
+    assert (again.status_code, again.json()) == (200, {"id": "k3Qx8vTa", "imported": False})
+    read = door.read("k3Qx8vTa").json()
+    assert (read["kind"], read["mode"], read["title"], read["payload"], read["revision"]) == (
+        "card",
+        "live",
+        "Imported",
+        {"held": True},
+        1,
+    )
+    assert read["created_at"] == "2026-09-01T10:00:00.000001+00:00"
+    assert [pin[1] for pin in door.frame_store.pins] == [door.cards["cmp_a"]]
+    assert door.allowances.spent == []
+    assert door.replace("k3Qx8vTa", ["cmp_b"], token=token).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("principals", "presented", "status"),
+    [
+        (_PRINCIPALS, _IMPORT_PRINCIPAL, 201),
+        (_PRINCIPALS, None, 403),
+        (_PRINCIPALS, "wrong", 403),
+        (_PRINCIPALS, "ai-publish", 403),
+        (None, _IMPORT_PRINCIPAL, 403),
+        (Principals(header=_PRINCIPAL_HEADER, secrets=(("", Grant.share_import),)), "", 403),
+    ],
+    ids=["right", "none", "wrong", "other-grant", "unset", "empty"],
+)
+def test_the_import_admits_its_principal_alone(
+    release_registry: FakeReleaseRegistry,
+    frame_store: FakeFrameStore,
+    principals: Principals | None,
+    presented: str | None,
+    status: int,
+):
+    with _serving(release_registry, frame_store, principals=principals) as served:
+        resp = served.import_share(
+            "k3Qx8vTa", _import_body(served, token=None), principal=presented
+        )
+        read = served.read("k3Qx8vTa")
+
+    if status == 201:
+        assert resp.status_code == 201, resp.json()
+        assert read.status_code == 200
+    else:
+        _assert_refused(resp, status=403, code="share_import_not_permitted")
+        _assert_refused(read, status=404, code="not_found")
+
+
+@pytest.mark.parametrize(
+    ("held", "changes", "status", "code"),
+    [
+        ("made-here", {}, 409, "share_id_taken"),
+        ("other-digest", {}, 409, "share_id_taken"),
+        ("guest", {}, 409, "share_id_taken"),
+        (None, {"owner": None}, 400, "request_invalid"),
+        (None, {"write_token_sha256": "A" * 64}, 400, "request_invalid"),
+        (None, {"id": "k3Qx8vTa"}, 400, "request_invalid"),
+        (
+            None,
+            {"slots": [{"component_id": "cmp_missing", "revision": 1, "frame": None}]},
+            404,
+            "not_found",
+        ),
+        (None, "note", 400, "request_invalid"),
+    ],
+    ids=[
+        "id-holds-a-share-made-here",
+        "id-holds-it-under-another-digest",
+        "id-holds-it-with-no-digest",
+        "digest-without-owner",
+        "uppercase-digest",
+        "id-in-the-body",
+        "unknown-card",
+        "slot-drawing-no-frame",
+    ],
+)
+def test_an_import_it_cannot_place_is_refused_and_changes_nothing(
+    door: _Door, held: str | None, changes: dict[str, object] | str, status: int, code: str
+):
+    token = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+    if held == "made-here":
+        LiveShareStore(store=door.share_store._store, mint_id=lambda: "k3Qx8vTa").create_share(
+            kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
+        )
+    elif held == "other-digest":
+        other = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+        assert door.import_share("k3Qx8vTa", _import_body(door, token=other)).status_code == 201
+    elif held == "guest":
+        assert door.import_share("k3Qx8vTa", _import_body(door, token=None)).status_code == 201
+    before = _stored(door.read("k3Qx8vTa"))
+    if changes == "note":
+        note = door.client.post(
+            "/api/presentation/components",
+            json={"intent": {"type": "note_narration", "text": "Aid rose."}},
+            headers=_HEADERS,
+        ).json()["component_id"]
+        changes = {"slots": [{"component_id": note, "revision": 1, "frame": None}]}
+    assert isinstance(changes, dict)
+
+    resp = door.import_share("k3Qx8vTa", _import_body(door, token=token, **changes))
+
+    problem = _assert_refused(resp, status=status, code=code)
+    if held is None and changes.get("slots") and code == "request_invalid":
+        assert problem["pointer"] == "/slots/0/frame"
+    assert _stored(door.read("k3Qx8vTa")) == before
+
+
 @pytest.mark.parametrize("share_id", ["k3Qx8vT", "k3Qx8vTa9", "k3Qx-vTa"])
 def test_a_malformed_share_id_refuses_request_invalid(door: _Door, share_id: str):
     _assert_refused(door.read(share_id), status=400, code="request_invalid")
@@ -904,7 +1071,11 @@ def test_a_frame_store_the_door_builds_pins_through_the_door_s_ledger(
     def built(*, settings, allowances):
         given.append(allowances)
         return LiveFrames(
-            frame_store=frame_store, graph=_Graph(), snapshot_reader=None, recipe_reader=None
+            frame_store=frame_store,
+            unmetered_frame_store=frame_store,
+            graph=_Graph(),
+            snapshot_reader=None,
+            recipe_reader=None,
         )
 
     monkeypatch.setattr(shares_door, "build_live_frame_store", built)
@@ -929,7 +1100,7 @@ def test_a_frame_store_the_door_builds_pins_through_the_door_s_ledger(
 def test_every_share_route_handler_is_a_module_level_function():
     routes = [r for r in build_shares_door().router.routes if isinstance(r, APIRoute)]
 
-    assert len(routes) == 8
+    assert len(routes) == 9
     assert all("<locals>" not in getattr(route.endpoint, "__qualname__", "") for route in routes)
 
 
