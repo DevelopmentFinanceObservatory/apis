@@ -29,7 +29,8 @@ one component, and `stat_var` leads the sort key (`dfo_frame_grammar.grammar.der
 so the composed frame is each component's rows of one member at a time, merged across
 components by `stat_var` alone. It is composed once: the pass that hashes it also counts it,
 folds its series statistics and output profile, and writes it as Parquet, one row group per
-member, which every later pass reads (`frame_build.ParquetFrameChunks`).
+composed chunk (`_COMPOSED_CHUNK_TARGET_ROWS`), which every later pass reads
+(`frame_build.ParquetFrameChunks`).
 """
 
 from __future__ import annotations
@@ -100,6 +101,15 @@ _RESTATED_CODES = frozenset(
 
 _EMPTY_RUN = pa.table({STAT_VAR_COLUMN: pa.array([], type=pa.string())})
 """A member run with no row, which `_composed_chunks` skips."""
+
+_COMPOSED_CHUNK_TARGET_ROWS = 100_000
+"""Composed members are joined into chunks of about this many rows, as a component's own frame
+is (`generation._FRAME_CHUNK_TARGET_ROWS`). Every pass over a chunk (its frame build, hash,
+statistics, profile and Parquet write) has a fixed Arrow cost of about 4 ms, and a composite
+like total ODA composes some 600 members of about 76 rows each, so a chunk per member spends
+most of the pass on that fixed cost. A member stays whole, so a series never spans two chunks,
+as `statistics.SeriesStatisticsSink` requires. Every member's table has the frame grammar's one
+column schema, so members of any component join."""
 
 type _Cell = tuple[tuple[str, ...], str]
 """A row's role values and period."""
@@ -551,12 +561,13 @@ def _composed_chunks(
     composite: CompositeDeclaration,
     role_columns: tuple[str, ...],
 ) -> Iterator[Frame]:
-    """The composed frame, one chunk per member, in `stat_var` order. Yields one empty chunk
-    when no row is served."""
+    """The composed frame in `stat_var` order, whole members joined into chunks of up to
+    `_COMPOSED_CHUNK_TARGET_ROWS` rows. Yields one empty chunk when no row is served."""
     streams = [
         _component_runs(component, plan=plan, role_columns=role_columns) for component in components
     ]
-    produced = False
+    pending: list[pa.Table] = []
+    pending_rows = 0
     for _stat_var, table in heapq.merge(*streams, key=lambda run: run[0]):
         if table.num_rows == 0:
             continue
@@ -566,9 +577,14 @@ def _composed_chunks(
             pa.array([composite.provenance] * table.num_rows, type=pa.string()),
         )
         table = table.drop_columns([STATUS_COLUMN])
-        produced = True
-        yield build_frame_from_arrow(table, role_keys=role_columns)
-    if not produced:
+        if pending and pending_rows + table.num_rows > _COMPOSED_CHUNK_TARGET_ROWS:
+            yield build_frame_from_arrow(pa.concat_tables(pending), role_keys=role_columns)
+            pending, pending_rows = [], 0
+        pending.append(table)
+        pending_rows += table.num_rows
+    if pending:
+        yield build_frame_from_arrow(pa.concat_tables(pending), role_keys=role_columns)
+    else:
         yield build_frame(role_keys=role_columns, rows=())
 
 

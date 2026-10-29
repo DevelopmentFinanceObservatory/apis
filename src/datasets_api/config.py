@@ -63,7 +63,8 @@ class DatasetsBuildSettings(BaseSettings):
     # materialise permit, so every thread that runs one holds its frame as well.
     work_max_concurrency: int = Field(default=4, ge=1)
 
-    # Concurrent SDMX members per request. The surface's one SDMX client caps total GETs at 8.
+    # Concurrent SDMX member fetches per mint. The surface's one mint SDMX client allows as many
+    # GETs in flight, so mints running at once on one instance share them.
     mint_member_max_concurrency: int = Field(default=DEFAULT_MEMBER_CONCURRENCY, ge=1)
 
     # A mint's deadline. Every SDMX, graph and metadata read of the mint takes it, and the door
