@@ -402,8 +402,11 @@ def sync_estimate(
     Group by component, dispatch key and window years, then use the same lanes and
     StatVar chunks as materialisation. A composite's components materialise apart
     (`serve.prewrite_definition`), so each component's requests are priced as reads of their
-    own, under their own windows, and the estimate is their sum. Estimate each chunk with
-    `lanes=1`, using the first member's roles and window. The `latest` window keeps
+    own, under their own windows and lanes, and the estimate is their sum. Only members with
+    a coverage row under their bound roles in any year (`CoverageIndex.variables_with_rows`)
+    are chunked and counted toward the lanes, in dcid order, since materialisation fetches no
+    member without a dispatch facet (`generation._plan_collection_chunks`). Estimate each
+    chunk with `lanes=1`, using the first member's roles and window. The `latest` window keeps
     `LATEST` in request-size estimates while coverage prices all years, and
     adds the requests of one read alone at one year of each member that can
     make it (`_members_read_twice`): a member with a series ending after the
@@ -415,7 +418,6 @@ def sync_estimate(
     count each such member once per cell any of `requests` can hold
     (`CoverageIndex.cell_count`), a bound no composed frame exceeds.
     """
-    lanes = dispatch_lanes(member_concurrency, len(requests))
     groups: dict[
         tuple[str | None, tuple[object, ...], int | None, int | None],
         list[MaterialisationRequest],
@@ -439,11 +441,22 @@ def sync_estimate(
             count=uncovered_requests,
             cap=UNCOVERED_MEMBER_CAP,
         )
+    fetched: dict[tuple[str | None, tuple[object, ...], int | None, int | None], list[str]] = {}
+    fetching_members: dict[str | None, int] = {}
+    for key, members in groups.items():
+        variables = sorted(_bare_dcid(member.stat_var) for member in members)
+        with_rows = index.variables_with_rows(
+            variables=variables, bound=bound_roles(members[0], index=index)
+        )
+        fetched[key] = [variable for variable in variables if variable in with_rows]
+        fetching_members[key[0]] = fetching_members.get(key[0], 0) + len(fetched[key])
     total_rows = 0
     total_requests = 0
-    for (_component, _batch_key, first_year, last_year), members in groups.items():
+    for key, members in groups.items():
+        component, _batch_key, first_year, last_year = key
         bound = bound_roles(members[0], index=index)
-        variables = [_bare_dcid(member.stat_var) for member in members]
+        variables = fetched[key]
+        lanes = dispatch_lanes(member_concurrency, fetching_members[component])
         time_period = _time_period_for_window(members[0].window)
         # Every year is asked for by four digits, so any year prices the read of one.
         elected_period = _time_period_for_window(members[0].window, year=index.horizon.max_year)

@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 # Deployment code supplies its configured bound; this is the package fallback. The mixer
 # answers a `/data` request in about 0.09 s whatever its size, so a mint's fetch is bound by
 # round trips: 16 workers cut the total-ODA composite's 248 requests from 15.7 s to about 7 s
-# against 4, with no slower server time. Each worker's look-ahead holds about 16 member tables
+# against 4, with no slower server time. Each worker's look-ahead holds about 32 member tables
 # (`generation._DISPATCH_CHUNK_TARGET_MEMBERS`).
 DEFAULT_MEMBER_CONCURRENCY = 16
 
