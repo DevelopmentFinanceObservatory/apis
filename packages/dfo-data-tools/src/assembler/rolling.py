@@ -9,7 +9,9 @@ each write or render resolves it again on the frame it draws.
 "latest" is `ResolvedFrame.anchor.period` when the frame carries an anchor. Otherwise it is
 `dfo_frame_grammar.latest_anchor` over one population, the component's selected series, each
 holding the periods of its rows without a status: the newest period at least half of them
-hold. A select value the frame holds no row for is dropped from a rolling selection and
+hold. On a frame that keeps a selection in each period (`assembler.bind.selects_per_period`),
+where a series holds no row in the periods it was not chosen in, "latest" is the newest
+period any selected series holds, and no series is named as left out at it. A select value the frame holds no row for is dropped from a rolling selection and
 named, where a selection of fixed periods refuses it.
 
 A frame anchor's left-out series are named only when the select admits them
@@ -34,7 +36,7 @@ from dfo_frame_grammar import (
     shift_period,
 )
 
-from assembler.bind import _label
+from assembler.bind import _label, selects_per_period
 from assembler.errors import BindingInvalid
 from assembler.frame_view import dimension_columns, facet_dimension_names, hashable_cell
 from assembler.ports import LeftOutSeries, NamedSeries, ResolvedFrame, RollingAnchor
@@ -245,7 +247,8 @@ def _anchor_of_selection(
     selectors: Sequence[Mapping[str, object]],
     pointer: str,
 ) -> tuple[str, tuple[NamedSeries, ...]]:
-    """The anchor over the selected series, and those with no row at it."""
+    """The anchor over the selected series, and those with no row at it. A frame keeping a
+    selection in each period pools the selected series into one."""
     series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=None)
     population = {
         one.id: [
@@ -253,6 +256,10 @@ def _anchor_of_selection(
         ]
         for one in series
     }
+    if selects_per_period(resolved_frame=resolved_frame):
+        # A series without a row in a period was not chosen there, so "latest" is the newest
+        # period any selected series holds, and no series is left out at it.
+        population = {"selected": [period for periods in population.values() for period in periods]}
     try:
         found = latest_anchor([population])
     except (RollingError, FrameError) as exc:

@@ -35,6 +35,7 @@ from pydantic.experimental.missing_sentinel import MISSING
 from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
+from description.steps import Step
 from materialise.unit_cells import composed_unit_sides
 
 __all__ = [
@@ -102,19 +103,30 @@ def bind_series(
 
 
 def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
-    """Whether a step that computed the frame keeps a selection of entities in each period: a
-    `rank` over each period on its own (`per_period`) with a `limit`, which keeps each
-    period's top or bottom entities. A `rank` without a `limit` keeps every entity, and one
-    over the whole window writes a single period. A frame without a description record, or
-    whose record holds no steps, keeps none."""
+    """Whether the frame keeps a selection of entities in each period: walking back from its
+    record's last step through each step's one earlier step (`input`), a `rank` over each
+    period on its own (`per_period`) with a `limit` is reached, which keeps each period's top
+    or bottom entities. The walk stops at a step reading several inputs (`inputs`), whose
+    output need not hold only the ranked side's entities, and at a version. A `rank` without a
+    `limit` keeps every entity, and one over the whole window writes a single period. A frame
+    without a description record, or whose record holds no steps, keeps none."""
     record = resolved_frame.description_record
-    return record is not None and any(
-        step.op == "rank"
-        and step.params is not MISSING
-        and step.params.get("per_period") is True
-        and "limit" in step.params
-        for step in record.known_steps
-    )
+    known = record.known_steps if record is not None else []
+    if not known:
+        return False
+    # A step's `input` names an earlier step, so the walk ends.
+    by_id = {step.id: step for step in known}
+    step: Step | None = known[-1]
+    while step is not None:
+        if (
+            step.op == "rank"
+            and step.params is not MISSING
+            and step.params.get("per_period") is True
+            and "limit" in step.params
+        ):
+            return True
+        step = by_id.get(step.input) if isinstance(step.input, str) else None
+    return False
 
 
 def count_selected_points(

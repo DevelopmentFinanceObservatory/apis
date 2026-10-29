@@ -1063,7 +1063,9 @@ def test_a_cards_description_counts_the_series_it_draws(
 _TOP_DONOR_FRAME = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
 _IDA = "InternationalDevelopmentAssociation"
 _USA = "country/USA"
+_GBR = "country/GBR"
 _IDA_NAME = "International Development Association"
+_GBR_NAME = "United Kingdom"
 _USA_NAME = "United States of America"
 # Each year's top donor of net ODA to Kenya, as the deployed per-period rank kept it.
 _TOP_DONOR_BY_YEAR = (
@@ -1110,12 +1112,13 @@ def _top_donor_table(
     release_registry,
     *,
     steps: Sequence[Mapping[str, object]] | None,
-    years: Sequence[str] = tuple(year for year, _, _ in _TOP_DONOR_BY_YEAR),
-    window: Mapping[str, str],
+    top_donors: Sequence[tuple[str, str, float]] = _TOP_DONOR_BY_YEAR,
+    years: Sequence[str] | None = None,
+    window: Mapping[str, object],
 ) -> WriteReply:
-    """A table naming both donors over `window`, from a frame holding each year's top donor
-    to Kenya in `years`, computed by `steps` after its retrieve, or with no description record
-    when `steps` is `None`."""
+    """A table naming every donor of `top_donors` over `window`, from a frame holding each
+    year's top donor to Kenya in `years`, by default every year, computed by `steps` after
+    its retrieve, or with no description record when `steps` is `None`."""
     frame = _described(
         build_resolved_frame(
             frame_ref=_TOP_DONOR_FRAME,
@@ -1130,10 +1133,10 @@ def _top_donor_table(
                     "measurementMethod": None,
                     "provenance": None,
                 }
-                for year, provider, value in _TOP_DONOR_BY_YEAR
-                if year in years
+                for year, provider, value in top_donors
+                if years is None or year in years
             ],
-            labels={_IDA: _IDA_NAME, _USA: _USA_NAME},
+            labels={_IDA: _IDA_NAME, _USA: _USA_NAME, _GBR: _GBR_NAME},
         ),
         None if steps is None else computed_record(frame_ref=_TOP_DONOR_FRAME, steps=steps),
     )
@@ -1144,7 +1147,7 @@ def _top_donor_table(
             "table",
             select={
                 "stat_var": "dcid:MalariaGrantDisbursements",
-                "financingProvider": [_IDA, _USA],
+                "financingProvider": list(dict.fromkeys(one for _, one, _ in top_donors)),
             },
             window=window,
         ),
@@ -1182,6 +1185,18 @@ def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]
                 ("2022", _IDA_NAME, 938_795_140.0),
             ],
             id="top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, {**_VALUE_FILTER, "id": "s3", "input": "s2"}],
+            ("2018", "2019", "2020", "2021", "2022"),
+            [
+                ("2018", _USA_NAME, 829_231_420.0),
+                ("2019", _IDA_NAME, 1_357_452_310.0),
+                ("2020", _IDA_NAME, 1_570_237_409.0),
+                ("2021", _IDA_NAME, 1_151_749_460.0),
+                ("2022", _IDA_NAME, 938_795_140.0),
+            ],
+            id="filter-over-a-per-period-top-one",
         ),
         pytest.param(
             [_TOP_ONE],
@@ -1232,16 +1247,30 @@ def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]
             _PADDED,
             id="whole-window-rank",
         ),
+        pytest.param(
+            [
+                _TOP_ONE,
+                {
+                    "id": "s3",
+                    "op": "share_of",
+                    "inputs": {"denominator": "s2", "numerator": "s1"},
+                },
+            ],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _PADDED,
+            id="share-over-a-per-period-top-one",
+        ),
     ],
 )
 def test_a_table_over_a_per_period_top_one_lists_the_donors_each_year_kept(
     frame_store, revision_store, release_registry, steps, years, cells
 ):
-    """A per-period top one leaves a donor out of a year another donor holds, so the table
-    lists only the frame's rows there. A year no donor holds is a gap in the data and keeps a
+    """A per-period top one, or a step reading only its output, leaves a donor out of a year
+    another donor holds, so the table lists only the frame's rows there. A year no donor holds is a gap in the data and keeps a
     missing row per donor. A frame that selects nothing in each period, whether a filter, a
-    retrieve alone, a rank without a limit or over the whole window computed it, or whose
-    steps are unknown, pads every absent year."""
+    retrieve alone, a rank without a limit or over the whole window computed it, or a share
+    over a top one, which reads every donor's own values, or whose steps are unknown, pads
+    every absent year."""
     created = _top_donor_table(
         frame_store,
         revision_store,
@@ -1278,6 +1307,37 @@ def test_a_table_over_a_per_period_top_one_describes_only_the_donors_it_lists(
     assert select_step["params"]["window"] == {"start": "2019", "end": "2022"}
     assert select_step["kept"] == {"series": 1}
     assert description["about"]["drawn"]["series"] == 1
+
+
+def test_a_rolling_table_over_a_per_period_top_one_ends_at_the_newest_year_a_donor_leads(
+    frame_store, revision_store, release_registry
+):
+    """No year after 2018 has two of the three donors at the top, so "latest" over the donors
+    is the newest year any of them leads, 2021, and no donor is named as left out there."""
+    created = _top_donor_table(
+        frame_store,
+        revision_store,
+        release_registry,
+        steps=[_TOP_ONE],
+        top_donors=(
+            ("2018", _IDA, 3.0),
+            ("2018", _USA, 3.0),
+            ("2019", _IDA, 3.0),
+            ("2020", _USA, 4.0),
+            ("2021", _GBR, 4.0),
+        ),
+        window={
+            "start": {"anchor": "latest", "offset": -2},
+            "end": {"anchor": "latest", "offset": 0},
+        },
+    )
+    payload = created.resolved_payload
+    assert _table_cells(payload) == [
+        ("2019", _IDA_NAME, 3.0),
+        ("2020", _USA_NAME, 4.0),
+        ("2021", _GBR_NAME, 4.0),
+    ]
+    assert _description(payload)["caveats"] == []
 
 
 _MALARIA_CONTROL = "CRSPurposeCode12262"
