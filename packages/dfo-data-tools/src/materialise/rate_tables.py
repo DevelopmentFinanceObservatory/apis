@@ -18,8 +18,10 @@ raises `UpstreamVersionChangedError`. The admitted table's version is a
 SHA-256 digest of its rows, values included, so two loads of the same served
 rows carry the same version whatever the refresh date says. The table also
 carries the refresh date it was admitted under, which head reuse compares with
-the live date. The thread-safe cache keys tables by StatVar, provenance, and
-refresh date, so recipes that read one table share one fetch.
+the live date. The thread-safe cache keys tables by StatVar, provenance, refresh
+date and the bound graph release's import key (`Release.imported_data`), so
+recipes that read one table share one fetch, and a table re-imported on the day
+of an earlier import, whose refresh date does not move, is fetched again.
 
 `RateTableCache.for_request` returns a `RequestRateTables` view. The view pins
 the first table admitted for each StatVar and provenance, and every later load
@@ -44,6 +46,7 @@ import pyarrow as pa
 
 from dc_sdmx import SdmxClient, SdmxQueryError
 from dc_sdmx.results import SdmxObservation
+from graph_release.context import bound_release_or_none
 from materialise.errors import (
     MaterialisationError,
     UpstreamResponseError,
@@ -172,16 +175,22 @@ def _table_digest(table: pa.Table) -> str:
     return hasher.hexdigest()
 
 
+def _bound_import() -> str | None:
+    """The bound graph release's import key, or `None` with no release bound."""
+    release = bound_release_or_none()
+    return release.imported_data if release is not None else None
+
+
 class RateTableCache:
-    """Thread-safe process-wide cache keyed by StatVar, table provenance, and
-    `lastDataRefreshDate`. Admitted tables remain cached for the process
-    lifetime. When two loads race on one key, the first admitted table wins
-    and both callers receive it.
+    """Thread-safe process-wide cache keyed by StatVar, table provenance,
+    `lastDataRefreshDate` and the bound release's import key. Admitted tables
+    remain cached for the process lifetime. When two loads race on one key, the
+    first admitted table wins and both callers receive it.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._entries: dict[tuple[str, str, str], RateTable] = {}
+        self._entries: dict[tuple[str, str, str, str | None], RateTable] = {}
 
     def pinned(self, *, stat_var: str, provenance_id: str) -> RateTable | None:
         """The table this request already holds for the pair. The process
@@ -190,14 +199,15 @@ class RateTableCache:
         return None
 
     def get(self, *, stat_var: str, provenance_id: str, refresh_date: str) -> RateTable | None:
+        key = (stat_var, provenance_id, refresh_date, _bound_import())
         with self._lock:
-            return self._entries.get((stat_var, provenance_id, refresh_date))
+            return self._entries.get(key)
 
     def admit(self, table: RateTable) -> RateTable:
-        """Cache `table` under its own refresh date unless that key already
-        holds a table, and return the cached one.
+        """Cache `table` under its own refresh date and the bound import unless
+        that key already holds a table, and return the cached one.
         """
-        key = (table.stat_var, table.provenance_id, table.refresh_date)
+        key = (table.stat_var, table.provenance_id, table.refresh_date, _bound_import())
         with self._lock:
             return self._entries.setdefault(key, table)
 

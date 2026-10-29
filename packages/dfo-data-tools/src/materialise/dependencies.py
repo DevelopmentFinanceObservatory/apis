@@ -13,12 +13,13 @@ unchanged definition, each member a token that exists today.
 - `latest_years`: for each member of a `latest` run, the year the coverage index elected for
   it and the year its rows hold, with the facets and omitted entities the election counted
   (`window.LatestYear`).
-- `imported_data`: the bound graph release's digest of the import it copied
-  (`graph_release.format.Manifest.imported_data`) when every provenance the run read, rate
-  tables included, is one the bound origin catalogue lists as DFO's, or `None` when any is not
-  (`run_imported_data`). A DFO provenance's rows reach the mixer only through an import, and
-  every import that lands moves the digest, so an unchanged digest means unchanged rows. Base
-  Data Commons and UN rows move without one.
+- `imported_data`: the bound graph release's digest of the import it copied and the serving
+  views a mint reads (`graph_release.service.Release.imported_data`) when only DFO holds each
+  member StatVar and every provenance the run read, rate tables included, is one the bound
+  origin catalogue lists as DFO's, or `None` otherwise (`run_imported_data`). A DFO
+  provenance's rows reach the mixer only through an import, and every import that lands moves
+  the digest, so an unchanged digest means unchanged rows. Base Data Commons and UN rows move
+  without one, and a base or UN holder of a member could win its facet election.
 
 The graph serving revision is not a member: it moves on every graph restart. Materialisation
 builds the fingerprint from what the run dispatched (`build_dependencies`), so every entry
@@ -141,20 +142,27 @@ def _latest_members(
     }
 
 
-def run_imported_data(provenances: Iterable[str]) -> str | None:
-    """The bound graph release's `imported_data` digest when `provenances` is not empty and
-    the bound origin catalogue lists each as DFO's, else `None`. Also `None` with no release
-    bound."""
+def run_imported_data(*, stat_vars: Iterable[str], provenances: Iterable[str]) -> str | None:
+    """The bound graph release's `imported_data` digest when the bound origin catalogue names
+    DFO alone as holding each of `stat_vars` and lists each of `provenances`, which must not be
+    empty, as DFO's. Otherwise `None`, and also `None` with no release bound.
+
+    Holding is the catalogue's `data_commons`, every origin with admitted data for the
+    StatVar at any place, so a base or UN facet that facet election could rank above DFO's
+    (`facets.rank_candidates`, `facets.dfo_precedence`) unkeys the run whatever it
+    dispatched."""
     release = bound_release_or_none()
     refs = set(provenances)
     if release is None or not refs:
         return None
     catalogue = current_catalogue()
+    if any(catalogue.data_commons(bare_stat_var_ref(ref)) != (DFO,) for ref in set(stat_vars)):
+        return None
     for ref in refs:
         row = catalogue.provenance(ref)
         if row is None or row.data_commons != DFO:
             return None
-    return release.manifest.imported_data
+    return release.imported_data
 
 
 def build_dependencies(
@@ -170,7 +178,7 @@ def build_dependencies(
     (`MaterialisationResult.latest_years`). `provenance_refresh` holds each dispatched
     provenance's refresh dates; a ref it lacks records no date. The requests of one run share
     one window, so the first request's gives `window`. `imported_data` is `run_imported_data`
-    over the sources and rate table provenances."""
+    over the requests' StatVars and the sources and rate table provenances."""
     records = [record for record in conversion_records if record is not None]
     sources: dict[str, str | None] = {}
     for ref in source_refs:
@@ -187,7 +195,10 @@ def build_dependencies(
         recipes=tuple(sorted(recipes.items())),
         window=_clock_window(requests[0].window),
         latest_years=tuple(sorted(_latest_members(requests, latest_years).items())),
-        imported_data=run_imported_data(sources.keys() | conversion_sources.keys()),
+        imported_data=run_imported_data(
+            stat_vars=(request.stat_var for request in requests),
+            provenances=sources.keys() | conversion_sources.keys(),
+        ),
     )
 
 

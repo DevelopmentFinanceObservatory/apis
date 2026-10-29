@@ -853,8 +853,10 @@ def _dependencies(
     """Every component's fingerprint as one: its members over every component, and each
     source, conversion source, recipe and latest year any component recorded. The window
     is the first component's, as `dependencies.refreshed_dependencies` reads the first
-    request's."""
+    request's. `imported_data` is the components' when every one records the same key, and
+    `None` when any records none or another."""
     fingerprints = [component.result.dependencies for component in components]
+    imported = {fingerprint.imported_data for fingerprint in fingerprints}
 
     def merged(name: str) -> tuple[tuple[str, object], ...]:
         pairs: dict[str, object] = {}
@@ -869,6 +871,7 @@ def _dependencies(
         recipes=cast("tuple[tuple[str, str | None], ...]", merged("recipes")),
         window=fingerprints[0].window,
         latest_years=cast("tuple", merged("latest_years")),
+        imported_data=imported.pop() if len(imported) == 1 else None,
     )
 
 

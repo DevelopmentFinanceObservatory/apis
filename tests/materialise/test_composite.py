@@ -70,6 +70,7 @@ def _component(
     unserved: Sequence[str] = (),
     units: Mapping[str, object] | None = None,
     covered: Sequence[int] | None = None,
+    imported_data: str | None = None,
 ) -> ComponentResult:
     """One component's result over `rows`, as `pipeline.materialise_group` returns it, with
     `unserved` the members its facet group election left out and its warning counting them.
@@ -167,6 +168,7 @@ def _component(
             conversion_sources=(),
             recipes=(),
             window=None,
+            imported_data=imported_data,
         ),
     )
     return ComponentResult(
@@ -399,6 +401,37 @@ def test_every_row_carries_the_composite_provenance_and_the_trace_names_each_com
     assert _summary(result, "bilateral")["content_version"] == bilateral.result.content_version
     assert result.content_version == mint_version_from_chunks(result.frame_chunks())
     assert [entry["ref"] for entry in result.trace.resolved_stat_vars] == [_B, _I]
+
+
+@pytest.mark.parametrize(
+    ("bilateral_key", "imputed_key", "expected"),
+    [
+        pytest.param("sha256:a", "sha256:a", "sha256:a", id="same-key"),
+        pytest.param("sha256:a", "sha256:b", None, id="different-keys"),
+        pytest.param("sha256:a", None, None, id="one-unkeyed"),
+    ],
+)
+def test_the_composite_keeps_the_import_key_only_when_every_component_shares_it(
+    bilateral_key, imputed_key, expected
+):
+    bilateral = _component(
+        _STACKED,
+        "bilateral",
+        [(_B, "country/KEN", 2012, 10.0)],
+        provenance=_CRS,
+        members=[_B],
+        imported_data=bilateral_key,
+    )
+    imputed = _component(
+        _STACKED,
+        "imputed",
+        [(_I, "country/KEN", 2012, 1.0)],
+        provenance=_IMPUTED,
+        members=[_I],
+        imported_data=imputed_key,
+    )
+
+    assert _compose([bilateral, imputed]).dependencies.imported_data == expected
 
 
 def test_the_composed_frame_records_each_components_measurement_method_under_one_unit():

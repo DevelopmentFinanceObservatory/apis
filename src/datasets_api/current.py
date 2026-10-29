@@ -9,9 +9,9 @@ compare-and-set in the run's transaction (`HeadStore.advance_head`). Every head,
 version, and operation is keyed on the served definition's `spec_id`, the one
 `kinds.spec_id.resolve_served_definition` returns.
 
-A head whose run was keyed on the data an import left (`imported_data`,
-`materialise.dependencies.run_imported_data`) rebuilds once the bound graph release carries
-another import's, inside the recheck window or past it. Otherwise a head is current for
+A head whose run was keyed on an import (`imported_data`, the release's import key that
+`materialise.dependencies.run_imported_data` records) rebuilds once the bound graph release
+carries another key, inside the recheck window or past it. Otherwise a head is current for
 `head_recheck_interval` after it was confirmed, with no read. Past that window, a head whose
 `materialised_at` is older than its maximum age rebuilds: `head_max_age`, or
 `head_imported_data_max_age_seconds` for a head keyed on the bound release's import.
@@ -48,8 +48,8 @@ request sent, hedge duplicates included. A read that hedges also counts `sdmx_he
 duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response won
 (`SdmxClient`). The reason is the fingerprint members that differed, joined by commas
 (`dependency_changes`), `schema` for a head with no readable fingerprint, `imported_data`
-for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or `unservable` for a current
-head that cannot answer the call.
+for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or
+`unservable` for a current head that cannot answer the call.
 """
 
 from __future__ import annotations
@@ -1040,7 +1040,7 @@ def _import_replaced(head: SubjectHead) -> bool:
     carries. A head keyed on none, or a call with no release bound, has none to compare."""
     keyed = _head_import(head)
     bound = bound_release_or_none()
-    return keyed is not None and bound is not None and keyed != bound.manifest.imported_data
+    return keyed is not None and bound is not None and keyed != bound.imported_data
 
 
 def _max_age(head: SubjectHead, *, deps: DefinitionDeps) -> timedelta:

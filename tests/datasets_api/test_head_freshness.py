@@ -5,9 +5,10 @@ stored source refs' `lastDataRefreshDate` builds the current fingerprint and
 `dependency_changes` compares it with the head's: a match confirms the head with no SDMX
 request, and a mismatch rebuilds. A head older than `head_max_age` rebuilds regardless, and a
 head stored with no fingerprint rebuilds once. A head whose sources are all DFO's records the
-import the bound graph release copied (`Manifest.imported_data`), serves past `head_max_age`
-while the bound release carries that import, whatever its builder or DC serving revision, up
-to `head_imported_data_max_age_seconds`, and rebuilds once it carries another. Each serve's
+import key of the bound graph release (`Release.imported_data`), serves past `head_max_age`
+while the bound release carries that key, whatever its builder or DC serving revision, up to
+`head_imported_data_max_age_seconds`, and rebuilds once it carries another. A head over a
+StatVar base Data Commons also holds records no key. Each serve's
 `datasets.timings` labels name the `rebuild_reason` and count `sdmx_requests` and
 `graph_requests`.
 
@@ -19,9 +20,11 @@ The materialiser, `serve_current` and the head store are real. The graph is
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import override
 
 import httpx
 import pytest
@@ -38,18 +41,20 @@ from dc_sdmx import SdmxClient
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration
 from graph_release.context import bound_release, current_release
-from graph_release.format import PLATFORM
+from graph_release.format import PartRef
 from graph_release.service import Release
+from graph_release.views import CODE_INDEX_PART, DECLARATIONS_PART
 from materialise import EnrichmentLookup, MaterialisationRequest
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.window import RequestedWindow
 from origin_catalogue import Catalogue
-from origin_catalogue.origins import DFO
+from origin_catalogue.origins import BASE, DFO, DataCommons
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
+from tests.graph_release.support import release_with
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from ._graph_doubles import FakeMintGraphReader
@@ -64,7 +69,23 @@ _REFRESH_DATE = "2026-10-07"
 _RECHECK = timedelta(seconds=900)
 _MAX_AGE = timedelta(hours=24)
 _START = datetime(2026, 10, 11, 9, 0, tzinfo=UTC)
-_DFO_SOURCE = FakeCatalogue(provenances={_PROVENANCE: provenance_row(_PROVENANCE, DFO)})
+_DFO_SOURCE = FakeCatalogue(
+    provenances={_PROVENANCE: provenance_row(_PROVENANCE, DFO)},
+    dfo_variables=frozenset({_STAT_VAR}),
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class _HeldByDfoAndBase(FakeCatalogue):
+    """Lists the StatVar under DFO and base Data Commons, as the origin catalogue's overlap set
+    does for a StatVar both hold."""
+
+    @override
+    def data_commons(self, variable: str) -> tuple[DataCommons, ...]:
+        return (DFO, BASE)
+
+
+_OVERLAP = _HeldByDfoAndBase(provenances={_PROVENANCE: provenance_row(_PROVENANCE, DFO)})
 _RECIPE_ID = next(iter(sorted(RECIPE_BODIES)))
 
 
@@ -309,34 +330,52 @@ def _import_max_age(rig: _Rig) -> timedelta:
     return timedelta(seconds=rig.deps.settings.head_imported_data_max_age_seconds)
 
 
-def _rebuilt_release(**changes: object) -> Release:
-    """The bound release with its manifest changed by `changes`, served by no service."""
-    release = current_release()
-    manifest = dataclasses.replace(release.loaded.manifest, **changes)
-    loaded = dataclasses.replace(release.loaded, manifest=manifest)
-    return dataclasses.replace(release, loaded=loaded, service=None)
+def _role_axes_moved() -> dict[str, bytes]:
+    """The bound release's `declarations` part with one role axis changed."""
+    declarations = json.loads(current_release().loaded.blobs[DECLARATIONS_PART])
+    role, axis = next(iter(sorted(declarations["role_axes"].items())))
+    declarations["role_axes"][role] = "destination" if axis != "destination" else "origin"
+    return {DECLARATIONS_PART: json.dumps(declarations).encode()}
+
+
+def _part_moved(name: str) -> tuple[PartRef, ...]:
+    """The bound release's parts with the part `name` given another hash."""
+    parts = current_release().manifest.parts
+    assert any(ref.name == name for ref in parts)
+    return tuple(
+        dataclasses.replace(ref, sha256="f" * 64) if ref.name == name else ref for ref in parts
+    )
 
 
 def _redeployed() -> Release:
-    """A release of the same import from another builder and DC serving revision: every DFO
-    part rebuilt, every platform part as it was."""
-    bound = current_release()
-    redeployed = _rebuilt_release(
+    """A release of the same import from another builder and DC serving revision, its
+    `declarations` text and `base_parties` part rebuilt, the code index and role axes as they
+    were."""
+    redeployed = release_with(
         dc_serving_revision="dc-serving-next",
         builder_code_hash="b" * 64,
         declarations_hash="d" * 64,
         parts=tuple(
-            ref if ref.layer == PLATFORM else dataclasses.replace(ref, sha256="f" * 64)
-            for ref in bound.manifest.parts
+            dataclasses.replace(ref, sha256="f" * 64)
+            if ref.name in {DECLARATIONS_PART, "base_parties"}
+            else ref
+            for ref in current_release().manifest.parts
         ),
     )
-    assert any(ref.layer != PLATFORM for ref in bound.manifest.parts)
-    assert redeployed.release_id != bound.release_id
+    assert redeployed.release_id != current_release().release_id
     return redeployed
 
 
 def _imported() -> Release:
-    return _rebuilt_release(import_execution_id="import-next")
+    return release_with(import_execution_id="import-next")
+
+
+def _code_index_rebuilt() -> Release:
+    return release_with(parts=_part_moved(CODE_INDEX_PART))
+
+
+def _role_axes_rebuilt() -> Release:
+    return release_with(blobs=_role_axes_moved())
 
 
 def _base_source(rig: _Rig) -> timedelta:
@@ -346,7 +385,7 @@ def _base_source(rig: _Rig) -> timedelta:
 
 
 def _keyed_past_the_import_backstop(rig: _Rig) -> timedelta:
-    assert rig.head_dependencies()["imported_data"] == current_release().manifest.imported_data
+    assert rig.head_dependencies()["imported_data"] == current_release().imported_data
     return _import_max_age(rig)
 
 
@@ -385,6 +424,27 @@ def test_a_head_older_than_the_maximum_age_rebuilds(
     assert rig.transport.requests > 0
 
 
+def test_an_unpinned_head_over_a_statvar_base_also_holds_keeps_the_day_limit(
+    version_store, bind_catalogue
+):
+    """Election ranks every admitted facet of an unpinned request's StatVar, so a base facet
+    that gains a requested country can win it with no import of ours. The head records no
+    import key, and two days on it rebuilds on age."""
+    bind_catalogue(_OVERLAP)
+    rig = _Rig(version_store, dated=True)
+    unpinned = replace(rig.request, facet_bindings={})
+    minted, _ = rig.serve(unpinned)
+    assert minted.trace["served_from"] == "materialise"
+    assert "imported_data" not in rig.head_dependencies()
+    rig.clock.at += timedelta(days=2)
+    rig.reset_counts()
+
+    manifest, fields = rig.serve(unpinned)
+
+    assert manifest.trace["served_from"] == "materialise"
+    assert fields["rebuild_reason"] == "max_age"
+
+
 @pytest.mark.parametrize(
     "release", [current_release, _redeployed], ids=["same-release", "redeployed-release"]
 )
@@ -394,7 +454,7 @@ def test_a_head_keyed_on_the_bound_import_serves_past_the_maximum_age(
     bind_catalogue(_DFO_SOURCE)
     rig = _Rig(version_store, dated=True)
     minted, _ = rig.serve()
-    assert rig.head_dependencies()["imported_data"] == current_release().manifest.imported_data
+    assert rig.head_dependencies()["imported_data"] == current_release().imported_data
     rig.clock.at += _import_max_age(rig) - timedelta(seconds=1)
     rig.reset_counts()
 
@@ -412,8 +472,13 @@ def test_a_head_keyed_on_the_bound_import_serves_past_the_maximum_age(
     [_RECHECK - timedelta(seconds=1), _MAX_AGE + timedelta(seconds=1)],
     ids=["inside-recheck-window", "past-maximum-age"],
 )
+@pytest.mark.parametrize(
+    "release",
+    [_imported, _code_index_rebuilt, _role_axes_rebuilt],
+    ids=["new-import", "new-code-index", "new-role-axes"],
+)
 def test_a_head_keyed_on_a_replaced_import_rebuilds_and_records_the_new_one(
-    version_store, bind_catalogue, elapsed: timedelta
+    version_store, bind_catalogue, elapsed: timedelta, release: Callable[[], Release]
 ):
     bind_catalogue(_DFO_SOURCE)
     rig = _Rig(version_store, dated=True)
@@ -421,14 +486,14 @@ def test_a_head_keyed_on_a_replaced_import_rebuilds_and_records_the_new_one(
     rig.clock.at += elapsed
     rig.reset_counts()
 
-    with bound_release(_imported()) as published:
+    with bound_release(release()) as published:
         manifest, fields = rig.serve()
 
     assert manifest.trace["served_from"] == "materialise"
     assert fields["rebuild_reason"] == "imported_data"
     assert rig.transport.requests > 0
-    assert published.manifest.imported_data != current_release().manifest.imported_data
-    assert rig.head_dependencies()["imported_data"] == published.manifest.imported_data
+    assert published.imported_data != current_release().imported_data
+    assert rig.head_dependencies()["imported_data"] == published.imported_data
 
 
 def _drop_fingerprint(rig: _Rig) -> None:

@@ -3,7 +3,6 @@ manifest refusals and the download hash check."""
 
 from __future__ import annotations
 
-import dataclasses
 import gzip
 import hashlib
 import itertools
@@ -131,61 +130,6 @@ def test_manifest_round_trips_through_json():
     )
 
     assert Manifest.from_json(manifest.to_json()) == manifest
-
-
-def _part(name: str, layer: str, sha256: str) -> PartRef:
-    return PartRef(
-        name=name,
-        layer=layer,
-        sha256=sha256,
-        bytes=10,
-        rows=None,
-        columns=(),
-        source="test",
-        produced_by_execution="execution",
-    )
-
-
-_SERIES = _part("series", release_format.PLATFORM, "1" * 64)
-_DECLARATIONS = _part("declarations", release_format.DFO, "2" * 64)
-_KEYED = Manifest(
-    import_execution_id="execution",
-    import_completed_at="2026-10-18T23:50:00+00:00",
-    ingested_imports=("ImportA",),
-    read_timestamp="2026-10-19T00:00:00+00:00",
-    dc_serving_revision="revision",
-    builder_code_hash="code",
-    declarations_hash="declarations",
-    parts=(_SERIES, _DECLARATIONS),
-)
-
-
-@pytest.mark.parametrize(
-    ("changes", "moves"),
-    [
-        pytest.param({"dc_serving_revision": "revision-2"}, False, id="serving-revision"),
-        pytest.param(
-            {"builder_code_hash": "code-2", "declarations_hash": "declarations-2"},
-            False,
-            id="builder",
-        ),
-        pytest.param(
-            {"parts": (_SERIES, _part("declarations", release_format.DFO, "3" * 64))},
-            False,
-            id="dfo-part",
-        ),
-        pytest.param({"import_execution_id": "execution-2"}, True, id="import"),
-        pytest.param(
-            {"parts": (_part("series", release_format.PLATFORM, "4" * 64), _DECLARATIONS)},
-            True,
-            id="platform-part",
-        ),
-    ],
-)
-def test_imported_data_moves_with_the_import_and_its_platform_parts_alone(changes, moves):
-    changed = dataclasses.replace(_KEYED, **changes)
-
-    assert (changed.imported_data != _KEYED.imported_data) is moves
 
 
 def test_row_order_and_dictionary_order_do_not_change_part_bytes(tmp_path):

@@ -334,21 +334,6 @@ class Manifest:
             format_version=self.format,
         )
 
-    @cached_property
-    def imported_data(self) -> str:
-        """`sha256:` and the hex digest of the import execution id and the sorted hashes of
-        the platform parts (`series`, `facets`, `edges`, `nodes`, `imports`), the copy of Spanner
-        the import left. It moves when an ingestion lands, or when a builder change alters that
-        copy (the authored rows, the visibility rule). A change that moves only the DFO parts
-        (`declarations`, `code_index_blocks`, `base_parties`) or the DC serving revision leaves
-        it alone, though each moves `release_id`."""
-        payload = {
-            "import_execution_id": self.import_execution_id,
-            "parts": sorted(ref.sha256 for ref in self.parts if ref.layer == PLATFORM),
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
-
     def to_json(self) -> bytes:
         """Serialises with sorted keys, so equal manifests give equal bytes."""
         payload = dataclasses.asdict(self) | {

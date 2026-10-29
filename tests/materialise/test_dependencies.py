@@ -264,14 +264,21 @@ def test_build_dependencies_records_what_the_run_dispatched():
 _TABLES = "provenance/Tables"
 
 
-def _keyed_run(source_origins: dict[str, DataCommons], tables: DataCommons) -> Dependencies:
+def _keyed_run(
+    source_origins: dict[str, DataCommons],
+    tables: DataCommons,
+    *,
+    held_by_dfo: bool = True,
+) -> Dependencies:
     """The fingerprint of a run over the sources `source_origins` names, converted under
     `_TABLES`, with the bound catalogue listing each provenance under the origin given."""
     record = _record(recipe_id=_RECIPE_ID, provenance=_TABLES, refresh="2026-09-30")
     rows = {ref: provenance_row(ref, origin) for ref, origin in source_origins.items()}
-    with bound_catalogue(
-        FakeCatalogue(provenances={**rows, _TABLES: provenance_row(_TABLES, tables)})
-    ):
+    catalogue = FakeCatalogue(
+        provenances={**rows, _TABLES: provenance_row(_TABLES, tables)},
+        dfo_variables=frozenset({_BARE_STAT_VAR} if held_by_dfo else ()),
+    )
+    with bound_catalogue(catalogue):
         return build_dependencies(
             [_request(_STAT_VAR, RequestedWindow(kind="all"))],
             source_refs=source_origins,
@@ -295,7 +302,7 @@ def test_a_run_keys_on_the_bound_import_only_when_every_provenance_is_dfos(
 ):
     dependencies = _keyed_run(source_origins, tables)
 
-    expected = current_release().manifest.imported_data if keyed else None
+    expected = current_release().imported_data if keyed else None
     assert dependencies.imported_data == expected
     assert dependencies.as_json().get("imported_data") == expected
     assert decode_dependencies(dependencies.as_json()) == dependencies
@@ -312,6 +319,12 @@ def test_a_provenance_the_catalogue_does_not_list_keys_on_no_import():
         )
 
     assert dependencies.imported_data is None
+
+
+def test_a_run_over_a_statvar_another_origin_holds_keys_on_no_import():
+    """The fake catalogue names base as holding every StatVar outside `dfo_variables`, so a
+    base facet could win the member's election though the run dispatched DFO's."""
+    assert _keyed_run({"provenance/X": DFO}, DFO, held_by_dfo=False).imported_data is None
 
 
 @pytest.mark.unbound_release
