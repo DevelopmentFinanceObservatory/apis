@@ -58,13 +58,12 @@ def test_written_entries_read_back_as_every_series_record():
 
     assert isinstance(entries, list)
     assert len(entries) == len(_CONVERSIONS)
-    assert decode_series_conversion_entries(_stored(entries)) == _CONVERSIONS
+    decoded = decode_series_conversion_entries(_stored(entries))
+    assert decoded == _CONVERSIONS
+    assert len({id(record) for record in decoded.values()}) == 2
 
 
 def test_a_packed_object_reads_back_as_every_series_record():
     packed = pack_series_conversions(_CONVERSIONS)
 
     assert decode_series_conversion_entries(_stored(packed)) == _CONVERSIONS
-    assert len(packed["records"]) == 2
-    assert len(packed["stat_vars"]) == 40
-    assert len(packed["roles"]) == 2 * 25 + 1

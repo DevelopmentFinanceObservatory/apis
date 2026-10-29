@@ -6,7 +6,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
-from materialise.series_conversion import RoleTuple, SeriesConversion, SeriesKey
+from materialise.series_conversion import (
+    RoleTuple,
+    SeriesConversion,
+    SeriesKey,
+    _record_entry,
+)
 
 
 def pack_series_conversions(
@@ -29,20 +34,7 @@ def pack_series_conversions(
         "stat_vars": list(positions["stat_vars"]),
         "roles": [[list(pair) for pair in cast(RoleTuple, roles)] for roles in positions["roles"]],
         "records": [
-            _record_fields(cast(SeriesConversion, record)) for record in positions["records"]
+            _record_entry(cast(SeriesConversion, record)) for record in positions["records"]
         ],
         "series": series,
-    }
-
-
-def _record_fields(conversion: SeriesConversion) -> dict[str, object]:
-    return {
-        "recipe_id": conversion.recipe_id,
-        "table_provenance_id": conversion.table_provenance_id,
-        "exchange_rate_table_version": conversion.exchange_rate_table_version,
-        "deflator_table_version": conversion.deflator_table_version,
-        "fallback_count": conversion.fallback_count,
-        "fallback_examples": [list(pair) for pair in conversion.fallback_examples],
-        "projected_count": conversion.projected_count,
-        "projected_examples": list(conversion.projected_examples),
     }
