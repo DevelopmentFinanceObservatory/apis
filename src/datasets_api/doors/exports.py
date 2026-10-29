@@ -9,7 +9,7 @@
   `pin` allowance, so data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`.
 - `GET /api/datasets/exports/{export_id}` answers 302 to a URL signed for five minutes to the
   export's pinned file, with `Cache-Control: no-store`. It admits every caller and never
-  renders.
+  renders. A version revoked since the export was prepared refuses `snapshot_revoked`.
 
 The prepare (`build_exports_door`) binds the `datasets.exports` registry endpoint and the link
 (`build_export_link_door`) `datasets.export_link`.
@@ -220,6 +220,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
         classify=classify_files_exception,
         exception_types=(
             ExportNotFound,
+            SnapshotRevoked,
             LicenceNotRedistributable,
             ExportBackpressure,
             SnapshotSigningFailed,
@@ -229,6 +230,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
         ),
         exception_exemplars=(
             ExportNotFound(export_id="exp_exemplar"),
+            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
             LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
             ExportBackpressure(),
             SnapshotSigningFailed(

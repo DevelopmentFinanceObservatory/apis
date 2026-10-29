@@ -16,8 +16,13 @@ concurrent prepares of one request compute one id, and, since every render is de
 the second copy finds the pinned bytes stored and gives its units back, and the second record
 write returns the first's row.
 
-The export link (`sign_export`) reads the record and signs a URL to the pinned copy. It never
-renders. The pinned tier never expires its objects, so a link keeps working.
+The export link (`sign_export`) reads the record, refuses a version revoked since the prepare,
+and signs a URL to the pinned copy. It never renders. The pinned tier never expires its objects,
+so a link keeps working until its version is taken down.
+
+The record keys the version by the id it is recorded under, the served id for a dataset the
+request named by a posted id (`doors.snapshot.read_under_served_id`), as a pin's reference does.
+The facts name the frame as the request did.
 
 Refusals:
 
@@ -49,7 +54,7 @@ import rfc8785
 from pydantic import BaseModel, ConfigDict, Field
 
 from artifact_store import ArtifactNotFoundError, ArtifactSigningError, Tier
-from dataset_store.snapshot import read_servable_version
+from dataset_store.snapshot import SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.codes_exports import (
@@ -287,6 +292,7 @@ def _prepare_dataset(
     return _record(
         request,
         export=export,
+        subject_id=stored.version.subject_id,
         digest=location.artifact_digest,
         bucket=bucket,
         object_name=object_name,
@@ -341,6 +347,7 @@ def _prepare_derived(
     return _record(
         request,
         export=export,
+        subject_id=frame.spec_id,
         digest=stored.digest,
         bucket=bucket,
         object_name=object_name,
@@ -358,6 +365,7 @@ def _record(
     request: ExportRequest,
     *,
     export: str,
+    subject_id: str,
     digest: str,
     bucket: str,
     object_name: str,
@@ -387,7 +395,7 @@ def _record(
     )
     return ExportRecord(
         export_id=export,
-        spec_id=request.frame.spec_id,
+        subject_id=subject_id,
         content_version=request.frame.content_version,
         artifact_digest=digest,
         bucket=bucket,
@@ -445,14 +453,32 @@ def sign_export(*, export_id: str, current: Deps) -> str:
     """A URL to the export's pinned file, signed for `DOWNLOAD_SIGNED_URL_TTL` and naming the
     download by its file name.
 
+    The version is read again first, so a takedown reaches the link as it reaches every other
+    file link: a revocation of the version or its base version under the id it is recorded
+    under, or under the id the request named, refuses.
+
     Raises:
         ExportNotFound: No export is recorded under `export_id`.
+        SnapshotRevoked: The version, or its base version, is revoked.
         LicenceNotRedistributable: The deny-list names a source of the export.
         SnapshotSigningFailed: Signing failed.
     """
     record = current.export_store.read_export(export_id)
     if record is None:
         raise ExportNotFound(export_id=export_id)
+    named = cast(Mapping[str, str], record.body["frame"])
+    with phase("revocation"):
+        state = current.snapshot_reader.read_version_state(
+            record.subject_id, record.content_version, revoked_under=(named["spec_id"],)
+        )
+    # Version records are never deleted, and the export row's foreign key names one.
+    assert state is not None
+    if state.revocation is not None:
+        raise SnapshotRevoked(
+            id=named["spec_id"],
+            content_version=record.content_version,
+            reason=state.revocation.reason,
+        )
     body = _servable_body(record)
     try:
         with phase("sign"):

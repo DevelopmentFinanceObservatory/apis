@@ -1,7 +1,7 @@
 """The export store keeps one row per prepared export in `datasets.export`, keyed by its
 `export_id` (`exports.export_id`).
 
-A row names the frame pair the export renders, the pinned copy of its file by digest, bucket
+A row names the version the export renders, under the id its record is keyed by, the pinned copy of its file by digest, bucket
 and object name, which the export link signs without another read, and `body`, the facts the
 prepare answered (`exports.ExportFacts`), sources and licences included, as they stood when the
 file was prepared.
@@ -26,10 +26,12 @@ from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
 @dataclass(frozen=True, kw_only=True)
 class ExportRecord:
-    """One prepared export: the frame pair, the pinned file's location and the prepare's facts."""
+    """One prepared export: the version it renders, the pinned file's location and the prepare's
+    facts. `subject_id` is the id the version is recorded under, the served id for a dataset
+    the request named by a posted id, while `body` names the frame as the request did."""
 
     export_id: str
-    spec_id: str
+    subject_id: str
     content_version: str
     artifact_digest: str
     bucket: str
@@ -85,7 +87,7 @@ class LiveExportStore:
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                     (
                         record.export_id,
-                        record.spec_id,
+                        record.subject_id,
                         record.content_version,
                         record.artifact_digest,
                         record.bucket,
@@ -111,7 +113,7 @@ class LiveExportStore:
 def _record(row: Mapping[str, object]) -> ExportRecord:
     return ExportRecord(
         export_id=cast(str, row["export_id"]),
-        spec_id=cast(str, row["subject_id"]),
+        subject_id=cast(str, row["subject_id"]),
         content_version=cast(str, row["content_version"]),
         artifact_digest=cast(str, row["artifact_digest"]),
         bucket=cast(str, row["bucket"]),

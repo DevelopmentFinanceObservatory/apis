@@ -96,7 +96,7 @@ class _Rig:
             inventory=LiveArtifactInventory(store=self.store)
         )
         self.signings = self.artifact_store.signings
-        spec_store = FakeDatasetStore()
+        self.spec_store = spec_store = FakeDatasetStore()
         self.client = make_client(
             registry=LiveSpecRegistry(store=spec_store),
             spec_reader=LiveSpecReader(store=spec_store),
@@ -133,6 +133,35 @@ class _Rig:
 
     def pinned_bytes(self, sha256: str) -> bytes:
         return self.artifact_store.get(artifact_digest=f"sha256:{sha256}", tier=Tier.pinned)
+
+    def bind_posted_id(self) -> str:
+        """Register a posted id the registry binds to the minted served id, as a resolution of
+        a posted definition does, and return it."""
+        posted = "spec_posted"
+        state = self.spec_store.state
+        [definition] = [
+            row for key, row in state.spec_definition.items() if key[0] == self.frame["spec_id"]
+        ]
+        state.spec_definition[(posted, 1)] = dict(definition)
+        state.spec_alias.append((posted, self.frame["spec_id"]))
+        return posted
+
+    def revoke(self, subject_id: str) -> None:
+        with self.store.transaction() as tx:
+            tx.execute(
+                "INSERT INTO datasets.version_revocation "
+                "(subject_id, content_version, reason, trace_id, revoked_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (subject_id, self.frame["content_version"], "taken down", None, "2026-10-30"),
+            )
+
+    def recorded_subject(self, export_id: str) -> str:
+        with self.store.transaction() as tx:
+            row = tx.fetch_one(
+                "SELECT subject_id FROM datasets.export WHERE export_id = %s", (export_id,)
+            )
+        assert row is not None
+        return str(row["subject_id"])
 
     def forget_exports(self) -> None:
         with self.store.transaction() as tx:
@@ -309,6 +338,55 @@ def test_an_unknown_version_refuses_snapshot_not_found(kind: str, monkeypatch):
 
     assert resp.status_code == 404, resp.text
     assert resp.json()["code"] == "snapshot_not_found"
+
+
+def test_a_posted_id_records_the_served_id_and_answers_the_frame_it_named(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The record's version is keyed by the id `version_record` holds, the served one, which the
+    row's foreign key needs; the facts and the export id keep the id the request named."""
+    rig = _Rig("fetched", monkeypatch)
+    served = rig.frame["spec_id"]
+    posted = rig.bind_posted_id()
+    frame = {**rig.frame, "spec_id": posted}
+
+    resp = rig.prepare("csv", frame=frame)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["frame"] == frame
+    assert body["export_id"] == _export_id(frame, "csv", bundle=False)
+    assert rig.recorded_subject(body["export_id"]) == served
+    assert rig.link(body["export_id"]).status_code == 302
+
+
+@pytest.mark.parametrize("revoked", ["served", "posted"])
+def test_a_version_revoked_after_its_export_refuses_the_link_and_signs_nothing(
+    revoked: str, monkeypatch: pytest.MonkeyPatch
+):
+    rig = _Rig("fetched", monkeypatch)
+    served = rig.frame["spec_id"]
+    posted = rig.bind_posted_id()
+    body = rig.prepare("csv", frame={**rig.frame, "spec_id": posted}).json()
+    rig.revoke(served if revoked == "served" else posted)
+
+    resp = rig.link(body["export_id"])
+
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["code"] == "snapshot_revoked"
+    assert rig.signings == []
+
+
+def test_a_revoked_derived_frame_refuses_its_export_link(monkeypatch: pytest.MonkeyPatch):
+    rig = _Rig("derived", monkeypatch)
+    body = rig.prepare("csv").json()
+    rig.revoke(rig.frame["spec_id"])
+
+    resp = rig.link(body["export_id"])
+
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["code"] == "snapshot_revoked"
+    assert rig.signings == []
 
 
 def test_a_source_on_the_licence_deny_list_refuses_the_prepare_and_the_link(
