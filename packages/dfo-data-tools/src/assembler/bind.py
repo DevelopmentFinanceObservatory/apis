@@ -105,12 +105,14 @@ def bind_series(
 # The input roles a step reading several inputs takes its output's rows from: a share or
 # quotient writes one row per numerator key, over the periods its denominator shares, and an
 # inner join one row per key both sides hold. A sum or comparison writes series of its own,
-# so it has none.
+# so it has none. A share or quotient whose `denominator_by` pairs each numerator key with a
+# denominator group also keeps a key only in its group's periods (`_keyed_denominator`).
 _ROW_SOURCE_ROLES: Final[Mapping[str, tuple[str, ...]]] = {
     "share": ("numerator",),
     "quotient": ("numerator",),
     "join": ("left", "right"),
 }
+_KEYED_DENOMINATOR_OPS: Final = frozenset({"share", "quotient"})
 
 
 def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
@@ -118,7 +120,7 @@ def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
     record's last step through the inputs its rows come from, a `rank` over each period on its
     own (`per_period`) with a `limit` is reached, which keeps each period's top or bottom
     entities. A step's one `input` supplies its rows, and of several `inputs` the roles
-    `_ROW_SOURCE_ROLES` names. A `rank` without a `limit` keeps every entity, and one over the
+    `_ROW_SOURCE_ROLES` names, with a keyed denominator (`_keyed_denominator`). A `rank` without a `limit` keeps every entity, and one over the
     whole window writes a single period. A frame without a description record, or whose
     record holds no steps, keeps none."""
     record = resolved_frame.description_record
@@ -151,7 +153,19 @@ def _row_sources(step: Step) -> list[str]:
     if step.inputs is MISSING:
         return []
     roles = _ROW_SOURCE_ROLES.get(step.op, ())
+    if _keyed_denominator(step):
+        roles = (*roles, "denominator")
     return [one for role, one in step.inputs.items() if role in roles and isinstance(one, str)]
+
+
+def _keyed_denominator(step: Step) -> bool:
+    """Whether `step` is a share or quotient whose `denominator_by` pairs each numerator key
+    with a denominator group, so a key holds a row only in the periods its group holds."""
+    return (
+        step.op in _KEYED_DENOMINATOR_OPS
+        and step.params is not MISSING
+        and bool(step.params.get("denominator_by"))
+    )
 
 
 def count_selected_points(

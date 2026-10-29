@@ -1119,7 +1119,7 @@ _VALUE_FILTER = {
 }
 
 
-def _top_donor_table(
+def _top_donor_card(
     frame_store,
     revision_store,
     release_registry,
@@ -1127,12 +1127,14 @@ def _top_donor_table(
     steps: Sequence[Mapping[str, object]] | None,
     top_donors: Sequence[tuple[str, str, float]] = _TOP_DONOR_BY_YEAR,
     years: Sequence[str] | None = None,
-    donors: Sequence[str] | None = None,
+    donors: Sequence[str] | str | None = None,
+    member: str = "table",
     window: Mapping[str, object],
 ) -> WriteReply:
-    """A table naming `donors`, by default every donor of `top_donors`, over `window`, from a frame holding each
-    year's top donor to Kenya in `years`, by default every year, computed by `steps` after
-    its retrieve, or with no description record when `steps` is `None`."""
+    """A `member` card, by default a table, naming `donors`, one donor or a list, by default
+    every donor of `top_donors`, over `window`, from a frame holding each year's top donor to
+    Kenya in `years`, by default every year, computed by `steps` after its retrieve, or with
+    no description record when `steps` is `None`."""
     frame = _described(
         build_resolved_frame(
             frame_ref=_TOP_DONOR_FRAME,
@@ -1158,10 +1160,12 @@ def _top_donor_table(
     return _write(
         _intent(
             frame,
-            "table",
+            member,
             select={
                 "stat_var": "dcid:MalariaGrantDisbursements",
-                "financingProvider": list(donors or dict.fromkeys(one for _, one, _ in top_donors)),
+                "financingProvider": donors
+                if isinstance(donors, str)
+                else list(donors or dict.fromkeys(one for _, one, _ in top_donors)),
             },
             window=window,
         ),
@@ -1256,6 +1260,21 @@ def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]
             id="share-over-a-per-period-top-one",
         ),
         pytest.param(
+            [
+                _TOP_ONE,
+                {
+                    **_two_sided("share", denominator="s2", numerator="s1"),
+                    "params": {
+                        "denominator_by": {"financingProvider": "financingProvider"},
+                        "numerator_by": ["financingProvider"],
+                    },
+                },
+            ],
+            _ALL_YEARS,
+            _KEPT,
+            id="share-over-a-per-period-top-one-by-donor",
+        ),
+        pytest.param(
             [_TOP_ONE, _two_sided("share", denominator="s1", numerator="s2")],
             _ALL_YEARS,
             _KEPT,
@@ -1291,13 +1310,14 @@ def test_a_table_over_a_per_period_top_one_lists_the_donors_each_year_kept(
     frame_store, revision_store, release_registry, steps, years, cells
 ):
     """A per-period top one, or a step reading only its output, leaves a donor out of a year
-    another donor holds, so the table lists only the frame's rows there. A year no donor holds is a gap in the data and keeps a
-    missing row per donor. A share, quotient or join takes its rows from a top one it reads as
-    its numerator or either side, and keeps its selection. A frame that selects nothing in
-    each period, whether a filter, a retrieve alone, a rank without a limit or over the whole
-    window, a share over a top one or a sum with one computed it, or whose steps are unknown,
-    pads every absent year."""
-    created = _top_donor_table(
+    another donor holds, so the table lists only the frame's rows there. A year no donor holds
+    is a gap in the data and keeps a missing row per donor. A share, quotient or join takes its
+    rows from a top one it reads as its numerator or either side, or as a denominator each
+    donor is paired with by `denominator_by`, and keeps its selection. A frame that selects
+    nothing in each period, whether a filter, a retrieve alone, a rank without a limit or over
+    the whole window, a share over a whole top one or a sum with one computed it, or whose
+    steps are unknown, pads every absent year."""
+    created = _top_donor_card(
         frame_store,
         revision_store,
         release_registry,
@@ -1314,7 +1334,7 @@ def test_a_table_over_a_per_period_top_one_describes_only_the_donors_it_lists(
     """From 2019 to 2022 the top donor is the International Development Association each
     year, so the table lists four of its rows, and its fact summary and description count
     and name that one donor."""
-    created = _top_donor_table(
+    created = _top_donor_card(
         frame_store,
         revision_store,
         release_registry,
@@ -1335,28 +1355,59 @@ def test_a_table_over_a_per_period_top_one_describes_only_the_donors_it_lists(
     assert description["about"]["drawn"]["series"] == 1
 
 
+_LATEST = {"anchor": "latest", "offset": 0}
+_LAST_THREE_YEARS = {"start": {"anchor": "latest", "offset": -2}, "end": _LATEST}
+
+
 @pytest.mark.parametrize(
-    ("donors", "cells"),
+    ("member", "donors", "window", "resolved", "cells"),
     [
         pytest.param(
+            "table",
             (_IDA, _USA, _GBR),
+            _LAST_THREE_YEARS,
+            {"start": "2019", "end": "2021"},
             [("2019", _IDA_NAME, 3.0), ("2020", _USA_NAME, 4.0), ("2021", _GBR_NAME, 4.0)],
             id="every-donor",
         ),
         pytest.param(
+            "table",
             (_IDA, _USA),
-            [("2019", _IDA_NAME, 3.0), ("2020", _USA_NAME, 4.0)],
+            _LAST_THREE_YEARS,
+            {"start": "2018", "end": "2020"},
+            [
+                ("2018", _IDA_NAME, 3.0),
+                ("2018", _USA_NAME, 3.0),
+                ("2019", _IDA_NAME, 3.0),
+                ("2020", _USA_NAME, 4.0),
+            ],
             id="a-donor-left-out-leads-the-newest-year",
+        ),
+        pytest.param(
+            "table",
+            (_IDA, _USA),
+            {"start": _LATEST, "end": _LATEST},
+            {"start": "2020", "end": "2020"},
+            [("2020", _USA_NAME, 4.0)],
+            id="latest-year-a-donor-left-out-leads",
+        ),
+        pytest.param(
+            "stat_card",
+            _USA,
+            {"start": _LATEST, "end": _LATEST},
+            {"start": "2020", "end": "2020"},
+            None,
+            id="stat-card-a-donor-left-out-leads",
         ),
     ],
 )
-def test_a_rolling_table_over_a_per_period_top_one_ends_at_the_newest_year_a_donor_leads(
-    frame_store, revision_store, release_registry, donors, cells
+def test_a_rolling_card_over_a_per_period_top_one_ends_at_the_newest_year_its_donors_lead(
+    frame_store, revision_store, release_registry, member, donors, window, resolved, cells
 ):
     """No year after 2018 has two of the three donors at the top, so "latest" is the newest
-    year any donor leads, 2021, whether or not the table names that donor, and no donor is
-    named as left out there."""
-    created = _top_donor_table(
+    year any of the card's donors leads, and no donor is named as left out there. The United
+    Kingdom leads 2021, so a card without it ends at 2020, where the United States leads."""
+    created = _top_donor_card(
         frame_store,
         revision_store,
         release_registry,
@@ -1369,18 +1420,19 @@ def test_a_rolling_table_over_a_per_period_top_one_ends_at_the_newest_year_a_don
             ("2021", _GBR, 4.0),
         ),
         donors=donors,
-        window={
-            "start": {"anchor": "latest", "offset": -2},
-            "end": {"anchor": "latest", "offset": 0},
-        },
+        member=member,
+        window=window,
     )
     payload = created.resolved_payload
-    assert _table_cells(payload) == cells
+    if cells is None:
+        component = cast("dict[str, Any]", payload["component"])
+        assert (component["period"], component["value"]) == ("2020", 4.0)
+    else:
+        assert _table_cells(payload) == cells
     description = _description(payload)
     _, select_step = _step(description, "select")
-    assert select_step["params"]["window"] == {"start": "2019", "end": "2021"}
+    assert select_step["params"]["window"] == resolved
     assert description["caveats"] == []
-    assert _description(payload)["caveats"] == []
 
 
 _MALARIA_CONTROL = "CRSPurposeCode12262"
