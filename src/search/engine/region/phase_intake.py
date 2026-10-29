@@ -702,6 +702,7 @@ async def _derive_pool(
                 sv_scores={c.dcid: c.score for c in pool},
                 sv_types={c.dcid: c.type_of for c in pool},
                 rival_svs=frozenset(c.dcid for c in pool if c.rival),
+                basis_sibling_svs=frozenset(c.dcid for c in pool if c.basis_sibling),
                 # Use recall's country snapshot. Place sets and Group members stay off the
                 # floor.
                 place_dcids=state.recall_only_place_dcids,

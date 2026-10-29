@@ -129,7 +129,7 @@ class GeminiBinder:
         if pick_rating(shapes, output, ratings) < DECLINE_FLOOR:
             return BindResult(output=declined(output), binder=self.name), usage
         pool, holds = rated_pool(shapes, output, ratings)
-        choice = request.apply_policies(pool, ratings=ratings, holds=holds)
+        choice = request.apply_policies(pool, ratings=ratings, holds=holds, drafts=output.bindings)
         result = BindResult(
             output=nominated_near_best(
                 reelect(output, choice, shapes, request.admitted_qualifiers), ratings

@@ -501,9 +501,10 @@ class _CountingGemini(GeminiBinder):
             *,
             ratings: Mapping[int, float] | None = None,
             holds: Mapping[int, bool] | None = None,
+            drafts: Sequence[SlotBindingDraft] | None = None,
         ) -> PolicyChoice:
             self.calls += 1
-            return step(pool, ratings=ratings, holds=holds)
+            return step(pool, ratings=ratings, holds=holds, drafts=drafts)
 
         return await super().bind(replace(request, apply_policies=counted), llm=llm)
 

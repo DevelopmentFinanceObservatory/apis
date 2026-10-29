@@ -15,12 +15,14 @@ elect the basis.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import NamedTuple
 
 import pytest
 
 from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
+from search.engine.bind import SlotBindingDraft
 from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
 from search.engine.spec_id import identity_spec_id
@@ -172,21 +174,25 @@ _MENU_SIZE = re.compile(r"CANDIDATE SHAPES \((\d+) total\)")
 class _PickingLLM:
     """Picks menu shape `pick` (the last when the menu holds fewer) and nominates every other
     shape, so the whole menu is the house policies' pool; reads no quantity and rates no
-    word."""
+    word. It drafts `bindings` on its pick, and `menus` holds each bind prompt it answered."""
 
-    def __init__(self, pick: int = 0) -> None:
+    def __init__(self, pick: int = 0, bindings: Sequence[SlotBindingDraft] = ()) -> None:
         self.pick = pick
+        self.bindings = bindings
+        self.menus: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
         if schema is StatedWordsOutput:
             return NO_RATING
+        self.menus.append(prompt)
         match = _MENU_SIZE.search(prompt)
         assert match is not None, prompt[:400]
         size = int(match.group(1))
         pick = min(self.pick, size - 1)
-        return elected_reply(pick, also_plausible=[i for i in range(size) if i != pick]), None
+        nominees = [i for i in range(size) if i != pick]
+        return elected_reply(pick, bindings=self.bindings, also_plausible=nominees), None
 
 
 @pytest.fixture(autouse=True)
@@ -375,13 +381,62 @@ def test_neither_the_wording_nor_the_binders_pick_moves_the_basis(
     assert set(served.values()) == {row.basis}, served
 
 
-@pytest.mark.parametrize("variable", ["Total ODA", "ODA", "official development assistance"])
-def test_a_donor_total_recalling_only_amounts_is_counted_in_grant_equivalents(
-    variable: str, search_settings
+_GE_DEFAULT = ("measure_basis:grant_equivalent", "default", None)
+_GROSS_DRAFTED = (
+    SlotBindingDraft(
+        axis="how",
+        property_dcid="nettingBasis",
+        kind="value",
+        value_dcids=["Gross"],
+        evidence="mentioned",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "time", "message", "drafts", "basis", "choice"),
+    [
+        pytest.param("ODA", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="oda-2019"),
+        pytest.param("Total ODA", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="total-oda"),
+        pytest.param(
+            "official development assistance", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="words"
+        ),
+        pytest.param("aid", "2019", None, (), _GE_DAC1, _GE_DEFAULT, id="aid"),
+        pytest.param(
+            "net ODA",
+            "2022",
+            "net ODA from the United States in 2022",
+            (),
+            _NET_DAC1,
+            ("measure_basis:net", "explicit", "net"),
+            id="net-oda-2022",
+        ),
+        pytest.param(
+            "ODA",
+            "2019",
+            None,
+            _GROSS_DRAFTED,
+            _Basis("amount", "Gross", _DAC1),
+            ("measure_basis:gross", "default", None),
+            id="a-drafted-value-the-sibling-lacks",
+        ),
+    ],
+)
+def test_a_donor_total_recalling_only_amounts_is_counted_on_the_convention_basis(
+    variable: str,
+    time: str,
+    message: str | None,
+    drafts: tuple[SlotBindingDraft, ...],
+    basis: _Basis,
+    choice: tuple[str, str, str | None],
+    search_settings,
 ):
     """Recall finds DAC1's ODA amounts and none of its grant equivalents for these words;
-    recall adds the grant-equivalent family (`clients.graph.with_rival_families`), so the
-    convention still elects the headline basis for a window from 2018."""
+    recall adds the grant-equivalent family (`clients.graph.with_rival_families`), which
+    stays off the bind menu and joins the house policies' pool beside the amounts, so the
+    convention still elects the headline basis for a window from 2018 and a stated basis
+    still wins. A value the binder drafts on the amounts that the grant equivalents have no
+    slot for keeps them out of the pool, as it keeps out a menu shape lacking it."""
     search_settings(qualifier_coverage="log")
     amounts = tuple(m for m in _DAC1_MEMBERS if m.startswith("Amount_"))
     graph = FakeGraph(
@@ -392,6 +447,7 @@ def test_a_donor_total_recalling_only_amounts_is_counted_in_grant_equivalents(
         detect={variable: {"svs": list(amounts), "cosine_scores": [0.9] * len(amounts)}},
         resolve={"United States": _USA},
     )
+    llm = _PickingLLM(0, drafts)
     response = offline_resolve(
         ResolveRequest(
             input=ParsedInput(
@@ -399,21 +455,84 @@ def test_a_donor_total_recalling_only_amounts_is_counted_in_grant_equivalents(
                     ParsedPart(
                         variable_text=variable,
                         entities=[ParsedEntity(text="United States", role_text="from")],
-                        time_text="2019",
+                        time_text=time,
                     )
-                ]
+                ],
+                user_message=message,
             )
         ),
         graph=graph,
-        llm=_PickingLLM(0),
+        llm=llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     assert isinstance(response, Resolution), response
     (part,) = response.parts
     assert isinstance(part, DefinitePart), part
 
-    assert _served_basis(part.spec) == _GE_DAC1
-    assert _basis_choice(part.spec) == ("measure_basis:grant_equivalent", "default", None)
+    assert _served_basis(part.spec) == basis
+    assert _basis_choice(part.spec) == choice
+    assert llm.menus
+    assert not any(_DAC1_MEMBERS[2] in menu for menu in llm.menus)
+
+
+def _emissions_node(dcid: str) -> dict:
+    return {
+        "label": "Annual Amount Of Emissions: Greenhouse Gas",
+        "type": "StatisticalVariable",
+        "arcs": {
+            "typeOf": _nodes("StatisticalVariable"),
+            "name": {"nodes": [{"value": "Annual Amount Of Emissions: Greenhouse Gas"}]},
+            "populationType": _nodes("Emissions"),
+            "measuredProperty": _nodes("amount"),
+            "statType": _nodes("measuredValue"),
+            "measurementQualifier": _nodes("Annual"),
+            "constraintProperties": _nodes("emittedThing"),
+            "emittedThing": _nodes("GreenhouseGas"),
+        },
+    }
+
+
+def test_a_low_scoring_dac1_hit_puts_no_grant_equivalent_family_on_the_bind_menu():
+    """ "Greenhouse gas emissions" recalls DAC1's ODA amounts at the tail of its cut. Recall
+    adds their grant-equivalent family for the basis conventions, which joins the house
+    policies' pool only beside the amounts and never takes a menu seat, so the menu the
+    binder reads is the one recall gave."""
+    emissions = "Annual_Emissions_GreenhouseGas"
+    amounts = tuple(m for m in _DAC1_MEMBERS if m.startswith("Amount_"))
+    variable = "greenhouse gas emissions"
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            emissions: _emissions_node(emissions),
+            **{dcid: _member_node(dcid) for dcid in _DAC1_MEMBERS},
+        },
+        detect={
+            variable: {
+                "svs": [emissions, *amounts],
+                "cosine_scores": [0.9, *[0.586] * len(amounts)],
+            }
+        },
+        resolve={"United States": _USA},
+    )
+    llm = _PickingLLM(0)
+    offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text=variable, entities=[ParsedEntity(text="United States")]
+                    )
+                ]
+            )
+        ),
+        graph=graph,
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert llm.menus
+    assert all(amounts[0] in menu for menu in llm.menus)
+    assert not any(_DAC1_MEMBERS[2] in menu for menu in llm.menus)
 
 
 @pytest.mark.parametrize(

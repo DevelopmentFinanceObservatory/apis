@@ -954,6 +954,7 @@ def derive_shapes(
     sv_scores: dict[str, float] | None = None,
     sv_types: dict[str, str | None] | None = None,
     rival_svs: frozenset[str] = frozenset(),
+    basis_sibling_svs: frozenset[str] = frozenset(),
     place_dcids: list[str] | None = None,
     full_facets_max_candidates: int | None = None,
     deadline: float | None = None,
@@ -978,7 +979,9 @@ def derive_shapes(
 
     `rival_svs` are the rows recall added past its cut (`clients.graph.with_rival_families`).
     They are confirmed with the other candidates, and a shape whose members are all rivals
-    is marked `ShapeDraft.rival`.
+    is marked `ShapeDraft.rival`. `basis_sibling_svs` are those of them that measure another
+    convention basis of a recalled family, and a shape whose members are all among them is
+    marked `ShapeDraft.basis_sibling`.
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
@@ -1130,7 +1133,9 @@ def derive_shapes(
             if key in held_families:
                 shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
             if rival_svs.issuperset(group_svs):
-                shape = dataclasses.replace(shape, rival=True)
+                shape = dataclasses.replace(
+                    shape, rival=True, basis_sibling=basis_sibling_svs.issuperset(group_svs)
+                )
             shapes.append(shape)
 
     viable_groups = len(groups) - zero_member_groups

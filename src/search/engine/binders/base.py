@@ -29,9 +29,11 @@ if TYPE_CHECKING:
 class ApplyPolicies(Protocol):
     """The engine's house-policy step (`house_policy.apply_house_policies`): from the pool a
     binder elects among, its pick first in `PolicyPool.measuring`, the binder's rating of
-    each pool shape when it rates them, and whether each pool shape holds the constraints
-    the binder recognised on its pick (`holds`), the shape the part answers with. A binder
-    calls it once on a reply that elects a menu shape and never on one that does not."""
+    each pool shape when it rates them, whether each pool shape holds the constraints
+    the binder recognised on its pick (`holds`), and the binder's drafts on its pick
+    (`drafts`), against which the step judges the shapes it adds to the pool, the shape the
+    part answers with. A binder calls it once on a reply that elects a menu shape and never
+    on one that does not."""
 
     def __call__(
         self,
@@ -39,6 +41,7 @@ class ApplyPolicies(Protocol):
         *,
         ratings: Mapping[int, float] | None = None,
         holds: Mapping[int, bool] | None = None,
+        drafts: Sequence[SlotBindingDraft] | None = None,
     ) -> PolicyChoice: ...
 
 

@@ -106,7 +106,7 @@ class _CountingStep:
         self.calls = 0
         self.ratings: list[object] = []
 
-    def __call__(self, pool, *, ratings=None, holds=None):
+    def __call__(self, pool, *, ratings=None, holds=None, drafts=None):
         self.calls += 1
         self.ratings.append(ratings)
         return keep_the_pick(pool)

@@ -186,6 +186,11 @@ class ShapeDraft:
     # cut (`clients.graph.with_rival_families`). Such a shape displaces only shapes of its
     # own five-tuple (`place_roles.without_unasked_axes`).
     rival: bool = field(default=False, compare=False)
+    # True when every confirmed member is a row recall added for another convention basis of
+    # a recalled family (`clients.graph.with_rival_families`). Such a shape takes no bind-menu
+    # seat and joins only the house policies' pool, beside a shape it measures another basis
+    # of (`phase_rank_bind._HousePolicyStep`).
+    basis_sibling: bool = field(default=False, compare=False)
     # The resolver whose recall reached the shape (`Pool`). A variable our resolver recalls
     # under a superseded dcid derives as its UN successor and stays in our pool.
     pool: Pool = field(default="ours", compare=False)

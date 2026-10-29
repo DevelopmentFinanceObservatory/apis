@@ -25,7 +25,7 @@ from code_index.types import StatVarRow
 from dc_graph import Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
-from search.scope.basis import convention_measures, names_a_basis
+from search.scope.basis import sibling_measures
 from statvar_members import FiveTuple
 
 if TYPE_CHECKING:
@@ -67,6 +67,9 @@ class DetectedSV:
     sentence: str | None  # candidate.metadata.sentence, carried for diagnostics and labels.
     # A row `with_rival_families` adds for its five-tuple, which the resolve did not return.
     rival: bool = False
+    # A rival row of a family measuring another convention basis of a recalled family
+    # (`with_rival_families`), whose shape joins only the house policies' pool.
+    basis_sibling: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,11 +211,14 @@ def with_rival_families(
     gains a row of each family of that dataset measuring a basis the conventions count it on
     (`scope.basis.convention_measures`) on the hit's statistic, qualifier and denominator,
     when no family among the hits measures that basis there. The conventions elect the basis
-    from the part's shape and window, so its family must reach the menu whatever words
-    recalled the other. "ODA" from the United States, for example, recalls DAC1's ODA
+    from the part's shape and window, so its family must reach the house policies whatever
+    words recalled the other. "ODA" from the United States, for example, recalls DAC1's ODA
     amounts and none of its grant equivalents, the headline basis from 2018. A row added
-    this way is marked
-    `DetectedSV.rival` and takes its hit family's best score."""
+    this way is marked `DetectedSV.rival` and `DetectedSV.basis_sibling` and takes its hit
+    family's best score. A basis is a scope choice of the reading the binder elects, so its
+    shape takes no bind-menu seat and joins the policies' pool only beside a family it is a
+    sibling of (`phase_rank_bind._HousePolicyStep`): DAC1's ODA amounts at the tail of the
+    cut for "greenhouse gas emissions" put no grant equivalents before the binder."""
     scope = catalogue.scope
     best: dict[FiveTuple, float] = {}
     present: dict[FiveTuple, set[frozenset[str]]] = {}
@@ -272,6 +278,7 @@ def with_rival_families(
                     type_of="StatisticalVariable",
                     sentence=None,
                     rival=True,
+                    basis_sibling=True,
                 )
             )
     if not rivals:
@@ -298,14 +305,14 @@ def _basis_siblings(
     found: dict[int, tuple[IndexFamily, float]] = {}
     for family in recalled:
         five_tuple = family.five_tuple
-        if not names_a_basis(five_tuple.population_type, five_tuple.measured_property):
-            continue
         for dataset in family.datasets:
-            for measure in convention_measures(dataset):
+            for population_type, measured_property in sibling_measures(
+                five_tuple.population_type, five_tuple.measured_property, dataset
+            ):
                 sibling = dataclasses.replace(
                     five_tuple,
-                    population_type=measure.population_type,
-                    measured_property=measure.measured_property,
+                    population_type=population_type,
+                    measured_property=measured_property,
                 )
                 if (dataset, sibling) in measured:
                     continue

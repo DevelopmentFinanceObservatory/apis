@@ -308,6 +308,25 @@ def names_a_basis(population_type: str | None, measured_property: str | None) ->
     )
 
 
+def sibling_measures(
+    population_type: str | None, measured_property: str | None, dataset: str
+) -> tuple[tuple[str, str], ...]:
+    """The population type and measured property of each other basis the conventions reading
+    `dataset` count a part on (`convention_measures`), which `dataset` measures a part
+    measuring `measured_property` of `population_type` on instead, on the same statistic,
+    qualifier and denominator. Empty when no declared basis measures it (`names_a_basis`)."""
+    if not names_a_basis(population_type, measured_property):
+        return ()
+    own = (population_type, measured_property)
+    return tuple(
+        dict.fromkeys(
+            measure
+            for row in convention_measures(dataset)
+            if (measure := (row.population_type, row.measured_property)) != own
+        )
+    )
+
+
 def held_measure(identity: BaseIdentity) -> BasisMeasure | None:
     """The declared basis `identity` is counted on, None when it holds none: a pinned
     shape, a measure no basis names, or an amount whose netting basis it leaves open."""

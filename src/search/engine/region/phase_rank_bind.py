@@ -44,6 +44,12 @@ from search.engine.bind_repair import (
 )
 from search.engine.binders import BindRequest, BindResult, QuantityRequest
 from search.engine.binders.base import PolicyContractError
+from search.engine.binders.gemini import (
+    holds_drafted_values,
+    holds_requested_slots,
+    mentioned_drafts,
+    reelect,
+)
 from search.engine.binders.house_policy import (
     POLICY_ORDER,
     Context,
@@ -212,6 +218,7 @@ from search.models import (
     Warning,
 )
 from search.render.labels import _humanize_ref
+from search.scope.basis import sibling_measures
 
 logger = logging.getLogger(__name__)
 
@@ -875,6 +882,11 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # the index carries that declares no role on it leaves once a role-bearing shape that
     # does survives (`without_open_axis_gaps`).
     eligible_shapes = _without_unasked_opt_in(state, without_open_axis_gaps(state, admitted))
+    # A shape measuring another convention basis of a recalled family is a scope choice of
+    # the reading the binder elects: it takes no menu seat and joins the house policies'
+    # pool beside that reading (`_HousePolicyStep`).
+    state.basis_siblings = [_shape_with_taxonomy(s) for s in eligible_shapes if s.basis_sibling]
+    eligible_shapes = [s for s in eligible_shapes if not s.basis_sibling]
     if not eligible_shapes:
         # Nothing is admitted and nothing was refused, so no candidate cleared the score
         # floor; a refused reading takes the branch above.
@@ -900,6 +912,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         seated = {shape.shape_id for shape in menu}
         state.scope_removed_readings = any(shape.shape_id not in seated for shape in unexcluded)
         ranked_shapes = in_scope
+        state.basis_siblings = _dataset_candidates(state.basis_siblings, excluding)
         refuses = state.scope_removed_readings and not menu
         if refuses and ranked_shapes:
             # What the exclusion left is the leaves of roots larger than the menu. The part
@@ -4464,6 +4477,15 @@ def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
     return min(named)[1] if named else state.variable
 
 
+@dataclass(frozen=True, slots=True)
+class _BasisMove:
+    """The house policies elected a basis sibling (`_HousePolicyStep.siblings[sibling]`) of
+    the menu shape at `source`, which the binder's answer stands on."""
+
+    source: int
+    sibling: int
+
+
 @dataclass(kw_only=True)
 class _HousePolicyStep:
     """A part's house-policy step (`BindRequest.apply_policies`): the house policies over a
@@ -4473,7 +4495,18 @@ class _HousePolicyStep:
     the pool shapes, its report of the pool shapes that hold what it recognised on its
     pick, and the part's measure-basis entries (`basis_entries`), which win over the basis
     convention. `calls` counts the binder's calls. Each menu shape's facts are read once,
-    and the context once per pool, however often the binder asks `chooses_on`."""
+    and the context once per pool, however often the binder asks `chooses_on`.
+
+    `siblings` are the part's basis siblings (`ResolveState.basis_siblings`), which the
+    binder never sees. `admitted_qualifiers` and `availability` cover the menu and then
+    them, so sibling `k` reads as index ``len(shapes) + k``. A sibling joins the pool after
+    the binder's shapes when a pool shape it measures another convention basis of
+    (`scope.basis.sibling_measures`) shares a dataset with it, takes that shape's rating and
+    election probability, and holds what the binder recognised on its pick when it holds the
+    value and set drafts the phrase names (`gemini.mentioned_drafts`) and the slots asked for
+    in full on the pick (`drafts`). A sibling the policies elect stands as the pool shape it
+    joined beside, the binder's pick first, and the step records the move (`basis_move`) for
+    the engine to answer on the sibling (`_answer_on_basis_sibling`)."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
@@ -4481,7 +4514,9 @@ class _HousePolicyStep:
     availability: Sequence[bool | None]
     code_index: CodeIndex
     basis_entries: Sequence[Entry] = ()
+    siblings: Sequence[ShapeDraft] = ()
     calls: int = 0
+    basis_move: _BasisMove | None = None
     _contexts: dict[frozenset[int], Context] = field(default_factory=dict, init=False, repr=False)
 
     def __call__(
@@ -4490,15 +4525,57 @@ class _HousePolicyStep:
         *,
         ratings: Mapping[int, float] | None = None,
         holds: Mapping[int, bool] | None = None,
+        drafts: Sequence[SlotBindingDraft] | None = None,
     ) -> PolicyChoice:
         self.calls += 1
-        return apply_house_policies(
-            self._facts_of(pool.measuring),
-            pool,
-            self._context(pool.measuring),
+        self.basis_move = None
+        joined = self._joining(pool.measuring) if holds is None or drafts is not None else {}
+        if not joined:
+            return apply_house_policies(
+                self._facts_of(pool.measuring),
+                pool,
+                self._context(pool.measuring),
+                chosen=pool.measuring[0],
+                ratings=ratings,
+                holds=holds,
+            )
+        menu = len(self.shapes)
+        pick = self.shapes[pool.measuring[0]]
+        measuring = (*pool.measuring, *joined)
+
+        def beside(values: Mapping[int, float] | None) -> Mapping[int, float] | None:
+            if values is None:
+                return None
+            return {**values, **{k: values[i] for k, i in joined.items() if i in values}}
+
+        if holds is not None:
+            assert drafts is not None
+            named = mentioned_drafts(drafts)
+            holds = {
+                **holds,
+                **{
+                    k: holds_drafted_values(pick, self._all[k], named)
+                    and holds_requested_slots(pick, self._all[k], drafts)
+                    for k in joined
+                },
+            }
+        choice = apply_house_policies(
+            self._facts_of(measuring),
+            PolicyPool(measuring=measuring, election=beside(pool.election)),
+            self._context(measuring),
             chosen=pool.measuring[0],
-            ratings=ratings,
+            ratings=beside(ratings),
             holds=holds,
+        )
+        survivor = choice.survivor
+        if survivor >= menu:
+            self.basis_move = _BasisMove(source=joined[survivor], sibling=survivor - menu)
+            survivor = joined[survivor]
+        return PolicyChoice(
+            survivor=survivor,
+            fired=choice.fired,
+            dropped=frozenset(i for i in choice.dropped if i < menu and i != survivor),
+            facts=choice.facts,
         )
 
     def chooses_on(
@@ -4509,14 +4586,38 @@ class _HousePolicyStep:
         return chooses_on(self._facts_of(indices), self._context(indices), axis, policies=policies)
 
     @cached_property
+    def _all(self) -> tuple[ShapeDraft, ...]:
+        """The menu shapes, then the siblings."""
+        return (*self.shapes, *self.siblings)
+
+    @cached_property
     def _facts(self) -> tuple[ShapeFacts, ...]:
-        """The facts of every menu shape, by menu index."""
+        """The facts of every menu shape and sibling, by index (`_all`)."""
         return shape_facts(
-            self.shapes, self.availability, range(len(self.shapes)), code_index=self.code_index
+            self._all, self.availability, range(len(self._all)), code_index=self.code_index
         )
 
     def _facts_of(self, indices: Sequence[int]) -> tuple[ShapeFacts, ...]:
         return tuple(self._facts[i] for i in indices)
+
+    def _joining(self, pool: Sequence[int]) -> dict[int, int]:
+        """Each sibling that joins `pool`, by index (`_all`), with the first pool shape it
+        measures another convention basis of and shares a dataset with."""
+        joined: dict[int, int] = {}
+        for k in range(len(self.shapes), len(self._all)):
+            source = next(
+                (
+                    i
+                    for i in pool
+                    if _measures_basis_of(
+                        self._all[k], self._facts[k].datasets, self._all[i], self._facts[i].datasets
+                    )
+                ),
+                None,
+            )
+            if source is not None:
+                joined[k] = source
+        return joined
 
     def _context(self, pool: Sequence[int]) -> Context:
         """The context over `pool`, which reads the pool as a set."""
@@ -4534,6 +4635,23 @@ class _HousePolicyStep:
                 basis_entries=self.basis_entries,
             )
         return self._contexts[key]
+
+
+def _measures_basis_of(
+    sibling: ShapeDraft, sibling_datasets: Sequence[str], shape: ShapeDraft, datasets: Sequence[str]
+) -> bool:
+    """Whether `sibling`, which `sibling_datasets` publish, measures another convention
+    basis of `shape` (`scope.basis.sibling_measures`) in one of `shape`'s `datasets`, on
+    its statistic, qualifier and denominator."""
+    own, other = shape_five_tuple(shape), shape_five_tuple(sibling)
+    if other._replace(pop_type_dcid=own.pop_type_dcid, meas_prop_dcid=own.meas_prop_dcid) != own:
+        return False
+    measure = (other.pop_type_dcid, other.meas_prop_dcid)
+    return any(
+        dataset in sibling_datasets
+        and measure in sibling_measures(own.pop_type_dcid, own.meas_prop_dcid, dataset)
+        for dataset in datasets
+    )
 
 
 def _elected_index(state: ResolveState) -> int:
@@ -4639,11 +4757,13 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     The quantity read ran before admissibility (`_read_stated_quantity`), so the election
     never carries it, and the call's usage adds to the read's.
     """
-    await read_held_families(state.capped_shapes)
-    per_shape = [_shape_qualifiers(state, shape) for shape in state.capped_shapes]
+    siblings = state.basis_siblings
+    await read_held_families([*state.capped_shapes, *siblings])
+    per_shape = [_shape_qualifiers(state, shape) for shape in (*state.capped_shapes, *siblings)]
     candidate_menus = [_candidate_menus(state, shape) for shape in state.capped_shapes]
-    admitted_qualifiers = [matches for matches, _ties, _unheld in per_shape]
-    admitted_ties = [ties for _matches, ties, _unheld in per_shape]
+    menu = len(state.capped_shapes)
+    admitted_qualifiers = [matches for matches, _ties, _unheld in per_shape[:menu]]
+    admitted_ties = [ties for _matches, ties, _unheld in per_shape[:menu]]
     state.admitted_qualifiers = merge_lists(admitted_qualifiers)
     state.admitted_ties = merge_lists(admitted_ties)
     withheld_measure_axes = frozenset(
@@ -4653,16 +4773,18 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     if names_a_place(state):
         series = series_at_places(state)
         availability = [
-            has_data_where_asked(state, shape, series=series) for shape in state.capped_shapes
+            has_data_where_asked(state, shape, series=series)
+            for shape in (*state.capped_shapes, *siblings)
         ]
-    state.menu_availability = availability
+    state.menu_availability = availability[:menu]
     policies = _HousePolicyStep(
         shapes=state.capped_shapes,
         frame=state.frame,
-        admitted_qualifiers=admitted_qualifiers,
+        admitted_qualifiers=[matches for matches, _ties, _unheld in per_shape],
         availability=availability,
         code_index=get_index(),
         basis_entries=state.scope_selection.entries_on("measure_basis"),
+        siblings=siblings,
     )
     request = BindRequest(
         variable=_bind_variable(state, state.capped_shapes),
@@ -4675,7 +4797,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         nominated_words=[_nominated_words(state, shape) for shape in state.capped_shapes],
         frame=state.frame,
         refused=state.interpretations.refused_on_pinned,
-        availability=availability,
+        availability=state.menu_availability,
         query_text=state.query_text or state.role_query,
         apply_policies=policies,
         policy_chooses_on=policies.chooses_on,
@@ -4719,6 +4841,13 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
                     f"house policies ran {policies.calls} times on a bind call that "
                     f"{'elects' if elects else 'elects no'} shape"
                 )
+            elif elects and policies.basis_move is not None:
+                try:
+                    bind_result = _answer_on_basis_sibling(
+                        state, bind_result, policies.basis_move, per_shape, policies.availability
+                    )
+                except PolicyContractError as exc:
+                    breach = str(exc)
         if breach is None and refusal is None:
             bind_result, stray = split_stray_bindings(bind_result, state.capped_shapes)
             state.bind_result = bind_result
@@ -4790,6 +4919,57 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     for requirement in state.stray_requirements:
         state.requirements = with_requirement(state.requirements, requirement)
     return None
+
+
+def _answer_on_basis_sibling(
+    state: ResolveState,
+    output: _UniversalBindOutput,
+    move: _BasisMove,
+    per_shape: Sequence[
+        tuple[tuple[QualifierMatch, ...], tuple[QualifierTie, ...], tuple[QualifierTie, ...]]
+    ],
+    availability: Sequence[bool | None],
+) -> _UniversalBindOutput:
+    """`output` answering on the basis sibling the house policies elected (`move`), when it
+    still elects the menu shape the sibling joined beside, else as it is. The sibling takes
+    that shape's menu seat, availability and admitted qualifiers, and the drafts move to it
+    as a policy's move does (`gemini.reelect`), so every later phase reads the part as
+    electing it. `per_shape` and `availability` cover the menu and then the siblings
+    (`_HousePolicyStep`). Raises `PolicyContractError` when the sibling does not hold a
+    value the phrase names."""
+    if output.chosen_shape_index != move.source:
+        return output
+    menu = len(state.capped_shapes)
+    seat = move.source
+    joined = menu + move.sibling
+    sibling = state.basis_siblings[move.sibling]
+    qualifiers = [matches for matches, _ties, _unheld in per_shape]
+    moved = reelect(
+        output,
+        PolicyChoice(survivor=menu, fired=(), dropped=frozenset(), facts=()),
+        [*state.capped_shapes, sibling],
+        [*qualifiers[:menu], qualifiers[joined]],
+    )
+    # New lists, since the bind request the binder read holds the old ones.
+    state.capped_shapes = [sibling if i == seat else s for i, s in enumerate(state.capped_shapes)]
+    if state.menu_availability:
+        state.menu_availability = [
+            availability[joined] if i == seat else a for i, a in enumerate(state.menu_availability)
+        ]
+    seated = [*per_shape[:seat], per_shape[joined], *per_shape[seat + 1 : menu]]
+    state.admitted_qualifiers = merge_lists([matches for matches, _ties, _unheld in seated])
+    state.admitted_ties = merge_lists([ties for _matches, ties, _unheld in seated])
+    state.interpretations = replace(
+        state.interpretations,
+        admissible=tuple(Interpretation(shape=shape) for shape in state.capped_shapes),
+    )
+    plausible = moved.also_plausible
+    return moved.model_copy(
+        update={
+            "chosen_shape_index": seat,
+            "also_plausible": None if plausible is None else [i for i in plausible if i != seat],
+        }
+    )
 
 
 async def _stray_requirements(

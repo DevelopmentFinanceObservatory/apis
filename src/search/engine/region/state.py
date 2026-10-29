@@ -849,6 +849,10 @@ class ResolveState:
     ranked_shapes: list[ShapeDraft] = field(default_factory=list)
     # The seated bind menu, at most `bind_top_k` shapes; `chosen_shape_index` indexes it.
     capped_shapes: list[ShapeDraft] = field(default_factory=list)
+    # The admissible shapes measuring another convention basis of a recalled family
+    # (`ShapeDraft.basis_sibling`), with their taxonomy. They take no menu seat and join the
+    # house policies' pool beside a shape they are a sibling of (`phase_rank_bind._phase_bind`).
+    basis_siblings: list[ShapeDraft] = field(default_factory=list)
     # Every reading of the part, admitted or refused, with the admissible ones the bind
     # menu shows and the ones refused only on a pinned part (`region.admissibility`).
     interpretations: InterpretationSet = field(default_factory=InterpretationSet)

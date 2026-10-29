@@ -533,8 +533,9 @@ def _elect(
         measuring=(pick, *(i for i in pool if i != pick)),
         election=dict(conf.election),
     )
-    holds = _holds(menu, answers, pick, conf.pool.measuring, t, populations)
-    choice = menu.request.apply_policies(conf.pool, holds=holds)
+    on_pick = _shape_drafts(menu, answers, pick, Confidence(), t, populations.get(pick))
+    holds = _holds(menu, answers, pick, on_pick, conf.pool.measuring, t, populations)
+    choice = menu.request.apply_policies(conf.pool, holds=holds, drafts=on_pick)
     conf.choice = choice
     conf.rules += [f"house: {p}" for p in choice.fired]
     return choice.survivor
@@ -652,13 +653,14 @@ def _holds(
     menu: JevMenu,
     answers: JevAnswers,
     pick: int,
+    on_pick: Sequence[SlotBindingDraft],
     pool: Sequence[int],
     t: Thresholds,
     populations: Mapping[int, Population],
 ) -> dict[int, bool]:
     """Whether each `pool` shape holds the constraints Jev recognised on `pick`, as
     `pick`'s slots bind them at the thresholds once the span rule has run
-    (`_shape_drafts`), the drafts `assemble` binds: the value and set drafts the phrase
+    (`_shape_drafts`, given as `on_pick`), the drafts `assemble` binds: the value and set drafts the phrase
     names (`gemini.mentioned_drafts`), and the slots it validly asks for in full.
 
     A shape holds a named value when it holds it on its own slot as `pick` does
@@ -675,7 +677,6 @@ def _holds(
     def drafts(s: int) -> list[SlotBindingDraft]:
         return _shape_drafts(menu, answers, s, Confidence(), t, populations.get(s))
 
-    on_pick = drafts(pick)
     named = mentioned_drafts(on_pick)
     pick_slots = {slot.property_dcid for slot in shapes[pick].slot_keys}
 
