@@ -392,8 +392,11 @@ cadence.
 
 A stored dataset head holding two cadences rebuilds at its next source
 refresh, which its dependency fingerprint compares past the recheck interval
-(`DATASETS_HEAD_RECHECK_SECONDS`, default 900), or at the maximum-age
-rebuild (`DATASETS_HEAD_MAX_AGE_SECONDS`, default 86,400). Presentation
+(`DATASETS_HEAD_RECHECK_SECONDS`, default 900), at the next import for a
+head keyed on one, or at the maximum-age rebuild
+(`DATASETS_HEAD_MAX_AGE_SECONDS`, default 86,400, or
+`DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS`, default 604,800, for a head
+keyed on an import). Presentation
 frames recompute their structural view on load, so the assembler refuses a
 stored mixed frame on its next read.
 

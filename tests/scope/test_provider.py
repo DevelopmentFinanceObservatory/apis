@@ -651,6 +651,36 @@ def test_a_resubmit_of_a_composite_identity_answers_the_composite(monkeypatch):
     assert again.resolved.facets["provenance"].ref == _INCLUSIVE_SOURCE
 
 
+def test_a_resubmit_of_a_composite_times_its_scope_compile_and_composite_answer(monkeypatch):
+    """The part books `_served_entry` and `_as_composite`, which run outside
+    `resolve_spec_resubmit`, as steps of its own."""
+    _cover(monkeypatch, _ALL_YEARS)
+    first = _ask("total health aid from the United States to Kenya, 2015 to 2020", time="2015-2020")
+    scope = _scope(first)
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text="health aid",
+                        identity=scope.base.identity,
+                        scope_entries=list(scope.entries),
+                    )
+                ]
+            )
+        ),
+        graph=_graph("health aid", _CRS_MEMBERS),
+        llm=_PickingLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert isinstance(response, Resolution)
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart) and part.timing_ms is not None
+    by_step = part.timing_ms.by_step or {}
+    assert {"served_entry", "as_composite"} <= by_step.keys()
+
+
 def _bilateral_identity(
     *, origin: Sequence[str] = (_USA,), latest: bool = False, **slots: str
 ) -> BaseIdentity:

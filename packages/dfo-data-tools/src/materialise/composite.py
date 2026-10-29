@@ -29,7 +29,8 @@ one component, and `stat_var` leads the sort key (`dfo_frame_grammar.grammar.der
 so the composed frame is each component's rows of one member at a time, merged across
 components by `stat_var` alone. It is composed once: the pass that hashes it also counts it,
 folds its series statistics and output profile, and writes it as Parquet, one row group per
-member, which every later pass reads (`frame_build.ParquetFrameChunks`).
+composed chunk (`_COMPOSED_CHUNK_TARGET_ROWS`), which every later pass reads
+(`frame_build.ParquetFrameChunks`).
 """
 
 from __future__ import annotations
@@ -48,9 +49,11 @@ from dfo_frame_grammar import (
     TIME_PERIOD_COLUMN,
     VALUE_COLUMN,
     Frame,
+    widen_frame_table,
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 
+from code_index.composites import composite_digest
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import pipeline
@@ -101,6 +104,16 @@ _RESTATED_CODES = frozenset(
 _EMPTY_RUN = pa.table({STAT_VAR_COLUMN: pa.array([], type=pa.string())})
 """A member run with no row, which `_composed_chunks` skips."""
 
+_COMPOSED_CHUNK_TARGET_ROWS = 100_000
+"""Composed members are joined into chunks of about this many rows, as a component's own frame
+is (`generation._FRAME_CHUNK_TARGET_ROWS`). Every pass over a chunk (its frame build, hash,
+statistics, profile and Parquet write) has a fixed Arrow cost of about 4 ms, and a composite
+like total ODA composes some 600 members of about 76 rows each, so a chunk per member spends
+most of the pass on that fixed cost. A member stays whole, so a series never spans two chunks,
+as `statistics.SeriesStatisticsSink` requires. A member whose cells carry a conversion recipe has
+a wider `unit` struct than one without, so each member's table is widened to the recipe layout
+(`widen_frame_table`) before the members join."""
+
 type _Cell = tuple[tuple[str, ...], str]
 """A row's role values and period."""
 
@@ -122,21 +135,16 @@ def table_years(
     index: CodeIndex, coverage: CoverageIndex, identity: Mapping[str, object]
 ) -> frozenset[int]:
     """The years the table a component `identity` reads covers: those any series of its
-    index family (`code_index.members.index_family`) holds in `coverage`, under any place.
-    Empty for a family the index does not decide, or one its named dataset does not
-    publish."""
+    index family (`code_index.members.index_family`) holds in `coverage`, under any place
+    (`CoverageIndex.years_held`). Empty for a family the index does not decide, or one its
+    named dataset does not publish."""
     try:
         family = index_family(index, identity_family_query(index, identity))
     except SourceNotInFamily:
         return frozenset()
     if family is None or not family.rows:
         return frozenset()
-    counts = coverage.series_by_year(
-        variables=[row.dcid for row in family.rows],
-        first_year=coverage.horizon.epoch_year,
-        last_year=coverage.horizon.max_year,
-    )
-    return frozenset(year for year, count in counts.items() if count)
+    return coverage.years_held(variables=[row.dcid for row in family.rows])
 
 
 def stacked_years(covered: Iterable[frozenset[int]]) -> frozenset[int]:
@@ -335,7 +343,7 @@ def compose_components(
             for component in components
             for stat_var, record in component.result.member_conversion_records.items()
         },
-        dependencies=_dependencies(components, requests=all_requests),
+        dependencies=_dependencies(components, composite=composite, requests=all_requests),
         default_scope=tuple(
             dict.fromkeys(
                 place for component in components for place in component.result.default_scope
@@ -551,24 +559,31 @@ def _composed_chunks(
     composite: CompositeDeclaration,
     role_columns: tuple[str, ...],
 ) -> Iterator[Frame]:
-    """The composed frame, one chunk per member, in `stat_var` order. Yields one empty chunk
-    when no row is served."""
+    """The composed frame in `stat_var` order, whole members joined into chunks of up to
+    `_COMPOSED_CHUNK_TARGET_ROWS` rows. Yields one empty chunk when no row is served."""
     streams = [
         _component_runs(component, plan=plan, role_columns=role_columns) for component in components
     ]
-    produced = False
+    pending: list[pa.Table] = []
+    pending_rows = 0
     for _stat_var, table in heapq.merge(*streams, key=lambda run: run[0]):
         if table.num_rows == 0:
             continue
+        table = widen_frame_table(table, recipe=True)
         table = table.set_column(
             table.schema.get_field_index(PROVENANCE_COLUMN),
             PROVENANCE_COLUMN,
             pa.array([composite.provenance] * table.num_rows, type=pa.string()),
         )
         table = table.drop_columns([STATUS_COLUMN])
-        produced = True
-        yield build_frame_from_arrow(table, role_keys=role_columns)
-    if not produced:
+        if pending and pending_rows + table.num_rows > _COMPOSED_CHUNK_TARGET_ROWS:
+            yield build_frame_from_arrow(pa.concat_tables(pending), role_keys=role_columns)
+            pending, pending_rows = [], 0
+        pending.append(table)
+        pending_rows += table.num_rows
+    if pending:
+        yield build_frame_from_arrow(pa.concat_tables(pending), role_keys=role_columns)
+    else:
         yield build_frame(role_keys=role_columns, rows=())
 
 
@@ -848,13 +863,19 @@ def _union_entries(groups: Iterable[Iterable[dict[str, object]]]) -> tuple[dict[
 
 
 def _dependencies(
-    components: Sequence[ComponentResult], *, requests: Sequence[MaterialisationRequest]
+    components: Sequence[ComponentResult],
+    *,
+    composite: CompositeDeclaration,
+    requests: Sequence[MaterialisationRequest],
 ) -> Dependencies:
     """Every component's fingerprint as one: its members over every component, and each
     source, conversion source, recipe and latest year any component recorded. The window
     is the first component's, as `dependencies.refreshed_dependencies` reads the first
-    request's."""
+    request's. `imported_data` is the components' when every one records the same key, and
+    `None` when any records none or another. `composites` holds `composite`'s provenance and
+    the digest of the declaration it was composed by (`code_index.composites.composite_digest`)."""
     fingerprints = [component.result.dependencies for component in components]
+    imported = {fingerprint.imported_data for fingerprint in fingerprints}
 
     def merged(name: str) -> tuple[tuple[str, object], ...]:
         pairs: dict[str, object] = {}
@@ -869,6 +890,8 @@ def _dependencies(
         recipes=cast("tuple[tuple[str, str | None], ...]", merged("recipes")),
         window=fingerprints[0].window,
         latest_years=cast("tuple", merged("latest_years")),
+        imported_data=imported.pop() if len(imported) == 1 else None,
+        composites=((composite.provenance, composite_digest(composite)),),
     )
 
 

@@ -131,7 +131,7 @@ in 0.09 s at p50 and 0.39 s at p95 server-side, and 2.8% of requests take over 1
 second hedges about one request in twenty and cuts the tail beyond it."""
 
 # A mixer slow on every request would see each one sent twice. Two undecided races per client
-# cover the 3% tail across a mint's four fetch workers and cap the extra load.
+# cover the 3% tail across a mint's fetch workers and cap the extra load.
 _HEDGE_SLOTS = 2
 
 # Losers run on after their race until their own timeout, as do sends whose read gave up at its

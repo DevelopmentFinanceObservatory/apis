@@ -282,6 +282,7 @@ async def open_deps(
                 token=settings.graph_token,
                 timeout=settings.sdmx_timeout_seconds,
                 hedge_after=DATA_HEDGE_AFTER_SECONDS,
+                total_concurrency=settings.mint_member_max_concurrency,
             )
             stack.callback(sdmx.close)
 

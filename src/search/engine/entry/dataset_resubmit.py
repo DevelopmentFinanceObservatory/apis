@@ -38,6 +38,11 @@ reads end at `params.deadline` (45 s) unless its walk ran the full read. The tra
 stream runs to the latest `RegionResult.reads_deadline` among the parts, so it keeps the
 request deadline unless a promote ran the full read.
 
+An identity entry's part books the time `_served_entry` and `_as_composite` take under the
+`served_entry` and `as_composite` steps of its `timing_by_step`, beside the steps
+`resolve_spec_resubmit` books, so the part's total covers the scope compile and the composite
+answer.
+
 An identity entry that posts `scope_entries` compiles them over its identity
 (`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
 scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
@@ -143,7 +148,8 @@ def full_read_deadline_for(deadline: float) -> float:
 class _Promoted:
     """An identity entry's promote: the scope its scope entries compiled to, the facts it
     read, the identity it answers, the table identity it read, the part memo key it stores
-    under, and the region, which the part memo held when `stored`."""
+    under, the region, which the part memo held when `stored`, and the ms `_served_entry`
+    took."""
 
     scope: PartScope | None
     facts: ScopeFacts
@@ -152,6 +158,7 @@ class _Promoted:
     key: str | None
     region: RegionResult
     stored: bool
+    served_entry_ms: int
 
 
 def _served_entry(
@@ -393,7 +400,9 @@ async def handle(
         would serve it and its scope compiled (`_served_entry`), both of which read coverage
         and scan families, then the part memo's region for its payload or a fresh
         `resolve_spec_resubmit`."""
+        started = now_ms()
         entry, scope = _served_entry(entry, index=index, coverage=params.coverage)
+        served_entry_ms = now_ms() - started
         facts = ScopeFacts(index=get_index(), coverage=params.coverage)
         # A composite posted with no scope entries reads as a compiled one does.
         identity = (
@@ -422,6 +431,7 @@ async def handle(
                 key=None,
                 region=stored,
                 stored=True,
+                served_entry_ms=served_entry_ms,
             )
         try:
             region = resolve_spec_resubmit(
@@ -442,6 +452,7 @@ async def handle(
             key=key,
             region=region,
             stored=False,
+            served_entry_ms=served_entry_ms,
         )
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
@@ -457,10 +468,14 @@ async def handle(
             if memo is not None and promoted.key is not None:
                 memo.store(promoted.key, region)
         scope = promoted.scope
+        steps = {"served_entry": promoted.served_entry_ms}
         if promoted.read is not promoted.identity and region.status == "definite":
+            started = now_ms()
             region = _as_composite(region, promoted.identity, scope=scope, facts=promoted.facts)
+            steps["as_composite"] = now_ms() - started
         return dataclasses.replace(
             region,
+            timing_by_step={**region.timing_by_step, **steps},
             assumption_echo=None if entry.assumptions is None else tuple(entry.assumptions),
             variable_text=entry.variable_text,
             earliest_index=index,
