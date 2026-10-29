@@ -5136,7 +5136,7 @@ def _stand_in_declined(state: ResolveState, declined: Interpretation) -> None:
 
     Code settles it as it settles an elected reading, so the flagged match names the
     reading the question asked for and not its whole family: each slot takes the one value
-    whose name the variable phrase states (`_named_value_bindings`), the codes the question
+    whose name the variable phrase states (`_with_named_values`), the codes the question
     names in its vocabulary join the part's matches (`ResolveState.pinned_part_matches`),
     which vetting forces where it can bind them, and repair applies the declared defaults
     and the values its family shares."""
@@ -5151,7 +5151,7 @@ def _stand_in_declined(state: ResolveState, declined: Interpretation) -> None:
     state.bind_result = state.bind_result.model_copy(
         update={
             "chosen_shape_index": len(state.capped_shapes) - 1,
-            "bindings": _named_value_bindings(declined.shape, state.variable),
+            "bindings": [],
             "also_plausible": None,
         }
     )
@@ -5160,25 +5160,39 @@ def _stand_in_declined(state: ResolveState, declined: Interpretation) -> None:
 def _named_value_bindings(shape: ShapeDraft, variable: str) -> list[SlotBindingDraft]:
     """A binding for each slot of `shape` one of whose members' values the variable phrase
     names by its label, as a whole word outside a negation or exclusion, when exactly one
-    value of the slot is named. The members are the shape's population
-    (`shape_population_arcs`), its family's when it is held. Empty when the named values
-    match no member together, since a binding no member holds names no reading."""
+    value of the slot is named. A value whose graph label is missing or its dcid is named
+    by its dcid in words (`_humanize_ref`): the graph labels GreenhouseGas "GreenhouseGas",
+    which "greenhouse gas" names. The members are the shape's population
+    (`shape_population_arcs`), its family's when it is held. A label a member holds in
+    its name (`_member_names`) without holding the value names the measure there, and no
+    value: "infant" in "infant mortality rate" is the name of the series of deaths under
+    one year, which no ``ageGroupClassification`` of Infant selects. A value every member
+    holds selects none of them, and a measure axis's slot (`MeasureIndex.axes`) is the
+    measure election's to bind. Empty when the named values match no member together,
+    since a binding no member holds names no reading."""
     labels = shape.value_labels or {}
     population = shape_population_arcs(shape)
+    names = _member_names(shape)
+    measure_axes = {axis.axis for axis in get_measure_index().axes}
     bindings: list[SlotBindingDraft] = []
     for slot in shape.slot_keys:
         prop = slot.property_dcid
-        if prop is None:
+        if prop is None or prop in measure_axes:
             continue
-        values = dict.fromkeys(
-            value for member in population.values() if (value := read_constraints(member).get(prop))
-        )
+        held = [read_constraints(member).get(prop) for member in population.values()]
+        values = dict.fromkeys(value for value in held if value)
+        if len(values) == 1 and all(held):
+            continue
         named = [
             value
             for value in values
-            if (label := labels.get(value))
-            and _label_named_in_text(label, variable)
+            if _label_named_in_text(label := _humanize_ref(value, labels.get(value)), variable)
             and not _label_negated_in_text(label, variable)
+            and all(
+                read_constraints(population[dcid]).get(prop) == value
+                for dcid, words in names.items()
+                if {fold_word(word.text) for word in word_tokens(label)} <= words
+            )
         ]
         if len(named) == 1:
             bindings.append(
@@ -5191,3 +5205,37 @@ def _named_value_bindings(shape: ShapeDraft, variable: str) -> list[SlotBindingD
     ):
         return []
     return bindings
+
+
+def _with_named_values(
+    bindings: list[SlotBindingDraft], shape: ShapeDraft, variable: str
+) -> tuple[list[SlotBindingDraft], frozenset[str]]:
+    """`bindings` with each slot they leave ``unbound`` bound to the one value of it the
+    variable phrase names (`_named_value_bindings`), and the properties so bound. A slot
+    drafted ``requested_all``, by the reply or by a stated breakdown or operation
+    (`_open_breakdown_slots`, `_open_operation_slots`), stays open, and so does every slot
+    when the named values match no member together with the values `bindings` hold."""
+    named = {
+        b.property_dcid: b
+        for b in _named_value_bindings(shape, variable)
+        if b.property_dcid is not None
+    }
+    result = [
+        named[prop]
+        if (prop := b.property_dcid) in named
+        and b.kind == "unbound"
+        and b.evidence != "requested_all"
+        else b
+        for b in bindings
+    ]
+    bound = frozenset(
+        prop
+        for b, kept in zip(bindings, result, strict=True)
+        if b is not kept and (prop := kept.property_dcid)
+    )
+    population = shape_population_arcs(shape)
+    if bound and not bound_realizable_members(
+        list(population), population, bound_values_from_bindings(result)
+    ):
+        return bindings, frozenset()
+    return result, bound

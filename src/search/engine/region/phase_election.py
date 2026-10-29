@@ -62,6 +62,7 @@ from search.engine.region.phase_rank_bind import (
     _unheld_bound_codes,
     _unrated_words,
     _unread_qualifier_phrases,
+    _with_named_values,
     _withheld_qualifiers,
     judge_value_requirements,
     operation_slot_phrases,
@@ -335,7 +336,10 @@ def _settle_bindings(
     `_settle_role_bindings`, which leaves an opened slot open. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
     shape admits, with the codes the model chose from a phrase's candidate menu, are
-    forced into the bindings (`_force_qualifier_bindings`).
+    forced into the bindings (`_force_qualifier_bindings`). A slot still left ``unbound``,
+    and not asked for in full, binds the one value of it the variable phrase names by its
+    label (`_with_named_values`), as text-recognised: "greenhouse gas emissions" binds
+    `emittedThing` to GreenhouseGas whatever the reply drafted for it.
     """
     bindings = _with_every_slot_drafted(
         without_dataset_drafts(state.bind_result.bindings), shape_draft
@@ -437,6 +441,8 @@ def _settle_bindings(
         state.text_recognized_properties = forced & {m.code_system for m in admitted_qualifiers}
         bindings = _settle_sector(state, bindings, admitted_qualifiers)
         _log_admitted_qualifiers(admitted_qualifiers)
+    bindings, named = _with_named_values(bindings, shape_draft, state.variable)
+    state.text_recognized_properties |= named
     state.bind_result.bindings = with_sampled_claims(bindings, claims)
 
     return unresolved, readings
