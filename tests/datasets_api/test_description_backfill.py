@@ -968,7 +968,10 @@ def test_a_collapse_is_backfilled_from_its_base_versions_record() -> None:
     assert record.steps == minted.steps
     assert record.variables == minted.variables
     assert record.variables is not None
-    assert record.variables.dimensions == []
+    assert [
+        (dimension.property, dimension.within_set, dimension.values)
+        for dimension in record.variables.dimensions or ()
+    ] == [("testAxis", ["TestAxisA", "TestAxisB"], [])]
 
 
 @pytest.mark.parametrize(

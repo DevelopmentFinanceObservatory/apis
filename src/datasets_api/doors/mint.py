@@ -9,6 +9,11 @@ timeout itself and maps it to retryable 504. Cancelling a queued future releases
 running thread continues after request cancellation and holds its permit until it returns, and
 each of its reads stops at the deadline.
 
+A mint posted with `X-DFO-Mint-Admission: background` is admitted only without waiting and
+only while foreground callers keep a place (`datasets_api.background_admission`), and answers
+503 `MintBackgroundDeclined` at once otherwise.
+Any other value, or none, admits it as above.
+
 The door reads its clients and stores from the surface's `Deps` and builds none. Exception
 mapping lives in `datasets_api.doors.mint_errors` and its inventory in
 `datasets_api.doors.mint_inventory`.
@@ -21,12 +26,22 @@ import functools
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from datasets_api.background_admission import (
+    BACKGROUND_HEADER,
+    BACKGROUND_HEADROOM,
+    BACKGROUND_VALUE,
+    leaving_headroom,
+)
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
 from datasets_api.doors.definition import OPERATION_SUBMITTED_RESPONSES, ROUTE_EXCEPTION_TYPES
-from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
+from datasets_api.doors.mint_errors import (
+    MintBackgroundDeclined,
+    MintBackpressure,
+    classify_mint_exception,
+)
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS, MINT_EXCEPTION_TYPES
 from datasets_api.headers import no_store_headers
 from datasets_api.kinds.spec_id import mint_spec_id
@@ -34,6 +49,7 @@ from datasets_api.kinds.statvar_set import mint_statvar_set
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_deps import MintDeps
 from datasets_api.mint_models import MintRequest, StatVarSetInput
+from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.operations.submit import (
     OperationSubmitted,
     operation_submitted_resource,
@@ -90,10 +106,13 @@ def mint_deps(deps: Deps, *, deadline: float | None) -> MintDeps:
     )
 
 
-async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
+async def _mint_response(body: MintRequest, *, deps: Deps, background: bool) -> JSONResponse:
     """Run a mint on the work executor and return its manifest, or 202 when work is deferred.
 
-    Reject unsupported render options before resolution, writes, or SDMX reads.
+    Reject unsupported render options before resolution, writes, or SDMX reads. A `background`
+    mint binds `BACKGROUND_HEADROOM` (`leaving_headroom`) and answers `MintBackgroundDeclined`
+    where a foreground mint would find its work slot, a materialise permit or the operation
+    backlog full.
     """
     trace_id = get_trace_id()
     settings = deps.settings
@@ -120,8 +139,13 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
             deps=request_deps,
             trace_id=trace_id,
         )
+    headroom = BACKGROUND_HEADROOM if background else 0
     submitted_resource: OperationResource | None = None
-    with door_call("mint", logger=logger) as call, request_deadline(deadline):
+    with (
+        door_call("mint", logger=logger) as call,
+        request_deadline(deadline),
+        leaving_headroom(headroom),
+    ):
         try:
             manifest = await asyncio.wait_for(
                 deps.work_executor.run(
@@ -130,11 +154,16 @@ async def _mint_response(body: MintRequest, *, deps: Deps) -> JSONResponse:
                         retaining(mint, reader=deps.snapshot_reader, now=deps.now),
                         call.timings,
                     ),
-                    refuse=MintBackpressure,
+                    refuse=MintBackgroundDeclined if background else MintBackpressure,
                     timings=call.timings,
+                    headroom=headroom,
                 ),
                 timeout=settings.mint_timeout_seconds,
             )
+        except OperationBacklogFull:
+            if background:
+                raise MintBackgroundDeclined() from None
+            raise
         except OperationSubmitted as submitted:
             # A deferred 202 is a successful outcome, not a refusal.
             submitted_resource = operation_submitted_resource(submitted, now=deps.now())
@@ -160,8 +189,11 @@ def build_mint_door(*, deps: DepsCell) -> DoorContribution:
     router = APIRouter()
 
     @router.post("/api/datasets", response_model=Manifest, responses=OPERATION_SUBMITTED_RESPONSES)
-    async def mint(body: MintRequest) -> JSONResponse:
-        return await _mint_response(body, deps=deps.get())
+    async def mint(body: MintRequest, request: Request) -> JSONResponse:
+        admission = request.headers.get(BACKGROUND_HEADER, "")
+        return await _mint_response(
+            body, deps=deps.get(), background=admission.strip().lower() == BACKGROUND_VALUE
+        )
 
     return DoorContribution(
         router=router,

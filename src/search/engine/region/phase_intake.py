@@ -43,7 +43,12 @@ from search.engine.region.result import (
 )
 from search.engine.region.source_choice import allows_un_system
 from search.engine.region.state import ResolveState, UnLeg, UnPool
-from search.engine.region.whole_totals import named_whole, population_totals, side_classes
+from search.engine.region.whole_totals import (
+    containing_totals,
+    named_whole,
+    population_totals,
+    side_classes,
+)
 from search.engine.retrieval.bound_values import declared_datasets
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
@@ -288,7 +293,8 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
     """The place set of each whole total the part can bind (`ResolveState.whole_sets`), by
     dcid: each party a text names as a whole population (`ResolveState.whole_named`), and
     the totals of every party on each side the part totals (`place_roles.totalled_axes`,
-    `whole_totals.population_totals`). Each is its node, named by the code index's label
+    `whole_totals.population_totals`), and the containing totals of those sides
+    (`whole_totals.containing_totals`). Each is its node, named by the code index's label
     for the party.
 
     A total of a side the part totals binds where the code index marks it on a side its
@@ -298,6 +304,7 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
     (`place_roles.set_choices`), and its node carries no graph type, so no graph read runs
     for it."""
     named = [dcid for dcids in state.whole_named.values() for dcid in dcids]
+    axes = totalled_axes(state)
     rows = get_index().parties
 
     def label(dcid: str) -> str:
@@ -306,7 +313,7 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
 
     return {
         dcid: PlaceSet(name=label(dcid), kind="place", node=PlaceNode(dcid=dcid, graph_type=""))
-        for dcid in dict.fromkeys((*named, *population_totals(totalled_axes(state))))
+        for dcid in dict.fromkeys((*named, *population_totals(axes), *containing_totals(axes)))
     }
 
 

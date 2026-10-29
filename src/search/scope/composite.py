@@ -53,6 +53,7 @@ from search.models import (
     TimeWindow,
 )
 from search.observations import provenance_refs
+from search.render.labels import join_labels
 from search.scope.tables import ScopeFacts
 from series_coverage.coverage_types import BoundRoles, Role
 from series_coverage.index import CoverageIndex, elected_year
@@ -264,10 +265,11 @@ def assemble_composite(
     headline counts the latest of those years over every component serving it
     (`_headline`); its StatVar counts are the components' summed (`_stat_vars`); its
     provenance facet names the composite, with the composite's label and the account its
-    component tables give; its sources are its component tables and its measure label reads
-    the declaration's `measure_noun` (`_measure_label`), so its sentence cites both tables
-    and names the composite's measure; and it carries no observation preview, which reads
-    one table.
+    component tables give; its sources are its component tables, whose labels its
+    `published_tables` joins, and its measure label reads the declaration's `measure_noun`
+    (`_measure_label`), so its sentence cites both tables and names the composite's measure;
+    its concept label stays the table identity's answer's, which names no basis; and it
+    carries no observation preview, which reads one table.
     Each component names its role, the table it reads, the years it serves, how many
     StatVars it serves and its own identity. Raises
     `code_index.composites.CompositeNotServable` as `component_identities` does."""
@@ -278,6 +280,7 @@ def assemble_composite(
     years = sorted({year for item in served for year in item.served})
     observations = sum(item.years.counts.get(year, 0) for item in served for year in item.served)
     window = TimeWindow(start_year=years[0], end_year=years[-1]) if years else None
+    sources = _component_sources(index, declaration)
     facets = {
         **spec.resolved.facets,
         "provenance": ResolvedFacet(
@@ -304,9 +307,8 @@ def assemble_composite(
             ],
             "download": None,
             "measure_label": _measure_label(declaration, spec.resolved.measure_label),
-            "trace": spec.resolved.trace.model_copy(
-                update={"resolved_sources": _component_sources(index, declaration)}
-            ),
+            "published_tables": join_labels([source.label for source in sources]),
+            "trace": spec.resolved.trace.model_copy(update={"resolved_sources": sources}),
         }
     ).stating_data_years((years[0], years[-1]) if years else None)
     restated = spec.model_copy(

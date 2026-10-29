@@ -95,6 +95,8 @@ def test_render_and_store_streaming_write_aborts_when_the_chunk_iterator_raises(
             enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
             resolved_stat_var_refs=(),
             pivot_max_output_cells=5_000_000,
+            groupby_fold_max_rows=2_000_000,
+            groupby_row_fold_max_rows=700_000,
             prepared_at=PREPARED_AT,
             site=SITE,
         )

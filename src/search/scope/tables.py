@@ -24,7 +24,9 @@ class AxisTable:
     declared rule an option names when the part holds it, `held`'s among them (`rule`,
     `rule_of`). `concept` is the concept the axis was asked for, None when it has none.
     `published` says the part counts a published total, whose options may also bind the code
-    of another total (`PUBLISHED_BINDING`).
+    of another total (`PUBLISHED_BINDING`). `conflicts` are the pairs of one of the axis's
+    options and an option of another axis that cannot hold together on this part, beside the
+    ones every part declares (`rules.CONFLICTS`).
 
     Raises `ScopeTableError` for an empty table, a repeated option, an option of another
     axis or binding kind, a `preference`, `held` or `rules` naming no option, or `rules`
@@ -37,6 +39,7 @@ class AxisTable:
     rules: Mapping[str, str]
     concept: str | None = None
     published: bool = False
+    conflicts: tuple[Conflict, ...] = ()
 
     def __post_init__(self) -> None:
         ids = [option.option_id for option in self.options]

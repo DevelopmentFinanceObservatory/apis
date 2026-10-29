@@ -14,6 +14,7 @@ from code_index.composites import (
     CompositeNotServable,
     CompositeProvenanceRead,
     component_identities,
+    component_of,
 )
 from code_index.declarations import COMPOSITES
 from code_index.loader import parse_index
@@ -21,14 +22,16 @@ from code_index.members import pinned_refs
 from code_index.query import CodeIndex
 from code_index.types import YearPeriod
 from tests.code_index.aid_identity import (
+    AID_TYPE,
     CRS_PROVENANCE,
+    IMPUTED_MULTILATERAL,
     IMPUTED_PROVENANCE,
     education_aid_identity,
     imputed_education_aid_identity,
 )
 from tests.code_index.support import INDEX_FIXTURE
 
-_STACKED, _SPLICED = COMPOSITES
+_STACKED, _DAC2A_STACKED, _SPLICED = COMPOSITES
 
 
 def _payload() -> dict:
@@ -53,8 +56,9 @@ def _with_component(composite, role, **fields):
     )
 
 
-def test_the_fixture_index_serves_both_declared_composites():
+def test_the_fixture_index_serves_every_declared_composite():
     assert _INDEX.composite(_STACKED.provenance) == _STACKED
+    assert _INDEX.composite(_DAC2A_STACKED.provenance) == _DAC2A_STACKED
     assert _INDEX.composite(_SPLICED.provenance) == _SPLICED
     assert _INDEX.composite(CRS_PROVENANCE) is None
     # Both component tables read an absent row as zero, so the composite does too.
@@ -129,6 +133,77 @@ def test_the_stacked_components_are_the_crs_identity_and_its_imputed_counterpart
     assert [component.role for component in components] == ["bilateral", "imputed"]
     assert components[0].identity == education_aid_identity()
     assert components[1].identity == imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+
+
+_DAC2A = "provenance/OECDDAC2A"
+
+
+def _dac2a_oda_identity(netting: str, *, source: str | None = None) -> dict:
+    """DAC2a ODA from the United States to Kenya on the `netting` basis, binding `source`."""
+    identity: dict = {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal",
+        },
+        "slots": [
+            {"property": AID_TYPE, "binding": {"state": "value", "ref": "DAC2aAidType206"}},
+            {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+            {"property": "nettingBasis", "binding": {"state": "value", "ref": netting}},
+        ],
+        "entities": {"origin": ["country/USA"], "destination": ["country/KEN"]},
+        "requested_window": {"kind": "all"},
+    }
+    if source is not None:
+        identity["facets"] = {"provenance": {"state": "value", "ref": source}}
+    return identity
+
+
+@pytest.mark.parametrize("netting", ["Gross", "Net"])
+def test_dac2a_stacks_its_total_oda_on_its_own_gross_imputed_line_on_either_basis(netting: str):
+    """DAC2a publishes its imputed multilateral line gross alone, and the convention adds it
+    to total ODA on either basis, so the imputed component reads the gross line from DAC2a
+    itself whatever basis the composite asks for."""
+    components = component_identities(
+        _INDEX, _dac2a_oda_identity(netting, source=_DAC2A_STACKED.provenance)
+    )
+
+    assert components is not None
+    bilateral, imputed = components
+    assert bilateral.identity == _dac2a_oda_identity(netting)
+    assert imputed.identity == {
+        **_dac2a_oda_identity("Gross", source=_DAC2A),
+        "shape": {**_dac2a_oda_identity("Gross")["shape"], "measured_property": "attributedAmount"},
+        "slots": [
+            {"property": AID_TYPE, "binding": {"state": "value", "ref": IMPUTED_MULTILATERAL}},
+            {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+            {"property": "nettingBasis", "binding": {"state": "value", "ref": "Gross"}},
+        ],
+    }
+    assert not imputed.recipe.zero_absent
+
+
+@pytest.mark.parametrize(
+    ("dcid", "role"),
+    [
+        pytest.param(
+            "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal", "bilateral"
+        ),
+        pytest.param("Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal", "bilateral"),
+        pytest.param(
+            "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal", "imputed"
+        ),
+    ],
+)
+def test_each_dac2a_row_belongs_to_the_one_component_binding_its_aid_type(dcid: str, role: str):
+    """Both components of DAC2a's inclusive composite read DAC2a, so the aid type each binds
+    is what tells a row's component."""
+    (row,) = (row for row in _INDEX.statvars if row.dcid == dcid)
+
+    assert component_of(_DAC2A_STACKED, row) == role
 
 
 def test_an_identity_binding_no_composite_has_no_components():

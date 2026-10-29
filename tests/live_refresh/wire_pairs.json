@@ -270,7 +270,7 @@
                 "cite.title"
               ],
               "built_from": {
-                "facts_schema": 1,
+                "facts_schema": 2,
                 "vocabulary": "voc_00000000000000000000000000000001"
               }
             }
@@ -941,7 +941,7 @@
                 "cite.title"
               ],
               "built_from": {
-                "facts_schema": 1,
+                "facts_schema": 2,
                 "vocabulary": "voc_00000000000000000000000000000001"
               },
               "rendering": "live",
@@ -1413,7 +1413,7 @@
                 "cite.inputs.0.label"
               ],
               "built_from": {
-                "facts_schema": 1,
+                "facts_schema": 2,
                 "vocabulary": "voc_00000000000000000000000000000001"
               },
               "rendering": "live",

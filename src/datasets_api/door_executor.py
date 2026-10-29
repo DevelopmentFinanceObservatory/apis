@@ -2,20 +2,20 @@
 
 The Datasets surface owns two (`datasets_api.deps`), one for reads and one for materialising
 work, and every Datasets door submits to one of them. Presentation's doors own one each. The
-module imports only the standard library, `dfo_platform`, and `datasets_api.shutdown`, so any
-surface's doors can use it.
+module imports only the standard library, `dfo_platform`, `datasets_api.background_admission`
+and `datasets_api.shutdown`, so any surface's doors can use it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import BrokenExecutor
 from dataclasses import dataclass
 
+from datasets_api.background_admission import HeadroomSemaphore
 from datasets_api.shutdown import ShutdownBudget
 from dfo_platform.executor import ContextCarryingExecutor
 from dfo_platform.timings import PhaseTimings
@@ -37,7 +37,7 @@ class DoorExecutor:
     """
 
     executor: ContextCarryingExecutor
-    semaphore: threading.BoundedSemaphore
+    semaphore: HeadroomSemaphore
     pool_size: int
     name: str
 
@@ -49,22 +49,27 @@ class DoorExecutor:
         refuse: Callable[[], Exception],
         timings: PhaseTimings | None = None,
         wait_seconds: float = 0.0,
+        headroom: int = 0,
     ) -> T:
         """Run `job` on the executor under the caller's context behind bounded admission.
 
-        `refuse` builds the door's backpressure exception, raised when no permit comes free
-        within `wait_seconds` and when the executor has shut down. The wait polls the
-        semaphore every `_ADMISSION_POLL_SECONDS` on the event loop, so no thread blocks on it
-        and a cancelled wait holds no permit. The default `0` takes a free permit or refuses. A done callback on the executor future
-        releases the permit, so cancelling a queued future frees it and a running job
-        keeps it until the job returns. On `BrokenExecutor`, which signals a permanently failed
-        pool, the permit is released, the failure is logged, and the error propagates.
+        `refuse` builds the door's backpressure exception, raised when no permit it may take
+        comes free within `wait_seconds` and when the executor has shut down. The wait polls
+        the semaphore every `_ADMISSION_POLL_SECONDS` on the event loop, so no thread blocks on
+        it and a cancelled wait holds no permit. The default `0` takes a free permit or refuses.
+        A done callback on the executor future releases the permit, so cancelling a queued
+        future frees it and a running job keeps it until the job returns. On `BrokenExecutor`,
+        which signals a permanently failed pool, the permit is released, the failure is logged,
+        and the error propagates.
+
+        `headroom` is the permits that must stay free after this job takes one
+        (`HeadroomSemaphore.acquire_leaving`). A background mint leaves one for other callers.
 
         `timings`, when given, records `queue` from submission to the job's start and
         `handoff` from the job's finish to this coroutine resuming on the event loop.
         """
         admitted_by = time.monotonic() + wait_seconds
-        while not self.semaphore.acquire(blocking=False):
+        while not self.semaphore.acquire_leaving(headroom):
             if time.monotonic() >= admitted_by:
                 raise refuse()
             await asyncio.sleep(_ADMISSION_POLL_SECONDS)
@@ -150,7 +155,7 @@ def build_door_executor(pool_size: int, name: str, *, surface: str = "datasets")
     door_name = f"{surface}-{name}"
     return DoorExecutor(
         executor=ContextCarryingExecutor(max_workers=pool_size, thread_name_prefix=door_name),
-        semaphore=threading.BoundedSemaphore(pool_size),
+        semaphore=HeadroomSemaphore(pool_size),
         pool_size=pool_size,
         name=door_name,
     )

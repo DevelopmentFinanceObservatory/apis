@@ -201,6 +201,8 @@ def _render(
         entity_columns=_ENTITY_COLUMNS,
         enrichment=EnrichmentLookup(graph, parties=lambda: parties),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         code_index=index,
         resolved_stat_var_refs=(
             tuple(stat_var_refs)

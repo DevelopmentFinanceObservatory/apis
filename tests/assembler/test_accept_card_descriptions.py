@@ -129,7 +129,7 @@ def _record(
     return DescriptionRecord(
         id=frame.frame_ref.spec_id,
         content_version=frame.frame_ref.content_version,
-        schema_version=1,
+        schema_version=2,
         basis="mint",
         index_stamp=None,
         variables=None

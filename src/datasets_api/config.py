@@ -80,6 +80,20 @@ class DatasetsBuildSettings(BaseSettings):
     # Pivot cell limit. Format column caps bound width only, and CSV/Parquet have no width cap.
     pivot_max_output_cells: int = Field(default=5_000_000, ge=1)
 
+    # Frame rows a groupby that sums a canonical frame folds as Arrow. A larger frame refuses
+    # over_ceiling (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads
+    # (505 MiB over spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB.
+    groupby_fold_max_rows: int = Field(default=2_000_000, ge=1)
+
+    # Frame rows a groupby that sums a frame1 document folds row by row. That fold peaks at
+    # about 2.8 KiB a group (1.39 GiB over spec_09ff's 488,979 groups), and a frame can keep one
+    # group a row, so this ceiling holds it to the Arrow fold's 2 GiB.
+    groupby_row_fold_max_rows: int = Field(default=700_000, ge=1)
+
+    # Groupby folds the process runs at once. Permits times the fold's 2 GiB at its ceiling must
+    # fit the service's fold memory, so the 4 GiB service takes one. A further collapse waits.
+    groupby_fold_max_concurrency: int = Field(default=1, ge=1)
+
     # The deadline of a definition GET, `/options` call, or frame refresh, taken as a mint's is.
     # On a head hit it also covers on-demand rendering and storage.
     definition_timeout_seconds: float = Field(default=120, gt=0)

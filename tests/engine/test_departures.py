@@ -25,6 +25,7 @@ from search.engine.departures import (
 )
 from search.engine.entry.raw_text import _dropped_phrase_fact
 from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standard, served_dates
+from search.engine.spec_build import with_members_left_out
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
@@ -443,6 +444,15 @@ def _served_from(spec: Spec, provenance: str) -> Spec:
     return spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"facets": facets})})
 
 
+def _stated_left_out(spec: Spec, role: str) -> dict[str, object]:
+    """`left_out` and `sum_differs` as the wire states the group `spec` reads on `role` once
+    they are derived (`spec_build.with_members_left_out`), each absent when it is."""
+    groups = with_members_left_out(spec).resolved.entity_groups
+    assert groups is not None
+    stated = groups[role].model_dump(mode="json")
+    return {key: stated[key] for key in ("left_out", "sum_differs") if key in stated}
+
+
 @pytest.mark.parametrize(
     ("role", "provenance", "excluded"),
     [
@@ -475,7 +485,8 @@ def _served_from(spec: Spec, provenance: str) -> Spec:
 )
 def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, provenance, excluded):
     """Africa read as its members leaves out the regional amounts DAC's Africa total counts,
-    and names those the served dataset publishes on the role the group fills."""
+    and names those the served dataset publishes on the role the group fills. The Spec's
+    group states the same labels (`EntityGroup.left_out`), absent where it leaves none out."""
     spec = _served_from(_spec(groups={role: _AFRICA_GROUP}), provenance)
 
     (fact,) = spec_departure_facts(spec, operations=())
@@ -485,6 +496,7 @@ def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, prov
         excluded,
         False,
     )
+    assert _stated_left_out(spec, role) == ({"left_out": list(excluded)} if excluded else {})
 
 
 def test_a_summed_group_counts_its_members_alone_and_names_the_residuals_it_binds():
@@ -598,6 +610,7 @@ def test_a_group_whose_published_total_claims_no_sum_says_the_members_can_differ
         (),
         sum_differs,
     )
+    assert _stated_left_out(spec, role) == ({"sum_differs": True} if sum_differs else {})
 
 
 def test_a_group_read_as_its_total_departs_nothing():
@@ -605,6 +618,7 @@ def test_a_group_read_as_its_total_departs_nothing():
     spec = _served_from(_spec(groups={"destination": group}), "provenance/OECDDAC2A")
 
     assert spec_departure_facts(spec, operations=()) == []
+    assert with_members_left_out(spec) is spec
 
 
 _SOURCE_SLOT = Slot(

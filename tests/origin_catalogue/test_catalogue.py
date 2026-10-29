@@ -148,8 +148,11 @@ def test_admit_series_with_no_facets_admits_nothing() -> None:
 def test_admit_series_filters_by_scope_before_admission(
     allowed: set[str], admission: SeriesAdmission
 ) -> None:
+    """A series admits exactly the provenances `admits_in_scope` admits, each judged alone."""
     scoped = _snapshot(un_system_enabled=True).scoped(frozenset(allowed))
-    assert scoped.admit_series([WDI, CRS, UN_WHO, _NOT_ADMITTED]) == admission
+    provenances = [WDI, CRS, UN_WHO, _NOT_ADMITTED]
+    assert scoped.admit_series(provenances) == admission
+    assert tuple(p for p in provenances if scoped.admits_in_scope(p)) == admission.admitted
 
 
 def test_scoped_keeps_the_build_and_narrows_an_existing_scope() -> None:

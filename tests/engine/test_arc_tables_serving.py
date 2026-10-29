@@ -31,7 +31,8 @@ from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.catalogue import CatalogueSnapshot
 from origin_catalogue.families import FamilyKey, FamilySummary, family_tables, summarise_table
-from origin_catalogue.graph import _table_arcs, _wire
+from origin_catalogue.frozen_arcs import served_arcs
+from origin_catalogue.graph import _table_arcs
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnVariable
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.bind import SlotBindingDraft
@@ -426,7 +427,7 @@ def test_a_shape_reads_its_family_summary_without_reading_the_members_it_did_not
 def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -> None:
     """The catalogue job reads each variable's five-tuple, role class, constraints and name
     from its arc rows. Over variables that exercise each reading, its summaries equal those
-    built from the same variables' arcs as the catalogue serves them (`graph._wire`) with
+    built from the same variables' arcs as the catalogue serves them (`frozen_arcs.served_arcs`) with
     derive's own readers."""
     provisional = {"nodes": [{"dcid": "dangling", "types": ["ProvisionalNode"]}]}
     variables = {
@@ -451,7 +452,7 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
 
     by_family: dict[FamilyKey, list[dict]] = {}
     for dcid in sorted(tables.base):
-        arcs = _wire(tables.base[dcid])
+        arcs = served_arcs(tables.base[dcid])
         role_bearing, _ = member_group_class(dcid, read_five_tuple(arcs), arcs)
         key = FamilyKey(*read_five_tuple(arcs), role_bearing)
         by_family.setdefault(key, []).append({"dcid": dcid, "arcs": arcs})

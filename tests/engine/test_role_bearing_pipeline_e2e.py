@@ -1172,7 +1172,12 @@ def test_bound_destination_open_origin_warns_about_the_open_origin_axis(monkeypa
     facts = result.specs[0].resolved.role_axis_facts
     assert facts is not None
     assert [f.model_dump(mode="json") for f in facts] == [
-        {"role": "origin", "member_count": 2, "members_available": True}
+        {
+            "role": "origin",
+            "member_count": 2,
+            "members_available": True,
+            "holds_multilaterals": False,
+        }
     ]
 
 

@@ -60,7 +60,7 @@ from search.models import (
     Timing,
     Warning,
 )
-from search.render.labels import _join_labels
+from search.render.labels import join_labels
 from search.render.no_data import ScopeSources, UnlistedPopulation, untold_place_name
 from skills_index import SkillsIndex
 
@@ -541,7 +541,7 @@ def _direction_label(entities: Sequence[ParsedEntity], region: RegionResult) -> 
 def _axis_label(places: Sequence[Sequence[str]]) -> str:
     """The places `places` holds, each by its words."""
     names = (untold_place_name(texts, quote_first=False) for texts in places)
-    return _join_labels([name for name in names if name])
+    return join_labels([name for name in names if name])
 
 
 def _unit_options(region: RegionResult, part: ParsedPart) -> list[NoDataOption | None]:
@@ -836,13 +836,6 @@ def assemble_region(
         all_extra_warnings, key=lambda w: (w.code, w.severity, w.message)
     )
     echo = echo if echo is not None else make_query_echo(query, extract_skipped=False)
-    diag = make_diagnostics(
-        engine_build,
-        envelope_warnings,
-        _shared_timing_by_step([region]),
-        now_ms() - start_ms,
-        llm_usage=llm_usage,
-    )
     part = _build_part(
         region,
         representative=region,
@@ -852,6 +845,14 @@ def assemble_region(
         include_skills=include_skills,
         skills_index=skills_index,
         envelope_warnings=envelope_warnings,
+    )
+    # Stamped once the part is built, so the total covers its assembly.
+    diag = make_diagnostics(
+        engine_build,
+        envelope_warnings,
+        _shared_timing_by_step([region]),
+        now_ms() - start_ms,
+        llm_usage=llm_usage,
     )
     return make_response(
         echo, diag, [part], include_skills=include_skills, skills_index=skills_index
@@ -932,13 +933,6 @@ def combine_regions(
     envelope_warnings = _dedupe_by(
         all_extra_warnings, key=lambda w: (w.code, w.severity, w.message)
     )
-    diag = make_diagnostics(
-        engine_build,
-        envelope_warnings,
-        _shared_timing_by_step(regions),
-        now_ms() - start_ms,
-        llm_usage=llm_usage,
-    )
     echo = echo if echo is not None else make_query_echo(query, extract_skipped=False)
 
     parts = [
@@ -954,6 +948,14 @@ def combine_regions(
         )
         for r in sorted(regions, key=lambda r: r.earliest_index)
     ]
+    # Stamped once the parts are built, so the total covers their assembly.
+    diag = make_diagnostics(
+        engine_build,
+        envelope_warnings,
+        _shared_timing_by_step(regions),
+        now_ms() - start_ms,
+        llm_usage=llm_usage,
+    )
     response = make_response(
         echo, diag, parts, include_skills=include_skills, skills_index=skills_index
     )

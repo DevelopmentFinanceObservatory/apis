@@ -229,7 +229,9 @@ def test_bound_destination_open_origin_reports_the_count_without_the_list(monkey
     assert result.status == "definite", result
     spec = result.specs[0]
     assert spec.resolved.role_axis_facts == [
-        RoleAxisFact(role="origin", member_count=2, members_available=True)
+        RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        )
     ]
     assert spec.resolved.entity_options == [
         EntityOptions(entity_ref=None, role="origin", options=[], truncated=True, source="observed")
@@ -281,7 +283,9 @@ def test_both_axes_open_entity_options_carries_both_roles(monkeypatch):
     facts = {f.role: f for f in spec.resolved.role_axis_facts or []}
     assert facts == {
         "destination": RoleAxisFact(role="destination", member_count=1, members_available=True),
-        "origin": RoleAxisFact(role="origin", member_count=2, members_available=True),
+        "origin": RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        ),
     }
     options_by_role = {eo.role: eo for eo in spec.resolved.entity_options}
     assert set(options_by_role) == {"origin", "destination"}
@@ -355,7 +359,9 @@ def test_candidates_single_survivor_collapse_populates_entity_options(monkeypatc
     spec = result.specs[0]
     assert spec.resolved.members[0].ref.ref == _SV_DCID
     assert spec.resolved.role_axis_facts == [
-        RoleAxisFact(role="origin", member_count=2, members_available=True)
+        RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        )
     ]
     assert spec.resolved.entity_options != []
     eo = spec.resolved.entity_options[0]

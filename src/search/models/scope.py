@@ -140,8 +140,9 @@ class ProviderBinding(StrictModel):
     kind: Literal["provider"] = "provider"
     scope: ProviderScope = Field(
         description=(
-            "bilateral flows alone, with imputed shares of multilateral spending, or with core "
-            "contributions to multilaterals as a published donor total counts them"
+            "bilateral flows alone, with imputed shares of multilateral spending, with core "
+            "contributions to multilaterals, or the core contributions alone, as a published "
+            "donor total counts them"
         )
     )
     window: YearSpan | None = Field(
@@ -151,6 +152,14 @@ class ProviderBinding(StrictModel):
             "run of years both tables of the inclusive scope cover, when they cover fewer "
             "than the part asks for, or the one latest year both cover for a part asking for "
             "the latest year; None when the option keeps the part's window"
+        ),
+    )
+    provenance: str | None = Field(
+        default=None,
+        description=(
+            "the composite provenance the inclusive scope binds as the identity's source, "
+            "which stacks the part's bilateral flows on the imputed multilateral line of its "
+            "own table; None for every other scope"
         ),
     )
 
