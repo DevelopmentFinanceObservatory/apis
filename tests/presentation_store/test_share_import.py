@@ -1,22 +1,26 @@
-"""Checks `import_shares` over the website's export: every stored case `docs/share-export.md`
-places, slot numbering, `frame: null` slots, tokens for signed-in users alone, idempotence, and
-refused lines that leave the others imported."""
+"""Checks `import_website_share` over the website's export: every stored case
+`docs/share-export.md` places, slot numbering, `frame: null` slots, the write token digest,
+idempotence, and refused shares that store nothing."""
 
 from __future__ import annotations
 
-import json
+import hashlib
 from datetime import UTC, datetime
 from typing import ClassVar
 
 import pytest
+from pydantic import ValidationError
 
-from assembler.errors import FrameUnavailable
+from assembler.errors import FrameUnavailable, RevisionNotFound
 from assembler.ports import DraftNotFound, FrameRef, RevisionRecord
-from assembler.write_token import write_token_digest
 from dfo_platform.caller import Caller
-from presentation_store.share_import import ImportCounts, import_shares
-from presentation_store.shares import MAX_SHARE_PAYLOAD_BYTES, LiveShareStore, ShareNotFound
-from presentation_store.store_errors import PresentationStoreUnavailable
+from presentation_store.share_import import ShareImport, SlotDrawsNoFrame, import_website_share
+from presentation_store.shares import (
+    MAX_SHARE_PAYLOAD_BYTES,
+    LiveShareStore,
+    ShareIdTaken,
+    ShareNotFound,
+)
 
 from .conftest import FakePresentationStore
 
@@ -84,6 +88,13 @@ class _Pins:
         return True
 
 
+class _NoPins:
+    """A frame store an import must not pin through."""
+
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
+        raise AssertionError(f"{component_id} pinned {frame_ref}")
+
+
 def _slot(component_id: str, revision: int, frame: FrameRef | None) -> dict[str, object]:
     return {
         "component_id": component_id,
@@ -96,6 +107,15 @@ def _slot(component_id: str, revision: int, frame: FrameRef | None) -> dict[str,
     }
 
 
+def _digest(share_id: str) -> str:
+    """The hex digest of the token the website holds for `share_id`, one per share, since no
+    two shares hold one digest."""
+    return hashlib.sha256(f"shw_{share_id}".encode()).hexdigest()
+
+
+_DIGEST = _digest("cardLive")
+
+
 def _line(share_id: str, kind: str, mode: str, **members: object) -> dict[str, object]:
     line: dict[str, object] = {
         "id": share_id,
@@ -106,6 +126,7 @@ def _line(share_id: str, kind: str, mode: str, **members: object) -> dict[str, o
         "title": f"{kind} {mode}",
         "slots": [],
         "payload": {"held": share_id},
+        "write_token_sha256": _digest(share_id),
     }
     line.update(members)
     return line
@@ -140,46 +161,41 @@ _CASES = {
     "convSnap": _line("convSnap", "conversation", "snapshot", payload={"messages": []}),
     # A guest's share: stored with no token.
     "guestSnp": _line(
-        "guestSnp", "card", "snapshot", owner=None, slots=[_slot("cmp_chart", 1, _DATASET)]
+        "guestSnp",
+        "card",
+        "snapshot",
+        owner=None,
+        write_token_sha256=None,
+        slots=[_slot("cmp_chart", 1, _DATASET)],
     ),
 }
 
 
-def _run(
-    store: LiveShareStore, lines: list[str], *, pins: _Pins | None = None
-) -> tuple[ImportCounts, list[dict], list]:
-    tokens: list[dict] = []
-    refused: list[tuple[str, str]] = []
-    counts = import_shares(
-        lines,
+def _import(
+    store: LiveShareStore, line: dict[str, object], *, pins: _Pins | _NoPins | None = None
+) -> bool:
+    body = {key: value for key, value in line.items() if key != "id"}
+    return import_website_share(
+        str(line["id"]),
+        ShareImport.model_validate(body),
         share_store=store,
         revision_store=_Revisions(),
         frame_store=pins or _Pins(),
-        write_token=lambda text: tokens.append(json.loads(text)),
-        refuse=lambda label, reason: refused.append((label, reason)),
     )
-    return counts, tokens, refused
-
-
-def _lines(*lines: dict[str, object]) -> list[str]:
-    return [json.dumps(line) + "\n" for line in lines]
 
 
 def test_every_exported_case_imports_under_its_id_and_a_second_run_changes_nothing():
-    fake = FakePresentationStore()
-    store = LiveShareStore(store=fake)
-    lines = _lines(*_CASES.values())
+    store = LiveShareStore(store=FakePresentationStore())
 
-    counts, _tokens, refused = _run(store, lines)
+    first = [_import(store, line) for line in _CASES.values()]
     after_first = {share_id: store.read_share(share_id=share_id) for share_id in _CASES}
-    again, second_tokens, second_refused = _run(store, lines)
+    # The first import wins: a re-run stating other content still finds it, and pins nothing.
+    again = [
+        _import(store, {**line, "title": "Changed", "payload": None}, pins=_NoPins())
+        for line in _CASES.values()
+    ]
 
-    assert (counts, refused) == (ImportCounts(imported=8, unchanged=0, refused=0), [])
-    assert (again, second_tokens, second_refused) == (
-        ImportCounts(imported=0, unchanged=8, refused=0),
-        [],
-        [],
-    )
+    assert (first, again) == ([True] * 8, [False] * 8)
     assert {share_id: store.read_share(share_id=share_id) for share_id in _CASES} == after_first
     for share_id, line in _CASES.items():
         share = after_first[share_id]
@@ -216,23 +232,21 @@ def test_every_exported_case_imports_under_its_id_and_a_second_run_changes_nothi
     ] == [_DERIVED, _DATASET]
 
 
-def test_a_signed_in_users_share_gets_a_token_the_report_holds_and_a_guests_gets_none():
+def test_a_signed_in_users_share_keeps_the_digest_sent_and_a_guests_holds_none():
     store = LiveShareStore(store=FakePresentationStore())
 
-    _counts, tokens, _refused = _run(store, _lines(_CASES["cardLive"], _CASES["guestSnp"]))
+    _import(store, _CASES["cardLive"])
+    _import(store, _CASES["guestSnp"])
 
-    assert [(entry["id"], entry["owner"]) for entry in tokens] == [("cardLive", "user_1")]
-    assert tokens[0]["write_token"].startswith("shw_")
-    assert store.read_share(share_id="cardLive").write_token_sha256 == write_token_digest(
-        tokens[0]["write_token"]
-    )
+    assert store.read_share(share_id="cardLive").write_token_sha256 == bytes.fromhex(_DIGEST)
     assert store.read_share(share_id="guestSnp").write_token_sha256 is None
 
 
 def test_export_slot_index_i_is_slot_i_plus_one_and_a_null_frame_takes_the_revisions():
     store = LiveShareStore(store=FakePresentationStore())
 
-    _run(store, _lines(_CASES["canvLive"], _CASES["canvSnap"]))
+    _import(store, _CASES["canvLive"])
+    _import(store, _CASES["canvSnap"])
 
     live = store.read_share(share_id="canvLive")
     assert [(slot.slot, slot.card) for slot in live.slots] == [
@@ -247,108 +261,133 @@ def test_export_slot_index_i_is_slot_i_plus_one_and_a_null_frame_takes_the_revis
 
 
 @pytest.mark.parametrize(
-    ("line", "label"),
+    "line",
     [
-        ("not json", "line 1"),
-        (json.dumps({**_CASES["cardLive"], "id": "short"}), "line 1"),
-        (json.dumps({**_CASES["cardLive"], "kind": "deck"}), "share cardLive"),
-        (json.dumps({**_CASES["cardLive"], "mode": None}), "share cardLive"),
-        (json.dumps({**_CASES["convSnap"], "mode": "live"}), "share convSnap"),
-        (
-            json.dumps({**_CASES["srchLive"], "slots": [_slot("cmp_chart", 1, _DATASET)]}),
-            "share srchLive",
-        ),
-        (json.dumps({**_CASES["cardLive"], "created_at": "2026-09-01T10:00:00"}), "share cardLive"),
-        (
-            json.dumps({**_CASES["cardLive"], "slots": [_slot("cmp_absent", 1, _DATASET)]}),
-            "share cardLive",
-        ),
-        (
-            json.dumps({**_CASES["cardLive"], "slots": [_slot("cmp_chart", 9, _DATASET)]}),
-            "share cardLive",
-        ),
-        (
-            json.dumps({**_CASES["cardLive"], "slots": [_slot("cmp_note", 1, None)]}),
-            "share cardLive",
-        ),
-        (
-            json.dumps({**_CASES["canvSnap"], "slots": [_slot("cmp_chart", 1, _UNPINNABLE)]}),
-            "share canvSnap",
-        ),
-        (
-            json.dumps({**_CASES["canvNoRf"], "payload": {"text": "x" * MAX_SHARE_PAYLOAD_BYTES}}),
-            "share canvNoRf",
-        ),
+        {**_CASES["cardLive"], "kind": "deck"},
+        {**_CASES["cardLive"], "mode": None},
+        {**_CASES["convSnap"], "mode": "live"},
+        {**_CASES["srchLive"], "slots": [_slot("cmp_chart", 1, _DATASET)]},
+        {**_CASES["cardLive"], "created_at": "2026-09-01T10:00:00"},
+        {**_CASES["canvNoRf"], "payload": {"text": "x" * MAX_SHARE_PAYLOAD_BYTES}},
+        {**_CASES["guestSnp"], "write_token_sha256": _DIGEST},
+        {**_CASES["cardLive"], "write_token_sha256": _DIGEST.upper()},
+        {**_CASES["cardLive"], "write_token_sha256": _DIGEST[:63]},
+        {key: value for key, value in _CASES["cardLive"].items() if key != "write_token_sha256"},
     ],
     ids=[
-        "not-json",
-        "bad-id",
         "unknown-kind",
         "no-mode",
         "live-conversation",
         "search-with-slots",
         "naive-created-at",
-        "unknown-card",
-        "unknown-revision",
-        "null-frame-on-a-note",
-        "unpinnable-frame",
         "payload-over-the-bound",
+        "digest-without-owner",
+        "uppercase-digest",
+        "short-digest",
+        "no-digest",
     ],
 )
-def test_a_line_the_import_cannot_place_is_refused_and_the_others_import(line: str, label: str):
+def test_a_body_that_is_not_an_export_line_is_refused(line: dict[str, object]):
+    body = {key: value for key, value in line.items() if key != "id"}
+
+    with pytest.raises(ValidationError):
+        ShareImport.model_validate(body)
+
+
+@pytest.mark.parametrize(
+    ("line", "refusal"),
+    [
+        ({**_CASES["cardLive"], "slots": [_slot("cmp_absent", 1, _DATASET)]}, DraftNotFound),
+        ({**_CASES["cardLive"], "slots": [_slot("cmp_chart", 9, _DATASET)]}, RevisionNotFound),
+        ({**_CASES["cardLive"], "slots": [_slot("cmp_note", 1, None)]}, SlotDrawsNoFrame),
+        (
+            {**_CASES["canvSnap"], "slots": [_slot("cmp_chart", 1, _UNPINNABLE)]},
+            FrameUnavailable,
+        ),
+    ],
+    ids=["unknown-card", "unknown-revision", "null-frame-on-a-note", "unpinnable-frame"],
+)
+def test_a_share_the_import_cannot_place_is_refused_and_stores_nothing(
+    line: dict[str, object], refusal: type[Exception]
+):
     store = LiveShareStore(store=FakePresentationStore())
 
-    counts, _tokens, refused = _run(store, [line + "\n", *_lines(_CASES["guestSnp"])])
+    with pytest.raises(refusal):
+        _import(store, line)
 
-    assert counts == ImportCounts(imported=1, unchanged=0, refused=1)
-    assert [entry[0] for entry in refused] == [label]
-    assert store.read_share(share_id="guestSnp").owner is None
+    with pytest.raises(ShareNotFound):
+        store.read_share(share_id=str(line["id"]))
 
 
-def test_an_id_holding_a_share_made_here_refuses_the_line():
+@pytest.mark.parametrize(
+    ("held", "token_differs"),
+    [
+        ("made-here", False),
+        ({**_CASES["cardLive"], "kind": "canvas"}, False),
+        ({**_CASES["cardLive"], "write_token_sha256": "0" * 64}, True),
+        ({**_CASES["cardLive"], "owner": None, "write_token_sha256": None}, True),
+        ({**_CASES["guestSnp"], "owner": "user_1", "write_token_sha256": _DIGEST}, True),
+    ],
+    ids=["made-here", "other-kind", "other-digest", "no-digest", "digest-held-elsewhere"],
+)
+def test_an_id_holding_another_share_or_another_digest_refuses_and_pins_nothing(
+    held: str | dict[str, object], token_differs: bool
+):
     fake = FakePresentationStore()
-    LiveShareStore(store=fake, mint_id=lambda: "cardLive").create_share(
-        kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
+    if held == "made-here":
+        LiveShareStore(store=fake, mint_id=lambda: "cardLive").create_share(
+            kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
+        )
+    else:
+        assert isinstance(held, dict)
+        _import(LiveShareStore(store=fake), held)
+    stored = _stored(LiveShareStore(store=fake), "cardLive")
+
+    with pytest.raises(ShareIdTaken) as refused:
+        _import(LiveShareStore(store=fake), _CASES["cardLive"], pins=_NoPins())
+
+    assert refused.value.token_differs is token_differs
+    assert _stored(LiveShareStore(store=fake), "cardLive") == stored
+
+
+def _stored(store: LiveShareStore, share_id: str) -> object:
+    """The share at `share_id`, or `None` when none is."""
+    try:
+        return store.read_share(share_id=share_id)
+    except ShareNotFound:
+        return None
+
+
+class _RacingShareStore(LiveShareStore):
+    """A share store whose `held_import` found the id and digest free, as it would for an
+    import that another one overtook before its write."""
+
+    def held_import(self, **_: object) -> bool:
+        return False
+
+
+def test_an_import_overtaken_by_one_taking_its_digest_refuses_in_the_write():
+    fake = FakePresentationStore()
+    _import(
+        LiveShareStore(store=fake),
+        {**_CASES["guestSnp"], "owner": "user_1", "write_token_sha256": _DIGEST},
     )
 
-    counts, tokens, refused = _run(LiveShareStore(store=fake), _lines(_CASES["cardLive"]))
+    with pytest.raises(ShareIdTaken) as refused:
+        _import(_RacingShareStore(store=fake), _CASES["cardLive"])
 
-    assert (counts, tokens) == (ImportCounts(imported=0, unchanged=0, refused=1), [])
-    assert refused[0][0] == "share cardLive"
+    assert refused.value.token_differs is True
+    assert _stored(LiveShareStore(store=fake), "cardLive") is None
 
 
 @pytest.mark.parametrize("case", ["canvLive", "canvSnap"])
 def test_an_import_pins_each_card_revisions_frame_and_each_slots_frame(case: str):
     pins = _Pins()
 
-    _run(LiveShareStore(store=FakePresentationStore()), _lines(_CASES[case]), pins=pins)
+    _import(LiveShareStore(store=FakePresentationStore()), _CASES[case], pins=pins)
 
     expected = {
         "canvLive": {(_DATASET, "cmp_chart"), (_DERIVED, "cmp_derived")},
         "canvSnap": {(_DATASET, "cmp_chart"), (_REFRESHED, "cmp_chart")},
     }[case]
     assert set(pins.pins) == expected
-
-
-def test_a_token_line_is_written_before_its_share_commits_and_a_failed_write_stores_nothing():
-    store = LiveShareStore(store=FakePresentationStore())
-    written: list[str] = []
-
-    def write_token(text: str) -> None:
-        written.append(json.loads(text)["id"])
-        raise OSError("disk full")
-
-    with pytest.raises(PresentationStoreUnavailable):
-        import_shares(
-            _lines(_CASES["cardLive"]),
-            share_store=store,
-            revision_store=_Revisions(),
-            frame_store=_Pins(),
-            write_token=write_token,
-            refuse=lambda label, reason: None,
-        )
-
-    # The share rolled back with the failed write, so a re-run mints and reports its token.
-    assert written == ["cardLive"]
-    with pytest.raises(ShareNotFound):
-        store.read_share(share_id="cardLive")

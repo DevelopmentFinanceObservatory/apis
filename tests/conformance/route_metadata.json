@@ -784,6 +784,15 @@
   },
   {
     "has_description": true,
+    "method": "PUT",
+    "name": "put_share_import",
+    "operation_id": "presentation_put_share_import",
+    "path": "/api/presentation/shares/{share_id}/import",
+    "summary": "Put Share Import",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
     "method": "GET",
     "name": "read_share_slot_card",
     "operation_id": "presentation_read_share_slot_card",

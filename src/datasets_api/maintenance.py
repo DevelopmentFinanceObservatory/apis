@@ -124,25 +124,10 @@ case directory each labelled `NAME` (default `dfo-dev`) (`recipe_golden.record_c
 a recipe whose frames together pass `B` bytes (default 2,000,000). It reads the stores as `diff-recipes` does and writes only under
 `DIR`, one `datasets_recipe_golden_recorded` line counting the cases written and skipped.
 
-`import-shares --in PATH [--tokens TOKENS]` runs by hand to move the website's shares to this
-service. It reads the JSON lines the website's `scripts/export-shares.ts` writes and stores each
-share in the Presentation store under its own id (`presentation_store.share_import`). A
-signed-in user's share gets a fresh write token, appended to `TOKENS` (default
-`share-tokens.jsonl`, created readable by its owner alone) as one `{id, owner, write_token}`
-line for the website to keep, written to disk before that share commits; a guest's share gets
-none. Before storing a share it pins the frames the share shows. A share an earlier run imported is
-left as it is and gets no line, so a re-run changes nothing and keeps the earlier report. Each
-line it cannot place gets one `presentation_share_import_refused` `ERROR` line naming it
-(`share <id>`, or `line <n>` when its id is unreadable) and the reason, and the others carry on. It writes one
-`presentation_shares_imported` line counting the shares imported, unchanged and refused, at
-`ERROR` severity and exiting 1 when any was refused. It reads the Presentation store's runtime
-database settings and the settings `sweep` reads.
-
-`normalise-recipes [--dry-run]` runs by hand once, after `import-shares`. For each recipe in
-`datasets.frame_recipe` whose root `options.columns` are not sorted and listed once, or whose
-root `options.groupby.by` is not sorted, as `analysis_roots.mint_options` writes them, it sorts
-them, recomputes `normal_form_hash` and
-`replay_key` as the analysis route does, moves the card revisions drawing that frame from the
+`normalise-recipes [--dry-run]` runs by hand once, after the website's share migration job.
+For each recipe in `datasets.frame_recipe` whose root `options.columns` are not sorted and
+listed once, or whose root `options.groupby.by` is not sorted, as `analysis_roots.mint_options`
+writes them, it sorts them, recomputes `normal_form_hash` and `replay_key` as the analysis route does, moves the card revisions drawing that frame from the
 old hash to the new one in the Presentation database
 (`presentation_store.store.rehash_derived_rendering`), then rewrites the recipe row. Each
 database commits on its own, revisions first, so a run stopped between them leaves the recipe
@@ -1253,39 +1238,6 @@ def _record_recipe_golden(out: Path, limit: int, max_bytes: int, origin: str) ->
     )
 
 
-def _import_shares(in_path: Path, tokens: Path) -> int:
-    return _run_over_artifacts(
-        "import-shares", partial(_run_import_shares, in_path=in_path, tokens=tokens)
-    )
-
-
-def _run_import_shares(
-    *, store: DatasetStore, artifact_store: ArtifactStore, in_path: Path, tokens: Path
-) -> int:
-    """Import the shares in `in_path`, pinning their frames, and return how many lines were
-    refused."""
-    # Presentation is another surface's store, so its modules load for this task alone.
-    from presentation_store.share_import import import_share_file
-
-    counts = import_share_file(
-        in_path=in_path,
-        tokens=tokens,
-        dataset_store=store,
-        artifact_store=artifact_store,
-        refuse=lambda label, reason: emit(
-            "presentation_share_import_refused", severity="ERROR", share=label, reason=reason
-        ),
-    )
-    emit(
-        "presentation_shares_imported",
-        severity="ERROR" if counts.refused else "INFO",
-        imported=counts.imported,
-        unchanged=counts.unchanged,
-        refused=counts.refused,
-    )
-    return counts.refused
-
-
 class RecipeSkip(StrEnum):
     """Why `normalise-recipes` leaves a recipe whose root options are out of order as it is."""
 
@@ -1510,12 +1462,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     golden.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     golden.add_argument("--origin", default="dfo-dev")
     golden.set_defaults(run=_record_recipe_golden)
-    shares = tasks.add_parser(
-        "import-shares", help="store the website's exported shares under their own ids"
-    )
-    shares.add_argument("--in", dest="in_path", type=Path, required=True)
-    shares.add_argument("--tokens", type=Path, default=Path("share-tokens.jsonl"))
-    shares.set_defaults(run=_import_shares)
     normalise = tasks.add_parser(
         "normalise-recipes",
         help="sort each stored recipe's root columns and move its cards to the new hash",

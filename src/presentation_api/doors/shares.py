@@ -54,6 +54,21 @@ A spent budget refuses 503 `service_unavailable`, retryable, and a spent allowan
 the refusal, or before any later failure of the write, keeps its units, since the pinned bytes
 stay and a retry finds them pinned.
 
+`PUT /api/presentation/shares/{share_id}/import` stores a website share under its own id, for
+the website's share migration job (`presentation_store.share_import`). It admits one caller, the
+value of `PRESENTATION_SHARE_IMPORT_PRINCIPAL` in the principal header, checked before the body
+is read; another caller, and every caller while the principal is unset, refuses 403
+`share_import_not_permitted`. The body is the share's export line less its `id`, plus
+`write_token_sha256`, the hex digest of the write token the website holds, or null for a
+guest's share. It pins the frames the share shows as an operator's import does, spending no
+allowance or budget. It answers 201 `{id, imported: true}` when it stores the share and 200 with
+`imported` false when an earlier import stored it, with the same kind, `created_at` and digest,
+taken down since or not; the first import wins, so other content answers 200 too. An id holding
+another share, or this one under another digest, and a digest another share holds, refuse 409
+`share_id_taken`. Neither pins anything. A body that is not such a line refuses 400 `request_invalid`, a card
+revision this service does not hold 404 `not_found`, and a frame that cannot be pinned
+`frame_unavailable`, as a create does.
+
 `GET /api/presentation/shares/{share_id}` is public and allows any origin. It returns kind,
 mode, title, revision, slots, the website's payload and created_at, and omits the token.
 
@@ -184,6 +199,7 @@ from datasets_api.allowance import (
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.door_executor import DoorExecutor, build_door_executor
+from datasets_api.principals import Grant, Principal, Principals, granted_route_class
 from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -207,6 +223,7 @@ from presentation_api.live import build_live_frame_store
 from presentation_api.models import (
     SharedResponse,
     ShareHistoryResponse,
+    ShareImportResponse,
     ShareReadResponse,
     ShareSlotCardResponse,
     ShareSlotDataResponse,
@@ -239,6 +256,7 @@ from presentation_store import (
     PresentationStoreUnavailable,
     Renderings,
     ShareCard,
+    ShareIdTaken,
     ShareNotFound,
     ShareNotReplaceable,
     ShareRecord,
@@ -250,6 +268,7 @@ from presentation_store import (
 )
 from presentation_store import close_shared_pool as close_presentation_pool
 from presentation_store import shared_pool as presentation_shared_pool
+from presentation_store.share_import import ShareImport, SlotDrawsNoFrame, import_website_share
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
 __all__ = [
@@ -271,6 +290,7 @@ SHARES_ENDPOINT = "presentation.shares"
 SHARES_PATH = "/api/presentation/shares"
 SHARE_PATH = "/api/presentation/shares/{share_id}"
 SHARE_SNAPSHOT_PATH = f"{SHARE_PATH}/snapshot"
+SHARE_IMPORT_PATH = f"{SHARE_PATH}/import"
 SHARE_HISTORY_PATH = f"{SHARE_PATH}/history"
 SHARE_SLOT_PATH = f"{SHARE_PATH}/slots/{{slot}}"
 SHARE_SLOT_DATA_PATH = f"{SHARE_SLOT_PATH}/data"
@@ -283,6 +303,9 @@ MAX_LIVE_SHARE_DATA_CARDS = 20
 `LIVE_SHARE_MAX_DATA_CARDS`, since each one's slot checks for newer data on read."""
 
 _MAX_TITLE_LENGTH = 300
+
+# The principals a door built with none admits: nobody, so the import route refuses every caller.
+_NO_PRINCIPALS = Principals(header="x-dfo-principal", secrets=())
 
 _FRESHNESS_HEADER = "x-dfo-freshness"
 _CHECKED_AT_HEADER = "x-dfo-checked-at"
@@ -432,6 +455,34 @@ class WriteTokenInvalid(Exception):
         )
 
 
+class ShareImportNotPermitted(Exception):
+    """The caller lacks the `share_import` grant. Maps to 403 `share_import_not_permitted`."""
+
+    def __init__(self, *, presented: bool) -> None:
+        self.presented = presented
+        detail = "the share import is restricted to its first-party principal"
+        if not presented:
+            detail = f"no principal header was presented; {detail}"
+        super().__init__(detail)
+
+
+def _share_import_gate(principals: Principals) -> Callable[[Request], Principal]:
+    """The check the import route runs before FastAPI reads its body: the caller must hold
+    `share_import` under `principals`.
+
+    Raises:
+        ShareImportNotPermitted: The caller lacks the grant.
+    """
+
+    def check(request: Request) -> Principal:
+        principal = principals.parse(request)
+        if Grant.share_import not in principal.grants:
+            raise ShareImportNotPermitted(presented=principal.presented is not None)
+        return principal
+
+    return check
+
+
 class SharePayloadTooLarge(Exception):
     """A create's payload is over `MAX_SHARE_PAYLOAD_BYTES`. Maps to 413 `payload_too_large`."""
 
@@ -460,6 +511,8 @@ class SharesDeps:
     caller: CallerSettings
     site: PublicSiteSettings
     executor: DoorExecutor
+    # The frame store the share import pins through, spending no allowance or budget.
+    import_frame_store: FrameStore
     # The version records history entries take their retention from; `None` states none.
     snapshot_reader: SnapshotReader | None = None
     # Where a live slot asks for newer data; `None` leaves every live slot stale.
@@ -822,6 +875,26 @@ async def post_share_snapshot(
     return await _run(deps, job)
 
 
+async def put_share_import(share_id: str, body: ShareImport, deps: SharesDepsDep) -> Response:
+    require_share_id(share_id)
+
+    def job() -> Response:
+        imported = import_website_share(
+            share_id,
+            body,
+            share_store=deps.share_store,
+            revision_store=deps.revision_store,
+            frame_store=deps.import_frame_store,
+        )
+        return JSONResponse(
+            {"id": share_id, "imported": imported},
+            status_code=201 if imported else 200,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return await _run(deps, job)
+
+
 async def read_share_history(
     share_id: str,
     deps: SharesDepsDep,
@@ -1070,6 +1143,20 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         return ProblemSpec(
             status=409, code="share_not_replaceable", detail=str(exc), retryable=False
         )
+    if isinstance(exc, ShareIdTaken):
+        return ProblemSpec(status=409, code="share_id_taken", detail=str(exc), retryable=False)
+    if isinstance(exc, ShareImportNotPermitted):
+        return ProblemSpec(
+            status=403, code="share_import_not_permitted", detail=str(exc), retryable=False
+        )
+    if isinstance(exc, SlotDrawsNoFrame):
+        return ProblemSpec(
+            status=400,
+            code="request_invalid",
+            detail=str(exc),
+            pointer=f"/slots/{exc.index}/frame",
+            retryable=False,
+        )
     if isinstance(exc, ShareNotFound | ShareSlotEmpty):
         return ProblemSpec(status=404, code="not_found", detail=str(exc), retryable=False)
     if isinstance(exc, AllowanceExhausted):
@@ -1122,6 +1209,7 @@ def build_shares_door(
     vocabulary_source: VocabularySource | None = None,
     allowances: SharedAllowanceLedger | None = None,
     caller: CallerSettings | None = None,
+    principals: Principals | None = None,
     now: Callable[[], datetime] | None = None,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
@@ -1137,7 +1225,9 @@ def build_shares_door(
     and defaults to a `LiveVocabularySource` over the code index.
     `release_registry`, which a live slot draws its card on a newer frame under, defaults to the
     baked release. `caller` defaults to those settings' `caller`, and the public site to
-    `DFO_PUBLIC_SITE_URL`.
+    `DFO_PUBLIC_SITE_URL`. The import route admits the principal `principals` grants
+    `share_import`, and with no `principals` refuses every caller. It pins through the frame
+    store given, or through a store built here that spends nothing.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     executor = build_door_executor(
@@ -1183,6 +1273,7 @@ def build_shares_door(
                 )
                 dataset_borrows += 1
             effective_frame_store = frame_store
+            import_frame_store = frame_store
             effective_snapshot_reader = snapshot_reader
             if effective_frame_store is None:
                 live = build_live_frame_store(
@@ -1191,6 +1282,7 @@ def build_shares_door(
                 dataset_borrows += 1
                 owned_graph = live.graph
                 effective_frame_store = live.frame_store
+                import_frame_store = live.unmetered_frame_store
                 effective_snapshot_reader = live.snapshot_reader
             deps = SharesDeps(
                 share_store=(
@@ -1211,6 +1303,7 @@ def build_shares_door(
                 caller=effective_caller,
                 site=site,
                 executor=executor,
+                import_frame_store=cast(FrameStore, import_frame_store),
                 snapshot_reader=effective_snapshot_reader,
                 newest=newest,
                 vocabulary_source=(
@@ -1283,6 +1376,26 @@ def build_shares_door(
         "spends one unit of the caller's daily pin allowance and of the shared pin budgets.",
     )
     router.add_api_route(
+        SHARE_IMPORT_PATH,
+        put_share_import,
+        methods=["PUT"],
+        status_code=201,
+        response_model=ShareImportResponse,
+        responses={
+            200: {
+                "description": "An earlier import stored this share, which is left as it is.",
+                "model": ShareImportResponse,
+            }
+        },
+        route_class_override=granted_route_class(
+            _share_import_gate(principals if principals is not None else _NO_PRINCIPALS)
+        ),
+        description="Store one of the website's shares under its own id, for the website's "
+        "share migration job. Admits the share import principal alone. The body is the "
+        "share's export line less its id, plus write_token_sha256. Pins the frames the share "
+        "shows, spending no allowance. 201 when stored, 200 when an earlier import stored it.",
+    )
+    router.add_api_route(
         SHARE_HISTORY_PATH,
         read_share_history,
         methods=["GET"],
@@ -1346,6 +1459,9 @@ def build_shares_door(
             WriteTokenRequired,
             WriteTokenInvalid,
             ShareNotReplaceable,
+            ShareIdTaken,
+            ShareImportNotPermitted,
+            SlotDrawsNoFrame,
             ShareNotFound,
             ShareSlotEmpty,
             SharePayloadTooLarge,
@@ -1380,6 +1496,9 @@ def build_shares_door(
             WriteTokenRequired("Ab3dEf7h"),
             WriteTokenInvalid("Ab3dEf7h"),
             ShareNotReplaceable("Ab3dEf7h"),
+            ShareIdTaken("Ab3dEf7h"),
+            ShareImportNotPermitted(presented=False),
+            SlotDrawsNoFrame(index=0, component_id="cmp_a", revision=1),
             ShareNotFound("Ab3dEf7h"),
             ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),
             SharePayloadTooLarge("exemplar"),

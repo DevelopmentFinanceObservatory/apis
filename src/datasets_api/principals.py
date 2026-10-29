@@ -11,6 +11,9 @@ Each configured secret holds one grant:
   pin route admits every caller and requires no grant. The website sends it.
 - `LIVE_REFRESH_PRINCIPAL` holds `refresh`, which opens the frame refresh and the Presentation
   render routes. The website and `ai` both send it.
+- `PRESENTATION_SHARE_IMPORT_PRINCIPAL` holds `share_import`, which opens the Presentation share
+  import route, whose door refuses a caller lacking it with its own refusal. The website's share
+  migration job sends it.
 
 A secret configured under two names holds both grants, and an empty secret holds none.
 `Principals.parse` reads one request's header into a `Principal`, comparing the value with every
@@ -43,6 +46,7 @@ class Grant(StrEnum):
     publish = "publish"
     pin = "pin"
     refresh = "refresh"
+    share_import = "share_import"
 
 
 class PublishNotPermitted(Refusal):
@@ -97,6 +101,11 @@ class Principal:
                 raise ValueError("the pin route admits every caller, so no route requires `pin`")
             case Grant.refresh:
                 return RefreshNotPermitted(presented=self.presented is not None)
+            case Grant.share_import:
+                raise ValueError(
+                    "the share import route raises its own refusal "
+                    "(`presentation_api.doors.shares.ShareImportNotPermitted`)"
+                )
 
 
 @dataclass(frozen=True)
@@ -115,12 +124,18 @@ class Principals:
         publish: frozenset[str] | None = None,
         pin: frozenset[str] | None = None,
         refresh: frozenset[str] | None = None,
+        share_import: frozenset[str] | None = None,
     ) -> Self:
         """Default the header and each grant's secrets to `settings`."""
         by_grant = {
             Grant.publish: publish if publish is not None else {settings.first_party_principal},
             Grant.pin: pin if pin is not None else {settings.pin_first_party_principal},
             Grant.refresh: refresh if refresh is not None else {settings.live_refresh_principal},
+            Grant.share_import: (
+                share_import
+                if share_import is not None
+                else {settings.presentation_share_import_principal}
+            ),
         }
         return cls(
             header=principal_header if principal_header is not None else settings.principal_header,

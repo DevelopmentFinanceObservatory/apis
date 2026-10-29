@@ -13,8 +13,8 @@ append-only. A delete sets `deleted_at`, after which every read and write answer
 
 A snapshot conversion (`snapshot_share`) writes the next revision with the frame each slot
 serves and sets the share's mode to `snapshot`, so its slots keep those frames for good.
-`import_share` stores a share exported from the website under its own id, `created_at`, owner
-and payload, and finds a share it imported before by its id, kind and `created_at`.
+`import_share` stores a website share under its own id, `created_at`, owner, payload and write
+token digest, and finds a share it imported before by its id, kind, `created_at` and digest.
 
 A live slot's data read keeps one `SlotCheck` per slot and card revision: the frame the slot
 serves, its freshness, when the check ran and when the next one is due. `claim_slot_check`
@@ -154,11 +154,18 @@ class ShareWriteTokenInUse(Exception):
 
 class ShareIdTaken(Exception):
     """An imported share's id holds another share, either one made here or a website share of
-    another kind or creation time."""
+    another kind or creation time. With `token_differs`, the id holds this share under another
+    write token digest, or another share holds the digest sent."""
 
-    def __init__(self, share_id: str) -> None:
+    def __init__(self, share_id: str, *, token_differs: bool = False) -> None:
         self.share_id = share_id
-        super().__init__(f"share id {share_id!r} already holds another share")
+        self.token_differs = token_differs
+        super().__init__(
+            f"the write token digest sent for share {share_id!r} is not the one it holds, or "
+            "another share holds it"
+            if token_differs
+            else f"share id {share_id!r} already holds another share"
+        )
 
 
 @dataclass(frozen=True)
@@ -353,17 +360,32 @@ class ShareStore(Protocol):
         """
         ...
 
-    def import_share(
-        self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
+    def held_import(
+        self,
+        *,
+        share_id: str,
+        kind: ShareKind,
+        created_at: datetime,
+        write_token_sha256: bytes | None,
     ) -> bool:
-        """Store a website share under its own id at revision 1 and record what each slot
-        shows from its `created_at`, calling `on_stored` after its rows are written and before
-        they commit, so a failure of `on_stored` stores nothing. Returns
-        `False`, changing nothing and calling nothing, when the id already holds a share of the
-        same kind and `created_at`, which an earlier import stored.
+        """Whether an earlier import stored this share: the id holds a share of the same kind,
+        `created_at` and write token digest, taken down since or not. `False` when the id is
+        free and no other share holds the digest, so an import may store it.
 
         Raises:
-            ShareIdTaken: The id holds another share.
+            ShareIdTaken: The id holds another share, or this one under another digest, or
+                another share holds the digest.
+            PresentationStoreUnavailable: The store failed.
+        """
+        ...
+
+    def import_share(self, share: ImportedShare) -> bool:
+        """Store a website share under its own id at revision 1 and record what each slot
+        shows from its `created_at`. Returns `False`, changing nothing, when `held_import`
+        finds an earlier import stored it, whatever else the share now states.
+
+        Raises:
+            ShareIdTaken: As `held_import` raises it.
             PresentationStoreUnavailable: The store failed.
         """
         ...
@@ -573,32 +595,58 @@ class LiveShareStore:
 
         return self._in_transaction(f"turning share {share_id!r} into a snapshot", write)
 
-    def import_share(
-        self, share: ImportedShare, *, on_stored: Callable[[], None] | None = None
+    def held_import(
+        self,
+        *,
+        share_id: str,
+        kind: ShareKind,
+        created_at: datetime,
+        write_token_sha256: bytes | None,
     ) -> bool:
+        return self._in_transaction(
+            f"reading share {share_id!r} for an import",
+            lambda tx: _held_import(
+                tx,
+                share_id=share_id,
+                kind=kind,
+                created_at=created_at,
+                write_token_sha256=write_token_sha256,
+            ),
+        )
+
+    def import_share(self, share: ImportedShare) -> bool:
         def write(tx: Transaction) -> bool:
-            row = tx.fetch_one(
-                "INSERT INTO presentation.share (id, kind, mode, title, write_token_sha256, "
-                "owner, payload, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (id) DO NOTHING RETURNING id",
-                (
-                    share.id,
-                    share.kind,
-                    share.mode,
-                    share.title,
-                    share.write_token_sha256,
-                    share.owner,
-                    _json_param(share.payload),
-                    share.created_at,
-                ),
-            )
-            if row is None:
-                held = tx.fetch_one(
-                    "SELECT kind, created_at FROM presentation.share WHERE id = %s", (share.id,)
+            try:
+                row = tx.fetch_one(
+                    "INSERT INTO presentation.share (id, kind, mode, title, write_token_sha256, "
+                    "owner, payload, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO NOTHING RETURNING id",
+                    (
+                        share.id,
+                        share.kind,
+                        share.mode,
+                        share.title,
+                        share.write_token_sha256,
+                        share.owner,
+                        _json_param(share.payload),
+                        share.created_at,
+                    ),
                 )
-                if held is None or (held["kind"], held["created_at"]) != (
-                    share.kind,
-                    share.created_at,
+            except Exception as exc:
+                if not (
+                    is_unique_violation(exc)
+                    and violated_constraint(exc) == _SHARE_WRITE_TOKEN_INDEX
+                ):
+                    raise
+                raise ShareIdTaken(share.id, token_differs=True) from None
+            if row is None:
+                # Another import stored the id between `held_import` and this write.
+                if not _held_import(
+                    tx,
+                    share_id=share.id,
+                    kind=share.kind,
+                    created_at=share.created_at,
+                    write_token_sha256=share.write_token_sha256,
                 ):
                     raise ShareIdTaken(share.id)
                 return False
@@ -616,8 +664,6 @@ class LiveShareStore:
                 renderings=share.renderings,
                 at=at,
             )
-            if on_stored is not None:
-                on_stored()
             return True
 
         return self._in_transaction(f"importing share {share.id!r}", write)
@@ -823,6 +869,35 @@ class LiveShareStore:
         if failure is not None:
             raise failure
         return cast("T", result)
+
+
+def _held_import(
+    tx: Transaction,
+    *,
+    share_id: str,
+    kind: ShareKind,
+    created_at: datetime,
+    write_token_sha256: bytes | None,
+) -> bool:
+    """`ShareStore.held_import` within `tx`."""
+    held = tx.fetch_one(
+        "SELECT kind, created_at, write_token_sha256 FROM presentation.share WHERE id = %s",
+        (share_id,),
+    )
+    if held is None:
+        if write_token_sha256 is not None and tx.fetch_one(
+            "SELECT id, create_request_sha256 FROM presentation.share "
+            "WHERE write_token_sha256 = %s",
+            (write_token_sha256,),
+        ):
+            raise ShareIdTaken(share_id, token_differs=True)
+        return False
+    if (held["kind"], held["created_at"]) != (kind, created_at):
+        raise ShareIdTaken(share_id)
+    stored = cast("bytes | memoryview | None", held["write_token_sha256"])
+    if (bytes(stored) if stored is not None else None) != write_token_sha256:
+        raise ShareIdTaken(share_id, token_differs=True)
+    return True
 
 
 def _json_param(value: object) -> str | None:

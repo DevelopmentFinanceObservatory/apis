@@ -31,8 +31,9 @@ refresh. Transient frame, release, service, and timeout failures retry after a d
 release manifest.
 
 The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
-`write_token_required` and `write_token_invalid` at 403, `share_not_replaceable` at 409 and
-`payload_too_large` at 413, none retryable. A card create or revise and a share create refuse
+`write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
+`share_not_replaceable` and `share_id_taken` at 409 and `payload_too_large` at 413, none
+retryable. A card create or revise and a share create refuse
 the platform's `allowance_exhausted` at 429, not retryable either, with `Retry-After` naming
 the reset (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
 none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
@@ -120,6 +121,15 @@ SHARE_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "payload_too_large": (
         "Payload Too Large",
         "A share's request body is larger than the share routes accept.",
+    ),
+    "share_id_taken": (
+        "Share Id Taken",
+        "A share import names an id that holds another share, or holds this share under "
+        "another write token digest.",
+    ),
+    "share_import_not_permitted": (
+        "Share Import Not Permitted",
+        "The share import is restricted to its first-party principal.",
     ),
 }
 
