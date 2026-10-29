@@ -17,7 +17,8 @@ P, F, U, NA = Verdict.PASS, Verdict.FAIL, Verdict.UNVERIFIABLE, Verdict.NA
 # part, a a sample that reached and passed part 0 and never reached part 1. A base pass on
 # `disposition` or `answer` whose sample's `measure`: C passes, W fails. The same on a
 # case with two expected parts: w fails `measure` on part 1 only, v fails `measure` on part
-# 0 and `entities` on part 1.
+# 0 and `entities` on part 1. D a pass and E a failure on a sample that stayed degraded
+# after its retries.
 _SAMPLE = {
     "P": Observation(P),
     "F": Observation(F),
@@ -28,6 +29,8 @@ _SAMPLE = {
     "R": Observation(P, request_rejected=True),
     "X": Observation(NA, run_failed=True),
     "~": Observation(Verdict.UNREACHED),
+    "D": Observation(P, degraded=True),
+    "E": Observation(F, degraded=True),
     "0": Observation(F, parts={0: F}),
     "1": Observation(F, parts={1: F}),
     "a": Observation(Verdict.UNREACHED, parts={1: Verdict.UNREACHED}),
@@ -158,6 +161,21 @@ ROWS = [
         confirm="01",
         blocks=True,
     ),
+    # A degraded base sample is no baseline: each base round votes over the samples that
+    # were not degraded, and one with none is base inconclusive.
+    row("base degraded on every sample", Outcome.BASE_INCONCLUSIVE, head="FFF", base="DDD"),
+    row("degraded base failures", Outcome.BASE_INCONCLUSIVE, head="FFF", base="EDE"),
+    row("base judged on undegraded samples", Outcome.NEEDS_CONFIRM, head="FFF", base="PPE"),
+    row("undegraded base failure", Outcome.PRE_EXISTING, head="FFF", base="DFD"),
+    row(
+        "regression on undegraded samples",
+        Outcome.REGRESSION,
+        head="FFF",
+        base="PDE",
+        confirm="FP",
+        blocks=True,
+    ),
+    row("degraded confirm base", Outcome.BASE_INCONCLUSIVE, head="FFF", base="PPP", confirm="FD"),
     row("rejected at base is U", Outcome.UNVERIFIABLE_AT_BASE, head="FFF", base="PPR", blocks=True),
     row("rejected at head is scored", Outcome.PASS, head="RRR"),
     row("infra outranks a known failure", Outcome.INFRA, head="I", known=True),
@@ -410,6 +428,8 @@ def test_new_case(base_hashes, new):
         ([Outcome.PASS, Outcome.WRONG_ANSWER_AT_BASE], 0),
         ([Outcome.PASS, Outcome.INFRA], 3),
         ([Outcome.INFRA, Outcome.NEW_CASE_FAILURE], 1),
+        ([Outcome.PASS, Outcome.BASE_INCONCLUSIVE], 3),
+        ([Outcome.BASE_INCONCLUSIVE, Outcome.REGRESSION], 1),
     ],
 )
 def test_exit_code(outcomes, code):

@@ -7,7 +7,8 @@ head app, and scores every sample. It re-runs at base, ``--samples`` times, only
 whose verdict needs base (``search.eval.gate``), then runs one interleaved confirm round,
 a head sample and then a base sample, for each candidate regression. It writes a JSON
 report and a Markdown summary and exits 0 when nothing blocks, 1 on a blocking verdict,
-and 3 when a base run or a check's graph or coverage read failed on infrastructure. A
+and 3 when a base run or a check's graph or coverage read failed on infrastructure, or
+when every base sample of a check stayed degraded (``base_inconclusive``). A
 setup error, such as an unreadable head corpus or an unknown base ref, or any crash
 exits 2.
 

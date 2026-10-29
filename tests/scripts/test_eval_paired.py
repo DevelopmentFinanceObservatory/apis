@@ -345,6 +345,30 @@ def test_base_infra_costs_only_the_checks_that_sent_the_case_to_base(corpus, tmp
     assert {v for n, v in verdicts.items() if n not in ("entities", "answer")} == {"pass"}
 
 
+def test_a_base_degraded_on_every_sample_is_base_inconclusive(corpus, tmp_path):
+    """The base app times out its own leg on every attempt of every sample, as the slow base
+    of synth-ghg-emissions-nigeria did, and answers right. A degraded answer is no baseline,
+    so the head's failure is neither a regression nor a pass: the run exits 3 and the
+    summary names the case."""
+
+    def degraded(query: str, n: int) -> tuple[int, dict]:
+        body = answer()
+        body["diagnostics"]["timed_out"] = True
+        return 200, body
+
+    code, _, base_posts = run_driver(paired_args(corpus, tmp_path), base=for_regressing(degraded))
+
+    assert code == 3
+    verdicts = _verdicts(tmp_path, "eth-health")
+    assert verdicts["entities"] == verdicts["answer"] == "base_inconclusive"
+    assert not set(verdicts.values()) & {"regression", "pre_existing"}
+    # Each base sample retried twice and stayed degraded; no confirm round ran.
+    assert base_posts[REGRESSING] == 9
+    summary = (tmp_path / "summary.md").read_text()
+    assert "had only degraded base samples (exit 3)" in summary
+    assert "- `eth-health` entities: every base sample stayed degraded" in summary
+
+
 def test_a_head_500_against_a_base_200_is_a_regression(corpus, tmp_path):
     crashing = for_regressing(lambda q, n: (500, problem(500, "internal_error")))
 
