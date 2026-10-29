@@ -9,8 +9,6 @@ under the subject id and every id in `revoked_under`, in the upsert statement, a
 `lock_version_links` checks that the version still links the digest, so a pin completes only
 for a digest the version keeps. A pin naming a served id honours revocations under it, and a
 pin naming a posted id passes both ids. `remove_reference` soft-deletes a live row.
-`count_pinned_copies_since` counts pinned-tier locations by `stored_at` whose digest holds a
-reference of one kind, which the pin door's daily budget reads.
 `list_live_reference_principals` is a read-only diagnostic query.
 """
 
@@ -19,12 +17,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, cast
+from typing import cast
 
 from dataset_store import DatasetStore
 from dataset_store.snapshot import (
     ArtifactNotFound,
-    ArtifactReferenceWriter,
     SnapshotRevoked,
     revoking_subjects_sql,
 )
@@ -54,15 +51,6 @@ def _revocations(
         "WHERE subject_id = %s AND content_version = %s))"
     )
     return sql, (*subjects, content_version, subject_id, content_version)
-
-
-class PinReferenceWriter(ArtifactReferenceWriter, Protocol):
-    """A reference writer that can also count the pinned copies the budget limits."""
-
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
-        """Count pinned-tier locations stored at or after `since` whose digest holds a
-        `reference_kind` reference."""
-        ...
 
 
 @dataclass(frozen=True)
@@ -258,37 +246,6 @@ class LiveArtifactReferenceWriter:
                 f"{content_version!r} returned no row"
             )
         return ReferenceWrite(created_at=cast(datetime, row["created_at"]), changed=changed)
-
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
-        """Count pinned-tier locations stored at or after `since` whose digest holds a
-        `reference_kind` reference, removed ones too, since their copy was made.
-
-        One location exists per digest and tier, and a deduplicated copy keeps its `stored_at`,
-        so this counts promotions: a second reference to a pinned digest, a repaired reference,
-        and a repeat pin add nothing. Copies only another kind references, such as a
-        presentation pin's, are left out.
-        """
-        failure: str | None = None
-        sqlstate: str | None = None
-        row = None
-        try:
-            with self._store.transaction() as tx:
-                row = tx.fetch_one(
-                    "SELECT count(*) AS n FROM datasets.artifact_location al "
-                    "WHERE al.tier = 'pinned' AND al.stored_at >= %s "
-                    "AND al.artifact_digest IN (SELECT r.artifact_digest "
-                    "FROM datasets.artifact_reference r WHERE r.reference_kind = %s)",
-                    (since, reference_kind),
-                )
-        except Exception as exc:
-            failure = (
-                f"counting pinned artifact_location rows referenced by kind {reference_kind!r} "
-                f"since {since.isoformat()} failed: {safe_diagnostics(exc)}"
-            )
-            sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return cast(int, row["n"]) if row is not None else 0
 
     def remove_reference(
         self,

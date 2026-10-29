@@ -6,6 +6,7 @@ platform entries. Redeclaring them would raise `CodeCollision` in `merge_catalog
 
 from __future__ import annotations
 
+from datasets_api.codes_analysis import ANALYSIS_DOOR_CODE_CATALOGUE
 from datasets_api.codes_core import CORE_CODE_CATALOGUE
 from datasets_api.codes_materialise import MATERIALISE_DOOR_CODE_CATALOGUE
 from datasets_api.codes_publish import PUBLISH_DOOR_CODE_CATALOGUE
@@ -19,6 +20,7 @@ DATASETS_CODE_CATALOGUE: dict[str, tuple[str, str]] = merge_catalogues(
     SNAPSHOT_DOOR_CODE_CATALOGUE,
     PUBLISH_DOOR_CODE_CATALOGUE,
     REFRESH_DOOR_CODE_CATALOGUE,
+    ANALYSIS_DOOR_CODE_CATALOGUE,
 )
 
 # Include platform codes handled by this surface's classifiers.
@@ -31,7 +33,8 @@ CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
 # `recipe_not_declared` and `rate_coverage_gap` are raised by `materialise.recipes` during
 # currency conversion and classified by the mint doors (`doors/conversion_errors.py`).
 # `refresh_not_permitted` is the frame refresh door's caller refusal, which the Presentation
-# render routes serve too. Registry-binding tests use this served-code set.
+# render routes serve too. `allowance_exhausted` is the pin door's refusal of an open caller
+# that has spent its daily pin allowance. Registry-binding tests use this served-code set.
 SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
     {
         "request_invalid",
@@ -51,6 +54,7 @@ SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
         "capability_unavailable",
         "upstream_version_changed",
         "refresh_not_permitted",
+        "allowance_exhausted",
     }
 )
 if not frozenset(PLATFORM_CODE_CATALOGUE) >= SHARED_PLATFORM_CODES:

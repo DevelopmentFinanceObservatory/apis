@@ -24,7 +24,6 @@ from typing import Any
 from dfo_spec_kit.registry import REGISTRY
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -45,6 +44,7 @@ from dfo_platform.codes import (
 )
 from dfo_platform.compression import BufferedGzipMiddleware
 from dfo_platform.config import executor_max_workers as _default_executor_max_workers
+from dfo_platform.cors import PlatformCORSMiddleware
 from dfo_platform.executor import SaturationTrackingExecutor, current_thread_is_owned_by
 from dfo_platform.problem import (
     PROBLEM_JSON,
@@ -117,6 +117,11 @@ class Surface:
     default executor is rejected. The guard covers the serving loop. Separate
     loops in other threads keep their own executors.
 
+    `public_paths` names the route paths any origin may read with `GET`. The CORS layer gives
+    every `GET` reply on one `Access-Control-Allow-Origin: *`, a refusal sent before routing
+    included, and its preflights allow any origin and `If-None-Match` whatever `cors_origins`
+    lists (`dfo_platform.cors`).
+
     `description` is the one line the OpenAPI document gives the surface's tag. Every
     route the surface serves carries that one tag, `name` capitalised, and the operation
     id `{name}_{handler}`, so a new route leaves every other route's id as it was.
@@ -134,6 +139,7 @@ class Surface:
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
     registry_endpoints: Mapping[str, str] = field(default_factory=dict)
     request_scope: Callable[[], AbstractContextManager[object]] | None = None
+    public_paths: frozenset[str] = frozenset()
     description: str = ""
 
     @property
@@ -269,6 +275,17 @@ def _validate_surfaces(surfaces: Sequence[Surface]) -> None:
             raise SurfaceConfigurationError(
                 f"surface {surface.name!r} names registry endpoints for {unrouted!r}, which "
                 "no route on its router declares, so no request would bind them."
+            )
+        get_paths = {
+            route.path
+            for route in surface.router.routes
+            if isinstance(route, APIRoute) and "GET" in (route.methods or ())
+        }
+        unread = sorted(surface.public_paths - get_paths)
+        if unread:
+            raise SurfaceConfigurationError(
+                f"surface {surface.name!r} names public paths {unread!r}, which no GET route "
+                "on its router declares."
             )
 
 
@@ -458,7 +475,7 @@ def _install_cors_outermost_middleware_stack(app: FastAPI, *, cors_kwargs: dict[
     base_build_middleware_stack = app.build_middleware_stack
 
     def _build_middleware_stack() -> ASGIApp:
-        return CORSMiddleware(base_build_middleware_stack(), **cors_kwargs)
+        return PlatformCORSMiddleware(base_build_middleware_stack(), **cors_kwargs)
 
     app.build_middleware_stack = _build_middleware_stack  # ty: ignore[invalid-assignment]
 
@@ -1025,9 +1042,10 @@ def create_app(
     )
     _install_problem_details_openapi(app)
 
-    # Empty origins disable CORS. `expose_headers` controls which response
-    # headers browser scripts can read. `allow_headers` controls request headers.
-    # Install CORS outside ServerErrorMiddleware to cover catch-all responses.
+    # Empty origins disable CORS outside the surfaces' public paths. `expose_headers`
+    # controls which response headers browser scripts can read, beside each response's own.
+    # `allow_headers` controls request headers. Install CORS outside ServerErrorMiddleware to
+    # cover catch-all responses.
     _install_cors_outermost_middleware_stack(
         app,
         cors_kwargs={
@@ -1035,6 +1053,7 @@ def create_app(
             "allow_methods": list(cors_methods),
             "allow_headers": list(cors_headers),
             "expose_headers": list(cors_expose_headers),
+            "public_paths": [path for surface in surfaces for path in surface.public_paths],
         },
     )
 

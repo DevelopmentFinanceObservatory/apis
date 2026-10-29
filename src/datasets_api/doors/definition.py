@@ -281,7 +281,7 @@ def _served_or_none(
     )
 
 
-def _served_spec(
+def served_spec(
     *, spec_id: str, deps: DefinitionDeps, trace_id: str | None = None
 ) -> StoredDefinition:
     """`_served_or_none`, raising `SpecNotFound` for an unregistered id."""
@@ -299,7 +299,7 @@ def _resolve_spec_requests(
     Wrap `MemberNotResolvable` so the GET route uses retrieval's pointer-free refusal.
     """
     with phase("resolve"):
-        stored = _served_spec(spec_id=spec_id, deps=deps)
+        stored = served_spec(spec_id=spec_id, deps=deps)
         return stored, _rehydrate_stored(stored, deps=deps)
 
 
@@ -363,7 +363,7 @@ def _register_posted_definition(
     return stored, requests
 
 
-def _serve_spec(
+def serve_spec(
     *,
     stored: StoredDefinition,
     options: MintOptions | None,
@@ -410,7 +410,7 @@ def _serve_spec_options(
     body: DefinitionOptionsRequest | None,
     head_read: HeadRead | None,
 ) -> OptionsEnvelope:
-    """`_serve_spec` with no rendering: a rebuild records the version and advances the head
+    """`serve_spec` with no rendering: a rebuild records the version and advances the head
     as a GET does, and the envelope carries the manifest's fields alone.
 
     `head_read` is the head `_serve_spec_options_head` read for the served definition, and
@@ -433,7 +433,7 @@ def _serve_spec_options(
                     spec_id=spec_id, body=body, deps=deps, trace_id=trace_id
                 )
         stored = served
-    manifest = _serve_spec(
+    manifest = serve_spec(
         stored=stored,
         options=None,
         trigger="options",
@@ -607,10 +607,10 @@ def _serve_spec_head(
     *, spec_id: str, options: MintOptions, deps: DefinitionDeps, trace_id: str | None
 ) -> Manifest | HeadRead:
     """The served definition's answer from a current head that holds the requested rendering,
-    or the head read for `_serve_spec` (`serve_fresh_head`). The head honours revocations
+    or the head read for `serve_spec` (`serve_fresh_head`). The head honours revocations
     under the served id and under `spec_id`, the id the request named."""
     with phase("resolve"):
-        stored = _served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
+        stored = served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
     return serve_fresh_head(
         stored,
         deps=deps,
@@ -672,7 +672,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             manifest = (
                 await _run_retrieval(
                     deps.work_executor,
-                    retaining(_serve_spec, reader=deps.snapshot_reader, now=deps.now),
+                    retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
                     timings=call.timings,
                     stored=head_answer.stored,
                     options=options,
@@ -896,8 +896,8 @@ SERVING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     *_ANY_ROUTE_EXCEPTION_TYPES,
     *_MATERIALISING_EXCEPTION_TYPES,
 )
-"""The refusals of serving a registered id's current version (`_served_spec`, then
-`_serve_spec`), the requested rendering aside."""
+"""The refusals of serving a registered id's current version (`served_spec`, then
+`serve_spec`), the requested rendering aside."""
 
 ROUTE_EXCEPTION_TYPES: Mapping[str, tuple[type[Exception], ...]] = {
     "datasets.definition": (*SERVING_EXCEPTION_TYPES, *_RENDERING_EXCEPTION_TYPES),

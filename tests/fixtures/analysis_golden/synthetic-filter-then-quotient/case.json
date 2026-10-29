@@ -1,0 +1,166 @@
+{
+ "content_version": "ocv_ea7515e8f7f637c09e3f3f3c8b40d00c",
+ "expected": {
+  "frame_content_version": "cv_beb1bc65e5c4eba3c0e0bbd9e9aa4e5b",
+  "output_digest": "out_e64e2b613cf8ceb4e3b0cd93a54cf5ce"
+ },
+ "origin": "synthetic",
+ "recipe": {
+  "anchor": null,
+  "execution_identity": "0.9.0|1.1.0|0.2.0",
+  "left_out": {
+   "complete": true,
+   "series": []
+  },
+  "normal_form_hash": "rnf_3bad36ec748ff1385d7a24df2c6e4e02",
+  "replay_key": "rpk_b819d58f5760f87cc67409daaecb3dd7",
+  "roots": [
+   {
+    "dataset": {
+     "content_version": "cv_11111111111111111111111111111111",
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "frame": {
+     "content_version": "cv_11111111111111111111111111111111",
+     "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "options": {
+     "bundle": false,
+     "format": "parquet",
+     "layout": "frame"
+    },
+    "schema_version": 1,
+    "scope": {}
+   },
+   {
+    "dataset": {
+     "content_version": "cv_33333333333333333333333333333333",
+     "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "frame": {
+     "content_version": "cv_33333333333333333333333333333333",
+     "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "options": {
+     "bundle": false,
+     "format": "parquet",
+     "layout": "frame"
+    },
+    "schema_version": 1,
+    "scope": {}
+   }
+  ],
+  "schema_version": 1,
+  "tree": {
+   "frame": {
+    "content_version": "ocv_ea7515e8f7f637c09e3f3f3c8b40d00c",
+    "spec_id": "ops_664db264b67e0ba2cec6b95c18ea4635"
+   },
+   "inputs": {
+    "denominator_frame_ref": {
+     "frame": {
+      "content_version": "cv_33333333333333333333333333333333",
+      "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     },
+     "root": 1
+    },
+    "frame_ref": {
+     "frame": {
+      "content_version": "ocv_c073e708d9a6e0eadf97ce929bf9c54e",
+      "spec_id": "ops_4debfeab35cb9cd9aef84ad0f58b1fda"
+     },
+     "inputs": {
+      "frame_ref": {
+       "frame": {
+        "content_version": "cv_11111111111111111111111111111111",
+        "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+       },
+       "root": 0
+      }
+     },
+     "op_spec": {
+      "frame_ref": {
+       "content_version": "cv_11111111111111111111111111111111",
+       "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "identity_version": "ops1",
+      "parameters": {
+       "predicates": [
+        {
+         "column": "value",
+         "kind": "ordered_threshold",
+         "op": "gte",
+         "value": 0
+        }
+       ]
+      },
+      "verb": "filter"
+     }
+    }
+   },
+   "op_spec": {
+    "frame_ref": {
+     "content_version": "ocv_c073e708d9a6e0eadf97ce929bf9c54e",
+     "spec_id": "ops_4debfeab35cb9cd9aef84ad0f58b1fda"
+    },
+    "identity_version": "ops1",
+    "parameters": {
+     "denominator_by": {
+      "financingRecipient": "observationAbout"
+     },
+     "denominator_entity": {},
+     "denominator_frame_ref": {
+      "content_version": "cv_33333333333333333333333333333333",
+      "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     },
+     "denominator_unit": null,
+     "numerator_by": [
+      "financingRecipient"
+     ],
+     "numerator_entity": {},
+     "numerator_unit": null
+    },
+    "verb": "quotient_of"
+   }
+  }
+ },
+ "roots": [
+  {
+   "dataset": {
+    "content_version": "cv_11111111111111111111111111111111",
+    "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "file": "roots/0.parquet",
+   "frame": {
+    "content_version": "cv_11111111111111111111111111111111",
+    "spec_id": "spec_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "options": {
+    "bundle": false,
+    "format": "parquet",
+    "layout": "frame"
+   },
+   "schema_version": 1,
+   "scope": {}
+  },
+  {
+   "dataset": {
+    "content_version": "cv_33333333333333333333333333333333",
+    "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "file": "roots/1.parquet",
+   "frame": {
+    "content_version": "cv_33333333333333333333333333333333",
+    "spec_id": "spec_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   },
+   "options": {
+    "bundle": false,
+    "format": "parquet",
+    "layout": "frame"
+   },
+   "schema_version": 1,
+   "scope": {}
+  }
+ ],
+ "spec_id": "ops_664db264b67e0ba2cec6b95c18ea4635"
+}

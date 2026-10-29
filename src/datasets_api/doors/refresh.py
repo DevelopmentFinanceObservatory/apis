@@ -37,7 +37,7 @@ one to answer with. So does a derived version linking files of two or more diffe
 options, which two renderings producing the same rows share, such as a cut and a groupby that
 left the cut frame unchanged.
 
-Freshness is the definition door's (`current.serve_current` through `_serve_spec`): a head
+Freshness is the definition door's (`current.serve_current` through `serve_spec`): a head
 confirmed within `head_recheck_seconds` answers with no read, a later call compares the head's
 dependency fingerprint in one graph read, and a changed fingerprint, a newly imported release,
 or a head older than its maximum age (`head_max_age_seconds`, or
@@ -74,7 +74,6 @@ The door records no reference and pins nothing.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from fastapi import APIRouter
@@ -89,19 +88,22 @@ from datasets_api.deps import DepsCell
 from datasets_api.doors.definition import (
     SERVING_EXCEPTION_TYPES,
     _run_retrieval,
-    _serve_spec,
-    _served_spec,
     request_definition_deps,
+    serve_spec,
+    served_spec,
 )
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest_models import Manifest
-from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.principals import Grant, Principals, RefreshNotPermitted, granted_route_class
 from datasets_api.recorded_rendering import (
     MintingOptions,
+    RenderingNotRecorded,
+    StoredRendering,
+    frame_options,
     recorded_mintings,
     records_plain_file,
+    rendering_of,
 )
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import servable_frame_location
@@ -128,40 +130,6 @@ class FrameNotRefreshable(Refusal):
         super().__init__(
             f"{spec_id!r} is a derived frame; only a dataset frame (`spec_`) is refreshed here"
         )
-
-
-class RenderingNotRecorded(Refusal):
-    """The stored records do not say which rendering the frame is: a derived frame with no
-    linked file recording its minting options, or with `ambiguous` a raw version linking a file
-    of minting options and a plain file whose renderings of the current data differ, or with
-    `sums` above one a derived version, or a raw version with no plain file, linking files of
-    that many different minting options. Maps to `rendering_not_recorded` (422)."""
-
-    code = "rendering_not_recorded"
-
-    def __init__(
-        self, *, spec_id: str, content_version: str, ambiguous: bool = False, sums: int = 1
-    ) -> None:
-        self.ambiguous = ambiguous
-        if sums > 1:
-            detail = (
-                f"the rendering of {spec_id!r} at content_version {content_version!r} is "
-                f"ambiguous: the version links files of {sums} different renderings that "
-                "mint a version of their own, and its records do not say which the frame is"
-            )
-        elif ambiguous:
-            detail = (
-                f"the rendering of {spec_id!r} at content_version {content_version!r} is "
-                "ambiguous: the version links a groupby sum or party-totals cut and a plain "
-                "file, and the renderings of the current data are no longer one frame"
-            )
-        else:
-            detail = (
-                f"{spec_id!r} at content_version {content_version!r} is a derived version, "
-                "and no file linked under it records the groupby or party-totals cut it was "
-                "minted with"
-            )
-        super().__init__(detail)
 
 
 class RefreshRebuildFailed(Refusal):
@@ -233,43 +201,6 @@ FrameRefreshResponse = Annotated[
 ]
 
 
-def _frame_options(minting: MintingOptions | None) -> MintOptions:
-    """The options a mint of a frame takes: the bare frame-layout parquet `ai` mints a frame
-    with, plus the minting options."""
-    if minting is None:
-        return MintOptions(format="parquet", bundle=False, layout="frame")
-    return MintOptions(
-        format="parquet",
-        bundle=False,
-        groupby=minting.groupby,
-        without_party_totals=minting.without_party_totals,
-        layout="frame",
-    )
-
-
-@dataclass(frozen=True)
-class StoredRendering:
-    """The rendering of its dataset a stored frame is, read from its version record."""
-
-    # The raw version the frame is, or was derived from.
-    base_content_version: str
-    # The groupby and party-totals cut the frame was minted with, `None` for the plain one.
-    minting: MintingOptions | None
-    # The frame's version is a raw one linking a plain file and a file of each of `mintings`,
-    # so the frame is one of several renderings that were the same rows when it was minted.
-    ambiguous: bool = False
-    # The frame's version is a derived version of its own, not a raw version.
-    collapsed: bool = False
-    # Each different set of minting options a file linked under the frame's version records.
-    # `minting` is the first.
-    mintings: tuple[MintingOptions, ...] = ()
-
-    @property
-    def options(self) -> MintOptions:
-        """The options a mint of this rendering takes (`_frame_options`)."""
-        return _frame_options(self.minting)
-
-
 def stored_rendering(
     *, spec_id: str, content_version: str, snapshot_reader: SnapshotReader
 ) -> StoredRendering:
@@ -295,41 +226,13 @@ def stored_rendering(
     version = snapshot_reader.read_version(spec_id, content_version)
     if version is None:
         raise SnapshotNotFound(id=spec_id, content_version=content_version)
-    renderings = [
-        location.rendering
-        for location in snapshot_reader.read_artifact_locations(spec_id, content_version)
-    ]
-    mintings: tuple[MintingOptions, ...] = ()
-    for recorded in recorded_mintings(renderings):
-        if recorded not in mintings:
-            mintings += (recorded,)
-    minting = mintings[0] if mintings else None
-    if version.base_content_version is not None:
-        if minting is None:
-            raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version)
-        if len(mintings) > 1:
-            raise RenderingNotRecorded(
-                spec_id=spec_id,
-                content_version=content_version,
-                ambiguous=True,
-                sums=len(mintings),
-            )
-        return StoredRendering(
-            base_content_version=version.base_content_version,
-            minting=minting,
-            collapsed=True,
-            mintings=mintings,
-        )
-    plain_file = records_plain_file(renderings)
-    if len(mintings) > 1 and not plain_file:
-        raise RenderingNotRecorded(
-            spec_id=spec_id, content_version=content_version, ambiguous=True, sums=len(mintings)
-        )
-    return StoredRendering(
-        base_content_version=content_version,
-        minting=minting,
-        ambiguous=minting is not None and plain_file,
-        mintings=mintings,
+    return rendering_of(
+        spec_id=spec_id,
+        version=version,
+        renderings=[
+            location.rendering
+            for location in snapshot_reader.read_artifact_locations(spec_id, content_version)
+        ],
     )
 
 
@@ -407,7 +310,7 @@ def _rendering_frame(
         stored = _servable_frame(spec_id=spec_id, content_version=recorded, deps=deps)
         if stored is not None:
             return stored
-    options = _frame_options(minting)
+    options = frame_options(minting)
     rendered = head_rendering(
         subject_id=spec_id,
         content_version=head_content_version,
@@ -469,7 +372,7 @@ def _refuse_differing_renderings(
             subject_id=spec_id,
             content_version=current_content_version,
             deps=deps,
-            options=_frame_options(None),
+            options=frame_options(None),
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
         )
@@ -482,24 +385,42 @@ def _refuse_differing_renderings(
     raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version, ambiguous=True)
 
 
-def _refresh_frame(
-    *, spec_id: str, content_version: str, deps: DefinitionDeps, trace_id: str | None
+def answer_frame_refresh(
+    *,
+    spec_id: str,
+    content_version: str,
+    deps: DefinitionDeps,
+    trace_id: str | None,
+    recorded: StoredRendering | None = None,
 ) -> FrameCurrent | FrameMoved | FramePending:
     """Answer the refresh of one dataset frame. Runs on the refresh door's executor.
 
     The named frame's records are read under the id that names it, so a frame recorded under a
     posted id that is not its served id keeps resolving. The head, any rebuild, and the answer
     use the served id (`kinds.spec_id.resolve_served_definition`), so such a frame answers
-    `moved` to its served dataset's current frame."""
+    `moved` to its served dataset's current frame.
+
+    `recorded` is the frame's rendering as a card revision recorded it when the card was made
+    (`presentation.component_revision.frame_rendering`, read by `StoredRendering.from_record`).
+    With it the refresh answers under that rendering and reads no rendering from the frame's
+    records, so a file of another rendering linked later under the named version changes
+    nothing, as on the render routes (`refresh_can_answer`). Without it the rendering is the
+    one `stored_rendering` reads today."""
     with phase("resolve"):
-        served = _served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
-        rendering = stored_rendering(
-            spec_id=spec_id, content_version=content_version, snapshot_reader=deps.snapshot_reader
+        served = served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
+        rendering = (
+            recorded
+            if recorded is not None
+            else stored_rendering(
+                spec_id=spec_id,
+                content_version=content_version,
+                snapshot_reader=deps.snapshot_reader,
+            )
         )
     named_spec_id, spec_id = spec_id, served.spec_id
     # An ambiguous frame is served as the plain rendering, and `_answer` then checks the others.
     minting = None if rendering.ambiguous else rendering.minting
-    options = _frame_options(minting)
+    options = frame_options(minting)
 
     def _load_head_frame(
         head_content_version: str, coverage_snapshot: CoverageSnapshot
@@ -540,7 +461,7 @@ def _refresh_frame(
         return FrameMoved(frame=frame)
 
     try:
-        manifest = _serve_spec(
+        manifest = serve_spec(
             stored=served,
             options=options,
             trigger="refresh",
@@ -587,7 +508,7 @@ def build_refresh_door(
         with door_call("frame_refresh", logger=logger) as call:
             answer = await _run_retrieval(
                 current.work_executor,
-                _refresh_frame,
+                answer_frame_refresh,
                 deps=request_definition_deps(current),
                 timings=call.timings,
                 refuse=RefreshBackpressure,
@@ -604,8 +525,8 @@ def build_refresh_door(
         router=router,
         registry_endpoints=route_registry_endpoints(router, "datasets.refresh"),
         classify=classify_refresh_exception,
-        # `_refresh_frame` serves the frame's dataset as the definition door serves a registered
-        # id, rendering the frame's parquet and its groupby sum.
+        # `answer_frame_refresh` serves the frame's dataset as the definition door serves a
+        # registered id, rendering the frame's parquet and its groupby sum.
         exception_types=(
             *SERVING_EXCEPTION_TYPES,
             ParquetSizeBoundError,
@@ -637,6 +558,7 @@ __all__ = [
     "RefreshRebuildFailed",
     "RenderingNotRecorded",
     "StoredRendering",
+    "answer_frame_refresh",
     "build_refresh_door",
     "classify_refresh_exception",
     "refresh_can_answer",

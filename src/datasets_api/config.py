@@ -15,7 +15,11 @@ from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
-from dfo_platform.config import PublicSiteSettings, env_validation_error_message
+from dfo_platform.config import (
+    CallerSettings,
+    PublicSiteSettings,
+    env_validation_error_message,
+)
 from materialise import DEFAULT_MEMBER_CONCURRENCY
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -105,6 +109,27 @@ class DatasetsBuildSettings(BaseSettings):
     # Slot wait limit. The semaphore uses the earlier of this limit and the request deadline (503).
     materialise_wait_seconds: float = Field(default=30, gt=0)
 
+    # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
+    # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root
+    # frames, computes and stores under one materialise permit, so at most
+    # `materialise_max_concurrency` runs hold frames at once across every frame path.
+    analysis_max_concurrency: int = Field(default=2, ge=1)
+
+    # A run's deadline, from admission to its answer. A run past it answers timeout (504,
+    # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
+    # joins it (202, `Retry-After` 5), and a retry after it ends answers the stored body.
+    analysis_timeout_seconds: float = Field(default=120, gt=0)
+
+    # The most nodes one tree holds, steps and roots, after each derived root is expanded into
+    # its stored recipe.
+    analysis_max_nodes: int = Field(default=64, ge=1)
+
+    # The most rows a tree's root frames hold together. Every verb but `join` writes no more
+    # rows than its `data` side holds, and a `join` writes at most `analysis_max_join_rows`, so
+    # the two bound every frame a run holds.
+    analysis_max_root_rows: int = Field(default=2_000_000, ge=1)
+    analysis_max_join_rows: int = Field(default=250_000, ge=1)
+
     # Subjects a described arm's member walk reads when its first reverse page truncates
     # without a confirmed root. The walk takes the whole filtered set up to this many and
     # confirms it by the subjects' arcs. The default, shared with Search's resubmit, covers the deepest measured
@@ -130,9 +155,29 @@ class DatasetsBuildSettings(BaseSettings):
     # import carries.
     head_imported_data_max_age_seconds: int = Field(default=604_800, ge=1)
 
-    # New pinned copies allowed per trailing 24 hours, counted from `pin` references. A repin of
-    # an already pinned artifact is exempt. 0 refuses every new pinned copy.
-    pin_daily_max: int = Field(default=500, ge=0)
+    # New pinned copies the pin door and the share routes make per UTC day
+    # (`datasets_api.retention_admission`), a budget spent as an allowance is
+    # (`datasets_api.allowance`). A repin of an already pinned artifact and a serving-frame copy
+    # spend none. 0 refuses every new pinned copy.
+    pin_daily_max: int = Field(default=2_500, ge=0)
+
+    # New pinned copies callers without the pin grant may make together per UTC day, spent with
+    # `pin_daily_max` and the caller's `pin_daily_allowance` in one transaction. Their copies
+    # spend `pin_daily_max` as well, so open callers leave the pin grant's holders at least
+    # `pin_daily_max` minus this.
+    pin_open_daily_max: int = Field(default=2_000, ge=0)
+
+    # New pinned copies one caller without the pin grant may make per UTC day
+    # (`datasets_api.allowance`), through the pin door or a share's pins
+    # (`datasets_api.retention_admission`). A repin of an already pinned artifact spends none.
+    pin_daily_allowance: int = Field(default=100, ge=0)
+
+    # Shares one caller may write per UTC day (`datasets_api.allowance`).
+    share_daily_allowance: int = Field(default=10, ge=0)
+
+    # Presentation card creates and revisions one caller may write per UTC day
+    # (`datasets_api.allowance`). A caller holding the publish grant spends none.
+    card_daily_allowance: int = Field(default=500, ge=0)
 
     # Sent as `x-graph-token` to live graph/SDMX clients to bypass the graph WAF. Empty omits the
     # header.
@@ -176,6 +221,10 @@ class DatasetsBuildSettings(BaseSettings):
     # The website bundles link to, read from `DFO_PUBLIC_SITE_URL` (required) and
     # `DFO_SITE_DATASET_LINKS`, which the presentation surface reads too.
     site: PublicSiteSettings = Field(default_factory=PublicSiteSettings.from_env)
+
+    # How a request's caller is named for its allowances, read from `DFO_CALLER_PRINCIPAL`,
+    # `DFO_CALLER_HMAC_KEY` and `DFO_TRUSTED_PROXY_HOPS` (`dfo_platform.config.CallerSettings`).
+    caller: CallerSettings = Field(default_factory=CallerSettings.from_env)
 
     @model_validator(mode="after")
     def _check_head_recheck_before_max_age(self) -> DatasetsBuildSettings:

@@ -17,7 +17,9 @@ from dfo_spec_kit.registry import REGISTRY
 import datasets_api.app  # noqa: F401 -- imports every door module, so every refusal class loads
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
+from datasets_api.doors.analysis import RunningAnalyses, build_analysis_door
 from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES, build_definition_door
+from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
 from datasets_api.doors.files import build_files_door
 from datasets_api.doors.meta import build_meta_door
@@ -44,6 +46,9 @@ _ENDPOINTS = {
     "mint": ("datasets.mint",),
     "definition": ("datasets.definition", "datasets.options", "datasets.members"),
     "refresh": ("datasets.refresh",),
+    "analysis": ("datasets.analysis",),
+    "derived": ("datasets.snapshot",),
+    "derived_files": ("datasets.files",),
     "recipe": ("datasets.recipe",),
     "snapshot": ("datasets.snapshot",),
     "versions": ("datasets.snapshot",),
@@ -68,6 +73,9 @@ def doors() -> dict[str, DoorContribution]:
         "mint": build_mint_door(deps=cell),
         "definition": build_definition_door(deps=cell),
         "refresh": build_refresh_door(deps=cell, settings=settings),
+        "analysis": build_analysis_door(deps=cell, running=RunningAnalyses()),
+        "derived": build_derived_door(deps=cell),
+        "derived_files": build_derived_files_door(deps=cell),
         "recipe": build_recipe_door(deps=cell, settings=settings),
         "snapshot": build_snapshot_door(deps=cell),
         "versions": build_versions_door(deps=cell),

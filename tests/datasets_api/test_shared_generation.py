@@ -121,6 +121,7 @@ _STORES = (
     "recipe_store",
     "description_store",
     "reference_writer",
+    "allowances",
 )
 
 

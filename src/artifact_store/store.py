@@ -42,7 +42,7 @@ from artifact_store.errors import (
     ArtifactWriteError,
 )
 from artifact_store.inventory import InventoryBatch, InventoryEntry
-from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, sign_get_url
+from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, emulator_host, sign_get_url
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import working_tier_expired
 from dfo_platform.timings import count
@@ -544,6 +544,8 @@ class LiveArtifactStore:
                 f"buckets is missing an entry for tier(s): "
                 f"{[tier.value for tier in missing_tiers]!r}"
             )
+        # Refuse an emulator outside the local stack at start-up, before any link goes out.
+        emulator_host()
         self._buckets = dict(buckets)
         self._inventory = inventory
         self._client = client if client is not None else storage.Client()

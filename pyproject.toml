@@ -102,6 +102,8 @@ datasets = [
     # google-auth already ships transitively via google-cloud-storage;
     # pinned here directly since this surface now imports it by name.
     "google-auth>=2.34",
+    # datasets_api.analysis runs recipe trees through the analysis engine.
+    "dfo-analysis-engine",
 ]
 graph = [
     # graph_api mounts a FastAPI door and imports dfo_platform.app
@@ -127,6 +129,8 @@ typecheck = [
     # ty resolves pyarrow.compute results against these stubs; without them
     # a compute call's return type is Unknown.
     "pyarrow-stubs>=20",
+    # ty resolves the package's own `dfo_analysis_engine.*` imports through the venv.
+    "dfo-analysis-engine",
 ]
 test = [
     "pytest>=8",
@@ -139,6 +143,8 @@ test = [
     "pytest-testmon>=2.2.0",
     # tests/contract/test_client_contract.py reads the recorded client scenarios.
     "dfo-spec-kit-client-contract",
+    # packages/dfo-analysis-engine/tests import the package.
+    "dfo-analysis-engine",
 ]
 
 [build-system]
@@ -159,6 +165,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 dfo-data-tools = { workspace = true }
+dfo-analysis-engine = { workspace = true }
 # dfo-data-tools's own pyproject.toml pins dfo-spec-kit-frame-grammar,
 # dfo-spec-kit-components, dfo-spec-kit-provenance-docs, and
 # dfo-spec-kit-descriptions to this same
@@ -167,8 +174,9 @@ dfo-data-tools = { workspace = true }
 # uv resolves relative to frame-grammar's own pinned commit -- so this
 # project's own `dfo-spec-kit` source MUST resolve to that identical commit,
 # or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
-# (confirmed live). All six pins move together as a single rev: these four,
-# `dfo-spec-kit`, and `dfo-spec-kit-client-contract`. uv does not force the
+# (confirmed live). All eight pins move together as a single rev: these four,
+# `dfo-spec-kit`, `dfo-spec-kit-client-contract`, and dfo-analysis-engine's
+# `dfo-spec-kit` and `dfo-spec-kit-frame-grammar`. uv does not force the
 # contract package onto this commit; tests/contract/test_client_contract.py
 # checks that its rev equals `dfo-spec-kit`'s. This rev's
 # registry schema has no `spec_resubmit` door: a code with a raise site in
@@ -243,7 +251,11 @@ dfo-data-tools = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is ae602f5 on spec-kit's dev branch. It registers slot_default_not_applied, the three source-code
+# The pin is 6b606ec on spec-kit's dev branch. It adds ref format 2 (derived
+# members) with roots that may carry the groupby DFO read them with, `mv_`
+# minted variable names, the output-digest and analysis rule vectors, the
+# datasets.analysis and presentation.shares endpoints and their refusal codes.
+# It registers slot_default_not_applied, the three source-code
 # refusals, whole_total_available and the scope-choice refusals
 # requested_option_unavailable and conflicting_requested_options, retires
 # starved_axis_binding_restored, and holds the
@@ -257,14 +269,26 @@ dfo-data-tools = { workspace = true }
 # columns and rows for reading, and states the client-identity, base-URL and
 # role-keys rules. The client contract also holds the file-selector rule, which
 # names the format, bundle and layout of a file request, and compares values
-# across every column, flat or nested, by `same_value`.
-# Follow-up: move all six to a real spec-kit tag once one is cut, so a future
+# across every column, flat or nested, by `same_value`. Its registry maps the
+# analysis engine's refusal codes and the Datasets codes the datasets.analysis
+# route serves, each at its status.
+# It maps the share routes' refusals on presentation.shares at the statuses the
+# presentation write and components routes use, adds `payload_too_large` (413)
+# for a share body over the routes' limit, maps `timeout` (504) on
+# datasets.analysis, and retires `pin_not_permitted`. The client contract adds
+# the `payload_too_large` action row and the `series_left_out` warning.
+# Its registry maps `allowance_exhausted` (429) on presentation.write and says
+# its problem document reads `retryable: false`. Its output-digest rule is
+# `out2`, whose document names each value's `stat_var` and reads a variable that
+# compare, sum_of, share_of or quotient_of writes under a name built from its
+# verb and its inputs' variables.
+# Follow-up: move all eight to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "ae602f583ae2388871bd0480b432350397c8d1cb", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "ae602f583ae2388871bd0480b432350397c8d1cb", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6b606ec02d67def6851aae913a733da31e0183be", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6b606ec02d67def6851aae913a733da31e0183be", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/dfo-analysis-engine/tests"]
 filterwarnings = ["ignore::starlette.exceptions.StarletteDeprecationWarning"]
 markers = [
   # Exempts a test from tests/conftest.py's outbound-HTTP guard, which
@@ -287,7 +311,7 @@ markers = [
 # noise rather than defects; pytest is what guards the tests. promptlab is a
 # development tool, not shipped (see [tool.uv.build-backend]), but it is
 # still real source worth checking.
-include = ["src", "packages/dfo-data-tools/src", "promptlab"]
+include = ["src", "packages/dfo-data-tools/src", "packages/dfo-analysis-engine/src", "promptlab"]
 
 [tool.ty.environment]
 # Resolve imports against the project venv (python 3.12 + engine extras) rather
@@ -315,7 +339,7 @@ target-version = "py312"
 line-length = 100
 # isort first-party classification: without this, ruff treats the workspace
 # member's packages as third-party and reclassifies their imports repo-wide.
-src = [".", "src", "packages/dfo-data-tools/src"]
+src = [".", "src", "packages/dfo-data-tools/src", "packages/dfo-analysis-engine/src"]
 exclude = [
     ".git",
     ".venv",

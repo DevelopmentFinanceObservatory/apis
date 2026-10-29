@@ -1,6 +1,7 @@
-"""Build the live `FrameStore` shared by the components and frames doors, with the snapshot,
-recipe and description readers it reads through. The render routes decide whether a target frame may stand
-in for a stored one from those two readers.
+"""Build the live `FrameStore` shared by the components, frames and shares doors, with the
+snapshot, recipe and description readers it reads through. Its pins spend from the allowance
+ledger the door passes (`datasets_api.retention_admission`). The render routes decide whether a target frame may stand in for a stored one from the snapshot and
+recipe readers.
 Each door borrows the ref-counted dataset pool independently. This function closes the pool
 borrow and graph client if construction fails.
 """
@@ -14,6 +15,7 @@ from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
 from dataset_store import shared_pool as dataset_shared_pool
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
+from datasets_api.allowance import SharedAllowanceLedger
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.recipe_store import LiveRecipeStore, RecipeReader
 from datasets_api.reference_store import LiveArtifactReferenceWriter
@@ -41,10 +43,13 @@ class LiveFrames:
     recipe_reader: RecipeReader
 
 
-def build_live_frame_store(*, settings: PresentationSettings) -> LiveFrames:
+def build_live_frame_store(
+    *, settings: PresentationSettings, allowances: SharedAllowanceLedger | None
+) -> LiveFrames:
     """Build a frame store over the datasets pool and return it with its graph client and
-    readers. Success registers one pool borrow for the caller to release. Failure closes that
-    borrow and any graph client already built.
+    readers. Its pins spend from `allowances`, `None` for a door that never pins
+    (`LiveFrameStore`). Success registers one pool borrow for the caller to release. Failure
+    closes that borrow and any graph client already built.
     """
     connections = dataset_shared_pool()
     graph: OriginGraphClient | None = None
@@ -72,6 +77,7 @@ def build_live_frame_store(*, settings: PresentationSettings) -> LiveFrames:
             spec_reader=LiveSpecReader(store=store),
             recipe_reader=recipe_reader,
             description_reader=description_reader,
+            allowances=allowances,
             # Both doors call `load()`, so the shorter wait bounds its graph reads.
             read_budget_seconds=min(
                 PRESENTATION_COMPONENTS_TIMEOUT_SECONDS, PRESENTATION_FRAMES_TIMEOUT_SECONDS

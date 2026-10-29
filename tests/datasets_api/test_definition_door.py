@@ -214,9 +214,12 @@ def _client(
     settings: DatasetsBuildSettings | None = None,
     materialise_max_concurrency: int | None = None,
     sdmx_hedge_after: float | None = None,
+    recipe_store=None,
+    version_lister=None,
 ):
     """Builds a composed client with separate spec and version stores. A version store wires
-    live readers and inventory-aware artifacts. `sdmx_hedge_after` hedges its SDMX reads."""
+    live readers and inventory-aware artifacts. `sdmx_hedge_after` hedges its SDMX reads.
+    `recipe_store` and `version_lister` are `make_client`'s."""
     store = store if store is not None else FakeDatasetStore()
     if version_store is not None:
         from artifact_store import LiveArtifactInventory
@@ -250,6 +253,8 @@ def _client(
         coverage=coverage if coverage is not None else _coverage_service(),
         settings=settings,
         materialise_max_concurrency=materialise_max_concurrency,
+        recipe_store=recipe_store,
+        version_lister=version_lister,
     )
 
 

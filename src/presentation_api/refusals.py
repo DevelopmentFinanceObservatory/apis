@@ -12,7 +12,12 @@ from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.validation import validation_problem
 from presentation_api.codes import retryable_for
 
-__all__ = ["binding_invalid_spec", "frame_unavailable_spec", "request_validation_spec"]
+__all__ = [
+    "EXPIRED_FRAME_FIX",
+    "binding_invalid_spec",
+    "frame_unavailable_spec",
+    "request_validation_spec",
+]
 
 
 def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
@@ -48,7 +53,9 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
 
 
 # `expired` and `ops_unsupported` can succeed after republishing. Revoked, missing, digest
-# mismatch, quarantined, and unknown refs are permanent. I/O maps to retryable 503.
+# mismatch, quarantined, and unknown refs are permanent. I/O maps to retryable 503, as do a
+# derived frame whose recipe is not written yet (`recipe_pending`), which a recipe write lets a
+# retry pin, and a recipe the store cannot read (`recipe_unreadable`), a server fault.
 _FRAME_UNAVAILABLE_OUTCOME: dict[str, tuple[int, bool]] = {
     "expired": (404, True),
     "revoked": (404, False),
@@ -57,15 +64,26 @@ _FRAME_UNAVAILABLE_OUTCOME: dict[str, tuple[int, bool]] = {
     "digest_mismatch": (404, False),
     "quarantined": (404, False),
     "io": (503, True),
+    "recipe_pending": (503, True),
+    "recipe_unreadable": (503, True),
     "unknown": (404, False),
 }
 
 
+# An expired frame aged out of the working tier. A card made on it draws again from current
+# data, which a fetch of its ref with latest=True returns.
+EXPIRED_FRAME_FIX = (
+    "the frame aged out of the 30-day working tier; fetch its ref with latest=True, as "
+    "dfo.fetch(..., latest=True) does, to draw from current data"
+)
+
+
 def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
+    """`frame_unavailable`, at the status and retryability `exc.reason` gives. An expired frame's
+    detail ends with `EXPIRED_FRAME_FIX`."""
     status, retryable = _FRAME_UNAVAILABLE_OUTCOME.get(exc.reason, (503, True))
-    return ProblemSpec(
-        status=status, code="frame_unavailable", detail=exc.detail, retryable=retryable
-    )
+    detail = f"{exc.detail}; {EXPIRED_FRAME_FIX}" if exc.reason == "expired" else exc.detail
+    return ProblemSpec(status=status, code="frame_unavailable", detail=detail, retryable=retryable)
 
 
 def request_validation_spec(exc: BaseException) -> ProblemSpec | None:

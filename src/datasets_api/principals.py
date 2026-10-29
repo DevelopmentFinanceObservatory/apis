@@ -7,8 +7,8 @@ Each configured secret holds one grant:
 
 - `DATASETS_FIRST_PARTY_PRINCIPAL` holds `publish`, which opens the publish and recipe routes.
   `ai` sends it.
-- `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` holds `pin`, which opens the pin route. The website
-  sends it.
+- `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` holds `pin`, whose pins spend no caller allowance. The
+  pin route admits every caller and requires no grant. The website sends it.
 - `LIVE_REFRESH_PRINCIPAL` holds `refresh`, which opens the frame refresh and the Presentation
   render routes. The website and `ai` both send it.
 
@@ -58,19 +58,6 @@ class PublishNotPermitted(Refusal):
         super().__init__(detail)
 
 
-class PinNotPermitted(Refusal):
-    """The caller lacks the `pin` grant."""
-
-    code = "pin_not_permitted"
-
-    def __init__(self, *, presented: bool = False) -> None:
-        self.presented = presented
-        detail = "the pin permission is not granted to this caller"
-        if not presented:
-            detail = f"no principal header was presented; {detail}"
-        super().__init__(detail)
-
-
 class RefreshNotPermitted(Refusal):
     """The caller lacks the `refresh` grant."""
 
@@ -107,7 +94,7 @@ class Principal:
             case Grant.publish:
                 return PublishNotPermitted(presented=self.presented is not None)
             case Grant.pin:
-                return PinNotPermitted(presented=self.presented is not None)
+                raise ValueError("the pin route admits every caller, so no route requires `pin`")
             case Grant.refresh:
                 return RefreshNotPermitted(presented=self.presented is not None)
 
@@ -168,7 +155,7 @@ class Principals:
         returns the caller's `Principal`.
 
         Raises:
-            PublishNotPermitted, PinNotPermitted, RefreshNotPermitted: The caller lacks `grant`.
+            PublishNotPermitted, RefreshNotPermitted: The caller lacks `grant`.
         """
 
         def check(request: Request) -> Principal:
@@ -200,7 +187,6 @@ def granted_route_class(check: Callable[[Request], Principal]) -> type[APIRoute]
 
 __all__ = [
     "Grant",
-    "PinNotPermitted",
     "Principal",
     "Principals",
     "PublishNotPermitted",

@@ -524,6 +524,8 @@ def test_a_revise_carrying_composition_id_is_binding_invalid(client: TestClient)
     body = resp.json()
     assert body["code"] == "binding_invalid"
     assert body["type"] == "/codes/binding_invalid"
+    # The intent must change before the write can succeed, so a client must not resend it.
+    assert body["retryable"] is False
 
 
 def test_a_missing_type_on_create_is_schema_invalid_and_names_the_legal_types(client: TestClient):
@@ -534,8 +536,9 @@ def test_a_missing_type_on_create_is_schema_invalid_and_names_the_legal_types(cl
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "schema_invalid"
-    # The missing type returns the legal union members as `minimal_intent`.
-    assert body["retryable"] is True
+    # The missing type returns the legal union members as `minimal_intent`. The request must
+    # change before the write can succeed, so a client must not resend it.
+    assert body["retryable"] is False
     assert "minimal legal intent" in body["detail"]
 
 
@@ -547,7 +550,7 @@ def test_a_create_missing_select_is_schema_invalid_with_the_minimal_intent(clien
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "schema_invalid"
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert "minimal legal intent" in body["detail"]
 
 
@@ -806,21 +809,17 @@ def test_an_unpublished_ops_frame_ref_is_frame_unavailable_and_retryable(
         ("quarantined", 404, "frame_unavailable", False),
     ],
 )
-@pytest.mark.parametrize("stage", ["load", "pin"])
 def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
-    stage: str,
     fault: str,
     status: int,
     code: str,
     retryable: bool,
-    frame_store: FakeFrameStore,
     revision_store: FakeRevisionStore,
     release_registry: FakeReleaseRegistry,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """A real frame store reads the registry to scope a frame ref's revocation check when it
-    loads and when it pins. Each fault that read can raise at either stage answers a declared
-    refusal through the create route, never 500, and writes no component."""
+    loads. Each fault that read can raise answers a declared refusal through the create route,
+    never 500, and writes no component. A create pins nothing, so the load is the only read."""
     spec_reader = _FakeSpecReader()
     if fault == "quarantined":
         spec_reader.quarantined = frozenset({malaria_ethiopia_frame_ref().spec_id})
@@ -831,11 +830,8 @@ def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
             else SpecRegistryStoreError("spec registry read failed")
         )
     live_store = _store(spec_reader=spec_reader)
-    if stage == "pin":
-        # The fake loads the frame, so the create reaches the real store's pin.
-        monkeypatch.setattr(frame_store, "pin", live_store.pin)
     surface = presentation_surface(
-        frame_store=frame_store if stage == "pin" else live_store,
+        frame_store=live_store,
         revision_store=revision_store,
         release_registry=release_registry,
     )

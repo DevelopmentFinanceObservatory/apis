@@ -141,7 +141,12 @@ from datasets_api.version_store import (
     recorded_frame_sha256,
     rendering_key,
 )
-from datasets_api.versions import ArtifactRecord, carries_party_kind, enrichment_stamp
+from datasets_api.versions import (
+    ArtifactRecord,
+    carries_party_kind,
+    enrichment_stamp,
+    link_digest,
+)
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
@@ -184,6 +189,7 @@ from materialise.formats import (
     Table,
     WrittenArtifact,
     canonical_frame_rows,
+    frame_entity_columns,
     table_schema_for,
     write_canonical_frame,
     write_csv,
@@ -3557,4 +3563,71 @@ def render_and_store_canonical_frame(
         artifact_digest=stored.digest,
         rendering=dict(CANONICAL_FRAME_RENDERING),
         media_type=written.media_type,
+    )
+
+
+FRAME_FILE_OPTIONS = MintOptions(format="parquet", bundle=False, layout=FRAME_LAYOUT)
+"""The bare frame-layout Parquet file a derived frame stores beside its canonical frame
+(`render_and_store_frame_file`), the file `?format=parquet&bundle=false&layout=frame` selects."""
+
+
+def frame_file_rendering(site: PublicSiteSettings) -> dict[str, object]:
+    """The rendering a frame file (`FRAME_FILE_OPTIONS`) is stored and linked under. It is
+    the same under any `site`, which only a bundle's rendition token reads."""
+    return artifact_rendering(FRAME_FILE_OPTIONS, site=site)
+
+
+def frame_file_location(
+    locations: Sequence[StoredArtifactLocation], *, site: PublicSiteSettings
+) -> StoredArtifactLocation | None:
+    """The version's frame file (`frame_file_rendering`) among `locations`, else `None`."""
+    rendering = frame_file_rendering(site)
+    return next((location for location in locations if location.rendering == rendering), None)
+
+
+def render_and_store_frame_file(
+    *,
+    frame_chunks: Callable[[], Iterator[Table]],
+    subject_id: str,
+    content_version: str,
+    prepared_at: datetime,
+    site: PublicSiteSettings,
+    artifact_store: ArtifactStore,
+    enrichment: EnrichmentLookup,
+) -> ArtifactRecord:
+    """Store the frame `frame_chunks` holds as a version's file of `FRAME_FILE_OPTIONS`,
+    rendered by `render_and_store` as a dataset version's file of those options is, so `unit`
+    is text (a ref as its string, a converted or composed unit as its JCS text). Returns the
+    record a version links it under.
+
+    The frame layout reshapes nothing, reads no names and cuts no totals, so the render takes
+    no code index, and `prepared_at`, `site` and `enrichment` reach no byte, because only a bundle
+    writes the date or a link and the layout reads no name. The same frame stores the same
+    digest whenever it is published."""
+    rendered = render_and_store(
+        frame_chunks=frame_chunks,
+        options=FRAME_FILE_OPTIONS,
+        spec={"spec_id": subject_id},
+        provenance_refs=[],
+        citations={},
+        reproducing_call=None,
+        content_version=content_version,
+        prepared_at=prepared_at,
+        site=site,
+        artifact_store=artifact_store,
+        entity_columns=frame_entity_columns(next(frame_chunks()).columns),
+        enrichment=enrichment,
+        # The frame layout refuses a pivot, and `FRAME_FILE_OPTIONS` asks for no groupby, so
+        # no fold ceiling is read.
+        pivot_max_output_cells=0,
+        groupby_fold_max_rows=0,
+        groupby_row_fold_max_rows=0,
+        resolved_stat_var_refs=(),
+    )
+    artifact = rendered.artifact
+    return ArtifactRecord(
+        artifact_digest=artifact.artifact_digest,
+        rendering=artifact.rendering,
+        media_type=artifact.media_type,
+        enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
     )

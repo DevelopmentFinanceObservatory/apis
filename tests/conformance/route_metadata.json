@@ -9,12 +9,48 @@
     "surface": "datasets"
   },
   {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_analysis",
+    "operation_id": "datasets_post_analysis",
+    "path": "/api/datasets/analysis",
+    "summary": "Post Analysis",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_analysis_anchor",
+    "operation_id": "datasets_post_analysis_anchor",
+    "path": "/api/datasets/analysis/anchor",
+    "summary": "Post Analysis Anchor",
+    "surface": "datasets"
+  },
+  {
     "has_description": false,
     "method": "GET",
     "name": "get_capabilities",
     "operation_id": "datasets_get_capabilities",
     "path": "/api/datasets/capabilities",
     "summary": "Get Capabilities",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_derived",
+    "operation_id": "datasets_get_derived",
+    "path": "/api/datasets/derived/{id}/{content_version}",
+    "summary": "Get Derived",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_derived_file",
+    "operation_id": "datasets_get_derived_file",
+    "path": "/api/datasets/derived/{id}/{content_version}/file",
+    "summary": "Get Derived File",
     "surface": "datasets"
   },
   {
@@ -699,6 +735,78 @@
     "operation_id": "presentation_get_release",
     "path": "/api/presentation/release",
     "summary": "Get Release",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "create_share",
+    "operation_id": "presentation_create_share",
+    "path": "/api/presentation/shares",
+    "summary": "Create Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "DELETE",
+    "name": "delete_share",
+    "operation_id": "presentation_delete_share",
+    "path": "/api/presentation/shares/{share_id}",
+    "summary": "Delete Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share",
+    "operation_id": "presentation_read_share",
+    "path": "/api/presentation/shares/{share_id}",
+    "summary": "Read Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "PUT",
+    "name": "replace_share",
+    "operation_id": "presentation_replace_share",
+    "path": "/api/presentation/shares/{share_id}",
+    "summary": "Replace Share",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share_history",
+    "operation_id": "presentation_read_share_history",
+    "path": "/api/presentation/shares/{share_id}/history",
+    "summary": "Read Share History",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share_slot_card",
+    "operation_id": "presentation_read_share_slot_card",
+    "path": "/api/presentation/shares/{share_id}/slots/{slot}",
+    "summary": "Read Share Slot Card",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_share_slot_data",
+    "operation_id": "presentation_read_share_slot_data",
+    "path": "/api/presentation/shares/{share_id}/slots/{slot}/data",
+    "summary": "Read Share Slot Data",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_share_snapshot",
+    "operation_id": "presentation_post_share_snapshot",
+    "path": "/api/presentation/shares/{share_id}/snapshot",
+    "summary": "Post Share Snapshot",
     "surface": "presentation"
   },
   {

@@ -2,11 +2,17 @@
 
 Search always mounts. `DFO_DATASETS_SURFACE`, `DFO_GRAPH_SURFACE`,
 `DFO_PRESENTATION_SURFACE`, and `DFO_SKILLS_SURFACE` gate the other surfaces.
+`build_presentation_surface` builds the Presentation surface for any app that composes it.
 Datasets requires `DATASET_STORE_RUNTIME_DB_USER` and Graph requires
 `GRAPH_DCP_BASE_URL`. Presentation requires its runtime database user and
 the datasets runtime user. Skills uses Search's shared graph index.
 Gated packages load only when their flags enable them, keeping optional dependencies such
 as the Datasets `pg8000` driver out of engine-only installs.
+
+When Datasets and Presentation both mount, they share a `DatasetsLink`: the Datasets dependency
+cell, so a live share slot checks for newer data through Datasets' frame refresh and analysis
+runner in process (`presentation_api.newest_frames`), and the analysis keys the process is
+computing, so a slot check and `POST /api/datasets/analysis` of one key compute it once.
 
 `all_surfaces()` includes every surface for platform conformance tests.
 `deployed_surfaces()` returns live mounts. `DFO_WORKER_SURFACE` bypasses
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from pydantic import field_validator
@@ -29,6 +36,10 @@ from dfo_platform.config import parse_cors_origins
 from dfo_platform.flags import lenient_bool
 from materialise.rate_tables import RateTableCache
 from search.engine.app import search_surface
+
+if TYPE_CHECKING:
+    from datasets_api.deps import DepsCell
+    from datasets_api.doors.analysis import RunningAnalyses
 
 _TRUTHY_VALUES = frozenset({"1", "true"})
 
@@ -61,31 +72,86 @@ class _SurfaceFlags(BaseSettings):
         return lenient_bool(truthy=_TRUTHY_VALUES, strip=True)(value)
 
 
-def _datasets_factory(rate_cache: RateTableCache) -> Surface:
+@dataclass(frozen=True, slots=True)
+class DatasetsLink:
+    """What a mounted Datasets surface shares with Presentation's live share slots: its
+    dependency cell, and the analysis keys the process is computing."""
+
+    cell: DepsCell
+    running_analyses: RunningAnalyses
+
+
+def datasets_link() -> DatasetsLink:
+    """A new `DatasetsLink`, for one app's Datasets surface and the Presentation surface beside
+    it."""
+    from datasets_api.deps import DepsCell
+    from datasets_api.doors.analysis import RunningAnalyses
+
+    return DatasetsLink(cell=DepsCell(), running_analyses=RunningAnalyses())
+
+
+@dataclass(frozen=True, slots=True)
+class _Shared:
+    """What the gated surfaces of one app share: Search's rate cache, and the `DatasetsLink`
+    when the Datasets surface mounts."""
+
+    rate_cache: RateTableCache
+    datasets: DatasetsLink | None
+
+
+def _datasets_factory(shared: _Shared) -> Surface:
     from datasets_api.app import datasets_surface
 
-    return datasets_surface(rate_cache=rate_cache)
+    link = shared.datasets
+    assert link is not None  # `datasets` is set whenever the Datasets surface mounts
+    return datasets_surface(
+        rate_cache=shared.rate_cache, deps_cell=link.cell, running_analyses=link.running_analyses
+    )
 
 
-def _graph_factory(rate_cache: RateTableCache) -> Surface:
+def _graph_factory(shared: _Shared) -> Surface:
     from graph_api.app import graph_surface
 
     return graph_surface()
 
 
-def _presentation_factory(rate_cache: RateTableCache) -> Surface:
+def build_presentation_surface(
+    rate_cache: RateTableCache, *, datasets: DatasetsLink | None = None
+) -> Surface:
+    """Build the Presentation surface `create_app` mounts under `DFO_PRESENTATION_SURFACE`,
+    with its render routes admitting the Datasets live-refresh principal from the environment.
+    `datasets` is the mounted Datasets surface's link, which live share slots check for newer
+    data through; without one they serve their cards' own frames as stale.
+    Presentation reads no rate tables, so `rate_cache` is taken only to fit the gated-surface
+    factory signature."""
     from datasets_api.config import DatasetsBuildSettings
     from datasets_api.live_refresh import LiveRefreshPrincipal
     from presentation_api.app import presentation_surface
+    from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
+    from presentation_api.newest_frames import DatasetsNewestFrames
 
     # The render routes admit the principal the Datasets frame refresh admits, read from the
     # same settings, whether or not the Datasets surface is mounted.
     return presentation_surface(
-        live_refresh=LiveRefreshPrincipal.resolve(settings=DatasetsBuildSettings.from_env())
+        live_refresh=LiveRefreshPrincipal.resolve(settings=DatasetsBuildSettings.from_env()),
+        newest_frames=(
+            # Half the share route's wait goes to the check, leaving the rest to draw the card.
+            DatasetsNewestFrames(
+                datasets.cell,
+                running=datasets.running_analyses,
+                budget_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS / 2,
+            )
+            if datasets is not None
+            else None
+        ),
     )
 
 
-def _skills_factory(rate_cache: RateTableCache) -> Surface:
+def _presentation_factory(shared: _Shared) -> Surface:
+    return build_presentation_surface(shared.rate_cache, datasets=shared.datasets)
+
+
+def _skills_factory(shared: _Shared) -> Surface:
     from skills_api.app import skills_surface
 
     return skills_surface()
@@ -96,7 +162,7 @@ class _GatedSurface:
     """Map a `_SurfaceFlags` field to a lazily imported surface factory."""
 
     flag: str
-    factory: Callable[[RateTableCache], Surface]
+    factory: Callable[[_Shared], Surface]
 
 
 _GATED_SURFACES: tuple[_GatedSurface, ...] = (
@@ -112,9 +178,10 @@ def all_surfaces() -> list[Surface]:
     # One process-wide RateTableCache, shared by Search and the Datasets
     # surface's mint door below, so neither loads the same tables twice.
     rate_cache = RateTableCache()
+    shared = _Shared(rate_cache=rate_cache, datasets=datasets_link())
     return [
         search_surface(rate_cache=rate_cache),
-        *(gated.factory(rate_cache) for gated in _GATED_SURFACES),
+        *(gated.factory(shared) for gated in _GATED_SURFACES),
     ]
 
 
@@ -122,9 +189,12 @@ def deployed_surfaces() -> list[Surface]:
     """Return enabled surfaces in mount order for `create_app()` to compose."""
     rate_cache = RateTableCache()
     flags = _SurfaceFlags()
+    shared = _Shared(
+        rate_cache=rate_cache, datasets=datasets_link() if flags.datasets_surface else None
+    )
     surfaces = [search_surface(rate_cache=rate_cache)]
     surfaces.extend(
-        gated.factory(rate_cache) for gated in _GATED_SURFACES if getattr(flags, gated.flag)
+        gated.factory(shared) for gated in _GATED_SURFACES if getattr(flags, gated.flag)
     )
     return surfaces
 

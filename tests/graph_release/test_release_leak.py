@@ -80,6 +80,7 @@ def _graph_client_beside_datasets(stack: ExitStack) -> TestClient:
             "recipe_store",
             "description_store",
             "reference_writer",
+            "allowances",
             "graph",
             "sdmx",
             "task_client",

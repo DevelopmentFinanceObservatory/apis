@@ -1,8 +1,8 @@
 """`datasets-maintenance` dispatches tasks by subcommand. Its daily sweep reports reconciliation
 counts per tier, `age-operations` fails abandoned operations and deletes terminal ones past
 the published retention, `backfill-frame1` converts pinned frame1 documents to canonical
-frames, and `settle` repeats migration 0026's statements and counts the version rows holding
-no facts or the enrichment `kind`, each reporting structured log lines."""
+frames, and `settle` labels the raw pin principals migration 0026 missed and counts the version
+rows holding no facts or the enrichment `kind`, each reporting structured log lines."""
 
 from __future__ import annotations
 
@@ -29,7 +29,9 @@ from materialise.formats import (
     write_frame1,
 )
 from materialise.frame_build import build_frame
+from presentation_store import LiveShareStore, ShareNotFound, provider
 from tests.artifact_store.conftest import FakeGCSClient
+from tests.presentation_store.conftest import FakePresentationStore
 
 from ._artifact_doubles import FakeArtifactStore
 from ._operation_store import FakeOperationDatasetStore
@@ -310,15 +312,25 @@ def _statements(sql: str) -> list[str]:
     return [" ".join(statement.split()) for statement in code.split(";") if statement.strip()]
 
 
-def test_settle_repeats_the_statements_of_0026_verbatim():
-    """Each settle statement is a statement of migration 0026, whose window it closes, so they
-    cannot drift apart. Version facts and the enrichment `kind` are counted only: the insert
-    triggers of migrations 0030 and 0033 repair them."""
-    expected = _statements(
-        (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
-    )
+def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
+    """After its lock, each settle statement is a statement of migration 0026, whose window it
+    closes, with the old shape narrowed from "not a label" to "neither a label nor a caller
+    key", so they cannot drift apart otherwise. Version facts and the enrichment `kind` are
+    counted only: the insert triggers of migrations 0030 and 0033 repair them."""
+    migration = (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
+    expected = [
+        statement.replace(
+            f"NOT starts_with({column}, 'secret-sha256:')",
+            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}})$'",
+        )
+        for statement, column in zip(
+            _statements(migration), ("raw.principal", "raw.principal", "principal"), strict=True
+        )
+    ]
 
-    assert [" ".join(statement.split()) for statement in maintenance.SETTLE_STATEMENTS] == expected
+    lock, *statements = maintenance.SETTLE_STATEMENTS
+    assert lock == "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE"
+    assert [" ".join(statement.split()) for statement in statements] == expected
 
 
 def _frame(value: float):
@@ -519,3 +531,42 @@ def test_backfill_exits_non_zero_when_a_version_cannot_be_converted(monkeypatch,
         store.close()
 
     assert _backfill_counts(capsys) == [(1, 0), (0, 1)]
+
+
+def test_a_share_taken_down_twice_is_logged_once_taken_down_and_once_not_found(capsys):
+    store = LiveShareStore(store=FakePresentationStore())
+    share = store.create_share(
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
+    )
+
+    maintenance.run_take_down_share(share_store=store, share_id=share.id)
+    maintenance.run_take_down_share(share_store=store, share_id=share.id)
+
+    with pytest.raises(ShareNotFound):
+        store.read_share(share_id=share.id)
+    assert [
+        (line["event"], line["share_id"])
+        for line in map(json.loads, capsys.readouterr().out.splitlines())
+    ] == [
+        ("presentation_share_taken_down", share.id),
+        ("presentation_share_take_down_not_found", share.id),
+    ]
+
+
+@pytest.mark.parametrize("share_id", ["short", "k3Qx8vT/", "k3Qx8vTa9"])
+def test_take_down_share_refuses_an_id_that_is_not_a_share_id_before_opening_a_store(
+    capsys, monkeypatch, share_id
+):
+    def no_pool():
+        raise AssertionError("the store was opened")
+
+    monkeypatch.setattr(provider, "shared_pool", no_pool)
+
+    assert maintenance.main(["take-down-share", share_id]) == 1
+
+    [line] = map(json.loads, capsys.readouterr().out.splitlines())
+    assert (line["event"], line["severity"], line["share_id"]) == (
+        "presentation_share_take_down_refused",
+        "ERROR",
+        share_id,
+    )

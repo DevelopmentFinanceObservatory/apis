@@ -58,6 +58,7 @@ _DATASETS_LIVE_DEPENDENCIES = (
     "recipe_store",
     "description_store",
     "reference_writer",
+    "allowances",
     "graph",
     "sdmx",
     "task_client",

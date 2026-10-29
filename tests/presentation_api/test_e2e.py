@@ -17,6 +17,7 @@ from assembler.testing import (
 )
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
+from presentation_api.refusals import EXPIRED_FRAME_FIX
 
 
 def _frame_ref_dict(ref: FrameRef) -> dict[str, str]:
@@ -207,7 +208,7 @@ def test_a_bar_chart_intent_carrying_log_scale_refuses_constraint_violation_at_s
     assert body["code"] == "constraint_violation"
     assert body["constraint_id"] == "bar_zero_in_domain"
     assert body["pointer"] == "/scale"
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert "component_id" not in body
 
 
@@ -527,6 +528,7 @@ def test_an_expired_frame_is_frame_unavailable_and_retryable(release: CatalogueR
     body = resp.json()
     assert body["code"] == "frame_unavailable"
     assert body["retryable"] is True
+    assert body["detail"].endswith(EXPIRED_FRAME_FIX)
 
 
 def test_a_never_stored_frame_is_frame_unavailable_and_not_retryable(release: CatalogueRelease):

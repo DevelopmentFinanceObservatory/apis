@@ -198,6 +198,7 @@ def _every_store_injected() -> dict[str, object]:
             "recipe_store",
             "description_store",
             "reference_writer",
+            "allowances",
         )
     } | {"artifact_store": FakeArtifactStore()}
 
@@ -352,6 +353,7 @@ def test_every_omitted_store_shares_one_pool_borrow_and_one_store(pool: _Recordi
         "recipe_store",
         "description_store",
         "reference_writer",
+        "allowances",
     ):
         assert getattr(deps, name)._store is store, name
     assert isinstance(deps.artifact_store, RecordingArtifactStore)

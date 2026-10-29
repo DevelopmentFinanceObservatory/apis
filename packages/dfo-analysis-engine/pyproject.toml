@@ -1,0 +1,31 @@
+[project]
+name = "dfo-analysis-engine"
+version = "0.1.0"
+description = "The DFO analysis engine: the nine verbs over frames, the op-spec and its identity hashes, and the recipe normal form"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyarrow>=24",
+    "pydantic>=2.13",
+    # rolling.py and recipe.py hash their preimages as RFC 8785 canonical JSON.
+    "rfc8785>=0.1.4",
+    # The verbs read and build `dfo_frame_grammar.Frame`, which holds its rows as an
+    # Arrow table behind the `arrow` extra.
+    "dfo-spec-kit-frame-grammar[arrow]",
+    # identity.py canonicalizes an op-spec with `dfo_spec_kit.identity.canonicalize`.
+    "dfo-spec-kit",
+]
+
+[tool.uv.sources]
+# See the root pyproject.toml's dfo-spec-kit source comment for the
+# pin-consistency invariant these two revs must satisfy: every spec-kit source in the
+# workspace moves together as one rev.
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6b606ec02d67def6851aae913a733da31e0183be", subdirectory = "python/spec-kit" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6b606ec02d67def6851aae913a733da31e0183be", subdirectory = "python/frame-grammar" }
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "dfo_analysis_engine"

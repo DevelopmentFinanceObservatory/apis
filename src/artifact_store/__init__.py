@@ -14,6 +14,7 @@ from artifact_store.errors import (
     ArtifactSigningError,
     ArtifactStoreError,
     ArtifactWriteError,
+    StorageEmulatorRefused,
 )
 from artifact_store.inventory import ArtifactInventory, ArtifactLocation, LiveArtifactInventory
 from artifact_store.signing import SIGNED_URL_TTL_CEILING, SIGNED_URL_TTL_FLOOR, V4_MAX_TTL
@@ -45,6 +46,7 @@ __all__ = [
     "ArtifactWriteError",
     "LiveArtifactInventory",
     "LiveArtifactStore",
+    "StorageEmulatorRefused",
     "StoredArtifact",
     "Tier",
 ]

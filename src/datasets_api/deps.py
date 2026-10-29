@@ -3,10 +3,11 @@
 `open_deps` builds one `Deps` for the surface's lifespan, and every door reads it through the
 surface's `DepsCell`. Doors build no client and no store. The bundle holds one graph client, one
 SDMX client, one artifact store, the stores over one `dataset_store` pool borrow, the task client,
-the coverage service and rate cache, the source of the code index each request reads, the
-whole-variable breadth reader, one materialise semaphore, and two executors.
+the allowance ledger, the coverage service and rate cache, the source of the code index each request reads, the
+whole-variable breadth reader, one materialise semaphore, and three executors.
 
-The read executor runs snapshot, description, observations, operations polls, members, pin, register,
+The analysis executor runs analysis trees (`datasets_api.doors.analysis`), so a long
+computation queues behind no mint and delays no read. The read executor runs snapshot, description, observations, operations polls, members, pin, register,
 recipe, and head-hit reads. The work executor runs mints, definition rebuilds, frame refreshes,
 and publishes, which parse and write frames of up to 250,000 rows, so a queue of builds cannot
 delay a poll or a download. A
@@ -15,7 +16,7 @@ the work executor only when the head cannot answer it (`datasets_api.doors.defin
 
 A dependency the caller supplies in `DepsOverrides` is used as given and never closed here.
 Every other one is built live from `DatasetsSettings` and closed when the lifespan ends, after
-both executors drain within one `ShutdownBudget`.
+the three executors drain within one `ShutdownBudget`.
 """
 
 from __future__ import annotations
@@ -31,8 +32,9 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader
+from dataset_store.snapshot import ArtifactReferenceWriter, LiveSnapshotReader, SnapshotReader
 from datasets_api.admission import MaterialisePermits, RebuildFlights
+from datasets_api.allowance import LiveAllowanceLedger, SharedAllowanceLedger, allowance_limits
 from datasets_api.config import DatasetsBuildSettings, DatasetsSettings
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.door_executor import DoorExecutor, build_door_executor
@@ -50,7 +52,7 @@ from datasets_api.operations.task_client import (
 from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS
 from datasets_api.recipe_store import LiveRecipeStore, RecipeStore
-from datasets_api.reference_store import LiveArtifactReferenceWriter, PinReferenceWriter
+from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
@@ -87,7 +89,9 @@ class Deps:
     operation_store: OperationStore
     recipe_store: RecipeStore
     description_store: LiveDescriptionStore
-    reference_writer: PinReferenceWriter
+    reference_writer: ArtifactReferenceWriter
+    # The daily allowances of callers without a grant (`datasets_api.allowance`).
+    allowances: SharedAllowanceLedger
     graph: GraphReader
     sdmx: SdmxClient
     artifact_store: ArtifactStore
@@ -116,6 +120,8 @@ class Deps:
     rebuilds: RebuildFlights
     read_executor: DoorExecutor
     work_executor: DoorExecutor
+    # Runs analysis trees (`datasets_api.doors.analysis`), apart from mints and reads.
+    analysis_executor: DoorExecutor
 
     @property
     def code_index(self) -> CodeIndex:
@@ -165,7 +171,8 @@ class DepsOverrides:
     operation_store: OperationStore | None = None
     recipe_store: RecipeStore | None = None
     description_store: LiveDescriptionStore | None = None
-    reference_writer: PinReferenceWriter | None = None
+    reference_writer: ArtifactReferenceWriter | None = None
+    allowances: SharedAllowanceLedger | None = None
     graph: GraphReader | None = None
     sdmx: SdmxClient | None = None
     artifact_store: ArtifactStore | None = None
@@ -187,6 +194,7 @@ class DepsOverrides:
                 self.recipe_store,
                 self.description_store,
                 self.reference_writer,
+                self.allowances,
                 self.artifact_store,
             )
         )
@@ -207,6 +215,11 @@ def build_executors(settings: DatasetsBuildSettings) -> tuple[DoorExecutor, Door
         build_door_executor(settings.read_max_concurrency, "read"),
         build_door_executor(settings.work_max_concurrency, "work"),
     )
+
+
+def build_analysis_executor(settings: DatasetsBuildSettings) -> DoorExecutor:
+    """The analysis executor, sized by `analysis_max_concurrency`."""
+    return build_door_executor(settings.analysis_max_concurrency, "analysis")
 
 
 @asynccontextmanager
@@ -311,13 +324,14 @@ async def open_deps(
         stack.callback(overrides.release.register_swap_guard(materialise_semaphore.every_permit))
 
         read_executor, work_executor = build_executors(settings)
+        analysis_executor = build_analysis_executor(settings)
         budget = ShutdownBudget()
         code_index_source = _index_source(overrides.code_index)
 
         async def _drain() -> None:
-            for executor in (work_executor, read_executor):
+            for executor in (analysis_executor, work_executor, read_executor):
                 executor.executor.shutdown(wait=False, cancel_futures=True)
-            for executor in (work_executor, read_executor):
+            for executor in (analysis_executor, work_executor, read_executor):
                 await asyncio.to_thread(executor.drain, budget)
 
         # Registered last, so the drain runs before any client or the pool closes.
@@ -349,6 +363,10 @@ async def open_deps(
             reference_writer=_given_or(
                 overrides.reference_writer, lambda: LiveArtifactReferenceWriter(store=_store())
             ),
+            allowances=_given_or(
+                overrides.allowances,
+                lambda: LiveAllowanceLedger(store=_store(), limits=allowance_limits(settings)),
+            ),
             graph=graph,
             sdmx=sdmx,
             artifact_store=artifact_store,
@@ -364,6 +382,7 @@ async def open_deps(
             rebuilds=RebuildFlights(),
             read_executor=read_executor,
             work_executor=work_executor,
+            analysis_executor=analysis_executor,
         )
 
 
@@ -372,6 +391,7 @@ __all__ = [
     "Deps",
     "DepsCell",
     "DepsOverrides",
+    "build_analysis_executor",
     "build_executors",
     "open_deps",
 ]
