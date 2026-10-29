@@ -618,7 +618,8 @@ def collapse_measure_families(
     (`index_carries_shape`); other shapes pass through, a debt family on a five-tuple CRS
     flows share among them. `_family_key` keeps distinct non-measure and basis identities
     separate. Named free-axis values filter each family using index rows,
-    including constraint axes. If no member matches every value, elect from
+    including constraint axes. A named value no member of a family carries is left
+    out of that family's filter. If no member matches every remaining value, elect from
     that family's full set. With no named values, the declared default wins.
 
     Skip the partition election when there is no shape axis or a constraint
@@ -661,13 +662,21 @@ def collapse_measure_families(
             )
             for i in indices
         )
+        # A named value no partition of the group carries cannot steer it, so it leaves
+        # the filter and the other named values still steer: "constant" prices on a group
+        # of nominal shapes leave "commitments" to elect the FinancialObligation one.
+        steering = tuple(
+            check
+            for check in checks
+            if any(_rows_satisfy_all(targets[int(p.members[0])], (check,)) for p in partitions)
+        )
         eligible = (
             tuple(
                 partition
                 for partition in partitions
-                if _rows_satisfy_all(targets[int(partition.members[0])], checks)
+                if _rows_satisfy_all(targets[int(partition.members[0])], steering)
             )
-            if checks
+            if steering
             else partitions
         )
         election = elect_default_partition(eligible or partitions, shape_axes)

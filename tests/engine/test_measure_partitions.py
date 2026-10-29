@@ -695,18 +695,33 @@ def _measure_match(
     )
 
 
-def test_named_constraint_value_steers_the_collapse_across_a_shape_axis():
+@pytest.mark.parametrize(
+    ("group", "named"),
+    [
+        (("t1", "t2", "t3", "t4"), (("financialObligationType", "Commitment", "commitments"),)),
+        # "Constant" names a price basis no shape of the group carries, as in "ODA
+        # commitments in constant 2022 dollars" on the nominal CRS shapes, so it steers
+        # nothing and "commitments" still elects FinancialObligation.
+        (
+            ("t1", "t3"),
+            (
+                ("financialObligationType", "Commitment", "commitments"),
+                ("measurementQualifier", "RealValue", "constant"),
+            ),
+        ),
+    ],
+)
+def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, named):
     # The `commitments` filter selects FinancialObligation through `financialObligationType`,
     # which is absent from `_family_key` (#743).
     shapes = _worked_example_shapes()
     index = _index(_WORKED_EXAMPLE)
-    named = (_measure_match("financialObligationType", "Commitment", "commitments"),)
 
     collapsed = collapse_measure_families(
-        [shapes["t1"], shapes["t2"], shapes["t3"], shapes["t4"]],
+        [shapes[key] for key in group],
         index,
         _MEASURE_AXES,
-        named=named,
+        named=tuple(_measure_match(*match) for match in named),
     )
 
     assert collapsed == (shapes["t3"],)
