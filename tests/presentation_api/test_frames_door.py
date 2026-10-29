@@ -18,6 +18,7 @@ from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionSto
 from assembler.ports import FrameRef, FrameUnavailable
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
 from datasets_api.doors.definition import SpecNotFound
+from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
@@ -25,7 +26,11 @@ from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_FRAMES_TIMEOUT_SECONDS
 from presentation_api.doors.frames import classify_frames_exception
 from presentation_api.newest_frames import NewestPending
-from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
+from spec_registry.errors import (
+    IdentityQuarantined,
+    SpecRegistryStoreError,
+    SpecRegistryUnavailable,
+)
 from tests.presentation_api.conftest import BARE_SPEC_ID, FakeNewestSpecs
 from tests.presentation_store.test_frame_store import _posted_frame_fixture, _store
 
@@ -438,6 +443,13 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
     [
         pytest.param(NewestPending(retry_after_s=2.0), 503, True, id="building"),
         pytest.param(SpecNotFound(id=BARE_SPEC_ID), 404, False, id="not-registered"),
+        pytest.param(MintBackpressure(), 503, True, id="mint-backpressure"),
+        pytest.param(
+            IdentityQuarantined(subject_id=BARE_SPEC_ID, id_kind="spec"),
+            404,
+            False,
+            id="quarantined",
+        ),
     ],
 )
 def test_a_bare_spec_id_that_cannot_be_served_is_frame_unavailable(

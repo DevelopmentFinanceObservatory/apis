@@ -204,8 +204,8 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             other refusal below status 500, the Datasets code and detail in its detail; and
             `unknown` when no Datasets surface is mounted beside this one, so no bare id
             resolves.
-        Exception: A Datasets refusal the Datasets surface answers at 500 or above that no
-            retry clears, or a failure it does not classify, unchanged.
+        Exception: Any other Datasets refusal the Datasets surface answers at 500 or above,
+            or a failure it does not classify, unchanged.
     """
     if newest is None:
         raise FrameUnavailable(
@@ -218,13 +218,15 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         # The resolve is the analysis runner's, so its refusals classify as that door's do.
         with bound_registry_endpoint("datasets.analysis"):
             problem = classify_datasets_exception(exc)
-        if problem is None or problem.status >= 500:
-            # A server fault stays one; the surface answers it `internal_error`.
+        if problem is None:
             raise
         if problem.retryable:
             reason = "io"
         elif problem.code == "identity_quarantined":
             reason = "quarantined"
+        elif problem.status >= 500:
+            # A server fault stays one; the surface answers it `internal_error`.
+            raise
         else:
             reason = "unknown"
         raise FrameUnavailable(
