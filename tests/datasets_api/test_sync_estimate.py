@@ -176,11 +176,11 @@ def _latest_estimates(
 @pytest.mark.parametrize(
     ("members", "build_year", "facets", "second_reads", "requests"),
     [
-        pytest.param([_ONE_YEAR] * 40, 2026, 1, 0, 5, id="forty-ending-in-one-year"),
+        pytest.param([_ONE_YEAR] * 40, 2026, 1, 0, 4, id="forty-ending-in-one-year"),
         pytest.param([_ONE_YEAR], None, 2, 0, 1, id="two-facets-ending-in-one-year"),
         pytest.param([_NEWER_PARTIAL_YEAR], 2026, 1, 1, 2, id="a-newer-partial-year"),
         pytest.param(
-            [*([_ONE_YEAR] * 37), *([_NEWER_PARTIAL_YEAR] * 3)], 2026, 1, 3, 8, id="mixed-group"
+            [*([_ONE_YEAR] * 37), *([_NEWER_PARTIAL_YEAR] * 3)], 2026, 1, 3, 7, id="mixed-group"
         ),
         pytest.param([_NEWEST_YEAR_THIN], 2026, 1, 1, 2, id="newest-year-thin"),
         pytest.param([_ONE_YEAR], 2022, 1, 1, 2, id="one-year-after-the-build-year"),
@@ -246,7 +246,7 @@ def test_two_requests_with_different_role_name_pairs_sum_as_two_groups():
 
 def test_more_than_the_lane_target_splits_into_several_requests():
     """A group of 13 variables splits into four requests of at most four members, the lane
-    floor (`generation.dispatch_lanes`) applying while the group is under 32 members.
+    floor (`generation.dispatch_lanes`) applying while the group is under 64 members.
 
     The bound DEU/KEN filter and shared role pair keep this below the URL budget."""
     member_count = 13
@@ -263,6 +263,31 @@ def test_more_than_the_lane_target_splits_into_several_requests():
     )
     assert estimate.rows == member_count
     assert estimate.requests == 4
+
+
+def test_each_component_spreads_its_own_members_over_its_own_lanes():
+    """A composite's components materialise apart, each spreading its own members over
+    `generation.dispatch_lanes`: eighty members over five lanes of sixteen, and four over the
+    floor of four lanes of one, nine requests. Lanes taken over all eighty-four would split the
+    eighty into six requests."""
+    bilateral = [f"Amount_Crs_Bilateral{i:02d}" for i in range(80)]
+    imputed = [f"Amount_Crs_Imputed{i}" for i in range(4)]
+    index = build_coverage_index(
+        [(sv, "facet1", "country/DEU", "country/KEN", [2020]) for sv in bilateral + imputed],
+        role_names=dict.fromkeys(bilateral + imputed, _CRS_ROLES),
+    )
+    requests = [
+        dataclasses.replace(
+            _request(stat_var=sv, donor="country/DEU", recipient="country/KEN"),
+            component=component,
+        )
+        for component, stat_vars in (("bilateral", bilateral), ("imputed", imputed))
+        for sv in stat_vars
+    ]
+    estimate = sync_estimate(
+        requests, index=index, member_concurrency=_SETTINGS.mint_member_max_concurrency
+    )
+    assert estimate.requests == 5 + 4
 
 
 def test_requests_with_different_bindings_are_never_merged_into_one_group():

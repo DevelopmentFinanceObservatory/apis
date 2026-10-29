@@ -470,8 +470,10 @@ def test_a_response_without_a_facet_id_column_fails_instead_of_serving_nothing()
         )
 
 
-def _sdmx_serving(*rows: str) -> SdmxClient:
+def _sdmx_serving(*rows: str, sent: list[httpx.Request] | None = None) -> SdmxClient:
     def handler(request: httpx.Request) -> httpx.Response:
+        if sent is not None:
+            sent.append(request)
         return httpx.Response(
             200,
             text=_SDMX_HEADER + "".join(rows),
@@ -659,17 +661,33 @@ def test_rows_for_a_member_whose_probe_admitted_nothing_serve_nothing():
 
 @pytest.mark.usefixtures("overlap")
 @pytest.mark.parametrize("missing", sorted(_MALFORMED_AFTER_GOOD))
-def test_a_malformed_row_for_a_member_whose_probe_admitted_nothing_refuses(missing: str):
+def test_a_member_whose_probe_admitted_nothing_is_never_requested_and_its_rows_drop(
+    missing: str,
+):
+    """`_VARIABLE`'s probe admits nothing, so no request names it. A malformed row the service
+    returns for it anyway reaches no member: it raises nothing and serves nothing."""
     graph = FakeGraphReader(facets={(_OTHER, _P1): [_BASE_FACET], (_OTHER, _P2): [_BASE_FACET]})
     malformed = _MALFORMED_AFTER_GOOD[missing].replace(f",{_OTHER},", f",{_VARIABLE},")
+    sent: list[httpx.Request] = []
 
-    with pytest.raises(SdmxResponseError, match=f"carry no {missing}"):
-        materialise_group(
-            [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
-            sdmx=_sdmx_serving(_base_row(_P2, "2023", variable=_OTHER), malformed),
-            graph=graph,
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
-            materialiser_build="build-123",
-            capability_version="cap-v1",
-            member_concurrency=1,
-        )
+    result = materialise_group(
+        [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
+        sdmx=_sdmx_serving(_base_row(_P2, "2023", variable=_OTHER), malformed, sent=sent),
+        graph=graph,
+        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        materialiser_build="build-123",
+        capability_version="cap-v1",
+        member_concurrency=1,
+    )
+
+    named = {
+        variable
+        for request in sent
+        for variable in str(request.url.params["c[variableMeasured]"]).split(",")
+    }
+    assert named == {_OTHER}
+    table = only_chunk(result).table
+    served = set(
+        zip(table["stat_var"].to_pylist(), table["observationAbout"].to_pylist(), strict=True)
+    )
+    assert served == {(f"dcid:{_OTHER}", _P2)}

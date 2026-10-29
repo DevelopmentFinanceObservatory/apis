@@ -1740,6 +1740,13 @@ class CoverageIndex:
             last_year=int(last[0]),
         )
 
+    def variables_with_rows(self, *, variables: Sequence[str], bound: BoundRoles) -> frozenset[str]:
+        """The `variables` holding a coverage row under `bound` in any year. A mint's facet
+        probe (`materialise.facets.coverage_probe`) finds no candidate for any other, so its
+        fetch never names them (`materialise.generation._plan_collection_chunks`)."""
+        rows = self._member_rows(variables=variables, bound=bound)
+        return frozenset(cast("list[str]", pc.unique(rows[VARIABLE_COLUMN]).to_pylist()))
+
     def estimate(
         self,
         *,

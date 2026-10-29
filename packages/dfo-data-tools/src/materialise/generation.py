@@ -1597,6 +1597,7 @@ def _plan_collection_chunks(
     *,
     places: Sequence[Sequence[str]],
     lanes: int = DEFAULT_PLANNING_LANES,
+    idle: Collection[int] = frozenset(),
 ) -> list[_ShapeChunk]:
     """Groups requests by `request_batch_key`, then splits each group into chunks.
 
@@ -1608,25 +1609,27 @@ def _plan_collection_chunks(
     empty for the rest. Such requests share a chunk only when their places
     match, and the chunk carries those places as its entity filter
     (`facets.fetch_role_bindings`).
+
+    `idle` holds the positions of requests that dispatch no facet
+    (`_MemberFetchPlan.dispatch_ids` is empty). They form chunks of their own, one per
+    group and split only at a repeated StatVar, which `_generate_chunk` answers with empty
+    tables and no request, so no request names their StatVars and the lane target spreads
+    only the requests that fetch.
     """
     groups: dict[tuple[object, ...], list[int]] = {}
-    group_order: list[tuple[object, ...]] = []
     for index, (_spec_id, request) in enumerate(requests):
-        key = (request_batch_key(request), tuple(places[index]))
-        if key not in groups:
-            groups[key] = []
-            group_order.append(key)
-        groups[key].append(index)
+        key = (index in idle, request_batch_key(request), tuple(places[index]))
+        groups.setdefault(key, []).append(index)
 
     chunks: list[_ShapeChunk] = []
-    for key in group_order:
-        indices = groups[key]
+    for (idle_group, *_), indices in groups.items():
         first = requests[indices[0]][1]
         role_bindings = fetch_role_bindings(
             first.role_bindings, first.declared_roles, places=places[indices[0]]
         )
         bare_stat_vars = [bare_stat_var_ref(requests[i][1].stat_var) for i in indices]
-        for position_group in stat_var_chunk_positions(bare_stat_vars, lanes=lanes):
+        group_lanes = 1 if idle_group else lanes
+        for position_group in stat_var_chunk_positions(bare_stat_vars, lanes=group_lanes):
             chunk_indices = [indices[position] for position in position_group]
             chunks.append(_build_shape_chunk(chunk_indices, requests, role_bindings=role_bindings))
 
@@ -1635,23 +1638,29 @@ def _plan_collection_chunks(
 
 
 def stat_var_chunk_positions(bare_stat_vars: Sequence[str], *, lanes: int) -> list[tuple[int, ...]]:
-    """Splits ordered positions at the lane target or a repeated bare StatVar.
+    """Splits ordered positions into `min(lanes, len(bare_stat_vars))` runs of consecutive
+    positions whose sizes differ by at most one, and cuts a run again at a repeated bare
+    StatVar, so each group holds one occurrence of each StatVar.
 
-    Each group has at most `ceil(len(bare_stat_vars) / lanes)` positions and
-    one occurrence of each StatVar. Admission estimates use the same rule.
+    Admission estimates use the same rule over a superset of the members a mint fetches
+    (`datasets_api.admission.sync_estimate`). Since `dispatch_lanes` never falls as members
+    are added, neither does the run count, so the estimate can only overshoot the requests
+    sent. Runs of `ceil(n / lanes)` positions would not hold this: under the lane floor of
+    four, five positions make three runs and four make four.
     """
-    target = max(1, math.ceil(len(bare_stat_vars) / lanes))
+    count = len(bare_stat_vars)
+    runs = min(max(1, lanes), count)
     groups: list[tuple[int, ...]] = []
-    current: list[int] = []
-    current_stat_vars: set[str] = set()
-    for position, bare_stat_var in enumerate(bare_stat_vars):
-        if len(current) >= target or bare_stat_var in current_stat_vars:
-            groups.append(tuple(current))
-            current = []
-            current_stat_vars = set()
-        current.append(position)
-        current_stat_vars.add(bare_stat_var)
-    if current:
+    for run in range(runs):
+        current: list[int] = []
+        current_stat_vars: set[str] = set()
+        for position in range(run * count // runs, (run + 1) * count // runs):
+            if bare_stat_vars[position] in current_stat_vars:
+                groups.append(tuple(current))
+                current = []
+                current_stat_vars = set()
+            current.append(position)
+            current_stat_vars.add(bare_stat_vars[position])
         groups.append(tuple(current))
     return groups
 
@@ -2242,26 +2251,38 @@ _FRAME_CHUNK_TARGET_ROWS = 100_000
 Members stay whole and sort by dcid. This keeps each chunk's row-sort keys
 above the previous chunk's keys, as required by streaming frame hashing."""
 
-_DISPATCH_CHUNK_TARGET_MEMBERS = 8
-"""Group fetches target eight members per combined request, regardless of concurrency.
+_DISPATCH_CHUNK_TARGET_MEMBERS = 16
+"""Group fetches target sixteen fetching members per combined request, regardless of
+concurrency.
 
 With one shared entity scope, using only `member_concurrency` lanes would
 place the whole group in its first dispatch wave and defeat row coalescing.
-`dispatch_lanes` bounds each chunk to about eight members. With the dispatch
+`dispatch_lanes` bounds each chunk to about sixteen members that fetch. With the dispatch
 look-ahead (`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1`
 completed chunks wait ahead of the oldest one not yet consumed, so resident
-member tables reach about `(2 * member_concurrency - 1) * 8`, plus the members
-held in `pending_members` for a multi-batch group
-(`_GroupRowStreamer.stream_rows`). Kenya-scale fetches use about 35 requests
-instead of 110."""
+member tables reach about `(2 * member_concurrency - 1) * 16`, plus the members
+held in `pending_members` (`_GroupRowStreamer.stream_rows`). That product is the memory
+this target bounds.
+
+Sixteen halves the requests of eight at no cost in fetch time. The total-ODA composite's
+1,221 fetching members take 77 requests at sixteen against 154 at eight, its fetch window on
+16 workers against the dev mixer runs 4.6 to 5.5 s against 5.3 to 6.1 s, and its largest
+reply grows from 127 KB to 207 KB on the wire. Larger targets fetch no faster, since the
+slowest reply sets the window: 4.4 to 10.6 s at 32 and 4.5 to 5.1 s at 56, with replies of
+up to 379 KB and 654 KB and a resident bound that grows with the target. At 32 that mint's
+estimate also falls to 39 requests, inside the sync budget of 40
+(`DatasetsBuildSettings.sync_budget_requests`), so it would run inline. The URL byte budget
+(`dc_sdmx.client._DEFAULT_URL_BUDGET_BYTES`) splits any chunk whose StatVar list overruns
+it, so the target sets no URL length; sixteen CRS StatVars take about 2.3 KB of its 7.8 KB."""
 
 _DISPATCH_LANE_FLOOR = 4
 """A group splits into at least this many requests, or `member_concurrency` when that is
 fewer, so a small group still spreads over the fetch workers. The floor stays apart from the
 worker count: the mixer answers a request of two members and one of eight in about the same
-0.09 s, and 16 workers send every chunk of a group under 128 members in one wave whatever the
-floor, so a floor that rose with the workers would only add requests, and with them the sync
-estimate (`datasets_api.admission.sync_estimate`) that decides whether a mint runs inline."""
+0.09 s, and 16 workers send every chunk of a group under 256 fetching members in one wave
+whatever the floor, so a floor that rose with the workers would only add requests, and with
+them the sync estimate (`datasets_api.admission.sync_estimate`) that decides whether a mint
+runs inline."""
 
 _DISPATCH_LOOK_AHEAD_POOLS = 2
 """A group fetch dispatches chunks only within two pools' worth of the oldest chunk not yet
@@ -2485,18 +2506,21 @@ def _order_group_by_dcid(
     Chunks group matching roles, entity scope, and latest-window status, with
     bounded width and one request per chunk. Scope or window differences
     produce singleton chunks. Group roles must agree, while entity bindings
-    may vary by member.
+    may vary by member. Members that dispatch no facet are chunked apart and fetch nothing
+    (`_plan_collection_chunks`), and the lanes (`dispatch_lanes`) count only the members
+    that fetch, as admission's estimate does (`datasets_api.admission.sync_estimate`).
     """
     dcid_order = sorted(range(len(requests)), key=lambda i: bare_stat_var_ref(requests[i].stat_var))
     dcid_requests = [
         (str(original_index), requests[original_index]) for original_index in dcid_order
     ]
     dcid_plans = [plans[original_index] for original_index in dcid_order]
-    lanes = dispatch_lanes(member_concurrency, len(requests))
+    idle = frozenset(position for position, plan in enumerate(dcid_plans) if not plan.dispatch_ids)
     chunks = _plan_collection_chunks(
         dcid_requests,
         places=[places[original_index] for original_index in dcid_order],
-        lanes=lanes,
+        lanes=dispatch_lanes(member_concurrency, len(requests) - len(idle)),
+        idle=idle,
     )
     return _DcidOrderedGroup(dcid_requests=dcid_requests, dcid_plans=dcid_plans, chunks=chunks)
 
@@ -2711,6 +2735,31 @@ class _GroupRowStreamer:
             self._progress.add(frame.table.num_rows)
         return frame
 
+    def _record_member(self, index: int, member: _ConvertedMember) -> pa.Table:
+        """Records the member at dcid position `index`'s counts, conversion and read, and
+        returns its table. `stream_rows` records members in dcid order, so every mapping
+        this fills holds them in that order whichever chunk served them."""
+        request = self._dcid_requests[index][1]
+        table = member.table
+        self.observation_counts[request.stat_var] = table.num_rows
+        self.conversion_records[request.stat_var] = member.conversion_record
+        self.conversion_recipe_ids[request.stat_var] = member.recipe_id
+        self.series_conversions.update(member.series_conversions)
+        plan = self._dcid_plans[index]
+        read = _read_series(plan.dispatch_ids, plan.continuing_ids, member.omitted)
+        self.read_series[request.stat_var] = read
+        if request.window.kind == "latest":
+            applied_window = compute_applied_window(
+                request.window, columnar.served_year_bounds(table)
+            )
+            self.latest_windows.append(applied_window)
+            self.latest_years.update(
+                _latest_years(
+                    request, elected=member.elected_year, applied_window=applied_window, read=read
+                )
+            )
+        return table
+
     def stream_rows(self) -> Iterator[Frame]:
         """Dispatches `self._chunks` (already `dcid:`-sorted) on a pool kept
         full: at most `member_concurrency` chunks' own fetches in flight,
@@ -2728,19 +2777,22 @@ class _GroupRowStreamer:
         them: once any chunk has failed, no further chunk is submitted, even
         while the head chunk is already waiting in `ready`.
 
-        Each consumed chunk's own member outcomes are recorded into
+        Each consumed chunk's own member outcomes are put into
         `pending_members`, keyed by dcid position, and `cursor` then walks
         forward through however much of that keyspace has become
         contiguous: while `cursor` names a position `pending_members`
-        already carries, that member is folded into the row chunk
-        currently being assembled (closing and yielding it first, via
-        `_close_row_chunk`, when the next member would put it over
-        `_FRAME_CHUNK_TARGET_ROWS`), and its own table is dropped from
-        `pending_members` in the same step. `_plan_collection_chunks`
-        splits each entity-scope/`"latest"`-ness batch into runs of
-        consecutive positions and sorts the chunks by first position, so
-        when the group is one batch `cursor` empties `pending_members`
-        after every consumed chunk. When the group spans several batches
+        already carries, that member is recorded (`_record_member`) and
+        folded into the row chunk currently being assembled (closing and
+        yielding it first, via `_close_row_chunk`, when the next member
+        would put it over `_FRAME_CHUNK_TARGET_ROWS`), and its own table is
+        dropped from `pending_members` in the same step.
+        `_plan_collection_chunks` splits each entity-scope/`"latest"`-ness
+        batch into runs of the positions that fetch, puts the positions that
+        fetch nothing in one chunk of their own, and sorts the chunks by
+        first position. In a one-batch group only the chunk consumed just
+        before the idle chunk can hold positions above the idle chunk's
+        first, so `pending_members` holds at most that chunk's members and
+        the idle members' empty tables. When the group spans several batches
         their positions interleave across chunks, and a consumed chunk's
         members wait in `pending_members` until the chunk of every lower
         position has been consumed.
@@ -2748,16 +2800,16 @@ class _GroupRowStreamer:
         Peak memory is the sum of three parts. `ready` holds at most
         `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency - 1` completed
         chunks ahead of the oldest one not yet consumed. `pending_members`
-        is empty for a one-batch group and holds up to every member of the
-        consumed chunks for a multi-batch group. The third part is the one
-        row chunk being assembled.
+        holds, for a one-batch group, the members above, and up to every
+        member of the consumed chunks for a multi-batch group. The third
+        part is the one row chunk being assembled.
 
         `finally: pool.shutdown(wait=True, cancel_futures=True)` blocks for
         every already-submitted chunk's own fetch to finish, past whichever
         future raised, before this generator re-raises.
         """
         chunks = self._chunks
-        pending_members: dict[int, tuple[MaterialisationRequest, pa.Table]] = {}
+        pending_members: dict[int, _ConvertedMember] = {}
         accumulator: list[tuple[MaterialisationRequest, pa.Table]] = []
         accumulator_rows = 0
         cursor = 0
@@ -2790,33 +2842,10 @@ class _GroupRowStreamer:
                         break
                     completed, _ = wait(in_flight, return_when=FIRST_COMPLETED)
                     failed = collect(completed) or failed
-                result = ready.pop(head).result()
-                for index, member in result.items():
-                    request = self._dcid_requests[index][1]
-                    table = member.table
-                    self.observation_counts[request.stat_var] = table.num_rows
-                    self.conversion_records[request.stat_var] = member.conversion_record
-                    self.conversion_recipe_ids[request.stat_var] = member.recipe_id
-                    self.series_conversions.update(member.series_conversions)
-                    plan = self._dcid_plans[index]
-                    read = _read_series(plan.dispatch_ids, plan.continuing_ids, member.omitted)
-                    self.read_series[request.stat_var] = read
-                    if request.window.kind == "latest":
-                        applied_window = compute_applied_window(
-                            request.window, columnar.served_year_bounds(table)
-                        )
-                        self.latest_windows.append(applied_window)
-                        self.latest_years.update(
-                            _latest_years(
-                                request,
-                                elected=member.elected_year,
-                                applied_window=applied_window,
-                                read=read,
-                            )
-                        )
-                    pending_members[index] = (request, table)
+                pending_members.update(ready.pop(head).result())
                 while cursor < len(self._dcid_requests) and cursor in pending_members:
-                    request, table = pending_members.pop(cursor)
+                    request = self._dcid_requests[cursor][1]
+                    table = self._record_member(cursor, pending_members.pop(cursor))
                     if self._dcid_plans[cursor].unserved:
                         # Its table holds no row, and with no conversion planned its `unit`
                         # column stays a string where converted members' hold the struct.
