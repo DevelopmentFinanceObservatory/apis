@@ -167,7 +167,7 @@
     - variable_text: maternal health ODA
       time_text: 2010 to 2024
       provenance: provenance/OECDCreditorReportingSystem
-  why: No CRS purpose is named "maternal", so the answer refuses on that word and offers health 120 as the near match; a definite 13020 (maternity and prenatal care) is also correct.
+  why: No CRS purpose is named "maternal", so the answer refuses on that word and offers health, CRS 120 and 130, as the near match; a definite 13020 is also correct.
   tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
   expect:
     definite:
@@ -176,7 +176,7 @@
     no_data:
       reason: qualifier_not_bound
       category: absent
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
 
 - id: sb-girls-education
   query: girls education ODA
@@ -200,11 +200,11 @@
     - variable_text: health and education ODA
       time_text: 2010 to 2024
       provenance: provenance/OECDCreditorReportingSystem
-  why: '"and" joins two sectors, so the answer is their union, the set {110, 120}.'
+  why: '"and" joins two sectors, so the answer is their union: education 110 and the declared health grouping, CRS 120 and 130.'
   tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: union, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}}
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode110, CRSPurposeCode120, CRSPurposeCode130]}}
       window: {kind: range, start: 2010, end: 2024}
 
 - id: sb-malaria-control-within-health
@@ -228,13 +228,13 @@
     - variable_text: health excluding malaria control ODA
       time_text: 2010 to 2024
       provenance: provenance/OECDCreditorReportingSystem
-  why: Exclusion has no binding, so the restriction refuses with disposition no_vocabulary and offers health 120, the phrase before the exclusion, as the near match; 12262 is the code the query excludes.
+  why: Exclusion has no binding, so the restriction refuses and offers health, CRS 120 and 130, the phrase before the exclusion, as the near match; 12262 is the excluded code.
   tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: exclusion, breakdown: sector, door: parsed, phrasing: technical, probe: [sector_binding]}
   expect:
     no_data:
       reason: qualifier_not_bound
       category: absent
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
 
 - id: sb-compare-health-and-education-one-part
   query: compare aid to health and education
@@ -250,12 +250,12 @@
 
 - id: sb-raw-compare-health-and-education
   query: compare aid to health and education
-  why: Extraction splits a comparison into one part per side, each bound to its own sector and marked separate so the fold keeps them apart (health 120, then education 110). Depends on extraction.
+  why: 'Extraction splits a comparison into one part per side, each bound to its own sector and kept apart: health as CRS 120 and 130, then education 110. Depends on extraction.'
   tags: {theme: health, entity: none, direction: none, unit: default, time: none, operation: compare, breakdown: sector, door: raw_text, phrasing: casual, probe: [sector_binding]}
   expect:
     parts:
       - definite:
-          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
       - definite:
           measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
 
@@ -283,13 +283,13 @@
     - variable_text: global health ODA
       time_text: 2010 to 2024
       provenance: provenance/OECDCreditorReportingSystem
-  why: No CRS code reads "global", so an unread modifier beside a recognised sector is a restriction, so the answer refuses on "global" and offers health 120 as the near match.
+  why: No CRS code reads "global", so an unread modifier beside a recognised sector is a restriction; the answer refuses on "global" and offers health, CRS 120 and 130.
   tags: {theme: health, entity: none, direction: none, unit: default, time: range, operation: none, breakdown: sector, door: parsed, phrasing: casual, probe: [sector_binding]}
   expect:
     no_data:
       reason: qualifier_not_bound
       category: absent
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
 
 - id: sb-contraceptive-services
   query: contraceptive services ODA

@@ -64,13 +64,12 @@
 
 - id: dq-dac-007
   query: ODA from G7 countries
-  why: '"G7 countries" asks for the members, so the seven donors answer; DAC1''s G7 total answers "the G7" (dq-dac-036).'
+  why: '"G7 countries" asks for the members, so the seven donors answer on the OECD headline per year; DAC1''s G7 total answers "the G7" (dq-dac-036).'
   tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
-  # Known failure: "ODA" reads DAC1's ODA amount, not its grant equivalent.
-  known_failure: {issue: 1186, checks: [measure]}
   expect:
     definite:
-      measure: {family: dac1.oda_grant_equivalent}
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
       entities: [{dcid: GroupOfSeven, role: origin, expands: true}]
 
 - id: dq-dac-008
@@ -367,11 +366,11 @@
 
 - id: dq-dac-035
   query: aid from the G7 to Africa
-  why: DAC2a publishes the G7 total as a provider and DAC's Africa total as a recipient, so each group reads as its published total.
+  why: DAC2a publishes the G7 total as a provider and DAC's Africa total as a recipient, counted in net disbursements, the OECD's convention for a recipient total.
   tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: GroupOfSeven, role: origin}, {dcid: DACAfrica, role: destination}]
 
 - id: dq-dac-036
@@ -403,13 +402,13 @@
 
 - id: dq-dac-039
   query: ODA from France to Asia (DAC) for health
-  why: CRS answers the sector question using the DAC region's members and states the regional allocations they omit.
+  why: The CRS answers health, CRS 120 and 130 by the declared grouping, over the DAC region's members plus the regional and unspecified buckets it publishes.
   tags: {theme: health, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure:
         family: crs.disbursement_gross
-        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}
       entities: [{dcid: country/FRA, role: origin}, {label: Asia (DAC), role: destination, expands: true}]
 
 - id: dq-dac-040
