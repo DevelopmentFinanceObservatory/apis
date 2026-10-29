@@ -69,11 +69,12 @@ def seconds_to_reset(now: datetime) -> int:
 
 
 class AllowanceExhausted(Refusal):
-    """The caller has spent today's allowance of one kind. Maps to retryable 429 with
-    `Retry-After` set to the next UTC midnight."""
+    """The caller has spent today's allowance of one kind. Maps to 429 with `retryable: false`,
+    since a client that waits for the reset holds a request open for hours, and `Retry-After`
+    naming the reset at the next UTC midnight."""
 
     code = "allowance_exhausted"
-    retryable = True
+    retryable = False
 
     def __init__(self, *, kind: AllowanceKind, limit: int, now: datetime) -> None:
         self.kind = kind

@@ -288,7 +288,7 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
             status=429,
             code="allowance_exhausted",
             detail=str(exc),
-            retryable=True,
+            retryable=exc.retryable,
             headers=exc.headers,
         )
     if isinstance(exc, CallerHeaderInvalid):

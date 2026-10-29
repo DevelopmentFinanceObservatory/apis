@@ -1086,7 +1086,7 @@ def test_an_open_caller_past_its_allowance_refuses_429_until_utc_midnight(caller
     assert resp.status_code == 429, resp.text
     body = resp.json()
     assert body["code"] == "allowance_exhausted"
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     # `_NOW` is a UTC midnight, so the allowance resets a day later.
     assert resp.headers["retry-after"] == "86400"
 

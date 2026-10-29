@@ -43,7 +43,7 @@ def test_a_caller_spends_up_to_its_limit_then_waits_for_utc_midnight(ledger):
         ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
 
     assert refused.value.code == "allowance_exhausted"
-    assert refused.value.retryable is True
+    assert refused.value.retryable is False
     assert refused.value.headers == {"Retry-After": str(12 * 3600)}
 
 

@@ -495,7 +495,7 @@ def test_a_spent_allowance_refuses_429_with_retry_after_and_stores_nothing(door:
     resp = door.share(["cmp_b"], latest=True)
 
     body = _assert_refused(resp, status=429, code="allowance_exhausted")
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert int(resp.headers["retry-after"]) >= 1
     assert door.frame_store.pins == ()
 
@@ -586,7 +586,7 @@ def test_a_spent_card_allowance_refuses_create_and_revise_429_with_retry_after(d
         registered = registered_status("allowance_exhausted")
     for resp in (create, revise):
         body = _assert_refused(resp, status=registered, code="allowance_exhausted")
-        assert body["retryable"] is True
+        assert body["retryable"] is False
         assert int(resp.headers["retry-after"]) >= 1
 
 

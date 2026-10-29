@@ -33,9 +33,9 @@ release manifest.
 The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
 `write_token_required` and `write_token_invalid` at 403, `share_not_replaceable` at 409 and
 `payload_too_large` at 413, none retryable. A card create or revise and a share create refuse
-the platform's `allowance_exhausted` at 429, retryable after `Retry-After`
-(`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists none of these,
-so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
+the platform's `allowance_exhausted` at 429, not retryable either, with `Retry-After` naming
+the reset (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
+none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
 serves.
 
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists

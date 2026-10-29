@@ -33,8 +33,6 @@ def test_each_vector_frame_digests_to_its_document_and_digest(vector: dict[str, 
     )
 
     assert output_digest(frame) == vector["digest"]
-    picked = ["time_period", "value", "unit"]
-    rows = [
-        [row[columns.index(name)] for name in (*roles, *picked)] for row in vector["frame"]["rows"]
-    ]
+    picked = ["stat_var", *roles, "time_period", "value", "unit"]
+    rows = [[row[columns.index(name)] for name in picked] for row in vector["frame"]["rows"]]
     assert digest_document(role_columns=roles, rows=rows).decode() == vector["document"]

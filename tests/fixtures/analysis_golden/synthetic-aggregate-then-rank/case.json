@@ -2,7 +2,7 @@
  "content_version": "ocv_fc57fba5adfecf8d475521c1d450abea",
  "expected": {
   "frame_content_version": "cv_47ab9bff0167df5354ac77e83e7b4aa8",
-  "output_digest": "out_7968d7cebf8933afa65789216ca3267f"
+  "output_digest": "out_3d8b5d402581db800fce5c40aedc8e87"
  },
  "origin": "synthetic",
  "recipe": {

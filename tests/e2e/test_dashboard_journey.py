@@ -374,6 +374,7 @@ def test_a_dashboard_from_analysis_to_share_to_unshare(journey: _Journey):
     ]
     exhausted = answers[_PIN_ALLOWANCE]
     assert (exhausted.status_code, exhausted.json()["code"]) == (429, "allowance_exhausted")
+    assert exhausted.json()["retryable"] is False
     assert int(exhausted.headers["retry-after"]) > 0
 
 
