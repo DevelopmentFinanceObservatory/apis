@@ -1088,6 +1088,11 @@ _TOP_ONE = {
         "rank_by": ["financingProvider"],
     },
 }
+# The table of the Kenya frame as a per-period top one: each year's top donor alone.
+_KEPT = [
+    (year, _IDA_NAME if provider == _IDA else _USA_NAME, value)
+    for year, provider, value in _TOP_DONOR_BY_YEAR
+]
 # The table of a frame that selects nothing in each period: both donors in every year, a
 # year a donor holds no row in reading `missing`.
 _PADDED = sorted(
@@ -1098,6 +1103,14 @@ _PADDED = sorted(
         for year, provider, value in _TOP_DONOR_BY_YEAR
     ]
 )
+_ALL_YEARS = tuple(year for year, _, _ in _TOP_DONOR_BY_YEAR)
+
+
+def _two_sided(op: str, **inputs: str) -> dict[str, object]:
+    """The record of `op` reading the earlier steps `inputs` names by role."""
+    return {"id": "s3", "op": op, "inputs": inputs}
+
+
 _VALUE_FILTER = {
     "id": "s2",
     "op": "filter",
@@ -1114,9 +1127,10 @@ def _top_donor_table(
     steps: Sequence[Mapping[str, object]] | None,
     top_donors: Sequence[tuple[str, str, float]] = _TOP_DONOR_BY_YEAR,
     years: Sequence[str] | None = None,
+    donors: Sequence[str] | None = None,
     window: Mapping[str, object],
 ) -> WriteReply:
-    """A table naming every donor of `top_donors` over `window`, from a frame holding each
+    """A table naming `donors`, by default every donor of `top_donors`, over `window`, from a frame holding each
     year's top donor to Kenya in `years`, by default every year, computed by `steps` after
     its retrieve, or with no description record when `steps` is `None`."""
     frame = _described(
@@ -1147,7 +1161,7 @@ def _top_donor_table(
             "table",
             select={
                 "stat_var": "dcid:MalariaGrantDisbursements",
-                "financingProvider": list(dict.fromkeys(one for _, one, _ in top_donors)),
+                "financingProvider": list(donors or dict.fromkeys(one for _, one, _ in top_donors)),
             },
             window=window,
         ),
@@ -1177,25 +1191,13 @@ def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]
         pytest.param(
             [_TOP_ONE],
             ("2018", "2019", "2020", "2021", "2022"),
-            [
-                ("2018", _USA_NAME, 829_231_420.0),
-                ("2019", _IDA_NAME, 1_357_452_310.0),
-                ("2020", _IDA_NAME, 1_570_237_409.0),
-                ("2021", _IDA_NAME, 1_151_749_460.0),
-                ("2022", _IDA_NAME, 938_795_140.0),
-            ],
+            _KEPT,
             id="top-one",
         ),
         pytest.param(
             [_TOP_ONE, {**_VALUE_FILTER, "id": "s3", "input": "s2"}],
             ("2018", "2019", "2020", "2021", "2022"),
-            [
-                ("2018", _USA_NAME, 829_231_420.0),
-                ("2019", _IDA_NAME, 1_357_452_310.0),
-                ("2020", _IDA_NAME, 1_570_237_409.0),
-                ("2021", _IDA_NAME, 1_151_749_460.0),
-                ("2022", _IDA_NAME, 938_795_140.0),
-            ],
+            _KEPT,
             id="filter-over-a-per-period-top-one",
         ),
         pytest.param(
@@ -1248,17 +1250,40 @@ def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]
             id="whole-window-rank",
         ),
         pytest.param(
-            [
-                _TOP_ONE,
-                {
-                    "id": "s3",
-                    "op": "share_of",
-                    "inputs": {"denominator": "s2", "numerator": "s1"},
-                },
-            ],
-            ("2018", "2019", "2020", "2021", "2022"),
+            [_TOP_ONE, _two_sided("share", denominator="s2", numerator="s1")],
+            _ALL_YEARS,
             _PADDED,
             id="share-over-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("share", denominator="s1", numerator="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="share-of-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("share", denominator="s2", numerator="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="share-within-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("quotient", denominator="s1", numerator="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="quotient-of-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("join", left="s1", right="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="join-with-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("sum", left="s2", right="s1")],
+            _ALL_YEARS,
+            _PADDED,
+            id="sum-with-a-per-period-top-one",
         ),
     ],
 )
@@ -1267,10 +1292,11 @@ def test_a_table_over_a_per_period_top_one_lists_the_donors_each_year_kept(
 ):
     """A per-period top one, or a step reading only its output, leaves a donor out of a year
     another donor holds, so the table lists only the frame's rows there. A year no donor holds is a gap in the data and keeps a
-    missing row per donor. A frame that selects nothing in each period, whether a filter, a
-    retrieve alone, a rank without a limit or over the whole window computed it, or a share
-    over a top one, which reads every donor's own values, or whose steps are unknown, pads
-    every absent year."""
+    missing row per donor. A share, quotient or join takes its rows from a top one it reads as
+    its numerator or either side, and keeps its selection. A frame that selects nothing in
+    each period, whether a filter, a retrieve alone, a rank without a limit or over the whole
+    window, a share over a top one or a sum with one computed it, or whose steps are unknown,
+    pads every absent year."""
     created = _top_donor_table(
         frame_store,
         revision_store,
@@ -1309,11 +1335,27 @@ def test_a_table_over_a_per_period_top_one_describes_only_the_donors_it_lists(
     assert description["about"]["drawn"]["series"] == 1
 
 
+@pytest.mark.parametrize(
+    ("donors", "cells"),
+    [
+        pytest.param(
+            (_IDA, _USA, _GBR),
+            [("2019", _IDA_NAME, 3.0), ("2020", _USA_NAME, 4.0), ("2021", _GBR_NAME, 4.0)],
+            id="every-donor",
+        ),
+        pytest.param(
+            (_IDA, _USA),
+            [("2019", _IDA_NAME, 3.0), ("2020", _USA_NAME, 4.0)],
+            id="a-donor-left-out-leads-the-newest-year",
+        ),
+    ],
+)
 def test_a_rolling_table_over_a_per_period_top_one_ends_at_the_newest_year_a_donor_leads(
-    frame_store, revision_store, release_registry
+    frame_store, revision_store, release_registry, donors, cells
 ):
-    """No year after 2018 has two of the three donors at the top, so "latest" over the donors
-    is the newest year any of them leads, 2021, and no donor is named as left out there."""
+    """No year after 2018 has two of the three donors at the top, so "latest" is the newest
+    year any donor leads, 2021, whether or not the table names that donor, and no donor is
+    named as left out there."""
     created = _top_donor_table(
         frame_store,
         revision_store,
@@ -1326,17 +1368,18 @@ def test_a_rolling_table_over_a_per_period_top_one_ends_at_the_newest_year_a_don
             ("2020", _USA, 4.0),
             ("2021", _GBR, 4.0),
         ),
+        donors=donors,
         window={
             "start": {"anchor": "latest", "offset": -2},
             "end": {"anchor": "latest", "offset": 0},
         },
     )
     payload = created.resolved_payload
-    assert _table_cells(payload) == [
-        ("2019", _IDA_NAME, 3.0),
-        ("2020", _USA_NAME, 4.0),
-        ("2021", _GBR_NAME, 4.0),
-    ]
+    assert _table_cells(payload) == cells
+    description = _description(payload)
+    _, select_step = _step(description, "select")
+    assert select_step["params"]["window"] == {"start": "2019", "end": "2021"}
+    assert description["caveats"] == []
     assert _description(payload)["caveats"] == []
 
 

@@ -18,7 +18,7 @@ import calendar
 import datetime
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import Final, cast
 
 from dfo_frame_grammar import (
     FACET_IDENTITY_COLUMNS,
@@ -102,22 +102,37 @@ def bind_series(
     )
 
 
+# The input roles a step reading several inputs takes its output's rows from: a share or
+# quotient writes one row per numerator key, over the periods its denominator shares, and an
+# inner join one row per key both sides hold. A sum or comparison writes series of its own,
+# so it has none.
+_ROW_SOURCE_ROLES: Final[Mapping[str, tuple[str, ...]]] = {
+    "share": ("numerator",),
+    "quotient": ("numerator",),
+    "join": ("left", "right"),
+}
+
+
 def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
     """Whether the frame keeps a selection of entities in each period: walking back from its
-    record's last step through each step's one earlier step (`input`), a `rank` over each
-    period on its own (`per_period`) with a `limit` is reached, which keeps each period's top
-    or bottom entities. The walk stops at a step reading several inputs (`inputs`), whose
-    output need not hold only the ranked side's entities, and at a version. A `rank` without a
-    `limit` keeps every entity, and one over the whole window writes a single period. A frame
-    without a description record, or whose record holds no steps, keeps none."""
+    record's last step through the inputs its rows come from, a `rank` over each period on its
+    own (`per_period`) with a `limit` is reached, which keeps each period's top or bottom
+    entities. A step's one `input` supplies its rows, and of several `inputs` the roles
+    `_ROW_SOURCE_ROLES` names. A `rank` without a `limit` keeps every entity, and one over the
+    whole window writes a single period. A frame without a description record, or whose
+    record holds no steps, keeps none."""
     record = resolved_frame.description_record
     known = record.known_steps if record is not None else []
     if not known:
         return False
-    # A step's `input` names an earlier step, so the walk ends.
     by_id = {step.id: step for step in known}
-    step: Step | None = known[-1]
-    while step is not None:
+    pending = [known[-1].id]
+    seen: set[str] = set()
+    while pending:
+        step = by_id.get(pending.pop())
+        if step is None or step.id in seen:
+            continue
+        seen.add(step.id)
         if (
             step.op == "rank"
             and step.params is not MISSING
@@ -125,8 +140,18 @@ def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
             and "limit" in step.params
         ):
             return True
-        step = by_id.get(step.input) if isinstance(step.input, str) else None
+        pending.extend(_row_sources(step))
     return False
+
+
+def _row_sources(step: Step) -> list[str]:
+    """The ids of the earlier steps `step` takes its output's rows from."""
+    if isinstance(step.input, str):
+        return [step.input]
+    if step.inputs is MISSING:
+        return []
+    roles = _ROW_SOURCE_ROLES.get(step.op, ())
+    return [one for role, one in step.inputs.items() if role in roles and isinstance(one, str)]
 
 
 def count_selected_points(
