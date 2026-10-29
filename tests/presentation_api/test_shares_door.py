@@ -184,6 +184,7 @@ def test_publication_vector(door: _Door, vector: dict):
                         ShareCard(component_id=door.cards[card], revision=1, frame=None)
                         for card in step["cards"]
                     ],
+                    renderings={},
                 )
                 shares[name] = (stored.id, None)
             else:
@@ -739,6 +740,7 @@ def test_a_share_kept_from_the_website_reads_and_refuses_every_token(door: _Door
         title="Imported",
         write_token_sha256=None,
         cards=[ShareCard(component_id=door.cards["cmp_a"], revision=1, frame=None)],
+        renderings={},
     )
 
     resp = door.read(imported.id)

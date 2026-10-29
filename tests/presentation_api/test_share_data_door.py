@@ -33,7 +33,7 @@ from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
 from presentation_api.newest_frames import NewestPending
-from presentation_store import LiveShareStore, PresentationStoreUnavailable
+from presentation_store import LiveShareStore
 from tests.presentation_api.test_shares_door import _Allowances
 from tests.presentation_store.conftest import FakePresentationStore
 
@@ -891,43 +891,62 @@ def test_a_slot_whose_card_becomes_a_note_records_an_empty_entry(door: _Door):
     ]
 
 
-@pytest.mark.parametrize("client_token", [False, True], ids=["minted-token", "client-token"])
-def test_a_create_whose_record_fails_answers_its_token_and_the_history_catches_up(
-    door: _Door, monkeypatch: pytest.MonkeyPatch, client_token: bool
-):
-    """The record runs after the share commits, so its failure must not hide the only copy of
-    a server-minted token: a retry would make a second share and spend a second unit."""
-    card = door.card()
+def test_a_write_whose_history_cannot_be_recorded_commits_nothing(door: _Door):
+    """A write records its history in its own transaction, so a failed record leaves no
+    revision without its entries: the create stores no share and gives its unit back, the
+    replace leaves the share at its revision, and a retry records both."""
+    first, second = door.card(), door.card()
     deps = getattr(door.client.app.state, SHARES_DEPS_SLOT.name)
-    record_served = deps.share_store.record_served
+    body = {
+        "cards": [{"component_id": first, "revision": 1}],
+        "latest": True,
+        "write_token": mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX),
+    }
 
-    def unavailable(**_: object) -> None:
-        raise PresentationStoreUnavailable("recording a served frame")
+    def failing(fail: bool) -> None:
+        door.presentation.fail_before = (
+            (lambda sql, _: sql.startswith("INSERT INTO presentation.served_frame"))
+            if fail
+            else None
+        )
 
-    monkeypatch.setattr(deps.share_store, "record_served", unavailable)
-    body: dict[str, object] = {"cards": [{"component_id": card, "revision": 1}], "latest": True}
-    if client_token:
-        body["write_token"] = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
-    created = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
-    monkeypatch.setattr(deps.share_store, "record_served", record_served)
-    share_id = created.json()["id"]
-    history_path = f"/api/presentation/shares/{share_id}/history"
-    unrecorded = door.client.get(history_path).json()["served"]
+    def create():
+        return door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
 
-    if client_token:
-        retried = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
-        assert (retried.status_code, retried.json()["id"]) == (201, share_id)
-    else:
-        assert door.data(share_id).status_code == 200
+    failing(True)
+    refused_create = create()
+    failing(False)
+    share = create().json()
+    share_path = f"/api/presentation/shares/{share['id']}"
 
-    assert created.status_code == 201, created.json()
-    assert created.json()["write_token"].startswith(SHARE_WRITE_TOKEN_PREFIX)
+    def replace():
+        return door.client.put(
+            share_path,
+            json={"cards": [{"component_id": second, "revision": 1}]},
+            headers={_TOKEN: share["write_token"]},
+        )
+
+    failing(True)
+    refused_replace = replace()
+    failing(False)
+    unreplaced = door.client.get(share_path).json()["revision"]
+    replaced = replace()
+
+    assert (refused_create.status_code, refused_create.json()["code"]) == (
+        503,
+        "service_unavailable",
+    )
+    assert (refused_replace.status_code, refused_replace.json()["code"]) == (
+        503,
+        "service_unavailable",
+    )
+    assert list(door.presentation.state.shares) == [share["id"]]
     assert len(deps.allowances.spent) == 1
-    assert unrecorded == []
+    assert (unreplaced, replaced.json()["revision"]) == (1, 2)
     assert [
-        (entry["slot"], entry["component_id"], entry["frame"]["content_version"])
-        for entry in door.client.get(history_path).json()["served"]
-    ] == [(1, card, _STORED.content_version)]
+        (entry["slot"], entry["component_id"])
+        for entry in door.client.get(f"{share_path}/history").json()["served"]
+    ] == [(1, second), (1, first)]
 
 
 def test_a_replace_or_a_replayed_create_records_the_frame_a_kept_live_slot_serves(door: _Door):

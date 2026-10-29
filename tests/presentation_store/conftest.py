@@ -355,15 +355,16 @@ class FakeTransaction:
             return [{"id": share_id}]
 
         if sql.startswith("INSERT INTO presentation.share_revision (share_id, revision"):
-            share_id, revision = cast(str, params[0]), cast(int, params[1])
-            created_at = params[2] if len(params) == 3 else datetime.now(UTC)
+            share_id, revision, created_at = params
+            share_id, revision = cast(str, share_id), cast(int, revision)
+            created_at = created_at if created_at is not None else datetime.now(UTC)
             if share_id not in s.shares:
                 raise _foreign_key_violation("share_revision_share_id_fkey")
             revisions = s.share_revisions.setdefault(share_id, [])
             if any(row["revision"] == revision for row in revisions):
                 raise _unique_violation("share_revision_pkey")
             revisions.append({"revision": revision, "created_at": created_at})
-            return []
+            return [{"created_at": created_at}]
 
         if sql.startswith("SELECT revision, created_at FROM presentation.share_revision"):
             (share_id,) = params
@@ -457,12 +458,27 @@ class FakeTransaction:
             # Rows are appended in time order, so the slot's newest entry is its last one.
             return [{name: entries[-1][name] for name in _SERVED_FRAME_SHOWN}] if entries else []
 
+        if sql.startswith(
+            "SELECT 1 FROM presentation.share_slot WHERE share_id = %s AND slot = %s"
+        ):
+            share_id, slot, component_id, component_revision, _ = params
+            revisions = s.share_revisions.get(cast(str, share_id), [])
+            if not revisions:
+                return []
+            latest = max(row["revision"] for row in revisions)
+            held = any(
+                (row["slot"], row["component_id"], row["component_revision"])
+                == (slot, component_id, component_revision)
+                for row in s.share_slots.get((cast(str, share_id), latest), [])
+            )
+            return [{"?column?": 1}] if held else []
+
         if sql.startswith("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE"):
             (share_id,) = params
             return [{"?column?": 1}] if share_id in s.shares else []
 
         if sql.startswith("INSERT INTO presentation.served_frame ("):
-            share_id, slot, component_id, revision, spec_id, cv, rendering, *newest_of = params
+            share_id, slot, component_id, revision, spec_id, cv, rendering, at, *newest_of = params
             shown = (component_id, revision, spec_id, cv)
             assert newest_of == [share_id, slot, *shown]
             if share_id not in s.shares:
@@ -485,7 +501,7 @@ class FakeTransaction:
                     "rendering": json.loads(cast(str, rendering))
                     if rendering is not None
                     else None,
-                    "first_served_at": datetime.now(UTC),
+                    "first_served_at": at if at is not None else datetime.now(UTC),
                 }
             )
             return []

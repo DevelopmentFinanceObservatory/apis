@@ -3,6 +3,7 @@ conversion, website imports, slot checks, served frames, and failure wrapping.""
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import secrets
 from collections.abc import Iterator
@@ -51,6 +52,7 @@ def _create(
         title="Aid",
         write_token_sha256=secrets.token_bytes(32) if digest == "fresh" else digest,
         cards=cards,
+        renderings={},
     )
 
 
@@ -78,9 +80,9 @@ def test_a_replace_with_fewer_cards_keeps_the_later_slots_empty_and_more_cards_f
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"), _card("b"), _card("c"))
 
-    fewer = store.replace_share(share_id=created.id, revision=1, cards=[_card("d")])
+    fewer = store.replace_share(share_id=created.id, revision=1, cards=[_card("d")], renderings={})
     more = store.replace_share(
-        share_id=created.id, revision=2, cards=[_card("a"), _card("b"), _card("e")]
+        share_id=created.id, revision=2, cards=[_card("a"), _card("b"), _card("e")], renderings={}
     )
 
     assert (fewer.revision, _shown(fewer.slots)) == (2, [(1, "cmp_d"), (2, None), (3, None)])
@@ -95,7 +97,9 @@ def test_a_replace_past_the_slots_the_share_has_adds_slots():
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"))
 
-    grown = store.replace_share(share_id=created.id, revision=1, cards=[_card("b"), _card("c")])
+    grown = store.replace_share(
+        share_id=created.id, revision=1, cards=[_card("b"), _card("c")], renderings={}
+    )
 
     assert _shown(grown.slots) == [(1, "cmp_b"), (2, "cmp_c")]
 
@@ -125,6 +129,7 @@ def test_a_create_holding_another_shares_digest_is_refused_and_prior_create_find
         write_token_sha256=digest,
         cards=[_card("a")],
         create_request_sha256=request,
+        renderings={},
     )
 
     with pytest.raises(ShareWriteTokenInUse):
@@ -160,7 +165,7 @@ def test_a_deleted_share_is_absent_to_every_read_and_write():
     with pytest.raises(ShareNotFound):
         store.read_share(share_id=created.id)
     with pytest.raises(ShareNotFound):
-        store.replace_share(share_id=created.id, revision=1, cards=[_card("b")])
+        store.replace_share(share_id=created.id, revision=1, cards=[_card("b")], renderings={})
     with pytest.raises(ShareNotFound):
         store.delete_share(share_id=created.id)
 
@@ -210,6 +215,7 @@ def test_a_create_stores_its_kind_and_payload_as_given():
         write_token_sha256=None,
         cards=[_card("a")],
         payload=payload,
+        renderings={},
     )
 
     read = store.read_share(share_id=created.id)
@@ -219,11 +225,15 @@ def test_a_create_stores_its_kind_and_payload_as_given():
 def test_a_snapshot_conversion_writes_the_served_frames_and_answers_a_snapshot_as_it_is():
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"), _card("b"))
-    emptied = store.replace_share(share_id=created.id, revision=1, cards=[_card("a")])
+    emptied = store.replace_share(
+        share_id=created.id, revision=1, cards=[_card("a")], renderings={}
+    )
     assert _shown(emptied.slots) == [(1, "cmp_a"), (2, None)]
 
-    snapshot = store.snapshot_share(share_id=created.id, revision=2, frames={1: _NEWER})
-    again = store.snapshot_share(share_id=created.id, revision=2, frames={1: _FRAME})
+    snapshot = store.snapshot_share(
+        share_id=created.id, revision=2, frames={1: _NEWER}, renderings={}
+    )
+    again = store.snapshot_share(share_id=created.id, revision=2, frames={1: _FRAME}, renderings={})
 
     assert (snapshot.mode, snapshot.revision) == ("snapshot", 3)
     assert snapshot.slots == (ShareSlot(slot=1, card=_card("a", frame=_NEWER)), ShareSlot(2, None))
@@ -234,10 +244,10 @@ def test_a_snapshot_conversion_writes_the_served_frames_and_answers_a_snapshot_a
 def test_a_snapshot_conversion_of_a_share_replaced_meanwhile_is_an_edit_conflict():
     store = LiveShareStore(store=FakePresentationStore())
     created = _create(store, _card("a"))
-    store.replace_share(share_id=created.id, revision=1, cards=[_card("b")])
+    store.replace_share(share_id=created.id, revision=1, cards=[_card("b")], renderings={})
 
     with pytest.raises(EditConflict):
-        store.snapshot_share(share_id=created.id, revision=1, frames={})
+        store.snapshot_share(share_id=created.id, revision=1, frames={}, renderings={})
 
     assert store.read_share(share_id=created.id).mode == "live"
 
@@ -247,13 +257,13 @@ def test_a_replace_refuses_a_share_that_became_a_snapshot_or_moved_since_it_was_
     live = _create(store, _card("a"))
     frozen = _create(store, _card("a"))
     # Each replace read revision 1, then another write committed before its own.
-    store.replace_share(share_id=live.id, revision=1, cards=[_card("b")])
-    store.snapshot_share(share_id=frozen.id, revision=1, frames={})
+    store.replace_share(share_id=live.id, revision=1, cards=[_card("b")], renderings={})
+    store.snapshot_share(share_id=frozen.id, revision=1, frames={}, renderings={})
 
     with pytest.raises(EditConflict):
-        store.replace_share(share_id=live.id, revision=1, cards=[_card("c")])
+        store.replace_share(share_id=live.id, revision=1, cards=[_card("c")], renderings={})
     with pytest.raises(ShareNotReplaceable):
-        store.replace_share(share_id=frozen.id, revision=1, cards=[_card("c")])
+        store.replace_share(share_id=frozen.id, revision=1, cards=[_card("c")], renderings={})
 
     assert _shown(store.read_share(share_id=live.id).slots) == [(1, "cmp_b")]
     assert store.read_share(share_id=frozen.id).revision == 2
@@ -354,24 +364,127 @@ def test_a_slots_first_check_is_claimed_once_as_pending_with_no_check_time():
     )
 
 
-def test_a_slot_records_what_it_shows_each_time_it_changes_read_newest_first():
+def _timeline(
+    store: LiveShareStore, share_id: str
+) -> list[tuple[int, str | None, FrameRef | None]]:
+    """The share's entries, oldest first, as (slot, component id, frame)."""
+    entries = store.served_frames(share_id=share_id, limit=100).entries
+    return [(entry.slot, entry.component_id, entry.frame) for entry in reversed(entries)]
+
+
+def _shown_at(store: LiveShareStore, share_id: str, *, slot: int, at: datetime) -> str | None:
+    """The component `slot` showed at `at`: its newest entry from `at` or before."""
+    entries = store.served_frames(share_id=share_id, limit=100).entries
+    return next(e.component_id for e in entries if e.slot == slot and e.first_served_at <= at)
+
+
+def test_a_create_a_replace_and_a_snapshot_each_record_what_their_slots_show_at_their_revision():
+    store = LiveShareStore(store=FakePresentationStore())
+    a, b, c = _card("a"), _card("b"), _card("c")
+    rendering = {"without_party_totals": True}
+    created = store.create_share(
+        kind="canvas",
+        mode="live",
+        title=None,
+        write_token_sha256=None,
+        cards=[a, _card("note", frame=None), b],
+        renderings={("cmp_a", 1): rendering},
+    )
+    # Slot 1's check moved to a newer frame, which no read has recorded yet.
+    store.record_slot_check(
+        share_id=created.id,
+        slot=1,
+        card=a,
+        check=SlotCheck(frame=_NEWER, freshness="current", checked_at=_AT, next_check_at=_AT),
+    )
+    after_create = _timeline(store, created.id)
+
+    replaced = store.replace_share(share_id=created.id, revision=1, cards=[a, c], renderings={})
+    after_replace = _timeline(store, created.id)[len(after_create) :]
+
+    snapshot = store.snapshot_share(
+        share_id=created.id, revision=2, frames={1: _NEWER, 2: _NEWER}, renderings={}
+    )
+    after_snapshot = _timeline(store, created.id)[len(after_create) + len(after_replace) :]
+
+    assert after_create == [(1, "cmp_a", _FRAME), (2, None, None), (3, "cmp_b", _FRAME)]
+    # The kept card records its check's frame; slot 3 empties.
+    assert after_replace == [(1, "cmp_a", _NEWER), (2, "cmp_c", _FRAME), (3, None, None)]
+    # Slot 1 already shows what the snapshot keeps, so only slot 2 changes.
+    assert after_snapshot == [(2, "cmp_c", _NEWER)]
+    entries = store.served_frames(share_id=created.id, limit=100).entries
+    assert [entry.first_served_at for entry in entries] == [snapshot.revised_at] + [
+        replaced.revised_at
+    ] * 3 + [created.revised_at] * 3
+    assert [
+        entry.rendering for entry in entries if entry.first_served_at == created.revised_at
+    ] == [
+        None,
+        None,
+        rendering,
+    ]
+
+
+def test_two_replaces_record_in_commit_order_and_as_of_between_them_selects_the_first():
+    store = LiveShareStore(store=FakePresentationStore())
+    created = _create(store, _card("a"))
+
+    first = store.replace_share(share_id=created.id, revision=1, cards=[_card("b")], renderings={})
+    second = store.replace_share(share_id=created.id, revision=2, cards=[_card("c")], renderings={})
+
+    assert [component for _, component, _ in _timeline(store, created.id)] == [
+        "cmp_a",
+        "cmp_b",
+        "cmp_c",
+    ]
+    assert created.revised_at < first.revised_at < second.revised_at
+    assert _shown_at(
+        store, created.id, slot=1, at=second.revised_at - timedelta(microseconds=1)
+    ) == ("cmp_b")
+
+
+def _write(store: LiveShareStore, share_id: str, write: str) -> None:
+    if write == "replace":
+        store.replace_share(share_id=share_id, revision=1, cards=[_card("b")], renderings={})
+    else:
+        store.snapshot_share(share_id=share_id, revision=1, frames={1: _NEWER}, renderings={})
+
+
+@pytest.mark.parametrize("write", ["create", "replace", "snapshot"])
+def test_a_write_whose_history_insert_fails_commits_nothing(write: str):
+    fake = FakePresentationStore()
+    store = LiveShareStore(store=fake)
+    created = _create(store, _card("a")) if write != "create" else None
+    before = copy.deepcopy(fake.state.share_revisions), list(fake.state.served_frames)
+    fake.fail_before = lambda sql, _: sql.startswith("INSERT INTO presentation.served_frame")
+
+    with pytest.raises(PresentationStoreUnavailable):
+        if created is None:
+            _create(store, _card("a"))
+        else:
+            _write(store, created.id, write)
+
+    fake.fail_before = None
+    assert (fake.state.share_revisions, fake.state.served_frames) == before
+    if created is not None:
+        assert store.read_share(share_id=created.id) == created
+
+
+def test_a_slot_read_records_what_it_shows_each_time_it_changes_read_newest_first():
     store = LiveShareStore(store=FakePresentationStore())
     share = _create(store, _card("a"))
     rendering = {"without_party_totals": False}
 
-    for frame in (_FRAME, _FRAME, _NEWER, _FRAME):
+    for frame in (_FRAME, _NEWER, _NEWER, _FRAME):
         store.record_served(
             share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=rendering
         )
-    store.record_emptied(share_id=share.id, slot=1)
-    store.record_emptied(share_id=share.id, slot=1)
 
     served = store.served_frames(share_id=share.id, limit=10).entries
     assert [(entry.component_id, entry.frame, entry.rendering) for entry in served] == [
-        (None, None, None),
         ("cmp_a", _FRAME, rendering),
         ("cmp_a", _NEWER, rendering),
-        ("cmp_a", _FRAME, rendering),
+        ("cmp_a", _FRAME, None),
     ]
     assert served[0].first_served_at >= served[1].first_served_at
     store.delete_share(share_id=share.id)
@@ -379,27 +492,26 @@ def test_a_slot_records_what_it_shows_each_time_it_changes_read_newest_first():
         store.served_frames(share_id=share.id, limit=10)
 
 
+def test_a_read_of_a_card_a_replace_has_moved_out_of_its_slot_records_nothing():
+    store = LiveShareStore(store=FakePresentationStore())
+    share = _create(store, _card("a"))
+    store.replace_share(share_id=share.id, revision=1, cards=[_card("b")], renderings={})
+
+    # The read loaded revision 1 before the replace committed, and records after it.
+    store.record_served(share_id=share.id, slot=1, card=_card("a"), frame=_NEWER, rendering=None)
+
+    assert _timeline(store, share.id) == [(1, "cmp_a", _FRAME), (1, "cmp_b", _FRAME)]
+
+
 def test_a_slot_read_locks_the_share_only_when_what_the_slot_shows_changes():
     fake = FakePresentationStore()
     store = LiveShareStore(store=fake)
     share = _create(store, _card("a"))
 
-    def locks_taken(frame: FrameRef | None) -> int:
+    def locks_taken(frame: FrameRef) -> int:
         fake.statement_log.clear()
-        if frame is None:
-            store.record_emptied(share_id=share.id, slot=1)
-        else:
-            store.record_served(
-                share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=None
-            )
+        store.record_served(share_id=share.id, slot=1, card=_card("a"), frame=frame, rendering=None)
         return sum("FOR NO KEY UPDATE" in sql for sql in fake.statement_log)
 
-    assert [locks_taken(frame) for frame in (_FRAME, _FRAME, _NEWER, _NEWER, None, None)] == [
-        1,
-        0,
-        1,
-        0,
-        1,
-        0,
-    ]
+    assert [locks_taken(frame) for frame in (_FRAME, _NEWER, _NEWER, _FRAME)] == [0, 1, 0, 1]
     assert len(store.served_frames(share_id=share.id, limit=10).entries) == 3

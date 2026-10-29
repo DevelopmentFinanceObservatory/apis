@@ -22,8 +22,7 @@ URLs under the public site, and the `shw_` write token. The store keeps its SHA-
 A create may carry its own `shw_` token in `write_token`, in the form the server mints
 (`assembler.write_token.require_client_write_token`). The token keys the create. A retry with
 the same token and the same body, defaults filled, answers the share the first create made,
-201 with its current URLs and revision, spending no allowance and pinning nothing. It records
-what the share shows again, so a share whose first record failed lists it in its history. The
+201 with its current URLs and revision, spending no allowance and pinning nothing. The
 same token with another body refuses 400 `request_invalid` at `/write_token`, and a token whose
 share was taken down answers 404 `not_found`. A server-minted token appears only in the
 create's reply.
@@ -78,10 +77,10 @@ empty slot, answers 404 `not_found`.
 `GET /api/presentation/shares/{share_id}/history` is public and allows any origin. It returns a
 timeline of what each slot showed, newest first, each frame with its retention counted from when
 DFO stored it and whether it is still fetchable (`share_slots.history_document`). A create, replace
-or snapshot conversion records the frame each slot serves at the write, as a read does: a live
-slot whose card kept its place serves its last check's frame. The history then lists what a
-share shows before any read. That record runs after the write commits, so its failure is
-logged, the write still answers, and the slot's next read records what it serves. A slot a
+or snapshot conversion records the frame each slot serves in the transaction that writes its
+revision, dated with the revision (`ShareStore.create_share`): a live slot whose card kept its
+place serves its last check's frame. The history then lists what a share shows before any read,
+in the order its writes committed, and a write that cannot record commits nothing. A slot a
 replace leaves empty records an entry with `component_id`, `revision`, `frame`, `rendering` and
 `retention` null and `fetchable` false, and so does a slot whose card is a note, which draws no
 frame. A slot records an entry only when what it shows changes. The route answers a page of
@@ -482,8 +481,9 @@ def authorise_share_write(share: ShareRecord, *, presented: str | None) -> None:
 
 def _read_cards(
     cards: Iterable[ShareCardBody], *, revision_store: RevisionStore
-) -> list[ShareCard]:
-    """The stored card revisions `cards` name, each with the frame it draws.
+) -> tuple[list[ShareCard], dict[tuple[str, int], Mapping[str, object] | None]]:
+    """The stored card revisions `cards` name, each with the frame it draws, and the rendering
+    each recorded.
 
     Raises:
         PathParamInvalid: A component id is malformed.
@@ -492,6 +492,7 @@ def _read_cards(
         EditConflict: A component has no revision at all.
     """
     read: list[ShareCard] = []
+    renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
     for card in cards:
         require_component_id(card.component_id)
         record = read_stored_revision(
@@ -505,7 +506,8 @@ def _read_cards(
                 frame=FrameRef(**frame) if frame is not None else None,
             )
         )
-    return read
+        renderings[(card.component_id, card.revision)] = record.frame_rendering
+    return read, renderings
 
 
 def _require_live_data_cards(cards: Iterable[ShareCard]) -> None:
@@ -540,43 +542,21 @@ def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
         )
 
 
-def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
-    """Record the frame each slot of `share` serves (`serving_frame`), with the card revision's
-    recorded rendering, as a slot read records it. A live slot whose card kept its place serves
-    its last check's frame, so that frame is what the history lists. A slot a replace left
-    empty, or whose card is a note, records no card. The share's history then lists from the
-    write on what it shows.
-
-    The write has committed by now, so a failure here is logged and the write still answers:
-    a create's reply carries the only copy of a server-minted token. A slot read records what it
-    serves, so the history catches up at the slot's next read."""
-    try:
-        _record_slots(share, deps=deps)
-    except Exception:
-        logger.warning("Share %s could not record what its slots show", share.id, exc_info=True)
-
-
-def _record_slots(share: ShareRecord, *, deps: SharesDeps) -> None:
-    renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
-    for slot in share.slots:
-        card = slot.card
-        if card is None or card.frame is None:
-            deps.share_store.record_emptied(share_id=share.id, slot=slot.slot)
-            continue
-        key = (card.component_id, card.revision)
-        if key not in renderings:
-            renderings[key] = read_stored_revision(
-                component_id=card.component_id,
-                revision=card.revision,
-                revision_store=deps.revision_store,
-            ).frame_rendering
-        deps.share_store.record_served(
-            share_id=share.id,
-            slot=slot.slot,
-            card=card,
-            frame=serving_frame(share=share, slot=slot.slot, card=card, deps=deps),
-            rendering=renderings[key],
-        )
+def _renderings(
+    share: ShareRecord, *, revision_store: RevisionStore
+) -> dict[tuple[str, int], Mapping[str, object] | None]:
+    """The rendering each data card revision `share` shows recorded."""
+    keys = (
+        (slot.card.component_id, slot.card.revision)
+        for slot in share.slots
+        if slot.card is not None and slot.card.frame is not None
+    )
+    return {
+        (component_id, revision): read_stored_revision(
+            component_id=component_id, revision=revision, revision_store=revision_store
+        ).frame_rendering
+        for component_id, revision in dict.fromkeys(keys)
+    }
 
 
 def _locations(share: ShareRecord, *, site: str) -> dict[str, object]:
@@ -650,8 +630,7 @@ def _replay_create(
     *, token: str, token_sha256: bytes, request_sha256: bytes, deps: SharesDeps
 ) -> Response | None:
     """The first share a client's token made, answered as its create was, or `None` when no
-    share holds the token. It records what the share shows, as the create does, since the first
-    create's record runs after its write commits and may have failed (`_record_shown`).
+    share holds the token.
 
     Raises:
         CreateRequestInvalid: The token's share was made from another request, or from none.
@@ -667,7 +646,6 @@ def _replay_create(
             "mint a new write_token for each create",
         )
     share = deps.share_store.read_share(share_id=prior.share_id)
-    _record_shown(share, deps=deps)
     return _created(share, token=token, deps=deps)
 
 
@@ -690,7 +668,7 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
             )
         ):
             return replayed
-        cards = _read_cards(body.cards, revision_store=deps.revision_store)
+        cards, renderings = _read_cards(body.cards, revision_store=deps.revision_store)
         if body.latest:
             _require_live_data_cards(cards)
         try:
@@ -702,6 +680,7 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
                     title=body.title,
                     write_token_sha256=token_sha256,
                     cards=cards,
+                    renderings=renderings,
                     payload=body.payload,
                     create_request_sha256=request_sha256,
                 )
@@ -717,7 +696,6 @@ async def create_share(body: CreateShareBody, request: Request, deps: SharesDeps
             if replayed is None:
                 raise EditConflict from None
             return replayed
-        _record_shown(share, deps=deps)
         return _created(share, token=token, deps=deps)
 
     return await _run(deps, job)
@@ -740,7 +718,7 @@ async def replace_share(
             raise RequestValidationError(
                 [{"type": "value_error", "loc": ("body", "cards"), "msg": refusal, "input": None}]
             )
-        cards = _read_cards(body.cards, revision_store=deps.revision_store)
+        cards, renderings = _read_cards(body.cards, revision_store=deps.revision_store)
         _require_live_data_cards(cards)
         shown = {
             (slot.card.component_id, slot.card.revision)
@@ -749,9 +727,8 @@ async def replace_share(
         }
         _pin((card for card in cards if (card.component_id, card.revision) not in shown), deps=deps)
         share = deps.share_store.replace_share(
-            share_id=share_id, revision=current.revision, cards=cards
+            share_id=share_id, revision=current.revision, cards=cards, renderings=renderings
         )
-        _record_shown(share, deps=deps)
         return JSONResponse(_locations(share, site=deps.site.public_site_url))
 
     return await _run(deps, job)
@@ -816,9 +793,11 @@ async def post_share_snapshot(
             for component_id, frame in pins:
                 deps.frame_store.pin(frame_ref=frame, component_id=component_id)
             current = deps.share_store.snapshot_share(
-                share_id=share_id, revision=current.revision, frames=frames
+                share_id=share_id,
+                revision=current.revision,
+                frames=frames,
+                renderings=_renderings(current, revision_store=deps.revision_store),
             )
-            _record_shown(current, deps=deps)
         return JSONResponse(_locations(current, site=deps.site.public_site_url))
 
     return await _run(deps, job)

@@ -14,20 +14,30 @@ append-only. A delete sets `deleted_at`, after which every read and write answer
 A snapshot conversion (`snapshot_share`) writes the next revision with the frame each slot
 serves and sets the share's mode to `snapshot`, so its slots keep those frames for good.
 `import_share` stores a share exported from the website under its own id, `created_at`, owner
-and payload, and finds a share it imported before by its id, kind and `created_at`.
+and payload, and finds a share it imported before by its id, kind and `created_at`. It records
+no timeline entries; each slot's first read records what it serves.
 
 A live slot's data read keeps one `SlotCheck` per slot and card revision: the frame the slot
 serves, its freshness, when the check ran and when the next one is due. `claim_slot_check`
 claims a due check in one statement, so of two reads finding it due only one runs the check. The
 claim moves only the due time, to when the claim expires, and leaves the frame, freshness and
 check time of the last check for the reads that lose it. A slot's first claim inserts its row as
-`pending` on the card's own frame with no check time. `served_frame` (migrations 0012 and 0017)
-is a timeline of what each slot showed: `record_served` records the frame a slot serves, and
-`record_emptied` a slot left with no card, each only when it differs from the slot's newest
-entry, so a slot that goes back to an earlier frame records it again and repeated reads record
-nothing new. Each reads the slot's newest entry first and, only when it shows something else,
-locks the share row and checks again under the lock, so concurrent reads of one slot record one
-entry and a read of an unchanged slot takes no lock.
+`pending` on the card's own frame with no check time.
+
+`served_frame` (migrations 0012 and 0017) is a timeline of what each slot showed. An entry is
+recorded only when it differs from the slot's newest entry, so a slot that goes back to an
+earlier frame records it again and repeated reads record nothing new. A create, replace or
+snapshot conversion records what each slot of its revision shows in the transaction that writes
+the revision, dated with the revision's `created_at`: a slot with no card, or whose card draws no
+frame, records no card, and a data card records the frame the slot serves, which for a live slot
+whose card kept its place is its last check's frame. The revision's `clock_timestamp()` is read
+while the write holds the share row lock, so entries and revisions of one share are dated in
+commit order, and a write that cannot record its entries commits nothing. `record_served`
+records the frame a slot read serves. It reads the slot's newest entry first and, only when it
+shows something else, locks the share row, checks that the latest revision still shows the card
+in that slot, and checks the newest entry again under the lock, so concurrent reads of one slot
+record one entry, a read of an unchanged slot takes no lock, and a read that served a revision a
+replace has since moved past records nothing.
 `served_frames` reads the timeline a page at a time, newest first by `first_served_at` and then
 `id`, by keyset from a `ServedPosition` (migration 0018's index), reading one row past the page
 to learn whether another follows.
@@ -71,6 +81,7 @@ __all__ = [
     "ImportedShare",
     "LiveShareStore",
     "PriorShareCreate",
+    "Renderings",
     "ServedFrame",
     "ServedPage",
     "ServedPosition",
@@ -91,6 +102,9 @@ __all__ = [
 type ShareKind = Literal["card", "canvas", "search", "conversation"]
 type ShareMode = Literal["live", "snapshot"]
 type Freshness = Literal["current", "stale", "pending"]
+type Renderings = Mapping[tuple[str, int], Mapping[str, object] | None]
+"""The rendering each card revision recorded, by component id and revision. A write records
+what its slots show with these; a card revision absent from it records no rendering."""
 
 # The chance that one minted id is taken is the stored share count over 62**8, about 2.2e14, so
 # five tries in a row fail only on a broken minter.
@@ -262,12 +276,14 @@ class ShareStore(Protocol):
         title: str | None,
         write_token_sha256: bytes | None,
         cards: Sequence[ShareCard],
+        renderings: Renderings,
         payload: object = None,
         create_request_sha256: bytes | None = None,
     ) -> ShareRecord:
-        """Store a new share at revision 1, one slot per card in order, under a minted id.
-        `payload` is stored as given; `None` stores none. `create_request_sha256` is the digest
-        of the create request a client's write token keys, which `prior_create` returns.
+        """Store a new share at revision 1, one slot per card in order, under a minted id, and
+        record what each slot shows. `payload` is stored as given; `None` stores none.
+        `create_request_sha256` is the digest of the create request a client's write token
+        keys, which `prior_create` returns.
 
         Raises:
             ShareWriteTokenInUse: Another share holds `write_token_sha256`.
@@ -294,10 +310,11 @@ class ShareStore(Protocol):
         ...
 
     def replace_share(
-        self, *, share_id: str, revision: int, cards: Sequence[ShareCard]
+        self, *, share_id: str, revision: int, cards: Sequence[ShareCard], renderings: Renderings
     ) -> ShareRecord:
         """Write the live share's next revision after `revision`: `cards` in slots 1 to
-        `len(cards)`, and every further slot the latest revision has left empty.
+        `len(cards)`, and every further slot the latest revision has left empty. Record what
+        each slot shows.
 
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
@@ -317,11 +334,16 @@ class ShareStore(Protocol):
         ...
 
     def snapshot_share(
-        self, *, share_id: str, revision: int, frames: Mapping[int, FrameRef]
+        self,
+        *,
+        share_id: str,
+        revision: int,
+        frames: Mapping[int, FrameRef],
+        renderings: Renderings,
     ) -> ShareRecord:
         """Turn a live share at `revision` into a snapshot: write its next revision with the
-        same cards, each slot in `frames` drawing that frame, and set its mode. A snapshot is
-        returned as it is.
+        same cards, each slot in `frames` drawing that frame, set its mode, and record what each
+        slot shows. A snapshot is returned as it is.
 
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
@@ -385,16 +407,7 @@ class ShareStore(Protocol):
         rendering: Mapping[str, object] | None,
     ) -> None:
         """Record that `slot` shows `frame` for `card` from now, unless the slot's newest entry
-        already shows it.
-
-        Raises:
-            PresentationStoreUnavailable: The store failed.
-        """
-        ...
-
-    def record_emptied(self, *, share_id: str, slot: int) -> None:
-        """Record that `slot` shows no card from now, unless the slot's newest entry already
-        shows none.
+        already shows it or the share's latest revision no longer shows `card` in `slot`.
 
         Raises:
             PresentationStoreUnavailable: The store failed.
@@ -430,6 +443,7 @@ class LiveShareStore:
         title: str | None,
         write_token_sha256: bytes | None,
         cards: Sequence[ShareCard],
+        renderings: Renderings,
         payload: object = None,
         create_request_sha256: bytes | None = None,
     ) -> ShareRecord:
@@ -444,7 +458,10 @@ class LiveShareStore:
                 payload=payload,
             )
             slots = tuple(ShareSlot(slot=n, card=card) for n, card in enumerate(cards, start=1))
-            _insert_revision(tx, share_id=share_id, revision=1, slots=slots)
+            at = _insert_revision(tx, share_id=share_id, revision=1, slots=slots)
+            _record_revision(
+                tx, share_id=share_id, mode=mode, slots=slots, renderings=renderings, at=at
+            )
             return _read(tx, share_id=share_id, for_update=False)
 
         return self._in_transaction("creating a share", write)
@@ -475,7 +492,7 @@ class LiveShareStore:
         )
 
     def replace_share(
-        self, *, share_id: str, revision: int, cards: Sequence[ShareCard]
+        self, *, share_id: str, revision: int, cards: Sequence[ShareCard], renderings: Renderings
     ) -> ShareRecord:
         def write(tx: Transaction) -> ShareRecord:
             current = _read(tx, share_id=share_id, for_update=True)
@@ -491,7 +508,10 @@ class LiveShareStore:
                 ShareSlot(slot=n, card=cards[n - 1] if n <= len(cards) else None)
                 for n in range(1, count + 1)
             )
-            _insert_revision(tx, share_id=share_id, revision=current.revision + 1, slots=slots)
+            at = _insert_revision(tx, share_id=share_id, revision=current.revision + 1, slots=slots)
+            _record_revision(
+                tx, share_id=share_id, mode="live", slots=slots, renderings=renderings, at=at
+            )
             return _read(tx, share_id=share_id, for_update=False)
 
         return self._in_transaction(f"replacing share {share_id!r}", write)
@@ -509,7 +529,12 @@ class LiveShareStore:
         self._in_transaction(f"deleting share {share_id!r}", write)
 
     def snapshot_share(
-        self, *, share_id: str, revision: int, frames: Mapping[int, FrameRef]
+        self,
+        *,
+        share_id: str,
+        revision: int,
+        frames: Mapping[int, FrameRef],
+        renderings: Renderings,
     ) -> ShareRecord:
         def write(tx: Transaction) -> ShareRecord:
             current = _read(tx, share_id=share_id, for_update=True)
@@ -535,7 +560,10 @@ class LiveShareStore:
                 )
                 for slot in current.slots
             )
-            _insert_revision(tx, share_id=share_id, revision=revision + 1, slots=slots)
+            at = _insert_revision(tx, share_id=share_id, revision=revision + 1, slots=slots)
+            _record_revision(
+                tx, share_id=share_id, mode="snapshot", slots=slots, renderings=renderings, at=at
+            )
             tx.execute("UPDATE presentation.share SET mode = 'snapshot' WHERE id = %s", (share_id,))
             return _read(tx, share_id=share_id, for_update=False)
 
@@ -583,26 +611,10 @@ class LiveShareStore:
         return self._in_transaction(f"importing share {share.id!r}", write)
 
     def slot_check(self, *, share_id: str, slot: int, card: ShareCard) -> SlotCheck | None:
-        def read(tx: Transaction) -> SlotCheck | None:
-            row = tx.fetch_one(
-                "SELECT frame_spec_id, frame_content_version, freshness, checked_at, "
-                "next_check_at FROM presentation.share_slot_check WHERE share_id = %s AND slot = %s "
-                "AND component_id = %s AND component_revision = %s",
-                (share_id, slot, card.component_id, card.revision),
-            )
-            if row is None:
-                return None
-            return SlotCheck(
-                frame=FrameRef(
-                    spec_id=cast(str, row["frame_spec_id"]),
-                    content_version=cast(str, row["frame_content_version"]),
-                ),
-                freshness=cast("Freshness", row["freshness"]),
-                checked_at=cast("datetime | None", row["checked_at"]),
-                next_check_at=cast(datetime, row["next_check_at"]),
-            )
-
-        return self._in_transaction(f"reading slot {slot} of share {share_id!r}", read)
+        return self._in_transaction(
+            f"reading slot {slot} of share {share_id!r}",
+            lambda tx: _slot_check(tx, share_id=share_id, slot=slot, card=card),
+        )
 
     def claim_slot_check(
         self, *, share_id: str, slot: int, card: ShareCard, now: datetime, claim_until: datetime
@@ -670,24 +682,33 @@ class LiveShareStore:
         frame: FrameRef,
         rendering: Mapping[str, object] | None,
     ) -> None:
-        self._in_transaction(
-            f"recording a frame share {share_id!r} served",
-            lambda tx: _record_shown(
-                tx,
-                share_id=share_id,
-                slot=slot,
-                shown=(card.component_id, card.revision, frame.spec_id, frame.content_version),
-                rendering=rendering,
-            ),
-        )
+        shown = (card.component_id, card.revision, frame.spec_id, frame.content_version)
 
-    def record_emptied(self, *, share_id: str, slot: int) -> None:
-        self._in_transaction(
-            f"recording slot {slot} of share {share_id!r} emptied",
-            lambda tx: _record_shown(
-                tx, share_id=share_id, slot=slot, shown=(None, None, None, None), rendering=None
-            ),
-        )
+        def write(tx: Transaction) -> None:
+            newest = tx.fetch_one(
+                "SELECT component_id, component_revision, frame_spec_id, frame_content_version "
+                "FROM presentation.served_frame WHERE share_id = %s AND slot = %s "
+                "ORDER BY first_served_at DESC, id DESC LIMIT 1",
+                (share_id, slot),
+            )
+            if newest is not None and tuple(newest[name] for name in _SHOWN_COLUMNS) == shown:
+                return
+            tx.execute(
+                "SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE", (share_id,)
+            )
+            held = tx.fetch_one(
+                "SELECT 1 FROM presentation.share_slot WHERE share_id = %s AND slot = %s "
+                "AND component_id = %s AND component_revision = %s AND revision = "
+                "(SELECT max(revision) FROM presentation.share_revision WHERE share_id = %s)",
+                (share_id, slot, card.component_id, card.revision, share_id),
+            )
+            if held is None:
+                return
+            _record_shown(
+                tx, share_id=share_id, slot=slot, shown=shown, rendering=rendering, at=None
+            )
+
+        self._in_transaction(f"recording a frame share {share_id!r} served", write)
 
     def served_frames(
         self, *, share_id: str, limit: int, before: ServedPosition | None = None
@@ -805,19 +826,16 @@ def _insert_revision(
     revision: int,
     slots: Sequence[ShareSlot],
     created_at: datetime | None = None,
-) -> None:
-    """Insert one revision and its slots. `created_at` left out takes the column default."""
-    if created_at is None:
-        tx.execute(
-            "INSERT INTO presentation.share_revision (share_id, revision) VALUES (%s, %s)",
-            (share_id, revision),
-        )
-    else:
-        tx.execute(
-            "INSERT INTO presentation.share_revision (share_id, revision, created_at) "
-            "VALUES (%s, %s, %s)",
-            (share_id, revision, created_at),
-        )
+) -> datetime:
+    """Insert one revision and its slots, and return the revision's `created_at`. Left out, it
+    is `clock_timestamp()`, read after any share row lock the caller waited on, where the
+    column default `now()` would be the transaction's start."""
+    row = tx.fetch_one(
+        "INSERT INTO presentation.share_revision (share_id, revision, created_at) "
+        "VALUES (%s, %s, COALESCE(%s::timestamptz, clock_timestamp())) RETURNING created_at",
+        (share_id, revision, created_at),
+    )
+    assert row is not None
     for slot in slots:
         card = slot.card
         frame = card.frame if card is not None else None
@@ -835,6 +853,7 @@ def _insert_revision(
                 frame.content_version if frame is not None else None,
             ),
         )
+    return cast(datetime, row["created_at"])
 
 
 def _read(tx: Transaction, *, share_id: str, for_update: bool) -> ShareRecord:
@@ -879,6 +898,60 @@ def _read(tx: Transaction, *, share_id: str, for_update: bool) -> ShareRecord:
     )
 
 
+def _slot_check(tx: Transaction, *, share_id: str, slot: int, card: ShareCard) -> SlotCheck | None:
+    row = tx.fetch_one(
+        "SELECT frame_spec_id, frame_content_version, freshness, checked_at, "
+        "next_check_at FROM presentation.share_slot_check WHERE share_id = %s AND slot = %s "
+        "AND component_id = %s AND component_revision = %s",
+        (share_id, slot, card.component_id, card.revision),
+    )
+    if row is None:
+        return None
+    return SlotCheck(
+        frame=FrameRef(
+            spec_id=cast(str, row["frame_spec_id"]),
+            content_version=cast(str, row["frame_content_version"]),
+        ),
+        freshness=cast("Freshness", row["freshness"]),
+        checked_at=cast("datetime | None", row["checked_at"]),
+        next_check_at=cast(datetime, row["next_check_at"]),
+    )
+
+
+def _record_revision(
+    tx: Transaction,
+    *,
+    share_id: str,
+    mode: ShareMode,
+    slots: Sequence[ShareSlot],
+    renderings: Renderings,
+    at: datetime,
+) -> None:
+    """Record what each slot of a revision written at `at` shows, for a share in `mode` after
+    the write. The caller holds the share row lock, or inserted the row."""
+    for slot in slots:
+        card = slot.card
+        if card is None or card.frame is None:
+            _record_shown(
+                tx, share_id=share_id, slot=slot.slot, shown=_NO_CARD, rendering=None, at=at
+            )
+            continue
+        check = (
+            _slot_check(tx, share_id=share_id, slot=slot.slot, card=card)
+            if mode == "live"
+            else None
+        )
+        frame = check.frame if check is not None else card.frame
+        _record_shown(
+            tx,
+            share_id=share_id,
+            slot=slot.slot,
+            shown=(card.component_id, card.revision, frame.spec_id, frame.content_version),
+            rendering=renderings.get((card.component_id, card.revision)),
+            at=at,
+        )
+
+
 def _record_shown(
     tx: Transaction,
     *,
@@ -886,34 +959,28 @@ def _record_shown(
     slot: int,
     shown: tuple[str | None, int | None, str | None, str | None],
     rendering: Mapping[str, object] | None,
+    at: datetime | None,
 ) -> None:
     """Record that `slot` shows `shown` (component id, component revision, frame spec id, frame
-    content version, all `None` for no card) from now, unless the slot's newest entry already
-    shows it. Most reads find it does, so the newest entry is read first without a lock. When it
-    differs, the share row lock serialises a second check and the insert across readers of one
-    share, and `clock_timestamp()` dates the entry after any entry the lock waited on."""
-    newest = tx.fetch_one(
-        "SELECT component_id, component_revision, frame_spec_id, frame_content_version "
-        "FROM presentation.served_frame WHERE share_id = %s AND slot = %s "
-        "ORDER BY first_served_at DESC, id DESC LIMIT 1",
-        (share_id, slot),
-    )
-    if newest is not None and tuple(newest[name] for name in _SHOWN_COLUMNS) == shown:
-        return
-    tx.execute("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE", (share_id,))
+    content version, all `None` for no card) from `at`, or from `clock_timestamp()` when `at` is
+    `None`, unless the slot's newest entry already shows it. The caller holds the share row
+    lock, so the check and the insert are serialised across writers and readers of one share."""
     tx.execute(
         "INSERT INTO presentation.served_frame (share_id, slot, component_id, "
         "component_revision, frame_spec_id, frame_content_version, rendering, first_served_at) "
-        "SELECT %s, %s, %s::text, %s::int, %s::text, %s::text, %s::jsonb, clock_timestamp() "
+        "SELECT %s, %s, %s::text, %s::int, %s::text, %s::text, %s::jsonb, "
+        "COALESCE(%s::timestamptz, clock_timestamp()) "
         "WHERE NOT EXISTS (SELECT 1 FROM (SELECT component_id, component_revision, "
         "frame_spec_id, frame_content_version FROM presentation.served_frame "
         "WHERE share_id = %s AND slot = %s ORDER BY first_served_at DESC, id DESC LIMIT 1) "
         "AS newest WHERE (newest.component_id, newest.component_revision, newest.frame_spec_id, "
         "newest.frame_content_version) IS NOT DISTINCT FROM (%s::text, %s::int, %s::text, "
         "%s::text))",
-        (share_id, slot, *shown, _json_param(rendering), share_id, slot, *shown),
+        (share_id, slot, *shown, _json_param(rendering), at, share_id, slot, *shown),
     )
 
+
+_NO_CARD: tuple[None, None, None, None] = (None, None, None, None)
 
 _SERVED_SELECT = (
     "SELECT id, slot, component_id, component_revision, frame_spec_id, frame_content_version, "

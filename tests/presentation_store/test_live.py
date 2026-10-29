@@ -600,8 +600,11 @@ def test_a_share_keeps_its_slots_across_replacements_and_reads_absent_once_delet
         title="Live share",
         write_token_sha256=digest,
         cards=[_share_card("cmp_a"), ShareCard(component_id="cmp_n", revision=2, frame=None)],
+        renderings={},
     )
-    replaced = shares.replace_share(share_id=created.id, revision=1, cards=[_share_card("cmp_c")])
+    replaced = shares.replace_share(
+        share_id=created.id, revision=1, cards=[_share_card("cmp_c")], renderings={}
+    )
 
     assert shares.read_share(share_id=created.id) == replaced
     assert replaced.revision == 2
@@ -620,13 +623,13 @@ def test_a_share_keeps_its_slots_across_replacements_and_reads_absent_once_delet
 def test_a_share_mint_moves_past_an_id_already_stored(live_store):
     _apply()
     taken = LiveShareStore(store=live_store).create_share(
-        kind="card", mode="snapshot", title=None, write_token_sha256=None, cards=[]
+        kind="card", mode="snapshot", title=None, write_token_sha256=None, cards=[], renderings={}
     )
     minted = iter([taken.id, "Zq" + secrets.token_hex(3)])
     shares = LiveShareStore(store=live_store, mint_id=lambda: next(minted))
 
     created = shares.create_share(
-        kind="card", mode="snapshot", title=None, write_token_sha256=None, cards=[]
+        kind="card", mode="snapshot", title=None, write_token_sha256=None, cards=[], renderings={}
     )
 
     assert created.id != taken.id
@@ -643,23 +646,30 @@ def test_a_live_share_converts_to_a_snapshot_keeping_the_frames_its_slots_serve(
         write_token_sha256=None,
         cards=[_share_card("cmp_a"), _share_card("cmp_b")],
         payload=[{"slot": 0}],
+        renderings={},
     )
     newer = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
 
-    snapshot = shares.snapshot_share(share_id=created.id, revision=1, frames={1: newer})
+    snapshot = shares.snapshot_share(
+        share_id=created.id, revision=1, frames={1: newer}, renderings={}
+    )
 
     assert (snapshot.mode, snapshot.revision, snapshot.payload) == ("snapshot", 2, [{"slot": 0}])
     assert [slot.card.frame for slot in snapshot.slots if slot.card] == [
         newer,
         _share_card("cmp_b").frame,
     ]
-    assert shares.snapshot_share(share_id=created.id, revision=2, frames={}) == snapshot
+    assert (
+        shares.snapshot_share(share_id=created.id, revision=2, frames={}, renderings={}) == snapshot
+    )
     with pytest.raises(EditConflict):
         other = shares.create_share(
-            kind="card", mode="live", title=None, write_token_sha256=None, cards=[]
+            kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
         )
-        shares.replace_share(share_id=other.id, revision=1, cards=[_share_card("cmp_c")])
-        shares.snapshot_share(share_id=other.id, revision=1, frames={})
+        shares.replace_share(
+            share_id=other.id, revision=1, cards=[_share_card("cmp_c")], renderings={}
+        )
+        shares.snapshot_share(share_id=other.id, revision=1, frames={}, renderings={})
 
 
 def test_an_import_keeps_its_id_and_time_once_and_refuses_an_id_holding_another_share(
@@ -698,7 +708,7 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
     shares = LiveShareStore(store=live_store)
     card = _share_card("cmp_a")
     share = shares.create_share(
-        kind="card", mode="live", title=None, write_token_sha256=None, cards=[card]
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=[card], renderings={}
     )
     at = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
     newer = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
@@ -728,13 +738,13 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         shares.claim_slot_check(share_id=share.id, slot=1, card=card, now=now, claim_until=until)
         for now in (at + timedelta(seconds=29), later, later)
     ]
-    for frame in (newer, newer, stored, None, None, stored):
-        if frame is None:
-            shares.record_emptied(share_id=share.id, slot=1)
-            continue
+    for frame in (newer, newer, stored):
         shares.record_served(
             share_id=share.id, slot=1, card=card, frame=frame, rendering={"columns": ["a"]}
         )
+    shares.replace_share(share_id=share.id, revision=1, cards=[], renderings={})
+    # A read that loaded revision 1 before the replace records nothing after it.
+    shares.record_served(share_id=share.id, slot=1, card=card, frame=newer, rendering=None)
 
     first_claims = [
         shares.claim_slot_check(share_id=share.id, slot=2, card=card, now=at, claim_until=until)
@@ -750,41 +760,24 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         frame=stored, freshness="pending", checked_at=None, next_check_at=until
     )
     served = shares.served_frames(share_id=share.id, limit=10).entries
-    assert [(entry.component_id, entry.frame) for entry in served] == [
-        (card.component_id, stored),
-        (None, None),
-        (card.component_id, stored),
-        (card.component_id, newer),
+    assert [(entry.component_id, entry.frame, entry.rendering) for entry in served] == [
+        (None, None, None),
+        (card.component_id, stored, {"columns": ["a"]}),
+        (card.component_id, newer, {"columns": ["a"]}),
+        (card.component_id, stored, None),
     ]
-    assert [entry.rendering for entry in served[:2]] == [{"columns": ["a"]}, None]
 
 
 def test_a_timeline_pages_by_keyset_once_each_in_order_through_one_instant(live_store):
-    """Entries recorded at one instant, across slots, page by `id` with none repeated or
-    skipped, and an older entry follows them."""
+    """Entries one write recorded at its revision's instant, across slots, page by `id` with
+    none repeated or skipped, and an older write's entries follow them."""
     _apply()
     shares = LiveShareStore(store=live_store)
     cards = [_share_card(f"cmp_{name}") for name in "abc"]
     share = shares.create_share(
-        kind="card", mode="live", title=None, write_token_sha256=None, cards=cards
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=cards, renderings={}
     )
-    for slot, card in enumerate(cards, start=1):
-        shares.record_served(
-            share_id=share.id, slot=slot, card=card, frame=card.frame, rendering=None
-        )
-        shares.record_emptied(share_id=share.id, slot=slot)
-    instant = datetime(2026, 10, 28, 9, 0, 0, 123456, tzinfo=UTC)
-    with live_store.transaction() as tx:
-        tx.execute(
-            "UPDATE presentation.served_frame SET first_served_at = %s "
-            "WHERE share_id = %s AND component_id IS NULL",
-            (instant, share.id),
-        )
-        tx.execute(
-            "UPDATE presentation.served_frame SET first_served_at = %s "
-            "WHERE share_id = %s AND component_id IS NOT NULL",
-            (instant - timedelta(microseconds=1), share.id),
-        )
+    shares.replace_share(share_id=share.id, revision=1, cards=[], renderings={})
 
     whole = shares.served_frames(share_id=share.id, limit=10)
     pages = [shares.served_frames(share_id=share.id, limit=2)]
@@ -802,6 +795,52 @@ def test_a_timeline_pages_by_keyset_once_each_in_order_through_one_instant(live_
     ]
     assert [len(page.entries) for page in pages] == [2, 2, 2]
     assert [entry for page in pages for entry in page.entries] == list(whole.entries)
+
+
+def test_a_replace_waiting_on_the_share_lock_dates_its_revision_and_history_after_the_wait(
+    live_store,
+):
+    """A replace that began while another transaction held the share row commits after it, so
+    its revision and history entries are dated after that transaction's last instant, and two
+    replaces list in the order they committed."""
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    share = shares.create_share(
+        kind="card",
+        mode="live",
+        title=None,
+        write_token_sha256=None,
+        cards=[_share_card("cmp_a")],
+        renderings={},
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with live_store.transaction() as tx:
+            tx.execute("SELECT 1 FROM presentation.share WHERE id = %s FOR UPDATE", (share.id,))
+            waiting = pool.submit(
+                shares.replace_share,
+                share_id=share.id,
+                revision=1,
+                cards=[_share_card("cmp_b")],
+                renderings={},
+            )
+            with pytest.raises(FuturesTimeout):
+                waiting.result(timeout=0.5)
+            released = tx.fetch_one("SELECT clock_timestamp() AS at")["at"]
+        first = waiting.result(timeout=10)
+    second = shares.replace_share(
+        share_id=share.id, revision=2, cards=[_share_card("cmp_c")], renderings={}
+    )
+
+    entries = shares.served_frames(share_id=share.id, limit=10).entries
+    assert [(entry.component_id, entry.first_served_at) for entry in entries] == [
+        ("cmp_c", second.revised_at),
+        ("cmp_b", first.revised_at),
+        ("cmp_a", share.revised_at),
+    ]
+    assert released < first.revised_at < second.revised_at
+    between = second.revised_at - timedelta(microseconds=1)
+    assert next(e.component_id for e in entries if e.first_served_at <= between) == "cmp_b"
 
 
 def test_rehash_derived_rendering_moves_only_the_revisions_drawing_the_frame(live_store):

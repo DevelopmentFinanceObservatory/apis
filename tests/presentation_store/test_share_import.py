@@ -279,7 +279,7 @@ def test_a_line_the_import_cannot_place_is_refused_and_the_others_import(line: s
 def test_an_id_holding_a_share_made_here_refuses_the_line():
     fake = FakePresentationStore()
     LiveShareStore(store=fake, mint_id=lambda: "cardLive").create_share(
-        kind="card", mode="live", title=None, write_token_sha256=None, cards=[]
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=[], renderings={}
     )
 
     counts, tokens, refused = _run(LiveShareStore(store=fake), _lines(_CASES["cardLive"]))
