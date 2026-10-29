@@ -415,6 +415,32 @@ def _named_free_values(
     )
 
 
+def _most_named(
+    partitions: Sequence[MeasurePartition],
+    rows: Sequence[Sequence[StatVarRow]],
+    checks: Sequence[tuple[MeasureAxis, str]],
+) -> Sequence[MeasurePartition]:
+    """The partitions of a group, each read from its family `rows`, that carry the most of
+    the named values `checks`: first those the unit layer cannot convert an answer to,
+    then those it can (`is_price_basis`), since a price basis the elected partition lacks
+    is still served by conversion after election and any other value is not. All of
+    `partitions` when none carries a named value."""
+    carried = [
+        [check for check in checks if _rows_satisfy_all(family, (check,))] for family in rows
+    ]
+    scores = [
+        (
+            sum(not is_price_basis(axis.axis, value) for axis, value in held),
+            sum(is_price_basis(axis.axis, value) for axis, value in held),
+        )
+        for held in carried
+    ]
+    best = max(scores, default=(0, 0))
+    if best == (0, 0):
+        return partitions
+    return [partition for partition, score in zip(partitions, scores, strict=True) if score == best]
+
+
 def _rows_satisfy_all(
     rows: Iterable[StatVarRow], checks: Sequence[tuple[MeasureAxis, str]]
 ) -> bool:
@@ -617,10 +643,10 @@ def collapse_measure_families(
     Only shapes the index carries compete in the partition election
     (`index_carries_shape`); other shapes pass through, a debt family on a five-tuple CRS
     flows share among them. `_family_key` keeps distinct non-measure and basis identities
-    separate. Named free-axis values filter each family using index rows,
-    including constraint axes. A named value no member of a family carries is left
-    out of that family's filter. If no member matches every remaining value, elect from
-    that family's full set. With no named values, the declared default wins.
+    separate. Named free-axis values, constraint axes included, steer each group's election
+    to its partitions that carry the most of them (`_most_named`), read from index rows,
+    and the declared default elects among those. A group none of whose partitions
+    carries a named value, and a query naming none, elects by the declared default.
 
     Skip the partition election when there is no shape axis or a constraint
     basis axis; a constraint value never splits a shape, so grouping could merge two
@@ -662,24 +688,8 @@ def collapse_measure_families(
             )
             for i in indices
         )
-        # A named value no partition of the group carries cannot steer it, so it leaves
-        # the filter and the other named values still steer: "constant" prices on a group
-        # of nominal shapes leave "commitments" to elect the FinancialObligation one.
-        steering = tuple(
-            check
-            for check in checks
-            if any(_rows_satisfy_all(targets[int(p.members[0])], (check,)) for p in partitions)
-        )
-        eligible = (
-            tuple(
-                partition
-                for partition in partitions
-                if _rows_satisfy_all(targets[int(partition.members[0])], steering)
-            )
-            if steering
-            else partitions
-        )
-        election = elect_default_partition(eligible or partitions, shape_axes)
+        steered = _most_named(partitions, [targets[int(p.members[0])] for p in partitions], checks)
+        election = elect_default_partition(steered, shape_axes)
         assert election is not None  # indices, and so partitions, is never empty here
         survivor_index = int(election.elected.members[0])
         # The family's own best evidence, not the axis election's: every

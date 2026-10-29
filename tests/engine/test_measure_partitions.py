@@ -695,23 +695,26 @@ def _measure_match(
     )
 
 
+_COMMITMENTS = ("financialObligationType", "Commitment", "commitments")
+_CONSTANT = ("measurementQualifier", "RealValue", "constant")
+
+
 @pytest.mark.parametrize(
-    ("group", "named"),
+    ("group", "named", "elected"),
     [
-        (("t1", "t2", "t3", "t4"), (("financialObligationType", "Commitment", "commitments"),)),
-        # "Constant" names a price basis no shape of the group carries, as in "ODA
-        # commitments in constant 2022 dollars" on the nominal CRS shapes, so it steers
-        # nothing and "commitments" still elects FinancialObligation.
-        (
-            ("t1", "t3"),
-            (
-                ("financialObligationType", "Commitment", "commitments"),
-                ("measurementQualifier", "RealValue", "constant"),
-            ),
-        ),
+        (("t1", "t2", "t3", "t4"), (_COMMITMENTS,), "t3"),
+        # "ODA commitments in constant 2022 dollars" on the nominal CRS shapes: no shape
+        # carries "constant", which the unit layer converts to anyway.
+        (("t1", "t3"), (_COMMITMENTS, _CONSTANT), "t3"),
+        # Each value is carried by another shape. The unit layer converts the FinancialObligation
+        # shape to constant prices, but it cannot turn a disbursement into a commitment.
+        (("t1", "t2", "t3"), (_COMMITMENTS, _CONSTANT), "t3"),
+        # Two values the unit layer cannot convert to, each carried by another shape, tie,
+        # and the declared default elects between them.
+        (("t1", "t3"), (_COMMITMENTS, ("nettingBasis", "Net", "net")), "t1"),
     ],
 )
-def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, named):
+def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, named, elected):
     # The `commitments` filter selects FinancialObligation through `financialObligationType`,
     # which is absent from `_family_key` (#743).
     shapes = _worked_example_shapes()
@@ -724,7 +727,7 @@ def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, n
         named=tuple(_measure_match(*match) for match in named),
     )
 
-    assert collapsed == (shapes["t3"],)
+    assert collapsed == (shapes[elected],)
 
 
 def test_named_shape_axis_value_steers_the_collapse_to_the_matching_qualifier():
