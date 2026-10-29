@@ -48,7 +48,6 @@ from dfo_frame_grammar import (
     TIME_PERIOD_COLUMN,
     VALUE_COLUMN,
     Frame,
-    stream_frame_sha256,
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 
@@ -56,7 +55,7 @@ from code_index.members import SourceNotInFamily, identity_family_query, index_f
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import pipeline
 from materialise.codes import MaterialisationWarning
-from materialise.content_version import mint_version_from_digest
+from materialise.content_version import mint_version_from_digest, stream_frame_sha256
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
 from materialise.dependencies import Dependencies, members_digest
 from materialise.enrichment import EnrichmentLookup

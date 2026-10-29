@@ -41,16 +41,25 @@ class ScopeIntake:
     `entries` are the explicit entries read from the part's words and the conversation's
     carried entries. `total` is whether the words ask for a total ("total health aid"),
     which the provider default reads. It is a fact about the request and sits outside the
-    entries. `text` is the text the part's words were read from, the one every text origin
-    of the part indexes (`models.TextOrigin`)."""
+    entries. `sums_providers` is whether the explicit provider entry was read from words
+    summing the bilateral and multilateral lines and naming no imputed share ("bilateral
+    plus multilateral ODA"), which the part's dataset reads as the option summing the two
+    (`provider.with_summed_provider`). `text` is the text the part's words were read from,
+    the one every text origin of the part indexes (`models.TextOrigin`)."""
 
     entries: tuple[Entry, ...] = ()
     total: bool = False
+    sums_providers: bool = False
     text: str = ""
 
     def state(self) -> ScopeState:
         """A fresh state for one resolution of the part."""
-        return ScopeState(entries=self.entries, total=self.total, text=self.text)
+        return ScopeState(
+            entries=self.entries,
+            total=self.total,
+            sums_providers=self.sums_providers,
+            text=self.text,
+        )
 
 
 @dataclass(slots=True)
@@ -60,12 +69,14 @@ class ScopeState:
 
     `entries` are the part's explicit and carried entries. A binder reads those on its axis
     (`entries_on`) and applies precedence itself, then writes one `AxisRecord` (`write`).
-    `total` is the request's total intent (`ScopeIntake.total`) and `text` the text the
-    part's words were read from (`ScopeIntake.text`)."""
+    `total` is the request's total intent (`ScopeIntake.total`), `sums_providers` whether
+    its provider entry sums the bilateral and multilateral lines (`ScopeIntake.sums_providers`)
+    and `text` the text the part's words were read from (`ScopeIntake.text`)."""
 
     entries: tuple[Entry, ...] = ()
     records: dict[ScopeAxis, AxisRecord] = field(default_factory=dict)
     total: bool = False
+    sums_providers: bool = False
     text: str = ""
 
     def origin_of(self, words: str) -> TextOrigin:

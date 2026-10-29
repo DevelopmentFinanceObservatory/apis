@@ -67,6 +67,7 @@ from description.facts import (
     Span,
     StatusCounts,
     VariableFacts,
+    lowest_schema_version,
 )
 from description.steps import (
     CONTINUE_SERIES_OP,
@@ -195,7 +196,7 @@ def mint_record(
     return DescriptionRecord(
         id=version.subject_id,
         content_version=version.content_version,
-        schema_version=1,
+        schema_version=lowest_schema_version(variables),
         basis="mint",
         index_stamp=_index_stamp(code_index) if variables.dimensions is not None else None,
         variables=variables,
@@ -299,6 +300,7 @@ def _collapsed(
     record = base.model_copy(
         update={
             "content_version": content_version,
+            "schema_version": lowest_schema_version(variables),
             "variables": variables,
             "series": series,
             **update,
@@ -337,8 +339,9 @@ def _collapsed_variables(
     `stat_var_<property>` (`datasets_api.render.GroupbyCollapseRendering`); every other axis
     is summed away. A kept dimension takes its values from the derived version's figure for its
     column, unknown where the figure is not held. In a `summed` version, a summed-away
-    dimension narrowed `within` a code is that code's total, so the code becomes a fixed value;
-    a version that is not `summed` keeps every dimension it holds no column for as the base
+    dimension narrowed `within` a code is that code's total, so the code becomes a fixed value,
+    and one narrowed to a set is the set's total, a dimension that keeps the set and varies
+    over no value; a version that is not `summed` keeps every dimension it holds no column for as the base
     states it. With `columns` `None` the derived version's columns are unknown, and so are its
     dimensions.
     """
@@ -367,12 +370,24 @@ def _collapsed_variables(
                 else _role_dimension(figure)
             )
             dimensions.append(
-                kept.model_copy(update={"property": dimension.property, "within": dimension.within})
+                kept.model_copy(
+                    update={
+                        "property": dimension.property,
+                        "within": dimension.within,
+                        "within_set": dimension.within_set,
+                    }
+                )
             )
         elif not summed:
             dimensions.append(dimension)
         elif dimension.within is not None:
             fixed.append(FixedValue(property=dimension.property, value=dimension.within))
+        elif dimension.within_set is not MISSING:
+            dimensions.append(
+                dimension.model_copy(
+                    update={"values": [], "undeclared_variables": 0, "partial": False}
+                )
+            )
     return variables.model_copy(update={"fixed": fixed, "dimensions": dimensions})
 
 
@@ -504,7 +519,7 @@ def _computed_record(
     return DescriptionRecord(
         id=version.subject_id,
         content_version=version.content_version,
-        schema_version=1,
+        schema_version=lowest_schema_version(None),
         basis=basis,
         index_stamp=None,
         variables=None,
@@ -646,7 +661,7 @@ def _backfilled_dataset_record(
     record = DescriptionRecord(
         id=version.subject_id,
         content_version=version.content_version,
-        schema_version=1,
+        schema_version=lowest_schema_version(variables),
         basis="backfill",
         index_stamp=_index_stamp(code_index) if variables.dimensions is not None else None,
         variables=variables,
@@ -929,7 +944,8 @@ def variable_facts(
     in its order and then the rest in `roles` order; then the slots that leave their
     constraint open, in slot order; then the other constraints by name. A role's values
     count the variables with data that hold each entity (`role_dimensions`). A slot bound to a
-    code with descendants narrows its dimension `within` that code. With `roles` `None`, each
+    code with descendants narrows its dimension `within` that code, and a slot bound to a set
+    of two or more codes narrows it to that set (`within_set`). With `roles` `None`, each
     role the trace says the mint declared and the definition leaves open is a dimension whose
     values are unknown. A constraint's values count
     the variables with data that hold each, or every resolved variable where the trace records
@@ -1013,11 +1029,12 @@ def _declared_roles(trace: Mapping[str, object], roles: Sequence[RoleFigure]) ->
 
 def _bindings(
     identity: Mapping[str, object], code_index: CodeIndex, *, declared: tuple[str, ...]
-) -> tuple[list[FixedValue], dict[str, str | None]]:
+) -> tuple[list[FixedValue], dict[str, list[str]]]:
     """The values the identity fixes, in its order, and each slot it leaves open with the
-    code it narrows that slot to. A role is named by the declared role its key resolves to,
-    else by the key. Each property and ref passes through `bounded_text`, and one it leaves
-    empty is left out."""
+    codes it narrows that slot to: one code with descendants, the two or more codes of a set,
+    sorted, else none. A set of one code reads as that code bound alone. A role is named by
+    the declared role its key resolves to, else by the key. Each property and ref passes
+    through `bounded_text`, and one it leaves empty is left out."""
     fixed = [
         FixedValue(property=prop, value=value)
         for key, refs in cast("Mapping[str, Sequence[str]]", identity.get("entities", {})).items()
@@ -1026,22 +1043,33 @@ def _bindings(
         and (prop := bounded_text(declared_role_for(key, declared) or key)) is not None
         and (value := bounded_text(refs[0])) is not None
     ]
-    open_slots: dict[str, str | None] = {}
+    open_slots: dict[str, list[str]] = {}
     for slot in cast("Sequence[Mapping[str, object]]", identity.get("slots", ())):
         if (prop := bounded_text(slot["property"])) is None:
             continue
         binding = cast("Mapping[str, object]", slot.get("binding", {}))
         state = binding.get("state")
         ref = bounded_text(binding.get("ref"))
+        refs = sorted(
+            {
+                bounded
+                for member in cast("Sequence[object]", binding.get("refs", ()))
+                if (bounded := bounded_text(member)) is not None
+            }
+        )
+        if state == "set" and len(refs) == 1:
+            state, ref = "value", refs[0]
         if state == "exact" and ref is not None:
             fixed.append(FixedValue(property=prop, value=ref))
         elif state == "value" and ref is not None:
             if len(code_index.expansion(ref)) > 1:
-                open_slots[prop] = ref
+                open_slots[prop] = [ref]
             else:
                 fixed.append(FixedValue(property=prop, value=ref))
+        elif state == "set":
+            open_slots[prop] = refs
         else:
-            open_slots[prop] = None
+            open_slots[prop] = []
     return fixed, open_slots
 
 
@@ -1106,7 +1134,7 @@ def _role_dimension(figure: RoleFigure) -> DimensionFacts:
 def _dimensions(
     rows: Sequence[StatVarRow],
     *,
-    open_slots: Mapping[str, str | None],
+    open_slots: Mapping[str, list[str]],
     fixed: set[str],
     partial: bool,
 ) -> list[DimensionFacts]:
@@ -1118,10 +1146,12 @@ def _dimensions(
         for row in rows:
             if (value := row.constraint_properties.get(prop)) is not None:
                 held[value] = held.get(value, 0) + 1
+        narrowed = open_slots.get(prop, [])
         dimensions.append(
             DimensionFacts(
                 property=prop,
-                within=open_slots.get(prop),
+                within=narrowed[0] if len(narrowed) == 1 else None,
+                within_set=narrowed if len(narrowed) > 1 else MISSING,
                 values=[
                     DimensionValue(value=value, variables=count)
                     for value, count in sorted(held.items())
@@ -1447,8 +1477,7 @@ def named_refs(record: DescriptionRecord) -> list[str]:
         refs.update(item.value for item in variables.fixed)
         for dimension in variables.dimensions or []:
             refs.update(value.value for value in dimension.values or ())
-            if dimension.within is not None:
-                refs.add(dimension.within)
+            refs.update(dimension.narrowed_to)
     for step in record.known_steps:
         refs.update(ref.ref for ref in _step_refs(step))
         refs.update(bound_entities(step))
@@ -1475,9 +1504,7 @@ def title_refs(record: DescriptionRecord) -> list[str]:
     if (variables := record.variables) is None or record.computed is not None:
         return []
     refs = {item.value for item in variables.fixed}
-    refs.update(
-        dimension.within for dimension in variables.dimensions or [] if dimension.within is not None
-    )
+    refs.update(code for dimension in variables.dimensions or [] for code in dimension.narrowed_to)
     if variables.variable is not None:
         refs.add(variables.variable)
     return sorted(refs)
@@ -1494,7 +1521,7 @@ def title_named(record: DescriptionRecord, *, index: CodeIndex, indexed: Vocabul
         if variables is None or record.computed is not None
         else [
             *(fixed.property for fixed in variables.fixed),
-            *(d.property for d in variables.dimensions or [] if d.within is not None),
+            *(d.property for d in variables.dimensions or [] if d.narrowed_to),
         ]
     )
     return unlabelled(title_refs(record), properties, index=index, indexed=indexed)

@@ -874,7 +874,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # An axis the query asks every member of is a preference among those shapes: a shape
     # the index carries that declares no role on it leaves once a role-bearing shape that
     # does survives (`without_open_axis_gaps`).
-    eligible_shapes = without_open_axis_gaps(state, admitted)
+    eligible_shapes = _without_unasked_opt_in(state, without_open_axis_gaps(state, admitted))
     if not eligible_shapes:
         # Nothing is admitted and nothing was refused, so no candidate cleared the score
         # floor; a refused reading takes the branch above.
@@ -1113,6 +1113,58 @@ def _dataset_candidates(
         for shape in shapes
         if scope is None or _in_scope(shape, scope, index)
     ]
+
+
+def _without_unasked_opt_in(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
+    """`shapes` less each one only opt-in tables publish (`is_opt_in`) that a part not
+    naming a source has no need of, so a bind reply cannot elect it.
+
+    A table answers from its opt-in rows only when the part names it (`shape_for_part`)
+    or asks a breakdown no other table offers. Another of `shapes` on the same five-tuple
+    that a table that is not opt-in publishes measures what the opt-in shape does: ONE's
+    imputed multilateral sectors and DAC2a's imputed multilateral ODA line are both
+    attributed amounts of financial flows. The opt-in shape stays when the question names
+    a code (`ResolveState.pinned_part_matches`), or asks an operation over `category`
+    of (`operation_slot_phrases`), one of its slots that none of those other shapes
+    holds and that its tables do not hold fixed on every row
+    (`DatasetDeclaration.invariants`): "imputed multilateral aid to health" names a
+    sector and "which sectors get the most imputed multilateral ODA" ranks the sectors,
+    which only ONE's table breaks down, while "imputed multilateral ODA" names DAC2a's
+    aid type and ONE's fixed flow type, so DAC2a's own line answers it. A part naming a
+    source keeps every shape its scope allows. An excluding part keeps the rule as it
+    stands without the exclusion, so excluding a table opens no opt-in one, as
+    `code_index.members.eligible_among` keeps within one family."""
+    if state.scope is not None and state.scope.named:
+        return list(shapes)
+    index = get_index()
+
+    def opt_in_only(shape: ShapeDraft) -> bool:
+        return bool(shape.datasets) and all(is_opt_in(index, d) for d in shape.datasets or ())
+
+    def unasked(shape: ShapeDraft) -> bool:
+        if not opt_in_only(shape):
+            return False
+        five_tuple = shape_five_tuple(shape)
+        others = [
+            other
+            for other in shapes
+            if any(not is_opt_in(index, d) for d in other.datasets or ())
+            and shape_five_tuple(other) == five_tuple
+        ]
+        if not others:
+            return False
+        fixed = {
+            prop for dataset in shape.datasets or () for prop in index.datasets[dataset].invariants
+        }
+        offered = frozenset().union(*(shape_vocabulary(other) for other in others))
+        breakdown = shape_vocabulary(shape) - offered - fixed
+        if not breakdown.isdisjoint(operation_slot_phrases(state.operations, shape)):
+            return False
+        return not any(
+            match.code_system in breakdown for match in for_shape(state.pinned_part_matches, shape)
+        )
+
+    return [shape for shape in shapes if not unasked(shape)]
 
 
 def _in_scope(shape: ShapeDraft, scope: ProvenanceScope, index: CodeIndex) -> bool:

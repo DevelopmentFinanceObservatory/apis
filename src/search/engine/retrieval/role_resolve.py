@@ -384,12 +384,14 @@ def _elect_role_class(
     )
     if election.tied:
         return None
-    kept = [sv for sv in surviving_svs if sv not in electing or sv in election.members]
-    if len(kept) < len(surviving_svs):
+    elected = frozenset(election.members)
+    dropped = frozenset(electing) - elected
+    kept = [sv for sv in surviving_svs if sv not in dropped]
+    if dropped:
         logger.info(
             "graph_confirm_resolve: dropped %d member(s) the role-class election reduces: %r",
             len(surviving_svs) - len(kept),
-            [sv for sv in surviving_svs if sv not in kept],
+            [sv for sv in surviving_svs if sv in dropped],
         )
     return kept
 

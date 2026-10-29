@@ -15,8 +15,9 @@ Pure: it reads only its arguments and does no I/O. The rules it holds to:
   so a switch leaves every explicit or carried entry where it is. Carried entries are
   weighed in axis order, then by option id, so posting order has no effect.
 - A partial option (one serving fewer years than the part asks for, with its own shorter
-  window) applies only to a switch, since only a click may change the period asked for. A
-  stated or carried entry asking for it is refused or dropped with the option's reason.
+  window) applies to an explicit entry, a switch or the request's own words, over its own
+  window. A carried entry asking for it is dropped, since only the user may change the
+  period asked for.
 - Every other axis takes its derived default: the first option of its preference that is
   available and that no entry, and no default derived before it, conflicts with.
 - An option that would conflict with an entry on another axis is unavailable, with
@@ -100,8 +101,7 @@ def _unavailable(tables: Mapping[ScopeAxis, AxisTable], entry: Entry) -> str | N
         return "option_unknown"
     if option.availability.status == "unavailable":
         return option.availability.code or "option_unavailable"
-    switched = entry.provenance == "explicit" and entry.origin.kind == "choice"
-    if option.availability.status == "partial" and not switched:
+    if option.availability.status == "partial" and entry.provenance != "explicit":
         return option.availability.code or "option_partial"
     return None
 

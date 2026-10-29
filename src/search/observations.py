@@ -52,7 +52,7 @@ from search.models import (
     SpecObservations,
     omitted_observations,
 )
-from search.render.labels import _humanize_ref, _join_labels
+from search.render.labels import _humanize_ref, join_labels
 
 logger = logging.getLogger(__name__)
 
@@ -235,7 +235,7 @@ def member_row_label(
         _humanize_ref(value_dcid, labels.get(value_dcid))
         for _prop, value_dcid in sorted(constraints.items())
     ]
-    return _join_labels(value_labels)
+    return join_labels(value_labels)
 
 
 def as_entity_role_key(role: str) -> EntityRoleKey | None:

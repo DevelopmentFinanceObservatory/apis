@@ -389,6 +389,28 @@ def identity_basis_record(
     )
 
 
+def unbound_basis_record(
+    identity: BaseIdentity, index: CodeIndex, entries: Sequence[Entry]
+) -> AxisRecord | None:
+    """The measure-basis record of a fresh part whose binders settled no axis, served on
+    `identity` with the measure-basis `entries` it read, in precedence order: the first
+    entry asking for the option `identity` holds (`held_option`), applied as a binder
+    applies it (`_record_basis` in `phase_election`), so the scope states it and reports
+    none of them as dropped; else the record `identity_basis_record` reads with no entry,
+    since none of `entries` is served."""
+    held = held_option(identity)
+    stated = next((e for e in entries if e.axis == "measure_basis" and e.option_id == held), None)
+    if held is None or stated is None:
+        return identity_basis_record(identity, index, [])
+    return AxisRecord(
+        axis="measure_basis",
+        rule=BASIS_RULE,
+        active=held,
+        provenance=stated.provenance,
+        entry=stated,
+    )
+
+
 def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     """The convention dataset that serves `identity` when the measure-basis axis applies to
     it, else None: `identity` holds a declared basis (`held_measure`), the conventions read

@@ -12,7 +12,8 @@ from typing import ClassVar
 import pyarrow as pa
 import pytest
 
-from code_index.declarations import COMPOSITES
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import CRS_INCLUSIVE
 from dc_graph.client import SubjectPage
 from materialise.convert import require_conversion_coverage
 from materialise.errors import UpstreamResponseError
@@ -451,7 +452,7 @@ def test_no_recipe_offers_nothing(spec: Spec, members):
 def test_a_composite_offers_the_recipe_its_component_tables_share():
     """A composite answer's provenance facet names the composite, which names no recipe; its
     component tables do, and they share one."""
-    composite, _ = COMPOSITES
+    composite = DECLARED_COMPOSITES[CRS_INCLUSIVE]
     catalogue = ConversionCatalogue(
         recipes=MappingProxyType(
             {recipe.dataset: "ConversionRecipeDAC" for recipe in composite.components}

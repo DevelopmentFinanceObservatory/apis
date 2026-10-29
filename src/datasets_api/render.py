@@ -65,18 +65,22 @@ import pickle
 import re
 import sys
 import tempfile
+import threading
+import time
 import zipfile
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import cache, cached_property
 from typing import IO, cast
 from urllib.parse import urlencode
 
 import pyarrow as pa
 import pyarrow.compute as pc
-from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256, widen_frame_table
 from pydantic import ValidationError
 
 from artifact_store import (
@@ -89,7 +93,7 @@ from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
-from code_index.types import PartyRow, level_axes, summable_axes
+from code_index.types import CompositeDeclaration, PartyRow, level_axes, summable_axes
 from dataset_store.snapshot import StoredArtifactLocation, select_servable_locations
 from datasets_api.adapter import pinned_member_ref, shape_measurement_qualifier
 from datasets_api.artifact_delivery import (
@@ -100,7 +104,9 @@ from datasets_api.artifact_delivery import (
 )
 from datasets_api.capabilities import ENABLED_ENRICHMENTS
 from datasets_api.codes_materialise import CapabilityUnavailable
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.decode import build_decode_plan
+from datasets_api.failures import FoldPermitWaitExpired
 from datasets_api.groupby import (
     collapse_axes,
     contributing_dcids,
@@ -112,6 +118,7 @@ from datasets_api.groupby import (
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
     roll_up_levels,
+    sums_components,
     sums_stat_vars,
     unsummed_axes,
     yields_grammar_frame,
@@ -138,6 +145,7 @@ from datasets_api.versions import ArtifactRecord, carries_party_kind, enrichment
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
+from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
 from materialise.bundle import (
     ArtifactEntry as BundleArtifactEntry,
@@ -164,6 +172,7 @@ from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
 from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, is_party_role
+from materialise.errors import OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
     FORMAT_COLUMN_CAPS,
@@ -182,6 +191,14 @@ from materialise.formats import (
     write_parquet,
 )
 from materialise.frame_build import ParquetFrameChunks, build_frame, unit_cell_for_rebuild
+from materialise.groupby_columnar import (
+    ColumnarFoldOutcome,
+    GroupedTable,
+    decode_table,
+    fold_groupby_sum_table,
+    groupby_sum_table,
+    rows_table,
+)
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
     KIND_SUFFIX,
@@ -399,16 +416,18 @@ chunk can otherwise trigger a `to_pylist()` rebuild about 12 times larger than w
 
 
 def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
-    """Cuts Arrow frames into `_RESHAPE_CHUNK_ROWS`-row tuple tables counted from the first row,
-    joining the tables of short chunks, and other tables into tuple slices. A writer types its
+    """Yields `_FrameSlice`s of `_RESHAPE_CHUNK_ROWS` rows counted from the first row, cut from
+    Arrow frames with the tables of short chunks joined, and row-tuple tables of at most that
+    size cut from other tables. A writer types its
     columns from its first chunk, so the cut keeps a rendering's bytes independent of how the
     materialiser chunked the frame. An empty frame yields one empty table, since an empty
     materialisation can yield one. `_reshape_stream` applies the bound before each streaming
     path.
 
     The readers downstream (decode, enrichment, groupby and the long layout) each read `rows`,
-    and each `Frame.rows` access rebuilds the rows as Python objects, so every slice is converted
-    here once (`canonical_frame_rows`)."""
+    and each `Frame.rows` access rebuilds the rows as Python objects, so a frame slice
+    converts its rows once, on first read. The streamed groupby collapse reads
+    the slice's Arrow table and never builds them."""
     columns: tuple[str, ...] | None = None
     pending: list[pa.Table] = []
     pending_rows = 0
@@ -438,9 +457,22 @@ def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
         yield _frame_rows(columns, pa.concat_tables(pending))
 
 
+@dataclass(frozen=True)
+class _FrameSlice:
+    """A slice of a canonical frame: its Arrow `table`, and the tuple rows `Frame.rows` gives
+    built on first read of `rows`."""
+
+    columns: tuple[str, ...]
+    table: pa.Table
+
+    @cached_property
+    def rows(self) -> tuple[tuple[object, ...], ...]:
+        return tuple(canonical_frame_rows(self.table))
+
+
 def _frame_rows(columns: tuple[str, ...], table: pa.Table) -> Table:
-    """The canonical frame `table` as a tuple table of the rows `Frame.rows` gives."""
-    return cast(Table, ReshapeTable(columns=columns, rows=tuple(canonical_frame_rows(table))))
+    """The canonical frame `table` as a slice whose rows are those `Frame.rows` gives."""
+    return cast(Table, _FrameSlice(columns=columns, table=table))
 
 
 def _stream_first_axis_collapse(
@@ -452,10 +484,45 @@ def _stream_first_axis_collapse(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
-) -> tuple[GroupbySumChunksOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
-    """Decodes each chunk and folds it into `axis` in one pass, retaining one chunk plus per-group
-    accumulators. Collects distinct StatVars for the caller's collision check. `_reshape` checks
-    collisions before raising fold violations, matching whole-table error order."""
+) -> tuple[
+    GroupbySumChunksOutcome | ColumnarFoldOutcome,
+    frozenset[str],
+    tuple[MaterialisationWarning, ...],
+]:
+    """Decodes each chunk and folds it into `axis` in one pass. Collects distinct StatVars for
+    the caller's collision check. `_reshape` checks collisions before raising fold violations,
+    matching whole-table error order.
+
+    Frame slices (`_FrameSlice`) are decoded and folded as Arrow (`groupby_columnar`), holding
+    the whole decoded frame at once, and the outcome's table is Arrow when the sums need no row
+    fold. Other chunks fold row by row, one chunk at a time, retaining per-group accumulators.
+    Memory on either path grows with the frame. On spec_09ff's 488,979 rows, whose first axis
+    keeps one group a row, the Arrow fold peaks at about 1 KiB a row (430 MiB of Arrow above its
+    input and 75 MiB of Python), and the row fold at about 2.8 KiB a group (1.39 GiB, 1.9 KiB a
+    group of fold state before the final sort)."""
+    chunks = iter(frame_chunks)
+    first_chunk = next(chunks, None)
+    if isinstance(first_chunk, _FrameSlice):
+        slices: deque[_FrameSlice] = deque((first_chunk,))
+        for chunk in chunks:
+            if not isinstance(chunk, _FrameSlice):
+                frame_chunks = itertools.chain(_drained(slices), (chunk,), chunks)
+                break
+            slices.append(chunk)
+        else:
+            return _fold_frame_slices(
+                list(slices),
+                axis=axis,
+                classification=classification,
+                summable_axes=summable_axes,
+                missing_declared_as_zero=missing_declared_as_zero,
+                expected_population=expected_population,
+                decode_plan=decode_plan,
+            )
+    elif first_chunk is not None:
+        frame_chunks = itertools.chain((first_chunk,), chunks)
+    else:
+        frame_chunks = ()
     distinct_dcids: set[str] = set()
     stat_var_pos: list[int] = []
     warnings: list[MaterialisationWarning] = []
@@ -481,6 +548,136 @@ def _stream_first_axis_collapse(
 
     outcome = fold_groupby_sum_chunks(
         _decoded_chunks(),
+        axis=axis,
+        classification=classification,
+        summable_axes=summable_axes,
+        missing_declared_as_zero=missing_declared_as_zero,
+        expected_population=expected_population,
+    )
+    return outcome, frozenset(distinct_dcids), tuple(warnings)
+
+
+@cache
+def _fold_permits() -> threading.BoundedSemaphore:
+    """The process's groupby fold permits, `DatasetsBuildSettings.groupby_fold_max_concurrency`
+    of them, shared by every render of the process: mint, operation worker and head hit. A
+    collapse holds one from its first fold to its tuple rows (`_reshape_groupby_collapse`),
+    so a further collapse waits for a permit. Read from the
+    environment once, at the first collapse."""
+    return threading.BoundedSemaphore(DatasetsBuildSettings.from_env().groupby_fold_max_concurrency)
+
+
+@contextmanager
+def _fold_permit(deadline: float | None) -> Iterator[None]:
+    """Holds one of the process's fold permits (`_fold_permits`) for the block. The wait ends
+    at the earlier of `deadline` and the bound request deadline, raising
+    `FoldPermitWaitExpired` when it passes first. With neither, it waits for a permit."""
+    permits = _fold_permits()
+    ends = bounded_deadline(deadline)
+    acquired = (
+        permits.acquire()
+        if ends is None
+        else permits.acquire(timeout=max(0.0, ends - time.monotonic()))
+    )
+    if not acquired:
+        raise FoldPermitWaitExpired(
+            "the request's deadline passed while its groupby waited for another to finish"
+        )
+    try:
+        yield
+    finally:
+        permits.release()
+
+
+@dataclass(frozen=True)
+class FoldCeilings:
+    """The frame rows a groupby that sums a frame may fold: `arrow_rows` when every slice of
+    the frame is Arrow (`_FrameSlice`), which `_stream_first_axis_collapse` folds as Arrow, and
+    `row_rows` otherwise, when it folds row by row at a larger cost a row."""
+
+    arrow_rows: int
+    row_rows: int
+
+    def refuse_over(self, rows: int, *, arrow: bool) -> None:
+        """Raises `OverCeilingError` (`rows`) when a frame of `rows` rows is past its ceiling."""
+        cap = self.arrow_rows if arrow else self.row_rows
+        if rows > cap:
+            raise OverCeilingError(
+                f"the frame holds more than {cap} rows, past the ceiling of a groupby "
+                "that sums it. Narrow the identity (another slot binding, a shorter window) "
+                "to bring the frame under the ceiling.",
+                ceiling_kind="rows",
+                count=rows,
+                cap=cap,
+            )
+
+
+def _within_fold_ceiling(chunks: Iterable[Table], *, ceilings: FoldCeilings) -> Iterator[Table]:
+    """`chunks` in order, raising `OverCeilingError` (`rows`) at the chunk that carries the
+    frame past its ceiling, the row fold's once any chunk is not an Arrow slice. A frame whose
+    row count is known refuses before the fold waits for a permit (`_reshape_stream`), so this
+    check stands behind it for a frame read with no count. The `stat_var` collapse reads every
+    Arrow slice of a frame before it decodes or folds one (`_stream_first_axis_collapse`), so
+    on such a frame the refusal comes before any fold allocation."""
+    rows = 0
+    arrow = True
+    for chunk in chunks:
+        if isinstance(chunk, _FrameSlice):
+            rows += chunk.table.num_rows
+        else:
+            arrow = False
+            rows += len(chunk.rows)
+        ceilings.refuse_over(rows, arrow=arrow)
+        yield chunk
+
+
+def _known_frame_rows(
+    frame_chunks: Callable[[], Iterator[Table]], *, stated: int | None, cut: CutFrame | None
+) -> int | None:
+    """The rows of the frame a render reads, when known before it is read: a cut's counted
+    rows, the Parquet footer's count, or the caller's `stated` count of the uncut frame."""
+    if cut is not None:
+        return cut.rows
+    if isinstance(frame_chunks, ParquetFrameChunks):
+        return frame_chunks.num_rows
+    return stated
+
+
+def _drained(slices: deque[_FrameSlice]) -> Iterator[_FrameSlice]:
+    """`slices` in order, each released once read, so a slice's rows are not kept after its
+    fold."""
+    while slices:
+        yield slices.popleft()
+
+
+def _fold_frame_slices(
+    slices: Sequence[_FrameSlice],
+    *,
+    axis: str,
+    classification: ColumnClassification,
+    summable_axes: frozenset[str],
+    missing_declared_as_zero: bool,
+    expected_population: ExpectedPopulation,
+    decode_plan: DecodePlan | None,
+) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
+    """`_stream_first_axis_collapse` over Arrow frame slices: each slice decoded as
+    `apply_reshapes` decodes it, with its warnings, then one fold over their rows in order. Unit
+    columns take the recipe layout, which keeps every cell, so slices of either layout join."""
+    distinct_dcids: set[str] = set()
+    warnings: list[MaterialisationWarning] = []
+    decoded_slices: list[pa.Table] = []
+    for frame_slice in slices:
+        decoded = widen_frame_table(frame_slice.table, recipe=True)
+        if decode_plan is not None:
+            decoded, decode_warnings = decode_table(
+                decoded, requests=decode_plan.requests, lookup=decode_plan.lookup
+            )
+            warnings.extend(decode_warnings)
+        stat_vars = decoded.column(decoded.column_names.index(_STAT_VAR_COLUMN))
+        distinct_dcids.update(cast("list[str]", pc.unique(stat_vars).drop_null().to_pylist()))
+        decoded_slices.append(decoded)
+    outcome = fold_groupby_sum_table(
+        pa.concat_tables(decoded_slices),
         axis=axis,
         classification=classification,
         summable_axes=summable_axes,
@@ -516,6 +713,7 @@ def _reshape_groupby_collapse(
     subject_id: str | None,
     frame_chunks: Iterable[Table] | None,
     warnings: list[MaterialisationWarning],
+    deadline: float | None,
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
     """Collapses `stat_var` then each requested axis. With `grammar_frame`, it restores
     `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
@@ -530,7 +728,7 @@ def _reshape_groupby_collapse(
     # was served from, which is the elected one for an index-resolved family, or the
     # composite its components were composed into.
     dataset = next(iter(set(provenance_refs)), None)
-    composite = code_index.composite(dataset) if dataset is not None else None
+    composite = _frame_composite(code_index, provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
     if frame_chunks is None:
         if decode_plan is not None:
@@ -574,68 +772,82 @@ def _reshape_groupby_collapse(
         lookup=decode_lookup,
     )
     remaining_columns = population_columns
-    for axis_index, axis in enumerate(collapse_columns):
-        positions = tuple(population_columns.index(c) for c in remaining_columns)
-        projected_members = frozenset(
-            tuple(member[p] for p in positions) for member in population_members
-        )
-        axis_population = ExpectedPopulation(columns=remaining_columns, members=projected_members)
-        if axis_index == 0 and frame_chunks is not None:
-            # Fold the first axis with one output-group accumulator and the previous grain key.
-            # Later axes operate on the reduced, one-row-per-group table.
-            decoded_column_names_before_collapse = (
-                tuple(
-                    f"{entity_column}_{code_system}"
-                    for entity_column, code_system in decode_plan.requests
-                )
-                if decode_plan is not None
-                else ()
+    # One fold permit covers the collapse from its first fold to its tuple rows.
+    with _fold_permit(deadline):
+        # Arrow from a fold over frame slices until the last axis sums, then tuple rows.
+        collapsed: GroupedTable = cast(ReshapeTable, current)
+        for axis_index, axis in enumerate(collapse_columns):
+            positions = tuple(population_columns.index(c) for c in remaining_columns)
+            projected_members = frozenset(
+                tuple(member[p] for p in positions) for member in population_members
             )
-            classification = classify_columns(
-                (*table.columns, *decoded_column_names_before_collapse)
+            axis_population = ExpectedPopulation(
+                columns=remaining_columns, members=projected_members
             )
-            outcome, streaming_contributors, decode_warnings = _stream_first_axis_collapse(
-                frame_chunks,
-                axis=axis,
-                classification=classification,
-                summable_axes=summable_columns,
-                missing_declared_as_zero=missing_declared_as_zero,
-                expected_population=axis_population,
-                decode_plan=decode_plan,
-            )
-            warnings.extend(decode_warnings)
-            decode_plan = None  # already applied per chunk above
-            # Check all streamed StatVars for collisions before raising the fold's violation, as in
-            # the whole-table path.
-            distinct_table = ReshapeTable(
-                columns=(_STAT_VAR_COLUMN,),
-                rows=tuple((dcid,) for dcid in sorted(streaming_contributors)),
-            )
-            refuse_stat_var_collision(
-                distinct_table,
-                index=code_index,
-                decoded_code_systems=decoded_code_systems,
-                composite=composite,
-            )
-            if outcome.violation is not None:
-                raise outcome.violation
-            assert outcome.table is not None
-            current = outcome.table
-            contributors = contributing_dcids(distinct_table)
-        else:
-            current, _ = apply_reshapes(
-                current,
-                plan=ReshapePlan(
-                    groupby=GroupbyPlan(
-                        axis=axis,
-                        summable_axes=summable_columns,
-                        missing_declared_as_zero=missing_declared_as_zero,
-                        expected_population=axis_population,
+            if axis_index == 0 and frame_chunks is not None:
+                # Fold the first axis with one output-group accumulator and the previous grain key.
+                # Later axes operate on the reduced, one-row-per-group table.
+                decoded_column_names_before_collapse = (
+                    tuple(
+                        f"{entity_column}_{code_system}"
+                        for entity_column, code_system in decode_plan.requests
                     )
-                ),
-            )
-            current = cast(Table, current)
-        remaining_columns = tuple(c for c in remaining_columns if c != axis)
+                    if decode_plan is not None
+                    else ()
+                )
+                classification = classify_columns(
+                    (*table.columns, *decoded_column_names_before_collapse)
+                )
+                outcome, streaming_contributors, decode_warnings = _stream_first_axis_collapse(
+                    frame_chunks,
+                    axis=axis,
+                    classification=classification,
+                    summable_axes=summable_columns,
+                    missing_declared_as_zero=missing_declared_as_zero,
+                    expected_population=axis_population,
+                    decode_plan=decode_plan,
+                )
+                warnings.extend(decode_warnings)
+                decode_plan = None  # already applied per chunk above
+                # Check all streamed StatVars for collisions before raising the fold's violation, as in
+                # the whole-table path.
+                distinct_table = ReshapeTable(
+                    columns=(_STAT_VAR_COLUMN,),
+                    rows=tuple((dcid,) for dcid in sorted(streaming_contributors)),
+                )
+                refuse_stat_var_collision(
+                    distinct_table,
+                    index=code_index,
+                    decoded_code_systems=decoded_code_systems,
+                    composite=composite,
+                )
+                if outcome.violation is not None:
+                    raise outcome.violation
+                assert outcome.table is not None
+                collapsed = outcome.table
+                contributors = contributing_dcids(distinct_table)
+            elif isinstance(collapsed, pa.Table):
+                collapsed = groupby_sum_table(
+                    collapsed,
+                    axis=axis,
+                    summable_axes=summable_columns,
+                    missing_declared_as_zero=missing_declared_as_zero,
+                    expected_population=axis_population,
+                )
+            else:
+                collapsed, _ = apply_reshapes(
+                    collapsed,
+                    plan=ReshapePlan(
+                        groupby=GroupbyPlan(
+                            axis=axis,
+                            summable_axes=summable_columns,
+                            missing_declared_as_zero=missing_declared_as_zero,
+                            expected_population=axis_population,
+                        )
+                    ),
+                )
+            remaining_columns = tuple(c for c in remaining_columns if c != axis)
+        current = cast(Table, rows_table(collapsed))
 
     if not grammar_frame:
         return current, decode_plan, None
@@ -698,6 +910,7 @@ def _reshape_groupby(
     provenance_refs: Sequence[str],
     subject_id: str | None,
     frame_chunks: Iterable[Table] | None,
+    deadline: float | None = None,
 ) -> _GroupbyOutcome:
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
@@ -750,7 +963,10 @@ def _reshape_groupby(
         decoded_code_systems=decoded_code_systems,
         declarations=code_index.declarations,
     )
-    if axes_to_collapse or levels:
+    components = sums_components(
+        by=options.groupby.by, composite=_frame_composite(code_index, provenance_refs)
+    )
+    if axes_to_collapse or levels or components:
         kept = kept_axes(
             by=options.groupby.by,
             decoded_code_systems=decoded_code_systems,
@@ -765,6 +981,7 @@ def _reshape_groupby(
                 decoded_code_systems=decoded_code_systems,
                 declarations=code_index.declarations,
                 lookup=decode_plan.lookup if decode_plan is not None else {},
+                components=components,
             ),
             kept=kept,
             decoded_code_systems=decoded_code_systems,
@@ -774,6 +991,7 @@ def _reshape_groupby(
             subject_id=subject_id,
             frame_chunks=frame_chunks,
             warnings=warnings,
+            deadline=deadline,
         )
     elif (
         _STAT_VAR_COLUMN not in options.groupby.by
@@ -958,6 +1176,7 @@ def _reshape(
     subject_id: str | None = None,
     frame_chunks: Iterable[Table] | None = None,
     decoded: bool = False,
+    deadline: float | None = None,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
     leave the input table unchanged.
@@ -987,6 +1206,7 @@ def _reshape(
         provenance_refs=provenance_refs,
         subject_id=subject_id,
         frame_chunks=frame_chunks,
+        deadline=deadline,
     )
     return _reshape_select_pivot_enrich(
         groupby_outcome.table,
@@ -2356,6 +2576,7 @@ def _probe_groupby_collapse(
     options: MintOptions,
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
+    provenance_refs: Sequence[str],
 ) -> tuple[bool, DecodePlan | None]:
     """Whether `options.groupby` sums the `stat_var` of the frame whose first chunk is
     `first_chunk`, so a render folds it across chunks (`sums_stat_vars`), and the chunk's
@@ -2370,8 +2591,18 @@ def _probe_groupby_collapse(
         levels=options.groupby.levels,
         decoded_code_systems=_decoded_code_systems(decode_plan),
         declarations=code_index.declarations,
+        composite=_frame_composite(code_index, provenance_refs),
     )
     return sums, decode_plan
+
+
+def _frame_composite(
+    code_index: CodeIndex, provenance_refs: Sequence[str]
+) -> CompositeDeclaration | None:
+    """The declared composite a frame's rows carry as their one provenance, or `None` for a
+    frame of a dataset or of several provenances."""
+    distinct = set(provenance_refs)
+    return code_index.composite(next(iter(distinct))) if len(distinct) == 1 else None
 
 
 def _decoded_code_systems(decode_plan: DecodePlan | None) -> tuple[str, ...]:
@@ -2404,6 +2635,7 @@ def groupby_collapse_sha256(
         options=options,
         code_index=code_index,
         resolved_stat_var_refs=resolved_stat_var_refs,
+        provenance_refs=provenance_refs,
     )
     if not sums:
         return None
@@ -2426,6 +2658,9 @@ def _reshape_stream(
     options: MintOptions,
     entity_columns: Sequence[str],
     pivot_max_output_cells: int,
+    fold_ceilings: FoldCeilings,
+    frame_rows: int | None,
+    deadline: float | None,
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
@@ -2446,7 +2681,10 @@ def _reshape_stream(
 
     Groupby and pivot folds bound output size. Other paths retain chunk-sized row data. A frame
     a collapse already decoded (`decoded`, with no `groupby`) takes the plain or the bare pivot
-    path with no decode.
+    path with no decode. A collapsing groupby refuses a frame past `fold_ceilings`: before it
+    waits for a fold permit when `frame_rows`, the frame's row count, is given, and otherwise
+    as it reads the frame (`_within_fold_ceiling`).
+    Its wait for the permit ends at `deadline` (`_fold_permit`).
     """
     frame_chunks_iter = iter(_reslice_chunks(frame_chunks))
     first_chunk = next(frame_chunks_iter, None)
@@ -2476,6 +2714,7 @@ def _reshape_stream(
             options=options,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
+            provenance_refs=provenance_refs,
         )
         if first_chunk is not None
         else (False, None)
@@ -2483,6 +2722,8 @@ def _reshape_stream(
     probe_decoded_code_systems = _decoded_code_systems(probe_decode_plan)
 
     if will_stream_groupby_collapse and first_chunk is not None:
+        if frame_rows is not None:
+            fold_ceilings.refuse_over(frame_rows, arrow=isinstance(first_chunk, _FrameSlice))
         # `_reshape` recomputes this decision from the same inputs. A chained pivot runs on the
         # reduced output groups.
         result = _reshape(
@@ -2495,7 +2736,8 @@ def _reshape_stream(
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
             subject_id=subject_id,
-            frame_chunks=rest_of_frame_chunks,
+            frame_chunks=_within_fold_ceiling(rest_of_frame_chunks, ceilings=fold_ceilings),
+            deadline=deadline,
         )
         if options.pivot is not None:
             return _StreamedRender(
@@ -2662,9 +2904,12 @@ def render_and_store(
     entity_columns: Sequence[str],
     enrichment: EnrichmentLookup,
     pivot_max_output_cells: int,
+    groupby_fold_max_rows: int,
+    groupby_row_fold_max_rows: int,
     code_index: CodeIndex | None = None,
     resolved_stat_var_refs: Sequence[str],
     output_profile: OutputProfile | None = None,
+    frame_rows: int | None = None,
     deadline: float | None = None,
     base_frame_sha256: str | None = None,
     frame_mode: FrameMode = FrameMode.RAW,
@@ -2688,7 +2933,13 @@ def render_and_store(
     Decode, selection, and enrichment stream one chunk at a time. Enrichment warnings merge into
     one count per column. Groupby folds across chunks. Pivot folds to bounded output. No-op groupby
     also streams, so wide results can exceed 1,000,000 rows. The raw-fetch guard allows 1.5 times
-    the coverage estimate.
+    the coverage estimate. A groupby that sums the frame refuses `over_ceiling` (`rows`) when the
+    frame holds more than `groupby_fold_max_rows` rows, or `groupby_row_fold_max_rows` when its
+    chunks are row tuples and it folds row by row, since its fold holds the whole frame. The
+    refusal comes before the render waits for a fold permit whenever the frame's rows are known
+    first (`_known_frame_rows`): a cut's count, a Parquet frame's footer, or `frame_rows`, the
+    caller's count of the frame `frame_chunks` holds. The wait ends at `deadline` and then
+    raises `FoldPermitWaitExpired`.
 
     `code_index` controls decoding, and the artifact carries its `enrichment_digest` as
     `enrichment_stamp` when it holds party-kind cells (`versions.enrichment_stamp`, over
@@ -2784,6 +3035,11 @@ def render_and_store(
             ),
             entity_columns=entity_columns,
             pivot_max_output_cells=pivot_max_output_cells,
+            fold_ceilings=FoldCeilings(
+                arrow_rows=groupby_fold_max_rows, row_rows=groupby_row_fold_max_rows
+            ),
+            frame_rows=_known_frame_rows(frame_chunks, stated=frame_rows, cut=cut),
+            deadline=deadline,
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,

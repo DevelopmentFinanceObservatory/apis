@@ -12,6 +12,7 @@ import pyarrow as pa
 import pytest
 
 from dc_sdmx.results import VALUE_COLUMN
+from materialise import convert as convert_module
 from materialise.columnar import observed_values
 from materialise.convert import (
     ConversionRecord,
@@ -827,3 +828,53 @@ def test_merged_record_refuses_parts_under_different_trace_keys(
 ) -> None:
     with pytest.raises(MaterialisationUsageError, match="one recipe and table-version pair"):
         merged_record([_part_record(), _part_record(**changes)])
+
+
+class _CountedLookup(dict[tuple[str, int], tuple[float, str]]):
+    """A rate table's `lookup` counting its reads."""
+
+    reads = 0
+
+    def get(self, key, default=None):
+        self.reads += 1
+        return super().get(key, default)
+
+
+@pytest.mark.parametrize(
+    ("kind", "at_base_year", "expected_gaps", "gap_rows"),
+    [
+        pytest.param(
+            "deflator",
+            False,
+            {"deflator_missing": {"KEN@2002"}, convert_module._DEFLATOR_UNKEYED: {"None@2001"}},
+            {2, 7},
+            id="deflator",
+        ),
+        pytest.param(
+            "exchange_rate", True, {"rate_missing": {"KEN@2002", "None@2001"}}, set(), id="rate"
+        ),
+    ],
+)
+def test_term_values_reads_each_distinct_key_once(kind, at_base_year, expected_gaps, gap_rows):
+    """Each distinct (entity, year) is read once, and every row gets its key's value, gap row
+    and projected marker. A skipped row reads nothing."""
+    lookup = _CountedLookup({("KEN", 2000): (1.5, "actual"), ("KEN", 2001): (2.5, "projected")})
+    keys = ["KEN", "KEN", "KEN", None, "KEN", "KEN", "KEN", "KEN", "KEN"]
+    years = [2000, 2001, 2002, 2001, 2000, 2001, 2000, 2002, 2000]
+    skip = [False] * 8 + [True]
+    terms = convert_module._Terms(
+        skip=skip,
+        converted=frozenset({"actual", "projected"}),
+        gaps={cause: set() for cause in convert_module._GAP_PRIORITY},
+        projected=[],
+    )
+
+    values = convert_module._term_values(
+        lookup, terms, keys=keys, years=years, at_base_year=at_base_year, kind=kind
+    )
+
+    assert values == [1.5, 2.5, None, None, 1.5, 2.5, 1.5, None, None]
+    assert {cause: keys for cause, keys in terms.gaps.items() if keys} == expected_gaps
+    assert terms.deflator_gap_rows == gap_rows
+    assert terms.projected == [(1, "KEN@2001"), (5, "KEN@2001")]
+    assert lookup.reads == 3

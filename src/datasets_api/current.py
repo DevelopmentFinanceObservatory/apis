@@ -696,6 +696,7 @@ def _render_frame(
     )
     rendered = render_and_store(
         frame_chunks=lambda: iter((table,)),
+        frame_rows=table.table.num_rows if isinstance(table, Frame) else len(table.rows),
         options=options,
         spec=spec_dict,
         provenance_refs=provenance_refs,
@@ -716,6 +717,8 @@ def _render_frame(
         entity_columns=entity_columns,
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
+        groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
+        groupby_row_fold_max_rows=deps.settings.groupby_row_fold_max_rows,
         code_index=deps.code_index,
         resolved_stat_var_refs=resolved_stat_var_refs,
         # A pivot reads the stored pivot facts. They check its caps before the scan and let a

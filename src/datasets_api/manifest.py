@@ -107,7 +107,7 @@ from materialise.series_conversion import (
     SeriesConversion,
     SeriesKey,
     decode_series_conversion_entries,
-    encode_series_conversions,
+    pack_series_conversions,
 )
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
@@ -673,9 +673,9 @@ def manifest_facts(
     `artifacts`, `output_options` and `content_version` (the record's own column), with
     `output_profile` in place of options.
 
-    `series_conversions`, when non-empty, stores one entry per converted series
-    (`materialise.series_conversion.encode_series_conversions`), and an unconverted version
-    stores `None`. `default_scope`, the places of the mint's default place scope
+    `series_conversions`, when non-empty, stores one record per converted series, each
+    distinct record once (`materialise.series_conversion.pack_series_conversions`), and an
+    unconverted version stores `None`. `default_scope`, the places of the mint's default place scope
     (`MaterialisationResult.default_scope`), stores whether it holds more than one place, so
     the worldwide total alone and a bound place store `False`; `None` stores `None`.
     """
@@ -693,7 +693,7 @@ def manifest_facts(
         series_coverage_stamp=manifest.series_coverage_stamp,
         output_profile=output_profile.to_json() if output_profile is not None else None,
         series_conversions=(
-            encode_series_conversions(series_conversions) if series_conversions else None
+            pack_series_conversions(series_conversions) if series_conversions else None
         ),
         default_scope_plural=len(default_scope) > 1 if default_scope is not None else None,
     )
@@ -819,9 +819,10 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
 def version_body(record: VersionRecord) -> dict[str, object]:
     """The `immutable_body` `record`'s facts encode, the JSON an image reading bodies reads.
 
-    A dataset version's body is its `version_document` with `output_profile`, a non-empty
-    `series_conversions` and a non-null `default_scope_plural` added. A published frame's body is
-    its `version_document`, which holds its `continuations` when they are known and some continue
+    A dataset version's body is its `version_document` with `output_profile` and a non-null
+    `default_scope_plural` added. The `series_conversions` column alone holds the per-series
+    conversion records, which run to tens of megabytes on a wide converted mint. A published
+    frame's body is its `version_document`, which holds its `continuations` when they are known and some continue
     its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Nothing in this image reads the
     body.
     """
@@ -836,8 +837,6 @@ def version_body(record: VersionRecord) -> dict[str, object]:
         return body
     if facts.output_profile is not None:
         body["output_profile"] = dict(facts.output_profile)
-    if facts.series_conversions:
-        body["series_conversions"] = [dict(entry) for entry in facts.series_conversions]
     if facts.default_scope_plural is not None:
         body["default_scope_plural"] = facts.default_scope_plural
     return body
@@ -894,7 +893,9 @@ def definition_version_record(
     """The version record of a definition materialisation, linking `artifacts` and
     `record_only_artifacts`. A derived version stores the raw version it was rendered from as
     `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
-    (`render.DerivedVersion.summed`). A raw version passes neither.
+    (`render.DerivedVersion.summed`). A raw version passes neither. Only a raw version stores
+    the per-series conversion records. A derived version's rows are not those series, and the
+    observations door, their reader, serves raw versions alone.
 
     Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
     salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
@@ -906,7 +907,9 @@ def definition_version_record(
         facts=manifest_facts(
             manifest,
             output_profile=materialisation.output_profile,
-            series_conversions=materialisation.series_conversions,
+            series_conversions=(
+                materialisation.series_conversions if base_content_version is None else None
+            ),
             default_scope=materialisation.default_scope,
         ),
         artifacts=tuple(

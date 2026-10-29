@@ -32,11 +32,12 @@ from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
-from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame, stream_frame_sha256
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame
 
 from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
 from materialise.bundle_columns import PROVENANCE_COLUMN
+from materialise.content_version import stream_frame_sha256
 from materialise.enrichment import is_party_role, party_kind_of
 
 _TOTAL_KIND = "total"

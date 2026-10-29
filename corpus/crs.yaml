@@ -36,13 +36,13 @@
 
 - id: dq-crs-004
   query: how much official development assistance was given worldwide in 2022
-  why: Worldwide ODA in 2022 names no recipient, sector or channel, so DAC1's donor totals answer it with gross ODA disbursements.
+  why: Worldwide ODA in 2022 names no donor, recipient, sector or channel, so DAC1's DAC countries' total answers it with gross ODA disbursements.
   reuse: panel/crs-004
   tags: {theme: aid, entity: none, direction: none, unit: default, time: year, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType1010}}
-      entities: []
+      entities: [{dcid: DACCountriesTotal, role: origin}]
       window: {kind: range, start: 2022, end: 2022}
       operations: []
 

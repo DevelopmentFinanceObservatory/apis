@@ -52,8 +52,10 @@ from search.models import (
     ObservationSeries,
     Operation,
     OperationVerb,
+    ProviderBinding,
     RoleAxis,
     Slot,
+    SlotBinding,
     Spec,
     Warning,
     role_ref,
@@ -277,6 +279,7 @@ def spec_departure_facts(
     if left_out := member_unavailable_fact(spec):
         facts.append(left_out)
     facts.extend(year_facts)
+    facts.extend(_scope_window_facts(spec))
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
     for role, group in (spec.resolved.entity_groups or {}).items():
@@ -294,7 +297,7 @@ def spec_departure_facts(
             continue
         if group.total is not None:
             continue
-        excluded, sum_differs = _members_left_out(spec, role, group.ref)
+        excluded, sum_differs = members_left_out(spec, role, group.ref)
         facts.append(
             DepartureFact(
                 code="group_read_as_members",
@@ -363,7 +366,7 @@ def _role_members(spec: Spec, role: str) -> list[str]:
 
 def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
     """The labels of the residual buckets `spec` binds on `role` beside a group's members
-    (`scope.region.is_residual`), each by the code index's label, as `_members_left_out`
+    (`scope.region.is_residual`), each by the code index's label, as `members_left_out`
     names them, else its dcid."""
     index = get_index()
     return tuple(
@@ -383,7 +386,7 @@ def served_datasets(spec: Spec) -> frozenset[str]:
     return frozenset(source.ref for source in spec.resolved.trace.resolved_sources)
 
 
-def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
+def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
     """What the members of `group`, read on `role`, leave out of the group's total, by the
     code index: the labels of the residuals the total counts beside them
     (`PartyRow.residuals`) that the role does not bind beside them, and whether the total is
@@ -781,6 +784,55 @@ def _year_facts(spec: Spec, *, operations: Sequence[Operation]) -> list[Departur
         for start, end in requested
         if _outside(start, end, first=data_years[0], last=data_years[1])
     ]
+
+
+_SCOPE_LIMITS: Mapping[str, Literal["imputed_multilateral", "published_total"]] = MappingProxyType(
+    {"imputed_coverage": "imputed_multilateral", "option_not_covered": "published_total"}
+)
+"""What leaves out the years a partial scope option does not cover, by its reason."""
+
+
+def _scope_window_facts(spec: Spec) -> list[DepartureFact]:
+    """`year_unavailable` for each scope choice whose active option the request's own words
+    asked for (an explicit entry with a text origin) and that covers fewer years than the
+    part asks for (`OptionAvailability.status` partial), so the answer serves the latest
+    run of them, the window its binding sets (`scope.build._compiles_over_window`). A
+    switch to such an option states its years in its label, so it departs nothing.
+    `asked` is the range the part asked for, None for every year."""
+    scope = spec.resolved.scope_choices
+    if scope is None:
+        return []
+    stated = {
+        (entry.axis, entry.option_id)
+        for entry in scope.entries
+        if entry.provenance == "explicit" and entry.origin.kind == "text"
+    }
+    window = scope.base.identity.requested_window
+    requested = (
+        (window.start_year, window.end_year) if isinstance(window, IdentityWindowRange) else None
+    )
+    facts = []
+    for choice in scope.choices:
+        if (choice.axis, choice.active) not in stated:
+            continue
+        option = next(o for o in choice.options if o.option_id == choice.active)
+        binding = option.binding
+        served = binding.window if isinstance(binding, SlotBinding | ProviderBinding) else None
+        availability = option.availability
+        if availability.status != "partial" or not availability.years or served is None:
+            continue
+        facts.append(
+            DepartureFact(
+                code="year_unavailable",
+                binding_ref=WHEN_REF,
+                asked=_range_text(*requested) if requested is not None else None,
+                shown=_span_text(served),
+                requested_years=requested,
+                covered_years=tuple(availability.years),
+                limited_by=_SCOPE_LIMITS.get(availability.code or ""),
+            )
+        )
+    return facts
 
 
 def window_gap_fact(gap: WindowGap | None) -> DepartureFact | None:

@@ -21,8 +21,10 @@ from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import party_count
 from origin_catalogue import ORIGINS, current_catalogue
+from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
+from search.engine.departures import members_left_out
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     StatedMembers,
@@ -115,10 +117,13 @@ from search.models import (
     TraceDefaultReading,
     served_date_range,
 )
-from search.scope.region import without_residuals
+from search.scope.provider import provider_total_code
+from search.scope.region import policy_members, without_residuals
+from search.scope.sector import sector_concept
 from unit_words.price_basis import price_basis_option_label
 
 if TYPE_CHECKING:
+    from code_index.query import CodeIndex
     from materialise.roles import RoleAxis
     from search.engine.retrieval.bound_values import OpenAxisFact, ServedRows
     from search.engine.retrieval.member_facts import MemberFacts
@@ -259,14 +264,23 @@ def inapplicable_property_dcid(
     return slot_key_draft.property_dcid
 
 
-def _resolved_entities(entities: list[Entity]) -> list[ResolvedEntity]:
-    """Project entities with the shared role mapping. Confidence is unset."""
+def _resolved_entities(
+    entities: list[Entity], *, multilateral_dcids: Collection[str] = ()
+) -> list[ResolvedEntity]:
+    """Project entities with the shared role mapping, marking the origin entities whose
+    dcids are among `multilateral_dcids` (`ResolvedEntity.multilateral`). Confidence is
+    unset."""
     return [
         ResolvedEntity(
             ref=e.ref.ref,
             label=e.ref.label,
             entity_type=e.entity_type.ref if e.entity_type else None,
-            role=entity_role_key(e),
+            role=(role := entity_role_key(e)),
+            multilateral=(
+                True
+                if role_key_axis(role) == "origin" and e.ref.ref in multilateral_dcids
+                else None
+            ),
             confidence=None,
         )
         for e in entities
@@ -382,7 +396,7 @@ def role_entity_groups(
 
     A role takes a group when its bound dcids are exactly the group's members, or exactly
     the group's total (`NamedGroup.total`), which the group then names
-    (`EntityGroup.total`). A group read as a whole population states the classes it covers
+    (`EntityGroup.total`) with the members the total holds (`total_members`). A group read as a whole population states the classes it covers
     (`EntityGroup.whole_of`). A role whose entities were capped, widened or edited reads as
     its members instead. Of groups with the same members, one with a node wins over one
     without, then the first by dcid, then label, whatever order the request named them in.
@@ -392,15 +406,28 @@ def role_entity_groups(
     for role, dcids in _dcids_by_role(entities).items():
         group = _role_group(groups, dcids)
         if group is not None:
+            total = group.total if {group.total} == dcids else None
             result[role] = EntityGroup(
                 ref=group.dcid,
                 label=group.label,
                 entity_type=group.entity_type,
-                total=group.total if {group.total} == dcids else None,
+                total=total,
                 group_id=group.group_id,
+                members=None if total is None else total_members(total),
                 whole_of=list(group.whole_of) or None,
             )
     return result
+
+
+def total_members(total: str) -> list[str] | None:
+    """The members of the group the code index declares `total` the total of
+    (`PartyRow.totals`), as the membership policy lists them under its default projection,
+    sorted (`EntityGroup.members`). `None` where the index declares no group for `total` or
+    the policy lists no members for it."""
+    row = get_index().parties.get(total)
+    if row is None or row.totals is None:
+        return None
+    return sorted(held) if (held := policy_members(row.totals)) else None
 
 
 def with_side_classes(
@@ -419,6 +446,32 @@ def with_side_classes(
             continue
         classes = sorted(by_side.get((axis, dataset), ()))
         result[role] = group.model_copy(update={"side_classes": classes or None})
+    return result
+
+
+def with_multilateral_holdings(
+    groups: Mapping[str, EntityGroup], *, index: CodeIndex, datasets: Collection[str]
+) -> dict[str, EntityGroup]:
+    """`groups` with each donor group that binds a published total, or reads as its whole
+    population, stating whether that population holds a multilateral
+    (`EntityGroup.holds_multilaterals`): a total by the members it lists, a whole population
+    by the official parties `datasets` publish on its side where it covers them. Any other
+    group is unchanged."""
+    result = dict(groups)
+    for role, group in groups.items():
+        if role_key_axis(role) != "origin":
+            continue
+        if group.members is not None:
+            holds = multilaterals.holds_multilaterals(
+                group.members, parties=index.parties, datasets=datasets
+            )
+        elif group.whole_of:
+            holds = "official" in group.whole_of and multilaterals.side_holds_multilaterals(
+                "origin", index=index, datasets=datasets
+            )
+        else:
+            continue
+        result[role] = group.model_copy(update={"holds_multilaterals": holds})
     return result
 
 
@@ -939,7 +992,9 @@ def _role_axis_facts(
 
     Each count is `party_count` of the population, read in `datasets`, the provenances
     of the served StatVars. A missing member population yields ``member_count=None``
-    and ``members_available=False``.
+    and ``members_available=False``. The origin axis states whether its population holds
+    a multilateral: one of its members where they are known, else one `datasets` publish
+    on the axis (`RoleAxisFact.holds_multilaterals`).
     """
     if not facts:
         return None
@@ -952,36 +1007,48 @@ def _role_axis_facts(
                 else None
             ),
             members_available=fact.member_dcids is not None,
+            holds_multilaterals=_axis_holds_multilaterals(fact, parties=parties, datasets=datasets),
         )
         for fact in facts
     ]
 
 
-def _compose_wire_shape_label(
-    measure_label: str | None,
+def _axis_holds_multilaterals(
+    fact: RoleAxisFactInput, *, parties: Mapping[str, PartyRow], datasets: Collection[str]
+) -> bool | None:
+    if fact.role != "origin":
+        return None
+    if fact.member_dcids is None:
+        return multilaterals.side_holds_multilaterals(
+            "origin", index=get_index(), datasets=datasets
+        )
+    return multilaterals.holds_multilaterals(fact.member_dcids, parties=parties, datasets=datasets)
+
+
+def _shared_qualifiers(
     measure_label_axes: Sequence[str],
     slots: Sequence[Slot],
     open_axis_facts: Sequence[OpenConstraintAxisFact] | None,
-) -> str | None:
-    """Compose a label from properties the served group actually shares.
+    *,
+    index: CodeIndex,
+) -> tuple[list[str], list[str]]:
+    """The labels of the values the served group shares outside the measure label's axes,
+    as the shape label states them and as the concept label does.
 
-    An authored measure label supplies the head. Single bound values and constant
-    open-axis values add qualifiers unless the label already covers their axes.
-    A set binding adds the label of the group it was drawn from, else its members' labels
-    joined ("official development assistance and private sector instruments" for CRS
-    flows 10 and 60). Without a measure label, qualifiers form the whole label. Varying
-    axes are omitted, and duplicate label text is removed case-insensitively.
+    Single bound values and constant open-axis values each add their label, unless the
+    measure label covers their axis. A set binding adds the label of the group it was drawn
+    from, else its members' labels joined ("official development assistance and private
+    sector instruments" for CRS flows 10 and 60). Varying axes are omitted, and duplicate
+    label text is removed case-insensitively. The shape label states the first list after
+    the measure label (`_composed_shape_label`). The second names what the series count with
+    no basis or provider scope (`ResolvedSpec.concept_label`): a code a provider option
+    reads as a scope of a published total in `index`, the release's code index, names that
+    total (`provider.provider_total_code`), so DAC1's bilateral ODA names "official
+    development assistance" as the total and its multilateral ODA do.
     """
     covered = set(measure_label_axes)
-    qualifiers: list[str] = []
-    seen_text: set[str] = set()
-
-    def _add_qualifier(label: str) -> None:
-        folded = label.casefold()
-        if folded not in seen_text:
-            qualifiers.append(label)
-            seen_text.add(folded)
-
+    shown: list[str] = []
+    concept: list[str] = []
     for slot in slots:
         prop = slot.key.property
         if prop is None or prop.ref in covered:
@@ -989,15 +1056,45 @@ def _compose_wire_shape_label(
         binding = slot.binding
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
-            _add_qualifier(binding.value.ref.label)
+            shown.append(binding.value.ref.label)
+            concept.append(_concept_value_label(prop.ref, binding.value.ref, index))
         elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
             covered.add(prop.ref)
-            _add_qualifier(label)
+            shown.append(label)
+            concept.append(label)
     for fact in open_axis_facts or ():
         if fact.property in covered or fact.varies or fact.value is None:
             continue
         covered.add(fact.property)
-        _add_qualifier(fact.value.label)
+        shown.append(fact.value.label)
+        concept.append(fact.value.label)
+    return _distinct_labels(shown), _distinct_labels(concept)
+
+
+def _distinct_labels(labels: Iterable[str]) -> list[str]:
+    """`labels` in order, each text once, compared case-insensitively."""
+    seen: set[str] = set()
+    distinct: list[str] = []
+    for label in labels:
+        if (folded := label.casefold()) not in seen:
+            seen.add(folded)
+            distinct.append(label)
+    return distinct
+
+
+def _concept_value_label(prop: str, ref: GraphRef, index: CodeIndex) -> str:
+    """The label of code `ref` bound on `prop` as the concept label names it: the label of
+    the published total a provider option reads it as a scope of (`_shared_qualifiers`),
+    else its own."""
+    total = provider_total_code(prop, ref.ref, index)
+    row = index.code_by_dcid(total) if total not in (None, ref.ref) else None
+    return row.label if row is not None else ref.label
+
+
+def _composed_shape_label(measure_label: str | None, qualifiers: Sequence[str]) -> str | None:
+    """A shape label from what the served group shares: the authored measure label as the
+    head, then the `qualifiers` in brackets. Without a measure label, the qualifiers form
+    the whole label."""
     if not qualifiers:
         return measure_label
     joined = ", ".join(qualifiers)
@@ -1006,6 +1103,16 @@ def _compose_wire_shape_label(
     if measure_label.endswith(")"):
         return f"{measure_label[:-1]}, {joined})"
     return f"{measure_label} ({joined})"
+
+
+def _published_tables(provenance: ResolvedFacet | None, index: CodeIndex) -> str | None:
+    """The name of the table the elected `provenance` publishes: its declared dataset's
+    label (`DatasetDeclaration.label`), else the facet's own label, None when no provenance
+    was elected."""
+    if provenance is None or provenance.ref is None:
+        return None
+    declared = index.datasets.get(provenance.ref)
+    return declared.label if declared is not None else provenance.label
 
 
 def _set_label(binding: BindingSet) -> str | None:
@@ -1046,16 +1153,14 @@ def _wire_shape_label(
     *,
     measure_partition: MeasurePartition | None,
     measure_label: str | None,
-    measure_label_axes: Sequence[str],
-    slots: list[Slot],
-    resolved_open_axis_facts: list[OpenConstraintAxisFact] | None,
+    qualifiers: Sequence[str],
     stat_vars: list[StatVar],
 ) -> Shape:
     """Return ``shape`` labelled for the members the reading serves.
 
     With a measure partition, the label is the one composed from what the served group
-    shares (``_compose_wire_shape_label``), else the name of a served member of the
-    partition. Without one, a reading that serves one member with a graph name takes that
+    shares (``_composed_shape_label`` of `qualifiers`), else the name of a served member of
+    the partition. Without one, a reading that serves one member with a graph name takes that
     name. A label equal to its dcid is no name. Every other reading keeps the label
     ``shape`` came with.
     """
@@ -1066,9 +1171,7 @@ def _wire_shape_label(
         if served.label == served.ref:
             return shape
         return shape.model_copy(update={"label": served.label})
-    composed_label = _compose_wire_shape_label(
-        measure_label, measure_label_axes, slots, resolved_open_axis_facts
-    )
+    composed_label = _composed_shape_label(measure_label, qualifiers)
     if composed_label is not None:
         return shape.model_copy(update={"label": composed_label})
     partition_members = set(measure_partition.members)
@@ -1257,8 +1360,15 @@ def build_spec(
         requested_window=requested_window,
         explicit_facets=facet_bindings,
     )
-    entity_groups = with_side_classes(
-        role_entity_groups(named_groups, hashed_entities), dataset=identity_dataset(identity_doc)
+    index = get_index()
+    served_datasets = index.statvar_provenances(sv.ref.ref for sv in stat_vars)
+    entity_groups = with_multilateral_holdings(
+        with_side_classes(
+            role_entity_groups(named_groups, hashed_entities),
+            dataset=identity_dataset(identity_doc),
+        ),
+        index=index,
+        datasets=served_datasets,
     )
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)
@@ -1276,21 +1386,21 @@ def build_spec(
         else []
     )
     resolved_open_axis_facts = _open_axis_facts(open_axis_facts)
-    index = get_index()
     resolved_role_axis_facts = _role_axis_facts(
-        role_axis_facts,
-        parties=index.parties,
-        datasets=index.statvar_provenances(sv.ref.ref for sv in stat_vars),
+        role_axis_facts, parties=index.parties, datasets=served_datasets
     )
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
+    qualifiers, concept_qualifiers = (
+        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts, index=index)
+        if measure_partition is not None
+        else ([], [])
+    )
     wire_shape = _wire_shape_label(
         shape,
         measure_partition=measure_partition,
         measure_label=measure_label.text,
-        measure_label_axes=measure_label.axes,
-        slots=slots,
-        resolved_open_axis_facts=resolved_open_axis_facts,
+        qualifiers=qualifiers,
         stat_vars=stat_vars,
     )
 
@@ -1332,7 +1442,7 @@ def build_spec(
     )
     unserved = unserved_entities(plan)
     left_out = set(unserved_members(plan))
-    return Spec(
+    spec = Spec(
         spec_id=spec_id,
         definition=definition,
         resolved=ResolvedSpec(
@@ -1351,7 +1461,18 @@ def build_spec(
                 identity=identity_doc,
                 provenance=provenance.ref if provenance is not None else None,
             ),
-            entities=_resolved_entities(entities),
+            entities=_resolved_entities(
+                entities,
+                multilateral_dcids={
+                    dcid
+                    for role, dcids in identity_doc.entities.items()
+                    if role_key_axis(role) == "origin"
+                    for dcid in dcids
+                    if multilaterals.is_multilateral(
+                        index.parties.get(dcid), datasets=served_datasets
+                    )
+                },
+            ),
             entity_groups=entity_groups or None,
             coverage=coverage,
             headline=headline,
@@ -1370,6 +1491,10 @@ def build_spec(
             measure_label=measure_label.text,
             measure_label_axes=measure_label.axes,
             measure_axis_values=elected_axis_values,
+            concept_label=sector_concept(identity_doc, index)
+            or ", ".join(concept_qualifiers)
+            or None,
+            published_tables=_published_tables(provenance, index),
             open_axis_facts=resolved_open_axis_facts,
             role_axis_facts=resolved_role_axis_facts,
         )
@@ -1393,6 +1518,32 @@ def build_spec(
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)
         .stating_built_shape_label(shape.label),
+    )
+    return with_members_left_out(spec)
+
+
+def with_members_left_out(spec: Spec) -> Spec:
+    """`spec` with each group a role reads as its members stating what those members leave
+    out of the group's total (`departures.members_left_out`): the residuals the total counts
+    beside them (`EntityGroup.left_out`), and whether the source publishes its own figure for
+    the group (`EntityGroup.sum_differs`). Each is absent where it states nothing. A group
+    read as its total or whole population is unchanged."""
+    groups = spec.resolved.entity_groups
+    if not groups:
+        return spec
+    stated = dict(groups)
+    for role, group in groups.items():
+        if group.whole_of or group.total is not None:
+            continue
+        excluded, sum_differs = members_left_out(spec, role, group.ref)
+        if excluded or sum_differs:
+            stated[role] = group.model_copy(
+                update={"left_out": list(excluded) or None, "sum_differs": sum_differs or None}
+            )
+    if stated == groups:
+        return spec
+    return spec.model_copy(
+        update={"resolved": spec.resolved.model_copy(update={"entity_groups": stated})}
     )
 
 

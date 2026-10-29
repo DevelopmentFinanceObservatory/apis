@@ -10,6 +10,7 @@ results use this module's frozen `Table` because grouping and pivoting can break
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
@@ -1099,7 +1100,7 @@ def fold_groupby_sum_chunks(
         expected_population=expected_population,
     )
     fold = _GroupbySumFold(plan)
-    for chunk in (first_chunk, *chunks):
+    for chunk in itertools.chain((first_chunk,), chunks):
         for row in chunk.rows:
             fold.process_row(row)
 
@@ -1751,7 +1752,7 @@ def fold_pivot_chunks(
     index_values: list[object] = []
     seen_index_values: set[object] = set()
 
-    for chunk in (first_chunk, *chunks):
+    for chunk in itertools.chain((first_chunk,), chunks):
         for row in chunk.rows:
             index_value = row[index_pos]
             pivot_value = row[columns_pos]
