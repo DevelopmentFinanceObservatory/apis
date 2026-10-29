@@ -13,10 +13,15 @@ unchanged definition, each member a token that exists today.
 - `latest_years`: for each member of a `latest` run, the year the coverage index elected for
   it and the year its rows hold, with the facets and omitted entities the election counted
   (`window.LatestYear`).
+- `composites`: for a composite run, the composite provenance with the digest of the
+  declaration the run composed it by (`code_index.composites.composite_digest`).
 - `imported_data`: the bound graph release's digest of the import it copied and the serving
   views a mint reads (`graph_release.service.Release.imported_data`) when only DFO holds each
   member StatVar and every provenance the run read, rate tables included, is one the bound
-  origin catalogue lists as DFO's, or `None` otherwise (`run_imported_data`). A DFO
+  origin catalogue lists as DFO's, as is the provenance of every candidate its election
+  ranked, and no member's default place scope was a fallback this request alone took, or
+  `None` otherwise (`run_imported_data`, `build_dependencies`). The head rule runs the
+  catalogue test again when it judges the head. A DFO
   provenance's rows reach the mixer only through an import, and every import that lands moves
   the digest, so an unchanged digest means unchanged rows. Base Data Commons and UN rows move
   without one, and a base or UN holder of a member could win its facet election.
@@ -36,6 +41,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
+from code_index.composites import declared_composite_digest
 from graph_release.context import bound_release_or_none
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
@@ -78,13 +84,15 @@ class Dependencies:
     window: tuple[int | None, int | None] | None
     latest_years: tuple[tuple[str, LatestYear], ...] = ()
     imported_data: str | None = None
+    composites: tuple[tuple[str, str | None], ...] = ()
 
     def as_json(self) -> dict[str, object]:
         """The stored shape, `{"schema", "members", "sources", "conversion_sources",
         "recipes", "window"}`, with a JSON object per pair and `window` as
         `{"start_year", "end_year"}` or null. A `latest` run adds `latest_years`, one
         `{"stat_var", "elected", "served", "facet_ids", "omitted"}` per member, `omitted` a
-        list of `{"role", "entity"}`. A run keyed on an import adds `imported_data`."""
+        list of `{"role", "entity"}`. A run keyed on an import adds `imported_data`, and a composite run `composites`, one
+        `{"provenance", "digest"}` per composite."""
         encoded: dict[str, object] = {"schema": DEPENDENCIES_SCHEMA, "members": self.members}
         for name, key, value in _PAIR_FIELDS:
             encoded[name] = [{key: ref, value: token} for ref, token in getattr(self, name)]
@@ -108,6 +116,11 @@ class Dependencies:
             ]
         if self.imported_data is not None:
             encoded["imported_data"] = self.imported_data
+        if self.composites:
+            encoded["composites"] = [
+                {"provenance": provenance, "digest": digest}
+                for provenance, digest in self.composites
+            ]
         return encoded
 
 
@@ -142,10 +155,11 @@ def _latest_members(
     }
 
 
-def run_imported_data(*, stat_vars: Iterable[str], provenances: Iterable[str]) -> str | None:
+def run_imported_data(*, stat_vars: Iterable[str], provenances: Iterable[str | None]) -> str | None:
     """The bound graph release's `imported_data` digest when the bound origin catalogue names
     DFO alone as holding each of `stat_vars` and lists each of `provenances`, which must not be
-    empty, as DFO's. Otherwise `None`, and also `None` with no release bound.
+    empty, as DFO's. Otherwise `None`, also for a `None` provenance (a facet naming none), and
+    with no release bound.
 
     Holding is the catalogue's `data_commons`, every origin with admitted data for the
     StatVar at any place, so a base or UN facet that facet election could rank above DFO's
@@ -159,7 +173,7 @@ def run_imported_data(*, stat_vars: Iterable[str], provenances: Iterable[str]) -
     if any(catalogue.data_commons(bare_stat_var_ref(ref)) != (DFO,) for ref in set(stat_vars)):
         return None
     for ref in refs:
-        row = catalogue.provenance(ref)
+        row = catalogue.provenance(ref) if ref is not None else None
         if row is None or row.data_commons != DFO:
             return None
     return release.imported_data
@@ -172,13 +186,18 @@ def build_dependencies(
     provenance_refresh: Mapping[str, ProvenanceRefresh],
     conversion_records: Iterable[ConversionRecord | None],
     latest_years: Mapping[str, LatestYear],
+    candidate_provenances: Iterable[str | None],
+    scope_settled: bool,
 ) -> Dependencies:
     """The fingerprint of a run over `requests` that dispatched the provenances `source_refs`,
     converted with `conversion_records`, and served each `latest` member at `latest_years`
     (`MaterialisationResult.latest_years`). `provenance_refresh` holds each dispatched
     provenance's refresh dates; a ref it lacks records no date. The requests of one run share
     one window, so the first request's gives `window`. `imported_data` is `run_imported_data`
-    over the requests' StatVars and the sources and rate table provenances."""
+    over the requests' StatVars and the provenances of the sources, the rate tables and
+    `candidate_provenances`, every candidate the run's election ranked, and `None` when
+    `scope_settled` is false: a member's default place scope was a countries fallback this
+    request alone took (`place_scope.DefaultPresence.unsettled`)."""
     records = [record for record in conversion_records if record is not None]
     sources: dict[str, str | None] = {}
     for ref in source_refs:
@@ -195,9 +214,13 @@ def build_dependencies(
         recipes=tuple(sorted(recipes.items())),
         window=_clock_window(requests[0].window),
         latest_years=tuple(sorted(_latest_members(requests, latest_years).items())),
-        imported_data=run_imported_data(
-            stat_vars=(request.stat_var for request in requests),
-            provenances=sources.keys() | conversion_sources.keys(),
+        imported_data=(
+            run_imported_data(
+                stat_vars=(request.stat_var for request in requests),
+                provenances=[*sources, *conversion_sources, *candidate_provenances],
+            )
+            if scope_settled
+            else None
         ),
     )
 
@@ -297,6 +320,9 @@ def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
     imported_data = encoded.get("imported_data")
     if imported_data is not None and not isinstance(imported_data, str):
         return None
+    composites = _decode_pairs(encoded.get("composites", []), key="provenance", value="digest")
+    if composites is None:
+        return None
     return Dependencies(
         members=members,
         sources=pairs["sources"],
@@ -305,6 +331,7 @@ def decode_dependencies(encoded: Mapping[str, object]) -> Dependencies | None:
         window=window,
         latest_years=latest_years,
         imported_data=imported_data,
+        composites=composites,
     )
 
 
@@ -333,7 +360,9 @@ def refreshed_dependencies(
     `stored` lacks and so differs in `latest_years`. If it elects none, as a StatVar outside
     the index or a subject-only request does, it gains none and matches.
 
-    `imported_data` keeps `stored`'s. The head rule compares it with the bound release's
+    Each stored composite takes the digest of the declaration deployed now
+    (`declared_composite_digest`), `None` for one no longer declared. `imported_data`
+    keeps `stored`'s. The head rule compares it with the bound release's
     (`datasets_api.current`), and `dependency_changes` never does.
     """
     refs = sorted(
@@ -377,6 +406,10 @@ def refreshed_dependencies(
             )
         ),
         imported_data=stored.imported_data,
+        composites=tuple(
+            (provenance, declared_composite_digest(provenance))
+            for provenance, _ in stored.composites
+        ),
     )
 
 
@@ -394,6 +427,8 @@ def _pairs_by_name(dependencies: Dependencies) -> dict[str, object]:
     for name, _key, _value in _PAIR_FIELDS:
         for ref, token in getattr(dependencies, name):
             members[f"{name}:{ref}"] = token
+    for provenance, digest in dependencies.composites:
+        members[f"composites:{provenance}"] = digest
     return members
 
 
@@ -404,7 +439,7 @@ def dependency_changes(
     from `current`, sorted; empty when they agree.
 
     A member is `members`, `window`, `latest_years`, or a pair named `<field>:<ref>`, such as
-    `sources:provenance/OECDDAC2A`. A ref present on one side only differs. A source or
+    `sources:provenance/OECDDAC2A` or `composites:provenance/ONEBilateralAndImputedMultilateral`. A ref present on one side only differs. A source or
     conversion source whose current refresh date is `None` is unknown and never differs, so a
     source with no refresh date, or one whose date the graph stops serving, never rebuilds on
     its token. A missing, malformed, or other-schema `stored` returns `("schema",)`.

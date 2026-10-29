@@ -17,7 +17,7 @@ from dfo_frame_grammar import (
     stream_frame_sha256,
 )
 
-from code_index.composites import DECLARED_COMPOSITES
+from code_index.composites import DECLARED_COMPOSITES, composite_digest
 from code_index.declarations import COMPOSITES, CRS_INCLUSIVE
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import MaterialisationRequest, MaterialisationResult
@@ -431,7 +431,10 @@ def test_the_composite_keeps_the_import_key_only_when_every_component_shares_it(
         imported_data=imputed_key,
     )
 
-    assert _compose([bilateral, imputed]).dependencies.imported_data == expected
+    dependencies = _compose([bilateral, imputed]).dependencies
+
+    assert dependencies.imported_data == expected
+    assert dependencies.composites == ((_STACKED.provenance, composite_digest(_STACKED)),)
 
 
 def test_the_composed_frame_records_each_components_measurement_method_under_one_unit():

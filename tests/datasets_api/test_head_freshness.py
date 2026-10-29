@@ -424,6 +424,27 @@ def test_a_head_older_than_the_maximum_age_rebuilds(
     assert rig.transport.requests > 0
 
 
+def test_a_keyed_head_rebuilds_once_the_catalogue_lists_base_for_its_statvar(
+    version_store, bind_catalogue
+):
+    """The catalogue is rebuilt apart from the release, so the DFO-alone test runs again when
+    the head is judged, and a head keyed under a catalogue listing DFO alone rebuilds once one
+    lists base Data Commons beside it."""
+    bind_catalogue(_DFO_SOURCE)
+    rig = _Rig(version_store, dated=True)
+    rig.serve()
+    assert rig.head_dependencies()["imported_data"] == current_release().imported_data
+    bind_catalogue(_OVERLAP)
+    rig.clock.at += _RECHECK + timedelta(seconds=1)
+    rig.reset_counts()
+
+    manifest, fields = rig.serve()
+
+    assert manifest.trace["served_from"] == "materialise"
+    assert fields["rebuild_reason"] == "imported_data"
+    assert "imported_data" not in rig.head_dependencies()
+
+
 def test_an_unpinned_head_over_a_statvar_base_also_holds_keeps_the_day_limit(
     version_store, bind_catalogue
 ):

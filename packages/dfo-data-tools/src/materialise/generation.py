@@ -376,6 +376,7 @@ class _MemberOutcome:
     (`_convert_by_series`). `probe_empty` is true when the member's probe returned no
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` holds
     the dispatched provenance's refresh dates, read before the fetch (`_dispatch_refresh`).
+    `candidate_provenances` holds the provenance of every candidate its election ranked.
     `coverage_gaps` holds the places a national-currency unit binding serves no row at
     (`_national_currency_probe`). `latest_years` holds the member's year under a `latest`
     window (`_latest_years`), and `read_series` the series its read holds under any window.
@@ -392,6 +393,7 @@ class _MemberOutcome:
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    candidate_provenances: frozenset[str | None] = frozenset()
     coverage_gaps: tuple[CoverageGap, ...] = ()
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
@@ -413,7 +415,8 @@ class _GroupOutcome:
     `out_of_window_members` and `unserved_members` are `_GroupPlan`'s. `probe_empty` is true
     when no member's probe returned a candidate, and the outcome then holds no row and no
     selection. `provenance_refresh` is
-    `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
+    `_MemberOutcome.provenance_refresh` for the group's shared selection, and
+    `candidate_provenances` every member's as `_MemberOutcome.candidate_provenances` holds it. `method_periods`
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
     hold (`frame_build.fold_method_periods`). `latest_years` holds each member's year under
     a `latest` window (`_latest_years`), and `read_series` the series each member's read
@@ -438,6 +441,7 @@ class _GroupOutcome:
     unserved_members: tuple[str, ...] = ()
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    candidate_provenances: frozenset[str | None] = frozenset()
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
@@ -1416,6 +1420,7 @@ def _generate_member(
     return replace(
         outcome,
         provenance_refresh=provenance_refresh,
+        candidate_provenances=frozenset(c.provenance_id for c in probe.candidates),
         coverage_gaps=coverage_gaps,
         latest_years=_latest_years(
             request, elected=year, applied_window=outcome.applied_window, read=read
@@ -3009,7 +3014,13 @@ def _generate_group(
         unserved_members=group_plan.unserved_members,
         probe_empty=probe_empty,
     )
-    return replace(outcome, provenance_refresh=provenance_refresh)
+    return replace(
+        outcome,
+        provenance_refresh=provenance_refresh,
+        candidate_provenances=frozenset(
+            candidate.provenance_id for member in probed for candidate in member.candidates
+        ),
+    )
 
 
 def _merge_latest_windows(windows: Sequence[AppliedWindow | None]) -> AppliedWindow | None:

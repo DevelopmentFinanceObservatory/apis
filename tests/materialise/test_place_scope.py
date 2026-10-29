@@ -1506,6 +1506,7 @@ def test_a_known_presence_is_topped_up_and_keeps_its_unsettled_stat_vars():
     assert presence.scopes.keys() == {"A", "D"}
     assert presence.scope("D") == _countries_of_d()
     assert presence.unsettled == {"D"}
+    assert (presence.scope("A").settled, presence.scope("D").settled) == (True, False)
     assert presence.cold_reads == 4
     assert presence.countries == _COUNTRIES
 

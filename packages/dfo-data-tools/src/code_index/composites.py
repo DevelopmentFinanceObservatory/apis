@@ -10,12 +10,16 @@ reader that skips the derivation fails rather than reading the node nobody publi
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from code_index.declarations import COMPOSITES
 from code_index.measure_basis import edit_basis, with_slot
+from code_index.scope_conventions import BASIS_MEASURES, ODA_FLOW, ODA_FLOW_SYSTEM
 from code_index.types import (
     ComponentRecipe,
     ComponentRole,
@@ -35,6 +39,32 @@ DECLARED_COMPOSITES: Mapping[str, CompositeDeclaration] = {
     composite.provenance: composite for composite in COMPOSITES
 }
 """Every declared composite by its provenance."""
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, frozenset | set):
+        return sorted(str(item) for item in value)
+    raise TypeError(f"cannot digest {type(value).__name__}")
+
+
+def composite_digest(composite: CompositeDeclaration) -> str:
+    """`sha256:` and the hex digest of what a run composes `composite` from: its declaration
+    (each component's recipe with its periods, binds, dropped slots, zero absence, measure and
+    basis), and, when a component sets a basis, the basis measures and ODA flow codes
+    `measure_basis.edit_basis` reads."""
+    payload: dict[str, object] = {"composite": dataclasses.asdict(composite)}
+    if any(component.basis is not None for component in composite.components):
+        payload["basis_measures"] = [dataclasses.asdict(row) for row in BASIS_MEASURES]
+        payload["oda_flow"] = [ODA_FLOW_SYSTEM, ODA_FLOW]
+    encoded = json.dumps(payload, sort_keys=True, default=_jsonable).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def declared_composite_digest(provenance: str) -> str | None:
+    """`composite_digest` of the composite this deployment declares for `provenance`
+    (`DECLARED_COMPOSITES`), or `None` where it declares none."""
+    composite = DECLARED_COMPOSITES.get(provenance)
+    return composite_digest(composite) if composite is not None else None
 
 
 class CompositeNotServable(ValueError):

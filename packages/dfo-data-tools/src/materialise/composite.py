@@ -51,6 +51,7 @@ from dfo_frame_grammar import (
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 
+from code_index.composites import composite_digest
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import pipeline
@@ -335,7 +336,7 @@ def compose_components(
             for component in components
             for stat_var, record in component.result.member_conversion_records.items()
         },
-        dependencies=_dependencies(components, requests=all_requests),
+        dependencies=_dependencies(components, composite=composite, requests=all_requests),
         default_scope=tuple(
             dict.fromkeys(
                 place for component in components for place in component.result.default_scope
@@ -848,13 +849,17 @@ def _union_entries(groups: Iterable[Iterable[dict[str, object]]]) -> tuple[dict[
 
 
 def _dependencies(
-    components: Sequence[ComponentResult], *, requests: Sequence[MaterialisationRequest]
+    components: Sequence[ComponentResult],
+    *,
+    composite: CompositeDeclaration,
+    requests: Sequence[MaterialisationRequest],
 ) -> Dependencies:
     """Every component's fingerprint as one: its members over every component, and each
     source, conversion source, recipe and latest year any component recorded. The window
     is the first component's, as `dependencies.refreshed_dependencies` reads the first
     request's. `imported_data` is the components' when every one records the same key, and
-    `None` when any records none or another."""
+    `None` when any records none or another. `composites` holds `composite`'s provenance and
+    the digest of the declaration it was composed by (`code_index.composites.composite_digest`)."""
     fingerprints = [component.result.dependencies for component in components]
     imported = {fingerprint.imported_data for fingerprint in fingerprints}
 
@@ -872,6 +877,7 @@ def _dependencies(
         window=fingerprints[0].window,
         latest_years=cast("tuple", merged("latest_years")),
         imported_data=imported.pop() if len(imported) == 1 else None,
+        composites=((composite.provenance, composite_digest(composite)),),
     )
 
 

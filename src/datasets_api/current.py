@@ -162,6 +162,7 @@ from materialise.dependencies import (
     decode_dependencies,
     dependency_changes,
     refreshed_dependencies,
+    run_imported_data,
 )
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -1085,6 +1086,22 @@ def _fingerprint_changes(
     )
 
 
+def _catalogue_unkeys(head: SubjectHead, requests: Sequence[MaterialisationRequest]) -> bool:
+    """Whether `head` is keyed on an import the bound origin catalogue would no longer key a
+    run over `requests` on: `run_imported_data` over their StatVars and the head's sources and
+    rate tables differs from the head's key, as when a catalogue built since lists base Data
+    Commons as holding a member. Reads memory alone."""
+    keyed = _head_import(head)
+    stored = decode_dependencies(head.dependencies) if head.dependencies is not None else None
+    if keyed is None or stored is None:
+        return False
+    current = run_imported_data(
+        stat_vars=(request.stat_var for request in requests),
+        provenances=[ref for ref, _ in (*stored.sources, *stored.conversion_sources)],
+    )
+    return current != keyed
+
+
 @dataclass(frozen=True)
 class _Freshness:
     """A head freshness verdict: the head to serve, or `None` and why the call rebuilds."""
@@ -1103,7 +1120,8 @@ def _judge_head(
     coverage: CoverageIndex,
 ) -> _Freshness:
     """Whether `head`, the head of the served definition `stored`, is current (`serve_current`'s
-    head rule). A head keyed on an import the bound release no longer carries rebuilds. A head past the
+    head rule). A head keyed on an import the bound release no longer carries rebuilds, and so
+    does one the bound catalogue would key on none now (`_catalogue_unkeys`). A head past the
     recheck window and younger than its maximum age (`_max_age`) whose fingerprint matches is
     confirmed, and the verdict serves the head the confirmation wrote,
     or the head a concurrent update left. The fingerprint read and its election from
@@ -1122,7 +1140,10 @@ def _judge_head(
         definition_read_scope(stored.identity, code_index=deps.code_index),
         phase("fingerprint"),
     ):
-        changes = _fingerprint_changes(head, requests(), graph=deps.graph, coverage=coverage)
+        resolved = requests()
+        if _catalogue_unkeys(head, resolved):
+            return _Freshness(head=None, rebuild_reason=_IMPORTED_DATA)
+        changes = _fingerprint_changes(head, resolved, graph=deps.graph, coverage=coverage)
     if changes:
         return _Freshness(head=None, rebuild_reason=",".join(changes))
     written = deps.head_store.confirm_head(

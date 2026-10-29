@@ -368,6 +368,8 @@ def materialise_group(
                 provenance_refresh=outcome.provenance_refresh,
                 conversion_records=(outcome.conversion_record,),
                 latest_years=outcome.latest_years,
+                candidate_provenances=outcome.candidate_provenances,
+                scope_settled=outcome.default_scope.settled,
             ),
         )
 
@@ -403,6 +405,8 @@ def materialise_group(
             provenance_refresh=outcome.provenance_refresh,
             conversion_records=outcome.member_conversion_records.values(),
             latest_years=outcome.latest_years,
+            candidate_provenances=outcome.candidate_provenances,
+            scope_settled=outcome.default_scope.settled,
         ),
     )
 
