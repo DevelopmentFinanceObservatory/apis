@@ -37,6 +37,7 @@ __all__ = [
     "BoundSeries",
     "bind_all",
     "bind_series",
+    "count_held_points",
     "count_periods",
     "frame_periods",
     "role_columns",
@@ -71,15 +72,7 @@ def bind_series(
 ) -> BoundSeries:
     coordinates = dict(series.coordinates)
     rows_by_period = {row[TIME_PERIOD_COLUMN]: row for row in series.rows}
-    grain = resolved_frame.structural_view.period_grain
-    observed = frame_periods(resolved_frame=resolved_frame) if grain == "day" else frozenset()
-    periods = _period_sequence(
-        start=str(window["start"]),
-        end=str(window["end"]),
-        grain=grain,
-        observed=observed,
-        span=resolved_frame.structural_view.span,
-    )
+    periods = _window_periods(resolved_frame=resolved_frame, window=window)
 
     points: list[Mapping[str, object]] = []
     for period in periods:
@@ -99,6 +92,34 @@ def bind_series(
         unit=_unit(resolved_frame=resolved_frame, rows=series.rows),
         source_ref=coordinates.get(_PROVENANCE_COLUMN),
         points=tuple(points),
+    )
+
+
+def count_held_points(
+    *, resolved_frame: ResolvedFrame, series: Sequence[ResolvedSeries], window: Mapping[str, object]
+) -> int:
+    """Counts the points `bind_series` binds from a row of each of `series`: each series'
+    distinct periods among the window's.
+
+    The pipeline counts a table over a frame keeping each period's selection this way, since
+    its table lists only those points (`assembler.mint.builders.selects_per_period`)."""
+    periods = frozenset(_window_periods(resolved_frame=resolved_frame, window=window))
+    return sum(
+        len(periods.intersection(row[TIME_PERIOD_COLUMN] for row in one.rows)) for one in series
+    )
+
+
+def _window_periods(
+    *, resolved_frame: ResolvedFrame, window: Mapping[str, object]
+) -> tuple[str, ...]:
+    """The periods a series binds over `window` at the frame's grain (`_period_sequence`)."""
+    grain = resolved_frame.structural_view.period_grain
+    return _period_sequence(
+        start=str(window["start"]),
+        end=str(window["end"]),
+        grain=grain,
+        observed=frame_periods(resolved_frame=resolved_frame) if grain == "day" else frozenset(),
+        span=resolved_frame.structural_view.span,
     )
 
 

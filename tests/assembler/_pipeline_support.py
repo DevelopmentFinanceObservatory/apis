@@ -16,6 +16,7 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_resolved_frame,
 )
+from description.facts import DescriptionRecord
 
 
 def _stored_resolved_frame(
@@ -169,4 +170,65 @@ def _donor_and_recipient_frame():
             "country/ETH": "Ethiopia",
             "country/GHA": "Ghana",
         },
+    )
+
+
+def computed_record(
+    *, frame_ref: FrameRef, steps: Sequence[Mapping[str, object]]
+) -> DescriptionRecord:
+    """The record Datasets writes for the `ops_` version `frame_ref` when it is published with
+    the malaria version retrieved, then `steps`."""
+    malaria = malaria_ethiopia_frame_ref()
+    return DescriptionRecord.model_validate(
+        {
+            "id": frame_ref.spec_id,
+            "content_version": frame_ref.content_version,
+            "schema_version": 2,
+            "basis": "mint",
+            "index_stamp": None,
+            "variables": None,
+            "computed": {
+                "inputs": [{"id": malaria.spec_id, "content_version": malaria.content_version}],
+                "composed": None,
+            },
+            "series": {
+                "series": 2,
+                "rows": None,
+                "periods": None,
+                "span": {"start": "2018", "end": "2022"},
+                "grain": "year",
+                "latest_period": "2022",
+                "series_reaching_latest": None,
+                "entities_by_role": None,
+                "by_source_unit": [{"source": None, "unit": None, "series": 2}],
+                "status": {"estimated": None, "provisional": None},
+            },
+            "steps": [
+                {
+                    "id": "s1",
+                    "op": "retrieve",
+                    "input": {
+                        "id": malaria.spec_id,
+                        "content_version": malaria.content_version,
+                    },
+                },
+                *steps,
+            ],
+            "caveats": [],
+            "evidence": {
+                "prepared": "2026-10-28",
+                "title": "Computed from malaria grants",
+                "sources": [],
+                "source_release": None,
+                "labels": [],
+                "membership": None,
+                "builds": {
+                    "origin_catalogue": None,
+                    "code_index": None,
+                    "coverage": None,
+                    "method_status": None,
+                },
+            },
+            "late_fields": [],
+        }
     )

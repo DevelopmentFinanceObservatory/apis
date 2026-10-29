@@ -31,6 +31,8 @@ from datasets_api.manifest_models import CountedEntityYearsModel, CountedRefsMod
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from presentation_api.refusals import binding_invalid_spec
 
+from ._pipeline_support import computed_record
+
 
 def _fixed_clock():
     moment = datetime.datetime(2026, 7, 14, 10, 2, 0, tzinfo=datetime.UTC)
@@ -1019,6 +1021,152 @@ def test_table_preserves_status_for_a_missing_period(release):
     assert "2021" in minted.observed_periods
     assert missing_row["series_id"] == bound[0].id
     assert observed_row["series_id"] == bound[0].id
+
+
+_RANK_FRAME = FrameRef(spec_id="ops_" + "a" * 32, content_version="ocv_" + "b" * 32)
+_IDA = "org/IDA"
+_USA = "country/USA"
+# Each year's top donor of ODA to Kenya, 2018 to 2022.
+_TOP_DONOR_BY_YEAR = (
+    ("2018", _USA, 829_231_420.0),
+    ("2019", _IDA, 1_357_452_310.0),
+    ("2020", _IDA, 1_570_237_409.0),
+    ("2021", _IDA, 1_151_749_460.0),
+    ("2022", _IDA, 938_795_140.0),
+)
+
+
+def _mint_top_donor_table(*, release, record):
+    """A table of `_TOP_DONOR_BY_YEAR` over 2018 to 2022 that names both donors, as Studio
+    asks for one."""
+    resolved_frame = dataclasses.replace(
+        build_resolved_frame(
+            frame_ref=_RANK_FRAME,
+            role_keys=("financingProvider",),
+            rows=[
+                {
+                    "stat_var": "dcid:ODA",
+                    "financingProvider": provider,
+                    "time_period": period,
+                    "value": value,
+                    "unit": None,
+                    "measurementMethod": None,
+                    "provenance": None,
+                }
+                for period, provider, value in _TOP_DONOR_BY_YEAR
+            ],
+            labels={_IDA: "International Development Association", _USA: "United States"},
+        ),
+        description_record=record,
+    )
+    select = {"stat_var": "dcid:ODA", "financingProvider": [_IDA, _USA]}
+    window = {"start": "2018", "end": "2022"}
+    series, bound = _resolve_and_bind(
+        resolved_frame=resolved_frame, selectors=normalize_select(select=select), window=window
+    )
+    intent = {
+        "type": "table",
+        "frame_ref": {
+            "spec_id": _RANK_FRAME.spec_id,
+            "content_version": _RANK_FRAME.content_version,
+        },
+        "select": select,
+        "window": window,
+    }
+    return mint_component(
+        member="table",
+        merged_intent=intent,
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+
+
+_PER_PERIOD_TOP_ONE = {
+    "id": "s2",
+    "op": "rank",
+    "input": "s1",
+    "params": {"limit": 1, "order": "descending", "per_period": True},
+}
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        _PER_PERIOD_TOP_ONE,
+        {
+            "id": "s2",
+            "op": "filter",
+            "input": "s1",
+            "params": {"predicates": [{"column": "value", "op": "gt", "operand": 8e8}]},
+        },
+    ],
+    ids=["per-period-top-one", "value-filter"],
+)
+def test_a_table_over_a_per_period_selection_lists_only_the_frame_s_rows(release, step):
+    """A frame that keeps a selection of donors in each year leaves a donor out of a year
+    because it was not chosen there, so the table lists the frame's five rows and no
+    `missing` cells for the other donor's years."""
+    minted = _mint_top_donor_table(
+        release=release, record=computed_record(frame_ref=_RANK_FRAME, steps=[step])
+    )
+
+    rows = minted.component["rows"]
+    assert sorted(
+        (row["period"], row["dimensions"]["financingProvider"], row["value"]) for row in rows
+    ) == [
+        ("2018", "United States", 829_231_420.0),
+        ("2019", "International Development Association", 1_357_452_310.0),
+        ("2020", "International Development Association", 1_570_237_409.0),
+        ("2021", "International Development Association", 1_151_749_460.0),
+        ("2022", "International Development Association", 938_795_140.0),
+    ]
+    assert not any("status" in row for row in rows)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(None, id="no-record"),
+        pytest.param(computed_record(frame_ref=_RANK_FRAME, steps=[]), id="retrieved"),
+        pytest.param(
+            computed_record(
+                frame_ref=_RANK_FRAME,
+                steps=[
+                    {
+                        **_PER_PERIOD_TOP_ONE,
+                        "params": {"order": "descending", "per_period": True},
+                    }
+                ],
+            ),
+            id="per-period-positions",
+        ),
+        pytest.param(
+            computed_record(
+                frame_ref=_RANK_FRAME,
+                steps=[{**_PER_PERIOD_TOP_ONE, "params": {"limit": 1, "order": "descending"}}],
+            ),
+            id="whole-window-top-one",
+        ),
+    ],
+)
+def test_a_table_over_a_frame_that_selects_nothing_per_period_pads_each_absent_year(
+    release, record
+):
+    """A frame whose steps keep every series in every period it held, or whose steps are
+    unknown, holds no row for a year only where the data had none, so the table lists that
+    year as `missing`."""
+    rows = _mint_top_donor_table(release=release, record=record).component["rows"]
+    assert len(rows) == 10
+    assert sorted(row["period"] for row in rows if row.get("status") == "missing") == [
+        "2018",
+        "2019",
+        "2020",
+        "2021",
+        "2022",
+    ]
 
 
 _STAT_VAR_UNIT_SERIES = (

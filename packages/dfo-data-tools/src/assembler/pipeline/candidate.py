@@ -37,7 +37,13 @@ from typing import cast
 import jsonschema
 from dfo_frame_grammar import UNIT_COLUMN
 
-from assembler.bind import BoundSeries, bind_all, count_periods, frame_periods
+from assembler.bind import (
+    BoundSeries,
+    bind_all,
+    count_held_points,
+    count_periods,
+    frame_periods,
+)
 from assembler.catalogue import CatalogueRelease
 from assembler.errors import (
     BindingInvalid,
@@ -63,6 +69,7 @@ from assembler.mint import (
     mint_component,
     with_card_description,
 )
+from assembler.mint.builders import selects_per_period
 from assembler.mint.provenance import LeftOut, _with_left_out_warning
 from assembler.ports import FrameRef, FrameStore, NamedSeries, ResolvedFrame, RevisionRecord
 from assembler.resolve import ResolvedSeries, resolve_selectors
@@ -283,17 +290,22 @@ def _build_candidate(
             ),
         )
     if member == "table":
-        # `bind.py` emits exactly one row per (resolved coordinate, period
-        # in the window) -- table row count is the exact product,
-        # known before a single row is built.
-        row_count = len(series) * period_count
+        # `bind.py` emits exactly one point per (resolved coordinate, period
+        # in the window), and the table lists every one, so its row count is the
+        # product, known before a single row is built. A table over a frame keeping
+        # each period's selection lists only the points a row binds.
+        row_count = (
+            count_held_points(resolved_frame=resolved_frame, series=series, window=effective_window)
+            if selects_per_period(resolved_frame=resolved_frame)
+            else len(series) * period_count
+        )
         if row_count > MAX_TABLE_ROWS:
             raise ResourceExhausted(
                 pointer="/select",
                 limit_name="MAX_TABLE_ROWS",
                 detail=(
-                    f"selection resolves to {len(series)} coordinates across {period_count} "
-                    f"periods, {row_count} rows, over the maximum of {MAX_TABLE_ROWS}"
+                    f"selection resolves to {row_count} rows over {len(series)} coordinates "
+                    f"and {period_count} periods, over the maximum of {MAX_TABLE_ROWS}"
                 ),
             )
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=effective_window)

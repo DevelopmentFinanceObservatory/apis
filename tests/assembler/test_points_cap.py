@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from assembler.errors import BindingInvalid, ResourceExhausted
@@ -9,7 +11,7 @@ from assembler.pipeline import write_component
 from assembler.ports import FrameRef
 from assembler.testing import build_resolved_frame
 
-from ._pipeline_support import _multi_recipient_frame
+from ._pipeline_support import _multi_recipient_frame, computed_record
 
 # -- points cap ----------------------------------------------------------------
 
@@ -68,51 +70,84 @@ def test_wide_day_grain_window_refuses_resource_exhausted_without_materializing_
     assert excinfo.value.limit_name == "MAX_POINTS_PER_SERIES"
 
 
-def _wide_table_frame(*, spec_digit, recipient_count):
+def _wide_table_frame(*, frame_ref):
+    """Five recipients, one of them in each year from 2020 to 2429 in turn: 410 rows, the
+    shape of a per-period top one."""
     return build_resolved_frame(
-        frame_ref=FrameRef(
-            spec_id="spec_" + spec_digit * 32, content_version="cv_" + spec_digit * 32
-        ),
+        frame_ref=frame_ref,
         role_keys=("recipient",),
         rows=[
             {
                 "stat_var": "dcid:X",
-                "recipient": f"country/C{i:02d}",
-                "time_period": "2020",
+                "recipient": f"country/C{year % 5:02d}",
+                "time_period": str(year),
                 "value": 1.0,
                 "unit": None,
                 "measurementMethod": None,
                 "provenance": "src_a",
             }
-            for i in range(recipient_count)
+            for year in range(2020, 2430)
         ],
     )
 
 
-def test_table_row_cap_refuses_resource_exhausted_without_binding(
-    frame_store, revision_store, release_registry, monkeypatch
-):
-    """Five recipients across 410 years yield 2,050 rows, above the 2,000-row cap.
+_TOP_ONE_FRAME = FrameRef(spec_id="ops_" + "6" * 32, content_version="ocv_" + "6" * 32)
 
-    Refuse before `bind_all` runs.
-    """
+
+@pytest.mark.parametrize(
+    ("resolved_frame", "row_count"),
+    [
+        pytest.param(
+            _wide_table_frame(
+                frame_ref=FrameRef(spec_id="spec_" + "6" * 32, content_version="cv_" + "6" * 32)
+            ),
+            None,
+            id="padded",
+        ),
+        pytest.param(
+            dataclasses.replace(
+                _wide_table_frame(frame_ref=_TOP_ONE_FRAME),
+                description_record=computed_record(
+                    frame_ref=_TOP_ONE_FRAME,
+                    steps=[
+                        {
+                            "id": "s2",
+                            "op": "rank",
+                            "input": "s1",
+                            "params": {"limit": 1, "order": "descending", "per_period": True},
+                        }
+                    ],
+                ),
+            ),
+            410,
+            id="per-period-selection",
+        ),
+    ],
+)
+def test_table_row_cap_counts_the_rows_the_table_lists(
+    frame_store, revision_store, release_registry, monkeypatch, resolved_frame, row_count
+):
+    """Five recipients across 410 years pad to 2,050 rows, above the 2,000-row cap, so the
+    table refuses before `bind_all` runs. A frame keeping each period's selection lists only
+    the rows it holds, 410 here, and the cap counts those."""
     import assembler.pipeline.candidate as candidate_module
 
-    def _bind_all_must_not_run(**kwargs):
-        raise AssertionError("bind_all must not run once the row count exceeds MAX_TABLE_ROWS")
+    if row_count is None:
 
-    monkeypatch.setattr(candidate_module, "bind_all", _bind_all_must_not_run)
+        def _bind_all_must_not_run(**kwargs):
+            raise AssertionError("bind_all must not run once the row count exceeds MAX_TABLE_ROWS")
 
-    rf = _wide_table_frame(spec_digit="6", recipient_count=5)
-    frame_store.put(resolved_frame=rf)
+        monkeypatch.setattr(candidate_module, "bind_all", _bind_all_must_not_run)
 
-    with pytest.raises(ResourceExhausted) as excinfo:
-        write_component(
+    frame_store.put(resolved_frame=resolved_frame)
+
+    def _write():
+        return write_component(
             intent={
                 "type": "table",
                 "frame_ref": {
-                    "spec_id": rf.frame_ref.spec_id,
-                    "content_version": rf.frame_ref.content_version,
+                    "spec_id": resolved_frame.frame_ref.spec_id,
+                    "content_version": resolved_frame.frame_ref.content_version,
                 },
                 "select": {
                     "recipient": [f"country/C{i:02d}" for i in range(5)],
@@ -125,8 +160,17 @@ def test_table_row_cap_refuses_resource_exhausted_without_binding(
             revision_store=revision_store,
             release_registry=release_registry,
         )
-    assert excinfo.value.pointer == "/select"
-    assert excinfo.value.limit_name == "MAX_TABLE_ROWS"
+
+    if row_count is None:
+        with pytest.raises(ResourceExhausted) as excinfo:
+            _write()
+        assert excinfo.value.pointer == "/select"
+        assert excinfo.value.limit_name == "MAX_TABLE_ROWS"
+        return
+
+    reply = _write()
+    record = revision_store.read_revision(component_id=reply.component_id, revision=1)
+    assert len(record.resolved_payload["component"]["rows"]) == row_count
 
 
 def test_realistic_all_positive_entity_mode_bar_chart_succeeds(
