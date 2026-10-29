@@ -57,36 +57,23 @@ def series_key(stat_var: str, roles: Sequence[str], dcids: Sequence[str]) -> Ser
     return stat_var, tuple(sorted(zip(roles, dcids, strict=True)))
 
 
-def pack_series_conversions(
+def encode_series_conversions(
     conversions: Mapping[SeriesKey, SeriesConversion],
-) -> dict[str, object]:
-    """`conversions` as one JSON object that names each distinct StatVar, role tuple and
-    conversion record once. `stat_vars`, `roles` and `records` list them in order of first
-    appearance over the series sorted by key, a record as a JSON object of its fields. `series`
-    holds one `[stat_var, roles, record]` triple of list positions per series, sorted by key.
-
-    A mint's series mostly share one record, so the object grows by a few bytes a series where
-    a per-series entry would repeat every field of its record."""
-    positions: dict[str, dict[object, int]] = {"stat_vars": {}, "roles": {}, "records": {}}
-
-    def position(kind: str, value: object) -> int:
-        return positions[kind].setdefault(value, len(positions[kind]))
-
-    series = [
-        [position("stat_vars", stat_var), position("roles", roles), position("records", record)]
-        for (stat_var, roles), record in sorted(conversions.items())
-    ]
-    return {
-        "stat_vars": list(positions["stat_vars"]),
-        "roles": [[list(pair) for pair in cast(RoleTuple, roles)] for roles in positions["roles"]],
-        "records": [
-            _record_entry(cast(SeriesConversion, record)) for record in positions["records"]
-        ],
-        "series": series,
-    }
+) -> list[Mapping[str, object]]:
+    """JSON entries for `conversions`, one per series, sorted by key: the series' `stat_var` and
+    `roles` and its record's fields (`_record_entry`). Role tuples and fallback pairs are JSON
+    lists. Series that share a record share its field values."""
+    fields: dict[SeriesConversion, dict[str, object]] = {}
+    encoded: list[Mapping[str, object]] = []
+    for (stat_var, roles), conversion in sorted(conversions.items()):
+        if (record := fields.get(conversion)) is None:
+            record = fields[conversion] = _record_entry(conversion)
+        encoded.append({"stat_var": stat_var, "roles": [list(pair) for pair in roles], **record})
+    return encoded
 
 
 def _record_entry(conversion: SeriesConversion) -> dict[str, object]:
+    """`conversion`'s fields as a JSON object, fallback pairs as JSON lists."""
     return {
         "recipe_id": conversion.recipe_id,
         "table_provenance_id": conversion.table_provenance_id,
@@ -99,38 +86,54 @@ def _record_entry(conversion: SeriesConversion) -> dict[str, object]:
     }
 
 
+type _RecordFields = tuple[
+    str, str, str, str | None, int, tuple[tuple[str, str], ...], int, tuple[str, ...]
+]
+"""A `SeriesConversion`'s field values in declaration order."""
+
+
 def _pairs(value: object) -> tuple[tuple[str, str], ...]:
     return tuple((str(first), str(second)) for first, second in cast(list[list[str]], value))
 
 
-def _record(entry: Mapping[str, object]) -> SeriesConversion:
+def _record_fields(entry: Mapping[str, object]) -> _RecordFields:
     deflator_version = entry["deflator_table_version"]
-    return SeriesConversion(
-        recipe_id=str(entry["recipe_id"]),
-        table_provenance_id=str(entry["table_provenance_id"]),
-        exchange_rate_table_version=str(entry["exchange_rate_table_version"]),
-        deflator_table_version=None if deflator_version is None else str(deflator_version),
-        fallback_count=cast(int, entry["fallback_count"]),
-        fallback_examples=_pairs(entry["fallback_examples"]),
-        projected_count=cast(int, entry["projected_count"]),
-        projected_examples=tuple(str(e) for e in cast(list[str], entry["projected_examples"])),
+    return (
+        str(entry["recipe_id"]),
+        str(entry["table_provenance_id"]),
+        str(entry["exchange_rate_table_version"]),
+        None if deflator_version is None else str(deflator_version),
+        cast(int, entry["fallback_count"]),
+        _pairs(entry["fallback_examples"]),
+        cast(int, entry["projected_count"]),
+        tuple(str(e) for e in cast(list[str], entry["projected_examples"])),
     )
 
 
 def decode_series_conversion_entries(
     entries: list[Mapping[str, object]] | dict[str, object],
 ) -> dict[SeriesKey, SeriesConversion]:
-    """The records `entries` holds. `entries` is the object `pack_series_conversions` gives, or
-    a list of per-series entries, which some stored versions hold, each a record's fields with
-    the series' `stat_var` and `roles`."""
+    """The records `entries` holds. `entries` is the list `encode_series_conversions` gives, or
+    a packed object that names each distinct StatVar, role tuple and record once: `stat_vars`,
+    `roles` and `records` list them, a record as an entry's record fields, and `series` holds
+    one `[stat_var, roles, record]` triple of list positions per series. Series with equal
+    record fields share one `SeriesConversion`."""
     if isinstance(entries, list):
-        return {
-            (str(entry["stat_var"]), _pairs(entry["roles"])): _record(entry) for entry in entries
-        }
+        records: dict[_RecordFields, SeriesConversion] = {}
+        decoded: dict[SeriesKey, SeriesConversion] = {}
+        for entry in entries:
+            fields = _record_fields(entry)
+            if (record := records.get(fields)) is None:
+                record = records[fields] = SeriesConversion(*fields)
+            decoded[(str(entry["stat_var"]), _pairs(entry["roles"]))] = record
+        return decoded
     stat_vars = [str(stat_var) for stat_var in cast(list[str], entries["stat_vars"])]
     roles = [_pairs(pairs) for pairs in cast(list[object], entries["roles"])]
-    records = [_record(entry) for entry in cast(list[Mapping[str, object]], entries["records"])]
+    packed_records = [
+        SeriesConversion(*_record_fields(entry))
+        for entry in cast(list[Mapping[str, object]], entries["records"])
+    ]
     return {
-        (stat_vars[stat_var], roles[role]): records[record]
+        (stat_vars[stat_var], roles[role]): packed_records[record]
         for stat_var, role, record in cast(list[list[int]], entries["series"])
     }

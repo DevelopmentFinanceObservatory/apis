@@ -26,10 +26,10 @@ from search.engine.bind import (
 )
 from search.engine.binders import BindRequest, BindResult, GeminiBinder, JevBinder
 from search.engine.binders.base import PolicyContractError
+from search.engine.binders.election import reelect
 from search.engine.binders.gemini import (
     RATED_POOL_FRACTION,
     rated_pool,
-    reelect,
     shape_ratings,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
@@ -501,9 +501,10 @@ class _CountingGemini(GeminiBinder):
             *,
             ratings: Mapping[int, float] | None = None,
             holds: Mapping[int, bool] | None = None,
+            drafts: Sequence[SlotBindingDraft] | None = None,
         ) -> PolicyChoice:
             self.calls += 1
-            return step(pool, ratings=ratings, holds=holds)
+            return step(pool, ratings=ratings, holds=holds, drafts=drafts)
 
         return await super().bind(replace(request, apply_policies=counted), llm=llm)
 
@@ -975,3 +976,105 @@ def test_a_slot_asked_for_in_full_keeps_every_value_through_the_policies(
     result = _bind_every_sector(binder, phrase=phrase)
 
     assert result.output.chosen_shape_index == elected
+
+
+# The binder's pick, and the amounts ("source") whose grant equivalents recall adds as a
+# basis sibling (`clients.graph.with_rival_families`), which the binder does not read.
+_PICK = _shape("pick", _FLOW, taxonomy={"how:flowKind": ["Grant"]})
+_SOURCE = _shape("source", _FLOW, taxonomy={"how:flowKind": ["Grant", "Loan"]})
+_SIBLING = replace(
+    _shape(
+        "sibling", _FLOW, taxonomy={"how:flowKind": ["Grant"]}, measured_property="grantEquivalent"
+    ),
+    basis_of=frozenset({"amounts"}),
+)
+
+
+@pytest.fixture
+def _pools(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, ...]]:
+    """Each pool the house policies read, which elect its last shape. The source is built
+    from the family the sibling measures on another basis."""
+    pools: list[tuple[int, ...]] = []
+
+    def elect_last(facts, pool, context, **kwargs) -> PolicyChoice:
+        pools.append(pool.measuring)
+        return PolicyChoice(survivor=pool.measuring[-1], fired=(), dropped=frozenset(), facts=())
+
+    monkeypatch.setattr(
+        phase_rank_bind, "_family_ref", lambda shape: "amounts" if shape is _SOURCE else None
+    )
+    monkeypatch.setattr(phase_rank_bind, "apply_house_policies", elect_last)
+    return pools
+
+
+@pytest.mark.parametrize(
+    ("holds", "drafts", "pooled"),
+    [
+        ({0: True, 1: True}, (), (0, 1, 2)),
+        ({0: True, 1: False}, (), (0, 1)),
+        ({0: True}, (), (0, 1)),
+        (None, (), (0, 1)),
+        ({0: True, 1: True}, None, (0, 1)),
+    ],
+    ids=["source-holds", "source-lacks", "source-unreported", "no-holds", "no-drafts"],
+)
+def test_a_basis_sibling_joins_only_beside_a_source_the_binder_reports_holding(
+    holds, drafts, pooled, _pools
+):
+    """A sibling joins the pool beside its source only when the binder reports the source as
+    holding what it recognised on its pick, since the sibling stands for that source. A
+    binder that reports no holds or no drafts gives the step nothing to judge the sibling
+    on, so it pools none."""
+    step = _HousePolicyStep(
+        shapes=[_PICK, _SOURCE],
+        frame=_NO_PLACE,
+        admitted_qualifiers=[(), ()],
+        availability=[],
+        code_index=get_index(),
+        siblings=[_SIBLING],
+    )
+
+    step(PolicyPool(measuring=(0, 1)), holds=holds, drafts=drafts)
+
+    assert _pools == [pooled]
+
+
+class _ReboundBinder(GeminiBinder):
+    """Runs the house policies over its pick and the source, both holding, with a Grant
+    drafted on the pick, and answers on the shape they elect with an "all flows" binding,
+    as Jev assembles its bindings apart from the drafts it reports (`jev_assemble`)."""
+
+    async def bind(self, request: BindRequest, *, llm) -> tuple[BindResult, dict | None]:
+        pool = PolicyPool(measuring=(0, 1))
+        choice = request.apply_policies(
+            pool, holds={0: True, 1: True}, drafts=[_value("flowKind", "Grant")]
+        )
+        every_flow = SlotBindingDraft(
+            axis="how",
+            property_dcid="flowKind",
+            kind="unbound",
+            evidence="requested_all",
+            requested_all_phrase="all flows",
+        )
+        output = _reply(choice.survivor, every_flow)
+        return BindResult(
+            output=output, binder="rebound", policy_pool=pool, policy_choice=choice
+        ), None
+
+
+def test_a_move_to_a_basis_sibling_holds_it_to_the_drafts_the_policies_judged(_pools):
+    """The policies admitted the sibling on the Grant drafted on the pick, which it holds,
+    and elected it. The answer's own "all flows" binding on the source covers a Loan the
+    sibling lacks, but the move checks the drafts the sibling was judged on, so the part
+    answers on the sibling, seated after the menu, where judging it twice would break the
+    house-policy contract."""
+    state = _state([_PICK, _SOURCE], llm=_StubLLM(None))
+    state.basis_siblings = [_SIBLING]
+    state.binder = _ReboundBinder()
+
+    assert asyncio.run(_phase_bind(state)) is None
+
+    assert _pools == [(0, 1, 2)]
+    assert [shape.shape_id for shape in state.capped_shapes] == ["pick", "source", "sibling"]
+    assert state.bind_result.chosen_shape_index == state.basis_seat == 2
+    assert state.basis_siblings == []

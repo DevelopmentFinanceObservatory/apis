@@ -418,16 +418,17 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
     stored = _StoredPreview.from_manifest(
         manifest, default_scope_plural=facts.default_scope_plural, id=id
     )
-    conversions = stored_series_conversions(facts)
 
     @functools.cache
     def reads() -> dict[SeriesKey, SeriesRead]:
-        # Looked up only here, so a preview the mode omits reads no frame.
+        # Looked up and decoded only here, so a preview the mode omits reads no frame and
+        # decodes no conversion records.
         frame = servable_frame_location(locations, now=read_at)
         if frame is None:
             raise ObservationsUnavailable(
                 id=id, content_version=content_version, reason="holds no servable stored frame"
             )
+        conversions = stored_series_conversions(facts)
         try:
             with bounded_materialise_slot(
                 deps.materialise_semaphore, wait_seconds=deps.settings.materialise_wait_seconds

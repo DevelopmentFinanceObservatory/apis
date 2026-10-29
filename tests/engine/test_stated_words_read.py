@@ -13,6 +13,7 @@ from search.engine.binders import BindResult, GeminiBinder, JevBinder, StatedWor
 from search.engine.binders.jev_request import restated_request
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import LLMInfraError
+from search.engine.region.phase_rank_bind import _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.shape import SlotKeyDraft
 from search.engine.stated_words_read import (
@@ -22,7 +23,7 @@ from search.engine.stated_words_read import (
     build_stated_words_prompt,
     word_ratings,
 )
-from tests.engine._binders import FakeAsk
+from tests.engine._binders import FakeAsk, FixedBinder
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine.test_bind import _shape
 from tests.engine.test_qualifier_guard import _READER_PERSONS, _run, _served, _state
@@ -366,6 +367,27 @@ def test_binding_repair_reads_jev_s_rating(search_settings, rated, menu, records
     assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
     assert state.stated_word_ratings == (rated if menu else {})
     assert lost.reads == degraded
+
+
+def test_a_shape_a_later_phase_seats_after_the_menu_keeps_the_bind_s_rating(search_settings):
+    """A later phase seats a shape after the binder's menu, as a breakdown, a direction or a
+    stand-in does. Only the basis sibling the house policies moved to is off the binder's
+    menu (`StatedWordsRequest.on_bind_menu`), so Jev sends no request for this one and its
+    words stay unrated as the bind left them."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
+    )
+    state.capped_shapes = [replace(_READER_PERSONS, shape_id="menu")]
+    state.binder = FixedBinder(_UniversalBindOutput(chosen_shape_index=0))
+    assert asyncio.run(_phase_bind(state)) is None
+    state.binder = JevBinder(ask=(ask := FakeAsk({})))
+    state.capped_shapes.append(_READER_PERSONS)
+
+    _run(state)
+
+    assert ask.requests == []
+    assert state.stated_word_ratings == {}
 
 
 # The bind elects "Refugee population", and the read serves the total population alone.

@@ -227,24 +227,29 @@ class JevBinder:
         The request's answer replaces the bind's, and a word the request leaves unanswered
         is unrated. Any other word keeps the bind's rating, and a shape whose bindings
         override and restrict nothing, on an answer serving its label alone, sends no
-        request.
+        request. A shape off the bind's menu (`StatedWordsRequest.on_bind_menu`), on which the
+        bind rated no word, has every word of `request` rated in the request.
 
         Raises:
             JevFailure: The request gave no answer.
         """
         ratings = self.stated_words(request)
+        decision, index = request.decision, request.shape_index
+        if decision is None or index is None:
+            return ratings, None
         bar = settings().stated_word_bar
         overrides = implied_values(request.shape, request.bindings) != implied_values(
             request.shape, ()
         )
-        if overrides or serves_beyond_label(request.shape, request.served):
+        if not request.on_bind_menu:
+            again = request.words
+        elif overrides or serves_beyond_label(request.shape, request.served):
             again = tuple(word for word in request.words if word in ratings)
         elif restricting(request.bindings):
             again = tuple(word for word in request.words if ratings.get(word, bar) < bar)
         else:
             again = ()
-        index = request.shape_index
-        if not again or index is None:
+        if not again:
             return ratings, None
         state, questions = restated_request(
             request.variable,
@@ -256,7 +261,7 @@ class JevBinder:
         )
         answers, call = await self._request(state, questions)
         for k, word in enumerate(again):
-            del ratings[word]
+            ratings.pop(word, None)
             if (qid := unread_id(index, k)) in answers.nouls:
                 ratings[word] = float(answers.nouls[qid])
         return ratings, call

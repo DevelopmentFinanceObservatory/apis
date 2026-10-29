@@ -62,6 +62,7 @@ from search.engine.region.phase_rank_bind import (
     _unheld_bound_codes,
     _unrated_words,
     _unread_qualifier_phrases,
+    _with_named_values,
     _withheld_qualifiers,
     judge_value_requirements,
     operation_slot_phrases,
@@ -335,7 +336,10 @@ def _settle_bindings(
     `_settle_role_bindings`, which leaves an opened slot open. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
     shape admits, with the codes the model chose from a phrase's candidate menu, are
-    forced into the bindings (`_force_qualifier_bindings`).
+    forced into the bindings (`_force_qualifier_bindings`). A slot still left ``unbound``,
+    and not asked for in full, binds the one value of it the variable phrase names by its
+    label (`_with_named_values`), as text-recognised: "greenhouse gas emissions" binds
+    `emittedThing` to GreenhouseGas whatever the reply drafted for it.
     """
     bindings = _with_every_slot_drafted(
         without_dataset_drafts(state.bind_result.bindings), shape_draft
@@ -437,6 +441,8 @@ def _settle_bindings(
         state.text_recognized_properties = forced & {m.code_system for m in admitted_qualifiers}
         bindings = _settle_sector(state, bindings, admitted_qualifiers)
         _log_admitted_qualifiers(admitted_qualifiers)
+    bindings, named = _with_named_values(bindings, shape_draft, state.variable)
+    state.text_recognized_properties |= named
     state.bind_result.bindings = with_sampled_claims(bindings, claims)
 
     return unresolved, readings
@@ -1320,7 +1326,9 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
-    for the word or answering it both ways. The request names every member the read served
+    for the word or answering it both ways. The basis sibling the house policies moved the
+    election to (`ResolveState.basis_seat`) is off the binder's menu
+    (`StatedWordsRequest.on_bind_menu`), and the bind rated none of its words. The request names every member the read served
     (`served_member_names`), and the binder rates the words on them wherever they differ
     from the shape's label (`stated_words_read.serves_beyond_label`), so a word one of them
     does not state reads as narrower than the answer. Where a served member has no name,
@@ -1340,21 +1348,23 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
         if len(named) == len(names) and not _serves_the_labelled_series(answer, served_names)
         else ()
     )
+    index = next(
+        (
+            index
+            for index, menu_shape in enumerate(state.capped_shapes)
+            if menu_shape.shape_id == shape.shape_id
+        ),
+        None,
+    )
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
-        shape_index=next(
-            (
-                index
-                for index, menu_shape in enumerate(state.capped_shapes)
-                if menu_shape.shape_id == shape.shape_id
-            ),
-            None,
-        ),
+        shape_index=index,
         words=words,
         bindings=tuple(answer.bindings),
         decision=state.bind_decision,
         served=served,
+        on_bind_menu=index is None or index != state.basis_seat,
         part=state.variable_index,
         pool=state.pool,
     )

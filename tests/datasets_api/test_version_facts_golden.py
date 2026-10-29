@@ -6,9 +6,8 @@ published frames) and what the body readers rendered from each: the snapshot man
 output profile, conversion records and default scope a preview reads, the manifest a re-mint
 returns, and the document a Presentation frame carries. Each body is projected onto its facts
 as migration 0031 backfills them, and the read-time assembler must render the same JSON. The
-writers must store the same facts the body held, with the conversion records packed
-(`pack_series_conversions`), and the `immutable_body` each version write derives from its facts
-(`version_body`) must be the body without its `series_conversions`.
+writers must store the same facts the body held, and the `immutable_body` each version write
+derives from its facts (`version_body`) must be the body without its `series_conversions`.
 """
 
 from __future__ import annotations
@@ -39,12 +38,8 @@ from datasets_api.manifest import (
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest, WarningModel
 from datasets_api.render import DerivedVersion
 from datasets_api.versions import VersionRecord
-from materialise.series_conversion import (
-    decode_series_conversion_entries,
-    pack_series_conversions,
-)
+from materialise.series_conversion import encode_series_conversions
 from tests.datasets_api._legacy_conversion_trace import MIGRATED_CONVERSION
-from tests.materialise._legacy_series_conversions import legacy_series_conversion_entries
 
 from ._version_facts import facts_from_body, golden_cases
 from .test_manifest_assembly import (
@@ -122,7 +117,7 @@ def test_a_dataset_version_assembles_the_wire_its_body_rendered(name: str) -> No
         _as_json(profile.to_json() if profile is not None else None) == (expected["output_profile"])
     )
     assert (
-        _as_json(legacy_series_conversion_entries(stored_series_conversions(facts)))
+        _as_json(encode_series_conversions(stored_series_conversions(facts)))
         == expected["series_conversions"]
     )
     assert facts.default_scope_plural == expected["default_scope_plural"]
@@ -287,13 +282,6 @@ def test_a_writer_stores_the_facts_its_body_held(name: str) -> None:
     )
     expected = facts_from_body(_as_written(case["body"]))
     assert isinstance(expected, ManifestFacts)
-    if expected.series_conversions is not None:
-        expected = replace(
-            expected,
-            series_conversions=pack_series_conversions(
-                decode_series_conversion_entries(expected.series_conversions)
-            ),
-        )
     assert _as_json(asdict(record.facts)) == _as_json(asdict(expected))
 
 

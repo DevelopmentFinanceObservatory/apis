@@ -10,6 +10,7 @@ import pytest
 from dc_graph import Facet
 from search.eval.checks import CHECKS, MODAL_ONLY_CHECKS, Result, ScoreContext, Verdict, WireSchema
 from series_coverage.loader import CoverageArtifactError
+from series_coverage.schema import ABSENT_ENTITY
 from tests.conftest import base_response, minimal_spec
 from tests.eval.checks.conftest import (
     make_case,
@@ -700,11 +701,19 @@ _IDS_ROWS = (
 )
 
 
-def _ids_coverage(stamp: str = _COVERAGE_STAMP, rows=_IDS_ROWS, methods=None, period="P1Y"):
+def _ids_coverage(
+    stamp: str = _COVERAGE_STAMP,
+    rows=_IDS_ROWS,
+    methods=None,
+    period="P1Y",
+    provenance: str = _IDS,
+    roles: tuple[str, str | None] = ("creditor", "debtor"),
+):
     """Coverage for ids-debt-to-china-kenya's StatVar, holding China's claims on Kenya, 1983
     to 2024 (42 observations, as the dev coverage build records them), and France's, 2009 to
     2024, or the `rows` given, each facet of `methods` under its measurement method and
-    stating the observation period `period`."""
+    stating the observation period `period`, every facet from `provenance` and every StatVar
+    naming its donor and recipient roles `roles`."""
     from series_coverage.index import CoverageIndex
     from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
     from series_coverage.shared import CoverageSnapshot
@@ -713,10 +722,10 @@ def _ids_coverage(stamp: str = _COVERAGE_STAMP, rows=_IDS_ROWS, methods=None, pe
     table, horizon = coverage_table(list(rows))
     index = CoverageIndex(
         table,
-        {sv: RoleNames(donor="creditor", recipient="debtor") for sv, *_ in rows},
+        {sv: RoleNames(donor=roles[0], recipient=roles[1]) for sv, *_ in rows},
         {
             facet_id: FacetMetadata(
-                provenance_id=_IDS, measurement_method=method, observation_period=period
+                provenance_id=provenance, measurement_method=method, observation_period=period
             )
             for facet_id, method in (methods or {_IDS_FACET: None}).items()
         },
@@ -878,6 +887,83 @@ def test_materialisation_role_bearing_answer_from_another_coverage_stamp_is_unch
     resp = _role_response(42, (_KEN_DEBTOR, _CHN_CREDITOR))
     ev = check(resp, coverage=functools.partial(_ids_coverage, "newer-stamp"))
     assert (ev.verdict, reason_of(ev)) == (NA, "coverage_stamp_mismatch")
+
+
+_DAC1 = "provenance/OECDDAC1"
+_HEADLINE = "provenance/ONEOECDHeadlineODA"
+_ODA_NET = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal"
+_ODA_GE = "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal"
+# DAC1 publishes Japan's net ODA from 1960 and its grant equivalents from 2018, both to 2025.
+_HEADLINE_ROWS = (
+    (_ODA_NET, "dac1", "country/JPN", ABSENT_ENTITY, range(1960, 2026)),
+    (_ODA_GE, "dac1", "country/JPN", ABSENT_ENTITY, range(2018, 2026)),
+)
+
+
+def _headline_response(count: int, *, shape: dict | None = None) -> dict:
+    """dq-crs-003's answer, "aid from Japan": Japan's ODA on the OECD headline composite,
+    stating `count` observations over 1960 to 2025 and served by both DAC1 StatVars."""
+    resp = _role_response(
+        count,
+        (("country/JPN", "origin"),),
+        stat_vars=(_ODA_NET, _ODA_GE),
+        window={"start_year": 1960, "end_year": 2025},
+    )
+    spec = resp["parts"][0]["spec"]
+    spec["resolved"]["facets"] = {"provenance": {"basis": "bound", "ref": _HEADLINE}}
+    spec["definition"]["identity"] = {
+        "identity_version": "spec1",
+        "shape": shape
+        or {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal",
+        },
+        "slots": [
+            {"property": "dac1AidType", "binding": {"state": "value", "ref": "DAC1AidType1010"}},
+            {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+            {"property": "nettingBasis", "binding": {"state": "value", "ref": "Net"}},
+        ],
+        "entities": {"origin": ["country/JPN"]},
+        "requested_window": {"kind": "all"},
+        "facets": {"provenance": {"state": "value", "ref": _HEADLINE}},
+    }
+    return resp
+
+
+@pytest.mark.parametrize(
+    ("response", "verdict", "detail"),
+    [
+        pytest.param(_headline_response(66), PASS, "observed=66,", id="net-to-2017-ge-from-2018"),
+        pytest.param(
+            _headline_response(74), FAIL, "observed=66,", id="each-component-in-its-years-alone"
+        ),
+        pytest.param(
+            _headline_response(66, shape={"kind": "stat_var", "stat_var": _ODA_NET}),
+            NA,
+            "composite_not_servable",
+            id="components-not-derivable",
+        ),
+    ],
+)
+def test_materialisation_composite_counts_its_components(
+    response: dict, verdict: Verdict, detail: str
+):
+    """No series carries the headline composite's provenance. Its net component counts
+    Japan's 58 years to 2017 and its grant-equivalent component the 8 from 2018, each under
+    DAC1's provenance; the 8 net years from 2018 are no component's."""
+    coverage = functools.partial(
+        _ids_coverage,
+        rows=_HEADLINE_ROWS,
+        methods={"dac1": None},
+        provenance=_DAC1,
+        roles=("financingProvider", None),
+    )
+    ev = check(response, coverage=coverage)
+    assert ev.verdict == verdict, ev.detail
+    assert detail in ev.detail
 
 
 def _failing_coverage():

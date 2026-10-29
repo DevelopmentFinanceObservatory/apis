@@ -849,6 +849,14 @@ class ResolveState:
     ranked_shapes: list[ShapeDraft] = field(default_factory=list)
     # The seated bind menu, at most `bind_top_k` shapes; `chosen_shape_index` indexes it.
     capped_shapes: list[ShapeDraft] = field(default_factory=list)
+    # The basis siblings of the seated families (`ShapeDraft.basis_of`), which the binder
+    # does not read and which join only the house policies' pool. The bind clears them
+    # (`phase_rank_bind._phase_bind`).
+    basis_siblings: list[ShapeDraft] = field(default_factory=list)
+    # The `capped_shapes` index of the basis sibling the house policies moved the election
+    # to, seated after the binder's menu (`phase_rank_bind._answer_on_basis_sibling`), None
+    # when they moved to none.
+    basis_seat: int | None = None
     # Every reading of the part, admitted or refused, with the admissible ones the bind
     # menu shows and the ones refused only on a pinned part (`region.admissibility`).
     interpretations: InterpretationSet = field(default_factory=InterpretationSet)
