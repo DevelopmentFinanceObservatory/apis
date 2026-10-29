@@ -38,7 +38,7 @@ from datasets_api.output_digest import output_digest
 from datasets_api.recipe_store import ReplayedFrame
 from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
-from dfo_analysis_engine.recipe import pair
+from dfo_analysis_engine.recipe import derived_nodes, pair
 from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode
 
 from ._analysis_doubles import (
@@ -569,6 +569,107 @@ def test_rolling_steps_over_different_populations_refuse_before_any_verb() -> No
     with pytest.raises(AnalysisRefused) as raised:
         _run(stores, tree)
     assert raised.value.code is RefusalCode.ROLLING_POPULATIONS_DIFFER
+
+
+_LATEST_YEAR = {"anchor": "latest", "offset": 0}
+
+
+def _rolling_rank(root: dict, by: str) -> dict:
+    return step("rank", root, rank_by=[by], window_start=_LATEST_YEAR, window_end=_LATEST_YEAR)
+
+
+def _rolling_pair(stores: Stores):
+    """The aid data, latest 2022, and the population data, latest 2021, each ranked over its own
+    latest year and stored, and a join of the two stored frames."""
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): aid_frame(),
+            (POPULATION, POPULATION_V1): population_frame(years=("2021",)),
+        },
+    )
+    aid = _run(stores, _rolling_rank(dataset(AID, AID_V1), "destination"), root_source=roots)
+    people = _run(
+        stores, _rolling_rank(dataset(POPULATION, POPULATION_V1), "place"), root_source=roots
+    )
+    joined = step(
+        "join",
+        aid.evaluation.ref.model_dump(),
+        people.evaluation.ref.model_dump(),
+        on={"destination": "place"},
+    )
+    return roots, (aid, people), joined
+
+
+def test_derived_rolling_inputs_of_different_latest_years_follow_the_tree_under_rolling_tree() -> (
+    None
+):
+    stores = Stores()
+    roots, (aid, people), joined = _rolling_pair(stores)
+
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": joined, "rolling": "tree"}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+
+    ref = result.evaluation.ref
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    assert recipe is not None
+    ranks = [
+        node["op_spec"]["parameters"]
+        for node in derived_nodes(recipe.body["tree"])
+        if node["op_spec"]["verb"] == "rank"
+    ]
+    own = [r.evaluation.tree["op_spec"]["parameters"]["window_end"] for r in (aid, people)]
+    assert own == ["2022", "2021"]
+    assert [(rank["window_start"], rank["window_end"]) for rank in ranks] == [("2021", "2021")] * 2
+    # The tree pairs the two sides by recipient, so its one population is that pairing.
+    assert [rank["rolling"]["population"] for rank in ranks] == [
+        [
+            {
+                "pair": [
+                    [{"spec_id": AID, "bindings": {}}],
+                    [{"spec_id": POPULATION, "bindings": {}}],
+                ],
+                "keys": {"financingRecipient": "observationAbout"},
+            }
+        ]
+    ] * 2
+    assert result.resolved_periods == (
+        {"anchor": "latest", "offset": 0, "rule": "half1", "period": "2021"},
+    )
+
+
+def test_derived_rolling_inputs_of_different_populations_refuse_without_rolling_tree() -> None:
+    stores = Stores()
+    roots, _, joined = _rolling_pair(stores)
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, joined, root_source=roots)
+    assert raised.value.code is RefusalCode.ROLLING_POPULATIONS_DIFFER
+
+
+def test_rolling_tree_leaves_a_tree_without_rolling_as_it_is() -> None:
+    stores = Stores()
+    summed = _run(
+        stores, step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    )
+    tree = step("rank", summed.evaluation.ref.model_dump(), rank_by=["destination"], limit=1)
+    roots = source(stores)
+
+    def prepared(**fields: object):
+        request = AnalysisRequest.model_validate({"tree": tree, **fields})
+        return prepare_analysis(request, source=roots)
+
+    plain, flagged = prepared(), prepared(rolling="tree")
+    assert flagged.working == plain.working
+    assert flagged.key == plain.key
+    first = run_prepared(plain, source=roots, stores=stores.analysis())
+    second = run_prepared(flagged, source=roots, stores=stores.analysis())
+    assert second.body() == first.body()
 
 
 def test_an_input_holding_several_readings_refuses_naming_the_call_that_takes_one() -> None:

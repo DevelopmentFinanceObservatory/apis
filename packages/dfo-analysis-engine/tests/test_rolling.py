@@ -326,13 +326,21 @@ _AID_GNI = [_root(_AID), _root(_GNI)]
 _GNI_COLUMNS = ["stat_var", "observationAbout", "time_period", "value", "unit"]
 
 
-def test_a_keyed_pairing_whose_sides_both_count_gives_one_pairing_population() -> None:
+@pytest.mark.parametrize(
+    "slots_named", [True, False], ids=["slots-named", "slots-left-out-as-the-runner-writes"]
+)
+def test_a_keyed_pairing_whose_sides_both_count_gives_one_pairing_population(
+    slots_named: bool,
+) -> None:
     tree = _quotient(
         numerator_by=["recipient"],
         denominator_by={"recipient": "observationAbout"},
         numerator_entity={"reporter": "dcid:USA"},
     )
+    if not slots_named:
+        del tree["op_spec"]["parameters"]["denominator_frame_ref"]
 
+    assert [node["root"] for node in rolling_roots(_rolled(tree))] == [0, 1]
     assert anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _GNI_COLUMNS]) == [
         {
             "pair": [
