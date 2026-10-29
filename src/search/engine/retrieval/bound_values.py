@@ -75,6 +75,7 @@ from code_index.members import (
     shared_pins,
 )
 from code_index.query import IndexFamily, row_five_tuple
+from code_index.scope_conventions import NETTING_BASIS_SLOT, BasisMeasure
 from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import (
     Bound,
@@ -441,6 +442,23 @@ def _most_named(
     return [partition for partition, score in zip(partitions, scores, strict=True) if score == best]
 
 
+def _basis_values(
+    basis: BasisMeasure, axes: Sequence[MeasureAxis]
+) -> tuple[tuple[MeasureAxis, str], ...]:
+    """The values `basis` binds on the free axes among `axes`: its population type, its flow
+    type and its netting basis where it binds one."""
+    bound: dict[str, str | None] = {
+        axis: getattr(basis, field, None) for axis, field in _MEASURE_AXIS_SHAPE_FIELDS.items()
+    }
+    bound[basis.flow_type[0]] = basis.flow_type[1]
+    bound[NETTING_BASIS_SLOT] = basis.netting_basis
+    return tuple(
+        (axis, value)
+        for axis in axes
+        if axis.role == "free" and (value := bound.get(axis.axis)) is not None
+    )
+
+
 def _rows_satisfy_all(
     rows: Iterable[StatVarRow], checks: Sequence[tuple[MeasureAxis, str]]
 ) -> bool:
@@ -632,6 +650,7 @@ def collapse_measure_families(
     named: Sequence[QualifierMatch] = (),
     *,
     reading: DefaultReading | None = None,
+    basis: BasisMeasure | None = None,
 ) -> tuple[ShapeDraft, ...]:
     """Collapse indexed shape families to the partition best matching the query, and apply
     the default reading to shapes the index does not carry.
@@ -647,6 +666,10 @@ def collapse_measure_families(
     to its partitions that carry the most of them (`_most_named`), read from index rows,
     and the declared default elects among those. A group none of whose partitions
     carries a named value, and a query naming none, elects by the declared default.
+    `basis`, the basis the part's stated or carried scope entry names
+    (`scope.basis.entry_measure`), names its values on the free axes as the query's words
+    would (`_basis_values`), in place of the query's own on those axes, so a carried
+    "commitments" elects the FinancialObligation partition as the stated word does.
 
     Skip the partition election when there is no shape axis or a constraint
     basis axis; a constraint value never splits a shape, so grouping could merge two
@@ -676,6 +699,10 @@ def collapse_measure_families(
         groups[_family_key(shape, basis_shape_axes, index)].append(i)
 
     checks = _named_free_values(named, axes)
+    if basis is not None:
+        stated = _basis_values(basis, axes)
+        held = {axis.axis for axis, _value in stated}
+        checks = (*(c for c in checks if c[0].axis not in held), *stated)
 
     for indices in groups.values():
         partitions = tuple(

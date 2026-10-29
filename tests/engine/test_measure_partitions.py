@@ -11,6 +11,7 @@ from dataclasses import replace
 import pytest
 
 from code_index import CodeIndex, IndexStamp, StatVarRow
+from code_index.scope_conventions import BASIS_MEASURES
 from code_index.types import MeasureAxis, MeasurePartitionLabel
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.retrieval.bound_values import (
@@ -725,6 +726,30 @@ def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, n
         index,
         _MEASURE_AXES,
         named=tuple(_measure_match(*match) for match in named),
+    )
+
+    assert collapsed == (shapes[elected],)
+
+
+@pytest.mark.parametrize(
+    ("group", "named", "elected"),
+    [
+        # A follow-up asking for "ODA" with commitments carried names no measure value.
+        (("t1", "t3"), (), "t3"),
+        # The carried basis and the words' price basis steer together.
+        (("t1", "t2", "t3", "t4"), (_CONSTANT,), "t4"),
+    ],
+)
+def test_a_stated_or_carried_basis_steers_the_collapse_as_its_words_would(group, named, elected):
+    shapes = _worked_example_shapes()
+    commitments = next(row for row in BASIS_MEASURES if row.basis == "commitments")
+
+    collapsed = collapse_measure_families(
+        [shapes[key] for key in group],
+        _index(_WORKED_EXAMPLE),
+        _MEASURE_AXES,
+        named=tuple(_measure_match(*match) for match in named),
+        basis=commitments,
     )
 
     assert collapsed == (shapes[elected],)

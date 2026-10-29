@@ -762,6 +762,100 @@ def test_a_carried_basis_wins_over_the_convention():
     assert _basis_choice(spec) == ("measure_basis:gross", "carried", None)
 
 
+# The broadest CRS and DAC1 commitment rows the fixture index holds, which recall adds for a
+# carried commitments entry (`clients.graph.with_entry_basis_siblings`).
+_CRS_COMMITMENTS = (
+    "Amount_FinancialObligation_Commitment_CRSTypeOfFlow10_CRSTypeOfFinance110"
+    "_CRSPurposeCode11110_Nominal"
+)
+_DAC1_COMMITMENTS = "Amount_FinancialObligation_Commitment_DAC1AidType1010_Nominal"
+
+
+@pytest.mark.parametrize(
+    "recalled",
+    [_DAC2A_MEMBERS, (*_DAC2A_MEMBERS, _DAC1_COMMITMENTS)],
+    ids=["dac2a", "dac2a-and-dac1-commitments"],
+)
+def test_a_carried_basis_no_recalled_family_serves_brings_in_the_one_that_does(
+    recalled: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+):
+    """A follow-up asking for "aid" with commitments carried recalls DAC2a's receipts,
+    which publish no commitments, and may recall DAC1's donor totals of them, which name
+    no recipient. The CRS family measuring the carried basis joins the part's hits, and the
+    house policies elect the CRS commitments the entry asks for, so the carried entry
+    applies."""
+    patch_coverage(
+        monkeypatch,
+        [
+            *((dcid, "dac2a", _USA, _KEN, _YEARS) for dcid in _DAC2A_MEMBERS),
+            (_CRS_COMMITMENTS, "crs", _USA, _KEN, _YEARS),
+            (_DAC1_COMMITMENTS, "dac1", _USA, ABSENT_ENTITY, _YEARS),
+        ],
+        role_names={
+            **dict.fromkeys(
+                (*_DAC2A_MEMBERS, _CRS_COMMITMENTS),
+                RoleNames(donor="financingProvider", recipient="financingRecipient"),
+            ),
+            _DAC1_COMMITMENTS: RoleNames(donor="financingProvider", recipient=None),
+        },
+        facet_metadata={
+            "dac1": FacetMetadata(provenance_id=_DAC1, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+            "crs": FacetMetadata(provenance_id=_CRS, unit="USD"),
+        },
+    )
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            _KEN: {"label": "Kenya", "type": "Country"},
+            **{
+                dcid: _member_node(dcid)
+                for dcid in (*_DAC2A_MEMBERS, _CRS_COMMITMENTS, _DAC1_COMMITMENTS)
+            },
+        },
+        detect={"aid": {"svs": list(recalled), "cosine_scores": [0.9] * len(recalled)}},
+        resolve={"United States": _USA, "Kenya": _KEN},
+    )
+    carried = Entry(
+        axis="measure_basis",
+        option_id="measure_basis:commitments",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="earlier:measure_basis"),
+    )
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="aid",
+                        entities=[
+                            ParsedEntity(text="United States", role_text="from"),
+                            ParsedEntity(text="Kenya", role_text="to"),
+                        ],
+                        time_text="2019",
+                    )
+                ],
+                carried_entries=[carried],
+            )
+        ),
+        graph=graph,
+        llm=_PickingLLM(0),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+
+    identity = part.spec.definition.identity
+    assert isinstance(identity.shape, IdentityShapeSchema)
+    assert identity.shape.population_type == "FinancialObligation"
+    assert _served_basis(part.spec) == _Basis("amount", None, _CRS)
+    assert _basis_choice(part.spec) == ("measure_basis:commitments", "carried", None)
+    scope = part.spec.resolved.scope_choices
+    assert scope is not None
+    assert scope.dropped_entries == []
+
+
 def test_the_options_are_the_bases_the_parts_dataset_publishes():
     scope = _ask("aid", time="2019", recipient=True).resolved.scope_choices
     assert scope is not None

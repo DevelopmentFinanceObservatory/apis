@@ -13,6 +13,7 @@ from typing import Literal, cast
 
 import pytest
 
+from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
 from origin_catalogue import BASE, UN_SYSTEM, Catalogue, DatasetRef, ProvenanceRow, SourceRef
 from origin_catalogue.context import current_source_scope
@@ -20,6 +21,8 @@ from search.engine.clients.graph import (
     DetectedSV,
     EngineGraphClient,
     Facet,
+    family_ref,
+    with_entry_basis_siblings,
     with_rival_families,
 )
 from search.engine.conjoin import _build_part, _unbound_terms
@@ -451,6 +454,76 @@ def test_recall_under_a_scope_its_recalled_family_meets_is_the_unscoped_recall(
     scoped = with_rival_families([hit], catalogue=scope, index=index)
 
     assert scoped == plain
+
+
+_DAC1 = "provenance/OECDDAC1"
+
+
+def _family_hit(population_type: str, provenance: str) -> DetectedSV:
+    """A hit on the `provenance` family of the nominal `population_type` amount five-tuple."""
+    family = next(
+        family
+        for families in get_index().families_by_five_tuple.values()
+        for family in families
+        if family.five_tuple.population_type == population_type
+        and family.five_tuple.measured_property == "amount"
+        and family.five_tuple.measurement_denominator is None
+        and provenance in family.datasets
+    )
+    return DetectedSV(
+        dcid=family.rows[0].dcid, score=0.9, type_of="StatisticalVariable", sentence=None
+    )
+
+
+@pytest.mark.parametrize(
+    ("hits", "basis", "added"),
+    [
+        # DAC2a publishes no commitments, so they come from the tables that do.
+        (
+            (("FinancialFlow", _DAC2A),),
+            "commitments",
+            {("FinancialObligation", "amount", _CRS), ("FinancialObligation", "amount", _DAC1)},
+        ),
+        (
+            (("FinancialFlow", _CRS),),
+            "grant_equivalent",
+            {
+                ("FinancialFlow", "grantEquivalent", _CRS),
+                ("FinancialFlow", "grantEquivalent", _DAC1),
+            },
+        ),
+        # Net and gross differ from the hit only on its netting slot.
+        ((("FinancialFlow", _DAC2A),), "net", set()),
+        ((("FinancialFlow", _DAC2A),), "gross", set()),
+        # A table whose family recall found adds none; the other tables still add theirs.
+        (
+            (("FinancialFlow", _DAC2A), ("FinancialObligation", _CRS)),
+            "commitments",
+            {("FinancialObligation", "amount", _DAC1)},
+        ),
+    ],
+    ids=["commitments-from-dac2a", "grant-equivalents", "net", "gross", "already-recalled"],
+)
+def test_a_stated_or_carried_basis_adds_the_families_measuring_it(hits, basis, added):
+    """The part's hits gain a row of each family measuring the basis its entry names that
+    a convention table publishes, marked as a basis sibling of the recalled family."""
+    index = get_index()
+    recalled = [_family_hit(population_type, provenance) for population_type, provenance in hits]
+    measure = next(row for row in BASIS_MEASURES if row.basis == basis)
+
+    out = with_entry_basis_siblings(
+        recalled, measure=measure, catalogue=FakeCatalogue(), index=index
+    )
+
+    rows = [c for c in out if c not in recalled]
+    families = [index.family_by_dcid[c.dcid] for c in rows]
+    assert {
+        (f.five_tuple.population_type, f.five_tuple.measured_property, dataset)
+        for f in families
+        for dataset in f.datasets
+    } == added
+    sources = {family_ref(index.family_by_dcid[hit.dcid]) for hit in recalled}
+    assert all(c.rival and c.basis_of <= sources and c.score == 0.9 for c in rows)
 
 
 _EMPTY = "dc/base/EmptySource"

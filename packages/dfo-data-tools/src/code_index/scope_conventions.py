@@ -65,12 +65,16 @@ equivalents as its headline: every year from 2018, every year before it, years o
 sides, or any window."""
 
 
+NETTING_BASIS_SLOT = "nettingBasis"
+"""The slot whose value `BasisMeasure.netting_basis` names."""
+
+
 @dataclass(frozen=True)
 class BasisMeasure:
     """What an identity counted on `basis` binds.
 
     `population_type` and `measured_property` are its shape's, and `netting_basis` the
-    value its `nettingBasis` slot binds, None for a measure that carries no netting.
+    value its `NETTING_BASIS_SLOT` slot binds, None for a measure that carries no netting.
     `flow_type` is the constraint property and value that say a flow is disbursed or
     committed. `oda_flows` are the CRS types of flow an ODA flow binding (`ODA_FLOW`) reads as
     on this basis. `words` name the basis for a reader."""
