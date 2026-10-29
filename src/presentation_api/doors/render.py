@@ -4,9 +4,10 @@
 revision answers, built from the revision's stored intent on the frame the body names, through
 `assembler.pipeline.render_component`. Its envelope's `provenance.inputs` names that frame and
 `provenance.refreshed_from` names the revision. `stored_intent` is the revision's own, so its
-`frame_ref` names the frame the revision was stored on, and `retention` is the named frame's.
-No revision is appended and nothing is pinned, so a live render leaves the frame it draws in
-the working tier.
+`frame_ref` names the frame the revision was stored on, and `retention` is the named frame's
+(`presentation_api.retention.stated_retention`), `null` when it cannot be read, so a render
+that drew answers 200 whatever the retention read meets. No revision is appended and
+nothing is pinned, so a live render leaves the frame it draws in the working tier.
 
 `GET .../render/data` serves the rows behind that rendering as the component data route serves
 a stored revision's, through `export_component_data(target_frame=...)`. It pins nothing, and
@@ -87,7 +88,7 @@ from presentation_api.path_params import (
     require_spec_id,
 )
 from presentation_api.reply import serialize_read_reply
-from presentation_api.retention import frame_retention
+from presentation_api.retention import stated_retention
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
@@ -365,7 +366,7 @@ def build_render_router(
                     release_registry=deps.release_registry,
                     vocabulary_source=deps.vocabulary_source,
                 )
-                retention = frame_retention(target, snapshot_reader=deps.snapshot_reader)
+            retention = stated_retention(target, snapshot_reader=deps.snapshot_reader)
             return JSONResponse(
                 {
                     **serialize_read_reply(reply, stored_intent=record.stored_intent),

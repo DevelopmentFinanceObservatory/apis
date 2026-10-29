@@ -1,8 +1,8 @@
 """A derived frame's recipe: the tree of op-specs that computed it, down to the
 root datasets, and the two hashes apis indexes it by.
 
-This module holds the part of a recipe that needs no store: the error types, the
-normal form and the two hashes. The walk of the materialisation store from a
+This module holds the part of a recipe that needs no store: the normal form and
+the two hashes. The walk of the materialisation store from a
 derived frame's pair, which builds the recipe, is outside this package. Each
 derived frame's stored trace carries the canonical op-spec that produced it
 (`execution_record.content`, the RFC 8785 text `identity.canonicalize_op_spec`
@@ -57,18 +57,17 @@ each of them, so its key is not the key of a replay under any single build.
 the rolling calls were checked against:
 the latest period, the rule that chose it, and each series that holds no value
 at it as `{"root", "coordinates"}`, `root` indexing the populations the rolling
-op-specs carry. `recipe_anchor` finds the record by recomputing its key from
-those populations and the root frames the tree's rolling periods are taken over
-(`dfo_analysis_engine.rolling.rolling_roots`), which are the roots under its rolling op-specs. A
-dataset joined beside a rolling step is no part of the key.
+op-specs carry. The record is filed under the key
+`dfo_analysis_engine.rolling.anchor_key` gives for those populations and the
+root frames the tree's rolling periods are taken over
+(`dfo_analysis_engine.rolling.rolling_roots`), which are the roots under its
+rolling op-specs. A dataset joined beside a rolling step is no part of the key.
 
 A frame can be part of a wider plan than its own tree: its rolling op-specs then
 carry populations naming a dataset none of its rolling periods reads, and the
 period was taken over that dataset too. Such a frame has no anchor of its own.
-`build_recipe` raises `RecipeAnchorError` with reason
-`populations_outside_reach` and the rest of the recipe on the error, so a caller
-can replay it over the populations of its own tree
-(`dfo_analysis_engine.rolling.anchor_populations`), which gives a frame with an anchor.
+A replay over the populations of its own tree
+(`dfo_analysis_engine.rolling.anchor_populations`) gives a frame with an anchor.
 """
 
 from __future__ import annotations
@@ -83,11 +82,6 @@ from dfo_analysis_engine.frame_ref import FrameRef
 
 __all__ = [
     "RECIPE_SCHEMA_VERSION",
-    "RecipeAncestorMissingError",
-    "RecipeAnchorError",
-    "RecipeError",
-    "RecipeRootUnrecoverableError",
-    "RecipeTraceUnusableError",
     "derived_nodes",
     "input_slots",
     "normal_form",
@@ -95,6 +89,7 @@ __all__ = [
     "pair",
     "replay_key",
     "rolling_literals",
+    "rolling_places",
     "root_identity",
 ]
 
@@ -110,72 +105,6 @@ _PRIMARY_SLOT = "frame_ref"
 _SLOT_SUFFIX = "_frame_ref"
 _ROLLING = "rolling"
 _ANCHOR_ROOTS = "anchor_roots"
-
-
-class RecipeError(Exception):
-    """No recipe can be built. `ref` is the frame the walk stopped at."""
-
-    def __init__(self, ref: FrameRef, message: str) -> None:
-        self.ref = ref
-        super().__init__(message)
-
-
-class RecipeAncestorMissingError(RecipeError):
-    """The store holds no trace for the derived frame `ref`, which is the frame the
-    recipe was asked for or one of its ancestors."""
-
-    def __init__(self, ref: FrameRef) -> None:
-        super().__init__(
-            ref, f"no trace is held for the derived frame {ref.spec_id}, {ref.content_version}"
-        )
-
-
-class RecipeTraceUnusableError(RecipeError):
-    """The store holds something under the derived frame `ref` that no op-spec can
-    be read from: the object fails a store check, its trace carries no canonical
-    op-spec, or the op-spec does not hash to `ref.spec_id`."""
-
-    def __init__(self, ref: FrameRef, *, reason: str) -> None:
-        self.reason = reason
-        super().__init__(
-            ref,
-            f"the trace of the derived frame {ref.spec_id}, {ref.content_version} "
-            f"is unusable: {reason}",
-        )
-
-
-class RecipeRootUnrecoverableError(RecipeError):
-    """The root frame `ref` has no mint record and none could be rebuilt. `reason` is
-    `no_mint_record` when no recovery routine was given, else the routine's own."""
-
-    def __init__(self, ref: FrameRef, *, reason: str) -> None:
-        self.reason = reason
-        super().__init__(
-            ref,
-            f"no mint record for the root frame {ref.spec_id}, {ref.content_version}: {reason}",
-        )
-
-
-class RecipeAnchorError(RecipeError):
-    """The tree of the derived frame `ref` holds a rolling op-spec and its anchor
-    cannot be stated. `reason` is `populations_differ` or `rules_differ` when two
-    rolling op-specs of the tree disagree, `populations_outside_reach` when their
-    populations name a dataset no rolling period of the tree reads,
-    `no_anchor_record` when the store holds no record under the key the tree
-    gives, `anchor_record_unreadable` when it holds one that fails its check, and
-    `period_differs` when a rolling literal is not the record's period at its
-    offset.
-
-    `recipe` is set by `build_recipe` for `populations_outside_reach` alone: the
-    recipe it would have returned, with a null `anchor`."""
-
-    def __init__(self, ref: FrameRef, *, reason: str) -> None:
-        self.reason = reason
-        self.recipe: dict[str, Any] | None = None
-        super().__init__(
-            ref,
-            f"no anchor for the rolling recipe of {ref.spec_id}, {ref.content_version}: {reason}",
-        )
 
 
 def _digest(preimage: Mapping[str, Any], *, prefix: str) -> str:
@@ -304,17 +233,28 @@ def replay_key(
     )
 
 
-def rolling_literals(parameters: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
-    """Each literal period of `parameters` a rolling reference governs, with the
-    reference: a window bound named in `rolling`, and a rolling predicate's `value`."""
+def rolling_places[P: Mapping[str, Any]](
+    parameters: P,
+) -> Iterator[tuple[P, str, Mapping[str, Any]]]:
+    """Where each literal period of `parameters` a rolling reference governs sits,
+    as the object holding it, its key there, and the reference: a window bound
+    named in `rolling`, held by `parameters`, and a rolling predicate's `value`,
+    held by the predicate, which is an object of the same kind as `parameters`."""
     overlay = parameters.get(_ROLLING)
     if isinstance(overlay, Mapping):
         for name, ref in overlay.items():
             if _is_rolling_ref(ref):
-                yield parameters[name], ref
+                yield parameters, name, ref
     for predicate in parameters.get("predicates", ()):
         if _is_rolling_ref(predicate.get(_ROLLING)):
-            yield predicate["value"], predicate[_ROLLING]
+            yield predicate, "value", predicate[_ROLLING]
+
+
+def rolling_literals(parameters: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
+    """Each literal period of `parameters` a rolling reference governs, with the
+    reference (`rolling_places`)."""
+    for holder, key, ref in rolling_places(parameters):
+        yield holder[key], ref
 
 
 def derived_nodes(tree: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:

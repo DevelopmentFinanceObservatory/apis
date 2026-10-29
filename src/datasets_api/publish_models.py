@@ -109,8 +109,8 @@ CATALOGUE_UNIT_BASE_YEARS = range(1900, 2101)
 MAX_ROWS = 1_000_000
 MAX_RECIPE_BYTES = 1_000_000
 MAX_RECIPE_LEFT_OUT_SERIES = 2_000
-"""The most dropped series a recipe lists, which keeps a recipe well inside
-`MAX_RECIPE_BYTES`."""
+"""The most dropped series a recipe lists. The recipe's byte bound, `MAX_RECIPE_BYTES`, cuts
+the list shorter when this many series do not fit (`analysis.left_out_of`)."""
 MAX_ECHO_CHARS = 80
 MAX_STEPS = MAX_COMPUTED_STEPS
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -14,7 +15,8 @@ import pytest
 import rfc8785
 from dfo_frame_grammar.grammar import UnitRequest
 
-from datasets_api.analysis import RootRendering, RootRenderingUnreadable
+from datasets_api import analysis_roots
+from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
 from datasets_api.analysis_roots import (
     FLOW_ENRICHMENT_COLUMNS,
     LiveRootSource,
@@ -24,6 +26,8 @@ from datasets_api.analysis_roots import (
     mint_options,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.doors.refresh import RefreshRebuildFailed
+from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 
@@ -31,6 +35,7 @@ from ._deps_doubles import Unwired
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
 from .test_definition_door_groupby_collapse import _hierarchical_code_index
+from .test_meta_doors import _operation
 from .test_refresh_door import (
     _GROUPBY,
     _MEMBER_A_ROW,
@@ -316,3 +321,30 @@ def test_a_root_under_latest_follows_new_data_in_the_rendering_it_records(
     else:
         assert moved["content_version"] == new_head
         assert "groupby" not in moved["rendering"]
+
+
+@pytest.mark.parametrize(
+    ("state", "refused"),
+    [
+        pytest.param("pending", AnalysisPending, id="pending-waits"),
+        pytest.param("failed", RefreshRebuildFailed, id="failed-refuses"),
+    ],
+)
+def test_a_root_whose_rebuild_was_queued_waits_unless_the_rebuild_failed(
+    monkeypatch: pytest.MonkeyPatch, state: str, refused: type[Exception]
+) -> None:
+    """A rebuild that failed for good refuses as the refresh door refuses it, so a caller that
+    follows `Retry-After` is not told to wait for it forever."""
+    operation = _operation(state=state, refusal_code="over_ceiling" if state == "failed" else None)
+
+    def submitted(**_: object) -> None:
+        raise OperationSubmitted(operation=operation)
+
+    monkeypatch.setattr(
+        analysis_roots, "served_spec", lambda **_: SimpleNamespace(spec_id=_SPEC, identity={})
+    )
+    monkeypatch.setattr(analysis_roots, "serve_spec", submitted)
+    roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
+
+    with pytest.raises(refused):
+        roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)

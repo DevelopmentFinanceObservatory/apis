@@ -31,9 +31,12 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_rows,
 )
+from dataset_store.snapshot import Revocation
 from datasets_api.doors.refresh import StoredRendering
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeRecord
+from datasets_api.render import CANONICAL_FRAME_RENDERING
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
 from presentation_api.refusals import EXPIRED_FRAME_FIX
@@ -116,7 +119,8 @@ class _Recipes:
 def _record(
     snapshots: FakeSnapshotReader, frame: FrameRef, *, groupby: dict[str, object] | None = None
 ) -> None:
-    """Record `frame` as a plain version, or as a collapse with `groupby`."""
+    """Record `frame` as a plain version, or as a collapse with `groupby`, linking its
+    canonical frame and one Parquet file."""
     key = (frame.spec_id, frame.content_version)
     snapshots.versions[key] = dataclasses.replace(
         _version(content_version=frame.content_version),
@@ -126,7 +130,10 @@ def _record(
     rendering: dict[str, object] = {"format": "parquet", "bundle": False}
     if groupby is not None:
         rendering["groupby"] = groupby
-    snapshots.locations[key] = [_location(rendering=rendering)]
+    snapshots.locations[key] = [
+        _location(digest="sha256:frame", rendering=CANONICAL_FRAME_RENDERING),
+        _location(rendering=rendering),
+    ]
 
 
 @pytest.fixture
@@ -332,6 +339,48 @@ def test_a_card_create_and_read_state_its_frames_retention_counted_from_storage(
     assert created["retention"] == read.json()["retention"] == retention
     assert note_created["retention"] is None
     assert note_read.json()["retention"] is None
+
+
+def _store_outage(snapshots: FakeSnapshotReader, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(*_args: object, **_kwargs: object):
+        raise DatasetsStoreUnavailable("datasets store unavailable", sqlstate="08006")
+
+    monkeypatch.setattr(snapshots, "read_version_state", unavailable)
+
+
+def _revoked(snapshots: FakeSnapshotReader, monkeypatch: pytest.MonkeyPatch) -> None:
+    for frame in (_STORED, _TARGET):
+        snapshots.revocations[(frame.spec_id, frame.content_version)] = Revocation(
+            reason="takedown", revoked_at=datetime(2026, 6, 2, tzinfo=UTC)
+        )
+
+
+def _unlinked(snapshots: FakeSnapshotReader, monkeypatch: pytest.MonkeyPatch) -> None:
+    for frame in (_STORED, _TARGET):
+        snapshots.locations[(frame.spec_id, frame.content_version)] = []
+
+
+@pytest.mark.parametrize("unreadable", [_store_outage, _revoked, _unlinked])
+def test_a_create_read_and_render_state_no_retention_when_it_cannot_be_read(
+    client: TestClient,
+    snapshots: FakeSnapshotReader,
+    revision_store: FakeRevisionStore,
+    monkeypatch: pytest.MonkeyPatch,
+    unreadable,
+):
+    """Retention is advisory: a stored card is answered, and a stored and charged create is
+    answered 201, so a retry never makes a second card."""
+    unreadable(snapshots, monkeypatch)
+    # The render accepts the target from its version record, which the outage leaves readable.
+    created = client.post("/api/presentation/components", json={"intent": _intent("line_chart")})
+    component_id = created.json()["component_id"]
+    read = client.get(f"/api/presentation/components/{component_id}")
+    rendered = _render(client, component_id, _TARGET)
+
+    assert (created.status_code, created.json()["retention"]) == (201, None)
+    assert (read.status_code, read.json()["retention"]) == (200, None)
+    assert (rendered.status_code, rendered.json()["retention"]) == (200, None)
+    assert list(revision_store._revisions) == [component_id]
 
 
 # -- the answer -------------------------------------------------------------

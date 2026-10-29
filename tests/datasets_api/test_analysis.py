@@ -4,6 +4,7 @@ the bounds."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from datetime import timedelta
@@ -13,18 +14,21 @@ import jsonschema
 import pytest
 import rfc8785
 
-from datasets_api import analysis
+from datasets_api import analysis, publish_models
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisPending,
     AnalysisRequest,
     AnalysisStoreDiverges,
     AnalysisTooLarge,
+    AnchorRequest,
+    DatasetRoot,
     RootRecipeMissing,
     SeveralMembers,
     column_for,
     prepare_analysis,
     run_analysis,
+    run_anchor,
     run_prepared,
     stored_answer,
 )
@@ -581,3 +585,169 @@ def test_a_role_two_columns_fill_refuses_role_ambiguous() -> None:
     with pytest.raises(AnalysisRefused) as raised:
         column_for("destination", ["financingRecipient", "recipient"], parameter="group_by")
     assert raised.value.code is RefusalCode.ROLE_AMBIGUOUS
+
+
+def test_a_tree_past_its_node_bound_refuses_at_the_first_node_over_it() -> None:
+    """Nodes are counted as the plan walks, so the refusal names the first node past the bound
+    and no derived root after it has its recipe read."""
+    stores = Stores()
+    summed = step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    derived = _run(stores, summed).evaluation.ref.model_dump()
+    roots = source(stores)
+    read: list[dict] = []
+    held = roots.recipe
+
+    def recipe(**pair: str):
+        read.append(pair)
+        return held(**pair)
+
+    roots.recipe = recipe  # ty: ignore[invalid-assignment]
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(
+            stores,
+            step("quotient_of", derived, derived, on={"destination": "destination"}),
+            root_source=roots,
+            bounds=AnalysisBounds(max_nodes=2),
+        )
+
+    assert (raised.value.count, raised.value.cap) == (3, 2)
+    assert len(read) == 1
+
+
+def test_the_anchor_reads_its_roots_under_the_root_row_bound() -> None:
+    """Each root holds 4 rows, so 7 refuses before either is read."""
+    stores = Stores()
+    roots = source(stores)
+    request = AnchorRequest(
+        roots=[
+            DatasetRoot(spec_id=AID, content_version=AID_V1),
+            DatasetRoot(spec_id=POPULATION, content_version=POPULATION_V1),
+        ],
+        populations=[{"spec_id": AID, "bindings": {}}],
+    )
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        run_anchor(request, source=roots, bounds=AnalysisBounds(max_root_rows=7))
+
+    assert raised.value.ceiling_kind == "analysis_root_rows"
+    assert roots.reads == 0
+
+
+_LATEST = {"anchor": "latest", "offset": 0}
+_A_YEAR_BACK = {"anchor": "latest", "offset": -1}
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param({"window_start": None, "window_end": _LATEST}, id="one-sided-window"),
+        pytest.param(
+            {"window_start": {"anchor": "latest", "offset": "one"}, "window_end": _LATEST},
+            id="offset-not-an-integer",
+        ),
+        pytest.param(
+            {"rolling": [], "window_start": _A_YEAR_BACK, "window_end": _LATEST},
+            id="rolling-not-an-object",
+        ),
+        pytest.param(
+            {"window_start": _A_YEAR_BACK, "window_end": _LATEST, "predicates": ["gte"]},
+            id="predicate-not-an-object",
+        ),
+    ],
+)
+def test_a_rolling_argument_of_the_wrong_shape_refuses_op_spec_invalid(arguments: dict) -> None:
+    stores = Stores()
+    tree = step("growth", dataset(AID, AID_V1), entity_by=["destination"], **arguments)
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, tree)
+
+    assert raised.value.code is RefusalCode.OP_SPEC_INVALID
+
+
+def test_a_null_rolling_overlay_reads_as_none_given() -> None:
+    stores = Stores()
+    bounds = {"window_start": _A_YEAR_BACK, "window_end": _LATEST}
+    tree = step("growth", dataset(AID, AID_V1), entity_by=["destination"], **bounds)
+
+    with_null = _run(stores, {**tree, "arguments": {**tree["arguments"], "rolling": None}})
+
+    assert with_null.ref() == _run(stores, tree).ref()
+
+
+_SHORT_POPULATION = {
+    (AID, AID_V1): aid_frame(),
+    (POPULATION, POPULATION_V1): population_frame(years=("2021",)),
+}
+
+
+def _left_out(stores: Stores, result) -> dict:
+    stored = stores.recipe_store.read_recipe(
+        spec_id=result.evaluation.ref.spec_id,
+        content_version=result.evaluation.ref.content_version,
+    )
+    assert stored is not None
+    return stored.body["left_out"]
+
+
+def test_a_left_out_list_past_the_recipe_bytes_is_cut_to_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The population holds no 2022, so the quotient drops two series. One byte less room than
+    the whole recipe keeps the first series and marks the list incomplete."""
+    whole_stores = Stores()
+    whole = _run(
+        whole_stores, _PER_PERSON, root_source=source(whole_stores, frames=_SHORT_POPULATION)
+    )
+    whole_left_out = _left_out(whole_stores, whole)
+    assert len(whole_left_out["series"]) == 2 and whole_left_out["complete"]
+    stored = whole_stores.recipe_store.read_recipe(
+        spec_id=whole.evaluation.ref.spec_id,
+        content_version=whole.evaluation.ref.content_version,
+    )
+    assert stored is not None
+    size = len(json.dumps(stored.body, separators=(",", ":"), ensure_ascii=False).encode())
+    for module in (analysis, publish_models):
+        monkeypatch.setattr(module, "MAX_RECIPE_BYTES", size - 1)
+    stores = Stores()
+
+    result = _run(stores, _PER_PERSON, root_source=source(stores, frames=_SHORT_POPULATION))
+
+    assert _left_out(stores, result) == {
+        "series": whole_left_out["series"][:1],
+        "complete": False,
+    }
+
+
+def test_a_recipe_past_its_bytes_with_no_series_listed_refuses_over_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for module in (analysis, publish_models):
+        monkeypatch.setattr(module, "MAX_RECIPE_BYTES", 100)
+    stores = Stores()
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON)
+
+    assert (raised.value.ceiling_kind, raised.value.cap) == ("analysis_recipe_bytes", 100)
+    assert stores.version_count() == 0
+
+
+def test_a_step_the_engine_could_not_build_publishes_the_frame_without_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built = analysis.evaluate
+
+    def without_steps(*args, **kwargs):
+        evaluation = built(*args, **kwargs)
+        steps = tuple(dataclasses.replace(one, step=None) for one in evaluation.steps)
+        return dataclasses.replace(evaluation, steps=steps)
+
+    monkeypatch.setattr(analysis, "evaluate", without_steps)
+    stores = Stores()
+
+    result = _run(stores, _PER_PERSON)
+
+    assert _stored_steps(stores, result) is None
+    jsonschema.validate(result.ref(), _REF_SCHEMA)

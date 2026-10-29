@@ -326,20 +326,58 @@ class Refusal:
         )
 
     @classmethod
-    def role_ambiguous(cls, *, parameter: str, columns: list[str], available: list[str]) -> Self:
+    def role_ambiguous(
+        cls,
+        *,
+        parameter: str,
+        columns: list[str],
+        available: list[str],
+        side: str | None = None,
+    ) -> Self:
         """`parameter` names the calling verb's own column-list parameter
         this refusal is about (`group_by`, `entity_by`, `rank_by`,
-        `join_keys`, `predicates`, or an `entity` binding such as
+        `join_keys`, `predicates`, `on`, or an `entity` binding such as
         `left_entity`) -- never hardcoded to one verb's own vocabulary,
-        since every verb but `aggregate` reaches this factory too.
+        since every verb but `aggregate` reaches this factory too. `side`
+        names the side of a two-sided verb whose frame lacks the columns,
+        where `parameter` reads both sides.
         """
+        frame = "this frame" if side is None else f"the {side} side's frame"
+        fix: dict[str, Any] = {"parameter": parameter, "columns": columns, "available": available}
+        if side is not None:
+            fix["side"] = side
         return cls(
             code=RefusalCode.ROLE_AMBIGUOUS,
             message=(
-                f"{parameter} names column(s) this frame has no grain for: {columns}. "
+                f"{parameter} names column(s) {frame} has no grain for: {columns}. "
                 f"Available: {available}."
             ),
-            fix={"parameter": parameter, "columns": columns, "available": available},
+            fix=fix,
+        )
+
+    @classmethod
+    def paired_member_ambiguous(
+        cls, *, side: str, members: list[str], entity: list[str], available: list[str]
+    ) -> Self:
+        """`role_ambiguous` for a side of a paired `compare` or `sum_of` that holds
+        more than one row for one member and period: its `{side}_entity` binding
+        (`entity`, the columns it binds) leaves a role unbound, and binding one more
+        is the fix. `members` are the side's member columns under `on`."""
+        parameter = f"{side}_entity"
+        return cls(
+            code=RefusalCode.ROLE_AMBIGUOUS,
+            message=(
+                f"The {side} side holds more than one row for one member of {members} in "
+                f"one period, so {parameter} {entity} leaves a role unbound. Bind one more "
+                f"of {available} in {parameter}."
+            ),
+            fix={
+                "parameter": parameter,
+                "side": side,
+                "columns": entity,
+                "members": members,
+                "available": available,
+            },
         )
 
     @classmethod
@@ -1614,8 +1652,11 @@ def _two_sided_refusal(exc: Exception) -> Refusal:
     """`_refusal` for the exceptions of the verbs that read two sides."""
     match exc:
         case CompareAmbiguousSliceError() if exc.by:
-            return Refusal.role_ambiguous(
-                parameter="on", columns=[*exc.entity, *exc.by], available=list(exc.available)
+            return Refusal.paired_member_ambiguous(
+                side=exc.side,
+                members=list(exc.by),
+                entity=list(exc.entity),
+                available=list(exc.available),
             )
         case CompareAmbiguousSliceError():
             return Refusal.role_ambiguous(
@@ -1625,7 +1666,10 @@ def _two_sided_refusal(exc: Exception) -> Refusal:
             )
         case PairedUnknownColumnError():
             return Refusal.role_ambiguous(
-                parameter="on", columns=list(exc.columns), available=list(exc.available)
+                parameter="on",
+                columns=list(exc.columns),
+                available=list(exc.available),
+                side=exc.side,
             )
         case ComparisonPeriodsDisjointError():
             return Refusal.comparison_periods_disjoint(

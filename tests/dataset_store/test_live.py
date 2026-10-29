@@ -24,7 +24,7 @@ import pg8000.exceptions
 import pytest
 
 from artifact_store.inventory import LiveArtifactInventory
-from artifact_store.store import Tier
+from artifact_store.store import StoredArtifact, Tier
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
@@ -559,6 +559,14 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
                 object_name=digest,
                 size_bytes=7,
                 uploaded=True,
+            )
+            return StoredArtifact(
+                digest=digest,
+                tier=to_tier,
+                bucket="pinned-bucket",
+                object_name=digest,
+                size_bytes=7,
+                deduplicated=False,
             )
 
     with pytest.raises(ArtifactNotFound):
@@ -3945,6 +3953,106 @@ def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_stor
             tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
             tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
         _delete_versions(live_store, [factless, legacy, pinned])
+
+
+def test_settle_leaves_labels_and_caller_keys_as_they_are(live_store):
+    """Only a raw secret is rewritten. An open caller's `ip:` key and a principal's label stay
+    as stored over two runs, so a caller's repeat pin still matches its own reference."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    pinned = f"spec_settle_keys_{suffix}"
+    digest = f"sha256:test-live-settle-keys-{suffix}"
+    caller_key = "ip:" + suffix
+    label = _principal_label(f"settle-keys-secret-{suffix}")
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    with live_store.transaction() as tx:
+        for principal in (caller_key, label):
+            tx.execute(
+                "INSERT INTO datasets.artifact_reference (principal, artifact_digest, "
+                "subject_id, content_version, reference_kind, created_at) "
+                "VALUES (%s, %s, %s, 'cv1', %s, now())",
+                (principal, digest, pinned, PIN_REFERENCE_KIND),
+            )
+
+    try:
+        for _ in range(2):
+            assert run_settle(store=live_store) == 0
+            with live_store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                    (pinned,),
+                )
+            assert sorted(row["principal"] for row in rows) == sorted([caller_key, label])
+    finally:
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [pinned])
+
+
+def test_settle_waits_for_a_pin_in_flight_and_folds_the_raw_row_into_it(live_store):
+    """A pin under the label of a raw row, uncommitted when settle starts, would collide with
+    settle's rewrite of that row. Settle queues behind it, then folds the raw row into the
+    pin's and counts nothing left."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    pinned = f"spec_settle_race_{suffix}"
+    digest = f"sha256:test-live-settle-race-{suffix}"
+    secret = f"settle-race-secret-{suffix}"
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    insert = (
+        "INSERT INTO datasets.artifact_reference (principal, artifact_digest, subject_id, "
+        "content_version, reference_kind, created_at) VALUES (%s, %s, %s, 'cv1', %s, now())"
+    )
+    with live_store.transaction() as tx:
+        tx.execute(insert, (secret, digest, pinned, PIN_REFERENCE_KIND))
+
+    observer_pool = _pool(size=1)
+    observer = LiveDatasetStore(connections=observer_pool)
+    settled: list[int | BaseException] = []
+
+    def _settle() -> None:
+        try:
+            settled.append(run_settle(store=live_store))
+        except BaseException as exc:  # The test reads it below.
+            settled.append(exc)
+
+    try:
+        with live_store.transaction() as pin:
+            pin.execute(insert, (_principal_label(secret), digest, pinned, PIN_REFERENCE_KIND))
+            settling = threading.Thread(target=_settle)
+            settling.start()
+            deadline = time.monotonic() + 10
+            while not _settle_is_waiting_on_a_lock(observer):
+                assert time.monotonic() < deadline, "settle never waited on the pin"
+                time.sleep(0.05)
+        settling.join(timeout=10)
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                (pinned,),
+            )
+    finally:
+        observer_pool.close_all()
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [pinned])
+
+    assert settled == [0]
+    assert [row["principal"] for row in rows] == [_principal_label(secret)]
+
+
+def _settle_is_waiting_on_a_lock(store) -> bool:
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
+            "AND pid <> pg_backend_pid()"
+        )
+    return row is not None and row["n"] > 0
 
 
 _STRIP_DOCUMENTATION_MIGRATION = "0035_strip_backfilled_documentation.sql"

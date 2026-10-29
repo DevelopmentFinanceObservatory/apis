@@ -76,6 +76,7 @@ from datasets_api.codes_analysis import ANALYSIS_STATUSES
 from datasets_api.current import DefinitionDeps
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import SERVING_EXCEPTION_TYPES, _run_retrieval, definition_deps
+from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call
@@ -251,8 +252,13 @@ def analysis_permit(current: Deps, deps: DefinitionDeps) -> functools.partial[An
 _JOIN_RETRY_AFTER_S = 5.0
 
 
-class _RunningAnalyses:
-    """The request keys this process is computing."""
+class RunningAnalyses:
+    """The request keys this process is computing.
+
+    One instance serves every caller that runs a keyed analysis in the process: the analysis
+    door, and the live share slot check (`presentation_api.newest_frames`) when the app mounts
+    both surfaces. So a key computes once, and every other caller answers pending meanwhile.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -283,7 +289,7 @@ def _analysis_job(
     current: Deps,
     body: AnalysisRequest,
     trace_id: str | None,
-    running: _RunningAnalyses,
+    running: RunningAnalyses,
 ) -> dict[str, Any]:
     source = LiveRootSource(deps=deps, recipes=current.recipe_store)
     stores = analysis_stores(current)
@@ -309,6 +315,7 @@ def _anchor_job(
     anchor, roots = run_anchor(
         body,
         source=LiveRootSource(deps=deps, recipes=current.recipe_store),
+        bounds=analysis_bounds(current),
         permit=analysis_permit(current, deps),
         trace_id=trace_id,
     )
@@ -329,9 +336,9 @@ _REFUSED = (AnalysisRefused, SeveralMembers, FrameUnavailable, AnalysisTooLarge)
 class _AnalysisRoutes:
     """The door's two handlers over the surface's dependency cell."""
 
-    def __init__(self, cell: DepsCell) -> None:
+    def __init__(self, cell: DepsCell, *, running: RunningAnalyses) -> None:
         self._cell = cell
-        self._analysis_job = functools.partial(_analysis_job, running=_RunningAnalyses())
+        self._analysis_job = functools.partial(_analysis_job, running=running)
 
     async def _run(self, job: Any, *, name: str, request: Request, body: BaseModel) -> JSONResponse:
         current = self._cell.get()
@@ -375,9 +382,10 @@ class _AnalysisRoutes:
         return await self._run(_anchor_job, name="analysis_anchor", request=request, body=body)
 
 
-def build_analysis_door(*, deps: DepsCell) -> DoorContribution:
-    """Build the analysis door over the surface's dependency cell."""
-    routes = _AnalysisRoutes(deps)
+def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorContribution:
+    """Build the analysis door over the surface's dependency cell. `running` holds the keys
+    the process computes, shared with every other caller that runs a keyed analysis."""
+    routes = _AnalysisRoutes(deps, running=running)
     router = APIRouter()
     router.add_api_route(
         _ANALYSIS_PATH,
@@ -412,6 +420,8 @@ def build_analysis_door(*, deps: DepsCell) -> DoorContribution:
             AnalysisStoreDiverges,
             AnalysisBackpressure,
             CallerHeaderInvalid,
+            # A dataset root whose queued rebuild failed (`datasets_api.analysis_roots`).
+            RefreshRebuildFailed,
         ),
         exception_exemplars=(
             AnalysisRefused(EngineRefusal.op_spec_invalid(detail="exemplar")),
@@ -428,6 +438,7 @@ def build_analysis_door(*, deps: DepsCell) -> DoorContribution:
             AnalysisStoreDiverges(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             AnalysisBackpressure(),
             CallerHeaderInvalid(),
+            RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
         ),
     )
 
@@ -437,6 +448,7 @@ __all__ = [
     "AnalysisPendingBody",
     "AnalysisReady",
     "AnchorAnswer",
+    "RunningAnalyses",
     "analysis_bounds",
     "analysis_permit",
     "analysis_stores",

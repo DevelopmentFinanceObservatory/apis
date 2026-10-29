@@ -174,8 +174,9 @@ dfo-analysis-engine = { workspace = true }
 # uv resolves relative to frame-grammar's own pinned commit -- so this
 # project's own `dfo-spec-kit` source MUST resolve to that identical commit,
 # or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
-# (confirmed live). All six pins move together as a single rev: these four,
-# `dfo-spec-kit`, and `dfo-spec-kit-client-contract`. uv does not force the
+# (confirmed live). All eight pins move together as a single rev: these four,
+# `dfo-spec-kit`, `dfo-spec-kit-client-contract`, and dfo-analysis-engine's
+# `dfo-spec-kit` and `dfo-spec-kit-frame-grammar`. uv does not force the
 # contract package onto this commit; tests/contract/test_client_contract.py
 # checks that its rev equals `dfo-spec-kit`'s. This rev's
 # registry schema has no `spec_resubmit` door: a code with a raise site in
@@ -276,13 +277,13 @@ dfo-analysis-engine = { workspace = true }
 # `out2`, whose document names each value's `stat_var` and reads a variable that
 # compare, sum_of, share_of or quotient_of writes under a name built from its
 # verb and its inputs' variables.
-# Follow-up: move all six to a real spec-kit tag once one is cut, so a future
+# Follow-up: move all eight to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
 dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "17f0469a5d5648114ae40191bda7e8a573971617", subdirectory = "python/spec-kit" }
 dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "17f0469a5d5648114ae40191bda7e8a573971617", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/dfo-analysis-engine/tests"]
 filterwarnings = ["ignore::starlette.exceptions.StarletteDeprecationWarning"]
 markers = [
   # Exempts a test from tests/conftest.py's outbound-HTTP guard, which

@@ -274,6 +274,27 @@ def test_a_frame_file_whose_bytes_are_gone_renders_again_to_the_ref_digest(
     assert "sha256:" + hashlib.sha256(response.content).hexdigest() == member["artifact"]["digest"]
 
 
+def test_a_frame_stored_without_its_file_links_the_file_its_first_read_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A frame published before frames stored their file links none. The first bare Parquet
+    read renders and stores it, and links it under the version, so later reads serve it."""
+    stores = Stores()
+    member = _stored(stores)
+    digest = member["artifact"]["digest"]
+    with stores.store.transaction() as tx:
+        tx.execute("DELETE FROM datasets.version_artifact WHERE artifact_digest = %s", (digest,))
+    assert frame_file_location(_locations(stores, member), site=SITE) is None
+
+    with _client(stores, monkeypatch) as client:
+        response = client.get(_path(member, "/file?format=parquet&bundle=false&layout=frame"))
+
+    assert response.status_code == 200, response.text
+    assert "sha256:" + hashlib.sha256(response.content).hexdigest() == digest
+    linked = frame_file_location(_locations(stores, member), site=SITE)
+    assert linked is not None and linked.artifact_digest == digest
+
+
 def test_an_unknown_frame_refuses_snapshot_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     stores = Stores()
     with _client(stores, monkeypatch) as client:

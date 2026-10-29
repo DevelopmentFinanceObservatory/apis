@@ -1,9 +1,11 @@
 """The composed app's CORS layer: Starlette's `CORSMiddleware` with public paths and merged
 expose lists.
 
-A public path is a route any origin may read with `GET`, whose handler sets
-`Access-Control-Allow-Origin: *` itself. A preflight for a `GET` of one answers for any
-origin and allows `If-None-Match` beside the platform's request headers, so a page's conditional
+A public path is a route any origin may read with `GET`. Every `GET` or `HEAD` reply on one
+carries `Access-Control-Allow-Origin: *`, whether the route sent it or a layer refused before
+routing (an admission check, a 404), so a page tells a share taken down from a retryable fault.
+A reply to any other method on the same path allows only what `CORSMiddleware` allows. A
+preflight for a `GET` of a public path answers for any origin and allows `If-None-Match` beside the platform's request headers, so a page's conditional
 fetch passes whatever `DFO_CORS_ORIGINS` lists. Every other preflight, such as one for a `PUT`
 to the same path, answers as `CORSMiddleware` does.
 
@@ -27,13 +29,15 @@ __all__ = ["PlatformCORSMiddleware"]
 
 _EXPOSE = "Access-Control-Expose-Headers"
 _PUBLIC_METHODS = ("GET",)
+# A `GET` route also answers `HEAD`, so a public path's `HEAD` reply allows any origin too.
+_PUBLIC_READ_METHODS = frozenset({"GET", "HEAD"})
 _PUBLIC_REQUEST_HEADER = "if-none-match"
 
 
 class PlatformCORSMiddleware(CORSMiddleware):
-    """`CORSMiddleware` that answers preflights to `public_paths` (route paths as a router
-    declares them) for any origin, and merges a response's own expose list into the
-    platform's."""
+    """`CORSMiddleware` that allows any origin on a `GET` of `public_paths` (route paths as a
+    router declares them) and answers its preflight for any origin, and merges a response's own
+    expose list into the platform's."""
 
     def __init__(
         self,
@@ -67,16 +71,23 @@ class PlatformCORSMiddleware(CORSMiddleware):
         }
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["method"] == "OPTIONS":
+        if scope["type"] != "http" or not self._is_public(scope["path"]):
+            await super().__call__(scope, receive, send)
+            return
+        if scope["method"] == "OPTIONS":
             headers = Headers(scope=scope)
-            if (
-                "origin" in headers
-                and headers.get("access-control-request-method") in _PUBLIC_METHODS
-                and any(path.match(scope["path"]) for path in self._public_paths)
+            if "origin" in headers and headers.get("access-control-request-method") in (
+                _PUBLIC_METHODS
             ):
                 await self._public_preflight(headers)(scope, receive, send)
                 return
+        if scope["method"] in _PUBLIC_READ_METHODS:
+            await super().__call__(scope, receive, _allowing_any_origin(send))
+            return
         await super().__call__(scope, receive, send)
+
+    def _is_public(self, path: str) -> bool:
+        return any(public.match(path) for public in self._public_paths)
 
     def _public_preflight(self, request_headers: Headers) -> Response:
         """Allow any origin a `GET` sending only allowed request headers."""
@@ -108,6 +119,19 @@ class PlatformCORSMiddleware(CORSMiddleware):
             await send(start)
 
         await super().send(message, merged, request_headers)
+
+
+def _allowing_any_origin(send: Send) -> Send:
+    """`send` with `Access-Control-Allow-Origin: *` on the response start, in place of the
+    listed origin `CORSMiddleware` may have set."""
+
+    async def send_allowing_any_origin(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            message.setdefault("headers", [])
+            MutableHeaders(scope=message)["Access-Control-Allow-Origin"] = "*"
+        await send(message)
+
+    return send_allowing_any_origin
 
 
 def _names(header: str) -> list[str]:

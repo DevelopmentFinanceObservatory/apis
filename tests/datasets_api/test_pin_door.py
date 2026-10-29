@@ -628,7 +628,8 @@ _OPEN_CALLER = Caller(kind="address", key="ip:" + "0" * 32)
 )
 def test_the_open_budget_counts_only_open_callers_copies(seed: Caller | None, refused: bool):
     """A copy made today fills an open budget of one only when an open caller made it, and a
-    refusal by that budget spends neither the daily budget nor the caller's allowance."""
+    refusal by that budget, retryable after the reset, spends neither the daily budget nor
+    the caller's allowance."""
     ledger = _ledger(open_pin_budget=1)
     seeded = FakeArtifactStore()
     _pin_named(seeded, _store_and_locate(seeded, b"seed"), ledger, caller=seed)
@@ -637,12 +638,35 @@ def test_the_open_budget_counts_only_open_callers_copies(seed: Caller | None, re
     location = _store_and_locate(store, b"open-ceiling")
 
     if refused:
-        with pytest.raises(OpenPinBudgetExhausted):
+        with pytest.raises(OpenPinBudgetExhausted) as exhausted:
             _pin_named(store, location, ledger, caller=_OPEN_CALLER)
         assert _spent(ledger) == before
+        assert exhausted.value.retryable is True
+        assert exhausted.value.headers == {"Retry-After": "86400"}
     else:
         assert _pin_named(store, location, ledger, caller=_OPEN_CALLER)[0] == _NOW
         assert _spent(ledger)[(_OPEN_CALLER.key, AllowanceKind.pin.value)] == 1
+
+
+@pytest.mark.parametrize("caller", [_OPEN_CALLER, None], ids=["open-caller", "grant-holder"])
+def test_a_pin_racing_another_to_one_copy_spends_nothing(caller: Caller | None):
+    """Two pins read the artifact in the working tier and both spend, but the second's copy
+    finds the pinned bytes the first made. It gives its units back, so one copy costs one
+    unit of each budget and of one allowance."""
+    ledger = _ledger()
+    store = FakeArtifactStore()
+    location = _store_and_locate(store, b"raced")
+    _pin_named(store, location, ledger, caller=caller)
+    first = _spent(ledger)
+
+    pinned_at, writer = _pin_named(store, location, ledger, caller=caller)
+
+    assert _spent(ledger) == first
+    assert pinned_at == _NOW
+    principal = _PRINCIPAL if caller is None else caller.key
+    assert (principal, location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND) in (
+        writer.records
+    )
 
 
 def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_marker(
@@ -682,10 +706,11 @@ def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_
     assert ARTIFACT_REFERENCE_WRITE_FAILED_MARKER not in caplog.text
 
 
-def test_pin_door_wire_refuses_an_exhausted_budget_503_with_retry_after(
+def test_pin_door_wire_refuses_an_exhausted_budget_503_retryable_after_the_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`DATASETS_PIN_DAILY_MAX` reaches the door, and the refusal is retryable with a wait."""
+    """`DATASETS_PIN_DAILY_MAX` reaches the door. The refusal names the reset in `Retry-After`
+    and is retryable once the reset passes."""
     monkeypatch.setenv("DATASETS_PIN_DAILY_MAX", "0")
     store = _CopyForbiddenArtifactStore()
     # The composed surface reads the wall clock, so the working copy must be fresh.

@@ -28,7 +28,9 @@ entry, so a slot that goes back to an earlier frame records it again and repeate
 nothing new. Each reads the slot's newest entry first and, only when it shows something else,
 locks the share row and checks again under the lock, so concurrent reads of one slot record one
 entry and a read of an unchanged slot takes no lock.
-`served_frames` reads the timeline newest first.
+`served_frames` reads the timeline a page at a time, newest first by `first_served_at` and then
+`id`, by keyset from a `ServedPosition` (migration 0018's index), reading one row past the page
+to learn whether another follows.
 
 `create_share` mints the id (`ids.mint_share_id`) and inserts it with `ON CONFLICT DO NOTHING`,
 minting again while the id is taken, by a share made here or one imported from the website,
@@ -70,6 +72,8 @@ __all__ = [
     "LiveShareStore",
     "PriorShareCreate",
     "ServedFrame",
+    "ServedPage",
+    "ServedPosition",
     "ShareCard",
     "ShareIdTaken",
     "ShareKind",
@@ -231,6 +235,24 @@ class ServedFrame:
     first_served_at: datetime
 
 
+@dataclass(frozen=True)
+class ServedPosition:
+    """Where an entry sits in a share's timeline: newest first by `first_served_at`, then by
+    the entry's `id`, which orders entries recorded at one instant."""
+
+    first_served_at: datetime
+    id: int
+
+
+@dataclass(frozen=True)
+class ServedPage:
+    """One page of a share's timeline, newest first, and the position of its last entry when
+    older entries follow (`None` on the last page)."""
+
+    entries: tuple[ServedFrame, ...]
+    next: ServedPosition | None
+
+
 class ShareStore(Protocol):
     def create_share(
         self,
@@ -379,8 +401,11 @@ class ShareStore(Protocol):
         """
         ...
 
-    def served_frames(self, *, share_id: str) -> tuple[ServedFrame, ...]:
-        """Every entry of what the share's slots showed, newest first.
+    def served_frames(
+        self, *, share_id: str, limit: int, before: ServedPosition | None = None
+    ) -> ServedPage:
+        """Up to `limit` entries of what the share's slots showed, newest first, starting after
+        `before` (from the newest entry when `None`).
 
         Raises:
             ShareNotFound: No share exists at `share_id`, or it was taken down.
@@ -664,17 +689,35 @@ class LiveShareStore:
             ),
         )
 
-    def served_frames(self, *, share_id: str) -> tuple[ServedFrame, ...]:
-        def read(tx: Transaction) -> tuple[ServedFrame, ...]:
+    def served_frames(
+        self, *, share_id: str, limit: int, before: ServedPosition | None = None
+    ) -> ServedPage:
+        def read(tx: Transaction) -> ServedPage:
             _read(tx, share_id=share_id, for_update=False)
-            rows = tx.fetch_all(
-                "SELECT slot, component_id, component_revision, frame_spec_id, "
-                "frame_content_version, rendering, first_served_at "
-                "FROM presentation.served_frame WHERE share_id = %s "
-                "ORDER BY first_served_at DESC, slot, id DESC",
-                (share_id,),
+            if before is None:
+                rows = tx.fetch_all(
+                    f"{_SERVED_SELECT} ORDER BY first_served_at DESC, id DESC LIMIT %s",
+                    (share_id, limit + 1),
+                )
+            else:
+                rows = tx.fetch_all(
+                    f"{_SERVED_SELECT} AND (first_served_at, id) < (%s, %s) "
+                    "ORDER BY first_served_at DESC, id DESC LIMIT %s",
+                    (share_id, before.first_served_at, before.id, limit + 1),
+                )
+            page = rows[:limit]
+            last = page[-1] if len(rows) > limit else None
+            return ServedPage(
+                entries=tuple(_served(row) for row in page),
+                next=(
+                    ServedPosition(
+                        first_served_at=cast(datetime, last["first_served_at"]),
+                        id=cast(int, last["id"]),
+                    )
+                    if last is not None
+                    else None
+                ),
             )
-            return tuple(_served(row) for row in rows)
 
         return self._in_transaction(f"reading what share {share_id!r} served", read)
 
@@ -871,6 +914,11 @@ def _record_shown(
         (share_id, slot, *shown, _json_param(rendering), share_id, slot, *shown),
     )
 
+
+_SERVED_SELECT = (
+    "SELECT id, slot, component_id, component_revision, frame_spec_id, frame_content_version, "
+    "rendering, first_served_at FROM presentation.served_frame WHERE share_id = %s"
+)
 
 _SHOWN_COLUMNS = ("component_id", "component_revision", "frame_spec_id", "frame_content_version")
 

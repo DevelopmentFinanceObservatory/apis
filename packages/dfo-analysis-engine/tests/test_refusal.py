@@ -73,7 +73,7 @@ _PER_HEAD = ComposedUnit(numerator="dcid:USDollar", denominator=StatVarPart("dci
             "sum_of",
             PairedUnknownColumnError(side="left", columns=["recipient"], available=["donor"]),
             "role_ambiguous",
-            {"parameter": "on", "columns": ["recipient"], "available": ["donor"]},
+            {"parameter": "on", "columns": ["recipient"], "available": ["donor"], "side": "left"},
             id="sum_of-on-names-an-unknown-column",
         ),
         pytest.param(
@@ -82,7 +82,13 @@ _PER_HEAD = ComposedUnit(numerator="dcid:USDollar", denominator=StatVarPart("dci
                 side="right", entity={}, available=["destination", "origin"], by=["destination"]
             ),
             "role_ambiguous",
-            {"parameter": "on", "columns": ["destination"], "available": ["destination", "origin"]},
+            {
+                "parameter": "right_entity",
+                "side": "right",
+                "columns": [],
+                "members": ["destination"],
+                "available": ["destination", "origin"],
+            },
             id="compare-paired-member-ambiguous",
         ),
         pytest.param("join", ValueError("not an engine refusal"), None, None, id="other-exception"),

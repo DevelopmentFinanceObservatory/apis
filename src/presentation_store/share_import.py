@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from functools import partial
@@ -65,6 +64,7 @@ from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reference_store import LiveArtifactReferenceWriter
 from presentation_store.card_pins import pin_card_frames
 from presentation_store.frame_store import LiveFrameStore
+from presentation_store.ids import SHARE_ID_PATTERN
 from presentation_store.provider import close_shared_pool, shared_pool
 from presentation_store.shares import (
     ImportedShare,
@@ -77,8 +77,6 @@ from presentation_store.shares import (
 from presentation_store.store import LivePresentationStore
 
 __all__ = ["ImportCounts", "import_share_file", "import_shares"]
-
-_SHARE_ID = re.compile(r"[A-Za-z0-9]{8}")
 
 type _ContentVersion = Annotated[str, StringConstraints(min_length=1)]
 
@@ -103,7 +101,7 @@ class _ExportLine(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(pattern=_SHARE_ID.pattern)
+    id: str = Field(pattern=SHARE_ID_PATTERN.pattern)
     kind: Literal["card", "canvas", "search", "conversation"]
     mode: Literal["live", "snapshot"]
     owner: str | None
@@ -245,7 +243,7 @@ def _label(text: str, *, number: int) -> str:
         share_id = json.loads(text).get("id")
     except (ValueError, AttributeError):
         share_id = None
-    if isinstance(share_id, str) and _SHARE_ID.fullmatch(share_id):
+    if isinstance(share_id, str) and SHARE_ID_PATTERN.fullmatch(share_id):
         return f"share {share_id}"
     return f"line {number}"
 

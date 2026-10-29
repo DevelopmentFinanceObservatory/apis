@@ -30,13 +30,15 @@ Parquet is the frame file the publish stored beside the canonical frame
 dataset version's file selector serves the file its ref names: a flat file whose `unit` is
 text, a ref as its string and a converted or composed unit as its JCS text. A frame whose file
 is gone, past retention or published before frames stored one, renders it again from the
-canonical frame, which gives the same bytes. Every other file renders from the canonical frame
+canonical frame, which gives the same bytes, and links the stored file under the version, so the
+next request reads it in place of rendering it again. Every other file renders from the canonical frame
 and is not stored.
 """
 
 from __future__ import annotations
 
 import io
+import logging
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -64,6 +66,8 @@ from datasets_api.render import (
     stored_frame_location,
 )
 from datasets_api.retention import version_retention
+from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.versions import VersionRecordWriter
 from dfo_platform.config import PublicSiteSettings
 from materialise import EnrichmentLookup
 from materialise.bundle import (
@@ -95,12 +99,16 @@ _WRITERS = {"csv": write_csv, "xlsx": write_excel, "parquet": write_parquet}
 _TAG_LENGTH = 6
 _PROVENANCE_COLUMN = "provenance"
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, kw_only=True)
 class DerivedReads:
-    """The stores a derived read reads."""
+    """The stores a derived read reads, and `version_writer`, which links a frame file a read
+    stored again."""
 
     snapshot_reader: SnapshotReader
+    version_writer: VersionRecordWriter
     artifact_store: ArtifactStore
     recipe_reader: RecipeReader
     enrichment: EnrichmentLookup
@@ -308,7 +316,8 @@ def _frame_file(
     site: PublicSiteSettings,
 ) -> tuple[bytes, str]:
     """The bytes and media type of the derived version's frame file: the stored one, else one
-    rendered again from `frame` (`render.render_and_store_frame_file`), the same bytes."""
+    rendered again from `frame` (`render.render_and_store_frame_file`), the same bytes, and
+    linked under the version. A link that fails to write is logged, and the bytes are served."""
     location = frame_file_location(frame.servable, site=site)
     if location is not None:
         try:
@@ -328,6 +337,12 @@ def _frame_file(
         artifact_store=reads.artifact_store,
         enrichment=reads.enrichment,
     )
+    try:
+        reads.version_writer.record_artifact(
+            subject_id=spec_id, content_version=content_version, artifact=rendered
+        )
+    except DatasetsStoreUnavailable as exc:
+        logger.warning("Linking the frame file of %s %s failed: %s", spec_id, content_version, exc)
     data = reads.artifact_store.get(artifact_digest=rendered.artifact_digest, tier=Tier.working)
     return data, rendered.media_type
 

@@ -67,7 +67,8 @@ own arguments: `denominator_by` for a `share_of` or `quotient_of`,
 `join`, and `on` for a `compare` or `sum_of`, turned to run from the
 `frame_ref` side for a `compare`, whose `data` is its right side. A `join`
 with no `join_keys` leaves its keys to the engine's auto-detection, which no
-tree records, so it raises `PairingKeysUnstatedError`. A verb that pairs no
+tree records, and an `on` on an op-spec that names no verb leaves its
+direction open, so both raise `PairingKeysUnstatedError`. A verb that pairs no
 keys (`compare` and `sum_of` with no `on`, and a `share_of` or `quotient_of`
 with no `denominator_by`, whose keys share one pooled denominator), and a
 keyed verb with one side counted, pass each side's populations through flat. A side that is itself a keyed pairing nests.
@@ -92,6 +93,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import rfc8785
+
+from dfo_analysis_engine.engine.paired import DATA_SIDE
+from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
 
 __all__ = [
     "ANCHOR_KEY_PATTERN",
@@ -145,13 +149,15 @@ class PopulationEmptyError(ValueError):
 
 
 class PairingKeysUnstatedError(ValueError):
-    """A `join` whose two sides both hold a counted path states no `join_keys`,
-    so which keys it pairs is left to the engine and no population can say."""
+    """A verb whose two sides both hold a counted path pairs keys the tree does
+    not state: a `join` with no `join_keys`, which leaves them to the engine, or
+    an `on` with no verb, which leaves open whether it runs from the `frame_ref`
+    side (`sum_of`) or to it (`compare`). No population can say which keys pair."""
 
     def __init__(self) -> None:
         super().__init__(
-            "a join over two rolling sides states no join_keys, so the keys it pairs "
-            "cannot be stated in its population"
+            "a pairing over two rolling sides states no keys its population can carry: "
+            "a join names no join_keys, or an op-spec sets on without naming its verb"
         )
 
 
@@ -338,7 +344,11 @@ def _sides(
     node: Mapping[str, Any], above: _Narrowing
 ) -> Iterator[tuple[str, Mapping[str, Any], _Narrowing]]:
     """Each side of the derived `node`: its frame slot, the node of the frame it
-    reads, and what `above` and the verb itself keep of that side."""
+    reads, and what `above` and the verb itself keep of that side.
+
+    Raises:
+        AnalysisRefused: `op_spec_invalid`, for a predicate that is no object.
+    """
     parameters = node["op_spec"].get("parameters", {})
     inputs = node["inputs"]
     slots = [
@@ -348,6 +358,12 @@ def _sides(
     for slot in slots:
         kept = _Narrowing(above)
         for predicate in parameters.get("predicates", ()):
+            if not isinstance(predicate, Mapping):
+                raise AnalysisRefused(
+                    Refusal.op_spec_invalid(
+                        detail=f"a predicate must be an object, not {type(predicate).__name__}"
+                    )
+                )
             if predicate.get("kind") == "category_match":
                 kept.bind(predicate["column"], predicate["values"])
             elif predicate.get("kind") == "place_level":
@@ -369,14 +385,18 @@ def _pairing(op_spec: Mapping[str, Any]) -> tuple[str, dict[str, str]] | None:
     parameters = op_spec.get("parameters", {})
     if denominator_by := parameters.get("denominator_by"):
         return "denominator_frame_ref", dict(denominator_by)
-    verb = op_spec.get("verb")
-    if (on := parameters.get("on")) and verb in ("compare", "sum_of"):
-        if verb == "compare":
-            return "right_frame_ref", {left: right for right, left in on.items()}
-        return "right_frame_ref", dict(on)
     # A stored recipe's op-spec names its verb. A tree the compiler writes from
     # a plan carries parameters alone, and writes `join_keys` on every join.
-    if op_spec.get("verb") == "join" or "join_keys" in parameters:
+    verb = op_spec.get("verb")
+    if on := parameters.get("on"):
+        # Only `compare` and `sum_of` take `on`, and they read it in opposite
+        # directions, so with no verb the keys are unstated.
+        if verb is None:
+            return "right_frame_ref", {}
+        if DATA_SIDE[verb] == "right":
+            return "right_frame_ref", {left: right for right, left in on.items()}
+        return "right_frame_ref", dict(on)
+    if verb == "join" or "join_keys" in parameters:
         right_keys = parameters.get("right_keys") or {}
         join_keys = parameters.get("join_keys") or ()
         return "right_frame_ref", {key: right_keys.get(key, key) for key in join_keys}
@@ -444,7 +464,7 @@ def anchor_populations(
     """The canonical populations of the recipe `tree`. See the module docstring.
 
     Args:
-        tree: The recipe's tree as `dfo_analysis_engine.recipe.build_recipe` writes it. A
+        tree: The recipe's tree (`dfo_analysis_engine.recipe`). A
             derived node is read for `op_spec.parameters` and `inputs`, a root
             node for `root`, so a tree written from a plan before any frame
             exists serves as well: a node needs no `frame`, and a rolling
@@ -465,7 +485,9 @@ def anchor_populations(
         PopulationLevelColumnMissingError: A `place_level` predicate on a path
             tests a column that path's root does not carry.
         PairingKeysUnstatedError: A `join` whose sides both hold a counted
-            path states no `join_keys`.
+            path states no `join_keys`, or an op-spec whose sides both do sets
+            `on` and names no verb.
+        AnalysisRefused: `op_spec_invalid`, for a predicate that is no object.
     """
 
     def population(path: _Counted) -> dict[str, Any]:

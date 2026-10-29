@@ -82,6 +82,9 @@ from dfo_analysis_engine.engine.two_sided import (
 type PairedVerb = Literal["compare", "sum_of"]
 type SliceSide = Literal["left", "right"]
 
+# The side each paired verb's `data` fills: `compare` gives right minus left.
+DATA_SIDE: Mapping[str, SliceSide] = {"compare": "right", "sum_of": "left"}
+
 
 class PairedUnknownColumnError(Exception):
     """`on` names `columns` that `side`'s frame holds no member column for.
@@ -141,9 +144,14 @@ class PairedResult:
     `data_side` is the side the call's `data` fills, whose column names key
     `frame` and every `KeyPairs` below but the unmatched members. Periods and
     coverage read the members that pair: `left_periods` and `right_periods`
-    are every period those members hold on each side, `matched_periods` every
-    period some member shares with its partner, and a side's coverage
+    are every period those members hold on each side, `intersected_periods`
+    every period some member shares with its partner, and a side's coverage
     fraction the (member, period) cells it shares over those it holds.
+    `unit` is the result's unit, and `left_resolved_unit` and
+    `right_resolved_unit` each side's. Every field a single-series `compare`
+    (`CompareResult`) or `sum_of` (`SumOfResult`) result names is named
+    alike here, but for those it keeps per period, which a paired result
+    keeps per member: `cells` and the `*_only_periods` below.
 
     The dropped members are those the frame holds no row for:
     `left_unmatched_keys` and `right_unmatched_keys`, with no partner, each
@@ -161,13 +169,15 @@ class PairedResult:
     left_entities: Mapping[str, str]
     right_entities: Mapping[str, str]
     unit: UnitCell | None
+    left_resolved_unit: UnitCell | None
+    right_resolved_unit: UnitCell | None
     facet_selections: tuple[FacetSelection, ...]
     left_facet_selections: tuple[FacetSelection, ...]
     right_facet_selections: tuple[FacetSelection, ...]
     warnings: tuple[str, ...]
     left_periods: tuple[str, ...]
     right_periods: tuple[str, ...]
-    matched_periods: tuple[str, ...]
+    intersected_periods: tuple[str, ...]
     left_coverage_fraction: float
     right_coverage_fraction: float
     cells: tuple[PairedCell, ...]
@@ -301,7 +311,7 @@ def _run_paired(
     left_pinned_unit: UnitCell | None,
     right_pinned_unit: UnitCell | None,
 ) -> PairedResult:
-    data_side: SliceSide = "left" if verb == "sum_of" else "right"
+    data_side = DATA_SIDE[verb]
     data_columns, other_columns = tuple(on), tuple(on.values())
     left_by, right_by = (
         (data_columns, other_columns) if data_side == "left" else (other_columns, data_columns)
@@ -428,6 +438,8 @@ def _run_paired(
         left_entities=held_entities(left_frame, left_slice.table, entity=left_entity),
         right_entities=held_entities(right_frame, right_slice.table, entity=right_entity),
         unit=left_slice.unit,
+        left_resolved_unit=left_slice.unit,
+        right_resolved_unit=right_slice.unit,
         facet_selections=facets,
         left_facet_selections=left_slice.facet_selections,
         right_facet_selections=right_slice.facet_selections,
@@ -436,7 +448,7 @@ def _run_paired(
         ),
         left_periods=pairing.numerator_periods,
         right_periods=pairing.denominator_periods,
-        matched_periods=pairing.matched_periods,
+        intersected_periods=pairing.matched_periods,
         left_coverage_fraction=pairing.numerator_coverage_fraction,
         right_coverage_fraction=pairing.denominator_coverage_fraction,
         cells=tuple(cells),

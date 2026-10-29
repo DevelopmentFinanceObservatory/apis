@@ -5,6 +5,7 @@ the queued rebuild, the shared rebuild, and admission on `POST /api/datasets/fra
 from __future__ import annotations
 
 import contextvars
+import functools
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -814,6 +815,53 @@ def test_a_raw_version_linking_both_renderings_refuses_once_they_differ():
         assert refused.json()["retryable"] is False
 
 
+def test_a_refresh_under_the_recorded_rendering_ignores_a_file_linked_later(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A card made on a raw version linking only its groupby sum records that rendering. A plain
+    file linked under the version later makes its records ambiguous, so once the renderings
+    differ a refresh from the records refuses, and one under the recorded rendering moves to the
+    sum of the new data."""
+    shared = _one_contributor_rig(_SUMMED_MINT)
+    reader = LiveSnapshotReader(store=shared.rig.version_store)
+    recorded = refresh_module.stored_rendering(
+        spec_id=shared.spec_id,
+        content_version=shared.base_content_version,
+        snapshot_reader=reader,
+    )
+    assert not recorded.ambiguous
+    _, sidecar = collapse_fixture._spec_id_and_sidecar()
+    linked = collapse_fixture._mint(
+        shared.rig.client, spec_id=shared.spec_id, sidecar=sidecar, options=_PLAIN_MINT
+    )
+    assert linked["content_version"] == shared.base_content_version
+    assert refresh_module.stored_rendering(
+        spec_id=shared.spec_id, content_version=shared.base_content_version, snapshot_reader=reader
+    ).ambiguous
+    _move_to(shared, _MEMBER_A_ROW, _MEMBER_B_ROW)
+    named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
+
+    from_records = shared.rig.refresh(**named)
+    assert from_records.status_code == 422, from_records.text
+    assert from_records.json()["code"] == "rendering_not_recorded"
+
+    monkeypatch.setattr(
+        refresh_module,
+        "answer_frame_refresh",
+        functools.partial(refresh_module.answer_frame_refresh, recorded=recorded),
+    )
+    resp = shared.rig.refresh(**named)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "moved"
+    moved_to = resp.json()["frame"]["content_version"]
+    assert (
+        shared.version_rows()[moved_to]
+        == shared.rig.head_store.head_for(shared.spec_id).content_version
+    )
+    assert shared.recorded_groupby(moved_to) == [_GROUPBY]
+
+
 # --- A rebuild over the inline budget ---
 
 
@@ -912,10 +960,10 @@ def test_a_done_rebuild_of_a_kind_column_frame_is_checked_under_the_current_dige
     key salted with the serving code index's digest. The refresh reads the head the worker
     advanced under the same key, so it answers `moved`; a key without the digest would find
     nothing and submit the operation again."""
-    real_frame_options = refresh_module._frame_options
+    real_frame_options = refresh_module.frame_options
     monkeypatch.setattr(
         refresh_module,
-        "_frame_options",
+        "frame_options",
         lambda minting: real_frame_options(minting).model_copy(update={"columns": ["party_kind"]}),
     )
     plain = _plain_rig()

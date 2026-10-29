@@ -89,6 +89,7 @@ from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.description_store import LiveDescriptionStore
+from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.operation_store import LiveOperationStore
@@ -927,6 +928,7 @@ def compose(
     )
     revision_store = FakeRevisionStore()
     datasets_cell = DepsCell()
+    running_analyses = RunningAnalyses()
     allowances = LiveAllowanceLedger(store=version_store, limits=allowance_limits(settings))
     frame_store = LiveFrameStore(
         snapshots=snapshot_reader,
@@ -963,6 +965,7 @@ def compose(
                 task_client=task_client,
                 catalogue=fake_catalogue_service(),
                 deps_cell=datasets_cell,
+                running_analyses=running_analyses,
             ),
             presentation_surface(
                 revision_store=revision_store,
@@ -979,7 +982,9 @@ def compose(
                 principals=Principals.resolve(settings=settings),
                 # As `dfo_apis.app.build_presentation_surface` builds it over the same cell.
                 newest_frames=DatasetsNewestFrames(
-                    datasets_cell, budget_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS / 2
+                    datasets_cell,
+                    running=running_analyses,
+                    budget_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS / 2,
                 ),
             ),
         ]

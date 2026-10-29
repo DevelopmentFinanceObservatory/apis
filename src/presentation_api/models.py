@@ -472,7 +472,11 @@ class ShareHistoryResponse(BaseModel):
 
     id: str = Field(description="the share's id")
     served: list[ShareServedModel] = Field(
-        description="what each slot showed, newest first, an entry each time it changed"
+        description="what each slot showed, newest first, an entry each time it changed, up "
+        "to the page's limit"
+    )
+    next: str | None = Field(
+        description="the cursor of the next page, to send as before, or null on the last page"
     )
 
 

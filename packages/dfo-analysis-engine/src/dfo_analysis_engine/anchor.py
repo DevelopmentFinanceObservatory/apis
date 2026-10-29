@@ -189,8 +189,12 @@ def _content(population: Population) -> str:
 
 
 def _too_many(populations: Sequence[Population]) -> None:
-    """The refusal for populations of more than `MAX_DISTINCT_POPULATIONS`
-    distinct entries, `None` otherwise. A repeated entry is walked once."""
+    """Refuse populations of more than `MAX_DISTINCT_POPULATIONS` distinct
+    entries. A repeated entry is walked once.
+
+    Raises:
+        AnalysisRefused: `rolling_anchor_unresolved`, detail `populations_too_many`.
+    """
     seen: set[str] = set()
     pending: list[Population] = list(populations)
     while pending:
@@ -211,8 +215,12 @@ def _too_many(populations: Sequence[Population]) -> None:
 
 
 def _unmatched(populations: Sequence[Population], roots: Sequence[_Root]) -> None:
-    """The refusal for a flat population or a root frame with no counterpart,
-    `None` when each has one."""
+    """Refuse a flat population or a root frame with no counterpart.
+
+    Raises:
+        AnalysisRefused: `rolling_anchor_unresolved`, detail `population_without_root`
+            or `root_without_population`.
+    """
     flat = list(_flat(populations))
     for population in flat:
         if all(root.spec_id != population.spec_id for root in roots):
@@ -228,7 +236,6 @@ def _unmatched(populations: Sequence[Population], roots: Sequence[_Root]) -> Non
                 f"the root frame {root.spec_id} matches the spec_id of no population",
                 spec_id=root.spec_id,
             )
-    return None
 
 
 def _narrowed(population: RootPopulation, admitted: Input) -> pa.Table:

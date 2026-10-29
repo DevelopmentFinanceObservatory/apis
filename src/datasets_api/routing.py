@@ -77,11 +77,11 @@ class MalformedSubjectIdConvertor(Convertor[str]):
 
 register_url_convertor(
     "dfo_malformed_subject_id_excluding_meta_literals",
-    MalformedSubjectIdConvertor(("register", "healthz", "schema", "capabilities")),
+    MalformedSubjectIdConvertor(("register", "healthz", "schema", "capabilities", "analysis")),
 )
 register_url_convertor(
-    "dfo_malformed_subject_id_excluding_operations",
-    MalformedSubjectIdConvertor(("operations",)),
+    "dfo_malformed_subject_id_excluding_two_segment_literals",
+    MalformedSubjectIdConvertor(("operations", "analysis")),
 )
 register_url_convertor(
     "dfo_malformed_subject_id",
@@ -107,8 +107,8 @@ def build_id_grammar_refusal_router() -> APIRouter:
 
     for path in (
         "/api/datasets/{id:dfo_malformed_subject_id_excluding_meta_literals}",
-        "/api/datasets/{id:dfo_malformed_subject_id_excluding_operations}/options",
-        "/api/datasets/{id:dfo_malformed_subject_id_excluding_operations}/{content_version}",
+        "/api/datasets/{id:dfo_malformed_subject_id_excluding_two_segment_literals}/options",
+        "/api/datasets/{id:dfo_malformed_subject_id_excluding_two_segment_literals}/{content_version}",
         "/api/datasets/{id:dfo_malformed_subject_id}/{content_version}/pin",
         "/api/datasets/{id:dfo_malformed_subject_id}/{content_version}/observations",
     ):

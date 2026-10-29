@@ -4107,32 +4107,84 @@ def test_pin_of_a_derived_frame_pins_the_root_versions_its_recipe_names():
     }
 
 
+def _recipe_naming(root_ref: FrameRef) -> list[dict[str, object]]:
+    return [
+        {
+            "frame": {"spec_id": "spec_analysis_side", "content_version": "cv_other"},
+            "dataset": {"spec_id": root_ref.spec_id, "content_version": root_ref.content_version},
+        }
+    ]
+
+
 @pytest.mark.parametrize(
-    "recipe_roots",
-    [None, [{"frame": {"spec_id": "spec_x", "content_version": "cv_x"}}]],
-    ids=["no-recipe-reader", "root-without-dataset"],
+    ("recipe_roots", "reason"),
+    [
+        (None, "recipe_unreadable"),
+        ([{"frame": {"spec_id": "spec_x", "content_version": "cv_x"}}], "recipe_unreadable"),
+        ([], "recipe_pending"),
+    ],
+    ids=["no-recipe-reader", "root-without-dataset", "no-recipe-yet"],
 )
-def test_pin_of_a_derived_frame_refuses_when_its_roots_cannot_be_named(recipe_roots):
-    snapshots, artifacts, frame_ref, _, _, _ = _derived_over_a_root()
+def test_pin_of_a_derived_frame_whose_roots_cannot_be_named_refuses_and_pins_nothing(
+    recipe_roots, reason
+):
+    snapshots, artifacts, frame_ref, digest, _, _ = _derived_over_a_root()
     recipes = None
     if recipe_roots is not None:
         recipes = _FakeRecipeReader()
-        recipes.put(frame_ref, anchor=None, roots=recipe_roots)
-    store = _store(snapshots=snapshots, artifacts=artifacts, recipe_reader=recipes)
+        if recipe_roots:
+            recipes.put(frame_ref, anchor=None, roots=recipe_roots)
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
 
     with pytest.raises(FrameUnavailable) as excinfo:
         store.pin(frame_ref=frame_ref, component_id="cmp_test")
-    assert excinfo.value.reason == "unknown"
+
+    assert excinfo.value.reason == reason
+    assert (Tier.pinned, digest) not in artifacts.objects
+    assert reference_writer.records == {}
 
 
-def test_pin_of_a_derived_frame_with_no_recipe_yet_pins_the_frame_alone():
-    snapshots, artifacts, frame_ref, digest, _, root_digest = _derived_over_a_root()
-    store = _store(snapshots=snapshots, artifacts=artifacts, recipe_reader=_FakeRecipeReader())
+def _root_aged_out(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:
+    key = (root_ref.spec_id, root_ref.content_version)
+    snapshots.locations[key] = [
+        dataclasses.replace(location, stored_at=_NOW - timedelta(days=31))
+        for location in snapshots.locations[key]
+    ]
+
+
+def _root_revoked(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:
+    snapshots.revocations[(root_ref.spec_id, root_ref.content_version)] = Revocation(
+        reason="takedown", revoked_at=_NOW
+    )
+
+
+@pytest.mark.parametrize("lapse", [_root_aged_out, _root_revoked], ids=["expired", "revoked"])
+def test_pin_of_a_derived_frame_pins_the_frame_when_a_root_is_no_longer_held(lapse):
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    lapse(snapshots, root_ref)
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
 
     assert store.pin(frame_ref=frame_ref, component_id="cmp_test") is True
 
     assert (Tier.pinned, digest) in artifacts.objects
     assert (Tier.pinned, root_digest) not in artifacts.objects
+    assert {(key[2], key[3]) for key in reference_writer.records} == {
+        (frame_ref.spec_id, frame_ref.content_version)
+    }
 
 
 def test_pin_maps_a_copy_write_failure_to_frame_unavailable_io():

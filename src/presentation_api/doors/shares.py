@@ -10,7 +10,8 @@ none, and a `conversation` share is a snapshot. A live share holds at most
 (the website's `LIVE_SHARE_MAX_DATA_CARDS`). More refuses 400 `request_invalid` at `/cards`.
 `payload` is website-owned JSON of at most `presentation_store.MAX_SHARE_PAYLOAD_BYTES` (10 MiB)
 as compact UTF-8, stored as given and read back on GET. A larger one refuses 413
-`payload_too_large`. The create spends one unit of the caller's `share` allowance
+`payload_too_large`, and one holding NaN or Infinity, which JSON lacks, 400 `request_invalid`
+at `/payload`. The create spends one unit of the caller's `share` allowance
 (`datasets_api.allowance`, caller named by `dfo_platform.caller.resolve_caller`), refusing 429
 `allowance_exhausted` once it is spent. It then pins the frame each card revision draws
 (`presentation_store.pin_card_frames`), live or snapshot, since a share first including a card
@@ -57,8 +58,11 @@ refresh or the run gave. The JSON body and the `x-dfo-freshness` header state `c
 or `pending`, and a live slot's `x-dfo-checked-at` says when the check ran. `csv`, `xlsx` and
 `parquet` are the card's data file as the components door's data route serves it, unbundled by
 default. `bundle=true` serves that route's zip, and with `json` refuses 400 `request_invalid`.
-The reply carries a strong `ETag` over its bytes and answers `If-None-Match` with 304. A live
-slot's reply is `no-cache`, so a cache revalidates it, and a snapshot's is
+The reply carries a strong `ETag` over what its body is drawn from: the share, its mode and the
+slot, the card revision, the frame served and its freshness, the format, and for a card drawn
+on a newer frame the catalogue release. An `If-None-Match` naming it answers 304 without
+drawing the body while the slot needs no check: a snapshot, or a live slot whose last check is
+not yet due. A live slot's reply is `no-cache`, so a cache revalidates it, and a snapshot's is
 `public, max-age=300`. A slot number the share has not had, or a slot a
 replacement left empty, answers 404 `not_found`, and so does a note's slot.
 
@@ -66,22 +70,30 @@ replacement left empty, answers 404 `not_found`, and so does a note's slot.
 answers the slot's card as `GET /api/presentation/components/{component_id}` reads it, plus
 `freshness`, drawn on the frame the data route serves, chosen by the same function
 (`share_slots.serve_on_slot_frame`), with that frame's retention. Its `x-dfo-freshness` and
-`x-dfo-checked-at` headers, strong `ETag`, 304 and caching are the data route's. A note's card is
-its stored read. A slot number the share has not had, or an empty slot, answers 404
-`not_found`.
+`x-dfo-checked-at` headers, strong `ETag`, 304 and caching are the data route's, and its
+`ETag` also covers the frame's retention and, on a newer frame, the vocabulary revision the
+read is worded in. A note's card is its stored read. A slot number the share has not had, or an
+empty slot, answers 404 `not_found`.
 
 `GET /api/presentation/shares/{share_id}/history` is public and allows any origin. It returns a
 timeline of what each slot showed, newest first, each frame with its retention counted from when
 DFO stored it and whether it is still fetchable (`share_slots.history_document`). A create, replace
-or snapshot conversion records each slot's frame as served at the write, as a read does, so the
-history lists what a share shows before any read. A slot a replace leaves empty records an
-entry with `component_id`, `revision`, `frame`, `rendering` and `retention` null and
-`fetchable` false, and so does a slot whose card is a note, which draws no frame. A slot records
-an entry only when what it shows changes.
+or snapshot conversion records the frame each slot serves at the write, as a read does: a live
+slot whose card kept its place serves its last check's frame. The history then lists what a
+share shows before any read. That record runs after the write commits, so its failure is
+logged, the write still answers, and the slot's next read records what it serves. A slot a
+replace leaves empty records an entry with `component_id`, `revision`, `frame`, `rendering` and
+`retention` null and `fetchable` false, and so does a slot whose card is a note, which draws no
+frame. A slot records an entry only when what it shows changes. The route answers a page of
+`limit` entries (1 to `HISTORY_PAGE_MAX`, `HISTORY_PAGE_DEFAULT` when left out) and `next`, an
+opaque cursor that `before` takes to continue after the page's last entry, `null` on the last
+page. A `limit` out of range, or a `before` no page gave, refuses 400 `request_invalid`.
 
-A share id that names no share, or one taken down, answers 404 `not_found` on every route. A
-card's frame that is gone answers 404 `frame_unavailable`, and a frame read that fails answers
-retryable 503 `service_unavailable`.
+Every `GET` reply of a public route allows any origin, a refusal included, even one sent before
+routing, since the platform's CORS layer (`dfo_platform.cors`) adds the header. A share id that
+names no share, or one taken down, answers 404 `not_found` on every route. A card's frame that
+is gone answers 404 `frame_unavailable`, and a frame read that fails answers retryable 503
+`service_unavailable`.
 
 Handlers are module-level functions that read `SHARES_DEPS_SLOT`, which the door's lifespan
 sets. Every route runs on one executor of `PRESENTATION_COMPONENTS_MAX_CONCURRENCY` threads. A
@@ -94,7 +106,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import logging
+import math
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -111,6 +126,7 @@ from pydantic import (
     JsonValue,
     StrictBool,
     StrictInt,
+    field_validator,
     model_validator,
 )
 
@@ -189,18 +205,24 @@ from presentation_api.models import (
 from presentation_api.newest_frames import NewestFrames
 from presentation_api.path_params import PathParamInvalid, require_component_id, require_share_id
 from presentation_api.refusals import frame_unavailable_spec
+from presentation_api.retention import stated_retention
 from presentation_api.share_slots import (
+    HISTORY_PAGE_DEFAULT,
+    HISTORY_PAGE_MAX,
     ShareSlotEmpty,
     SlotData,
     SlotFormat,
     history_document,
+    history_position,
     serve_slot,
     serve_slot_card,
     serving_frame,
+    slot_card,
 )
 from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     MAX_SHARE_PAYLOAD_BYTES,
+    Freshness,
     GeneratedIdCollision,
     LivePresentationStore,
     LiveShareStore,
@@ -276,6 +298,17 @@ def _card_count_refusal(kind: str, count: int) -> str | None:
     return f"a {kind} share takes {wanted} cards, not {count}"
 
 
+def _holds_non_finite(value: JsonValue) -> bool:
+    """Whether `value` holds a NaN or an infinite number anywhere."""
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, list):
+        return any(_holds_non_finite(item) for item in value)
+    if isinstance(value, dict):
+        return any(_holds_non_finite(item) for item in value.values())
+    return False
+
+
 class ShareCardBody(BaseModel):
     """One card revision a share shows."""
 
@@ -336,6 +369,14 @@ class CreateShareBody(BaseModel):
         "and a different body with it is refused as request_invalid. Mint a new one for each "
         "create.",
     )
+
+    @field_validator("payload")
+    @classmethod
+    def _finite(cls, payload: JsonValue) -> JsonValue:
+        # Python's JSON parser reads NaN and Infinity, which JSON and Postgres's jsonb lack.
+        if _holds_non_finite(payload):
+            raise ValueError("the payload holds NaN or Infinity, which JSON cannot carry")
+        return payload
 
     @model_validator(mode="after")
     def _fits_its_kind(self) -> Self:
@@ -500,9 +541,22 @@ def _pin(cards: Iterable[ShareCard], *, deps: SharesDeps) -> None:
 
 
 def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
-    """Record the frame each slot of `share` draws, with the card revision's recorded
-    rendering, as a slot read records it. A slot a replace left empty, or whose card is a note,
-    records no card. The share's history then lists from the write on what it shows."""
+    """Record the frame each slot of `share` serves (`serving_frame`), with the card revision's
+    recorded rendering, as a slot read records it. A live slot whose card kept its place serves
+    its last check's frame, so that frame is what the history lists. A slot a replace left
+    empty, or whose card is a note, records no card. The share's history then lists from the
+    write on what it shows.
+
+    The write has committed by now, so a failure here is logged and the write still answers:
+    a create's reply carries the only copy of a server-minted token. A slot read records what it
+    serves, so the history catches up at the slot's next read."""
+    try:
+        _record_slots(share, deps=deps)
+    except Exception:
+        logger.warning("Share %s could not record what its slots show", share.id, exc_info=True)
+
+
+def _record_slots(share: ShareRecord, *, deps: SharesDeps) -> None:
     renderings: dict[tuple[str, int], Mapping[str, object] | None] = {}
     for slot in share.slots:
         card = slot.card
@@ -520,7 +574,7 @@ def _record_shown(share: ShareRecord, *, deps: SharesDeps) -> None:
             share_id=share.id,
             slot=slot.slot,
             card=card,
-            frame=card.frame,
+            frame=serving_frame(share=share, slot=slot.slot, card=card, deps=deps),
             rendering=renderings[key],
         )
 
@@ -597,7 +651,7 @@ def _replay_create(
 ) -> Response | None:
     """The first share a client's token made, answered as its create was, or `None` when no
     share holds the token. It records what the share shows, as the create does, since the first
-    create's record runs after its write commits and may have failed.
+    create's record runs after its write commits and may have failed (`_record_shown`).
 
     Raises:
         CreateRequestInvalid: The token's share was made from another request, or from none.
@@ -737,11 +791,7 @@ async def read_share(share_id: str, deps: SharesDepsDep) -> Response:
 
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
-        return JSONResponse(
-            _read_document(share, site=deps.site.public_site_url),
-            # A share is public, so any page may read it across origins.
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
+        return JSONResponse(_read_document(share, site=deps.site.public_site_url))
 
     return await _run(deps, job)
 
@@ -774,14 +824,44 @@ async def post_share_snapshot(
     return await _run(deps, job)
 
 
-async def read_share_history(share_id: str, deps: SharesDepsDep) -> Response:
+async def read_share_history(
+    share_id: str,
+    deps: SharesDepsDep,
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=HISTORY_PAGE_MAX,
+            description=f"the most entries the page holds, 1 to {HISTORY_PAGE_MAX}",
+        ),
+    ] = HISTORY_PAGE_DEFAULT,
+    before: Annotated[
+        str | None,
+        Query(
+            description="the `next` cursor of the previous page; the page continues after "
+            "that page's last entry"
+        ),
+    ] = None,
+) -> Response:
     require_share_id(share_id)
+    position = history_position(before) if before is not None else None
+    if before is not None and position is None:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("query", "before"),
+                    "msg": "not a cursor a history page gave as next",
+                    "input": before,
+                }
+            ]
+        )
 
     def job() -> Response:
-        served = deps.share_store.served_frames(share_id=share_id)
+        page = deps.share_store.served_frames(share_id=share_id, limit=limit, before=position)
         return JSONResponse(
-            history_document(share_id=share_id, served=served, deps=deps),
-            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+            history_document(share_id=share_id, page=page, deps=deps),
+            headers={"Cache-Control": "no-store"},
         )
 
     return await _run(deps, job)
@@ -795,20 +875,102 @@ def _matches(if_none_match: str | None, etag: str) -> bool:
     return "*" in tags or etag in tags
 
 
-def _slot_response(data: SlotData, *, share: ShareRecord, if_none_match: str | None) -> Response:
-    """A slot read's reply: its freshness, caching and strong ETag, 304 when `If-None-Match`
-    names that ETag."""
+@dataclass(frozen=True)
+class _SlotState:
+    """What a slot serves: the frame (`None` for a note's card), its freshness, and when a live
+    slot's check ran (`None` for a snapshot or a note)."""
+
+    frame: FrameRef | None
+    freshness: Freshness
+    checked_at: datetime | None
+
+    @classmethod
+    def of(cls, data: SlotData) -> Self:
+        return cls(frame=data.frame, freshness=data.freshness, checked_at=data.checked_at)
+
+
+def _settled_state(
+    share: ShareRecord, *, slot: int, card: ShareCard, deps: SharesDeps
+) -> _SlotState | None:
+    """What slot `slot` of `share`, showing `card`, serves now, when a read need not check for
+    newer data first: a note's card, a snapshot's frame, or a live slot's last check before it
+    falls due. `None` for a live slot whose check is due or has never run, so the read runs it
+    (`share_slots.serve_on_slot_frame`)."""
+    if card.frame is None:
+        return _SlotState(frame=None, freshness="current", checked_at=None)
+    if share.mode == "snapshot":
+        return _SlotState(frame=card.frame, freshness="current", checked_at=None)
+    check = deps.share_store.slot_check(share_id=share.id, slot=slot, card=card)
+    if check is None or check.next_check_at <= deps.now():
+        return None
+    return _SlotState(frame=check.frame, freshness=check.freshness, checked_at=check.checked_at)
+
+
+def _redrawn_under(
+    card: ShareCard, frame: FrameRef | None, *, worded: bool, deps: SharesDeps
+) -> list[str | None] | None:
+    """The catalogue release a card drawn on `frame`, a frame other than its own, is drawn
+    under, and with `worded` the vocabulary revision its read is worded in. `None` on the card's
+    own frame, whose export and read are stored, and for a note."""
+    if frame is None or frame == card.frame:
+        return None
+    vocabulary = (
+        deps.vocabulary_source.current().revision
+        if worded and deps.vocabulary_source is not None
+        else None
+    )
+    return [deps.release_registry.pinned().catalog_version, vocabulary]
+
+
+def _slot_etag(
+    share: ShareRecord,
+    *,
+    slot: int,
+    card: ShareCard,
+    state: _SlotState,
+    variant: str,
+    drawn_with: object,
+) -> str:
+    """A slot reply's strong ETag. It hashes what the body is drawn from, so a revalidation
+    answers 304 without drawing the body: the share, its mode and the slot, the card revision,
+    the frame served and its freshness, `variant` (the route and format), and `drawn_with`,
+    whatever else the body states (a card read's retention, a newer frame's release and
+    vocabulary). Equal inputs draw equal bodies, so they carry one ETag."""
+    validator = {
+        "share": share.id,
+        "mode": share.mode,
+        "slot": slot,
+        "card": [card.component_id, card.revision],
+        "frame": (
+            [state.frame.spec_id, state.frame.content_version] if state.frame is not None else None
+        ),
+        "freshness": state.freshness,
+        "variant": variant,
+        "drawn_with": drawn_with,
+    }
+    encoded = json.dumps(validator, sort_keys=True, separators=(",", ":")).encode()
+    return f'"{hashlib.sha256(encoded).hexdigest()[:32]}"'
+
+
+def _slot_headers(share: ShareRecord, *, state: _SlotState, etag: str) -> dict[str, str]:
     headers = {
-        "ETag": data.etag,
-        _FRESHNESS_HEADER: data.freshness,
+        "ETag": etag,
+        _FRESHNESS_HEADER: state.freshness,
         "Cache-Control": _LIVE_CACHE_CONTROL if share.mode == "live" else _SNAPSHOT_CACHE_CONTROL,
-        # Any page may read a share's slots across origins.
-        "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": _SLOT_DATA_EXPOSED,
     }
-    if data.checked_at is not None:
-        headers[_CHECKED_AT_HEADER] = data.checked_at.isoformat()
-    if _matches(if_none_match, data.etag):
+    if state.checked_at is not None:
+        headers[_CHECKED_AT_HEADER] = state.checked_at.isoformat()
+    return headers
+
+
+def _slot_response(
+    data: SlotData, *, share: ShareRecord, etag: str, if_none_match: str | None
+) -> Response:
+    """A slot read's reply: its freshness, caching and strong ETag, 304 when `If-None-Match`
+    names that ETag."""
+    headers = _slot_headers(share, state=_SlotState.of(data), etag=etag)
+    if _matches(if_none_match, etag):
         return Response(status_code=304, headers=headers)
     if data.file_name is not None:
         headers["Content-Disposition"] = artifact_content_disposition(data.file_name)
@@ -835,11 +997,27 @@ async def read_share_slot_data(
                 }
             ]
         )
+    variant = f"data:{format_}:bundle" if bundle else f"data:{format_}"
+
+    def etag(share: ShareRecord, card: ShareCard, state: _SlotState) -> str:
+        drawn_with = _redrawn_under(card, state.frame, worded=False, deps=deps)
+        return _slot_etag(
+            share, slot=slot, card=card, state=state, variant=variant, drawn_with=drawn_with
+        )
 
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
+        card = slot_card(share, slot)
+        # A note's slot refuses, so only a data card's slot answers 304.
+        if if_none_match is not None and card.frame is not None:
+            state = _settled_state(share, slot=slot, card=card, deps=deps)
+            if state is not None and _matches(if_none_match, tag := etag(share, card, state)):
+                return Response(
+                    status_code=304, headers=_slot_headers(share, state=state, etag=tag)
+                )
         data = serve_slot(share=share, slot=slot, format=format_, bundle=bundle, deps=deps)
-        return _slot_response(data, share=share, if_none_match=if_none_match)
+        tag = etag(share, card, _SlotState.of(data))
+        return _slot_response(data, share=share, etag=tag, if_none_match=if_none_match)
 
     return await _run(deps, job)
 
@@ -852,10 +1030,31 @@ async def read_share_slot_card(
 ) -> Response:
     require_share_id(share_id)
 
+    def etag(share: ShareRecord, card: ShareCard, state: _SlotState, retention: object) -> str:
+        drawn_with = [retention, _redrawn_under(card, state.frame, worded=True, deps=deps)]
+        return _slot_etag(
+            share, slot=slot, card=card, state=state, variant="card", drawn_with=drawn_with
+        )
+
     def job() -> Response:
         share = deps.share_store.read_share(share_id=share_id)
+        card = slot_card(share, slot)
+        if if_none_match is not None:
+            state = _settled_state(share, slot=slot, card=card, deps=deps)
+            if state is not None:
+                retention = (
+                    stated_retention(state.frame, snapshot_reader=deps.snapshot_reader)
+                    if state.frame is not None
+                    else None
+                )
+                if _matches(if_none_match, tag := etag(share, card, state, retention)):
+                    headers = _slot_headers(share, state=state, etag=tag)
+                    return Response(status_code=304, headers=headers)
         data = serve_slot_card(share=share, slot=slot, deps=deps)
-        return _slot_response(data, share=share, if_none_match=if_none_match)
+        # The read states its frame's retention as it read it, so the ETag hashes that.
+        retention = json.loads(data.body)["retention"]
+        tag = etag(share, card, _SlotState.of(data), retention)
+        return _slot_response(data, share=share, etag=tag, if_none_match=if_none_match)
 
     return await _run(deps, job)
 
@@ -1075,10 +1274,12 @@ def build_shares_door(
         read_share_history,
         methods=["GET"],
         response_model=ShareHistoryResponse,
-        description="What each of the share's slots showed, newest first: every frame it "
-        "served, with its retention counted from when DFO stored it and whether it is still "
+        description="What each of the share's slots showed, newest first, a page of up to "
+        f"limit entries (default {HISTORY_PAGE_DEFAULT}) at a time: every frame it served, "
+        "with its retention counted from when DFO stored it and whether it is still "
         "fetchable, and an entry with a null card and frame from when a replace left the slot "
-        "empty. Any origin may read it.",
+        "empty. next names the following page's cursor, to send as before, and is null on "
+        "the last page. Any origin may read it.",
     )
     router.add_api_route(
         SHARE_SLOT_PATH,

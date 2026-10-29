@@ -683,6 +683,32 @@ def test_an_oversize_payload_refuses_payload_too_large_and_spends_nothing(door: 
     assert door.allowances.spent == []
 
 
+@pytest.mark.parametrize(
+    "payload", ["NaN", "Infinity", '{"rows": [1, -Infinity]}'], ids=["nan", "infinity", "nested"]
+)
+def test_a_payload_holding_nan_or_infinity_refuses_request_invalid_before_any_pin(
+    door: _Door, payload: str
+):
+    """Python's JSON parser reads NaN and Infinity, which jsonb refuses, so the create refuses
+    them as invalid before it spends or pins anything."""
+    door.frame_store._pins.clear()
+    body = (
+        f'{{"cards": [{{"component_id": "{door.cards["cmp_a"]}", "revision": 1}}], '
+        f'"latest": true, "payload": {payload}}}'
+    )
+
+    resp = door.client.post(
+        "/api/presentation/shares",
+        content=body.encode(),
+        headers={**_HEADERS, "content-type": "application/json"},
+    )
+
+    problem = _assert_refused(resp, status=400, code="request_invalid")
+    assert problem["pointer"] == "/payload"
+    assert door.allowances.spent == []
+    assert door.frame_store.pins == ()
+
+
 def test_a_card_the_store_lacks_refuses_not_found_and_spends_nothing(door: _Door):
     resp = door.client.post(
         "/api/presentation/shares",

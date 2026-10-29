@@ -5,9 +5,10 @@ conversion."""
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
 
 import openpyxl
@@ -46,8 +47,13 @@ _START = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
 _SITE = "https://dfo.example"
 
 
+def _rendering(frame_ref: FrameRef) -> dict[str, object]:
+    """The rendering `frame_ref` resolves as, which a card made on it records."""
+    return {"base_content_version": frame_ref.content_version, "minting": None}
+
+
 def _frame(frame_ref: FrameRef, *, moved_by: float = 0.0) -> ResolvedFrame:
-    return build_resolved_frame(
+    frame = build_resolved_frame(
         frame_ref=frame_ref,
         role_keys=("recipient",),
         rows=[
@@ -57,20 +63,26 @@ def _frame(frame_ref: FrameRef, *, moved_by: float = 0.0) -> ResolvedFrame:
         labels={"country/ETH": "Ethiopia"},
         retrieved_on=date(2026, 10, 6),
     )
+    return dataclasses.replace(frame, rendering=_rendering(frame_ref))
 
 
 class _Newest:
     """`NewestFrames` answering `answer`: `None` for the frame asked about, a frame, a
-    `NewestPending`, or an exception to raise. Records every frame asked about, and calls
-    `during` once, as another read arriving while the check runs."""
+    `NewestPending`, or an exception to raise. Records every frame asked about and the
+    rendering it was asked under, and calls `during` once, as another read arriving while the
+    check runs."""
 
     def __init__(self) -> None:
         self.answer: FrameRef | NewestPending | Exception | None = None
         self.asked: list[FrameRef] = []
+        self.renderings: list[Mapping[str, object] | None] = []
         self.during: Callable[[], None] | None = None
 
-    def newest(self, frame: FrameRef) -> FrameRef | NewestPending:
+    def newest(
+        self, frame: FrameRef, *, rendering: Mapping[str, object] | None
+    ) -> FrameRef | NewestPending:
         self.asked.append(frame)
+        self.renderings.append(rendering)
         if (during := self.during) is not None:
             self.during = None
             during()
@@ -88,9 +100,17 @@ class _Clock:
 
 
 class _Door:
-    def __init__(self, client: TestClient, *, frame_store: FakeFrameStore, newest: _Newest):
+    def __init__(
+        self,
+        client: TestClient,
+        *,
+        frame_store: FakeFrameStore,
+        newest: _Newest,
+        presentation: FakePresentationStore,
+    ):
         self.client = client
         self.frame_store = frame_store
+        self.presentation = presentation
         self.newest = newest
         self.clock = _Clock()
         getattr(client.app.state, SHARES_DEPS_SLOT.name).now = self.clock
@@ -159,18 +179,19 @@ def _serve_door(
     frame_store.put(resolved_frame=_frame(_STORED))
     frame_store.put(resolved_frame=_frame(_MOVED, moved_by=_MOVED_BY))
     newest = _Newest()
+    presentation = FakePresentationStore()
     surface = presentation_surface(
         frame_store=frame_store,
         revision_store=FakeRevisionStore(),
         release_registry=release_registry,
-        share_store=LiveShareStore(store=FakePresentationStore()),
+        share_store=LiveShareStore(store=presentation),
         allowances=_Allowances(limit=50),
         caller_settings=CallerSettings(caller_hmac_key=SecretStr("share-data-test-key")),
         newest_frames=newest,
     )
     app = create_app([surface], cors_origins=cors_origins)
     with TestClient(app, raise_server_exceptions=False) as client:
-        yield _Door(client, frame_store=frame_store, newest=newest)
+        yield _Door(client, frame_store=frame_store, newest=newest, presentation=presentation)
 
 
 def _values(body: dict) -> list[float]:
@@ -223,6 +244,7 @@ def test_a_live_slots_card_is_drawn_on_the_frame_its_data_serves(
     assert resp.headers["cache-control"] == "no-cache"
     assert resp.headers["x-dfo-checked-at"] == _START.isoformat()
     assert door.newest.asked == [_STORED]
+    assert door.newest.renderings == [_rendering(_STORED)]
 
 
 def test_a_snapshot_slots_card_is_the_cards_read_with_a_strong_etag(door: _Door):
@@ -531,16 +553,17 @@ def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(
 ):
     frame_store = FakeFrameStore()
     frame_store.put(resolved_frame=_frame(_STORED))
+    presentation = FakePresentationStore()
     surface = presentation_surface(
         frame_store=frame_store,
         revision_store=FakeRevisionStore(),
         release_registry=release_registry,
-        share_store=LiveShareStore(store=FakePresentationStore()),
+        share_store=LiveShareStore(store=presentation),
         allowances=_Allowances(limit=50),
         caller_settings=CallerSettings(caller_hmac_key=SecretStr("share-data-test-key")),
     )
     with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
-        door = _Door(client, frame_store=frame_store, newest=_Newest())
+        door = _Door(client, frame_store=frame_store, newest=_Newest(), presentation=presentation)
         share = door.share(door.card(), latest=True)
 
         resp = door.data(share["id"])
@@ -673,6 +696,115 @@ def test_the_history_lists_each_frame_served_newest_first_with_its_retention(
     )
 
 
+def _seed_timeline(door: _Door, share_id: str, times: list[datetime]) -> None:
+    """Replace the share's timeline with one emptied-slot entry per time, `id` in list order."""
+    rows = door.presentation.state.served_frames
+    rows[:] = [row for row in rows if row["share_id"] != share_id]
+    for at in times:
+        rows.append(
+            {
+                "id": len(rows) + 1,
+                "share_id": share_id,
+                "slot": 1 + len(rows) % 3,
+                "component_id": None,
+                "component_revision": None,
+                "frame_spec_id": None,
+                "frame_content_version": None,
+                "rendering": None,
+                "first_served_at": at,
+            }
+        )
+
+
+def _pages(door: _Door, path: str, limit: int) -> list[dict]:
+    pages = [door.client.get(path, params={"limit": limit}).json()]
+    while pages[-1]["next"] is not None:
+        params = {"limit": limit, "before": pages[-1]["next"]}
+        pages.append(door.client.get(path, params=params).json())
+    return pages
+
+
+@pytest.mark.parametrize(
+    "offsets_us",
+    [[0, 1_000, 2_000, 3_000, 4_000], [0, 0, 1, 1, 999]],
+    ids=["apart", "one-millisecond"],
+)
+def test_the_history_pages_every_entry_once_in_the_order_it_lists_them(
+    door: _Door, offsets_us: list[int]
+):
+    share = door.share(door.card(), latest=True)
+    path = f"/api/presentation/shares/{share['id']}/history"
+    _seed_timeline(door, share["id"], [_START + timedelta(microseconds=us) for us in offsets_us])
+
+    whole = door.client.get(path).json()
+    pages = _pages(door, path, limit=2)
+
+    assert whole["next"] is None
+    assert [entry["first_served_at"] for entry in whole["served"]] == sorted(
+        (entry["first_served_at"] for entry in whole["served"]), reverse=True
+    )
+    assert [len(page["served"]) for page in pages] == [2, 2, 1]
+    assert [entry for page in pages for entry in page["served"]] == whole["served"]
+
+
+def test_the_history_holds_a_hundred_entries_unless_asked_for_more(door: _Door):
+    share = door.share(door.card(), latest=True)
+    path = f"/api/presentation/shares/{share['id']}/history"
+    _seed_timeline(door, share["id"], [_START + timedelta(seconds=n) for n in range(101)])
+
+    default = door.client.get(path).json()
+    most = door.client.get(path, params={"limit": 500}).json()
+    rest = door.client.get(path, params={"before": default["next"]}).json()
+
+    assert (len(default["served"]), len(most["served"]), most["next"]) == (100, 101, None)
+    assert default["served"] == most["served"][:100]
+    assert (rest["served"], rest["next"]) == (most["served"][100:], None)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": "0"},
+        {"limit": "501"},
+        {"limit": "ten"},
+        {"before": ""},
+        {"before": "not a cursor"},
+        {"before": "MTc2MTY0MjAwMDAwMDAwMC4w"},
+        {"before": "MTc2MTY0MjAwMDAwMDAwMC4xMg=="},
+        {"before": "OTk5OTk5OTk5OTk5OTk5OTk5OTk5OS4x"},
+    ],
+    ids=["zero", "over-max", "not-a-number", "empty", "not-base64", "id-zero", "padded", "far"],
+)
+def test_a_history_limit_out_of_range_or_a_cursor_no_page_gave_refuses_request_invalid(
+    door: _Door, params: dict[str, str]
+):
+    share = door.share(door.card(), latest=True)
+
+    resp = door.client.get(f"/api/presentation/shares/{share['id']}/history", params=params)
+
+    assert (resp.status_code, resp.json()["code"]) == (400, "request_invalid")
+    assert resp.headers["access-control-allow-origin"] == "*"
+
+
+def test_the_history_reads_each_frames_retention_once(door: _Door, monkeypatch: pytest.MonkeyPatch):
+    read: list[FrameRef] = []
+
+    def stated(frame_ref: FrameRef, *, snapshot_reader) -> dict[str, object]:
+        read.append(frame_ref)
+        return {"pinned": True}
+
+    monkeypatch.setattr(presentation_retention, "frame_retention", stated)
+    share = door.share(door.card(), door.card(), door.card(), latest=True)
+    read.clear()
+
+    served = door.client.get(f"/api/presentation/shares/{share['id']}/history").json()["served"]
+
+    assert [(entry["frame"]["content_version"], entry["fetchable"]) for entry in served] == [
+        (_STORED.content_version, True)
+    ] * 3
+    assert read == [_STORED]
+
+
 def test_a_create_and_a_replace_record_what_the_slots_show_before_any_read(door: _Door):
     first, second = door.card(), door.card()
     share = door.share(first, latest=True)
@@ -759,33 +891,73 @@ def test_a_slot_whose_card_becomes_a_note_records_an_empty_entry(door: _Door):
     ]
 
 
-def test_a_retried_create_records_what_the_first_create_failed_to_record(
-    door: _Door, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("client_token", [False, True], ids=["minted-token", "client-token"])
+def test_a_create_whose_record_fails_answers_its_token_and_the_history_catches_up(
+    door: _Door, monkeypatch: pytest.MonkeyPatch, client_token: bool
 ):
+    """The record runs after the share commits, so its failure must not hide the only copy of
+    a server-minted token: a retry would make a second share and spend a second unit."""
     card = door.card()
-    share_store = getattr(door.client.app.state, SHARES_DEPS_SLOT.name).share_store
-    record_served = share_store.record_served
+    deps = getattr(door.client.app.state, SHARES_DEPS_SLOT.name)
+    record_served = deps.share_store.record_served
 
     def unavailable(**_: object) -> None:
         raise PresentationStoreUnavailable("recording a served frame")
 
-    monkeypatch.setattr(share_store, "record_served", unavailable)
+    monkeypatch.setattr(deps.share_store, "record_served", unavailable)
+    body: dict[str, object] = {"cards": [{"component_id": card, "revision": 1}], "latest": True}
+    if client_token:
+        body["write_token"] = mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX)
+    created = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+    monkeypatch.setattr(deps.share_store, "record_served", record_served)
+    share_id = created.json()["id"]
+    history_path = f"/api/presentation/shares/{share_id}/history"
+    unrecorded = door.client.get(history_path).json()["served"]
+
+    if client_token:
+        retried = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+        assert (retried.status_code, retried.json()["id"]) == (201, share_id)
+    else:
+        assert door.data(share_id).status_code == 200
+
+    assert created.status_code == 201, created.json()
+    assert created.json()["write_token"].startswith(SHARE_WRITE_TOKEN_PREFIX)
+    assert len(deps.allowances.spent) == 1
+    assert unrecorded == []
+    assert [
+        (entry["slot"], entry["component_id"], entry["frame"]["content_version"])
+        for entry in door.client.get(history_path).json()["served"]
+    ] == [(1, card, _STORED.content_version)]
+
+
+def test_a_replace_or_a_replayed_create_records_the_frame_a_kept_live_slot_serves(door: _Door):
+    """A live slot whose card keeps its place serves its last check's frame, so a write that
+    keeps the card records that frame and never the card's own, which viewers no longer see."""
+    kept, added = door.card(), door.card()
     body = {
-        "cards": [{"component_id": card, "revision": 1}],
+        "cards": [{"component_id": kept, "revision": 1}],
         "latest": True,
         "write_token": mint_write_token(prefix=SHARE_WRITE_TOKEN_PREFIX),
     }
-    failed = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
-    monkeypatch.setattr(share_store, "record_served", record_served)
+    share = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS).json()
+    share_path = f"/api/presentation/shares/{share['id']}"
+    door.newest.answer = _MOVED
+    assert _stated(door.data(share["id"]))[:2] == ("current", _MOVED.content_version)
 
-    retried = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+    replaced = door.client.put(
+        share_path,
+        json={
+            "cards": [{"component_id": kept, "revision": 1}, {"component_id": added, "revision": 1}]
+        },
+        headers={_TOKEN: share["write_token"]},
+    )
+    replayed = door.client.post("/api/presentation/shares", json=body, headers=_HEADERS)
 
-    assert (failed.status_code, retried.status_code) == (503, 201)
-    history = door.client.get(f"/api/presentation/shares/{retried.json()['id']}/history")
+    assert (replaced.status_code, replayed.status_code) == (200, 201)
+    served = door.client.get(f"{share_path}/history").json()["served"]
     assert [
-        (entry["slot"], entry["component_id"], entry["frame"]["content_version"])
-        for entry in history.json()["served"]
-    ] == [(1, card, _STORED.content_version)]
+        entry["frame"]["content_version"] for entry in reversed(served) if entry["slot"] == 1
+    ] == [_STORED.content_version, _MOVED.content_version]
 
 
 def test_a_snapshot_conversion_keeps_and_pins_the_frame_each_slot_serves(door: _Door):

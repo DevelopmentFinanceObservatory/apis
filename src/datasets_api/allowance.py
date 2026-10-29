@@ -11,13 +11,15 @@ without the pin grant. `AllowanceLedger.spend` takes one unit, or refuses `Allow
 (429 `allowance_exhausted`) with `Retry-After` counting the seconds to the next UTC midnight,
 when every allowance and budget resets. `SharedAllowanceLedger.spend_together` takes one unit
 of each of several, all or none, and refuses naming the first spent out. `AllowanceLedger.refund`
-gives one unit back, and `spending` spends one around a write and refunds it when the write
+gives one unit back, `SharedAllowanceLedger.refund_together` gives back one of each of several,
+all or none, and `spending` spends one around a write and refunds it when the write
 fails, so a failed write costs its caller nothing. A pin's units stay spent when its copy fails.
 
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
 it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
 upserts in one transaction and rolls them all back when one finds its row at the limit. A
-refund takes one from the day's row, or deletes the row it would leave at zero.
+refund takes one from the day's row, or deletes the row it would leave at zero, and
+`refund_together` runs its refunds in one transaction.
 """
 
 from __future__ import annotations
@@ -151,6 +153,15 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         """
         ...
 
+    def refund_together(self, spends: Sequence[Spend], now: datetime) -> None:
+        """Give back one unit of each of `spends` spent for the UTC day of `now`, all or none. A
+        day with nothing spent stays at nothing.
+
+        Raises:
+            DatasetsStoreUnavailable: The ledger could not be written. Nothing is given back.
+        """
+        ...
+
 
 class _LimitReached(Exception):
     """Rolls back the spends of `spend_together` made before one found its row at the limit."""
@@ -207,26 +218,31 @@ class LiveAllowanceLedger:
             raise AllowanceExhausted(kind=exhausted, limit=self._limits[exhausted], now=now)
 
     def refund(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
-        params = (caller.key, kind.value, _utc_day(now))
+        self.refund_together([Spend(caller.key, kind)], now)
+
+    def refund_together(self, spends: Sequence[Spend], now: datetime) -> None:
         failure: str | None = None
         sqlstate: str | None = None
         try:
             with self._store.transaction() as tx:
-                # The row holds a positive count, so the last unit deletes it.
-                row = tx.fetch_one(
-                    "UPDATE datasets.caller_allowance SET count = count - 1 "
-                    "WHERE caller_key = %s AND kind = %s AND day = %s AND count > 1 "
-                    "RETURNING count",
-                    params,
-                )
-                if row is None:
-                    tx.execute(
-                        "DELETE FROM datasets.caller_allowance "
-                        "WHERE caller_key = %s AND kind = %s AND day = %s AND count = 1",
+                for spend in spends:
+                    params = (spend.key, spend.kind.value, _utc_day(now))
+                    # The row holds a positive count, so the last unit deletes it.
+                    row = tx.fetch_one(
+                        "UPDATE datasets.caller_allowance SET count = count - 1 "
+                        "WHERE caller_key = %s AND kind = %s AND day = %s AND count > 1 "
+                        "RETURNING count",
                         params,
                     )
+                    if row is None:
+                        tx.execute(
+                            "DELETE FROM datasets.caller_allowance "
+                            "WHERE caller_key = %s AND kind = %s AND day = %s AND count = 1",
+                            params,
+                        )
         except Exception as exc:
-            failure = f"refunding {kind} of {caller.key!r} failed: {safe_diagnostics(exc)}"
+            refunded = ", ".join(f"{spend.kind} of {spend.key!r}" for spend in spends)
+            failure = f"refunding {refunded} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)

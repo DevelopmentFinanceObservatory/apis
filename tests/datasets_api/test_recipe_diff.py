@@ -175,3 +175,38 @@ def test_the_command_exits_non_zero_when_a_recipe_differs(
 
     assert main(["diff-recipes", "--report", str(report)]) == 1
     assert seen == {"task": "diff-recipes", "report": str(report)}
+
+
+def _roots_swapped(node: Any) -> Any:
+    """`node` with root indices 0 and 1 swapped."""
+    if isinstance(node, dict):
+        if "root" in node:
+            return {**node, "root": 1 - node["root"]}
+        return {key: _roots_swapped(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_roots_swapped(value) for value in node]
+    return node
+
+
+def test_a_recipe_storing_its_roots_in_another_order_is_equal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The run numbers its roots in its own order, so a stored root is matched to the root the
+    run read by its record, not by its index."""
+    stores = Stores()
+    _store_root(stores, AID, AID_V1, aid_frame())
+    _store_root(stores, POPULATION, POPULATION_V1, population_frame())
+    _analysed(stores, _PER_PERSON)
+    with stores.store.transaction() as tx:
+        row = tx.fetch_one("SELECT recipe FROM datasets.frame_recipe", ())
+        assert row is not None
+        recipe = dict(row["recipe"])  # ty: ignore[no-matching-overload] -- the fake decodes JSON
+        recipe["roots"].reverse()
+        recipe["tree"] = _roots_swapped(recipe["tree"])
+        tx.execute("UPDATE datasets.frame_recipe SET recipe = %s", (json.dumps(recipe),))
+
+    differs, lines = _diff(stores)
+
+    assert lines == []
+    assert differs == 0
+    assert _counts(capsys)["equal"] == 1

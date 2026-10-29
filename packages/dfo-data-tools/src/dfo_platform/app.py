@@ -117,9 +117,10 @@ class Surface:
     default executor is rejected. The guard covers the serving loop. Separate
     loops in other threads keep their own executors.
 
-    `public_paths` names the route paths any origin may read with `GET`, whose handlers set
-    `Access-Control-Allow-Origin: *` themselves. Their preflights allow any origin and
-    `If-None-Match` whatever `cors_origins` lists (`dfo_platform.cors`).
+    `public_paths` names the route paths any origin may read with `GET`. The CORS layer gives
+    every `GET` reply on one `Access-Control-Allow-Origin: *`, a refusal sent before routing
+    included, and its preflights allow any origin and `If-None-Match` whatever `cors_origins`
+    lists (`dfo_platform.cors`).
 
     `description` is the one line the OpenAPI document gives the surface's tag. Every
     route the surface serves carries that one tag, `name` capitalised, and the operation

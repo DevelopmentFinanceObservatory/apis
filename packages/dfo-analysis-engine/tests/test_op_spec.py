@@ -10,6 +10,7 @@ from dfo_frame_grammar import ANCHOR_RULE
 from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 from pydantic import ValidationError
 
+from dfo_analysis_engine.calls import build_op_spec
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.identity import build_op_spec_preimage, op_spec_hash_for
 from dfo_analysis_engine.op_spec import (
@@ -30,6 +31,7 @@ from dfo_analysis_engine.op_spec import (
     Verb,
     with_anchor_key,
 )
+from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode
 from dfo_analysis_engine.rolling import canonical_populations
 
 SNAPSHOT_REF = {
@@ -745,3 +747,17 @@ def test_an_anchor_key_accompanies_exactly_a_rolling_op_spec() -> None:
     ]:
         with pytest.raises(ValidationError):
             with_anchor_key(op_spec, anchor_key)
+
+
+@pytest.mark.parametrize(
+    "on",
+    [
+        pytest.param([{"destination": "observationAbout"}], id="unhashable-item"),
+        pytest.param(["destination", "destination"], id="repeated-column"),
+    ],
+)
+def test_a_malformed_on_list_refuses_op_spec_invalid(on: list[object]) -> None:
+    with pytest.raises(AnalysisRefused) as caught:
+        build_op_spec({"verb": "sum_of", "frame_ref": SNAPSHOT_REF, "on": on})
+
+    assert caught.value.refusal.code is RefusalCode.OP_SPEC_INVALID

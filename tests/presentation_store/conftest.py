@@ -491,16 +491,21 @@ class FakeTransaction:
             return []
 
         if sql.startswith(
-            "SELECT slot, component_id, component_revision, frame_spec_id, "
+            "SELECT id, slot, component_id, component_revision, frame_spec_id, "
             "frame_content_version, rendering, first_served_at FROM presentation.served_frame"
         ):
-            (share_id,) = params
-            rows = [row for row in s.served_frames if row["share_id"] == share_id]
-            # ORDER BY first_served_at DESC, slot, id DESC: stable sorts from the last key.
-            rows.sort(key=lambda row: row["id"], reverse=True)
-            rows.sort(key=lambda row: row["slot"])
-            rows.sort(key=lambda row: row["first_served_at"], reverse=True)
-            return [dict(row) for row in rows]
+            if "(first_served_at, id) < (%s, %s)" in sql:
+                share_id, *before, limit = params
+            else:
+                (share_id, limit), before = params, None
+            rows = [
+                row
+                for row in s.served_frames
+                if row["share_id"] == share_id
+                and (before is None or (row["first_served_at"], row["id"]) < tuple(before))
+            ]
+            rows.sort(key=lambda row: (row["first_served_at"], row["id"]), reverse=True)
+            return [dict(row) for row in rows[:limit]]
 
         return None
 

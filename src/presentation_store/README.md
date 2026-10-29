@@ -83,6 +83,7 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 - `0011_revision_frame_rendering.sql`: Adds the nullable `frame_rendering` JSONB column to `component_revision`, with no backfill.
 - `0012_share.sql`: Creates the `share`, `share_revision`, `share_slot`, and `served_frame` tables.
 - `0017_served_frame_timeline.sql`: Replaces `served_frame`'s natural key with an identity `id`, lets its card and frame columns hold NULL together for an emptied slot, and indexes each slot's newest entry.
+- `0018_served_frame_share_newest.sql`: Indexes each share's `served_frame` entries newest first by `first_served_at` and `id`, the keyset the history route pages by.
 
 ### Running Migrations
 
@@ -152,7 +153,7 @@ A share id with no row, or a taken-down one, raises `ShareNotFound` from every m
 
 1. Promotes the canonical artifact from `working` to `pinned` tier in `ArtifactStore` when currently in the working tier.
 2. Inserts an artifact reference record (`reference_kind="presentation_draft"`, `principal="presentation:<component_id>"`) into `datasets.artifact_reference` using `ArtifactReferenceWriter`.
-3. For a derived (`ops_`) frame, pins each root version its recipe names (each root's `dataset`), and theirs in turn. A derived frame with no recipe yet pins alone. A store with no recipe reader, or a root naming no dataset version, refuses `frame_unavailable`.
+3. For a derived (`ops_`) frame, pins each root version its recipe names (each root's `dataset`), and theirs in turn. A derived frame with no recipe yet refuses the retryable `recipe_pending`, since a later recipe write lets a retry pin its roots. A store with no recipe reader, or a recipe root naming no dataset version, refuses the retryable `recipe_unreadable`. The recipes are read first, so either refusal pins nothing. A root that has expired or been revoked is left unpinned and logged, and does not block a share.
 
 No create, revise, or render pins. `pin_card_frames(component_id, revision, revision_store, frame_store)` pins the frame a card revision draws, and a share calls it for each card it first includes.
 

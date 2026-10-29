@@ -14,6 +14,7 @@ from frame_fixtures import (
     time_series_with_gap_year_frame,
 )
 
+from dfo_analysis_engine import calls
 from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.engine.aggregate import run_aggregate
 from dfo_analysis_engine.engine.paired import run_paired_compare
@@ -310,6 +311,24 @@ def test_a_paired_compare_over_a_derived_side_gives_data_minus_other_per_member(
     assert summary["result"]["right_unmatched_keys"] == [[["destination", "country/GHA"]]]
 
 
+@pytest.mark.parametrize("error", [TypeError, ValueError])
+def test_a_step_that_cannot_be_built_leaves_the_result_and_omits_the_step(
+    monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    tree = _node("aggregate", {"frame_ref": _root(0)}, aggregation="sum", group_by=["reporter"])
+    roots = {0: RootFrame(ref=_ROOT, frame=plain_single_unit_frame())}
+    built = evaluate(tree, roots)
+
+    def unbuildable(*_args: object, **_kwargs: object) -> None:
+        raise error("no step")
+
+    monkeypatch.setattr(calls, "call_step", unbuildable)
+    evaluation = evaluate(tree, roots)
+
+    assert evaluation.ref == built.ref
+    assert [step.step for step in evaluation.steps] == [None]
+
+
 def _rolling_growth(spec_id: str, *, window_start: str, window_end: str) -> dict[str, Any]:
     return _node(
         "growth",
@@ -435,6 +454,20 @@ def test_rolling_branches_over_different_populations_are_refused_in_the_same_yea
             plain_single_unit_frame(),
             RefusalCode.QUOTIENT_OF_SIDE_UNIT_UNSUPPORTED,
             id="quotient-over-a-share",
+        ),
+        pytest.param(
+            # The op-spec names a right side the node gives no input for, so no
+            # frame stands in for it.
+            _node(
+                "compare",
+                {"frame_ref": _root(0)},
+                right_frame_ref=_pair(_OTHER_ROOT),
+                left_entity={"reporter": "dcid:USA"},
+                right_entity={"reporter": "dcid:FRA"},
+            ),
+            plain_single_unit_frame(),
+            RefusalCode.OP_SPEC_INVALID,
+            id="named-slot-without-input",
         ),
     ],
 )

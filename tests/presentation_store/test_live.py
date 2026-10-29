@@ -749,7 +749,7 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
     assert shares.slot_check(share_id=share.id, slot=2, card=card) == SlotCheck(
         frame=stored, freshness="pending", checked_at=None, next_check_at=until
     )
-    served = shares.served_frames(share_id=share.id)
+    served = shares.served_frames(share_id=share.id, limit=10).entries
     assert [(entry.component_id, entry.frame) for entry in served] == [
         (card.component_id, stored),
         (None, None),
@@ -757,6 +757,51 @@ def test_a_slot_check_claim_and_served_frames_round_trip(live_store):
         (card.component_id, newer),
     ]
     assert [entry.rendering for entry in served[:2]] == [{"columns": ["a"]}, None]
+
+
+def test_a_timeline_pages_by_keyset_once_each_in_order_through_one_instant(live_store):
+    """Entries recorded at one instant, across slots, page by `id` with none repeated or
+    skipped, and an older entry follows them."""
+    _apply()
+    shares = LiveShareStore(store=live_store)
+    cards = [_share_card(f"cmp_{name}") for name in "abc"]
+    share = shares.create_share(
+        kind="card", mode="live", title=None, write_token_sha256=None, cards=cards
+    )
+    for slot, card in enumerate(cards, start=1):
+        shares.record_served(
+            share_id=share.id, slot=slot, card=card, frame=card.frame, rendering=None
+        )
+        shares.record_emptied(share_id=share.id, slot=slot)
+    instant = datetime(2026, 10, 28, 9, 0, 0, 123456, tzinfo=UTC)
+    with live_store.transaction() as tx:
+        tx.execute(
+            "UPDATE presentation.served_frame SET first_served_at = %s "
+            "WHERE share_id = %s AND component_id IS NULL",
+            (instant, share.id),
+        )
+        tx.execute(
+            "UPDATE presentation.served_frame SET first_served_at = %s "
+            "WHERE share_id = %s AND component_id IS NOT NULL",
+            (instant - timedelta(microseconds=1), share.id),
+        )
+
+    whole = shares.served_frames(share_id=share.id, limit=10)
+    pages = [shares.served_frames(share_id=share.id, limit=2)]
+    while (position := pages[-1].next) is not None:
+        pages.append(shares.served_frames(share_id=share.id, limit=2, before=position))
+
+    assert whole.next is None
+    assert [(entry.slot, entry.component_id) for entry in whole.entries] == [
+        (3, None),
+        (2, None),
+        (1, None),
+        (3, "cmp_c"),
+        (2, "cmp_b"),
+        (1, "cmp_a"),
+    ]
+    assert [len(page.entries) for page in pages] == [2, 2, 2]
+    assert [entry for page in pages for entry in page.entries] == list(whole.entries)
 
 
 def test_rehash_derived_rendering_moves_only_the_revisions_drawing_the_frame(live_store):

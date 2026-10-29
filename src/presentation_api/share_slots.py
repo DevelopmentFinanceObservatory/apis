@@ -34,23 +34,25 @@ beside it. A note draws no frame, so its card is its stored read, `current`. Eve
 frame records the frame it served in `served_frame` with the card revision's recorded
 rendering.
 
-The history lists those records newest first, each with the retention of its frame counted
-from when DFO stored it (`presentation_api.retention.stated_retention`) and whether that
-retention still holds: pinned, or held past now. A frame with no version record states no
+The history lists those records newest first, a page at a time, each with the retention of its
+frame counted from when DFO stored it (`presentation_api.retention.stated_retention`, read once per distinct
+frame of the document) and whether that retention still holds: pinned, or held past now. A frame with no version record states no
 retention and is not fetchable. An entry for a slot a replace left empty has no card, frame,
-rendering or retention, and is not fetchable.
+rendering or retention, and is not fetchable. A page names the next by an opaque cursor
+(`history_cursor`) over its last entry's `first_served_at` and id, the keyset the store reads by.
 """
 
 from __future__ import annotations
 
-import hashlib
+import base64
+import binascii
 import io
 import json
 import logging
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow.parquet as pq
@@ -68,17 +70,28 @@ from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
-from presentation_store import Freshness, ServedFrame, ShareCard, ShareRecord, SlotCheck
+from presentation_store import (
+    Freshness,
+    ServedPage,
+    ServedPosition,
+    ShareCard,
+    ShareRecord,
+    SlotCheck,
+)
 
 if TYPE_CHECKING:
     from presentation_api.doors.shares import SharesDeps
 
 __all__ = [
+    "HISTORY_PAGE_DEFAULT",
+    "HISTORY_PAGE_MAX",
     "ShareSlotEmpty",
     "SlotData",
     "SlotFormat",
     "SlotServed",
+    "history_cursor",
     "history_document",
+    "history_position",
     "serve_on_slot_frame",
     "serve_slot",
     "serve_slot_card",
@@ -91,6 +104,16 @@ logger = logging.getLogger(__name__)
 type SlotFormat = Literal["json", "csv", "xlsx", "parquet"]
 
 _JSON_MEDIA_TYPE = "application/json"
+
+HISTORY_PAGE_DEFAULT = 100
+"""The entries a history page holds when the request names no `limit`."""
+
+HISTORY_PAGE_MAX = 500
+"""The most entries a history page holds."""
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND = timedelta(microseconds=1)
+_MAX_ENTRY_ID = 2**63 - 1
 
 _MIN_RETRY_S = 1.0
 """The least a pending check waits, whatever retry time it was given."""
@@ -115,7 +138,7 @@ class ShareSlotEmpty(Exception):
 class SlotData:
     """One read of a slot: the body, its media type and file name (`None` for JSON), the frame
     served (`None` for a note's card), its freshness, when a live slot's check ran (`None` for
-    a snapshot or a note), and the body's strong ETag."""
+    a snapshot or a note)."""
 
     body: bytes
     media_type: str
@@ -123,7 +146,6 @@ class SlotData:
     frame: FrameRef | None
     freshness: Freshness
     checked_at: datetime | None
-    etag: str
 
 
 @dataclass(frozen=True)
@@ -184,7 +206,9 @@ def serve_on_slot_frame[T](
         frame, freshness, checked_at = card.frame, "current", None
         drawn = draw(frame)
     else:
-        check = _live_check(share=share, slot=slot, card=card, deps=deps)
+        check = _live_check(
+            share=share, slot=slot, card=card, rendering=record.frame_rendering, deps=deps
+        )
         try:
             drawn = draw(check.frame)
         except ExcelIllegalCharacterError:
@@ -265,7 +289,6 @@ def serve_slot(
         frame=served.frame,
         freshness=served.freshness,
         checked_at=served.checked_at,
-        etag=_etag(media_type, body),
     )
 
 
@@ -311,7 +334,6 @@ def serve_slot_card(*, share: ShareRecord, slot: int, deps: SharesDeps) -> SlotD
         frame=frame,
         freshness=freshness,
         checked_at=checked_at,
-        etag=_etag(_JSON_MEDIA_TYPE, body),
     )
 
 
@@ -345,26 +367,20 @@ def _card_document(
     return {**document, "retention": retention}
 
 
-def _etag(media_type: str, body: bytes) -> str:
-    """A strong ETag over `body` served as `media_type`."""
-    digest = hashlib.sha256(media_type.encode() + b"\0" + body).hexdigest()
-    return f'"{digest[:32]}"'
-
-
-def history_document(
-    *, share_id: str, served: Sequence[ServedFrame], deps: SharesDeps
-) -> dict[str, object]:
-    """The history route's body: every entry `served`, in the order given, each frame with its
-    retention."""
+def history_document(*, share_id: str, page: ServedPage, deps: SharesDeps) -> dict[str, object]:
+    """The history route's body: the entries of `page`, in the order given, each frame with its
+    retention, read once per distinct frame however many entries name it, and the cursor of the
+    next page (`None` on the last)."""
     now = deps.now()
+    retentions: dict[FrameRef, dict[str, object] | None] = {}
     entries: list[dict[str, object]] = []
-    for entry in served:
+    for entry in page.entries:
         frame = entry.frame
-        retention = (
-            stated_retention(frame, snapshot_reader=deps.snapshot_reader)
-            if frame is not None
-            else None
-        )
+        retention = None
+        if frame is not None:
+            if frame not in retentions:
+                retentions[frame] = stated_retention(frame, snapshot_reader=deps.snapshot_reader)
+            retention = retentions[frame]
         entries.append(
             {
                 "slot": entry.slot,
@@ -381,7 +397,31 @@ def history_document(
                 "fetchable": _fetchable(retention, now=now),
             }
         )
-    return {"id": share_id, "served": entries}
+    return {
+        "id": share_id,
+        "served": entries,
+        "next": history_cursor(page.next) if page.next is not None else None,
+    }
+
+
+def history_cursor(position: ServedPosition) -> str:
+    """The opaque cursor a history page names its next page by: unpadded URL-safe base64 of
+    the last entry's `first_served_at`, in microseconds since the epoch, and its id."""
+    micros = (position.first_served_at - _EPOCH) // _MICROSECOND
+    return base64.urlsafe_b64encode(f"{micros}.{position.id}".encode()).decode().rstrip("=")
+
+
+def history_position(cursor: str) -> ServedPosition | None:
+    """The position `cursor` names, or `None` when `history_cursor` gives no such cursor."""
+    try:
+        decoded = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+        micros, entry_id = (int(part) for part in decoded.decode("ascii").split("."))
+        position = ServedPosition(first_served_at=_EPOCH + micros * _MICROSECOND, id=entry_id)
+    except (binascii.Error, UnicodeDecodeError, ValueError, OverflowError):
+        return None
+    if not 0 < entry_id <= _MAX_ENTRY_ID or history_cursor(position) != cursor:
+        return None
+    return position
 
 
 def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool:
@@ -393,9 +433,17 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
     return isinstance(held_until, str) and datetime.fromisoformat(held_until) > now
 
 
-def _live_check(*, share: ShareRecord, slot: int, card: ShareCard, deps: SharesDeps) -> SlotCheck:
+def _live_check(
+    *,
+    share: ShareRecord,
+    slot: int,
+    card: ShareCard,
+    rendering: Mapping[str, object] | None,
+    deps: SharesDeps,
+) -> SlotCheck:
     """The slot's check, run once none is stored and again once the last one is due
-    (`SlotCheck.next_check_at`). Of reads finding it due, the one whose claim succeeds runs it,
+    (`SlotCheck.next_check_at`), asking for the newest frame of the card's frame under
+    `rendering`, the one the card revision recorded. Of reads finding it due, the one whose claim succeeds runs it,
     and the others serve what the last check recorded: its frame, freshness and check time, or
     `pending` on the card's own frame before the first check ends. A claim whose reader never
     records its check expires after `_CLAIM_TTL`."""
@@ -413,22 +461,35 @@ def _live_check(*, share: ShareRecord, slot: int, card: ShareCard, deps: SharesD
         assert held is not None
         return held
     last = prior.frame if prior is not None else card.frame
-    check = _check(card.frame, last=last, now=now, deps=deps, label=f"{share.id} slot {slot}")
+    check = _check(
+        card.frame,
+        rendering=rendering,
+        last=last,
+        now=now,
+        deps=deps,
+        label=f"{share.id} slot {slot}",
+    )
     store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
     return check
 
 
 def _check(
-    frame: FrameRef, *, last: FrameRef, now: datetime, deps: SharesDeps, label: str
+    frame: FrameRef,
+    *,
+    rendering: Mapping[str, object] | None,
+    last: FrameRef,
+    now: datetime,
+    deps: SharesDeps,
+    label: str,
 ) -> SlotCheck:
-    """Ask for the newest frame standing for `frame`, serving `last` when none answers. The
+    """Ask for the newest frame standing for `frame` of `rendering`, serving `last` when none answers. The
     check is due again after `FRESHNESS_WINDOW`, or after the retry time of a pending answer."""
     due = now + FRESHNESS_WINDOW
     if deps.newest is None:
         logger.error("Share %s cannot check for newer data: no Datasets surface answers", label)
         return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     try:
-        answer = deps.newest.newest(frame)
+        answer = deps.newest.newest(frame, rendering=rendering)
     except Exception:
         # Every refusal and failure of the refresh or the run leaves the slot on its last frame,
         # which the reply states as stale, until the next check.

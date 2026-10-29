@@ -132,12 +132,25 @@ def test_pin_card_frames_refuses_a_revision_the_component_lacks(
 # -- each revision keeps its frame's rendering ---------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("created_with", "kept"),
+    [
+        pytest.param(_CUT, _CUT, id="recorded"),
+        # A component created before renderings were recorded keeps none, so a draw reads
+        # its frame's records then, never those of the day of a revise.
+        pytest.param(None, None, id="created_before_renderings_were_recorded"),
+    ],
+)
 def test_a_revise_keeps_the_rendering_the_create_recorded(
-    frame_store, revision_store, release_registry
+    frame_store, revision_store, release_registry, created_with, kept
 ):
     frame, intent = _malaria_intent()
     frame_store.put(resolved_frame=dataclasses.replace(frame, rendering=_CUT))
     created = _create(frame_store, revision_store, release_registry, intent)
+    first = revision_store._revisions[created.component_id][0]
+    revision_store._revisions[created.component_id][0] = dataclasses.replace(
+        first, frame_rendering=created_with
+    )
     # A later fetch links a plain file under the same version, so its records now read plain.
     frame_store.put(resolved_frame=dataclasses.replace(frame, rendering=_PLAIN))
 
@@ -154,7 +167,7 @@ def test_a_revise_keeps_the_rendering_the_create_recorded(
     stored = [
         revision_store.read_revision(component_id=created.component_id, revision=n) for n in (1, 2)
     ]
-    assert [record.frame_rendering for record in stored] == [_CUT, _CUT]
+    assert [record.frame_rendering for record in stored] == [created_with, kept]
 
 
 # -- concurrent-writer rebuild --------------------------------------------------

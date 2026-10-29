@@ -21,8 +21,9 @@ runs the call as the verb's MCP tool runs it once its inputs are resolved:
 4. The `ops_` id is minted over the op-spec, and the `ocv_` content version over
    that id, each distinct input `cv_` once, and the engine's execution identity.
 
-A two-sided verb with no second slot reads its first input twice and mints over
-one `cv_`. Every refusal is raised as `AnalysisRefused`.
+Inputs that fill other slots than those the op-spec names refuse
+`op_spec_invalid`. A two-sided verb with no second slot reads its first input
+twice and mints over one `cv_`. Every refusal is raised as `AnalysisRefused`.
 
 `admit` makes a frame an input: its `time_period` cells must be points at one
 grain or exactly one span (`mixed_time_grain`). An input carries what the next
@@ -34,13 +35,17 @@ from: the `result.VerbResult` fields, the verb, the canonical op-spec's
 parameters, the execution identity, the derived marker, and `result`, every
 field of the engine's result dataclass but its frame. A `compare` or `sum_of`
 summary adds `sides`, the engine side each of the call's `data` and `other`
-fills: `compare` gives right minus left, so its `data` is `right`.
+fills (`engine.paired.DATA_SIDE`): `compare` gives right minus left, so its
+`data` is `right`. A call paired by `on` gives a `result` naming every field
+its verb's single-series result does, but for the per-period rows, which it
+keeps per member (`engine.paired.PairedResult`).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -71,7 +76,7 @@ from dfo_analysis_engine.engine.compare import run_compare
 from dfo_analysis_engine.engine.filter import run_filter
 from dfo_analysis_engine.engine.growth import run_growth
 from dfo_analysis_engine.engine.join import MatchedKeys, run_join
-from dfo_analysis_engine.engine.paired import run_paired_compare, run_paired_sum_of
+from dfo_analysis_engine.engine.paired import DATA_SIDE, run_paired_compare, run_paired_sum_of
 from dfo_analysis_engine.engine.quotient_of import run_quotient_of
 from dfo_analysis_engine.engine.rank import run_rank
 from dfo_analysis_engine.engine.share_of import run_share_of
@@ -207,6 +212,8 @@ class Input:
     marker: DerivedMarker | None = None
     components: tuple[CompositeComponent, ...] = ()
 
+
+logger = logging.getLogger(__name__)
 
 # How many spans a `mixed_time_grain` refusal names when a frame carries more than one.
 _NAMED_SPANS = 2
@@ -517,7 +524,7 @@ class VerbCall:
     minted over. `time`, `marker` and `components` are what a next call reads
     beside the rows (`as_input`). `summary` is described in the module docstring.
     `dropped` is every series the call dropped for a data gap, record by record, and `step`
-    the call's step record (`call_steps.call_step`)."""
+    the call's step record (`call_steps.call_step`), `None` when it could not be built."""
 
     ref: FrameRef
     frame: Frame
@@ -530,7 +537,7 @@ class VerbCall:
     components: tuple[CompositeComponent, ...]
     summary: dict[str, Any] = field(repr=False)
     dropped: tuple[DroppedSeries, ...] = field(default=(), repr=False)
-    step: Step = field(repr=False)
+    step: Step | None = field(repr=False)
 
     def as_input(self) -> Input:
         """This result, admitted as the input of a next call.
@@ -557,8 +564,10 @@ def call_verb(
     """Run `op_spec` over `inputs`, keyed by frame slot. See the module docstring.
 
     Raises:
-        AnalysisRefused: The call is refused.
+        AnalysisRefused: The call is refused, or `op_spec_invalid` when `inputs`
+            fills other slots than `frame_ref` and those the op-spec sets.
     """
+    _check_slots(op_spec, inputs)
     first = inputs["frame_ref"]
     match op_spec:
         case AggregateOpSpec():
@@ -570,8 +579,7 @@ def call_verb(
         case FilterOpSpec():
             outcome = _filter(op_spec, first)
         case CompareOpSpec() | SumOfOpSpec():
-            second = inputs.get("right_frame_ref", first)
-            outcome = _slice_pair(op_spec, first, second)
+            outcome = _slice_pair(op_spec, first, inputs.get("right_frame_ref", first))
         case ShareOfOpSpec():
             outcome = _share_of(op_spec, first, inputs.get("denominator_frame_ref", first))
         case QuotientOfOpSpec():
@@ -583,6 +591,25 @@ def call_verb(
     # The first slot before the second, whatever order the tree lists them in.
     ordered = [first, *(frame for slot, frame in inputs.items() if slot != "frame_ref")]
     return _finished(op_spec, outcome, ordered, components=first.components)
+
+
+def _check_slots(op_spec: OpSpecVariant, inputs: Mapping[str, Input]) -> None:
+    """Refuse `op_spec_invalid` unless `inputs` fills exactly the frame slots the
+    op-spec names: `frame_ref`, and each `*_frame_ref` parameter it sets."""
+    named = {
+        name
+        for name in type(op_spec).model_fields
+        if name.endswith("frame_ref") and getattr(op_spec, name) is not None
+    }
+    if named != set(inputs):
+        raise AnalysisRefused(
+            Refusal.op_spec_invalid(
+                detail=(
+                    f"the op-spec names the frame slots {sorted(named)}, and the call "
+                    f"was given frames for {sorted(inputs)}"
+                )
+            )
+        )
 
 
 def _finished(
@@ -637,15 +664,40 @@ def _finished(
         components=components,
         summary=summary,
         dropped=_dropped(outcome.result.exclusions),
-        step=call_step(
+        step=_step(
+            op_spec,
+            outcome,
+            op_spec_hash=op_spec_hash,
+            canonical_op_spec=canonical_text.decode(),
+            inputs=inputs,
+        ),
+    )
+
+
+def _step(
+    op_spec: OpSpecVariant,
+    outcome: _Outcome,
+    *,
+    op_spec_hash: str,
+    canonical_op_spec: str,
+    inputs: Sequence[Input],
+) -> Step | None:
+    """The call's step record, or `None`, logged, when none can be built: a step
+    describes a result and never refuses one."""
+    try:
+        return call_step(
             op_spec,
             outcome.result,
             op_spec_hash=op_spec_hash,
-            canonical_op_spec=canonical_text.decode(),
+            canonical_op_spec=canonical_op_spec,
             ratio=_ratio(outcome.marker),
             input_ratios=[_ratio(frame.marker) for frame in inputs],
-        ),
-    )
+        )
+    except (ValueError, TypeError):
+        logger.warning(
+            "No step record for the %s call %s", op_spec.verb, op_spec_hash, exc_info=True
+        )
+        return None
 
 
 def _ratio(marker: DerivedMarker | None) -> bool:
@@ -812,6 +864,7 @@ def _slice_pair(op_spec: CompareOpSpec | SumOfOpSpec, left: Input, right: Input)
     member (`engine.paired`). `data` is compare's right side and sum_of's left."""
     stat_var = f"dcid:{op_spec_hash_checked(op_spec)}"
     compare = isinstance(op_spec, CompareOpSpec)
+    data = DATA_SIDE[op_spec.verb]
     arguments: dict[str, Any] = {
         "stat_var": stat_var,
         "left_entity": _binding(op_spec.left_entity),
@@ -841,7 +894,7 @@ def _slice_pair(op_spec: CompareOpSpec | SumOfOpSpec, left: Input, right: Input)
         marker=_merged_marker([left.marker, right.marker]),
         dropped_key_count=dropped[0],
         right_dropped_key_count=dropped[1],
-        sides={"data": "right", "other": "left"} if compare else {"data": "left", "other": "right"},
+        sides={"data": data, "other": "left" if data == "right" else "right"},
     )
 
 

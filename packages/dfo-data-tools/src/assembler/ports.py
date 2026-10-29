@@ -177,8 +177,12 @@ class ResolvedFrame:
 
 class FrameUnavailable(Exception):
     # reason: "revoked" | "expired" | "missing_rendering" | "digest_mismatch" |
-    # "ops_unsupported" | "quarantined" | "io" | "unknown"
+    # "ops_unsupported" | "quarantined" | "recipe_pending" | "recipe_unreadable" | "io" |
+    # "unknown"
     # Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed on retry.
+    # `recipe_pending` (a derived frame with no recipe yet) and `recipe_unreadable` (a store with
+    # no recipe reader, or a recipe root naming no dataset version) refuse a pin, and both are
+    # retryable.
     def __init__(self, *, reason: str, detail: str) -> None:
         self.reason = reason
         self.detail = detail
@@ -210,8 +214,9 @@ class RevisionRecord:
     created_at: datetime.datetime | None = None
     # The rendering of the frame `stored_intent.frame_ref` names, recorded when the revision
     # first drew that frame (`ResolvedFrame.rendering`) and kept by every revision on the same
-    # frame, so a draw on a later frame matches the rendering the card was made from. `None`
-    # for a note, a frame whose records did not say, and revisions stored before it was kept.
+    # frame, so a draw on a later frame matches the rendering the card was made from. Recorded
+    # at create; `None` for a note, a frame whose records did not say, and a revision stored
+    # before migration 0011.
     frame_rendering: Mapping[str, object] | None = None
 
 

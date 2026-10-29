@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode
 from dfo_analysis_engine.rolling import (
     PairingKeysUnstatedError,
     PopulationEmptyError,
@@ -163,6 +164,18 @@ def test_a_tree_with_no_binding_keeps_every_series_of_each_root() -> None:
     assert anchor_populations(_rolled(tree), [_root(_AID)], root_columns=[_COLUMNS]) == [
         {"spec_id": _AID, "bindings": {}}
     ]
+
+
+@pytest.mark.parametrize(
+    "predicate", ["category_match", None, ["reporter"]], ids=["string", "none", "list"]
+)
+def test_a_predicate_that_is_no_object_refuses_op_spec_invalid(predicate: object) -> None:
+    tree = _node("filter", {"predicates": [predicate]}, frame_ref={"root": 0})
+
+    with pytest.raises(AnalysisRefused) as raised:
+        anchor_populations(_rolled(tree), [_root(_AID)], root_columns=[_COLUMNS])
+
+    assert raised.value.refusal.code is RefusalCode.OP_SPEC_INVALID
 
 
 def test_bindings_that_share_no_value_raise() -> None:
@@ -428,10 +441,23 @@ def test_a_join_pairs_its_keys_through_right_keys_and_nests_a_pairing_on_a_side(
     assert [node["root"] for node in rolling_roots(_rolled(tree))] == [0, 1]
 
 
-def test_a_join_whose_keys_are_left_to_auto_detection_raises_when_both_sides_count() -> None:
-    tree = _node(
-        "join", {"right_frame_ref": _RIGHT}, frame_ref={"root": 0}, right_frame_ref={"root": 1}
-    )
+@pytest.mark.parametrize(
+    "op_spec",
+    [
+        {"verb": "join", "parameters": {"right_frame_ref": _RIGHT}},
+        # A plan tree's op-spec carries parameters alone, and `on` runs one way
+        # for sum_of and the other for compare.
+        {"parameters": {"right_frame_ref": _RIGHT, "on": {"recipient": "observationAbout"}}},
+    ],
+    ids=["join-without-join_keys", "on-without-verb"],
+)
+def test_a_pairing_whose_keys_the_tree_leaves_open_raises_when_both_sides_count(
+    op_spec: dict[str, Any],
+) -> None:
+    tree = {
+        "op_spec": op_spec,
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
 
     with pytest.raises(PairingKeysUnstatedError):
         anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _COLUMNS])

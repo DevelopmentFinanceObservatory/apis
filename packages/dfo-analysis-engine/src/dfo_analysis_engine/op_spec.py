@@ -554,6 +554,8 @@ def _pairing_mapping(value: object) -> object:
     mapping of each column to itself, and both spellings hash alike."""
     if not isinstance(value, list | tuple):
         return value
+    if not all(isinstance(column, str) for column in value):
+        raise ValueError(f"on lists something other than a column name: {list(value)}")
     if len(set(value)) != len(value):
         raise ValueError(f"on names a column twice: {list(value)}")
     return {column: column for column in value}

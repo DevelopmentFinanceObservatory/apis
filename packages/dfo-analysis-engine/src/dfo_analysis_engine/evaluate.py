@@ -26,6 +26,10 @@ at its offset, else the tree refuses `rolling_anchor_unresolved` with detail
 `literal_differs`. Under `Policy(latest=True)` each literal is rewritten to it,
 so the tree follows newer data.
 
+`evaluate` takes the root frames whole and bounds no input's rows:
+`Policy.max_frame_rows` bounds only the rows a `join` writes. A caller bounds
+the roots' rows before it reads them.
+
 Every refusal is raised as `refusal.AnalysisRefused`.
 """
 
@@ -54,7 +58,7 @@ from dfo_analysis_engine.calls import (
 from dfo_analysis_engine.execution_identity import ExecutionIdentity
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.op_spec import Populations
-from dfo_analysis_engine.recipe import derived_nodes, pair
+from dfo_analysis_engine.recipe import derived_nodes, pair, rolling_places
 from dfo_analysis_engine.refusal import AnalysisRefused, CompositeComponent, Refusal
 from dfo_analysis_engine.rolling import canonical_populations, rolling_roots
 from dfo_analysis_engine.steps import Step
@@ -103,13 +107,13 @@ class EvaluatedStep:
     and `other` fills where the call names them (`calls.VerbCall.summary`'s
     `sides`, `None` otherwise), the series it dropped for a data gap
     (`calls.VerbCall.dropped`), and its step record (`calls.VerbCall.step`), whose inputs
-    name the pairs of the frames it read."""
+    name the pairs of the frames it read, `None` when it could not be built."""
 
     node: int
     verb: str
     sides: Mapping[str, str] | None
     dropped: tuple[DroppedSeries, ...]
-    step: Step
+    step: Step | None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -248,19 +252,10 @@ def _latest_period(tree: Mapping[str, Any], roots: Mapping[int, _Root]) -> Resol
     return latest_period(populations, list(reached.values()))
 
 
-# The window bounds a rolling overlay can govern, in the order they are checked.
-_WINDOW_BOUNDS = ("window_start", "window_end")
-
-
-def _is_rolling_ref(value: object) -> bool:
-    return isinstance(value, Mapping) and "anchor" in value
-
-
 def _anchored(parameters: Mapping[str, Any], *, period: str, latest: bool) -> dict[str, Any]:
     """`parameters` of a rolling op-spec on the latest `period`: each literal a
-    rolling reference governs (a window bound named in `rolling`, and a rolling
-    predicate's `value`) rewritten to `period` at its offset under `latest`, else
-    checked to be it.
+    rolling reference governs (`recipe.rolling_places`) rewritten to `period` at
+    its offset under `latest`, else checked to be it.
 
     Raises:
         AnalysisRefused: `rolling_anchor_unresolved`, with detail `literal_differs`
@@ -268,14 +263,9 @@ def _anchored(parameters: Mapping[str, Any], *, period: str, latest: bool) -> di
             `literal_unshiftable` for an offset that moves the period off the calendar.
     """
     anchored = copy.deepcopy(dict(parameters))
-    overlay = anchored[_ROLLING]
-    for name in _WINDOW_BOUNDS:
-        if _is_rolling_ref(reference := overlay.get(name)):
-            _anchor(anchored, name, reference, place=name, period=period, latest=latest)
-    for predicate in anchored.get("predicates", ()):
-        if _is_rolling_ref(reference := predicate.get(_ROLLING)):
-            place = f"the {predicate['op']} threshold on {predicate['column']}"
-            _anchor(predicate, "value", reference, place=place, period=period, latest=latest)
+    for holder, key, reference in list(rolling_places(anchored)):
+        place = key if holder is anchored else f"the {holder['op']} threshold on {holder['column']}"
+        _anchor(holder, key, reference, place=place, period=period, latest=latest)
     return anchored
 
 

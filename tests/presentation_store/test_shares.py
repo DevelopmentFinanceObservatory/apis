@@ -366,7 +366,7 @@ def test_a_slot_records_what_it_shows_each_time_it_changes_read_newest_first():
     store.record_emptied(share_id=share.id, slot=1)
     store.record_emptied(share_id=share.id, slot=1)
 
-    served = store.served_frames(share_id=share.id)
+    served = store.served_frames(share_id=share.id, limit=10).entries
     assert [(entry.component_id, entry.frame, entry.rendering) for entry in served] == [
         (None, None, None),
         ("cmp_a", _FRAME, rendering),
@@ -376,7 +376,7 @@ def test_a_slot_records_what_it_shows_each_time_it_changes_read_newest_first():
     assert served[0].first_served_at >= served[1].first_served_at
     store.delete_share(share_id=share.id)
     with pytest.raises(ShareNotFound):
-        store.served_frames(share_id=share.id)
+        store.served_frames(share_id=share.id, limit=10)
 
 
 def test_a_slot_read_locks_the_share_only_when_what_the_slot_shows_changes():
@@ -402,4 +402,4 @@ def test_a_slot_read_locks_the_share_only_when_what_the_slot_shows_changes():
         1,
         0,
     ]
-    assert len(store.served_frames(share_id=share.id)) == 3
+    assert len(store.served_frames(share_id=share.id, limit=10).entries) == 3

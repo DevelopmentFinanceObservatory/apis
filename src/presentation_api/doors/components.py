@@ -17,8 +17,9 @@ its stores live.
 
 No route pins a frame. A card's frame stays in the working tier until a share first includes
 the card (`presentation_store.pin_card_frames`). A create and a read state the stored frame's
-retention (`datasets_api.retention.version_retention`): pinned, or held until 30 days after DFO
-stored it. A frame whose working copy has aged out refuses `frame_unavailable` on every route that
+retention (`presentation_api.retention.stated_retention`): pinned, or held until 30 days after
+DFO stored it, or `null` when it cannot be read, so a read answers the stored card and a create
+that stored its card answers 201 whatever the retention read meets. A frame whose working copy has aged out refuses `frame_unavailable` on every route that
 loads it, naming a fetch with latest=True as the way to current data.
 
 The door also carries `presentation_api.doors.component_data`'s export route and the two render

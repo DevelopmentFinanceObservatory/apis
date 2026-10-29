@@ -34,9 +34,10 @@ failed, and reads the settings `sweep` reads.
 `settle` runs on every deploy, after the services move to the new image. Between the migration
 job and the service move the previous image can still write a pin reference holding the raw
 shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
-its label (`SETTLE_STATEMENTS`). Each touches only rows in the old shape, so a repeat run
-changes nothing. It runs them in one transaction, then writes one `datasets_settled` line
-counting the pin references still holding a raw secret, the version rows holding no facts, and
+its label (`SETTLE_STATEMENTS`). Each touches only a pin principal that is neither a label nor
+an open caller's `ip:` key, so a repeat run changes nothing, and the table lock they run under
+holds concurrent pins back until they finish. It runs them in one transaction, then writes one
+`datasets_settled` line counting the pin references still holding a raw secret, the version rows holding no facts, and
 the version rows whose output profile, in the column or the body, still names the party-kind
 enrichment `kind`. Insert triggers repair the previous image's version rows, also for a request
 an old revision finishes after this task: migration 0030's fills the facts of a row written with
@@ -367,8 +368,14 @@ def _age_operations() -> int:
     return 0
 
 
+_LABELLED = "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32})$'"
+"""Every principal the pin door writes, as a POSIX pattern: a `Principal.label` or a caller key
+(`dfo_platform.caller.address_key`). A pin principal it does not match is the raw secret the
+image before migration 0026 stored."""
+
 SETTLE_STATEMENTS: tuple[str, ...] = (
-    """UPDATE datasets.artifact_reference AS labelled
+    "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE",
+    f"""UPDATE datasets.artifact_reference AS labelled
 SET created_at = LEAST(labelled.created_at, raw.created_at),
     removed_at = CASE
         WHEN labelled.removed_at IS NULL OR raw.removed_at IS NULL THEN NULL
@@ -376,30 +383,33 @@ SET created_at = LEAST(labelled.created_at, raw.created_at),
     END
 FROM datasets.artifact_reference AS raw
 WHERE raw.reference_kind = 'pin'
-  AND NOT starts_with(raw.principal, 'secret-sha256:')
+  AND raw.principal !~ {_LABELLED}
   AND labelled.principal
       = 'secret-sha256:' || left(encode(sha256(convert_to(raw.principal, 'UTF8')), 'hex'), 16)
   AND labelled.artifact_digest = raw.artifact_digest
   AND labelled.subject_id = raw.subject_id
   AND labelled.content_version = raw.content_version
   AND labelled.reference_kind = raw.reference_kind""",
-    """DELETE FROM datasets.artifact_reference AS raw
+    f"""DELETE FROM datasets.artifact_reference AS raw
 USING datasets.artifact_reference AS labelled
 WHERE raw.reference_kind = 'pin'
-  AND NOT starts_with(raw.principal, 'secret-sha256:')
+  AND raw.principal !~ {_LABELLED}
   AND labelled.principal
       = 'secret-sha256:' || left(encode(sha256(convert_to(raw.principal, 'UTF8')), 'hex'), 16)
   AND labelled.artifact_digest = raw.artifact_digest
   AND labelled.subject_id = raw.subject_id
   AND labelled.content_version = raw.content_version
   AND labelled.reference_kind = raw.reference_kind""",
-    """UPDATE datasets.artifact_reference
+    f"""UPDATE datasets.artifact_reference
 SET principal = 'secret-sha256:' || left(encode(sha256(convert_to(principal, 'UTF8')), 'hex'), 16)
 WHERE reference_kind = 'pin'
-  AND NOT starts_with(principal, 'secret-sha256:')""",
+  AND principal !~ {_LABELLED}""",
 )
-"""The three statements of `0026_artifact_reference_principal_label.sql`, verbatim. The
-migration explains them."""
+"""The statements of `0026_artifact_reference_principal_label.sql`, which the migration
+explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:` key and a
+second run are left alone. The lock queues pins until the transaction ends: a pin landing between
+the fold and the rewrite would otherwise make the rewrite collide with its row, or leave a raw
+row the count reports."""
 
 
 def run_settle(*, store: DatasetStore) -> int:
@@ -417,7 +427,7 @@ def run_settle(*, store: DatasetStore) -> int:
         raw = _count(
             tx,
             "SELECT count(*) AS count FROM datasets.artifact_reference "
-            "WHERE reference_kind = 'pin' AND NOT starts_with(principal, 'secret-sha256:')",
+            f"WHERE reference_kind = 'pin' AND principal !~ {_LABELLED}",
         )
         legacy_party_kind = _count(
             tx,

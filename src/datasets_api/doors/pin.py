@@ -11,13 +11,15 @@ secret is never stored or logged. Pinning is irreversible on this surface.
 Every other caller is an open caller, named by `dfo_platform.caller.resolve_caller` before the
 pin runs, and its reference names it by its caller key (`ip:<digest>`). A new pinned copy for an
 open caller also spends one unit of the open callers' budget (`DATASETS_PIN_OPEN_DAILY_MAX`,
-default 200 a UTC day), refusing the daily budget's retryable 503 past it, so open callers
+default 200 a UTC day), refusing the daily budget's 503 past it, so open callers
 cannot spend the budget the grant's holders draw on, and one unit of the caller's `pin`
 allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 50 a UTC day), refusing 429
 `allowance_exhausted` once it is spent. A pin spends its units of the daily budget, the open
 budget and the allowance together (`allowance.SharedAllowanceLedger.spend_together`), so a
 refusal by one spends none of the others. A unit stays spent when the copy then fails. A repeat
-pin of an artifact that already has a pinned copy spends nothing.
+pin of an artifact that already has a pinned copy spends nothing, and a pin whose copy finds the
+pinned copy already made, by a concurrent pin of the same artifact, gives its units back, so one
+copy spends one set of units.
 
 The door checks the spec, then the version, its revocation and its base version's, and the
 digest's link in one `read_servable_version` transaction, before copying. The path id resolves
@@ -54,9 +56,9 @@ named artifact alone. A frame copy spends no budget.
 
 A daily budget bounds the pinned copies this door creates. Before it copies a named artifact,
 the door spends one unit of `DATASETS_PIN_DAILY_MAX` (default 500 a UTC day,
-`datasets_api.allowance`), and refuses retryable 503 `service_unavailable` with `Retry-After`
-counting the seconds to the next UTC midnight once the day's budget is spent. Each spend is one
-conditional upsert, so pins admitted together cannot pass the budget. Presentation pins spend
+`datasets_api.allowance`), and refuses 503 `service_unavailable` once the day's budget is
+spent, with `retryable: true` and `Retry-After` naming the reset at the next UTC midnight. Each
+spend is one conditional upsert, so pins admitted together cannot pass the budget. Presentation pins spend
 none of it, and neither does a serving-frame copy. A reference to an artifact that already has a
 pinned copy skips the budget, so a repeat call that repairs a missing reference, or a second
 subject sharing the digest, always succeeds.
@@ -144,12 +146,13 @@ class PinBackpressure(Backpressure):
 
 
 class PinBudgetExhausted(Refusal):
-    """The day's `DATASETS_PIN_DAILY_MAX` new pinned copies are made. Maps to retryable 503 with
-    `Retry-After` counting the seconds to the next UTC midnight."""
+    """The day's `DATASETS_PIN_DAILY_MAX` new pinned copies are made. Maps to 503 with
+    `retryable: true`, since the budget resets and a pin that raced to an existing copy gives its
+    unit back, and `Retry-After` naming the reset at the next UTC midnight."""
 
     code = "service_unavailable"
     retryable = True
-    detail = "the pin door has reached its daily pin budget; retry after the next UTC midnight"
+    detail = "the pin door has reached its daily pin budget; it resets at the next UTC midnight"
 
     def __init__(self, *, limit: int, now: datetime) -> None:
         self.limit = limit
@@ -159,13 +162,13 @@ class PinBudgetExhausted(Refusal):
 
 class OpenPinBudgetExhausted(Refusal):
     """The day's `DATASETS_PIN_OPEN_DAILY_MAX` new pinned copies for callers without the pin
-    grant are made. Maps to retryable 503 with `Retry-After` counting the seconds to the next
-    UTC midnight."""
+    grant are made. Maps to 503 with `retryable: true` and `Retry-After` naming the reset, as
+    `PinBudgetExhausted` does."""
 
     code = "service_unavailable"
     retryable = True
     detail = (
-        "the pin door has reached its daily pin budget for open callers; retry after the next "
+        "the pin door has reached its daily pin budget for open callers; it resets at the next "
         "UTC midnight"
     )
 
@@ -209,7 +212,8 @@ def pin_artifact(
     open caller (`caller` set) one unit of the open callers' budget and one of `caller`'s `pin`
     allowance, all together before any copy. A spent budget refuses `PinBudgetExhausted` or
     `OpenPinBudgetExhausted`, a spent allowance `AllowanceExhausted`, and a refusal spends none
-    of the others. An artifact that already has a pinned copy spends nothing.
+    of the others. An artifact that already has a pinned copy spends nothing, and a copy that
+    finds the pinned bytes already stored gives the units back (`_refund_new_copy`).
 
     The refusals concern the named artifact alone. A serving frame is retained after the named
     artifact's reference is recorded. The serving frames are walked in order, each the frame the
@@ -243,13 +247,19 @@ def pin_artifact(
 
     already_pinned = named.tier == "pinned"
     if not already_pinned:
-        _spend_new_copy(allowances, caller=caller, now=read_at)
+        spends = _spend_new_copy(allowances, caller=caller, now=read_at)
         try:
             with phase("copy"):
-                artifact_store.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+                copied = artifact_store.copy(
+                    artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+                )
         except ArtifactNotFoundError as exc:
             # The working copy aged out between the read and the copy.
             raise ArtifactExpired(id=id, content_version=content_version) from exc
+        if copied.deduplicated:
+            # A concurrent pin made the pinned copy after this one read the tier, and its units
+            # pay for it.
+            _refund_new_copy(allowances, spends, now=read_at)
 
     pinned_at = _record_pin_reference(
         reference_writer,
@@ -308,8 +318,8 @@ def pin_artifact(
 
 def _spend_new_copy(
     allowances: SharedAllowanceLedger, *, caller: Caller | None, now: datetime
-) -> None:
-    """Spend the units one new pinned copy takes. See `pin_artifact`."""
+) -> list[Spend]:
+    """Spend the units one new pinned copy takes, and return them. See `pin_artifact`."""
     spends = [Spend(BUDGET_KEY, AllowanceKind.pin_budget)]
     if caller is not None:
         spends += [
@@ -323,6 +333,18 @@ def _spend_new_copy(
         if budget is None:
             raise
         raise budget(limit=exhausted.limit, now=now) from None
+    return spends
+
+
+def _refund_new_copy(
+    allowances: SharedAllowanceLedger, spends: Sequence[Spend], *, now: datetime
+) -> None:
+    """Give back each of `spends` together. The pin stands either way, so a refund that fails is
+    logged and leaves the units spent."""
+    try:
+        allowances.refund_together(spends, now)
+    except Exception:
+        logger.exception("Refunding the pin units %s failed", spends)
 
 
 def _record_pin_reference(

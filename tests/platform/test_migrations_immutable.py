@@ -127,7 +127,7 @@ _PRESENTATION_STORE = {
         "41bac2559d6a5999ff756cf65e3e73133240fa0b463e0465f53becd445134b48"
     ),
     "0011_revision_frame_rendering.sql": (
-        "956cc50b9e0285883089f082f663aa37b311974d0ac1b46cb1ee51e78a0889f0"
+        "b21ecec09c539424a9771d592ee9cc8acec695b1eebb7616b01118b7f40325dd"
     ),
     "0012_share.sql": "af08f2b8183f5347fca21e7b4392adfd88161a854587c40cb7eef3fc6b134a51",
     "0013_share_slot_check.sql": (
@@ -144,6 +144,9 @@ _PRESENTATION_STORE = {
     ),
     "0017_served_frame_timeline.sql": (
         "2200d61d92e1b9d02a88c43c525f96c90a404caa23967b6388de2ca1c70282a1"
+    ),
+    "0018_served_frame_share_newest.sql": (
+        "58bb4fe9e55208ca901d002654c9d59dcdeafde3730d1ab57204f1cc049883fd"
     ),
 }
 

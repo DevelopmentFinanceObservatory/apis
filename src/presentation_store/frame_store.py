@@ -131,14 +131,15 @@ call, cache hit or not, so a later takedown refuses the next load.
 
 `load()` states the frame's rendering as `ResolvedFrame.rendering`. A dataset frame's is read
 on every load from the version record and the files linked under it, the read the revocation
-check makes (`datasets_api.doors.refresh.rendering_of`, as `StoredRendering.to_record`), since
+check makes (`datasets_api.recorded_rendering.rendering_of`, as `StoredRendering.to_record`), since
 a later fetch can link a file of another rendering under the same version. A version whose
 records do not say has none. A derived frame's is its recipe's `normal_form_hash`, read with
 the recipe and cached with it, and a derived frame with no recipe yet, or of a store with no
 recipe reader, has none.
 
 `pin()` records a presentation reference and promotes working artifacts to pinned. A derived
-frame pins with the root versions its recipe names, and theirs in turn.
+frame pins with the root versions its recipe names, and theirs in turn, by the rule
+`LiveFrameStore.pin` states: the frame itself must pin, and each root pins while it is held.
 """
 
 from __future__ import annotations
@@ -202,7 +203,6 @@ from datasets_api.codes_snapshot import SpecNotFound
 from datasets_api.derived import recipe_citation
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
-from datasets_api.doors.refresh import RenderingNotRecorded, rendering_of
 from datasets_api.manifest import (
     HEALED_FIELDS,
     build_citation,
@@ -211,6 +211,7 @@ from datasets_api.manifest import (
 )
 from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
+from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
 from datasets_api.render import servable_frame_location
 from datasets_api.subject_ids import served_subject_ids
 from dc_graph import label_or_self_name
@@ -742,7 +743,9 @@ class LiveFrameStore:
             deadline=deadline,
             rendering=rendering,
         )
-        # A file of another rendering linked under the version since the frame was cached.
+        # A file of another rendering linked under the version since the frame was cached. The
+        # frame loaded afresh carries `rendering`, so the usual load returns the cached frame
+        # itself and copies it only after such a link.
         return frame if frame.rendering == rendering else replace(frame, rendering=rendering)
 
     def _cached_or_resolved(
@@ -1221,34 +1224,71 @@ class LiveFrameStore:
         recipe names, through every derived root down to the datasets. Returns whether any
         reference was created or reactivated.
 
-        A derived frame whose recipe is not written yet pins alone. A derived frame of a store
-        with no recipe reader, and a recipe root naming no dataset version, refuse, so no derived
-        frame is pinned without its roots.
+        The frame `frame_ref` names is what the card draws, so it must pin or the call refuses.
+        Its roots pin so the data it was computed from stays fetchable, and the frame is held
+        without them. The recipes are read first, so a refusal over them pins nothing. A
+        derived frame, or a derived root, whose recipe is not written yet refuses
+        `recipe_pending`, since the recipe a publish writes after its frame, or a later recipe
+        write, makes a retry pin the roots. A store with no recipe reader, and a recipe root
+        that names no dataset version, refuse `recipe_unreadable`, a server fault. Both answer
+        a retryable 503 (`presentation_api.refusals`). Then the frame pins, and a refusal there
+        pins nothing either. Then each root pins while it is still held: a root that aged out of
+        the working tier, was revoked, or cannot be read is left unpinned and logged. A root
+        whose pin fails on I/O raises `io`, and a retry pins what is left.
 
         Raises:
-            FrameUnavailable: A frame cannot be pinned, or its roots cannot be named.
+            FrameUnavailable: The frame cannot be pinned, its roots cannot be named, or a
+                root's pin failed on I/O.
         """
-        changed = False
-        pending, seen = [frame_ref], set[FrameRef]()
-        while pending:
-            ref = pending.pop()
-            if ref in seen:
-                continue
-            seen.add(ref)
-            changed = self._pin_frame(ref, component_id=component_id) or changed
-            pending.extend(self._recipe_roots(ref))
+        roots = self._root_closure(frame_ref)
+        changed = self._pin_frame(frame_ref, component_id=component_id)
+        for root in roots:
+            try:
+                changed = self._pin_frame(root, component_id=component_id) or changed
+            except FrameUnavailable as exc:
+                if exc.reason == "io":
+                    raise
+                logger.warning(
+                    "root %s at %s of %s at %s left unpinned for %s: %s %s",
+                    root.spec_id,
+                    root.content_version,
+                    frame_ref.spec_id,
+                    frame_ref.content_version,
+                    component_id,
+                    exc.reason,
+                    exc.detail,
+                )
         return changed
+
+    def _root_closure(self, frame_ref: FrameRef) -> list[FrameRef]:
+        """Every root version below `frame_ref`, through the recipes of its derived roots, each
+        once, in the order they are first named. None for a dataset frame."""
+        roots: list[FrameRef] = []
+        pending, seen = [frame_ref], {frame_ref}
+        while pending:
+            for root in self._recipe_roots(pending.pop()):
+                if root not in seen:
+                    seen.add(root)
+                    roots.append(root)
+                    pending.append(root)
+        return roots
 
     def _recipe_roots(self, frame_ref: FrameRef) -> list[FrameRef]:
         """The root versions a derived frame's recipe names (each root's `dataset`), none for a
-        dataset frame or a derived frame with no recipe yet."""
+        dataset frame.
+
+        Raises:
+            FrameUnavailable: `recipe_pending` for a derived frame with no recipe yet, and
+                `recipe_unreadable` for a store with no recipe reader or a root naming no
+                dataset version.
+        """
         if not frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
             return []
         if self._recipe_reader is None:
             raise FrameUnavailable(
-                reason="unknown",
+                reason="recipe_unreadable",
                 detail=(
-                    f"derived frame {frame_ref.spec_id!r} cannot be pinned without its roots: "
+                    f"derived frame {frame_ref.spec_id!r} cannot be pinned with its roots: "
                     "this store reads no recipes"
                 ),
             )
@@ -1256,7 +1296,14 @@ class LiveFrameStore:
             spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
         )
         if recipe is None:
-            return []
+            raise FrameUnavailable(
+                reason="recipe_pending",
+                detail=(
+                    f"derived frame {frame_ref.spec_id!r} at content_version "
+                    f"{frame_ref.content_version!r} holds no recipe yet, so its roots cannot be "
+                    "named; retry once its recipe is written"
+                ),
+            )
         roots: list[FrameRef] = []
         for root in cast("Sequence[Mapping[str, object]]", recipe.body.get("roots") or ()):
             dataset = root.get("dataset")
@@ -1264,7 +1311,7 @@ class LiveFrameStore:
             spec_id, content_version = pair.get("spec_id"), pair.get("content_version")
             if not (isinstance(spec_id, str) and isinstance(content_version, str)):
                 raise FrameUnavailable(
-                    reason="unknown",
+                    reason="recipe_unreadable",
                     detail=(
                         f"a root of derived frame {frame_ref.spec_id!r} at content_version "
                         f"{frame_ref.content_version!r} names no dataset version, so its roots "

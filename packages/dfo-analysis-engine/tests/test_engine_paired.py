@@ -4,6 +4,7 @@ refusal."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import Any
 
@@ -13,6 +14,7 @@ from dfo_frame_grammar import Frame
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
 from dfo_analysis_engine.engine.compare import (
     CompareAmbiguousSliceError,
+    CompareResult,
     CompareUnitMismatchError,
     ComparisonPeriodsDisjointError,
 )
@@ -23,6 +25,7 @@ from dfo_analysis_engine.engine.paired import (
     run_paired_compare,
     run_paired_sum_of,
 )
+from dfo_analysis_engine.engine.sum_of import SumOfResult
 
 _OWN_REF = "dcid:ops_" + "e" * 32
 _USD = "dcid:USDollar"
@@ -107,8 +110,24 @@ def test_paired_members_give_one_row_per_member_and_period_keyed_as_data_names_i
     ]
     assert result.frame.columns[:2] == ("stat_var", "destination")
     assert set(result.frame.table.to_pydict()["stat_var"]) == {_OWN_REF}
-    assert result.matched_periods == ("2022", "2023")
+    assert result.intersected_periods == ("2022", "2023")
     assert (result.left_dropped_key_count, result.right_dropped_key_count) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("single", "per_period"),
+    [(CompareResult, {"period_comparisons"}), (SumOfResult, {"period_sums", "left_out"})],
+    ids=["compare", "sum_of"],
+)
+def test_a_paired_result_names_every_field_the_single_series_result_does(
+    single: type, per_period: set[str]
+) -> None:
+    """A summary renders from these fields, so a paired call reads as its verb
+    does but for the fields kept per period, which a paired result keeps per
+    member (`cells`, `left_only_periods` and `right_only_periods`)."""
+    paired = {field.name for field in dataclasses.fields(PairedResult)}
+
+    assert {field.name for field in dataclasses.fields(single)} - per_period <= paired
 
 
 def test_data_fills_compares_right_side_and_sum_ofs_left() -> None:

@@ -1,8 +1,8 @@
 """`datasets-maintenance` dispatches tasks by subcommand. Its daily sweep reports reconciliation
 counts per tier, `age-operations` fails abandoned operations and deletes terminal ones past
 the published retention, `backfill-frame1` converts pinned frame1 documents to canonical
-frames, and `settle` repeats migration 0026's statements and counts the version rows holding
-no facts or the enrichment `kind`, each reporting structured log lines."""
+frames, and `settle` labels the raw pin principals migration 0026 missed and counts the version
+rows holding no facts or the enrichment `kind`, each reporting structured log lines."""
 
 from __future__ import annotations
 
@@ -310,15 +310,25 @@ def _statements(sql: str) -> list[str]:
     return [" ".join(statement.split()) for statement in code.split(";") if statement.strip()]
 
 
-def test_settle_repeats_the_statements_of_0026_verbatim():
-    """Each settle statement is a statement of migration 0026, whose window it closes, so they
-    cannot drift apart. Version facts and the enrichment `kind` are counted only: the insert
-    triggers of migrations 0030 and 0033 repair them."""
-    expected = _statements(
-        (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
-    )
+def test_settle_repeats_the_statements_of_0026_for_raw_secrets_alone():
+    """After its lock, each settle statement is a statement of migration 0026, whose window it
+    closes, with the old shape narrowed from "not a label" to "neither a label nor a caller
+    key", so they cannot drift apart otherwise. Version facts and the enrichment `kind` are
+    counted only: the insert triggers of migrations 0030 and 0033 repair them."""
+    migration = (MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql").read_text()
+    expected = [
+        statement.replace(
+            f"NOT starts_with({column}, 'secret-sha256:')",
+            f"{column} !~ '^(secret-sha256:[0-9a-f]{{16}}|ip:[0-9a-f]{{32}})$'",
+        )
+        for statement, column in zip(
+            _statements(migration), ("raw.principal", "raw.principal", "principal"), strict=True
+        )
+    ]
 
-    assert [" ".join(statement.split()) for statement in maintenance.SETTLE_STATEMENTS] == expected
+    lock, *statements = maintenance.SETTLE_STATEMENTS
+    assert lock == "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE"
+    assert [" ".join(statement.split()) for statement in statements] == expected
 
 
 def _frame(value: float):

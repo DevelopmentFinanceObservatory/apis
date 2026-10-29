@@ -28,7 +28,8 @@ A Spec root is served as the definition door serves a registered id (`doors.defi
 newest version of the rendering, rebuilt when its head is stale. A dataset root under `latest`
 is served the same way with the rendering it records, so it is read by its rendering, since its
 version alone can record two renderings that the newest data splits. A rebuild
-over the inline budget answers `AnalysisPending` naming its operation.
+over the inline budget answers `AnalysisPending` naming its operation, and a rebuild that failed
+and will not be retried refuses as the refresh door refuses it (`RefreshRebuildFailed`).
 """
 
 from __future__ import annotations
@@ -73,6 +74,7 @@ from datasets_api.analysis import (
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
 from datasets_api.derived import root_rendering
 from datasets_api.doors.definition import serve_spec, served_spec
+from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
@@ -291,7 +293,12 @@ class LiveRootSource:
                     trace_id=trace_id,
                 )
             except OperationSubmitted as submitted:
-                raise _pending(submitted.operation.id) from None
+                operation = submitted.operation
+                if operation.state == "failed":
+                    raise RefreshRebuildFailed(
+                        operation_id=operation.id, refusal_code=operation.refusal_code
+                    ) from None
+                raise _pending(operation.id) from None
             return self._resolved(
                 spec_id=served.spec_id,
                 content_version=manifest.content_version,

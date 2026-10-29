@@ -11,7 +11,8 @@ runner would serve by building it, raises `RootRenderingUnreadable`.
 `replay_recipe` computes one stored recipe again through the runner's own path
 (`analysis.compute_analysis` on the derived root alone, `latest` false) and compares the
 result's frame `cv_` and output digest with the stored frame's. The stored frame's digest names
-the variables its operations wrote by the stored tree over the roots the run read
+the variables its operations wrote by the stored tree over the roots the run read, each stored
+root matched to the root the run read under the same record
 (`output_digest.minted_variable_names`), so a run that reads no root or computes nothing
 reports the stored frame's `cv_` alone. Its `Replay.outcome` is one of:
 
@@ -31,7 +32,7 @@ from __future__ import annotations
 
 import functools
 import traceback
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -48,6 +49,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.analysis import (
     AnalysisRequest,
+    Computed,
     DatasetRoot,
     DerivedRoot,
     FrameUnavailable,
@@ -260,6 +262,22 @@ def frame_facts(frame: Frame, names: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def _stored_root_variables(
+    records: Sequence[Mapping[str, Any]], computed: Computed
+) -> dict[int, frozenset[str]] | None:
+    """The `stat_var` values of each root of the stored recipe, by its index in the stored
+    tree, taken from the root the run read under the same record, or `None` when a record has
+    no such root. The run numbers its roots in its own order (`analysis._renumbered`), which
+    need not be the stored one."""
+    variables: dict[int, frozenset[str]] = {}
+    for index, record in enumerate(records):
+        read = next((at for at, root in enumerate(computed.roots) if root.record == record), None)
+        if read is None:
+            return None
+        variables[index] = computed.root_variables[read]
+    return variables
+
+
 def replay_recipe(
     *, spec_id: str, content_version: str, recipe: Mapping[str, Any], source: StoredRootSource
 ) -> Replay:
@@ -290,9 +308,14 @@ def replay_recipe(
             stored=stored,
             detail="".join(traceback.format_exception_only(failed)).strip(),
         )
-    stored = frame_facts(
-        stored_frame, minted_variable_names(recipe["tree"], computed.root_variables)
-    )
+    variables = _stored_root_variables(recipe["roots"], computed)
+    if variables is None:
+        return replay(
+            outcome=ReplayOutcome.DIFFERS,
+            stored=stored,
+            detail="the run read roots other than those the recipe records",
+        )
+    stored = frame_facts(stored_frame, minted_variable_names(recipe["tree"], variables))
     facts = {
         "frame_content_version": computed.evaluation.summary["frame_content_version"],
         "output_digest": computed.output_digest,

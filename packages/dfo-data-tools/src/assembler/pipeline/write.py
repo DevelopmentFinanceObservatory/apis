@@ -109,8 +109,8 @@ def write_component(
     A write pins nothing. A card's frame stays in the working tier, held 30 days from when DFO
     stored it, until a share first includes the card (`presentation_store.pin_card_frames`).
     Each revision stores the rendering of the frame it draws (`RevisionRecord.frame_rendering`).
-    That is the one the frame's records give when the revision first draws the frame, and the
-    one the current revision holds while the frame stays the same.
+    A create stores the one the frame's records give, and every revise keeps the one the
+    component was created with, `None` for a component created before renderings were recorded.
 
     `write_token` is the caller's `x-dfo-write-token`. A revise needs the component's own
     token, and a create into an existing composition needs that composition's token. Both
@@ -348,17 +348,13 @@ def write_component(
 def _frame_rendering(
     *, current: RevisionRecord | None, resolved_frame: ResolvedFrame | None
 ) -> Mapping[str, object] | None:
-    """The rendering a new revision drawing `resolved_frame` stores: the current revision's
-    while it draws the same frame and holds one, else the one the frame's records give."""
+    """The rendering a new revision drawing `resolved_frame` stores. A create stores the one
+    the frame's records give. A revise draws the current revision's frame, since `frame_ref` is
+    create-only, so it keeps the current revision's rendering, `None` for a revision stored
+    before renderings were recorded."""
     if resolved_frame is None:
         return None
-    frame_ref = resolved_frame.frame_ref
-    if (
-        current is not None
-        and current.frame_rendering is not None
-        and current.stored_intent.get("frame_ref")
-        == {"spec_id": frame_ref.spec_id, "content_version": frame_ref.content_version}
-    ):
+    if current is not None:
         return current.frame_rendering
     return resolved_frame.rendering
 

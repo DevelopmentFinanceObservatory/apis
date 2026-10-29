@@ -49,7 +49,11 @@ from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell, DepsOverrides, open_deps
 from datasets_api.description_store import LiveDescriptionStore
-from datasets_api.doors.analysis import build_analysis_door, classify_analysis_exception
+from datasets_api.doors.analysis import (
+    RunningAnalyses,
+    build_analysis_door,
+    classify_analysis_exception,
+)
 from datasets_api.doors.definition import build_definition_door, classify_definition_exception
 from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
@@ -141,6 +145,7 @@ def datasets_surface(
     catalogue: CatalogueService | None = None,
     release: ReleaseService | None = None,
     deps_cell: DepsCell | None = None,
+    running_analyses: RunningAnalyses | None = None,
 ) -> Surface:
     """Build the Datasets `Surface` from its doors.
 
@@ -173,6 +178,9 @@ def datasets_surface(
 
     `deps_cell` is the cell the lifespan sets the surface's `Deps` in, given when another
     surface reads them too (`dfo_apis.app` gives Presentation's live share slots the same cell).
+    `running_analyses` is the analysis keys the process is computing, given with `deps_cell` so
+    the live share slots and `POST /api/datasets/analysis` compute one key once. Left out, the
+    analysis door holds a set of its own.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
@@ -189,7 +197,10 @@ def datasets_surface(
             build_mint_door(deps=cell),
             build_definition_door(deps=cell),
             build_refresh_door(deps=cell, settings=_settings),
-            build_analysis_door(deps=cell),
+            build_analysis_door(
+                deps=cell,
+                running=running_analyses if running_analyses is not None else RunningAnalyses(),
+            ),
             build_derived_door(deps=cell),
             build_derived_files_door(deps=cell),
             build_recipe_door(

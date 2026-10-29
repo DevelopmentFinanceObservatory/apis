@@ -333,7 +333,7 @@ def _paired(
         inputs={"left": left, "right": right},
         kept={
             "entities": len({cell.key for cell in result.cells}),
-            "periods": len(result.matched_periods),
+            "periods": len(result.intersected_periods),
         },
         left_out=[
             *_one_sided(result.left_periods, result.right_periods),

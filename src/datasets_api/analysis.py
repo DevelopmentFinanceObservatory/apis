@@ -84,11 +84,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol, Self
 
 import rfc8785
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, check_steps, steps_bytes
@@ -103,6 +104,7 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
+    model_validator,
 )
 
 from artifact_store import ArtifactStore
@@ -116,9 +118,11 @@ from datasets_api.doors.publish import (
 from datasets_api.mint_models import GroupbyOptions
 from datasets_api.output_digest import minted_variable_names, output_digest, stat_vars
 from datasets_api.publish_models import (
+    MAX_RECIPE_BYTES,
     MAX_RECIPE_LEFT_OUT_SERIES,
     MAX_STEPS,
     Recipe,
+    RecipeAnchor,
     RecipeDroppedSeries,
     RecipeLeftOut,
     RecipeStepRef,
@@ -255,7 +259,7 @@ class DerivedRoot(BaseModel):
 class _RefSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    spec_id: str
+    spec_id: str = Field(pattern=r"^(?:spec|ops)_[0-9a-f]{32}$")
 
 
 class _RefRendering(BaseModel):
@@ -272,11 +276,23 @@ class _RefArtifact(BaseModel):
 
 
 class _RefMember(BaseModel):
+    """A ref member, held to the pair a root of its kind takes (`DatasetRoot`, `DerivedRoot`),
+    so a malformed member refuses as the request does."""
+
     model_config = ConfigDict(extra="ignore")
 
     spec: _RefSpec
-    content_version: str
+    content_version: str = Field(pattern=r"^(?:cv|ocv)_[0-9a-f]{32}$")
     artifact: _RefArtifact | None = None
+
+    @model_validator(mode="after")
+    def _pair_of_one_kind(self) -> Self:
+        if self.spec.spec_id.startswith("ops_") != self.content_version.startswith("ocv_"):
+            raise ValueError(
+                "a member pairs an `ops_` id with an `ocv_` version, and a `spec_` id with a "
+                "`cv_` version"
+            )
+        return self
 
 
 class _Ref(BaseModel):
@@ -483,6 +499,7 @@ _CEILING_NOUNS = {
     "analysis_nodes": "nodes",
     "analysis_root_rows": "root rows",
     "analysis_output_rows": "output rows",
+    "analysis_recipe_bytes": "bytes of recipe",
 }
 
 
@@ -670,15 +687,35 @@ def _sentence(evaluation: Evaluation) -> str:
 
 @dataclass(kw_only=True)
 class _Plan:
-    """The tree with every root numbered by its first reach, derived roots expanded."""
+    """The tree with every root numbered by its first reach, derived roots expanded. Nodes are
+    counted as the walk reaches them, so a tree past `max_nodes` refuses at the first node over
+    it, before the rest is expanded or any further recipe is read."""
 
-    roots: list[SpecRoot | DatasetRoot] = field(default_factory=list)
+    max_nodes: int
     nodes: int = 0
+    indices: dict[str, int] = field(default_factory=dict)
+    roots: list[SpecRoot | DatasetRoot] = field(default_factory=list)
+
+    def count(self) -> None:
+        """Count one node.
+
+        Raises:
+            AnalysisTooLarge: The node is past `max_nodes`.
+        """
+        self.nodes += 1
+        if self.nodes > self.max_nodes:
+            raise AnalysisTooLarge(
+                ceiling_kind="analysis_nodes", count=self.nodes, cap=self.max_nodes
+            )
 
     def root(self, root: SpecRoot | DatasetRoot) -> dict[str, Any]:
-        if root not in self.roots:
+        """Count `root` and number it, once per distinct root."""
+        self.count()
+        key = f"{type(root).__name__}:{root.model_dump_json()}"
+        if key not in self.indices:
+            self.indices[key] = len(self.roots)
             self.roots.append(root)
-        return {"root": self.roots.index(root)}
+        return {"root": self.indices[key]}
 
 
 def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
@@ -696,10 +733,11 @@ def _member_root(member: _RefMember) -> DerivedRoot | DatasetRoot:
 
 def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: str) -> Any:
     """`node` as the runner's working tree: a step as `{"step", "inputs"}`, a stored recipe's
-    node as `{"op_spec", "inputs"}`, a root as `{"root": i}`."""
-    plan.nodes += 1
+    node as `{"op_spec", "inputs"}`, a root as `{"root": i}`. A ref or a derived root counts as
+    the nodes it stands for."""
     match node:
         case StepNode():
+            plan.count()
             inputs = {
                 "data": _plan_node(
                     node.inputs.data, plan, source=source, verb=node.verb, side="data"
@@ -716,7 +754,6 @@ def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: 
                 raise SeveralMembers(
                     verb=str(verb), side=side, spec_ids=[m.spec.spec_id for m in members]
                 )
-            plan.nodes -= 1
             return _plan_node(
                 _member_root(members[0]),
                 plan,
@@ -732,7 +769,6 @@ def _plan_node(node: Node, plan: _Plan, *, source: RootSource, verb: str, side: 
                     content_version=node.content_version,
                     reason="no recipe is stored for it",
                 )
-            plan.nodes -= 1
             records = stored["roots"]
             return _expand(stored["tree"], records, plan, source=source)
         case SpecRoot() | DatasetRoot():
@@ -747,9 +783,9 @@ def _expand(
     source: RootSource,
 ) -> dict[str, Any]:
     """A stored recipe's `tree` as working nodes, its roots read again (`dataset_root`)."""
-    plan.nodes += 1
     if "root" in tree:
         return plan.root(source.dataset_root(records[tree["root"]]))
+    plan.count()
     op_spec = tree["op_spec"]
     expanded: dict[str, Any] = {
         "op_spec": {"verb": op_spec["verb"], "parameters": copy.deepcopy(op_spec["parameters"])},
@@ -877,31 +913,68 @@ def _is_rolling_ref(value: object) -> bool:
     return isinstance(value, Mapping) and value.get("anchor") == "latest"
 
 
+def _offset(reference: Mapping[Any, Any]) -> int:
+    """The whole-number offset of a rolling reference.
+
+    Raises:
+        AnalysisRefused: `op_spec_invalid`, for an offset that is not a whole number.
+    """
+    offset = reference.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise AnalysisRefused(
+            EngineRefusal.op_spec_invalid(detail=f"a rolling offset is an integer, not {offset!r}")
+        )
+    return offset
+
+
 def _rolling_ref(value: object) -> dict[str, Any]:
     """A rolling reference given in place of a period, with its rule defaulted."""
     assert isinstance(value, Mapping)
     return {
         "anchor": "latest",
-        "offset": value.get("offset", 0),
+        "offset": _offset(value),
         "rule": value.get("rule", _DEFAULT_RULE),
     }
 
 
+def _overlay(parameters: dict[str, Any]) -> dict[str, Any]:
+    """The rolling overlay of `parameters`, set to `{}` where it is absent or null.
+
+    Raises:
+        AnalysisRefused: `op_spec_invalid`, for an overlay that is not an object.
+    """
+    overlay = parameters.get(_ROLLING)
+    if overlay is None:
+        overlay = parameters[_ROLLING] = {}
+    if not isinstance(overlay, dict):
+        raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail="rolling: an object"))
+    return overlay
+
+
 def _lift_rolling(parameters: dict[str, Any]) -> bool:
     """Move each rolling reference given in place of a period into the rolling overlay, its
-    period left to fill (`None`). Return whether one was."""
+    period left to fill (`None`). Return whether one was.
+
+    Raises:
+        AnalysisRefused: `op_spec_invalid`, for `predicates` that are not a list of objects,
+            which the rolling population walk reads before the engine checks the op-spec.
+    """
+    predicates = parameters.get("predicates")
+    if predicates is not None and (
+        not isinstance(predicates, list) or not all(isinstance(p, dict) for p in predicates)
+    ):
+        raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail="predicates: a list of objects"))
     lifted = False
     for bound in _WINDOW_BOUNDS:
         if _is_rolling_ref(reference := parameters.get(bound)):
-            overlay = parameters.setdefault(_ROLLING, {})
-            overlay[bound] = _rolling_ref(reference)
+            _overlay(parameters)[bound] = _rolling_ref(reference)
             parameters[bound] = None
             lifted = True
     for predicate in parameters.get("predicates") or ():
         if isinstance(predicate, dict) and _is_rolling_ref(predicate.get("value")):
             predicate[_ROLLING] = _rolling_ref(predicate["value"])
             predicate["value"] = None
-            parameters.setdefault(_ROLLING, {})
+            _overlay(parameters)
             lifted = True
     return lifted
 
@@ -1015,15 +1088,17 @@ _POPULATIONS: TypeAdapter[Populations] = TypeAdapter(Populations)
 
 
 def _fill_literals(tree: Mapping[str, Any], period: str) -> None:
-    """Set each period left to fill to the latest `period` at its reference's offset."""
+    """Set each period left to fill to the latest `period` at its reference's offset. A null
+    period no rolling reference states is left for the engine to refuse."""
 
     def shifted(reference: Mapping[str, Any]) -> str:
+        offset = _offset(reference)
         try:
-            return shift_period(period, int(reference["offset"]))
+            return shift_period(period, offset)
         except (RollingError, FrameError) as exc:
             raise AnalysisRefused(
                 EngineRefusal.op_spec_invalid(
-                    detail=f"offset {reference['offset']} from {period} leaves the calendar"
+                    detail=f"offset {offset} from {period} leaves the calendar"
                 )
             ) from exc
 
@@ -1031,10 +1106,18 @@ def _fill_literals(tree: Mapping[str, Any], period: str) -> None:
         parameters = node["op_spec"]["parameters"]
         overlay = parameters.get(_ROLLING)
         for bound in _WINDOW_BOUNDS:
-            if parameters.get(bound, "") is None and isinstance(overlay, Mapping):
+            if (
+                parameters.get(bound, "") is None
+                and isinstance(overlay, Mapping)
+                and _is_rolling_ref(overlay.get(bound))
+            ):
                 parameters[bound] = shifted(overlay[bound])
         for predicate in parameters.get("predicates") or ():
-            if predicate.get("value", "") is None and _is_rolling_ref(predicate.get(_ROLLING)):
+            if (
+                isinstance(predicate, Mapping)
+                and predicate.get("value", "") is None
+                and _is_rolling_ref(predicate.get(_ROLLING))
+            ):
                 predicate["value"] = shifted(predicate[_ROLLING])
 
 
@@ -1098,10 +1181,16 @@ def _caller_side(
     return _CALLER_SIDES[engine_side]
 
 
-def left_out_of(evaluation: Evaluation) -> RecipeLeftOut:
+def _compact_bytes(value: object) -> int:
+    """The UTF-8 bytes of `value`'s compact JSON, as `Recipe` measures a recipe."""
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def left_out_of(evaluation: Evaluation, *, max_bytes: int | None = None) -> RecipeLeftOut:
     """Every series a step of the evaluated tree dropped for a data gap, step by step in
     `derived_nodes` order, each naming its step, the step input it came from and why, at
-    most `MAX_RECIPE_LEFT_OUT_SERIES` of them."""
+    most `MAX_RECIPE_LEFT_OUT_SERIES` of them, and with `max_bytes` set only those whose
+    compact JSON list fits in it."""
     series = [
         RecipeDroppedSeries(
             coordinates=dict(dropped.coordinates),
@@ -1113,26 +1202,45 @@ def left_out_of(evaluation: Evaluation) -> RecipeLeftOut:
         for step in evaluation.steps
         for dropped in step.dropped
     ]
-    return RecipeLeftOut(
-        series=series[:MAX_RECIPE_LEFT_OUT_SERIES],
-        complete=len(series) <= MAX_RECIPE_LEFT_OUT_SERIES,
-    )
+    kept = series[:MAX_RECIPE_LEFT_OUT_SERIES]
+    if max_bytes is not None:
+        room = max_bytes
+        for count, one in enumerate(kept):
+            # Each series after the first adds its separating comma.
+            room -= _compact_bytes(one.model_dump(mode="json")) + (1 if count else 0)
+            if room < 0:
+                kept = kept[:count]
+                break
+    return RecipeLeftOut(series=kept, complete=len(kept) == len(series))
 
 
 def _recipe(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> Recipe:
+    """The recipe of `evaluation`, its left-out list cut to the room `MAX_RECIPE_BYTES` leaves
+    beside the rest of the recipe.
+
+    Raises:
+        AnalysisTooLarge: The recipe passes `MAX_RECIPE_BYTES` with no series listed.
+    """
     hashes = _recipe_hashes(evaluation, roots)
-    return Recipe(
-        schema_version=RECIPE_SCHEMA_VERSION,
-        normal_form_hash=hashes["normal_form_hash"],
-        replay_key=hashes["replay_key"],
-        execution_identity=evaluation.execution_identity.canonical_string(),
-        tree=evaluation.tree,
-        roots=[dict(root.record) for root in roots],
-        anchor=None
+    fields: dict[str, Any] = {
+        "schema_version": RECIPE_SCHEMA_VERSION,
+        "normal_form_hash": hashes["normal_form_hash"],
+        "replay_key": hashes["replay_key"],
+        "execution_identity": evaluation.execution_identity.canonical_string(),
+        "tree": evaluation.tree,
+        "roots": [dict(root.record) for root in roots],
+        "anchor": None
         if evaluation.resolved_periods is None
-        else evaluation.resolved_periods.as_json(),
-        left_out=left_out_of(evaluation),
-    )
+        else RecipeAnchor.model_validate(evaluation.resolved_periods.as_json()),
+    }
+    # `complete: false` is the longer flag, so the bare size is never under the stored one.
+    bare = Recipe.model_construct(**fields, left_out=RecipeLeftOut(series=[], complete=False))
+    size = _compact_bytes(bare.stored_body())
+    if size > MAX_RECIPE_BYTES:
+        raise AnalysisTooLarge(
+            ceiling_kind="analysis_recipe_bytes", count=size, cap=MAX_RECIPE_BYTES
+        )
+    return Recipe(**fields, left_out=left_out_of(evaluation, max_bytes=MAX_RECIPE_BYTES - size))
 
 
 _STEPS: TypeAdapter[list[Step]] = TypeAdapter(list[Step])
@@ -1147,8 +1255,17 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
     `s2`, ..., and each input names the step of the frame in that role. A list over the kit's
     byte bound (`MAX_STEPS_BYTES`) sheds coverage members until it fits
     (`dfo_analysis_engine.call_steps.shed_coverage`). A list over `MAX_STEPS`, or still over
-    the kit's bounds with no coverage left, is logged and gives `None`, which publishes the
-    frame without steps."""
+    the kit's bounds with no coverage left, or holding a step the engine could not build
+    (`EvaluatedStep.step` `None`), is logged and gives `None`, which publishes the frame without
+    steps."""
+    ref = evaluation.ref
+    if any(call.step is None for call in evaluation.steps):
+        logger.warning(
+            "A step of %s %s could not be built; publishing it without steps",
+            ref.spec_id,
+            ref.content_version,
+        )
+        return None
     calls = iter(evaluation.steps)
     ids: dict[tuple[str, str], str] = {}
     steps: list[dict[str, Any]] = []
@@ -1174,7 +1291,10 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
                     "options": dict(root.record.get("options") or {}),
                 },
             )
-        step = next(calls).step.model_dump(mode="json")
+        built = next(calls).step
+        # Every step was built: a `None` step returned above.
+        assert built is not None
+        step = built.model_dump(mode="json")
         read = {slot: walk(child) for slot, child in node["inputs"].items()}
         by_pair = {
             (child["frame"]["spec_id"], child["frame"]["content_version"]): read[slot]
@@ -1191,7 +1311,6 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
         return emit(node["frame"], step)
 
     walk(evaluation.tree)
-    ref = evaluation.ref
     try:
         if len(steps) > MAX_STEPS:
             raise ValueError(f"{len(steps)} steps, over MAX_STEPS={MAX_STEPS}")
@@ -1342,17 +1461,12 @@ def plan_roots(
         FrameUnavailable: A derived root's recipe is not stored.
         AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
     """
-    plan = _Plan()
+    plan = _Plan(max_nodes=bounds.max_nodes)
     top = request.tree
     verb = top.verb if isinstance(top, StepNode) else ""
     tree = _plan_node(top, plan, source=source, verb=verb, side="data")
     if request.anchor_roots is not None:
-        plan.nodes += len(request.anchor_roots)
         tree[_ANCHOR_ROOTS] = [plan.root(root) for root in request.anchor_roots]
-    if plan.nodes > bounds.max_nodes:
-        raise AnalysisTooLarge(
-            ceiling_kind="analysis_nodes", count=plan.nodes, cap=bounds.max_nodes
-        )
     return tree, plan.roots
 
 
@@ -1660,15 +1774,18 @@ def run_anchor(
     request: AnchorRequest,
     *,
     source: RootSource,
+    bounds: AnalysisBounds = _DEFAULT_BOUNDS,
     permit: Callable[[], AbstractContextManager[object]] = nullcontext,
     trace_id: str | None = None,
 ) -> tuple[ResolvedPeriods, list[ResolvedRoot]]:
-    """The latest period of `request`'s roots over its populations, storing nothing.
+    """The latest period of `request`'s roots over its populations, storing nothing. The roots
+    are read under the root-row bound a run reads its roots under (`bounds.max_root_rows`).
 
     Raises:
         AnalysisRefused: `rolling_anchor_unresolved`, `rolling_grain_unsupported`, or
             `op_spec_invalid` for populations that do not parse.
         AnalysisPending: A root is still building.
+        AnalysisTooLarge: The roots hold more than `bounds.max_root_rows` rows.
     """
     try:
         populations = _POPULATIONS.validate_python(canonical_populations(request.populations))
@@ -1676,7 +1793,7 @@ def run_anchor(
         raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail=f"populations: {exc}")) from exc
     resolved = resolve_roots(request.roots, source=source, latest=request.latest, trace_id=trace_id)
     with permit():
-        frames = [source.read(root) for root in resolved]
+        frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
         anchor = latest_period(
             populations,
             [
