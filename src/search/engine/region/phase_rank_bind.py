@@ -890,7 +890,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     top_k = settings().bind_top_k
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
     # leaf or none (`seat_menu`), which is the order the status rule offers alternatives in.
-    menu, withheld = _seat_menu_and_siblings(ranked_shapes, top_k)
+    menu, siblings = _seat_menu_and_siblings(ranked_shapes, top_k)
     if excluding is not None:
         in_scope = _dataset_candidates(ranked_shapes, excluding)
         # The exclusion removed a reading when the menu would have offered it without the
@@ -898,8 +898,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         # displaced that seats only once the exclusion took some of its leaves. A reading
         # offered neither way, a leaf of a root larger than the menu or a shape past the
         # last seat, is no loss to the part.
-        unexcluded = menu
-        menu, withheld = _seat_menu_and_siblings(in_scope, top_k)
+        unexcluded, (menu, siblings) = menu, _seat_menu_and_siblings(in_scope, top_k)
         seated = {shape.shape_id for shape in menu}
         state.scope_removed_readings = any(shape.shape_id not in seated for shape in unexcluded)
         ranked_shapes = in_scope
@@ -951,12 +950,10 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     if places and len(capped_shapes) > 1:
         capped_shapes = await _read_availability(state, capped_shapes, places)
     state.capped_shapes = capped_shapes
-    state.withheld = withheld
+    state.basis_siblings = [_shape_with_taxonomy(s) for s in siblings]
     state.interpretations = replace(
         state.interpretations,
-        admissible=tuple(
-            Interpretation(shape=shape) for shape in capped_shapes[: len(capped_shapes) - withheld]
-        ),
+        admissible=tuple(Interpretation(shape=shape) for shape in capped_shapes),
         refused_on_pinned=tuple(refused_on_pinned),
     )
     await _record_shape_step(state)
@@ -965,9 +962,9 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
 
 def _seat_menu_and_siblings(
     shapes: Sequence[ShapeDraft], seats: int
-) -> tuple[list[ShapeDraft], int]:
-    """The shapes of `shapes` that take the menu's seats (`seat_menu`), then the basis
-    siblings the binder does not read, and how many of those there are.
+) -> tuple[list[ShapeDraft], list[ShapeDraft]]:
+    """The shapes of `shapes` that take the menu's seats (`seat_menu`), and the basis
+    siblings the binder does not read (`ResolveState.basis_siblings`).
 
     A basis sibling (`ShapeDraft.basis_of`) of a family another of `shapes` is built from
     measures that family's reading on another basis, a scope choice of the reading the
@@ -975,12 +972,14 @@ def _seat_menu_and_siblings(
     shape of one of its families takes a seat, for the house policies' pool alone
     (`_HousePolicyStep`), and leaves otherwise. A sibling whose families none of `shapes`
     is built from is a reading of its own and is seated as any shape is."""
-    families = {ref for shape in shapes if (ref := _family_ref(shape)) is not None}
+    if not any(shape.basis_of for shape in shapes):
+        return seat_menu(shapes, seats), []
+    family_of = {shape.shape_id: _family_ref(shape) for shape in shapes}
+    families = {ref for ref in family_of.values() if ref is not None}
     aside = [shape for shape in shapes if shape.basis_of & families]
     seated = seat_menu([shape for shape in shapes if not shape.basis_of & families], seats)
-    seated_families = {ref for shape in seated if (ref := _family_ref(shape)) is not None}
-    withheld = [shape for shape in aside if shape.basis_of & seated_families]
-    return [*seated, *withheld], len(withheld)
+    seated_families = {ref for shape in seated if (ref := family_of[shape.shape_id]) is not None}
+    return seated, [shape for shape in aside if shape.basis_of & seated_families]
 
 
 def _family_ref(shape: ShapeDraft) -> str | None:
@@ -4500,11 +4499,15 @@ def _bind_variable(state: ResolveState, shapes: Sequence[ShapeDraft]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _BasisMove:
-    """The house policies elected the withheld basis sibling at `sibling`, which joined
-    their pool beside the menu shape at `source`, both indices of `_HousePolicyStep.shapes`."""
+    """The house policies elected the basis sibling at `sibling`, which joined their pool
+    beside the menu shape at `source`, both pool indices of `_HousePolicyStep`. The step
+    judged the sibling against `drafts`, the binder's drafts on the menu shape at `pick`
+    (`election.holds_mentioned_values`), and the move checks it against them again."""
 
     source: int
     sibling: int
+    pick: int
+    drafts: tuple[SlotBindingDraft, ...]
 
 
 _ShapeRead = tuple[tuple[QualifierMatch, ...], tuple[QualifierTie, ...], tuple[QualifierTie, ...]]
@@ -4523,16 +4526,18 @@ class _HousePolicyStep:
     a pool first holds it, and the context once per pool, however often the binder asks
     `chooses_on`.
 
-    `shapes` is the part's seated shapes (`ResolveState.capped_shapes`): the binder's menu
-    (`menu`), which `admitted_qualifiers` and `availability` cover, then the `withheld`
-    basis siblings it does not read (`ResolveState.withheld`). A sibling joins the pool after the
-    binder's shapes when a pool shape is built from one of its families
-    (`ShapeDraft.basis_of`), the first such shape its source, and `read_sibling` reads its
-    qualifiers and availability then. It takes its source's rating and election
-    probability, and holds what the binder recognised on its pick when it holds the pick's
-    drafts (`drafts`) as a menu shape does (`election.holds_mentioned_values`). The binder
-    reads a choice of its menu alone: a sibling the policies elect stands as its source,
-    and the step records the move (`basis_move`) for the engine to answer on the sibling
+    `shapes` is the binder's menu (`ResolveState.capped_shapes`), which
+    `admitted_qualifiers` and `availability` cover, and `siblings` the basis siblings it
+    does not read (`ResolveState.basis_siblings`), at the pool indices after the menu. A
+    sibling joins the pool after the binder's shapes beside the first pool shape built from
+    one of its families (`ShapeDraft.basis_of`), its source, which the binder reports as
+    holding what it recognised on its pick (`holds`). It then holds that itself when it
+    holds the pick's drafts (`drafts`) as a menu shape does
+    (`election.holds_mentioned_values`), and `read_sibling` reads its qualifiers and
+    availability. A binder that reports no holds or no drafts pools no sibling. A sibling
+    takes its source's rating and election probability. The binder reads a choice of its
+    menu alone: a sibling the policies elect stands as its source, and the step records the
+    move (`basis_move`) for the engine to answer on the sibling
     (`_answer_on_basis_sibling`); the choice drops no sibling and states the facts and the
     policies that set aside menu shapes."""
 
@@ -4542,7 +4547,7 @@ class _HousePolicyStep:
     availability: Sequence[bool | None]
     code_index: CodeIndex
     basis_entries: Sequence[Entry] = ()
-    withheld: int = 0
+    siblings: Sequence[ShapeDraft] = ()
     read_sibling: Callable[[ShapeDraft], tuple[_ShapeRead, bool | None]] | None = None
     calls: int = 0
     basis_move: _BasisMove | None = None
@@ -4563,14 +4568,16 @@ class _HousePolicyStep:
     ) -> PolicyChoice:
         self.calls += 1
         self.basis_move = None
-        # A sibling is judged against the pick's drafts, so a binder that reports holds
-        # without them pools none.
-        joined = self._joining(pool.measuring) if holds is None or drafts is not None else {}
+        pick = pool.measuring[0]
+        joined: dict[int, int] = {}
         if holds is not None and drafts is not None:
-            pick = self.shapes[pool.measuring[0]]
+            joined = self._joining(pool.measuring, holds)
             holds = {
                 **holds,
-                **{k: holds_mentioned_values(pick, self.shapes[k], drafts) for k in joined},
+                **{
+                    k: holds_mentioned_values(self.shapes[pick], self.shape(k), drafts)
+                    for k in joined
+                },
             }
 
         def beside(values: Mapping[int, float] | None) -> Mapping[int, float] | None:
@@ -4583,14 +4590,16 @@ class _HousePolicyStep:
             self._facts_of(measuring),
             PolicyPool(measuring=measuring, election=beside(pool.election)),
             self._context(measuring),
-            chosen=pool.measuring[0],
+            chosen=pick,
             ratings=beside(ratings),
             holds=holds,
             reported=range(self.menu),
         )
         survivor = choice.survivor
         if survivor in joined:
-            self.basis_move = _BasisMove(source=joined[survivor], sibling=survivor)
+            self.basis_move = _BasisMove(
+                source=joined[survivor], sibling=survivor, pick=pick, drafts=tuple(drafts or ())
+            )
             survivor = joined[survivor]
         return PolicyChoice(
             survivor=survivor,
@@ -4601,8 +4610,12 @@ class _HousePolicyStep:
 
     @property
     def menu(self) -> int:
-        """How many of `shapes` the binder reads."""
-        return len(self.shapes) - self.withheld
+        """How many shapes the binder reads, the first pool index of a sibling."""
+        return len(self.shapes)
+
+    def shape(self, index: int) -> ShapeDraft:
+        """The menu shape or sibling at pool index `index`."""
+        return self.shapes[index] if index < self.menu else self.siblings[index - self.menu]
 
     def chooses_on(
         self, indices: Sequence[int], axis: str, *, policies: Sequence[PolicyName] = POLICY_ORDER
@@ -4611,17 +4624,18 @@ class _HousePolicyStep:
         shapes at `indices` (`house_policy.chooses_on`). Not a call of the step."""
         return chooses_on(self._facts_of(indices), self._context(indices), axis, policies=policies)
 
-    def _joining(self, pool: Sequence[int]) -> dict[int, int]:
-        """Each sibling that joins `pool`, by index, with its source: the first pool shape
-        built from one of its families. Reads each joining sibling once."""
+    def _joining(self, pool: Sequence[int], holds: Mapping[int, bool]) -> dict[int, int]:
+        """Each sibling that joins `pool`, by pool index, with its source: the first pool
+        shape built from one of its families, which it joins only when that shape holds
+        (`holds`, which the pick, `pool`'s first index, does by definition, and a shape it
+        leaves out does not). Reads each joining sibling once."""
         joined: dict[int, int] = {}
-        for k in range(self.menu, len(self.shapes)):
-            families = self.shapes[k].basis_of
-            source = next((i for i in pool if self._family(i) in families), None)
-            if source is None:
+        for k, sibling in enumerate(self.siblings, start=self.menu):
+            source = next((i for i in pool if self._family(i) in sibling.basis_of), None)
+            if source is None or not (source == pool[0] or holds.get(source, False)):
                 continue
             if k not in self.sibling_reads and self.read_sibling is not None:
-                self.sibling_reads[k] = self.read_sibling(self.shapes[k])
+                self.sibling_reads[k] = self.read_sibling(sibling)
             joined[k] = source
         return joined
 
@@ -4648,8 +4662,9 @@ class _HousePolicyStep:
     def _facts_of(self, indices: Sequence[int]) -> tuple[ShapeFacts, ...]:
         unread = [i for i in dict.fromkeys(indices) if i not in self._facts]
         if unread:
-            availability = [self._available(i) for i in range(len(self.shapes))]
-            facts = shape_facts(self.shapes, availability, unread, code_index=self.code_index)
+            shapes = [*self.shapes, *self.siblings]
+            availability = [self._available(i) for i in range(len(shapes))]
+            facts = shape_facts(shapes, availability, unread, code_index=self.code_index)
             self._facts.update((f.index, f) for f in facts)
         return tuple(self._facts[i] for i in indices)
 
@@ -4748,9 +4763,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     Each menu shape states whether it has data at the places the part names
     (`has_data_where_asked`), when it names any, and the words of the variable the readers
     that read no binding leave unread on it (`_nominated_words`), which the binder may
-    rate once the bindings settle (`Binder.rate_words_stated`). The menu's held families,
-    whose members' names those words read, are read first, off the event loop
-    (`read_held_families`).
+    rate once the bindings settle (`Binder.rate_words_stated`). The held families of the
+    menu and of the basis siblings that may join the house policies' pool
+    (`ResolveState.basis_siblings`), whose members' names those words read, are read first,
+    off the event loop (`read_held_families`).
 
     An answer the schema refuses at parse (`LLMOutputRefused`: a binding that names no
     value) refuses ``variable_not_resolved`` with the call's usage and warns
@@ -4774,9 +4790,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     The quantity read ran before admissibility (`_read_stated_quantity`), so the election
     never carries it, and the call's usage adds to the read's.
     """
-    menu = state.capped_shapes[: len(state.capped_shapes) - state.withheld]
-    state.bind_menu = len(menu)
-    await read_held_families(menu)
+    menu = state.capped_shapes
+    state.basis_seat = None
+    await read_held_families([*menu, *state.basis_siblings])
     per_shape = [_shape_qualifiers(state, shape) for shape in menu]
     candidate_menus = [_candidate_menus(state, shape) for shape in menu]
     admitted_qualifiers = [matches for matches, _ties, _unheld in per_shape]
@@ -4803,7 +4819,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         availability=availability,
         code_index=get_index(),
         basis_entries=state.scope_selection.entries_on("measure_basis"),
-        withheld=state.withheld,
+        siblings=state.basis_siblings,
         read_sibling=read_sibling,
     )
     request = BindRequest(
@@ -4864,15 +4880,14 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
                     bind_result = _answer_on_basis_sibling(state, bind_result, policies)
                 except PolicyContractError as exc:
                     breach = str(exc)
-        # The bind leaves no withheld sibling it did not answer on.
-        state.capped_shapes = state.capped_shapes[: len(state.capped_shapes) - state.withheld]
-        state.withheld = 0
         if breach is None and refusal is None:
             bind_result, stray = split_stray_bindings(bind_result, state.capped_shapes)
             state.bind_result = bind_result
             if stray:
                 state.stray_requirements = await _stray_requirements(state, stray)
     finally:
+        # The basis siblings serve this bind's pool alone.
+        state.basis_siblings = []
         # Cancel and await an unfinished bind task so cancellation cannot detach it.
         if not bind_task.done():
             bind_task.cancel()
@@ -4943,30 +4958,33 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
 def _answer_on_basis_sibling(
     state: ResolveState, output: _UniversalBindOutput, step: _HousePolicyStep
 ) -> _UniversalBindOutput:
-    """`output` answering on the withheld basis sibling the house policies elected
+    """`output` answering on the basis sibling the house policies elected
     (`_HousePolicyStep.basis_move`), when it still elects the menu shape the sibling joined
-    beside, else as it is. The sibling takes the seat after the binder's menu, with its own
-    admitted qualifiers and availability, and the drafts move to it as a policy's move does
-    (`election.reelect`). The decision states the move: the sibling in the pool and elected,
-    its source set aside, so the menu rank keeps it (`_elected_index`). The binder judged no
-    word on the sibling's seat, so the stated-words read rates its words afresh
-    (`phase_election._rated_words`, `JevBinder.restated`). Raises `PolicyContractError` when the sibling does not
-    hold a value the phrase names."""
+    beside, else as it is. The sibling takes the seat after the binder's menu
+    (`ResolveState.basis_seat`), with its own admitted qualifiers and availability, and the
+    drafts move to it as a policy's move does (`election.reelect`), checked against the
+    drafts the step judged it on. The decision states the move: the sibling in the pool and
+    elected, its source set aside, so the menu rank keeps it (`_elected_index`). The binder
+    judged no word on the sibling, so the stated-words read rates its words afresh
+    (`phase_election._rated_words`, `StatedWordsRequest.on_bind_menu`). Raises
+    `PolicyContractError` when the sibling does not hold a value the phrase names."""
     move = step.basis_move
     assert move is not None
     if output.chosen_shape_index != move.source:
         return output
-    sibling = state.capped_shapes[move.sibling]
+    sibling = step.shape(move.sibling)
     (qualifiers, ties, _unheld), available = step.sibling_reads[move.sibling]
+    shapes = [*step.shapes, *step.siblings]
     moved = reelect(
         output,
         PolicyChoice(survivor=move.sibling, fired=(), dropped=frozenset(), facts=()),
-        state.capped_shapes,
-        [step.qualifiers_of(i) for i in range(len(state.capped_shapes))],
+        shapes,
+        [step.qualifiers_of(i) for i in range(len(shapes))],
+        judged=(shapes[move.pick], move.drafts),
     )
     seat = step.menu
-    state.capped_shapes = [*state.capped_shapes[:seat], sibling]
-    state.withheld = 0
+    state.capped_shapes = [*state.capped_shapes, sibling]
+    state.basis_seat = seat
     if state.menu_availability:
         state.menu_availability = [*state.menu_availability, available]
     state.admitted_qualifiers = merge_lists([state.admitted_qualifiers, qualifiers])

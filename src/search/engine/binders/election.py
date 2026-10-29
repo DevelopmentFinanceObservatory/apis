@@ -64,6 +64,8 @@ def reelect(
     choice: PolicyChoice,
     shapes: Sequence[ShapeDraft],
     admitted_qualifiers: Sequence[Sequence[QualifierMatch]] = (),
+    *,
+    judged: tuple[ShapeDraft, Sequence[SlotBindingDraft]] | None = None,
 ) -> _UniversalBindOutput:
     """`output` electing the shape the house policies chose (`choice`), without the shapes
     they set aside in `also_plausible`.
@@ -74,7 +76,9 @@ def reelect(
     grounded in the new shape's taxonomy (`bind._grounded_in_taxonomy`,
     `bind._without_partly_stated_values`). The pool admitted the new shape only if it
     holds each value the phrase names (`holds_mentioned_values`), and a move to one that
-    does not raises `PolicyContractError`. An unplaced phrase leaves `unplaced` when the
+    does not raises `PolicyContractError`. The check reads `output`'s drafts on its elected
+    shape, or the shape and drafts `judged` names, the ones the pool admitted the new shape
+    on. An unplaced phrase leaves `unplaced` when the
     new shape admits a qualifier read from its words (`admitted_qualifiers`, each menu
     shape's own, as the bind request carries them), since that shape's vocabulary reads it.
     An output the policies leave as it was is returned as it is."""
@@ -92,7 +96,8 @@ def reelect(
         ]
     if moved:
         shape = shapes[elected]
-        if not holds_mentioned_values(shapes[old], shape, output.bindings):
+        chosen, drafts = judged or (shapes[old], output.bindings)
+        if not holds_mentioned_values(chosen, shape, drafts):
             raise PolicyContractError(
                 f"house policies moved the election to {shape.shape_id!r}, which does not "
                 "hold a value the phrase names"
