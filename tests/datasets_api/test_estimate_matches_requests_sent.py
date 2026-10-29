@@ -7,6 +7,8 @@ Latest-window filters count against the same URL budget.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import httpx
 import pytest
 
@@ -18,7 +20,13 @@ from materialise import (
     MaterialisationRequest,
     materialise_group,
 )
-from materialise.facets import FacetBinding
+from materialise.facets import CoverageAdmission, FacetBinding
+from materialise.generation import (
+    _MemberFetchPlan,
+    _order_group_by_dcid,
+    dispatch_lanes,
+    stat_var_chunk_positions,
+)
 from materialise.window import RequestedWindow
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -219,6 +227,58 @@ def test_members_with_no_dispatch_facet_ride_in_no_request_and_leave_the_estimat
     assert len(sent) == estimate.requests == 4
     counts = {entry["ref"]: entry["observation_count"] for entry in result.trace.resolved_stat_vars}
     assert {sv: counts[sv] for sv in idle} == dict.fromkeys(idle, 0)
+
+
+@pytest.mark.parametrize("member_concurrency", [1, 4, _SETTINGS.mint_member_max_concurrency])
+def test_a_group_never_plans_fewer_requests_for_more_members(member_concurrency: int):
+    """Admission chunks every member with coverage, dispatch only those the election serves,
+    so the request count must not fall as members are added or the estimate could fall short
+    of the requests sent."""
+    counts = [
+        len(
+            stat_var_chunk_positions(
+                [f"V{i}" for i in range(member_count)],
+                lanes=dispatch_lanes(member_concurrency, member_count),
+            )
+        )
+        for member_count in range(1, 301)
+    ]
+    assert all(later >= earlier for earlier, later in pairwise(counts))
+
+
+def test_five_covered_members_with_one_the_election_idles_are_not_estimated_short():
+    """Admission prices five covered members; the election serves four, and dispatch fetches
+    those four alone. The estimate must cover every request dispatch sends."""
+    stat_vars = [f"dcid:IdledByElectionVar{i}" for i in range(5)]
+    requests = [_aggregate_ceiling_request(stat_var=sv, recipient=_RECIPIENT) for sv in stat_vars]
+    coverage = _coverage_index([(sv, _RECIPIENT) for sv in stat_vars])
+    plans = [
+        _MemberFetchPlan(
+            selections={},
+            dispatch_ids=() if index == 2 else ("facet1",),
+            admission=CoverageAdmission(),
+            conversion_plan=None,
+        )
+        for index in range(len(stat_vars))
+    ]
+
+    estimate = sync_estimate(
+        requests, index=coverage, member_concurrency=_SETTINGS.mint_member_max_concurrency
+    )
+    ordered = _order_group_by_dcid(
+        requests,
+        plans,
+        member_concurrency=_SETTINGS.mint_member_max_concurrency,
+        places=[()] * len(requests),
+    )
+    fetched = [
+        chunk
+        for chunk in ordered.chunks
+        if any(ordered.dcid_plans[index].dispatch_ids for index in chunk.member_indices)
+    ]
+
+    assert len(fetched) == 4
+    assert estimate.requests >= len(fetched)
 
 
 _UNBOUND_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")

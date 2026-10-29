@@ -1638,23 +1638,29 @@ def _plan_collection_chunks(
 
 
 def stat_var_chunk_positions(bare_stat_vars: Sequence[str], *, lanes: int) -> list[tuple[int, ...]]:
-    """Splits ordered positions at the lane target or a repeated bare StatVar.
+    """Splits ordered positions into `min(lanes, len(bare_stat_vars))` runs of consecutive
+    positions whose sizes differ by at most one, and cuts a run again at a repeated bare
+    StatVar, so each group holds one occurrence of each StatVar.
 
-    Each group has at most `ceil(len(bare_stat_vars) / lanes)` positions and
-    one occurrence of each StatVar. Admission estimates use the same rule.
+    Admission estimates use the same rule over a superset of the members a mint fetches
+    (`datasets_api.admission.sync_estimate`). Since `dispatch_lanes` never falls as members
+    are added, neither does the run count, so the estimate can only overshoot the requests
+    sent. Runs of `ceil(n / lanes)` positions would not hold this: under the lane floor of
+    four, five positions make three runs and four make four.
     """
-    target = max(1, math.ceil(len(bare_stat_vars) / lanes))
+    count = len(bare_stat_vars)
+    runs = min(max(1, lanes), count)
     groups: list[tuple[int, ...]] = []
-    current: list[int] = []
-    current_stat_vars: set[str] = set()
-    for position, bare_stat_var in enumerate(bare_stat_vars):
-        if len(current) >= target or bare_stat_var in current_stat_vars:
-            groups.append(tuple(current))
-            current = []
-            current_stat_vars = set()
-        current.append(position)
-        current_stat_vars.add(bare_stat_var)
-    if current:
+    for run in range(runs):
+        current: list[int] = []
+        current_stat_vars: set[str] = set()
+        for position in range(run * count // runs, (run + 1) * count // runs):
+            if bare_stat_vars[position] in current_stat_vars:
+                groups.append(tuple(current))
+                current = []
+                current_stat_vars = set()
+            current.append(position)
+            current_stat_vars.add(bare_stat_vars[position])
         groups.append(tuple(current))
     return groups
 
