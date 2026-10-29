@@ -220,12 +220,12 @@
 
 - id: dq-mls-022
   query: Norway's bilateral-only aid to Kenya, not counting what goes through multilaterals
-  why: A flow from a donor to a recipient country is bilateral on DAC2a, so the word restricts nothing and the plain donor-to-recipient family answers.
+  why: A donor-to-recipient flow is bilateral on DAC2a, so the word restricts nothing, and the recipient total counts net disbursements by the OECD's convention.
   reuse: panel/mls-033
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [mls]}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: dq-mls-023
@@ -262,12 +262,12 @@
 
 - id: dq-mls-026
   query: bilateral and imputed multilateral aid from Norway to Kenya in 2022
-  why: Norway's flows to Kenya on DAC2a and its imputed multilateral share do not double count, so the caller may add the two parts.
+  why: Norway's net ODA to Kenya on DAC2a and its imputed multilateral share, published gross, do not double count, and DAC2a adds the imputed line on either basis.
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs]}
   expect:
     parts:
       - definite:
-          measure: {family: dac2a.oda_gross_received}
+          measure: {family: dac2a.oda_net_received}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
       - definite:
@@ -277,12 +277,12 @@
 
 - id: dq-mls-027
   query: total bilateral and imputed multilateral aid to Ethiopia
-  why: DAC2a holds no bilateral aid type, so part 0 answers total ODA and discloses "bilateral" on that part alone; part 1 is DAC2a imputed multilateral.
+  why: DAC2a holds no bilateral aid type, so part 0 answers total ODA in net disbursements and discloses "bilateral"; part 1 is DAC2a imputed multilateral, published gross.
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs]}
   expect:
     parts:
       - definite:
-          measure: {family: dac2a.oda_gross_received}
+          measure: {family: dac2a.oda_net_received}
           entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       - definite:
           measure: {family: dac2a.imputed_multilateral}

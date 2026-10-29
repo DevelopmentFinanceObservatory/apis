@@ -107,7 +107,7 @@ from materialise.series_conversion import (
     SeriesConversion,
     SeriesKey,
     decode_series_conversion_entries,
-    pack_series_conversions,
+    encode_series_conversions,
 )
 from materialise.trace import ManifestTrace
 from materialise.window import Coverage
@@ -673,9 +673,9 @@ def manifest_facts(
     `artifacts`, `output_options` and `content_version` (the record's own column), with
     `output_profile` in place of options.
 
-    `series_conversions`, when non-empty, stores one record per converted series, each
-    distinct record once (`materialise.series_conversion.pack_series_conversions`), and an
-    unconverted version stores `None`. `default_scope`, the places of the mint's default place scope
+    `series_conversions`, when non-empty, stores one entry per converted series
+    (`materialise.series_conversion.encode_series_conversions`), and an unconverted version
+    stores `None`. `default_scope`, the places of the mint's default place scope
     (`MaterialisationResult.default_scope`), stores whether it holds more than one place, so
     the worldwide total alone and a bound place store `False`; `None` stores `None`.
     """
@@ -693,7 +693,7 @@ def manifest_facts(
         series_coverage_stamp=manifest.series_coverage_stamp,
         output_profile=output_profile.to_json() if output_profile is not None else None,
         series_conversions=(
-            pack_series_conversions(series_conversions) if series_conversions else None
+            encode_series_conversions(series_conversions) if series_conversions else None
         ),
         default_scope_plural=len(default_scope) > 1 if default_scope is not None else None,
     )

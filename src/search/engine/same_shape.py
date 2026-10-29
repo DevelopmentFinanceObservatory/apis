@@ -40,6 +40,7 @@ from search.engine.spec_build import (
 from search.engine.unit.conversion import with_unit_conversion
 from search.models import (
     BindingSet,
+    BindingUnbound,
     BindingValue,
     EntityOptions,
     IdentityShapeSchema,
@@ -595,10 +596,11 @@ def collapse_same_shape(
     The group merges in either case:
     - No binding differs and at least one unbound slot appears in only some
       members. Union the slot rosters without adding a ``BindingSet``.
-    - Exactly one slot differs, every member binds it to a value, at least two
-      distinct refs remain, and entity buckets meet the dimensionality rule. The
-      refs drop each one nested under another (`_simplify_merged_union`), and one ref
-      left binds a value.
+    - Exactly one slot differs, every member binds it to a value or, off the where axis,
+      a set (a value reads as a set of one), members binding different sets share no
+      ref, the union holds at least two distinct refs, and entity buckets meet the
+      dimensionality rule. The refs drop each one nested under another
+      (`_simplify_merged_union`), and one ref left binds a value.
 
     A ``where`` difference may widen one identity-entity bucket. Roster-only
     and other slot merges require identical buckets; otherwise the merge would
@@ -735,14 +737,16 @@ def _build_merged_slots(
     diff_key: tuple[str, str | None] | None,
     set_ref_for: Callable[[list[str]], GraphRef | None] | None,
 ) -> list[Slot]:
-    """Build merged slots from a roster union or one differing value binding.
+    """Build merged slots from a roster union or the union of one differing binding.
 
     A ``None`` key unions unbound slots after the base roster. Otherwise every
-    member must bind the differing slot to a value with at least two distinct
-    refs. Each ref nested under another drops (`_simplify_merged_union`). One ref left
-    binds a ``BindingValue``, more bind a ``BindingSet``.
-    ``set_ref_for`` labels only what/how sets because ``isPartOf`` also
-    represents geographic containment.
+    member must bind the differing slot to graph refs, a value as a set of one and a set
+    only off the where axis. Members binding different sets must share no ref, and the
+    sets must union to at least two distinct refs. Each ref nested under another drops
+    (`_simplify_merged_union`). One ref left binds a ``BindingValue``, more bind a
+    ``BindingSet``. The set keeps the ``set_ref`` of a member whose set it equals, else
+    ``set_ref_for`` labels it, on what/how only because ``isPartOf`` also represents
+    geographic containment.
     """
     if diff_key is None:
         merged_slots = list(base_spec.resolved.slots)
@@ -755,22 +759,32 @@ def _build_merged_slots(
                     merged_slots.append(sl)
         return merged_slots
 
-    all_value = True
+    bindings: list[BindingValue | BindingSet] = []
     for r in group:
         s = next((sl for sl in r.spec.resolved.slots if _slot_key_t(sl) == diff_key), None)
-        if s is None or s.binding.kind != "value":
-            all_value = False
-            break
-    if not all_value:
+        if s is None or isinstance(s.binding, BindingUnbound):
+            raise _RefuseMerge
+        if isinstance(s.binding, BindingSet) and diff_key[0] == "where":
+            # A place set reads a region, and this merge reads no containment of places.
+            raise _RefuseMerge
+        bindings.append(s.binding)
+    member_values = [[b.value] if isinstance(b, BindingValue) else b.values for b in bindings]
+    member_refs = [[value.ref for value in values if value.ref] for values in member_values]
+    if any(
+        len(refs) < len(values) for refs, values in zip(member_refs, member_values, strict=True)
+    ):
+        # A literal or a window names no code to union.
+        raise _RefuseMerge
+    member_codes = [frozenset(ref.ref for ref in refs) for refs in member_refs]
+    # Members that share a code would count it in two parts of one answer.
+    distinct_codes = set(member_codes)
+    if sum(len(codes) for codes in distinct_codes) != len(frozenset().union(*distinct_codes)):
         raise _RefuseMerge
 
-    diff_refs: list = []
+    diff_refs: list[GraphRef] = []
     seen_dcids: set[str] = set()
-    for r in group:
-        s = next(sl for sl in r.spec.resolved.slots if _slot_key_t(sl) == diff_key)
-        assert isinstance(s.binding, BindingValue)
-        ref = s.binding.value.ref
-        if ref and ref.ref not in seen_dcids:
+    for ref in (ref for refs in member_refs for ref in refs):
+        if ref.ref not in seen_dcids:
             seen_dcids.add(ref.ref)
             diff_refs.append(ref)
     if len(diff_refs) < 2:
@@ -778,16 +792,23 @@ def _build_merged_slots(
     diff_refs = _simplify_merged_union(diff_refs)
 
     # Slot values may be enum values, so retain the source value_kind.
-    src_slot = next(s for s in group[0].spec.resolved.slots if _slot_key_t(s) == diff_key)
-    assert isinstance(src_slot.binding, BindingValue)  # all_value guarantees this
-    source_vk = src_slot.binding.value.value_kind
+    source_vk = member_values[0][0].value_kind
     values = [SlotValue(ref=ref, value_kind=source_vk) for ref in diff_refs]
     binding: BindingValue | BindingSet
     if len(values) == 1:
         binding = BindingValue(value=values[0])
     else:
-        merged_set_ref: GraphRef | None = None
-        if diff_key[0] in ("what", "how") and set_ref_for is not None:
+        # A member whose set the merge leaves whole keeps naming its group.
+        merged_codes = frozenset(ref.ref for ref in diff_refs)
+        merged_set_ref = next(
+            (
+                b.set_ref
+                for b, codes in zip(bindings, member_codes, strict=True)
+                if isinstance(b, BindingSet) and b.set_ref is not None and codes == merged_codes
+            ),
+            None,
+        )
+        if merged_set_ref is None and diff_key[0] in ("what", "how") and set_ref_for is not None:
             merged_set_ref = set_ref_for([r.ref for r in diff_refs])
         binding = BindingSet(values=values, set_ref=merged_set_ref)
     return [
@@ -948,21 +969,26 @@ def _merge_slot_filter_properties(
 
     Query-recognized properties outrank measure elections, which outrank
     defaults. Subtraction keeps each property in one set, as ``build_spec``
-    requires. A property a member's sector concept bound to its declared grouping is
-    grouped on the merge, and text-recognised too, as ``build_spec`` requires.
+    requires. A property every member that names it binds by a sector concept's declared
+    grouping is grouped on the merge, and text-recognised too, as ``build_spec`` requires.
+    A slot filter states one provenance, so a property one member grouped and another
+    named by its code ("health and education") is text-recognised alone, which holds for
+    every value it binds.
     """
-    grouped = frozenset(
+    grouped_somewhere = frozenset(
         sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
         if sf.provenance == "declared_grouping" and sf.key.property is not None
     )
-    text_recognized = grouped | frozenset(
+    named_somewhere = frozenset(
         sf.key.property.ref
         for r in group
         for sf in r.spec.resolved.trace.slot_filters
         if sf.provenance == "text_recognized" and sf.key.property is not None
     )
+    grouped = grouped_somewhere - named_somewhere
+    text_recognized = grouped_somewhere | named_somewhere
     measure_elected = (
         frozenset(
             sf.key.property.ref
