@@ -44,8 +44,14 @@ so the recipe's normal form names them, its `roots` hold them after the tree's o
 of the stored recipe takes its period over them again.
 
 A derived root is expanded into its stored recipe, so the runner computes the whole chain from
-its root datasets. A request whose whole `tree` is a derived root computes that recipe again
-under its own ids, which is how a client reads a derived frame on its datasets' newest versions.
+its root datasets. An expanded node keeps its stored op-spec, rolling overlay and literal
+periods included, so two derived roots whose overlays state different populations refuse
+`rolling_populations_differ`. A request with `rolling` set to `"tree"` has each expanded node
+follow the larger tree instead: its overlay's `population` is dropped, each literal period the
+overlay governs is left to fill (`_follow_tree`), and its `anchor_roots` are dropped, so the
+runner fills one population list from the whole tree and every period from its one latest
+period, and the inputs are computed again under that period. A request whose whole `tree` is a
+derived root computes that recipe again under its own ids, which is how a client reads a derived frame on its datasets' newest versions.
 With `latest` false every root is read at the version it names. With `latest` true a Spec or dataset root is read at its dataset's current version of the same rendering, and
 each rolling literal follows the latest period of that data. Both read their roots through one
 `RootSource`.
@@ -156,6 +162,7 @@ from dfo_analysis_engine.recipe import (
     pair,
     replay_key,
     rolling_literals,
+    rolling_places,
     root_identity,
 )
 from dfo_analysis_engine.refusal import AnalysisRefused
@@ -374,7 +381,10 @@ class AnalysisRequest(BaseModel):
     """`POST /api/datasets/analysis`: the tree to compute, and whether its roots follow their
     datasets' newest versions. A `tree` that is a derived root alone computes that frame's
     stored recipe again, so `latest` reads it on its datasets' newest versions under the
-    recipe's own ids."""
+    recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
+    rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
+    are computed again under one latest period; left out, each keeps its stored populations and
+    periods."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -383,6 +393,7 @@ class AnalysisRequest(BaseModel):
         Discriminator(_node_kind),
     ]
     latest: bool = False
+    rolling: Literal["tree"] | None = None
     anchor_roots: (
         list[
             Annotated[
@@ -697,6 +708,7 @@ class _Plan:
     it, before the rest is expanded or any further recipe is read."""
 
     max_nodes: int
+    rolling_tree: bool = False
     nodes: int = 0
     indices: dict[str, int] = field(default_factory=dict)
     roots: list[SpecRoot | DatasetRoot] = field(default_factory=list)
@@ -787,19 +799,24 @@ def _expand(
     *,
     source: RootSource,
 ) -> dict[str, Any]:
-    """A stored recipe's `tree` as working nodes, its roots read again (`dataset_root`)."""
+    """A stored recipe's `tree` as working nodes, its roots read again (`dataset_root`). Under
+    `plan.rolling_tree` each rolling overlay follows the larger tree (`_follow_tree`) and the
+    stored `anchor_roots` are dropped, so the period is taken over that tree."""
     if "root" in tree:
         return plan.root(source.dataset_root(records[tree["root"]]))
     plan.count()
     op_spec = tree["op_spec"]
+    parameters = copy.deepcopy(op_spec["parameters"])
+    if plan.rolling_tree:
+        _follow_tree(parameters)
     expanded: dict[str, Any] = {
-        "op_spec": {"verb": op_spec["verb"], "parameters": copy.deepcopy(op_spec["parameters"])},
+        "op_spec": {"verb": op_spec["verb"], "parameters": parameters},
         "inputs": {
             slot: _expand(child, records, plan, source=source)
             for slot, child in tree["inputs"].items()
         },
     }
-    if anchors := tree.get(_ANCHOR_ROOTS):
+    if (anchors := tree.get(_ANCHOR_ROOTS)) and not plan.rolling_tree:
         expanded[_ANCHOR_ROOTS] = [_expand(root, records, plan, source=source) for root in anchors]
     return expanded
 
@@ -984,6 +1001,16 @@ def _lift_rolling(parameters: dict[str, Any]) -> bool:
     return lifted
 
 
+def _follow_tree(parameters: dict[str, Any]) -> None:
+    """Leave each literal period the rolling overlay of a stored op-spec governs to fill, and
+    drop its stated `population`, so both follow the tree the op-spec is expanded into. The
+    mirror of `_lift_rolling` for an op-spec already lifted."""
+    for holder, key, _ in list(rolling_places(parameters)):
+        holder[key] = None
+    if isinstance(overlay := parameters.get(_ROLLING), dict):
+        overlay.pop("population", None)
+
+
 @dataclass(kw_only=True)
 class _Engine:
     """The working tree turned to the engine's tree over the read root frames."""
@@ -1009,6 +1036,11 @@ class _Engine:
             return {"root": node["root"]}
         anchors = {_ANCHOR_ROOTS: node[_ANCHOR_ROOTS]} if _ANCHOR_ROOTS in node else {}
         if "op_spec" in node:
+            # A stored op-spec holds every literal filled, so a null one is a period
+            # `_follow_tree` left to fill.
+            self.lifted |= any(
+                literal is None for literal, _ in rolling_literals(node["op_spec"]["parameters"])
+            )
             return {
                 "op_spec": node["op_spec"],
                 "inputs": {slot: self.tree(child) for slot, child in node["inputs"].items()},
@@ -1553,7 +1585,7 @@ def plan_roots(
         FrameUnavailable: A derived root's recipe is not stored.
         AnalysisTooLarge: The tree holds more than `bounds.max_nodes` nodes.
     """
-    plan = _Plan(max_nodes=bounds.max_nodes)
+    plan = _Plan(max_nodes=bounds.max_nodes, rolling_tree=request.rolling == "tree")
     top = request.tree
     verb = top.verb if isinstance(top, StepNode) else ""
     tree = _plan_node(top, plan, source=source, verb=verb, side="data")

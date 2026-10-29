@@ -49,7 +49,8 @@ path gives one population over its root's dataset, bound by:
 - the entity binding of each two-sided verb on the path, for the side the path
   goes down: `left_entity` and `numerator_entity` for `frame_ref`,
   `right_entity` for `right_frame_ref`, `denominator_entity` for
-  `denominator_frame_ref`. A verb whose second frame slot is null reads
+  `denominator_frame_ref`. A node's sides are the slots its `inputs` fill and
+  those its parameters name. A verb whose second frame slot is null reads
   `frame_ref` twice, so the paths under it are walked once for each side;
 - the card's selection.
 
@@ -344,17 +345,18 @@ def _sides(
     node: Mapping[str, Any], above: _Narrowing
 ) -> Iterator[tuple[str, Mapping[str, Any], _Narrowing]]:
     """Each side of the derived `node`: its frame slot, the node of the frame it
-    reads, and what `above` and the verb itself keep of that side.
+    reads, and what `above` and the verb itself keep of that side. The slots are
+    those its `inputs` fill and those its parameters name, so a tree whose
+    op-specs leave their filled slots out, as the dfo-apis runner writes them,
+    is walked down both sides.
 
     Raises:
         AnalysisRefused: `op_spec_invalid`, for a predicate that is no object.
     """
     parameters = node["op_spec"].get("parameters", {})
     inputs = node["inputs"]
-    slots = [
-        _PRIMARY_SLOT,
-        *sorted(name for name in parameters if name.endswith(_SLOT_SUFFIX)),
-    ]
+    named = {name for name in parameters if name.endswith(_SLOT_SUFFIX)}
+    slots = [_PRIMARY_SLOT, *sorted((named | set(inputs)) - {_PRIMARY_SLOT})]
     for slot in slots:
         kept = _Narrowing(above)
         for predicate in parameters.get("predicates", ()):
