@@ -2,7 +2,8 @@
 
 Two readings are minted: `DATASET` read summed by recipient, and `GRANTS`. An analysis tree
 compares them and answers a format 2 ref to a derived frame, whose file hashes to the ref's
-digest. A card on that frame cites the roots' sources, and a live share of the card serves it
+digest. A card on that frame is described from the frame's description record and cites the
+roots' sources there, and a live share of the card serves it
 through its slot data and slot card routes, follows new data for `DATASET` once the freshness
 window passes, keeps a history of what it served, takes a replacement with its write token and
 refuses another token, turns into a snapshot that pins what each slot serves and refuses a
@@ -239,13 +240,18 @@ def test_a_dashboard_from_analysis_to_share_to_unshare(journey: _Journey):
     assert "sha256:" + hashlib.sha256(body).hexdigest() == member["artifact"]["digest"]
     assert _values(body) == _loans()
 
-    # A card on the derived frame cites the sources its manifest cites, in that order.
+    # A card on the derived frame is described from the frame's description record: its
+    # description cites the sources the frame's manifest cites, in that order, and its
+    # provenance keeps the frame it was drawn on alone.
     card = journey.card(frame)
     cited = journey.derived(frame).json()["citation"]["sources"]
     assert cited
-    assert [source["name"] for source in card["resolved_payload"]["provenance"]["sources"]] == [
-        source["label"] for source in cited
+    payload = card["resolved_payload"]
+    assert [(source["ref"], source["label"]) for source in payload["description"]["sources"]] == [
+        (source["ref"], source["label"]) for source in cited
     ]
+    assert payload["provenance"]["inputs"] == [frame]
+    assert "sources" not in payload["provenance"]
     component_id = card["component_id"]
 
     # A card alone pins nothing; a live share of it pins the frame and its roots.

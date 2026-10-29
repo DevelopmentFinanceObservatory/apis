@@ -40,11 +40,11 @@ _STAT_VAR = "dcid:Amount_ODA"
 _POPULATION_STAT_VAR = "dcid:Count_Person"
 
 
-def aid_frame(*, scale: float = 1.0) -> Frame:
+def aid_frame(*, scale: float = 1.0, stat_var: str = _STAT_VAR) -> Frame:
     """ODA from one donor to two recipients over 2021 and 2022, each recipient a party."""
     rows = [
         {
-            "stat_var": _STAT_VAR,
+            "stat_var": stat_var,
             "financingRecipient": recipient,
             "financingRecipient_party_kind": "party",
             "origin": donor,

@@ -114,7 +114,7 @@ from datasets_api.doors.publish import (
     write_frame_recipe,
 )
 from datasets_api.mint_models import GroupbyOptions
-from datasets_api.output_digest import output_digest
+from datasets_api.output_digest import minted_variable_names, output_digest, stat_vars
 from datasets_api.publish_models import (
     MAX_RECIPE_LEFT_OUT_SERIES,
     MAX_STEPS,
@@ -1387,10 +1387,12 @@ def resolve_roots(
 @dataclass(frozen=True, kw_only=True)
 class Computed:
     """A tree computed and not stored: the engine's evaluation, the roots it read in the
-    recipe's order, and the output digest of its frame."""
+    recipe's order, the `stat_var` values of each root's frame by its index in the tree, and
+    the output digest of its frame."""
 
     evaluation: Evaluation
     roots: tuple[ResolvedRoot, ...]
+    root_variables: Mapping[int, frozenset[str]]
     output_digest: str
 
 
@@ -1454,8 +1456,13 @@ def _evaluated(
         raise AnalysisTooLarge(
             ceiling_kind="analysis_output_rows", count=rows, cap=PUBLISH_MAX_ROWS
         )
+    root_variables = {index: stat_vars(root.frame) for index, root in inputs.items()}
+    names = minted_variable_names(evaluation.tree, root_variables)
     return Computed(
-        evaluation=evaluation, roots=tuple(ordered), output_digest=output_digest(evaluation.frame)
+        evaluation=evaluation,
+        roots=tuple(ordered),
+        root_variables=root_variables,
+        output_digest=output_digest(evaluation.frame, names),
     )
 
 

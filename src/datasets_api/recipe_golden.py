@@ -8,7 +8,7 @@ A case is one directory:
   engine's own fixture frames). `recipe` is the stored recipe body. `roots` lists each root
   record the recipe's tree names, in order, with `file`, its frame's path in the case. `expected`
   holds the stored output frame's `frame_content_version` and `output_digest`
-  (`recipe_replay.frame_facts`).
+  (`recipe_replay.frame_facts`), its operations' variables named over the recorded roots.
 - `roots/<i>.parquet`: each root frame as the runner read it, in the canonical frame encoding.
 - `output.parquet`: the stored output frame.
 
@@ -42,6 +42,7 @@ from datasets_api.analysis import (
     resolve_roots,
 )
 from datasets_api.derived import root_rendering
+from datasets_api.output_digest import minted_variable_names, stat_vars
 from datasets_api.recipe_replay import StoredRootSource, frame_facts
 from dfo_analysis_engine.frame_ref import FrameRef
 from materialise.formats import read_canonical_frame, write_canonical_frame
@@ -81,7 +82,8 @@ def record_case(
     request = AnalysisRequest(tree=DerivedRoot(spec_id=spec_id, content_version=content_version))
     _, roots = plan_roots(request, source=source, bounds=_BOUNDS)
     resolved = resolve_roots(roots, source=source, latest=False, trace_id=None)
-    files = [_frame_bytes(source.read(root)) for root in resolved]
+    frames = [source.read(root) for root in resolved]
+    files = [_frame_bytes(frame) for frame in frames]
     output_bytes = _frame_bytes(output)
     if sum(map(len, files)) + len(output_bytes) > max_bytes:
         return False
@@ -98,10 +100,28 @@ def record_case(
         "roots": [
             {**root.record, "file": f"roots/{index}.parquet"} for index, root in enumerate(resolved)
         ],
-        "expected": frame_facts(output),
+        "expected": frame_facts(
+            output,
+            _names(
+                recipe, [(root.record, frame) for root, frame in zip(resolved, frames, strict=True)]
+            ),
+        ),
     }
     (out / CASE_FILE).write_text(json.dumps(case, indent=1, sort_keys=True) + "\n")
     return True
+
+
+def _names(
+    recipe: Mapping[str, Any], roots: Sequence[tuple[Mapping[str, Any], Frame]]
+) -> dict[str, str]:
+    """The names of the variables `recipe`'s operations wrote, over `roots`, each root record
+    with its frame. A tree's root index is its record's place in the recipe's `roots`, which
+    the order roots are read in need not follow."""
+    variables = {
+        index: next(stat_vars(frame) for held, frame in roots if held == record)
+        for index, record in enumerate(recipe["roots"])
+    }
+    return minted_variable_names(recipe["tree"], variables)
 
 
 @dataclass(kw_only=True)
@@ -149,6 +169,21 @@ class FixtureRootSource:
     def read(self, root: ResolvedRoot) -> Frame:
         assert isinstance(root.source, str)
         return read_canonical_frame((self.case / root.source).read_bytes())
+
+
+def recorded_facts(case: Path) -> dict[str, str]:
+    """The output facts of `case`'s recorded output frame, its variables named over its
+    recorded roots."""
+    body = json.loads((case / CASE_FILE).read_text())
+    roots = [
+        (
+            {key: value for key, value in held.items() if key != "file"},
+            read_canonical_frame((case / held["file"]).read_bytes()),
+        )
+        for held in body["roots"]
+    ]
+    output = read_canonical_frame((case / OUTPUT_FILE).read_bytes())
+    return frame_facts(output, _names(body["recipe"], roots))
 
 
 def replay_case(case: Path) -> tuple[dict[str, str], dict[str, str]]:

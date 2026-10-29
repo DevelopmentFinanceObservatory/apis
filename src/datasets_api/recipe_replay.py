@@ -10,7 +10,10 @@ runner would serve by building it, raises `RootRenderingUnreadable`.
 
 `replay_recipe` computes one stored recipe again through the runner's own path
 (`analysis.compute_analysis` on the derived root alone, `latest` false) and compares the
-result's frame `cv_` and output digest with the stored frame's. Its `Replay.outcome` is one of:
+result's frame `cv_` and output digest with the stored frame's. The stored frame's digest names
+the variables its operations wrote by the stored tree over the roots the run read
+(`output_digest.minted_variable_names`), so a run that reads no root or computes nothing
+reports the stored frame's `cv_` alone. Its `Replay.outcome` is one of:
 
 - `equal`: both match;
 - `differs`: either differs, or the runner refuses or fails on a recipe whose roots and stored
@@ -59,7 +62,7 @@ from datasets_api.analysis import (
 from datasets_api.analysis_roots import frame_from_frame_layout, frame_of_stored
 from datasets_api.derived import root_rendering
 from datasets_api.mint_models import MintOptions
-from datasets_api.output_digest import output_digest
+from datasets_api.output_digest import minted_variable_names, output_digest
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import (
     artifact_rendering,
@@ -248,11 +251,12 @@ class Replay:
         }
 
 
-def frame_facts(frame: Frame) -> dict[str, str]:
-    """A frame's `cv_` and output digest, the two facts a replay compares."""
+def frame_facts(frame: Frame, names: Mapping[str, str]) -> dict[str, str]:
+    """A frame's `cv_` and output digest, the two facts a replay compares, with `names` the
+    names of the variables its operations wrote (`output_digest.output_digest`)."""
     return {
         "frame_content_version": derive_frame_content_version(frame),
-        "output_digest": output_digest(frame),
+        "output_digest": output_digest(frame, names),
     }
 
 
@@ -268,7 +272,7 @@ def replay_recipe(
     stored_frame = source.stored_output(spec_id=spec_id, content_version=content_version)
     if stored_frame is None:
         return replay(outcome=ReplayOutcome.FRAME_UNREADABLE)
-    stored = frame_facts(stored_frame)
+    stored = {"frame_content_version": derive_frame_content_version(stored_frame)}
     request = AnalysisRequest(tree=DerivedRoot(spec_id=spec_id, content_version=content_version))
     try:
         computed = compute_analysis(request, source=source)
@@ -286,6 +290,9 @@ def replay_recipe(
             stored=stored,
             detail="".join(traceback.format_exception_only(failed)).strip(),
         )
+    stored = frame_facts(
+        stored_frame, minted_variable_names(recipe["tree"], computed.root_variables)
+    )
     facts = {
         "frame_content_version": computed.evaluation.summary["frame_content_version"],
         "output_digest": computed.output_digest,

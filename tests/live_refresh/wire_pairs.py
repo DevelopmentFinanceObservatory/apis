@@ -10,7 +10,7 @@ Values that differ between runs or builds are replaced, the same value by the sa
 everywhere, so the recording is stable and ids still line up across pairs:
 
 - content versions, derived frame ids, recipe hashes, replay keys, operation ids, component
-  ids, and artifact digests are numbered in order of first appearance, in their own grammar
+  ids, description vocabulary revisions, and artifact digests are numbered in order of first appearance, in their own grammar
   (`cv_00000000000000000000000000000001`);
 - times read `<timestamp>`, dates `<date>`, a citation's year `<year>`, and `trace_id` and
   `capability_version` their own name in angle brackets;
@@ -70,6 +70,7 @@ _NUMBERED_IDS = (
     (re.compile(r"\brpk_[0-9a-f]{32}\b"), "rpk_", 32),
     (re.compile(r"\bop_[0-9a-f]{64}\b"), "op_", 64),
     (re.compile(r"\bcmp_[0-9a-f]{24}\b"), "cmp_", 24),
+    (re.compile(r"\bvoc_[0-9a-f]{32}\b"), "voc_", 32),
     (re.compile(r"\bsha256:[0-9a-f]{64}\b"), "sha256:", 64),
 )
 _NAMED_VALUES = (

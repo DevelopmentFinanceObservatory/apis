@@ -164,11 +164,13 @@ def _expected(
     }
 
 
-def _coverage_gaps(payload: dict) -> list[str]:
+def _coverage_gaps(payload: dict) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """The entities and periods of each series a described card leaves out, from its
+    description's `coverage_gap` caveats."""
     return [
-        warning["detail"]
-        for warning in payload["provenance"]["warnings"]
-        if warning["kind"] == "coverage_gap"
+        (tuple(entity["ref"] for entity in caveat["entities"]), tuple(caveat["periods"]))
+        for caveat in payload["description"]["caveats"]
+        if caveat["kind"] == "coverage_gap"
     ]
 
 
@@ -437,7 +439,7 @@ def test_a_derived_card_is_redrawn_on_the_replay_of_its_recipe(rig: _Rig):
     )
     created = rig.read(card).json()["resolved_payload"]
     assert created["component"]["x_axis"]["window"] == {"start": "2023", "end": "2024"}
-    assert _coverage_gaps(created) == ["1 series has no 2024 value: Uganda"]
+    assert _coverage_gaps(created) == [((_UGANDA,), ("2024",))]
     assert _refusal(rig.refresh(stored)) == (422, "frame_not_refreshable")
 
     rig.composed.move(add_year=2025, recipients=drawn)
@@ -472,8 +474,7 @@ def test_a_derived_card_is_redrawn_on_the_replay_of_its_recipe(rig: _Rig):
         _NAMES[recipient]: {year: growth[(recipient, year)] for year in ("2024", "2025")}
         for recipient in drawn
     }
-    assert _coverage_gaps(payload) == ["1 series has no 2025 value: Uganda"]
-    assert payload["provenance"]["warnings"][0]["kind"] == "coverage_gap"
+    assert _coverage_gaps(payload) == [((_UGANDA,), ("2025",))]
     assert (f"presentation:{card}", replay["spec_id"], replay["content_version"]) not in (
         rig.composed.pins()
     )
@@ -530,10 +531,7 @@ def test_a_rolling_window_on_a_dataset_frame_moves_when_half_the_series_hold_the
         "Tanzania": {"2024": 320.0, "2025": None},
         "Uganda": {"2024": 420.0, "2025": None},
     }
-    assert payload["provenance"]["warnings"][0] == {
-        "kind": "coverage_gap",
-        "detail": "2 series have no 2025 value: Tanzania, Uganda",
-    }
+    assert _coverage_gaps(payload) == [((_TANZANIA, _UGANDA), ("2025",))]
     moved = rig.redrawn(stat, half)["component"]
     assert (moved["period"], moved["value"]) == ("2024", 220.0)
     assert moved["change"]["basis"] == ["2023", "2024"]

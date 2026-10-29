@@ -98,7 +98,11 @@ def test_a_two_sided_tree_pairs_roles_by_column_and_stores_its_frame() -> None:
         },
     )
     assert result.evaluation.ref == expected.ref
-    assert result.output_digest == output_digest(expected.frame)
+    named = {
+        expected.ref.spec_id: '{"denominator_frame_ref":["dcid:Count_Person"],'
+        '"frame_ref":["dcid:Amount_ODA"],"verb":"quotient_of"}'
+    }
+    assert result.output_digest == output_digest(expected.frame, named)
     assert result.created
     jsonschema.validate(result.ref(), _REF_SCHEMA)
     member = result.ref()["members"][0]

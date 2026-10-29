@@ -935,6 +935,7 @@ def compose(
         reference_writer=reference_writer,
         spec_reader=spec_reader,
         recipe_reader=recipe_store,
+        description_reader=description_store,
         code_index=code_index,
     )
 

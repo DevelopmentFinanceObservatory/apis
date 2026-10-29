@@ -10,9 +10,7 @@ import pytest
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.doors.publish import publish_built_frame
 from datasets_api.maintenance import run_record_recipe_golden
-from datasets_api.recipe_golden import OUTPUT_FILE, cases, replay_case
-from datasets_api.recipe_replay import frame_facts
-from materialise.formats import read_canonical_frame
+from datasets_api.recipe_golden import cases, recorded_facts, replay_case
 
 from ._analysis_doubles import (
     AID,
@@ -39,7 +37,7 @@ def test_the_golden_holds_cases() -> None:
 def test_the_runner_reproduces_the_recorded_output(case: Path) -> None:
     expected, computed = replay_case(case)
 
-    assert frame_facts(read_canonical_frame((case / OUTPUT_FILE).read_bytes())) == expected
+    assert recorded_facts(case) == expected
     assert computed == expected
 
 

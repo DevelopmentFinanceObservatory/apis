@@ -250,7 +250,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 03d8f5a on spec-kit. It adds ref format 2 (derived members), the
+# The pin is 17f0469 on spec-kit. It adds ref format 2 (derived members), the
 # output-digest and analysis rule vectors, the datasets.analysis and
 # presentation.shares endpoints and their refusal codes. It registers slot_default_not_applied, the three source-code
 # refusals, whole_total_available and the scope-choice refusals
@@ -273,11 +273,13 @@ dfo-analysis-engine = { workspace = true }
 # the `payload_too_large` action row and the `series_left_out` warning.
 # Its registry maps `allowance_exhausted` (429) on presentation.write and says
 # its problem document reads `retryable: false`. Its output-digest rule is
-# `out2`, whose document names each value's `stat_var`.
+# `out2`, whose document names each value's `stat_var` and reads a variable that
+# compare, sum_of, share_of or quotient_of writes under a name built from its
+# verb and its inputs' variables.
 # Follow-up: move all six to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "03d8f5a0f457f4b008f636c484f3bb81e3c98184", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "03d8f5a0f457f4b008f636c484f3bb81e3c98184", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "17f0469a5d5648114ae40191bda7e8a573971617", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "17f0469a5d5648114ae40191bda7e8a573971617", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
