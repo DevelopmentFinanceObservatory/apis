@@ -22,6 +22,7 @@ from search.models import (
     SlotValue,
     StatVar,
 )
+from tests.engine._builders import binding_set_slot as _set_slot
 from tests.engine._builders import conjoin_spec as _spec
 from tests.engine._builders import constraint_value_slot as _cv_slot
 from tests.engine._builders import gref as _gr
@@ -382,15 +383,26 @@ def test_collapse_same_shape_states_its_set_in_identity_order(asked: tuple[str, 
 _HIV = "CRSPurposeCode13040"
 _POPULATION = "CRSPurposeCode130"
 _HEALTH = "CRSPurposeCode120"
+_EDUCATION = "CRSPurposeCode110"
+_WATER = "CRSPurposeCode140"
+_HEALTH_GROUP = (_HEALTH, _POPULATION)
 
 
-def _purpose_region(code: str, index: int, *qualifiers: ResolvedQualifier) -> RegionResult:
-    """A definite region binding one CRS purpose code, with its qualifier records."""
+def _purpose_region(
+    code: str | tuple[str, ...], index: int, *qualifiers: ResolvedQualifier
+) -> RegionResult:
+    """A definite region binding one CRS purpose code, or a tuple of codes as a set, with its
+    qualifier records."""
+    slot = (
+        _cv_slot("crsPurpose", code)
+        if isinstance(code, str)
+        else _set_slot("what", "crsPurpose", "crsPurpose", list(code))
+    )
     spec = build_spec(
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_ECON_SHAPE,
-        slots=[_cv_slot("crsPurpose", code)],
+        slots=[slot],
         stat_vars=[
             StatVar(
                 ref=_gr("sv"),
@@ -429,6 +441,14 @@ def _record(text: str, code: str, *, union: tuple[str, ...] = ()) -> ResolvedQua
         # Codes that do not nest stay a set whatever union was recorded.
         ((_HEALTH, _HIV), (_HEALTH, _HIV), [_HIV, _HEALTH]),
         ((_HEALTH, _HIV), (), [_HIV, _HEALTH]),
+        # A set binds its codes as a value binds its one ("health and education aid").
+        ((_HEALTH_GROUP, _EDUCATION), (), [_EDUCATION, _HEALTH, _POPULATION]),
+        ((_EDUCATION, _HEALTH_GROUP), (), [_EDUCATION, _HEALTH, _POPULATION]),
+        (((_EDUCATION, _WATER), _HEALTH_GROUP), (), [_EDUCATION, _HEALTH, _POPULATION, _WATER]),
+        ((_HEALTH_GROUP, _HIV), (), [_HEALTH, _POPULATION]),
+        # Parts sharing a code would count it in both, so they stay apart.
+        (((_HEALTH, _WATER), _HEALTH_GROUP), (), None),
+        ((_HEALTH_GROUP, _HEALTH), (), None),
     ],
     ids=[
         "union-selected-both",
@@ -436,19 +456,31 @@ def _record(text: str, code: str, *, union: tuple[str, ...] = ()) -> ResolvedQua
         "split-parts-narrower-first",
         "no-nesting",
         "no-nesting-split",
+        "grouping-and-value",
+        "value-and-grouping",
+        "grouping-and-grouping",
+        "grouping-holds-value",
+        "overlapping-groupings",
+        "grouping-shares-value",
     ],
 )
 def test_collapse_same_shape_drops_a_merged_value_nested_under_another(
-    codes: tuple[str, str], union: tuple[str, ...], expected: list[str]
+    codes: tuple[str | tuple[str, ...], str | tuple[str, ...]],
+    union: tuple[str, ...],
+    expected: list[str] | None,
 ):
-    """The fold reads its members as a union. A merged code that descends from another
-    merged code drops, and one code left binds a value."""
+    """The fold reads its members as a union, a value as a set of one. A merged code that
+    descends from another merged code drops, and one code left binds a value. Parts that
+    share a code keep the first and residualise the second."""
     first, second = codes
-    r_a = _purpose_region(first, 0, _record("first", first, union=union))
-    r_b = _purpose_region(second, 1, _record("second", second))
+    r_a = _purpose_region(first, 0, _record("first", _first_code(first), union=union))
+    r_b = _purpose_region(second, 1, _record("second", _first_code(second)))
 
     (merged,), residual = collapse_same_shape([r_a, r_b])
 
+    if expected is None:
+        assert (merged, residual) == (r_a, [("part 1", 1)])
+        return
     assert residual == []
     binding = merged.spec.resolved.slots[0].binding
     if len(expected) == 1:
@@ -457,6 +489,10 @@ def test_collapse_same_shape_drops_a_merged_value_nested_under_another(
     else:
         assert isinstance(binding, BindingSet)
         assert sorted(ref_dcid(v.ref) for v in binding.values) == sorted(expected)
+
+
+def _first_code(code: str | tuple[str, ...]) -> str:
+    return code if isinstance(code, str) else code[0]
 
 
 def test_collapse_same_shape_keeps_every_union_record_of_one_text():

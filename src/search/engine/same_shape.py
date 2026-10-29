@@ -40,6 +40,7 @@ from search.engine.spec_build import (
 from search.engine.unit.conversion import with_unit_conversion
 from search.models import (
     BindingSet,
+    BindingUnbound,
     BindingValue,
     EntityOptions,
     IdentityShapeSchema,
@@ -595,10 +596,11 @@ def collapse_same_shape(
     The group merges in either case:
     - No binding differs and at least one unbound slot appears in only some
       members. Union the slot rosters without adding a ``BindingSet``.
-    - Exactly one slot differs, every member binds it to a value, at least two
-      distinct refs remain, and entity buckets meet the dimensionality rule. The
-      refs drop each one nested under another (`_simplify_merged_union`), and one ref
-      left binds a value.
+    - Exactly one slot differs, every member binds it to a value or, off the where axis,
+      a set (a value reads as a set of one), members binding different sets share no
+      ref, the union holds at least two distinct refs, and entity buckets meet the
+      dimensionality rule. The refs drop each one nested under another
+      (`_simplify_merged_union`), and one ref left binds a value.
 
     A ``where`` difference may widen one identity-entity bucket. Roster-only
     and other slot merges require identical buckets; otherwise the merge would
@@ -735,12 +737,14 @@ def _build_merged_slots(
     diff_key: tuple[str, str | None] | None,
     set_ref_for: Callable[[list[str]], GraphRef | None] | None,
 ) -> list[Slot]:
-    """Build merged slots from a roster union or one differing value binding.
+    """Build merged slots from a roster union or the union of one differing binding.
 
     A ``None`` key unions unbound slots after the base roster. Otherwise every
-    member must bind the differing slot to a value with at least two distinct
-    refs. Each ref nested under another drops (`_simplify_merged_union`). One ref left
-    binds a ``BindingValue``, more bind a ``BindingSet``.
+    member must bind the differing slot, a value as a set of one and a set only off the
+    where axis. Members binding different sets must share no ref, and the sets must
+    union to at least two distinct refs. Each ref nested under another drops
+    (`_simplify_merged_union`). One ref left binds a ``BindingValue``, more bind a
+    ``BindingSet``.
     ``set_ref_for`` labels only what/how sets because ``isPartOf`` also
     represents geographic containment.
     """
@@ -755,32 +759,38 @@ def _build_merged_slots(
                     merged_slots.append(sl)
         return merged_slots
 
-    all_value = True
+    member_values: list[list[SlotValue]] = []
     for r in group:
         s = next((sl for sl in r.spec.resolved.slots if _slot_key_t(sl) == diff_key), None)
-        if s is None or s.binding.kind != "value":
-            all_value = False
-            break
-    if not all_value:
+        if s is None or isinstance(s.binding, BindingUnbound):
+            raise _RefuseMerge
+        if isinstance(s.binding, BindingValue):
+            member_values.append([s.binding.value])
+        elif diff_key[0] == "where":
+            # A place set reads a region, and this merge reads no containment of places.
+            raise _RefuseMerge
+        else:
+            member_values.append(s.binding.values)
+    # Members that share a code would count it in two parts of one answer.
+    member_codes = {
+        frozenset(value.ref.ref for value in values if value.ref) for values in member_values
+    }
+    if sum(len(codes) for codes in member_codes) != len(frozenset().union(*member_codes)):
         raise _RefuseMerge
 
-    diff_refs: list = []
+    diff_refs: list[GraphRef] = []
     seen_dcids: set[str] = set()
-    for r in group:
-        s = next(sl for sl in r.spec.resolved.slots if _slot_key_t(sl) == diff_key)
-        assert isinstance(s.binding, BindingValue)
-        ref = s.binding.value.ref
-        if ref and ref.ref not in seen_dcids:
-            seen_dcids.add(ref.ref)
-            diff_refs.append(ref)
+    for values in member_values:
+        for value in values:
+            if value.ref and value.ref.ref not in seen_dcids:
+                seen_dcids.add(value.ref.ref)
+                diff_refs.append(value.ref)
     if len(diff_refs) < 2:
         raise _RefuseMerge
     diff_refs = _simplify_merged_union(diff_refs)
 
     # Slot values may be enum values, so retain the source value_kind.
-    src_slot = next(s for s in group[0].spec.resolved.slots if _slot_key_t(s) == diff_key)
-    assert isinstance(src_slot.binding, BindingValue)  # all_value guarantees this
-    source_vk = src_slot.binding.value.value_kind
+    source_vk = member_values[0][0].value_kind
     values = [SlotValue(ref=ref, value_kind=source_vk) for ref in diff_refs]
     binding: BindingValue | BindingSet
     if len(values) == 1:
