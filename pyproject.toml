@@ -251,7 +251,8 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 6b606ec on spec-kit's dev branch. It adds ref format 2 (derived
+# The pin is 831e1d5 on spec-kit's feat/public-mcp-codes branch, one commit on
+# dev's 6b606ec. It adds ref format 2 (derived
 # members) with roots that may carry the groupby DFO read them with, `mv_`
 # minted variable names, the output-digest and analysis rule vectors, the
 # datasets.analysis and presentation.shares endpoints and their refusal codes.
@@ -282,10 +283,13 @@ dfo-analysis-engine = { workspace = true }
 # `out2`, whose document names each value's `stat_var` and reads a variable that
 # compare, sum_of, share_of or quotient_of writes under a name built from its
 # verb and its inputs' variables.
+# It maps the exports routes' refusals on datasets.exports and datasets.export_link,
+# registers `provenance_unavailable` and `licence_not_redistributable`, and adds the
+# mcp_refusal channel with the MCP tool refusals on mcp.tools.
 # Follow-up: move all eight to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6b606ec02d67def6851aae913a733da31e0183be", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6b606ec02d67def6851aae913a733da31e0183be", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "831e1d507251d488c8cb22d98dda69a158faf461", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "831e1d507251d488c8cb22d98dda69a158faf461", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]

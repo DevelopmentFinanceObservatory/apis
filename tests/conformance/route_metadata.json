@@ -56,6 +56,24 @@
   {
     "has_description": true,
     "method": "POST",
+    "name": "post_export",
+    "operation_id": "datasets_post_export",
+    "path": "/api/datasets/exports",
+    "summary": "Post Export",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_export",
+    "operation_id": "datasets_get_export",
+    "path": "/api/datasets/exports/{export_id}",
+    "summary": "Get Export",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
     "name": "post_publish",
     "operation_id": "datasets_post_publish",
     "path": "/api/datasets/frames/publish",

@@ -14,6 +14,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.analysis import RunningAnalyses
+from datasets_api.export_store import LiveExportStore
 from datasets_api.mint_deps import MintDeps
 from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.task_client import FakeTaskClient, TaskClient
@@ -32,12 +33,14 @@ from ._version_record_store import FakeVersionRecordDatasetStore
 
 
 def offline_recipe_stores() -> dict[str, object]:
-    """Return `datasets_surface`'s `recipe_store`, `version_lister` and `description_store`
-    keywords over one empty SQLite-backed store, so the lifespan opens no pool.
+    """Return `datasets_surface`'s `recipe_store`, `export_store`, `version_lister` and
+    `description_store` keywords over one empty SQLite-backed store, so the lifespan opens no
+    pool.
     """
     store = FakeVersionRecordDatasetStore()
     return {
         "recipe_store": LiveRecipeStore(store=store),
+        "export_store": LiveExportStore(store=store),
         "version_lister": LiveVersionLister(store=store),
         "description_store": LiveDescriptionStore(store=store),
     }
@@ -71,6 +74,7 @@ def make_app(
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
     recipe_store=None,
+    export_store=None,
     version_lister=None,
     description_store=None,
     code_index=None,
@@ -91,7 +95,8 @@ def make_app(
     reads nothing until a write, and an omitted writer records what it writes into a fake
     reader. `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
-    injects both over the store its version writer shares. `description_store` defaults to one
+    injects both over the store its version writer shares. `export_store` defaults to one over
+    the recipe store's store when both default, else over an empty SQLite-backed store. `description_store` defaults to one
     over an empty SQLite-backed store, and `allowances` to `offline_allowances` under the
     resolved settings. Every other omitted client is
     `Unwired`. Publish verification under the null writer raises `PublishRecordMissing` (500),
@@ -118,6 +123,12 @@ def make_app(
         if recipe_store is None and version_lister is None
         else {"recipe_store": recipe_store, "version_lister": version_lister}
     )
+    if export_store is not None or "export_store" not in recipe_stores:
+        recipe_stores["export_store"] = (
+            export_store
+            if export_store is not None
+            else LiveExportStore(store=FakeVersionRecordDatasetStore())
+        )
     if description_store is not None or "description_store" not in recipe_stores:
         recipe_stores["description_store"] = (
             description_store

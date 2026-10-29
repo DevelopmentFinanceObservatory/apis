@@ -17,7 +17,8 @@ the recipe door's
 `PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
 `GET /api/datasets/recipes/replays/{replay_key}`, `POST /api/datasets/analysis` and its
 `/anchor` route, the derived door's `GET /api/datasets/derived/{ops_id}/{content_version}` and its
-`/file`, and `GET /api/datasets/{spec_id}/versions`.
+`/file`, `GET /api/datasets/{spec_id}/versions`, and the exports door's
+`POST /api/datasets/exports` and `GET /api/datasets/exports/{export_id}`.
 Registration stores definitions for later materialisation. The mint route handles four input
 kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
 The versions door mounts before the snapshot door, whose
@@ -57,6 +58,7 @@ from datasets_api.doors.analysis import (
 from datasets_api.doors.definition import build_definition_door, classify_definition_exception
 from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
+from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.files import build_files_door, classify_files_exception
 from datasets_api.doors.meta import build_meta_door, classify_meta_exception
 from datasets_api.doors.mint import build_mint_door
@@ -78,6 +80,7 @@ from datasets_api.doors.register import (
 )
 from datasets_api.doors.snapshot import build_snapshot_door
 from datasets_api.doors.versions import build_versions_door
+from datasets_api.export_store import ExportStore
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
 from datasets_api.recipe_store import RecipeStore
@@ -129,6 +132,7 @@ def datasets_surface(
     version_lister: VersionLister | None = None,
     operation_store: OperationStore | None = None,
     recipe_store: RecipeStore | None = None,
+    export_store: ExportStore | None = None,
     description_store: LiveDescriptionStore | None = None,
     reference_writer: ArtifactReferenceWriter | None = None,
     allowances: SharedAllowanceLedger | None = None,
@@ -163,7 +167,8 @@ def datasets_surface(
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
     defaulting to `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` and `DATASETS_FIRST_PARTY_PRINCIPAL`.
-    Pinning has no delete route, so publish permission grants no pin permission. The recipe
+    Pinning has no delete route, so publish permission grants no pin permission. The exports
+    door admits the pin allowlist's holders as the pin door does. The recipe
     door admits the publish allowlist. The frame refresh door admits
     `settings.live_refresh_principal` alone.
 
@@ -217,6 +222,10 @@ def datasets_surface(
             build_publish_door(
                 deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
             ),
+            build_exports_door(
+                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
+            ),
+            build_export_link_door(deps=cell),
         )
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
@@ -231,6 +240,7 @@ def datasets_surface(
         version_lister=version_lister,
         operation_store=operation_store,
         recipe_store=recipe_store,
+        export_store=export_store,
         description_store=description_store,
         reference_writer=reference_writer,
         allowances=allowances,

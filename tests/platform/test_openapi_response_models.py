@@ -42,9 +42,10 @@ def _schema_path(path: str) -> str:
     return _CONVERTER_SUFFIX_RE.sub(r"{\1}", path)
 
 
-# Operations allowed to omit a 2xx response. The Datasets download link answers 302.
+# Operations allowed to omit a 2xx response. The Datasets download and export links answer 302.
 _NO_2XX_EXEMPT: frozenset[tuple[str, str]] = frozenset(
     {
+        ("/api/datasets/exports/{export_id}", "get"),
         ("/api/datasets/{id}/{content_version}/file", "get"),
         ("/api/datasets/{id}/{content_version}/files/{digest}", "get"),
     }

@@ -126,7 +126,8 @@ class DerivedManifest(BaseModel):
     )
 
 
-def _reads(current: Deps) -> DerivedReads:
+def derived_reads(current: Deps) -> DerivedReads:
+    """The stores a derived read reads, from the surface's `Deps`."""
     return DerivedReads(
         snapshot_reader=current.snapshot_reader,
         artifact_store=current.artifact_store,
@@ -139,12 +140,16 @@ def _reads(current: Deps) -> DerivedReads:
 
 def _manifest(*, id: str, content_version: str, current: Deps) -> dict[str, Any]:
     facts = read_derived_manifest(
-        spec_id=id, content_version=content_version, reads=_reads(current)
+        spec_id=id, content_version=content_version, reads=derived_reads(current)
     )
     return DerivedManifest.model_validate(manifest_body(facts)).model_dump(mode="json")
 
 
-def _file(*, id: str, content_version: str, options: MintOptions, current: Deps) -> DerivedFile:
+def derived_file(
+    *, id: str, content_version: str, options: MintOptions, current: Deps
+) -> DerivedFile:
+    """The derived frame's file in `options` (`derived.render_derived_file`), rendered under a
+    materialise permit."""
     with bounded_materialise_slot(
         current.materialise_semaphore, wait_seconds=current.settings.materialise_wait_seconds
     ):
@@ -152,7 +157,7 @@ def _file(*, id: str, content_version: str, options: MintOptions, current: Deps)
             spec_id=id,
             content_version=content_version,
             options=options,
-            reads=_reads(current),
+            reads=derived_reads(current),
             site=current.settings.site,
         )
 
@@ -189,7 +194,7 @@ class _DerivedRoutes:
             rendered = await current.work_executor.run(
                 functools.partial(
                     run_with_timings,
-                    _file,
+                    derived_file,
                     call.timings,
                     id=id,
                     content_version=content_version,
@@ -291,4 +296,6 @@ __all__ = [
     "DerivedManifest",
     "build_derived_door",
     "build_derived_files_door",
+    "derived_file",
+    "derived_reads",
 ]

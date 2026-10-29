@@ -78,6 +78,7 @@ def _graph_client_beside_datasets(stack: ExitStack) -> TestClient:
             "version_lister",
             "operation_store",
             "recipe_store",
+            "export_store",
             "description_store",
             "reference_writer",
             "allowances",

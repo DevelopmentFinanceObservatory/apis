@@ -77,11 +77,13 @@ class MalformedSubjectIdConvertor(Convertor[str]):
 
 register_url_convertor(
     "dfo_malformed_subject_id_excluding_meta_literals",
-    MalformedSubjectIdConvertor(("register", "healthz", "schema", "capabilities", "analysis")),
+    MalformedSubjectIdConvertor(
+        ("register", "healthz", "schema", "capabilities", "analysis", "exports")
+    ),
 )
 register_url_convertor(
     "dfo_malformed_subject_id_excluding_two_segment_literals",
-    MalformedSubjectIdConvertor(("operations", "analysis")),
+    MalformedSubjectIdConvertor(("operations", "analysis", "exports")),
 )
 register_url_convertor(
     "dfo_malformed_subject_id",

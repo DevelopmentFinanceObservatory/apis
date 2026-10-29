@@ -6,8 +6,8 @@ validation codes stay with the contract whose request model determines them.
 The contract-wide comparison misses a code served at the wrong endpoint or status, as when the
 publish door emitted `identity_collision` (409) and `pin_not_permitted` (403), which other Datasets
 endpoints already registered. The per-endpoint check compares `(code, status)` for
-`datasets.publish` and `datasets.operations`, the Datasets doors with reproducible exception
-exemplars. Other endpoints also serve validation codes or codes raised outside their door
+`datasets.publish`, `datasets.operations`, `datasets.exports` and `datasets.export_link`, the
+Datasets doors with reproducible exception exemplars. Other endpoints also serve validation codes or codes raised outside their door
 classifiers, so comparing them would report false gaps. Shared Search observation warnings must
 list every resolve door. A mismatch fails in either direction.
 """
@@ -32,6 +32,7 @@ import skills_api.codes as skills_codes
 from datasets_api.app import classify_datasets_exception
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
+from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.publish import build_publish_door
 from dfo_platform.doors import DoorContribution
@@ -185,7 +186,7 @@ def test_shared_observations_warnings_name_every_resolve_door():
 
 # One `DoorContribution` per Datasets endpoint this module can verify
 # byte-for-byte against the registry's own per-(code, http_status) mapping
-# -- see this module's own docstring for why only these two, and why every
+# -- see this module's own docstring for why only these, and why every
 # other Datasets endpoint (and every other contract) stays out.
 _ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
     "datasets.publish": build_publish_door(
@@ -194,6 +195,10 @@ _ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
     "datasets.operations": build_meta_door(
         deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
     ),
+    "datasets.exports": build_exports_door(
+        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
+    ),
+    "datasets.export_link": build_export_link_door(deps=DepsCell()),
 }
 
 
@@ -248,6 +253,11 @@ def test_datasets_operations_served_codes_match_registry_by_status():
     _assert_endpoint_bijection(
         endpoint="datasets.operations", contribution=_ENDPOINT_DOOR_EXEMPLARS["datasets.operations"]
     )
+
+
+@pytest.mark.parametrize("endpoint", ["datasets.exports", "datasets.export_link"])
+def test_datasets_exports_served_codes_match_registry_by_status(endpoint: str):
+    _assert_endpoint_bijection(endpoint=endpoint, contribution=_ENDPOINT_DOOR_EXEMPLARS[endpoint])
 
 
 def test_no_served_code_resolves_to_a_retired_registry_entry():

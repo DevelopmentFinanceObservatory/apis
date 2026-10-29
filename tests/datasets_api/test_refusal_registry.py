@@ -21,6 +21,7 @@ from datasets_api.doors.analysis import RunningAnalyses, build_analysis_door
 from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES, build_definition_door
 from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
+from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.files import build_files_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.mint import build_mint_door
@@ -57,6 +58,8 @@ _ENDPOINTS = {
     "observations": ("datasets.observations",),
     "pin": ("datasets.pin",),
     "publish": ("datasets.publish",),
+    "exports": ("datasets.exports",),
+    "export_link": ("datasets.export_link",),
 }
 
 # Refusal classes only another surface raises, as Search's subclasses of materialise refusals.
@@ -84,6 +87,8 @@ def doors() -> dict[str, DoorContribution]:
         "observations": build_observations_door(deps=cell),
         "pin": build_pin_door(deps=cell, settings=settings),
         "publish": build_publish_door(deps=cell, settings=settings),
+        "exports": build_exports_door(deps=cell, settings=settings),
+        "export_link": build_export_link_door(deps=cell),
     }
 
 

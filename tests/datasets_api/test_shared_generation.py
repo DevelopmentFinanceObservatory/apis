@@ -119,6 +119,7 @@ _STORES = (
     "version_lister",
     "operation_store",
     "recipe_store",
+    "export_store",
     "description_store",
     "reference_writer",
     "allowances",
