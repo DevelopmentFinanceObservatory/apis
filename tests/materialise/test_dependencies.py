@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from dc_sdmx import SdmxClient
+from graph_release.context import current_release
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_group
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
@@ -27,8 +28,11 @@ from materialise.facets import FacetBinding, ProvenanceRefresh, probe_collection
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.window import LatestYear, RequestedWindow, election_window
+from origin_catalogue import DataCommons, bound_catalogue
+from origin_catalogue.origins import BASE, DFO, UN_SYSTEM
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from .conftest import FakeGraphReader
 
@@ -61,6 +65,7 @@ def _stored(**changes: Any) -> dict[str, object]:
         pytest.param(None, ("schema",), id="no-stored-fingerprint"),
         pytest.param({**_BASE.as_json(), "schema": 2}, ("schema",), id="unknown-schema"),
         pytest.param({"schema": 1, "members": "x"}, ("schema",), id="malformed"),
+        pytest.param({**_BASE.as_json(), "imported_data": 7}, ("schema",), id="non-text-import"),
         pytest.param(_stored(members=members_digest(["A"])), ("members",), id="members"),
         pytest.param(
             _stored(sources=(("provenance/OECDDAC2A", "2026-10-01"), ("provenance/IMF", None))),
@@ -96,6 +101,7 @@ def _stored(**changes: Any) -> dict[str, object]:
         ),
         pytest.param(_stored(window=(2015, 2025)), ("window",), id="window"),
         pytest.param(_stored(window=None), ("window",), id="window-missing"),
+        pytest.param(_stored(imported_data="sha256:a"), (), id="import-never-compared"),
         pytest.param(
             _stored(members=members_digest(["C"]), window=(2014, 2026)),
             ("members", "window"),
@@ -253,6 +259,64 @@ def test_build_dependencies_records_what_the_run_dispatched():
         "recipes": [{"id": _RECIPE_ID, "digest": recipe_dependency_fingerprint(_RECIPE_ID)[1]}],
         "window": {"start_year": 2015, "end_year": 2026},
     }
+
+
+_TABLES = "provenance/Tables"
+
+
+def _keyed_run(source_origins: dict[str, DataCommons], tables: DataCommons) -> Dependencies:
+    """The fingerprint of a run over the sources `source_origins` names, converted under
+    `_TABLES`, with the bound catalogue listing each provenance under the origin given."""
+    record = _record(recipe_id=_RECIPE_ID, provenance=_TABLES, refresh="2026-09-30")
+    rows = {ref: provenance_row(ref, origin) for ref, origin in source_origins.items()}
+    with bound_catalogue(
+        FakeCatalogue(provenances={**rows, _TABLES: provenance_row(_TABLES, tables)})
+    ):
+        return build_dependencies(
+            [_request(_STAT_VAR, RequestedWindow(kind="all"))],
+            source_refs=source_origins,
+            provenance_refresh={},
+            conversion_records=[record],
+            latest_years={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_origins", "tables", "keyed"),
+    [
+        pytest.param({"provenance/X": DFO, "provenance/Y": DFO}, DFO, True, id="all-dfo"),
+        pytest.param({"provenance/X": DFO, "provenance/Y": BASE}, DFO, False, id="base-source"),
+        pytest.param({"provenance/X": DFO, "undata/Y": UN_SYSTEM}, DFO, False, id="un-source"),
+        pytest.param({"provenance/X": DFO}, BASE, False, id="base-rate-tables"),
+    ],
+)
+def test_a_run_keys_on_the_bound_import_only_when_every_provenance_is_dfos(
+    source_origins, tables, keyed
+):
+    dependencies = _keyed_run(source_origins, tables)
+
+    expected = current_release().manifest.imported_data if keyed else None
+    assert dependencies.imported_data == expected
+    assert dependencies.as_json().get("imported_data") == expected
+    assert decode_dependencies(dependencies.as_json()) == dependencies
+
+
+def test_a_provenance_the_catalogue_does_not_list_keys_on_no_import():
+    with bound_catalogue(FakeCatalogue()):
+        dependencies = build_dependencies(
+            [_request(_STAT_VAR, RequestedWindow(kind="all"))],
+            source_refs=["provenance/X"],
+            provenance_refresh={},
+            conversion_records=(),
+            latest_years={},
+        )
+
+    assert dependencies.imported_data is None
+
+
+@pytest.mark.unbound_release
+def test_a_run_with_no_release_bound_keys_on_none():
+    assert _keyed_run({"provenance/X": DFO}, DFO).imported_data is None
 
 
 @pytest.mark.parametrize(

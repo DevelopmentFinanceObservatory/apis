@@ -9,9 +9,13 @@ compare-and-set in the run's transaction (`HeadStore.advance_head`). Every head,
 version, and operation is keyed on the served definition's `spec_id`, the one
 `kinds.spec_id.resolve_served_definition` returns.
 
-A head is current for `head_recheck_interval` after it was confirmed, with no read. Past that
-window, a head whose `materialised_at` is older than `head_max_age` rebuilds. Otherwise one
-graph read of the `lastDataRefreshDate` of every source and conversion source the head's
+A head whose run was keyed on the data an import left (`imported_data`,
+`materialise.dependencies.run_imported_data`) rebuilds once the bound graph release carries
+another import's, inside the recheck window or past it. Otherwise a head is current for
+`head_recheck_interval` after it was confirmed, with no read. Past that window, a head whose
+`materialised_at` is older than its maximum age rebuilds: `head_max_age`, or
+`head_imported_data_max_age_seconds` for a head keyed on the bound release's import.
+Otherwise one graph read of the `lastDataRefreshDate` of every source and conversion source the head's
 dependency fingerprint names builds the fingerprint a run would record now
 (`materialise.dependencies.refreshed_dependencies`), and `dependency_changes` compares it with
 the head's source by source: a match confirms and serves the head, a difference rebuilds. A
@@ -43,8 +47,9 @@ the permit wait add to (`dfo_platform.timings.count`): `sdmx_requests`, `graph_r
 request sent, hedge duplicates included. A read that hedges also counts `sdmx_hedges`, the
 duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response won
 (`SdmxClient`). The reason is the fingerprint members that differed, joined by commas
-(`dependency_changes`), `schema` for a head with no readable fingerprint, `max_age`, `no_head`,
-or `unservable` for a current head that cannot answer the call.
+(`dependency_changes`), `schema` for a head with no readable fingerprint, `imported_data`
+for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or `unservable` for a current
+head that cannot answer the call.
 """
 
 from __future__ import annotations
@@ -144,6 +149,7 @@ from datasets_api.versions import (
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
+from graph_release.context import bound_release_or_none
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
@@ -1023,14 +1029,38 @@ def _rebuild_mark(head: SubjectHead | None) -> tuple[str, datetime] | None:
     return None if head is None else (head.content_version, head.materialised_at)
 
 
+def _head_import(head: SubjectHead) -> str | None:
+    """The `imported_data` digest `head`'s run was keyed on (`run_imported_data`), or `None`."""
+    keyed = head.dependencies.get("imported_data") if head.dependencies is not None else None
+    return keyed if isinstance(keyed, str) else None
+
+
+def _import_replaced(head: SubjectHead) -> bool:
+    """Whether `head` is keyed on an import other than the one the bound graph release
+    carries. A head keyed on none, or a call with no release bound, has none to compare."""
+    keyed = _head_import(head)
+    bound = bound_release_or_none()
+    return keyed is not None and bound is not None and keyed != bound.manifest.imported_data
+
+
+def _max_age(head: SubjectHead, *, deps: DefinitionDeps) -> timedelta:
+    """The age past which `head` rebuilds: `head_imported_data_max_age_seconds` for a head
+    keyed on the bound release's import, `head_max_age` for any other."""
+    if _head_import(head) is not None and bound_release_or_none() is not None:
+        return timedelta(seconds=deps.settings.head_imported_data_max_age_seconds)
+    return deps.head_max_age
+
+
 def _head_is_fresh(head: SubjectHead, *, now: datetime, deps: DefinitionDeps) -> bool:
-    """Whether `head` was confirmed inside the recheck window."""
-    return now - head.confirmed_at < deps.head_recheck_interval
+    """Whether `head` was confirmed inside the recheck window and the import it is keyed
+    on, if any, is still the bound release's."""
+    return now - head.confirmed_at < deps.head_recheck_interval and not _import_replaced(head)
 
 
 # The rebuild reasons that name no fingerprint member (`serve_current`).
 _NO_HEAD = "no_head"
 _MAX_AGE = "max_age"
+_IMPORTED_DATA = "imported_data"
 _UNSERVABLE = "unservable"
 _YEAR_COVERAGE = "year_coverage"
 
@@ -1073,8 +1103,9 @@ def _judge_head(
     coverage: CoverageIndex,
 ) -> _Freshness:
     """Whether `head`, the head of the served definition `stored`, is current (`serve_current`'s
-    head rule). A head past the recheck window and younger than `head_max_age` whose
-    fingerprint matches is confirmed, and the verdict serves the head the confirmation wrote,
+    head rule). A head keyed on an import the bound release no longer carries rebuilds. A head past the
+    recheck window and younger than its maximum age (`_max_age`) whose fingerprint matches is
+    confirmed, and the verdict serves the head the confirmation wrote,
     or the head a concurrent update left. The fingerprint read and its election from
     `coverage` run under the definition's pinned provenances
     (`adapter.definition_read_scope`), as its materialisation does."""
@@ -1083,7 +1114,9 @@ def _judge_head(
         return _Freshness(head=None, rebuild_reason=_NO_HEAD)
     if _head_is_fresh(head, now=now, deps=deps):
         return _Freshness(head=head)
-    if now - head.materialised_at >= deps.head_max_age:
+    if _import_replaced(head):
+        return _Freshness(head=None, rebuild_reason=_IMPORTED_DATA)
+    if now - head.materialised_at >= _max_age(head, deps=deps):
         return _Freshness(head=None, rebuild_reason=_MAX_AGE)
     with (
         definition_read_scope(stored.identity, code_index=deps.code_index),

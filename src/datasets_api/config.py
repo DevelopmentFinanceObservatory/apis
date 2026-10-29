@@ -123,6 +123,12 @@ class DatasetsBuildSettings(BaseSettings):
     # Maximum head age before rebuilding. Catches count- and date-invariant value corrections.
     head_max_age_seconds: int = Field(default=86_400, ge=1)
 
+    # Maximum age of a head keyed on an import (`materialise.dependencies.run_imported_data`),
+    # which serves while the bound graph release carries that import and rebuilds once it
+    # carries another. Bounds a Spanner edit that lands no import and a catalogue change no
+    # import carries.
+    head_imported_data_max_age_seconds: int = Field(default=604_800, ge=1)
+
     # New pinned copies allowed per trailing 24 hours, counted from `pin` references. A repin of
     # an already pinned artifact is exempt. 0 refuses every new pinned copy.
     pin_daily_max: int = Field(default=500, ge=0)
