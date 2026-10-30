@@ -6,17 +6,24 @@ frame the analysis runner stored for a derived one.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
+import openpyxl
+import pyarrow.parquet as pq
 import pytest
 
 import datasets_api.doors.analysis as analysis_door
 import datasets_api.doors.exports as exports_door
 import datasets_api.exports as exports_module
 from artifact_store import LiveArtifactInventory, Tier
+from code_index import CodeIndex, IndexStamp
+from code_index.types import PartyRow, StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.allowance import BUDGET_KEY, LiveAllowanceLedger
 from datasets_api.analysis import AnalysisPending
@@ -30,12 +37,16 @@ from datasets_api.export_store import LiveExportStore
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.caller import address_key
+from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
 from spec_registry.errors import IdentityCollision
+from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
+from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
 from ._analysis_doubles import Stores
 from ._app_factories import make_client
+from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 from .test_definition_door import _BASE_URL
@@ -43,15 +54,118 @@ from .test_definition_door_currency import _FakeHeadStore
 from .test_derived import _roots
 from .test_derived import _stored as _stored_derived
 from .test_pin_door import FakeArtifactReferenceWriter, _ledger, _spent
-from .test_serve_groupby_collapse import (
-    _code_index,
-    _coverage_service,
-    _graph,
-    _mint,
-    _sdmx_transport,
-    _spec_id_and_sidecar,
-)
+from .test_serve_groupby_collapse import _mint
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
+
+# A flow dataset as DAC2a serves one: France and Germany give to Kenya.
+_MEMBER = "FlowMember"
+_FRANCE = "country/FRA"
+_GERMANY = "country/DEU"
+_KENYA = "country/KEN"
+_FACET_ID = "facet1"
+_PROVENANCE = "OECD_DAC2A"
+_ROLE_COLUMNS = ("financingProvider", "financingRecipient")
+_FLOW_IDENTITY = {
+    "identity_version": "spec1",
+    "shape": {
+        "kind": "statvar_schema",
+        "population_type": "DevelopmentFinance",
+        "measured_property": "amount",
+    },
+    "slots": [],
+    "entities": {"destination": [_KENYA]},
+    "open_roles": ["origin"],
+    "requested_window": {"kind": "all"},
+}
+_SDMX_BODY = (
+    "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,financingProvider,financingRecipient,unit,"
+    "measurementMethod,observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,facetId\r\n"
+) + "".join(
+    f"dataflow,DC:DF_OBS(1.0.0),I,{_MEMBER},{provider},{_KENYA},USD,GrantEquivalent,"
+    f"NotApplicable,{_PROVENANCE},2020,{value},,{_FACET_ID}\r\n"
+    for provider, value in ((_GERMANY, 900), (_FRANCE, 100))
+)
+
+
+def _graph() -> FakeMintGraphReader:
+    return FakeMintGraphReader(
+        arcs={
+            _MEMBER: {
+                "typeOf": ("StatisticalVariable",),
+                "populationType": ("DevelopmentFinance",),
+                "measuredProperty": ("amount",),
+                "observationProperties": _ROLE_COLUMNS,
+            },
+            **{place: {"typeOf": ("Country",)} for place in (_FRANCE, _GERMANY, _KENYA)},
+        },
+        labels={_PROVENANCE: "OECD DAC2a", _KENYA: "Kenya", _FRANCE: "France", _GERMANY: "Germany"},
+    )
+
+
+def _sdmx_transport() -> httpx.MockTransport:
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=_SDMX_BODY,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+
+
+def _coverage_service() -> FakeCoverageService:
+    return FakeCoverageService(
+        build_coverage_index(
+            [(_MEMBER, _FACET_ID, provider, _KENYA, [2020]) for provider in (_GERMANY, _FRANCE)],
+            role_names={_MEMBER: RoleNames(donor=_ROLE_COLUMNS[0], recipient=_ROLE_COLUMNS[1])},
+            facet_metadata={
+                _FACET_ID: FacetMetadata(
+                    provenance_id=_PROVENANCE, measurement_method="GrantEquivalent", unit="USD"
+                )
+            },
+        )
+    )
+
+
+def _code_index() -> CodeIndex:
+    return CodeIndex(
+        stamp=IndexStamp(
+            graph_endpoint="https://fixture.example.org",
+            exported_at="2026-09-15T00:00:00Z",
+            code_counts={},
+            statvar_shape_counts={},
+            content_hash="sha256:fixture",
+        ),
+        declarations=(),
+        codes=(),
+        statvars=(
+            StatVarRow(
+                dcid=_MEMBER,
+                population_type="DevelopmentFinance",
+                measured_property="amount",
+                stat_type=None,
+                measurement_qualifier=None,
+                measurement_denominator=None,
+                observation_properties=_ROLE_COLUMNS,
+                constraint_properties={},
+                provenances=(_PROVENANCE,),
+            ),
+        ),
+        parties=(
+            PartyRow(dcid=_GERMANY, kind="party", datasets=(_PROVENANCE,), axes=("origin",)),
+            PartyRow(dcid=_FRANCE, kind="party", datasets=(_PROVENANCE,), axes=("origin",)),
+            PartyRow(dcid=_KENYA, kind="party", datasets=(_PROVENANCE,), axes=("destination",)),
+        ),
+    )
+
+
+def _spec_id_and_sidecar() -> tuple[str, dict]:
+    recomputed = recompute_identity(_FLOW_IDENTITY)
+    return recomputed.spec_id, {
+        "schema_version": 1,
+        "spec_id": recomputed.spec_id,
+        "identity": _FLOW_IDENTITY,
+    }
+
 
 _HMAC_KEY = "test-caller-key"
 _CLIENT_ADDRESS = "203.0.113.7"
@@ -564,3 +678,31 @@ def test_a_bare_spec_id_that_cannot_be_resolved_refuses_with_a_code_exports_regi
         assert resp.status_code == status, resp.text
     assert resp.json()["code"] == code, resp.text
     assert resp.json()["retryable"] is retryable
+
+
+def _table(data: bytes, fmt: str) -> list[dict[str, Any]]:
+    """The rows of an unbundled export file, each as its header's cells."""
+    if fmt == "csv":
+        return list(csv.DictReader(io.StringIO(data.decode())))
+    if fmt == "xlsx":
+        sheet = openpyxl.load_workbook(io.BytesIO(data), read_only=True).worksheets[0]
+        header, *rows = sheet.iter_rows(values_only=True)
+        return [dict(zip(header, row, strict=True)) for row in rows]
+    return pq.read_table(io.BytesIO(data)).to_pylist()
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx", "parquet"])
+def test_a_fetched_flow_frame_exports_the_enrichment_a_client_frame_holds(
+    fmt: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each party role's `_type` cells, which the Spec root's default enrichment adds, beside
+    the long layout's own `_label` and `_kind` cells."""
+    rig = _Rig("fetched", monkeypatch)
+
+    body = rig.prepare(fmt).json()
+
+    rows = _table(rig.pinned_bytes(body["sha256"]), fmt)
+    assert len(rows) == body["rows"] == 2
+    for role in _ROLE_COLUMNS:
+        assert {f"{role}_label", f"{role}_kind", f"{role}_type"} <= rows[0].keys()
+        assert {row[f"{role}_type"] for row in rows} == {"Country"}

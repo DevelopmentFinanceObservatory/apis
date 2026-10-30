@@ -7,8 +7,11 @@ other. A request naming a dataset id alone (`BareExportFrame`) is first resolved
 the analysis runner reads for a Spec root of that id (`resolve_export_frame`), the newest in its
 default enrichment, as the Presentation frames door reads a bare id. The request then runs, and
 is keyed and answered, as one naming that pair. A dataset version's file is the one its file
-selector serves (`doors.files`): the file the version lists under that rendering, else one
-rendered from its stored frame. A derived frame's file is the one its file route renders
+selector serves (`doors.files`) in the long layout with the version's default enrichment columns
+(`analysis_roots.enrichment_columns`), the columns a Spec root of it reads: each flow party
+role's `_type` cells, else `observationAbout_type`, beside the layout's own `_label` and `_kind`
+cells. It is the file the version lists under that rendering, else one rendered from its stored
+frame. A derived frame's file is the one its file route renders
 (`derived.render_derived_file`). The file is then copied to the pinned tier through
 `retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
 pin budgets as a pin does. A file already pinned spends nothing. The record keeps the pinned
@@ -62,7 +65,7 @@ from artifact_store import ArtifactNotFoundError, ArtifactSigningError, Tier
 from dataset_store.snapshot import SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
 from datasets_api.analysis import AnalysisPending
-from datasets_api.analysis_roots import newest_spec_version
+from datasets_api.analysis_roots import enrichment_columns, newest_spec_version
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.codes_exports import (
     ExportNotFound,
@@ -300,7 +303,14 @@ def _prepare_dataset(
     check_licences(licence.source for licence in licences)
     _check_rows(request, cast(int, facts.coverage["rows"]))
 
-    requested = MintOptions(format=request.format, bundle=request.bundle)
+    # The file holds the enrichment a client's frame of the version holds: the columns a Spec
+    # root reads it with, added to the long layout's own.
+    identity = cast("Mapping[str, Any]", facts.definition["identity"])
+    requested = MintOptions(
+        format=request.format,
+        bundle=request.bundle,
+        columns=sorted(set(enrichment_columns(identity))),
+    )
     location = listed_file_location(
         stored,
         id=frame.spec_id,
