@@ -214,6 +214,7 @@ from search.models import (
     Warning,
 )
 from search.render.labels import _humanize_ref
+from search.scope.basis import entry_measure
 
 logger = logging.getLogger(__name__)
 
@@ -672,6 +673,9 @@ def _read_offer(
         state.dropped_qualifier_phrases,
         operation_phrases=[operation.phrase for operation in state.operations],
     )
+    # A stated or carried measure basis steers the collapse as its words would, so a basis
+    # family `phase_intake._with_entry_basis` brought in survives beside its source.
+    asked = entry_measure(state.scope_selection.entries_on("measure_basis"))
     collapsed = collapse_measure_families(
         ranked_shapes,
         get_index(),
@@ -682,6 +686,7 @@ def _read_offer(
             if unread_price_basis
             else _default_reading(state, role_free_matches, eligible_shapes)
         ),
+        basis=asked[1] if asked is not None else None,
     )
     offer = _Offer(
         frame=frame,

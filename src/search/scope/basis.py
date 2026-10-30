@@ -35,6 +35,7 @@ from code_index.scope_conventions import (
     BASIS_RESTRICTIONS,
     CONVENTION_CURRENCY,
     MEASURE_BASIS_CONVENTIONS,
+    NETTING_BASIS_SLOT,
     OPTION_LABELS,
     BasisConvention,
     BasisMeasure,
@@ -96,7 +97,6 @@ CONVENTION_DATASETS: frozenset[str] = frozenset(row.dataset for row in MEASURE_B
 axis."""
 
 _MEASURES: Mapping[MeasureBasis, BasisMeasure] = {row.basis: row for row in BASIS_MEASURES}
-_NETTING = "nettingBasis"
 _RECIPIENT_DIRECTIONS = ("destination", "both")
 
 
@@ -206,16 +206,29 @@ def elect_basis(
     return _elect_on(convention(shape, window), entries)
 
 
-def _elect_on(row: BasisConvention, entries: Sequence[Entry]) -> BasisElection:
-    """The basis a part whose applicable convention is `row` is counted on: the basis the
-    first of `entries` asking for one an identity can hold names, else `row`'s."""
+def entry_measure(entries: Sequence[Entry]) -> tuple[Entry, BasisMeasure] | None:
+    """The first of `entries` (`ScopeState.entries_on`, explicit before carried) asking for
+    a basis one identity can hold, with what that basis binds, or None when none does. The
+    basis election (`elect_basis`), the families recall adds beside a part's hits for it
+    (`clients.graph.with_entry_basis_siblings`) and the measure-family collapse
+    (`retrieval.bound_values.collapse_measure_families`) read the entry here, so a stated
+    and a carried basis count alike in each."""
     for entry in entries:
         measure = next(
             (m for m in BASIS_MEASURES if measure_basis_option_id(m.basis) == entry.option_id),
             None,
         )
         if measure is not None:
-            return BasisElection(convention=row, basis=measure.basis, entry=entry)
+            return entry, measure
+    return None
+
+
+def _elect_on(row: BasisConvention, entries: Sequence[Entry]) -> BasisElection:
+    """The basis a part whose applicable convention is `row` is counted on: the basis the
+    first of `entries` asking for one an identity can hold names, else `row`'s."""
+    if (asked := entry_measure(entries)) is not None:
+        entry, measure = asked
+        return BasisElection(convention=row, basis=measure.basis, entry=entry)
     return BasisElection(convention=row, basis=_served(row))
 
 
@@ -337,7 +350,8 @@ def held_measure(identity: BaseIdentity) -> BasisMeasure | None:
         (
             slot.binding.ref
             for slot in identity.slots
-            if slot.property == _NETTING and isinstance(slot.binding, IdentityBindingValue)
+            if slot.property == NETTING_BASIS_SLOT
+            and isinstance(slot.binding, IdentityBindingValue)
         ),
         None,
     )
