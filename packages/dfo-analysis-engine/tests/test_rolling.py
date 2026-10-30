@@ -385,6 +385,167 @@ def test_a_narrowing_above_a_keyed_pairing_crosses_its_key_map(
     ]
 
 
+_FLOW_COLUMNS = [
+    "stat_var",
+    "financingProvider",
+    "financingRecipient",
+    "time_period",
+    "value",
+    "unit",
+]
+_SHAPES = pytest.mark.parametrize(
+    "stored", [True, False], ids=["stored-shape", "runner-shape-slots-left-out"]
+)
+
+
+def _one_frame(verb: str, slot: str, *, stored: bool, **parameters: Any) -> dict[str, Any]:
+    """`verb` reading root 0 on both sides, with the null second slot the stored shape keeps."""
+    return _node(verb, {**parameters, **({slot: None} if stored else {})}, frame_ref={"root": 0})
+
+
+def _two_frames(verb: str, slot: str, *, stored: bool, **parameters: Any) -> dict[str, Any]:
+    """`verb` over roots 0 and 1, with the second slot's pair the stored shape keeps."""
+    return _node(
+        verb,
+        {**parameters, **({slot: _RIGHT} if stored else {})},
+        frame_ref={"root": 0},
+        **{slot: {"root": 1}},
+    )
+
+
+@_SHAPES
+@pytest.mark.parametrize(
+    ("verb", "slot", "parameters"),
+    [
+        pytest.param(
+            "compare",
+            "right_frame_ref",
+            {
+                "left_entity": {"recipient": "dcid:GHA"},
+                "right_entity": {"recipient": "dcid:KEN"},
+            },
+            id="compare",
+        ),
+        pytest.param(
+            "share_of",
+            "denominator_frame_ref",
+            {
+                "numerator_entity": {"recipient": "dcid:GHA"},
+                "denominator_entity": {"recipient": "dcid:KEN"},
+            },
+            id="share_of",
+        ),
+    ],
+)
+def test_a_one_frame_two_sided_verb_counts_both_sides_in_either_tree_shape(
+    stored: bool, verb: str, slot: str, parameters: dict[str, Any]
+) -> None:
+    tree = _one_frame(verb, slot, stored=stored, **parameters)
+
+    assert anchor_populations(_rolled(tree), [_root(_AID)], root_columns=[_COLUMNS]) == [
+        {"spec_id": _AID, "bindings": {"recipient": ["dcid:GHA"]}},
+        {"spec_id": _AID, "bindings": {"recipient": ["dcid:KEN"]}},
+    ]
+
+
+@_SHAPES
+def test_a_column_outside_the_key_map_stays_on_the_output_s_side(stored: bool) -> None:
+    keyed = _two_frames(
+        "share_of",
+        "denominator_frame_ref",
+        stored=stored,
+        numerator_by=["financingRecipient"],
+        denominator_by={"financingRecipient": "financingRecipient"},
+    )
+    level = {"kind": "place_level", "column": "financingProvider_type", "level": "Country"}
+    tree = _node(
+        "filter",
+        {"predicates": [_match("financingProvider", "dcid:USA"), level]},
+        frame_ref=keyed,
+    )
+    columns = [*_FLOW_COLUMNS, "financingProvider_type"]
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[columns, columns])
+
+    assert populations == [
+        {
+            "pair": [
+                [
+                    {
+                        "spec_id": _AID,
+                        "bindings": {"financingProvider": ["dcid:USA"]},
+                        "levels": {"financingProvider_type": "Country"},
+                    }
+                ],
+                [{"spec_id": _GNI, "bindings": {}}],
+            ],
+            "keys": {"financingRecipient": "financingRecipient"},
+        }
+    ]
+
+
+@_SHAPES
+def test_a_pooled_denominator_takes_no_narrowing_from_above(stored: bool) -> None:
+    pooled = _two_frames("share_of", "denominator_frame_ref", stored=stored)
+    tree = _node(
+        "filter", {"predicates": [_match("financingProvider", "dcid:USA")]}, frame_ref=pooled
+    )
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[_FLOW_COLUMNS, _FLOW_COLUMNS]
+    )
+
+    assert populations == [
+        {"spec_id": _AID, "bindings": {"financingProvider": ["dcid:USA"]}},
+        {"spec_id": _GNI, "bindings": {}},
+    ]
+
+
+@_SHAPES
+def test_a_key_column_crosses_under_its_mapped_name_and_its_namesake_stays(stored: bool) -> None:
+    """The key maps recipients to the denominator's `financingProvider`, so the numerator's
+    providers bind nothing there, and its recipients bind that column."""
+    keyed = _two_frames(
+        "share_of",
+        "denominator_frame_ref",
+        stored=stored,
+        numerator_by=["financingRecipient"],
+        denominator_by={"financingRecipient": "financingProvider"},
+    )
+    tree = _node(
+        "filter",
+        {
+            "predicates": [
+                _match("financingProvider", "dcid:USA"),
+                _match("financingRecipient", "dcid:GHA"),
+            ]
+        },
+        frame_ref=keyed,
+    )
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[_FLOW_COLUMNS, _FLOW_COLUMNS]
+    )
+
+    assert populations == [
+        {
+            "pair": [
+                [
+                    {
+                        "spec_id": _AID,
+                        "bindings": {
+                            "financingProvider": ["dcid:USA"],
+                            "financingRecipient": ["dcid:GHA"],
+                        },
+                    }
+                ],
+                [{"spec_id": _GNI, "bindings": {"financingProvider": ["dcid:GHA"]}}],
+            ],
+            "keys": {"financingRecipient": "financingProvider"},
+        }
+    ]
+
+
 def test_a_compare_takes_its_output_columns_from_its_right_side() -> None:
     compare = {
         "op_spec": {

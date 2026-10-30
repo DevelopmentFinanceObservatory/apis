@@ -10,7 +10,9 @@ A create's `intent.frame_ref` may name a dataset id alone, `{"spec_id": "spec_..
 draws the version the analysis runner reads for a Spec root of that id
 (`presentation_api.newest_frames.resolve_bare_spec`) and stores that pair, which the reply's
 `resolved_payload.provenance.inputs` and a read's `stored_intent.frame_ref` name. A revise
-keeps its component's frame.
+keeps its component's frame. The resolve can rebuild a dataset, so it runs first, on the
+bounded executor the frames door's bare route uses, and component routes keep their permits. A
+refused intent or write token then refuses after the resolve.
 
 A create or a revise spends one unit of its caller's daily `card` allowance
 (`datasets_api.allowance`, `DATASETS_CARD_DAILY_ALLOWANCE`, default 500), the caller named by
@@ -48,7 +50,7 @@ from typing import cast
 
 from fastapi import APIRouter, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from assembler.catalogue import BakedReleaseRegistry
@@ -64,7 +66,7 @@ from assembler.errors import (
     SchemaInvalid,
     WriteRefused,
 )
-from assembler.pipeline import get_component, write_component
+from assembler.pipeline import bare_frame_ref, get_component, write_component
 from assembler.ports import (
     FrameRef,
     FrameStore,
@@ -86,7 +88,7 @@ from datasets_api.allowance import (
     spending,
 )
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.door_executor import build_door_executor
+from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.principals import Grant, Principals
 from datasets_api.recipe_store import RecipeReader
@@ -395,6 +397,7 @@ def build_components_door(
     caller: CallerSettings | None = None,
     principals: Principals | None = None,
     newest: NewestFrames | None = None,
+    bare_reads: DoorExecutor,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
 ) -> DoorContribution:
@@ -416,7 +419,7 @@ def build_components_door(
 
     `newest` resolves a create intent's `frame_ref` that names a dataset id alone
     (`presentation_api.newest_frames.resolve_bare_spec`); with none, such a create refuses
-    `frame_unavailable`.
+    `frame_unavailable`. `bare_reads` runs that resolve.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     effective_pool_size = (
@@ -532,10 +535,10 @@ def build_components_door(
             return nullcontext()
         return spending(deps.card_allowance.ledger, spender, AllowanceKind.card, datetime.now(UTC))
 
-    async def _run[R: Response](job: Callable[[], R], /) -> R:
+    async def _run[R](job: Callable[[], R], /, *, on: DoorExecutor = door_executor) -> R:
         with frame_reads_bounded_by(timeout_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS):
             return await asyncio.wait_for(
-                door_executor.run(job, refuse=PresentationBackpressure),
+                on.run(job, refuse=PresentationBackpressure),
                 timeout=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
             )
 
@@ -553,17 +556,25 @@ def build_components_door(
     ) -> JSONResponse:
         spender = _card_spender(request)
 
-        def job() -> JSONResponse:
-            # A create retried with its `cmw_` token replays the first create's reply, which
-            # spent the unit already.
-            replays = (
+        def replays() -> bool:
+            """Whether this create, retried with its `cmw_` token, replays the first create's
+            reply, which resolved its frame and spent the unit already."""
+            return (
                 body.write_token is not None
                 and deps.revision_store.prior_create(
                     write_token_sha256=write_token_digest(body.write_token)
                 )
                 is not None
             )
-            with _spending_card(None if replays else spender):
+
+        def resolve(spec_id: str) -> FrameRef | None:
+            return None if replays() else resolve_bare_spec(spec_id, newest=newest)
+
+        spec_id = bare_frame_ref(body.intent)
+        frame = None if spec_id is None else await _run(lambda: resolve(spec_id), on=bare_reads)
+
+        def job() -> JSONResponse:
+            with _spending_card(None if replays() else spender):
                 reply = write_component(
                     intent=body.intent,
                     component_id=None,
@@ -574,7 +585,7 @@ def build_components_door(
                     revision_store=deps.revision_store,
                     release_registry=deps.release_registry,
                     vocabulary_source=deps.vocabulary_source,
-                    resolve_spec=lambda spec_id: resolve_bare_spec(spec_id, newest=newest),
+                    resolve_spec=None if frame is None else lambda _: frame,
                 )
             retention = _frame_ref_retention(reply.frame_ref)
             return JSONResponse(

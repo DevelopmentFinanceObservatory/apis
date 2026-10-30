@@ -51,7 +51,7 @@ from datasets_api.reconciliation import sweep_tier
 from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
-from dfo_platform.caller import address_key
+from dfo_platform.caller import CallerUnresolved, address_key
 from materialise.graph import Facet
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
@@ -857,6 +857,25 @@ def test_an_export_whose_record_is_gone_refuses_rather_than_signing(
         assert resp.status_code == 500, resp.text
         assert resp.json()["code"] == "internal_error"
     assert not [signed for signed in rig.signings if signed[0] == f"sha256:{body['sha256']}"][1:]
+
+
+def test_a_repeat_prepare_needs_no_caller_and_a_new_one_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _Rig("fetched", monkeypatch)
+    body = rig.prepare("csv").json()
+
+    def unresolved(*_: object, **__: object) -> None:
+        raise CallerUnresolved("no caller")
+
+    monkeypatch.setattr(exports_door, "resolve_caller", unresolved)
+
+    repeat = rig.prepare("csv")
+    fresh = rig.prepare("parquet")
+
+    assert repeat.status_code == 200, repeat.text
+    assert repeat.json() == body
+    assert fresh.status_code == 503, fresh.text
 
 
 def test_a_lasting_link_outlives_a_change_to_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:

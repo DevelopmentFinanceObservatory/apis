@@ -11,6 +11,7 @@ import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+import presentation_api.app as presentation_app
 import presentation_api.doors.frames as frames_door
 import presentation_store.frame_store as frame_store_module
 from assembler.catalogue import CatalogueRelease
@@ -538,7 +539,7 @@ def test_bare_reads_at_their_limit_refuse_and_leave_pair_reads_their_permits(
 ):
     """A rebuild holds a bare read's permit for seconds, so pair reads run beside it."""
     monkeypatch.setattr(frames_door, "PRESENTATION_FRAMES_MAX_CONCURRENCY", 1)
-    monkeypatch.setattr(frames_door, "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(presentation_app, "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY", 1)
     rebuilding = threading.Event()
     finish_rebuild = threading.Event()
 

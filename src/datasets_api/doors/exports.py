@@ -106,11 +106,6 @@ def build_exports_door(
         allowance."""
         current = deps.get()
         granted: Principal = request.state.principal
-        caller: Caller | None = (
-            None
-            if Grant.pin in granted.grants
-            else resolve_caller(request, current.settings.caller)
-        )
         retrieval = request_definition_deps(current)
         with door_call("export", logger=logger) as call:
             frame = body.frame
@@ -136,6 +131,12 @@ def build_exports_door(
                 refuse=ExportBackpressure,
             )
             if facts is None:
+                # Only a new export can spend, so a repeat needs no caller.
+                caller: Caller | None = (
+                    None
+                    if Grant.pin in granted.grants
+                    else resolve_caller(request, current.settings.caller)
+                )
                 facts = await _run_retrieval(
                     current.work_executor,
                     prepare_export,

@@ -28,11 +28,12 @@ from __future__ import annotations
 from assembler.pipeline.describe_component import get_component
 from assembler.pipeline.describe_frame import get_frame_view
 from assembler.pipeline.render import ComponentHoldsNoFrame, render_component
-from assembler.pipeline.write import BARE_SPEC_ID, write_component
+from assembler.pipeline.write import BARE_SPEC_ID, bare_frame_ref, write_component
 
 __all__ = [
     "BARE_SPEC_ID",
     "ComponentHoldsNoFrame",
+    "bare_frame_ref",
     "get_component",
     "get_frame_view",
     "render_component",

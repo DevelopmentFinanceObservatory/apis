@@ -399,8 +399,7 @@ class MintOptions(BaseModel):
         default=None, json_schema_extra={"uniqueItems": True}
     )
     without_party_totals: bool = False
-    # Left out of every dump while unset, so options that do not ask for it dump, key and
-    # identify operations as they did before it existed.
+    # Left out of every dump while unset, so only options that ask for it key on it.
     enrichment: Literal["default"] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,

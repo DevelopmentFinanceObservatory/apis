@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import presentation_api.app as presentation_app
 import presentation_api.doors.components as components_door
 from assembler.catalogue import CatalogueRelease
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
@@ -1203,6 +1204,52 @@ def test_a_bare_create_whose_dataset_is_building_is_frame_unavailable_and_stores
     assert resp.json()["code"] == "frame_unavailable"
     assert resp.json()["retryable"] is True
     assert revision_store._revisions == {}
+
+
+def test_bare_creates_at_their_limit_refuse_and_leave_component_routes_their_permits(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    frame_ref: FrameRef,
+):
+    """A rebuild holds a bare resolve's permit for seconds, so component reads run beside it."""
+    monkeypatch.setattr(components_door, "PRESENTATION_COMPONENTS_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(presentation_app, "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY", 1)
+    rebuilding = threading.Event()
+    finish_rebuild = threading.Event()
+
+    class Rebuilding(FakeNewestSpecs):
+        def newest_of_spec(self, spec_id: str) -> FrameRef:
+            rebuilding.set()
+            finish_rebuild.wait(timeout=5.0)
+            return frame_ref
+
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        newest_frames=Rebuilding(),
+    )
+    with (
+        TestClient(create_app([surface]), raise_server_exceptions=False) as client,
+        ThreadPoolExecutor(max_workers=1) as caller,
+    ):
+        first = caller.submit(_create, client, intent=_bare(_LINE_CHART_INTENT))
+        try:
+            assert rebuilding.wait(timeout=5.0)
+            concurrent = _create(client, intent=_bare(_LINE_CHART_INTENT))
+            bare_read = client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
+            read = client.get("/api/presentation/components/cmp_" + "0" * 32)
+        finally:
+            finish_rebuild.set()
+        first_resp = first.result(timeout=5.0)
+
+    assert concurrent.status_code == 503, concurrent.text
+    assert concurrent.json()["code"] == "service_unavailable"
+    assert bare_read.status_code == 503, bare_read.text
+    assert read.status_code == 404, read.text
+    assert first_resp.status_code == 201, first_resp.text
 
 
 def test_a_bare_create_without_a_datasets_surface_is_frame_unavailable(client: TestClient):

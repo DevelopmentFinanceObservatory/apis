@@ -49,17 +49,20 @@ path gives one population over its root's dataset, bound by:
 - the entity binding of each two-sided verb on the path, for the side the path
   goes down: `left_entity` and `numerator_entity` for `frame_ref`,
   `right_entity` for `right_frame_ref`, `denominator_entity` for
-  `denominator_frame_ref`. A node's sides are the slots its `inputs` fill and
-  those its parameters name. A verb whose second frame slot is null reads
-  `frame_ref` twice, so the paths under it are walked once for each side;
+  `denominator_frame_ref`. A node's sides are the slots its verb takes, its
+  `inputs` fill and its parameters name. A verb whose second frame slot is null
+  or left out reads `frame_ref` twice, so the paths under it are walked once for
+  each side;
 - the card's selection.
 
 What a step above a two-sided verb keeps is stated on the verb's output, which
 takes its columns from one side: `right_frame_ref` for a `compare`, whose `data`
 is its right side, and `frame_ref` for any other verb. On the other side it
-holds under the verb's key map, so a key column, or an enrichment column of one
-(`dfo_analysis_engine.place_type.enrichment_role`), takes the name that side
-gives it, and a level holds only where that side's root carries the column.
+holds only through the verb's key map: a binding on a key column takes the name
+that side gives it, and so does a level on an enrichment column of a key
+(`dfo_analysis_engine.place_type.enrichment_role`), held only where that side's
+root carries the column. Anything else stays on the output's side, since a
+column of one name on the other side need not hold the same thing.
 
 A binding counts only where the root carries its column, and never on
 `time_period`, `value` or `status`, which are no part of a series. Two bindings
@@ -138,6 +141,15 @@ _SLOT_SUFFIX = "_frame_ref"
 # The columns that are no part of a series: `apis`' assembler groups rows
 # into series by every other column.
 NON_SERIES_COLUMNS = frozenset({"time_period", "value", "status"})
+# The second frame slot of each two-sided verb. `compare`, `sum_of`, `share_of`
+# and `quotient_of` read `frame_ref` again when it is null or left out.
+_SECOND_SLOTS = {
+    "compare": "right_frame_ref",
+    "join": "right_frame_ref",
+    "quotient_of": "denominator_frame_ref",
+    "share_of": "denominator_frame_ref",
+    "sum_of": "right_frame_ref",
+}
 # Each entity binding of a two-sided verb, and the frame slot it narrows.
 _ENTITY_SLOTS = {
     "left_entity": _PRIMARY_SLOT,
@@ -353,21 +365,23 @@ class _Narrowing:
             self.strict_levels.add(column)
 
     def across(self, keys: Mapping[str, str]) -> _Narrowing:
-        """This narrowing on the side of a two-sided verb its output does not take its
-        columns from, `keys` mapping each output column to that side's."""
-
-        def named(column: str) -> str:
-            if column in keys:
-                return keys[column]
-            role = enrichment_role(column, roles=keys)
-            return column if role is None else keys[role] + column.removeprefix(role)
-
+        """What holds of this narrowing on the side of a two-sided verb its output does not
+        take its columns from, `keys` mapping each output column to that side's. See the module
+        docstring."""
         crossed = _Narrowing()
         for column, values in self.bindings.items():
-            crossed.bind(named(column), values)
+            if column in keys:
+                crossed.bind(keys[column], values)
         for column, levels in self.levels.items():
+            role = enrichment_role(column, roles=keys)
+            if role is None:
+                continue
             for level in levels:
-                crossed.hold(named(column), level, strict=column in self.strict_levels)
+                crossed.hold(
+                    keys[role] + column.removeprefix(role),
+                    level,
+                    strict=column in self.strict_levels,
+                )
         crossed.optional_levels = set(crossed.levels)
         return crossed
 
@@ -377,9 +391,9 @@ def _sides(
 ) -> Iterator[tuple[str, Mapping[str, Any], _Narrowing]]:
     """Each side of the derived `node`: its frame slot, the node of the frame it
     reads, and what `above` and the verb itself keep of that side. The slots are
-    those its `inputs` fill and those its parameters name, so a tree whose
-    op-specs leave their filled slots out, as the dfo-apis runner writes them,
-    is walked down both sides.
+    those its verb takes, its `inputs` fill and its parameters name, so a tree
+    whose op-specs leave their slots out, as the dfo-apis runner writes them, is
+    walked down both sides.
 
     Raises:
         AnalysisRefused: `op_spec_invalid`, for a predicate that is no object.
@@ -387,6 +401,8 @@ def _sides(
     parameters = node["op_spec"].get("parameters", {})
     inputs = node["inputs"]
     named = {name for name in parameters if name.endswith(_SLOT_SUFFIX)}
+    if second := _SECOND_SLOTS.get(node["op_spec"].get("verb", "")):
+        named.add(second)
     slots = [_PRIMARY_SLOT, *sorted((named | set(inputs)) - {_PRIMARY_SLOT})]
     for slot in slots:
         keys = _output_keys(node["op_spec"], slot)
