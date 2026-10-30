@@ -698,6 +698,7 @@ def _measure_match(
 
 _COMMITMENTS = ("financialObligationType", "Commitment", "commitments")
 _CONSTANT = ("measurementQualifier", "RealValue", "constant")
+_DISBURSEMENT = ("financialFlowType", "Disbursement", "disbursements")
 
 
 @pytest.mark.parametrize(
@@ -738,6 +739,8 @@ def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, n
         (("t1", "t3"), (), "t3"),
         # The carried basis and the words' price basis steer together.
         (("t1", "t2", "t3", "t4"), (_CONSTANT,), "t4"),
+        # The question's own measure words outvote a carried basis.
+        (("t1", "t3"), (_DISBURSEMENT,), "t1"),
     ],
 )
 def test_a_stated_or_carried_basis_steers_the_collapse_as_its_words_would(group, named, elected):

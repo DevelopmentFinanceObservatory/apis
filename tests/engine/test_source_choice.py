@@ -501,8 +501,17 @@ def _family_hit(population_type: str, provenance: str) -> DetectedSV:
             "commitments",
             {("FinancialObligation", "amount", _DAC1)},
         ),
+        # A table no convention reads keeps its own family.
+        ((("FinancialFlow", "provenance/OECDDAC2B"),), "commitments", set()),
     ],
-    ids=["commitments-from-dac2a", "grant-equivalents", "net", "gross", "already-recalled"],
+    ids=[
+        "commitments-from-dac2a",
+        "grant-equivalents",
+        "net",
+        "gross",
+        "already-recalled",
+        "unconventional-table",
+    ],
 )
 def test_a_stated_or_carried_basis_adds_the_families_measuring_it(hits, basis, added):
     """The part's hits gain a row of each family measuring the basis its entry names that

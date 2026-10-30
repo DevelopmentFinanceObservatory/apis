@@ -395,7 +395,8 @@ def _sibling_targets(
     (`scope.basis.sibling_measures`), from that dataset. With `measure`, that basis, from
     every dataset the conventions read (`scope.basis.CONVENTION_DATASETS`), since a basis is
     often published by another table alone: a recalled DAC1 total of commitments serves no
-    part naming a recipient, which the CRS's commitments do."""
+    part naming a recipient, which the CRS's commitments do. A family no convention reads
+    has none, so a recalled DAC2b family keeps its own table."""
     five_tuple = family.five_tuple
     if measure is None:
         for dataset in family.datasets:
@@ -410,7 +411,9 @@ def _sibling_targets(
                 if (dataset, sibling) not in measured:
                     yield sibling, frozenset((dataset,))
         return
-    if not names_a_basis(five_tuple.population_type, five_tuple.measured_property):
+    if CONVENTION_DATASETS.isdisjoint(family.datasets) or not names_a_basis(
+        five_tuple.population_type, five_tuple.measured_property
+    ):
         return
     sibling = dataclasses.replace(
         five_tuple,
