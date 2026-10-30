@@ -282,7 +282,10 @@ dfo-analysis-engine = { workspace = true }
 # its problem document reads `retryable: false`. Its output-digest rule is
 # `out2`, whose document names each value's `stat_var` and reads a variable that
 # compare, sum_of, share_of or quotient_of writes under a name built from its
-# verb and its inputs' variables.
+# verb and its inputs' variables. Its registry maps the share import route's
+# refusals on presentation.shares, `share_id_taken` (409) and
+# `share_import_not_permitted` (403), and the client contract adds their action
+# rows.
 # It maps the exports routes' refusals on datasets.exports and datasets.export_link,
 # maps `snapshot_revoked` (410) on the export link,
 # maps on datasets.exports, at their datasets.definition statuses, the refusals

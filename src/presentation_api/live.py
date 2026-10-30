@@ -1,6 +1,7 @@
 """Build the live `FrameStore` shared by the components, frames and shares doors, with the
 snapshot, recipe and description readers it reads through. Its pins spend from the allowance
-ledger the door passes (`datasets_api.retention_admission`). The render routes decide whether a target frame may stand in for a stored one from the snapshot and
+ledger the door passes (`datasets_api.retention_admission`). Beside it comes a store over the
+same readers whose pins spend nothing, which the share import pins through. The render routes decide whether a target frame may stand in for a stored one from the snapshot and
 recipe readers.
 Each door borrows the ref-counted dataset pool independently. This function closes the pool
 borrow and graph client if construction fails.
@@ -35,9 +36,11 @@ __all__ = ["LiveFrames", "build_live_frame_store"]
 @dataclass(frozen=True)
 class LiveFrames:
     """A live frame store, the graph client to close at teardown, and the readers over the
-    datasets pool the frame store was built on."""
+    datasets pool the frame store was built on. `unmetered_frame_store` pins over the same
+    readers and spends no allowance or budget, for the share import; it reads no graph."""
 
     frame_store: LiveFrameStore
+    unmetered_frame_store: LiveFrameStore
     graph: OriginGraphClient
     snapshot_reader: SnapshotReader
     recipe_reader: RecipeReader
@@ -63,18 +66,21 @@ def build_live_frame_store(
         snapshot_reader = LiveSnapshotReader(store=store)
         recipe_reader = LiveRecipeStore(store=store)
         description_reader: DescriptionReader = LiveDescriptionStore(store=store)
+        artifacts = LiveArtifactStore(
+            buckets={
+                Tier.working: settings.datasets.artifact_bucket_working,
+                Tier.pinned: settings.datasets.artifact_bucket_pinned,
+            },
+            inventory=LiveArtifactInventory(store=store),
+        )
+        reference_writer = LiveArtifactReferenceWriter(store=store)
+        spec_reader = LiveSpecReader(store=store)
         frame_store = LiveFrameStore(
             snapshots=snapshot_reader,
-            artifacts=LiveArtifactStore(
-                buckets={
-                    Tier.working: settings.datasets.artifact_bucket_working,
-                    Tier.pinned: settings.datasets.artifact_bucket_pinned,
-                },
-                inventory=LiveArtifactInventory(store=store),
-            ),
+            artifacts=artifacts,
             graph=graph,
-            reference_writer=LiveArtifactReferenceWriter(store=store),
-            spec_reader=LiveSpecReader(store=store),
+            reference_writer=reference_writer,
+            spec_reader=spec_reader,
             recipe_reader=recipe_reader,
             description_reader=description_reader,
             allowances=allowances,
@@ -83,6 +89,15 @@ def build_live_frame_store(
                 PRESENTATION_COMPONENTS_TIMEOUT_SECONDS, PRESENTATION_FRAMES_TIMEOUT_SECONDS
             ),
         )
+        unmetered_frame_store = LiveFrameStore(
+            snapshots=snapshot_reader,
+            artifacts=artifacts,
+            graph=None,
+            reference_writer=reference_writer,
+            allowances=None,
+            spec_reader=spec_reader,
+            recipe_reader=recipe_reader,
+        )
     except BaseException:
         if graph is not None:
             graph.close()
@@ -90,6 +105,7 @@ def build_live_frame_store(
         raise
     return LiveFrames(
         frame_store=frame_store,
+        unmetered_frame_store=unmetered_frame_store,
         graph=graph,
         snapshot_reader=snapshot_reader,
         recipe_reader=recipe_reader,

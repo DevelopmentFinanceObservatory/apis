@@ -16,7 +16,8 @@ doors take no session. The two render routes of `presentation_api.doors.render` 
 live-refresh principal the composition passes in, and refuse every caller when it passes none.
 A card create or revise names its caller for the card allowance, and the share routes
 (`presentation_api.doors.shares`) for the share allowance. A replace or delete of a share takes
-its write token.
+its write token. The share import route admits the principal the composition's `principals`
+grants `share_import`, and refuses every caller when it passes none.
 
 The surface maps refusals to RFC 9457 problem details through the platform `Envelope`.
 """
@@ -91,7 +92,9 @@ def presentation_surface(
     records, the ledger of each caller's daily allowances, and how a caller is named. The
     components door spends the same ledger's card allowance when `allowances` is given or no
     `revision_store` is, except for a caller whose principal `principals` grants `publish`
-    (`DatasetsBuildSettings`' by default). The shares door mounts with a share store given or with no `revision_store` given, and builds
+    (`DatasetsBuildSettings`' by default). The share import route admits the caller
+    `principals` grants `share_import`, and with no `principals` refuses every caller. The
+    shares door mounts with a share store given or with no `revision_store` given, and builds
     whichever of the three is left out. `newest_frames` answers a live share slot's check for
     newer data (`presentation_api.newest_frames`); with none, every live slot serves its card's
     own frame and states it stale. The frames door's bare `spec_id` route and a component create
@@ -147,6 +150,7 @@ def presentation_surface(
                 vocabulary_source=vocabulary_source,
                 allowances=allowances,
                 caller=caller_settings,
+                principals=principals,
             ),
         )
 

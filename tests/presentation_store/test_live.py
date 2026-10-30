@@ -686,7 +686,7 @@ def test_an_import_keeps_its_id_time_and_history_once_and_refuses_an_id_holding_
         owner="user_1",
         payload={"held": True},
         created_at=at,
-        write_token_sha256=None,
+        write_token_sha256=secrets.token_bytes(32),
         cards=(_share_card("cmp_a"),),
         renderings={("cmp_a", 1): {"without_party_totals": True}},
     )
@@ -695,6 +695,8 @@ def test_an_import_keeps_its_id_time_and_history_once_and_refuses_an_id_holding_
     assert shares.import_share(dataclasses.replace(imported, title="Other")) is False
     with pytest.raises(ShareIdTaken):
         shares.import_share(dataclasses.replace(imported, created_at=at + timedelta(seconds=1)))
+    with pytest.raises(ShareIdTaken):
+        shares.import_share(dataclasses.replace(imported, write_token_sha256=None))
     stored = shares.read_share(share_id=imported.id)
     assert (stored.title, stored.owner, stored.created_at, stored.revised_at) == (
         "Aid",

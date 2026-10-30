@@ -124,7 +124,7 @@ def test_fixture_route_count_per_surface():
         "search": 6,
         "datasets": 64,
         "graph": 10,
-        "presentation": 19,
+        "presentation": 20,
         "skills": 4,
     }
 

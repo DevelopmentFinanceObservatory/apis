@@ -35,6 +35,7 @@ __all__ = [
     "ShareCardModel",
     "ShareFrameModel",
     "ShareHistoryResponse",
+    "ShareImportResponse",
     "ShareReadResponse",
     "ShareRetentionModel",
     "ShareServedModel",
@@ -320,6 +321,17 @@ class SharedResponse(ShareWriteResponse):
     write_token: str = Field(
         description="the shw_ token that grants replacing and deleting this share, sent back as "
         "the x-dfo-write-token header. It appears only in this reply, so keep it secret"
+    )
+
+
+class ShareImportResponse(BaseModel):
+    """`PUT /api/presentation/shares/{share_id}/import`'s 201 and 200 body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id, 8 letters and digits, as the path names it")
+    imported: bool = Field(
+        description="true when this call stored the share, false when an earlier import had"
     )
 
 
