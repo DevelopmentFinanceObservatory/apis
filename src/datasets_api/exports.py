@@ -11,19 +11,27 @@ selector serves (`doors.files`) in the long layout with the version's default en
 (`default_enrichment`, from the roles the version holds), the columns a Spec root of
 it reads: each typed role's `_type` cells beside the layout's own `_label` and `_kind` cells.
 It is the file the version lists under that rendering, else one rendered from its stored frame.
-A derived frame's file is the one its file route renders (`derived.render_derived_file`). The file is then copied to the pinned tier through
+A derived frame's file is the one its file route renders (`derived.render_derived_file`). Its
+render, its count (`file_shape`) and its store run inside one materialise slot, so its bytes stay
+inside a slot, as a dataset file's do. The file is then copied to the pinned tier through
 `retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
-pin budgets as a pin does. A file already pinned spends nothing, whichever version or export
-pinned it. An `artifact_reference` row of kind `export` (`reference_store.EXPORT_REFERENCE_KIND`)
-then keeps the copy from any deletion keyed on references, under the transactional revocation
+pin budgets as a pin does. A file with a pinned copy needs no copy and spends nothing, whichever
+version or export pinned it. A caller whose `pin` allowance is spent is refused before any render
+as the copy would refuse it (`retention_admission.refuse_spent_caller`), by reads that spend
+nothing, so a listed dataset file with a pinned copy still serves it. A file whose digest only its
+render gives, a derived frame's or a dataset file its version does not list, is refused to that
+caller even when the same bytes happen to be pinned. An `artifact_reference` row of kind `export`
+(`reference_store.EXPORT_REFERENCE_KIND`) then keeps the copy from any deletion keyed on references, under the transactional revocation
 recheck a pin's reference takes. The record keeps the pinned copy's location and the facts the
 prepare answered.
 
-A request whose id holds a record answers that record, rendering and spending nothing. Two
-concurrent prepares of one request compute one id, and, since every render is deterministic
-(bundle members carry fixed timestamps), one file, which the content-addressed store holds once:
-the second copy finds the pinned bytes stored and gives its units back, and the second record
-write returns the first's row.
+A request whose id holds a record answers that record, rendering and spending nothing.
+Concurrent prepares of one id in one process share one prepare (`admission.RebuildFlights`). The
+first runs, and each other waits for it, then answers the record as a repeat prepare does. After
+a prepare that failed, each waiter runs its own. Two instances can prepare one id together. Every
+render is deterministic (bundle members carry fixed timestamps), so they give one file, which the
+content-addressed store holds once: the second copy finds the pinned bytes stored and gives its
+units back, and the second record write returns the first's row.
 
 The first prepare, a repeat prepare and the export link (`sign_export`) answer a record through
 one guard (`_servable_facts`), so they cannot disagree. A version's revocation, or its base
@@ -62,15 +70,16 @@ import json
 import math
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, cast
 
 import openpyxl
 import pyarrow.parquet as pq
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field
 
-from artifact_store import ArtifactNotFoundError, Tier
+from artifact_store import ArtifactNotFoundError, StoredArtifact, Tier
 from dataset_store.snapshot import ServableVersion, SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
 from datasets_api.allowance import AllowanceExhausted
@@ -88,8 +97,8 @@ from datasets_api.codes_snapshot import ArtifactExpired, SpecNotFound
 from datasets_api.current import DefinitionDeps
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.deps import Deps
-from datasets_api.derived import full_recipe_citation, stored_recipe_roots
-from datasets_api.doors.derived import derived_file
+from datasets_api.derived import full_recipe_citation, render_derived_file, stored_recipe_roots
+from datasets_api.doors.derived import derived_reads
 from datasets_api.doors.files import (
     artifact_file_name,
     listed_file_location,
@@ -110,6 +119,7 @@ from datasets_api.retention_admission import (
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
     copy_to_pinned,
+    refuse_spent_caller,
 )
 from datasets_api.subject_ids import served_subject_ids
 from datasets_api.timings import phase
@@ -268,19 +278,27 @@ def _licences(citation: CitationModel) -> list[ExportLicence]:
 
 def file_shape(data: bytes, *, format: ExportFormat, bundle: bool) -> tuple[int, int]:
     """The rows, header excluded, and columns of the data table of the file `data`: a bundle's
-    first data resource, and an xlsx workbook's `data` sheet."""
-    if bundle:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            package = json.loads(archive.read("datapackage.json"))
-            data = archive.read(package["resources"][0]["path"])
+    first data resource, and an xlsx workbook's `data` sheet. The table is read as a stream, so
+    the count holds neither a decoded copy of a CSV nor an unzipped copy of a bundle's member."""
+    if not bundle:
+        return _table_shape(io.BytesIO(data), format=format)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        package = json.loads(archive.read("datapackage.json"))
+        with archive.open(package["resources"][0]["path"]) as member:
+            return _table_shape(member, format=format)
+
+
+def _table_shape(table: IO[bytes], *, format: ExportFormat) -> tuple[int, int]:
+    """`file_shape` of the data table read from the seekable stream `table`."""
     if format == "parquet":
-        metadata = pq.read_metadata(io.BytesIO(data))
+        metadata = pq.read_metadata(table)
         return metadata.num_rows, metadata.num_columns
     if format == "csv":
-        reader = csv.reader(io.StringIO(data.decode("utf-8"), newline=""))
-        header = next(reader)
-        return sum(1 for _ in reader), len(header)
-    workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+        with io.TextIOWrapper(table, encoding="utf-8", newline="") as text:
+            reader = csv.reader(text)
+            header = next(reader)
+            return sum(1 for _ in reader), len(header)
+    workbook = openpyxl.load_workbook(table, read_only=True)
     try:
         # `materialise.formats.write_excel` writes each sheet's dimension, so the sheet's size
         # is read from it in place of scanning every row.
@@ -293,6 +311,14 @@ def file_shape(data: bytes, *, format: ExportFormat, bundle: bool) -> tuple[int,
 def _check_rows(request: ExportRequest, rows: int) -> None:
     if request.format != "parquet" and rows > EXPORT_MAX_ROWS:
         raise ExportOverCeiling(format=request.format, count=rows, cap=EXPORT_MAX_ROWS)
+
+
+def _refuse_spent_caller(caller: Caller | None, *, current: Deps) -> None:
+    """Refuse the open caller `caller` when it has no `pin` unit left, before a render it could
+    not pin (`refuse_spent_caller`). It spends nothing. `copy_to_pinned` still spends, and judges
+    a race for the last unit. A holder of the pin grant, `None`, has no allowance."""
+    if caller is not None:
+        refuse_spent_caller(current.allowances, caller, now=current.now())
 
 
 def _pinned_location(digest: str, *, current: Deps) -> tuple[str, str] | None:
@@ -378,7 +404,8 @@ def _stored_file_shape(
     digest: str, *, request: ExportRequest, current: Deps, deps: DefinitionDeps
 ) -> tuple[int, int]:
     """`file_shape` of the pinned file `digest`, whose bytes stay inside one materialise
-    slot."""
+    slot. Only the file states its table's shape, and the artifact store reads a whole object,
+    so the whole file is read."""
     with bounded_materialise_slot(
         current.materialise_semaphore,
         wait_seconds=current.settings.materialise_wait_seconds,
@@ -423,6 +450,7 @@ def _prepare_dataset(
         deps=deps,
     )
     if location is None:
+        _refuse_spent_caller(caller, current=current)
         stored, location = render_file_location(
             stored, id=frame.spec_id, subject_ids=subject_ids, requested=requested, deps=deps
         )
@@ -460,8 +488,62 @@ def _prepare_dataset(
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class _StoredDerivedFile:
+    """A derived frame's file in the working tier, with the facts its bytes gave."""
+
+    stored: StoredArtifact
+    file_name: str
+    media_type: str
+    rows: int
+    columns: int
+
+
+def _render_and_store(request: ExportRequest, *, current: Deps) -> _StoredDerivedFile:
+    """Render the derived frame's file, count it, and store it in the working tier.
+
+    Raises:
+        ExportOverCeiling: The file holds more rows than a CSV or xlsx export may.
+    """
+    rendered = render_derived_file(
+        spec_id=request.frame.spec_id,
+        content_version=request.frame.content_version,
+        options=MintOptions(format=request.format, bundle=request.bundle),
+        reads=derived_reads(current),
+        site=current.settings.site,
+    )
+    rows, columns = file_shape(rendered.data, format=request.format, bundle=request.bundle)
+    _check_rows(request, rows)
+    with phase("store"):
+        stored = current.artifact_store.put(rendered.data, tier=Tier.working)
+    return _StoredDerivedFile(
+        stored=stored,
+        file_name=rendered.file_name,
+        media_type=rendered.media_type,
+        rows=rows,
+        columns=columns,
+    )
+
+
+def _stored_derived_file(
+    request: ExportRequest, *, current: Deps, deps: DefinitionDeps
+) -> _StoredDerivedFile:
+    """`_render_and_store` inside one materialise slot, which releases with the bytes freed."""
+    with bounded_materialise_slot(
+        current.materialise_semaphore,
+        wait_seconds=current.settings.materialise_wait_seconds,
+        deadline=deps.deadline,
+    ):
+        return _render_and_store(request, current=current)
+
+
 def _prepare_derived(
-    request: ExportRequest, *, export: str, caller: Caller | None, current: Deps
+    request: ExportRequest,
+    *,
+    export: str,
+    caller: Caller | None,
+    current: Deps,
+    deps: DefinitionDeps,
 ) -> ExportRecord:
     frame = request.frame
     read_servable_version(
@@ -480,16 +562,9 @@ def _prepare_derived(
     licences = _licences(citation)
     check_licences(licence.source for licence in licences)
 
-    rendered = derived_file(
-        id=frame.spec_id,
-        content_version=frame.content_version,
-        options=MintOptions(format=request.format, bundle=request.bundle),
-        current=current,
-    )
-    rows, columns = file_shape(rendered.data, format=request.format, bundle=request.bundle)
-    _check_rows(request, rows)
-    with phase("store"):
-        stored = current.artifact_store.put(rendered.data, tier=Tier.working)
+    _refuse_spent_caller(caller, current=current)
+    file = _stored_derived_file(request, current=current, deps=deps)
+    stored = file.stored
     bucket, object_name = _pinned_copy(
         digest=stored.digest,
         tier=stored.tier,
@@ -509,11 +584,11 @@ def _prepare_derived(
         digest=stored.digest,
         bucket=bucket,
         object_name=object_name,
-        file_name=rendered.file_name,
-        media_type=rendered.media_type,
+        file_name=file.file_name,
+        media_type=file.media_type,
         size_bytes=stored.size_bytes,
-        rows=rows,
-        columns=columns,
+        rows=file.rows,
+        columns=file.columns,
         citation=citation.text,
         licences=licences,
     )
@@ -762,10 +837,10 @@ def recorded_export(*, request: ExportRequest, current: Deps) -> Mapping[str, An
 def prepare_export(
     *, request: ExportRequest, caller: Caller | None, current: Deps, deps: DefinitionDeps
 ) -> Mapping[str, Any]:
-    """Prepare the file `request` names, pin it, record it, and return its facts. See the
-    module docstring. `caller` names an open caller, whose `pin` allowance a new pinned copy
-    spends, and `None` a caller holding the pin grant. `deps` is the request's retrieval view of
-    `current`, under its deadline.
+    """Prepare the file `request` names, pin it, record it, and return its facts, or answer the
+    record a concurrent prepare left. See the module docstring. `caller` names an open caller,
+    whose `pin` allowance a new pinned copy spends, and `None` a caller holding the pin grant.
+    `deps` is the request's retrieval view of `current`, under its deadline.
 
     Raises:
         SpecNotFound, IdentityQuarantined, SnapshotNotFound, SnapshotRevoked, ArtifactExpired:
@@ -776,15 +851,23 @@ def prepare_export(
         ExportOverCeiling: A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows.
         PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: The copy's units are
             spent.
+        MintBackpressure: A concurrent prepare of the request is still running at the
+            deadline, or no materialise permit came free.
     """
     export = export_id(request)
-    if request.frame.spec_id.startswith("ops_"):
-        record = _prepare_derived(request, export=export, caller=caller, current=current)
-    else:
-        record = _prepare_dataset(request, export=export, caller=caller, current=current, deps=deps)
-    with phase("record"):
-        stored = current.export_store.write_export(record)
-    return _servable_facts(stored, current=current)
+    with deps.rebuilds.turn(
+        export, deadline=deps.deadline, wait_seconds=deps.settings.materialise_wait_seconds
+    ):
+        # A prepare can end between the door's read and this turn, so the turn reads again
+        # whether or not it waited.
+        recorded = recorded_export(request=request, current=current)
+        if recorded is not None:
+            return recorded
+        prepare = _prepare_derived if request.frame.spec_id.startswith("ops_") else _prepare_dataset
+        record = prepare(request, export=export, caller=caller, current=current, deps=deps)
+        with phase("record"):
+            stored = current.export_store.write_export(record)
+        return _servable_facts(stored, current=current)
 
 
 def sign_export(*, export_id: str, current: Deps) -> str:

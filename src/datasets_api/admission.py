@@ -25,9 +25,10 @@ with `MintBackgroundDeclined`.
 A permit covers a frame for as long as its work runs. An error's traceback can keep the frame
 until the door has answered the error, after the permit is released.
 
-`RebuildFlights` lets concurrent callers share one rebuild of a subject. `sync_estimate`
-models dispatch from one coverage snapshot: it groups by request-batch key and window years,
-then applies the same lane and StatVar chunk rules as materialisation.
+`RebuildFlights` lets concurrent callers share one rebuild of a subject, and concurrent exports
+of one id share one prepare (`exports.prepare_export`).
+`sync_estimate` models dispatch from one coverage snapshot: it groups by request-batch key and
+window years, then applies the same lane and StatVar chunk rules as materialisation.
 
 Uncovered StatVars contribute zero priced rows or requests. The estimate counts them separately
 and refuses more than 700 with a 422 member-cardinality error. Sync budgets assess covered costs,
@@ -255,7 +256,8 @@ class RebuildFlights:
     """Lets the callers that need one rebuild of a subject share it, within this process.
 
     A rebuild that advances a subject's head serves every caller that needs it, so the
-    definition and frame refresh doors take a turn here before re-materialising. Two
+    definition and frame refresh doors take a turn here before re-materialising. An export
+    takes a turn under its `exp_` id, which names no subject, on the same terms. Two
     instances can still rebuild one subject together: version inserts are
     `ON CONFLICT DO NOTHING` and `HeadWriter.advance_head` is a compare-and-swap on the
     observed run, so the second records its run and moves no head.

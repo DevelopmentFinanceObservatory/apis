@@ -89,16 +89,22 @@ bound (`stream_canonical_frame_bytes`'s `_STREAM_SLICE_ROWS`)."""
 
 
 def iter_rows(table: Table) -> Iterator[tuple[object, ...]]:
-    """Yields rows from any `Table`. For `Frame` chunks, reads the Arrow table in
-    `_ROWS_SLICE`-row slices to avoid rebuilding all `Frame.rows` at once. Other tables yield
-    their stored rows directly."""
+    """Yields rows from any `Table`. For `Frame` chunks, builds the rows `Frame.rows` gives
+    column by column (`canonical_frame_rows`), `_ROWS_SLICE` at a time, in place of a dict per
+    row. Other tables yield their stored rows directly."""
     if not isinstance(table, Frame):
         yield from table.rows
         return
-    whole = table.table
-    for start in range(0, whole.num_rows, _ROWS_SLICE):
-        row_slice = whole.slice(start, _ROWS_SLICE)
-        yield from Frame(columns=table.columns, table=row_slice).rows
+    yield from canonical_frame_rows(table.table.select(list(table.columns)))
+
+
+def column_cells(table: Table, column: str) -> Iterable[object]:
+    """`column`'s cells in row order, as `iter_rows` gives them. A `Frame` builds that one
+    column's Python objects, each distinct string and unit once, and no row."""
+    if isinstance(table, Frame):
+        return _column_cells(table.table, column, json_form=False)
+    index = table.columns.index(column)
+    return (row[index] for row in iter_rows(table))
 
 
 @dataclass(frozen=True)
@@ -595,10 +601,11 @@ def _widen_kind(a: str, b: str) -> str:
     return "any"
 
 
-def _infer_column_type(values: Sequence[object]) -> str:
-    """Infers a Frictionless type from non-null cells. An all-null column is `any`."""
+def _infer_column_type(values: Iterable[object]) -> str:
+    """Infers a Frictionless type from non-null cells. An all-null column is `any`. One cell of
+    each Python type decides, since `_cell_kind` reads nothing else of a cell."""
     kind: str | None = None
-    for value in values:
+    for value in {type(value): value for value in values}.values():
         if value is None:
             continue
         this_kind = _cell_kind(value)
@@ -610,7 +617,12 @@ def _field_types(table: Table, *, rendering: Rendering) -> tuple[str, ...]:
     """Each column's type: the one `rendering.column_types` fixes, else `_infer_column_type`
     of its cells."""
     declared = rendering.column_types or {}
-    # Read rows once because each `Frame.rows` access rebuilds the full row tuple.
+    if isinstance(table, Frame):
+        return tuple(
+            declared.get(column) or _infer_column_type(column_cells(table, column))
+            for column in table.columns
+        )
+    # Read rows once because a chunk's `rows` access can rebuild the full row tuple.
     columns_values: list[list[object]] = [[] for _ in table.columns]
     for row in iter_rows(table):
         for column_values, cell in zip(columns_values, row, strict=True):

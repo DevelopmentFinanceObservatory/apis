@@ -83,8 +83,8 @@ from materialise.bundle_sources import source_provenance
 from materialise.formats import (
     Rendering,
     Table,
+    column_cells,
     frame_entity_columns,
-    iter_rows,
     read_stored_frame,
     table_schema_for,
     write_csv,
@@ -378,8 +378,7 @@ def _provenance_refs(table: Table) -> list[str]:
     """The distinct refs of `table`'s `provenance` column, in first-seen order."""
     if _PROVENANCE_COLUMN not in table.columns:
         return []
-    index = table.columns.index(_PROVENANCE_COLUMN)
-    refs = (row[index] for row in iter_rows(table))
+    refs = column_cells(table, _PROVENANCE_COLUMN)
     return [ref for ref in dict.fromkeys(refs) if isinstance(ref, str)]
 
 

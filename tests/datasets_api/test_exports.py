@@ -10,9 +10,12 @@ import csv
 import hashlib
 import io
 import json
+import threading
+import zipfile
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +25,7 @@ import openpyxl
 import pyarrow.parquet as pq
 import pytest
 
+import datasets_api.admission as admission
 import datasets_api.analysis_roots as analysis_roots
 import datasets_api.current as current_module
 import datasets_api.doors.analysis as analysis_door
@@ -40,6 +44,7 @@ from datasets_api.allowance import (
 from datasets_api.analysis import AnalysisPending
 from datasets_api.codes_exports import LicenceNotRedistributable
 from datasets_api.codes_materialise import SpecNotExportable
+from datasets_api.codes_snapshot import ArtifactExpired
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import SpecNotFound
 from datasets_api.doors.mint_errors import MintBackpressure
@@ -286,10 +291,12 @@ _DATASETS = {
     "place": _Dataset(stores=_place_stores, mint=_place_mint),
 }
 
+_PIN_PRINCIPAL = "pin-principal"
 _HMAC_KEY = "test-caller-key"
 _CLIENT_ADDRESS = "203.0.113.7"
 _CALLER_HEADERS = {"x-forwarded-for": f"198.51.100.1, {_CLIENT_ADDRESS}"}
 _FORMATS = [(fmt, bundle) for fmt in ("csv", "xlsx", "parquet") for bundle in (False, True)]
+_RENDERS = {"fetched": "render_file_location", "derived": "render_derived_file"}
 
 
 @pytest.fixture(autouse=True)
@@ -332,6 +339,7 @@ class _Rig:
                 export_store=LiveExportStore(store=stores.store),
                 version_lister=LiveVersionLister(store=stores.store),
                 allowances=self.ledger,
+                pin_allowed_principals=frozenset({_PIN_PRINCIPAL}),
                 now=lambda: stores.now,
             )
             self.frame = {
@@ -355,6 +363,7 @@ class _Rig:
             reference_writer=LiveArtifactReferenceWriter(store=self.store),
             export_store=LiveExportStore(store=self.store),
             allowances=self.ledger,
+            pin_allowed_principals=frozenset({_PIN_PRINCIPAL}),
             **_DATASETS[dataset].stores(),
         )
         minted = _DATASETS[dataset].mint(self.client)
@@ -497,7 +506,7 @@ def test_the_link_redirects_to_the_pinned_file_without_rendering(
     rig: _Rig, monkeypatch: pytest.MonkeyPatch
 ):
     body = rig.prepare("xlsx", bundle=True).json()
-    monkeypatch.setattr(exports_module, "derived_file", _forbidden)
+    monkeypatch.setattr(exports_module, "render_derived_file", _forbidden)
     monkeypatch.setattr(exports_module, "render_file_location", _forbidden)
 
     resp = rig.link(body["export_id"])
@@ -536,24 +545,81 @@ def test_a_new_pinned_copy_spends_one_unit_of_the_callers_pin_allowance(rig: _Ri
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
-def test_an_open_caller_past_its_pin_allowance_refuses_429_until_utc_midnight(
-    kind: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("spent", "status", "code", "retryable"),
+    [
+        ({"pin": 0}, 429, "allowance_exhausted", False),
+        ({"pin": 0, "pin_budget": 0}, 503, "service_unavailable", True),
+        ({"pin": 0, "open_pin_budget": 0}, 503, "service_unavailable", True),
+    ],
+    ids=["allowance", "allowance-and-pin-budget", "allowance-and-open-budget"],
+)
+def test_an_open_caller_past_its_pin_allowance_refuses_as_the_copy_would_before_any_render(
+    kind: str,
+    spent: dict[str, int],
+    status: int,
+    code: str,
+    retryable: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=0))
+    """Each refusal holds until UTC midnight, and is the one spending the units would raise."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(**spent))
+    monkeypatch.setattr(exports_module, _RENDERS[kind], _forbidden)
 
     resp = rig.prepare("csv", bundle=True)
 
-    assert resp.status_code == 429, resp.text
-    assert resp.json()["code"] == "allowance_exhausted"
+    assert resp.status_code == status, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == (code, retryable)
     assert int(resp.headers["retry-after"]) > 0
+    assert _spent(rig.ledger) == {}
     assert rig.link(_export_id(rig.frame, "csv", bundle=True)).status_code == 404
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
-def test_a_file_pinned_already_asks_for_no_copy(kind: str, monkeypatch: pytest.MonkeyPatch):
-    """The first prepare spends the caller's last unit. The second finds the pinned copy first,
-    so it spends nothing and copies nothing."""
-    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=1))
+def test_a_spent_budget_alone_refuses_at_the_copy_after_the_render(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    """A concurrent pin can give a budget's unit back, so the early check leaves it alone."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin_budget=0))
+    render = getattr(exports_module, _RENDERS[kind])
+    renders: list[str] = []
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        renders.append(kind)
+        return render(*args, **kwargs)
+
+    monkeypatch.setattr(exports_module, _RENDERS[kind], counted)
+
+    resp = rig.prepare("csv", bundle=True)
+
+    assert resp.status_code == 503, resp.text
+    assert renders == [kind]
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_holder_of_the_pin_grant_has_no_allowance_to_spend(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=0))
+
+    resp = rig.client.post(
+        "/api/datasets/exports",
+        json={"frame": rig.frame, "format": "csv", "bundle": False},
+        headers={"x-dfo-principal": _PIN_PRINCIPAL},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert _spent(rig.ledger) == {(BUDGET_KEY, "pin_budget"): 1}
+
+
+@pytest.mark.parametrize(("kind", "allowance"), [("fetched", 1), ("derived", 2)])
+def test_a_file_pinned_already_asks_for_no_copy(
+    kind: str, allowance: int, monkeypatch: pytest.MonkeyPatch
+):
+    """The second prepare finds the pinned copy, so it spends nothing and copies nothing. A
+    listed dataset file's digest is known first, so the first prepare can spend the caller's
+    last unit. A derived file's digest comes from its render, which needs a unit left."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=allowance))
     first = rig.prepare("csv")
     assert first.status_code == 200, first.text
     spent = _spent(rig.ledger)
@@ -709,6 +775,214 @@ def test_two_concurrent_prepares_of_one_request_answer_one_export(rig: _Rig, cal
     assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
     assert responses[0].json() == responses[1].json()
     assert _spent(rig.ledger)[(caller_key, "pin")] == 1
+
+
+class _HeldRender:
+    """Stands in for the render on one rig: `results` says how each call ends, each call holds
+    until `release`, and `parked` is set once a concurrent prepare waits for the holder."""
+
+    def __init__(self, kind: str, monkeypatch: pytest.MonkeyPatch, *, results: list[Any]) -> None:
+        self.calls = 0
+        self.entered = threading.Event()
+        self.parked = threading.Event()
+        self.release = threading.Event()
+        self._results = results
+        self._render = getattr(exports_module, _RENDERS[kind])
+        monkeypatch.setattr(exports_module, _RENDERS[kind], self)
+        sliced_wait = admission._sliced_wait
+
+        def parked_wait(attempt: Any, **kwargs: Any) -> bool:
+            if attempt.__qualname__ == "Event.wait":
+                self.parked.set()
+            return sliced_wait(attempt, **kwargs)
+
+        monkeypatch.setattr(admission, "_sliced_wait", parked_wait)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls += 1
+        self.entered.set()
+        assert self.release.wait(10)
+        result = self._results.pop(0)
+        if result is not None:
+            raise result
+        return self._render(*args, **kwargs)
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_concurrent_prepares_of_one_id_render_once_and_answer_the_record(
+    kind: str, monkeypatch: pytest.MonkeyPatch, caller_key: str
+):
+    rig = _Rig(kind, monkeypatch)
+    render = _HeldRender(kind, monkeypatch, results=[None])
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        leader = pool.submit(rig.prepare, "csv")
+        assert render.entered.wait(10)
+        followers = [pool.submit(rig.prepare, "csv") for _ in range(2)]
+        assert render.parked.wait(10)
+        render.release.set()
+        responses = [leader.result(), *(follower.result() for follower in followers)]
+
+    assert [r.status_code for r in responses] == [200, 200, 200], [r.text for r in responses]
+    assert responses[0].json() == responses[1].json() == responses[2].json()
+    assert render.calls == 1
+    assert _spent(rig.ledger)[(caller_key, "pin")] == 1
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_waiter_runs_its_own_prepare_after_the_one_it_waited_on_failed(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    rig = _Rig(kind, monkeypatch)
+    failure = ArtifactExpired(id=rig.frame["spec_id"], content_version=rig.frame["content_version"])
+    render = _HeldRender(kind, monkeypatch, results=[failure, None])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader = pool.submit(rig.prepare, "csv")
+        assert render.entered.wait(10)
+        waiter = pool.submit(rig.prepare, "csv")
+        assert render.parked.wait(10)
+        render.release.set()
+        failed, answered = leader.result(), waiter.result()
+
+    assert failed.json()["code"] == "artifact_expired", failed.text
+    assert answered.status_code == 200, answered.text
+    assert render.calls == 2
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_prepare_answers_a_record_written_since_the_door_read_it(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    rig = _Rig(kind, monkeypatch)
+    first = rig.prepare("csv")
+    monkeypatch.setattr(exports_door, "recorded_export", lambda **_: None)
+    monkeypatch.setattr(exports_module, "_prepare_dataset", _forbidden)
+    monkeypatch.setattr(exports_module, "_prepare_derived", _forbidden)
+
+    again = rig.prepare("csv")
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+
+
+def test_a_derived_file_is_rendered_counted_and_stored_inside_one_slot_and_stays_there(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each step sees a slot held, and the bytes are gone by the time the slot releases."""
+    rig = _Rig("derived", monkeypatch)
+    slots = 0
+    inside = False
+    steps: list[tuple[str, bool]] = []
+    held: set[int] = set()
+    held_at_release: list[int] = []
+
+    class _Bytes(bytes):
+        def __del__(self) -> None:
+            held.discard(id(self))
+
+    slot = exports_module.bounded_materialise_slot
+    render = exports_module.render_derived_file
+    shape = exports_module.file_shape
+    put = rig.artifact_store.put
+
+    @contextmanager
+    def watched(*args: Any, **kwargs: Any) -> Iterator[None]:
+        nonlocal slots, inside
+        slots += 1
+        with slot(*args, **kwargs):
+            inside = True
+            yield
+            inside = False
+            held_at_release.append(len(held))
+
+    def rendered(**kwargs: Any) -> Any:
+        steps.append(("render", inside))
+        file = render(**kwargs)
+        tracked = _Bytes(file.data)
+        held.add(id(tracked))
+        return replace(file, data=tracked)
+
+    def shaped(*args: Any, **kwargs: Any) -> Any:
+        steps.append(("shape", inside))
+        return shape(*args, **kwargs)
+
+    def stored(data: bytes, *, tier: Tier) -> Any:
+        steps.append(("store", inside))
+        return put(data, tier=tier)
+
+    monkeypatch.setattr(exports_module, "bounded_materialise_slot", watched)
+    monkeypatch.setattr(exports_module, "render_derived_file", rendered)
+    monkeypatch.setattr(exports_module, "file_shape", shaped)
+    monkeypatch.setattr(rig.artifact_store, "put", stored)
+
+    assert rig.prepare("csv").status_code == 200
+
+    assert steps == [("render", True), ("shape", True), ("store", True)]
+    assert slots == 1
+    assert held_at_release == [0]
+
+
+def _csv_bytes(rows: list[list[str]]) -> bytes:
+    text = io.StringIO(newline="")
+    csv.writer(text).writerows(rows)
+    return text.getvalue().encode("utf-8")
+
+
+def _bundled(data: bytes) -> bytes:
+    """`data` as the first data resource of a bundle, beside a second CSV."""
+    resources = [{"path": "data/main.csv"}, {"path": "data/main-totals.csv"}]
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("data/main.csv", data)
+        archive.writestr("data/main-totals.csv", b"a\r\n1\r\n2\r\n3\r\n")
+        archive.writestr("datapackage.json", json.dumps({"resources": resources}))
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("bundle", [False, True], ids=["bare", "bundle"])
+def test_file_shape_counts_a_row_once_whatever_newlines_its_cells_quote(bundle: bool):
+    data = _csv_bytes([["a", "b"], ["one\ntwo", "1"], ["three\r\nfour", "2"], ["fünf", "3"]])
+
+    shape = exports_module.file_shape(
+        _bundled(data) if bundle else data, format="csv", bundle=bundle
+    )
+
+    assert shape == (3, 2)
+
+
+class _ChunkedReads(io.BytesIO):
+    """A stream that refuses a read of everything left, which a whole copy would need."""
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        assert size is not None and 0 <= size < len(self.getvalue())
+        return super().read(size)
+
+    def read1(self, size: int | None = -1, /) -> bytes:
+        return self.read(size)
+
+
+_LONG_CSV = _csv_bytes([["a", "b"], *([["text", "1"]] * 5_000)])
+
+
+def test_a_csv_is_counted_from_chunks_of_the_stream():
+    assert exports_module._table_shape(_ChunkedReads(_LONG_CSV), format="csv") == (5_000, 2)
+
+
+def test_a_bundle_unzips_only_its_package_descriptor_whole(monkeypatch: pytest.MonkeyPatch):
+    read = zipfile.ZipFile.read
+    unzipped: list[str] = []
+
+    def recorded(archive: zipfile.ZipFile, name: str, *args: Any) -> bytes:
+        unzipped.append(name)
+        return read(archive, name, *args)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", recorded)
+
+    shape = exports_module.file_shape(_bundled(_LONG_CSV), format="csv", bundle=True)
+
+    assert shape == (5_000, 2)
+    assert unzipped == ["datapackage.json"]
 
 
 def test_an_export_id_is_the_hash_of_the_request_alone(rig: _Rig):

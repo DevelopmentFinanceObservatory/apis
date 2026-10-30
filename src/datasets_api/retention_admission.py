@@ -17,6 +17,10 @@ by a concurrent pin, gives its units back, since that pin's units pay for it, an
 whose working bytes are gone, since nothing landed. A copy that stands keeps its units through
 any later failure of the write that asked for it, since the pinned bytes stay. A caller that
 skips the copy for an artifact already pinned spends nothing.
+
+`refuse_spent_caller` answers, before work a copy would follow, the refusal that copy would raise
+for a caller whose own `pin` allowance is spent, and spends nothing. A spent budget alone refuses
+at the copy, since a concurrent pin can give its unit back.
 """
 
 from __future__ import annotations
@@ -37,7 +41,12 @@ from datasets_api.allowance import (
 from dfo_platform.caller import Caller
 from dfo_platform.problem import Refusal
 
-__all__ = ["OpenPinBudgetExhausted", "PinBudgetExhausted", "copy_to_pinned"]
+__all__ = [
+    "OpenPinBudgetExhausted",
+    "PinBudgetExhausted",
+    "copy_to_pinned",
+    "refuse_spent_caller",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +93,46 @@ _BUDGET_REFUSALS = {
 }
 
 
+def _pin_spends(caller: Caller | None) -> list[Spend]:
+    """The units one new pinned copy takes for `caller`, in the order they refuse."""
+    spends = [Spend(BUDGET_KEY, AllowanceKind.pin_budget)]
+    if caller is not None:
+        spends += [
+            Spend(BUDGET_KEY, AllowanceKind.open_pin_budget),
+            Spend(caller.key, AllowanceKind.pin),
+        ]
+    return spends
+
+
+def _refusal(exhausted: AllowanceExhausted, *, now: datetime) -> Refusal:
+    """The refusal a copy raises for the spent unit `exhausted` names."""
+    budget = _BUDGET_REFUSALS.get(exhausted.kind)
+    return exhausted if budget is None else budget(limit=exhausted.limit, now=now)
+
+
+def refuse_spent_caller(
+    allowances: SharedAllowanceLedger, caller: Caller, *, now: datetime
+) -> None:
+    """Refuse as `copy_to_pinned` would when `caller`'s `pin` allowance is spent, spending
+    nothing. The first spent unit in spending order names the refusal.
+
+    Raises:
+        PinBudgetExhausted: The allowance and the day's pin budget are spent.
+        OpenPinBudgetExhausted: The allowance and the open callers' budget are spent.
+        AllowanceExhausted: The allowance alone is spent.
+        DatasetsStoreUnavailable: The ledger could not be read.
+    """
+    spends = _pin_spends(caller)
+    try:
+        allowances.check_remaining(spends[-1], now)
+    except AllowanceExhausted:
+        try:
+            for spend in spends:
+                allowances.check_remaining(spend, now)
+        except AllowanceExhausted as exhausted:
+            raise _refusal(exhausted, now=now) from None
+
+
 def copy_to_pinned(
     artifacts: ArtifactStore,
     artifact_digest: str,
@@ -107,19 +156,11 @@ def copy_to_pinned(
     """
     if allowances is None:
         return artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
-    spends = [Spend(BUDGET_KEY, AllowanceKind.pin_budget)]
-    if caller is not None:
-        spends += [
-            Spend(BUDGET_KEY, AllowanceKind.open_pin_budget),
-            Spend(caller.key, AllowanceKind.pin),
-        ]
+    spends = _pin_spends(caller)
     try:
         allowances.spend_together(spends, now)
     except AllowanceExhausted as exhausted:
-        budget = _BUDGET_REFUSALS.get(exhausted.kind)
-        if budget is None:
-            raise
-        raise budget(limit=exhausted.limit, now=now) from None
+        raise _refusal(exhausted, now=now) from None
     try:
         copied = artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
     except ArtifactNotFoundError:

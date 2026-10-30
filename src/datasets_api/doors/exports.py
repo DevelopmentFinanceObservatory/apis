@@ -171,7 +171,8 @@ def build_exports_door(
             OpenPinBudgetExhausted,
             AllowanceExhausted,
             ExportBackpressure,
-            # A render from the stored frame takes the shared materialise permit.
+            # The export's turn, a derived file's slot and a render from the stored frame can
+            # each raise this, the last two at the shared materialise permit.
             MintBackpressure,
             DatasetsStoreUnavailable,
             *SELECTOR_RENDERING_EXCEPTION_TYPES,

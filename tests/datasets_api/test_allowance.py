@@ -74,7 +74,24 @@ def test_a_zero_limit_refuses_the_first_spend():
     )
 
     with pytest.raises(AllowanceExhausted):
+        ledger.check_remaining(Spend(_ALICE.key, AllowanceKind.pin), _NOON)
+    with pytest.raises(AllowanceExhausted):
         ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+
+
+def test_checking_what_remains_spends_nothing_and_refuses_as_a_spend_would(ledger):
+    for _ in range(5):
+        ledger.check_remaining(Spend(_ALICE.key, AllowanceKind.pin), _NOON)
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+    ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
+
+    with pytest.raises(AllowanceExhausted) as refused:
+        ledger.check_remaining(Spend(_ALICE.key, AllowanceKind.pin), _NOON)
+
+    assert (refused.value.kind, refused.value.limit) == (AllowanceKind.pin, 2)
+    assert refused.value.headers == {"Retry-After": str(12 * 3600)}
+    ledger.check_remaining(Spend(_BOB.key, AllowanceKind.pin), _NOON)
+    ledger.check_remaining(Spend(_ALICE.key, AllowanceKind.pin), _NOON + timedelta(days=1))
 
 
 def test_spends_together_take_every_unit_or_none():

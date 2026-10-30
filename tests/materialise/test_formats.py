@@ -289,6 +289,11 @@ def test_sanitize_csv_cell_is_reversible_for_neutralised_cells():
 # --- table_schema_for --------------------------------------------------------
 
 
+def _excel_cells(data: bytes) -> list[list[object]]:
+    sheet = openpyxl.load_workbook(io.BytesIO(data)).active
+    return [[cell.value for cell in row] for row in sheet.iter_rows()]
+
+
 def test_table_schema_for_golden_table():
     schema = table_schema_for(_GOLDEN_TABLE, rendering=_FRIENDLY_RENDERING)
     assert schema == {
@@ -300,6 +305,58 @@ def test_table_schema_for_golden_table():
             {"name": "Unit", "type": "string"},
         ]
     }
+
+
+def _unit_frame(unit: object) -> Frame:
+    """A frame of two rows, the second holding `unit`, with an all-null `status` column."""
+    rows = [
+        {
+            "stat_var": "dcid:Exemplar",
+            "recipient": recipient,
+            "time_period": "2015",
+            "value": 1.5,
+            "unit": cell,
+        }
+        for recipient, cell in (("country/TGO", "USDollar"), ("country/GHA", unit))
+    ]
+    return build_frame(role_keys=("recipient",), rows=rows)
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "USDollar",
+        None,
+        {"currency": "EUR", "prices": "constant", "base_year": 2024},
+        {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+    ],
+    ids=["ref", "null", "converted", "composed"],
+)
+def test_a_frame_writes_what_its_rows_write_and_never_builds_them(unit, monkeypatch):
+    """The rows as `Frame.rows` gives them set the bytes. With `rows` barred, every writer reads
+    the frame column by column, and with `iter_rows` barred too, typing builds no row at all."""
+    frame = _unit_frame(unit)
+    table = _Table(columns=frame.columns, rows=frame.rows)
+    expected = (
+        write_csv((table,), rendering=_PLAIN_RENDERING).data,
+        table_schema_for(table, rendering=_PLAIN_RENDERING),
+    )
+    excel_cells = _excel_cells(write_excel((table,), rendering=_PLAIN_RENDERING).data)
+
+    def barred(*_: object) -> None:
+        raise AssertionError("a writer built the frame's rows")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Frame, "rows", property(barred))
+
+        csv_bytes = write_csv((frame,), rendering=_PLAIN_RENDERING).data
+        excel = write_excel((frame,), rendering=_PLAIN_RENDERING).data
+        write_parquet((frame,), rendering=_PLAIN_RENDERING)
+        patch.setattr(materialise_formats, "iter_rows", barred)
+        schema = table_schema_for(frame, rendering=_PLAIN_RENDERING)
+
+    assert (csv_bytes, schema) == expected
+    assert _excel_cells(excel) == excel_cells
 
 
 def test_table_schema_for_infers_types_from_cells_not_headers():
