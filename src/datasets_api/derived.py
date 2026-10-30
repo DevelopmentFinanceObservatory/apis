@@ -40,7 +40,7 @@ from __future__ import annotations
 import io
 import logging
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -143,16 +143,20 @@ def recipe_roots(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return roots
 
 
-def roots_citation(reader: SnapshotReader, roots: Sequence[Mapping[str, Any]]) -> CitationModel:
-    """The citations of `roots` merged: each root version's text once, and each source once by
-    `(ref, processing_level)`, in root order. A root with no stored record cites nothing."""
+def _root_citation(reader: SnapshotReader, root: Mapping[str, Any]) -> CitationModel | None:
+    """The citation of `root`'s version, `None` for a root with no stored manifest record."""
+    stored = reader.read_version(root["spec_id"], root["content_version"])
+    if stored is None or not isinstance(stored.facts, ManifestFacts):
+        return None
+    return CitationModel.model_validate(stored.facts.citation)
+
+
+def _merged_citation(citations: Iterable[CitationModel]) -> CitationModel:
+    """`citations` merged: each text once, and each source once by
+    `(ref, processing_level)`, in order."""
     texts: list[str] = []
     sources: dict[tuple[str, str | None], CitationSource] = {}
-    for root in roots:
-        stored = reader.read_version(root["spec_id"], root["content_version"])
-        if stored is None or not isinstance(stored.facts, ManifestFacts):
-            continue
-        citation = CitationModel.model_validate(stored.facts.citation)
+    for citation in citations:
         if citation.text not in texts:
             texts.append(citation.text)
         for source in citation.sources:
@@ -160,15 +164,38 @@ def roots_citation(reader: SnapshotReader, roots: Sequence[Mapping[str, Any]]) -
     return CitationModel(text="\n\n".join(texts), sources=list(sources.values()))
 
 
+def roots_citation(reader: SnapshotReader, roots: Sequence[Mapping[str, Any]]) -> CitationModel:
+    """The citations of `roots` merged, in root order. A root with no stored record cites
+    nothing."""
+    citations = (_root_citation(reader, root) for root in roots)
+    return _merged_citation(citation for citation in citations if citation is not None)
+
+
+def stored_recipe_roots(record: RecipeRecord | None) -> list[dict[str, Any]]:
+    """The roots of the stored recipe `record` (`recipe_roots`), none for a frame with no
+    recipe."""
+    if record is None:
+        return []
+    return recipe_roots(cast("Sequence[Mapping[str, Any]]", record.body.get("roots") or []))
+
+
 def recipe_citation(reader: SnapshotReader, record: RecipeRecord | None) -> CitationModel:
     """The citation of the derived frame whose stored recipe is `record`: its roots' citations
     merged (`roots_citation`), and no source for a frame with no recipe."""
-    roots = (
-        []
-        if record is None
-        else recipe_roots(cast("Sequence[Mapping[str, Any]]", record.body.get("roots") or []))
-    )
-    return roots_citation(reader, roots)
+    return roots_citation(reader, stored_recipe_roots(record))
+
+
+def full_recipe_citation(
+    reader: SnapshotReader, record: RecipeRecord | None
+) -> CitationModel | None:
+    """`recipe_citation` when the recipe has roots and each of them can be cited, else `None`,
+    for a caller that must name every source of the frame."""
+    roots = stored_recipe_roots(record)
+    citations = [_root_citation(reader, root) for root in roots]
+    cited = [citation for citation in citations if citation is not None]
+    if not roots or len(cited) != len(roots):
+        return None
+    return _merged_citation(cited)
 
 
 @dataclass(frozen=True, kw_only=True)

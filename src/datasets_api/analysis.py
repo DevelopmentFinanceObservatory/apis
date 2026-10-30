@@ -12,7 +12,7 @@ A Spec or dataset root carries a `rendering`, the mint options data-mcp records 
 frame: `without_party_totals`; `columns`, the enrichment columns its frame is read with; and
 `groupby`, the sum its frame was read with (`mint_models.GroupbyOptions`), such as a breakdown
 or a sum over StatVars. Left out, `columns` is the place-type and party-kind columns the
-dataset's roles take (`analysis_roots.enrichment_columns`), which the verbs need to keep group
+dataset's roles take (`default_enrichment`), which the verbs need to keep group
 totals out of a sum or rank. The rendering is part of the root's identity: its mint options
 are the root record's `options`, which the recipe's normal form names.
 
@@ -220,7 +220,7 @@ ROOT_MINT_OPTIONS = frozenset(
 
 class RootRendering(BaseModel):
     """How a dataset root's frame is read. `columns` left out takes the enrichment its
-    dataset's roles need (`analysis_roots.enrichment_columns`); `[]` reads the stored frame
+    dataset's roles need (`default_enrichment`); `[]` reads the stored frame
     alone. `groupby` reads the frame summed as a mint with that `options.groupby` sums it."""
 
     model_config = ConfigDict(extra="forbid")

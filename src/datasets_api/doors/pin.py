@@ -216,7 +216,7 @@ def pin_artifact(
             # The working copy aged out between the read and the copy.
             raise ArtifactExpired(id=id, content_version=content_version) from exc
 
-    pinned_at = _record_pin_reference(
+    pinned_at = record_pin_reference(
         reference_writer,
         principal=principal,
         artifact_digest=artifact_digest,
@@ -257,7 +257,7 @@ def pin_artifact(
                     serving.content_version,
                 )
                 continue
-        _record_pin_reference(
+        record_pin_reference(
             reference_writer,
             principal=principal,
             artifact_digest=frame.artifact_digest,
@@ -271,7 +271,7 @@ def pin_artifact(
     return pinned_at
 
 
-def _record_pin_reference(
+def record_pin_reference(
     reference_writer: ArtifactReferenceWriter,
     *,
     principal: str,
@@ -281,9 +281,13 @@ def _record_pin_reference(
     revoked_under: Sequence[str],
     already_pinned: bool,
     now: datetime,
+    reference_kind: str = PIN_REFERENCE_KIND,
+    require_link: bool = True,
 ) -> datetime:
-    """Record the principal's pin reference under the transactional revocation recheck, which
-    covers `id` and every id in `revoked_under`."""
+    """Record the principal's reference to a pinned copy under the transactional revocation
+    recheck, which covers `id` and every id in `revoked_under`. `reference_kind` and
+    `require_link` are the writer's (`ArtifactReferenceWriter.record_reference_unless_revoked`).
+    """
     try:
         with phase("record"):
             return reference_writer.record_reference_unless_revoked(
@@ -291,9 +295,10 @@ def _record_pin_reference(
                 artifact_digest=artifact_digest,
                 subject_id=id,
                 content_version=content_version,
-                reference_kind=PIN_REFERENCE_KIND,
+                reference_kind=reference_kind,
                 now=now,
                 revoked_under=revoked_under,
+                require_link=require_link,
             )
     except (SnapshotRevoked, ArtifactNotFound):
         # The transactional rechecks catch a revocation or a replaced link during the copy.

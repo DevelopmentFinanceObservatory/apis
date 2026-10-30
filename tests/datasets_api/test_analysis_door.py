@@ -94,7 +94,7 @@ def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same_reading_no
     assert body["summary"]["verb"] == "quotient_of"
     assert body["rows"] == body["summary"]["rows"] == 4
     assert body["role_keys"] == ["financingRecipient", "financingRecipient_party_kind"]
-    assert body["execution_identity"]["engine_version"] == "0.9.0"
+    assert body["execution_identity"]["engine_version"] == "0.9.1"
     assert first.headers["cache-control"] == "no-store"
     assert stores.snapshot_reader.read_version(member["spec"]["spec_id"], member["content_version"])
     assert again.json() == body

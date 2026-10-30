@@ -13,8 +13,11 @@ it reads: each typed role's `_type` cells beside the layout's own `_label` and `
 It is the file the version lists under that rendering, else one rendered from its stored frame.
 A derived frame's file is the one its file route renders (`derived.render_derived_file`). The file is then copied to the pinned tier through
 `retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
-pin budgets as a pin does. A file already pinned spends nothing. The record keeps the pinned
-copy's location and the facts the prepare answered.
+pin budgets as a pin does. A file already pinned spends nothing, whichever version or export
+pinned it. An `artifact_reference` row of kind `export` (`reference_store.EXPORT_REFERENCE_KIND`)
+then keeps the copy from any deletion keyed on references, under the transactional revocation
+recheck a pin's reference takes. The record keeps the pinned copy's location and the facts the
+prepare answered.
 
 A request whose id holds a record answers that record, rendering and spending nothing. Two
 concurrent prepares of one request compute one id, and, since every render is deterministic
@@ -22,9 +25,14 @@ concurrent prepares of one request compute one id, and, since every render is de
 the second copy finds the pinned bytes stored and gives its units back, and the second record
 write returns the first's row.
 
-The export link (`sign_export`) reads the record, refuses a version revoked since the prepare,
-and signs a URL to the pinned copy. It never renders. The pinned tier never expires its objects,
-so a link keeps working until its version is taken down.
+The first prepare, a repeat prepare and the export link (`sign_export`) answer a record through
+one guard (`_servable_facts`), so they cannot disagree. A version's revocation, or its base
+version's, under the id it is recorded under, the id the request named or any served id bound
+to that id refuses `snapshot_revoked`, a quarantine of the named id or a served id bound to it
+refuses `identity_quarantined`, and the recorded version and file stay the ones served. A
+derived frame holds its roots' data, so the same guard covers every root of its recipe. The link
+then signs a URL to the pinned copy. It never renders. The pinned tier never expires its
+objects, so a link keeps working until its version is taken down.
 
 The record keys the version by the id it is recorded under, the served id for a dataset the
 request named by a posted id (`doors.snapshot.read_under_served_id`), as a pin's reference does.
@@ -34,8 +42,10 @@ Refusals:
 
 - A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows refuses `over_ceiling`
   (`ExportOverCeiling`). Parquet has no row ceiling.
-- A derived frame stored without a recipe names no sources, and refuses
-  `provenance_unavailable`.
+- A derived frame whose sources cannot all be named, because it has no stored recipe, its
+  recipe has no roots or a root cannot be cited, refuses `provenance_unavailable`.
+- A render linked incomplete (`render.incomplete_rendering`) refuses retryable
+  `service_unavailable` (`ExportFileIncomplete`) and pins and records nothing.
 - A source on the licence deny-list, `licence_restrictions.json` beside this module, keyed by
   source ref, refuses `licence_not_redistributable` at prepare and at the link. Every source is
   checked against the list as read when the process started, and the link checks the sources
@@ -60,38 +70,47 @@ import pyarrow.parquet as pq
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field
 
-from artifact_store import ArtifactNotFoundError, ArtifactSigningError, Tier
-from dataset_store.snapshot import SnapshotRevoked, read_servable_version
+from artifact_store import ArtifactNotFoundError, Tier
+from dataset_store.snapshot import ServableVersion, SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
+from datasets_api.allowance import AllowanceExhausted
 from datasets_api.analysis import AnalysisPending
 from datasets_api.analysis_roots import newest_spec_version
-from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.codes_exports import (
+    ExportFileIncomplete,
     ExportNotFound,
     ExportOverCeiling,
     LicenceNotRedistributable,
     NewestVersionUnservable,
     ProvenanceUnavailable,
 )
-from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed
-from datasets_api.config import DOWNLOAD_SIGNED_URL_TTL
+from datasets_api.codes_snapshot import ArtifactExpired
 from datasets_api.current import DefinitionDeps
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.deps import Deps
-from datasets_api.derived import recipe_citation
+from datasets_api.derived import full_recipe_citation, stored_recipe_roots
 from datasets_api.doors.derived import derived_file
 from datasets_api.doors.files import (
     artifact_file_name,
     listed_file_location,
     read_version,
     render_file_location,
+    signed_download_url,
 )
+from datasets_api.doors.pin import record_pin_reference
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
-from datasets_api.export_store import ExportRecord, ExportStore
+from datasets_api.export_store import ExportRecord
 from datasets_api.manifest import stored_manifest_facts
 from datasets_api.manifest_models import CitationModel, CoverageModel
 from datasets_api.mint_models import MintOptions
-from datasets_api.retention_admission import copy_to_pinned
+from datasets_api.recipe_store import RecipeRecord
+from datasets_api.reference_store import EXPORT_REFERENCE_KIND
+from datasets_api.render import is_incomplete_rendering
+from datasets_api.retention_admission import (
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    copy_to_pinned,
+)
 from datasets_api.timings import phase
 from dfo_platform.caller import Caller
 from dfo_platform.codes import bound_registry_endpoint, registered_status
@@ -256,21 +275,19 @@ def _check_rows(request: ExportRequest, rows: int) -> None:
         raise ExportOverCeiling(format=request.format, count=rows, cap=EXPORT_MAX_ROWS)
 
 
-def _pinned_copy(
-    *,
-    digest: str,
-    tier: str,
-    bucket: str,
-    object_name: str,
-    frame: ExportFrame,
-    caller: Caller | None,
-    current: Deps,
+def _pinned_location(digest: str, *, current: Deps) -> tuple[str, str] | None:
+    """The bucket and object name of `digest`'s pinned copy, `None` when it has none."""
+    location = current.artifact_store.location(digest, tier=Tier.pinned)
+    return None if location is None else (location.bucket, location.object_name)
+
+
+def _copied_to_pinned(
+    digest: str, *, frame: ExportFrame, caller: Caller | None, current: Deps
 ) -> tuple[str, str]:
-    """The bucket and object name of the pinned copy of `digest`, stored at `tier`, copying it
-    from the working tier (`copy_to_pinned`) unless it is pinned already. Working bytes gone
-    before the copy refuse `ArtifactExpired`."""
-    if tier == Tier.pinned:
-        return bucket, object_name
+    """Copy `digest` to the pinned tier (`copy_to_pinned`) and return the copy's bucket and
+    object name. Working bytes gone before the copy refuse `ArtifactExpired`. A spent unit
+    refuses only while no pinned copy exists, since a concurrent prepare may have spent the last
+    one on these bytes."""
     try:
         with phase("copy"):
             copied = copy_to_pinned(
@@ -282,7 +299,76 @@ def _pinned_copy(
             )
     except ArtifactNotFoundError as exc:
         raise ArtifactExpired(id=frame.spec_id, content_version=frame.content_version) from exc
+    except (AllowanceExhausted, PinBudgetExhausted, OpenPinBudgetExhausted):
+        pinned = _pinned_location(digest, current=current)
+        if pinned is None:
+            raise
+        return pinned
     return copied.bucket, copied.object_name
+
+
+def _pinned_copy(
+    *,
+    digest: str,
+    tier: str,
+    bucket: str,
+    object_name: str,
+    frame: ExportFrame,
+    subject_id: str,
+    subject_ids: tuple[str, ...],
+    export: str,
+    caller: Caller | None,
+    current: Deps,
+) -> tuple[str, str]:
+    """The bucket and object name of the pinned copy of `digest`, stored at `tier`, copying it
+    from the working tier unless a pinned copy exists (`_copied_to_pinned`), and record the
+    export's reference to it under the version `subject_id` records, unless a revocation under
+    it or `subject_ids` now refuses."""
+    pinned = (
+        (bucket, object_name) if tier == Tier.pinned else _pinned_location(digest, current=current)
+    )
+    already_pinned = pinned is not None
+    if pinned is None:
+        pinned = _copied_to_pinned(digest, frame=frame, caller=caller, current=current)
+    record_pin_reference(
+        current.reference_writer,
+        principal=f"export:{export}",
+        artifact_digest=digest,
+        id=subject_id,
+        content_version=frame.content_version,
+        revoked_under=subject_ids,
+        already_pinned=already_pinned,
+        now=current.now(),
+        reference_kind=EXPORT_REFERENCE_KIND,
+        require_link=False,
+    )
+    return pinned
+
+
+def _linked_complete(stored: ServableVersion, digest: str) -> bool:
+    """Whether the version links `digest` under a complete rendering. An incomplete render and
+    the complete render after it can give the same bytes."""
+    return any(
+        location.artifact_digest == digest and not is_incomplete_rendering(location.rendering)
+        for location in stored.servable
+    )
+
+
+def _stored_file_shape(
+    digest: str, *, request: ExportRequest, current: Deps, deps: DefinitionDeps
+) -> tuple[int, int]:
+    """`file_shape` of the pinned file `digest`, whose bytes stay inside one materialise
+    slot."""
+    with bounded_materialise_slot(
+        current.materialise_semaphore,
+        wait_seconds=current.settings.materialise_wait_seconds,
+        deadline=deps.deadline,
+    ):
+        return file_shape(
+            current.artifact_store.get(artifact_digest=digest, tier=Tier.pinned),
+            format=request.format,
+            bundle=request.bundle,
+        )
 
 
 def _prepare_dataset(
@@ -320,24 +406,23 @@ def _prepare_dataset(
         stored, location = render_file_location(
             stored, id=frame.spec_id, subject_ids=subject_ids, requested=requested, deps=deps
         )
+    if not _linked_complete(stored, location.artifact_digest):
+        raise ExportFileIncomplete(id=frame.spec_id, content_version=frame.content_version)
     bucket, object_name = _pinned_copy(
         digest=location.artifact_digest,
         tier=location.tier,
         bucket=location.bucket,
         object_name=location.object_name,
         frame=frame,
+        subject_id=stored.version.subject_id,
+        subject_ids=subject_ids,
+        export=export,
         caller=caller,
         current=current,
     )
-    with bounded_materialise_slot(
-        current.materialise_semaphore,
-        wait_seconds=current.settings.materialise_wait_seconds,
-        deadline=deps.deadline,
-    ):
-        data = current.artifact_store.get(
-            artifact_digest=location.artifact_digest, tier=Tier.pinned
-        )
-        rows, columns = file_shape(data, format=request.format, bundle=request.bundle)
+    rows, columns = _stored_file_shape(
+        location.artifact_digest, request=request, current=current, deps=deps
+    )
     return _record(
         request,
         export=export,
@@ -368,9 +453,10 @@ def _prepare_derived(
     recipe = current.recipe_store.read_recipe(
         spec_id=frame.spec_id, content_version=frame.content_version
     )
-    if recipe is None:
+    citation = full_recipe_citation(current.snapshot_reader, recipe)
+    if citation is None:
         raise ProvenanceUnavailable(spec_id=frame.spec_id, content_version=frame.content_version)
-    citation = recipe_citation(current.snapshot_reader, recipe)
+    _check_roots(recipe, frame=frame, current=current)
     licences = _licences(citation)
     check_licences(licence.source for licence in licences)
 
@@ -390,6 +476,9 @@ def _prepare_derived(
         bucket=stored.bucket,
         object_name=stored.object_name,
         frame=frame,
+        subject_id=frame.spec_id,
+        subject_ids=(frame.spec_id,),
+        export=export,
         caller=caller,
         current=current,
     )
@@ -479,6 +568,8 @@ def resolve_export_frame(
             headers={"Retry-After": str(math.ceil(pending.retry_after_s))},
         ) from None
     except Exception as exc:
+        if passes_through(exc):
+            raise
         raise _unservable(frame.spec_id, exc) from exc
     return ExportFrame(spec_id=dataset.spec_id, content_version=dataset.content_version)
 
@@ -499,17 +590,28 @@ def _status(code: str, endpoint: str) -> int | None:
         return None
 
 
-def _unservable(spec_id: str, exc: Exception) -> Exception:
-    """The refusal the exports door answers for `exc`, a failure resolving `spec_id`: `exc`
-    itself when it `passes_through`, else a `NewestVersionUnservable` of the registered code
-    that stands for it, read from the status the analysis door, whose resolve this is, gives
-    its code. A code neither endpoint registers is the server's own rendering failing, an
+def resolve_endpoint(exc: BaseException) -> str | None:
+    """The registry endpoint whose statuses classify `exc`, a failure resolving a bare
+    `spec_id`, `None` for a refusal neither reads: `datasets.analysis`, whose resolve this is,
+    else `datasets.exports`, which registers the rendering refusals a rebuild raises and the
+    analysis door serves none of. Anything that is no refusal classifies under the first."""
+    if not isinstance(exc, Refusal):
+        return "datasets.analysis"
+    for endpoint in ("datasets.analysis", "datasets.exports"):
+        if _status(exc.code, endpoint) is not None:
+            return endpoint
+    return None
+
+
+def _unservable(spec_id: str, exc: Exception) -> NewestVersionUnservable:
+    """The `NewestVersionUnservable` of the registered code that stands for `exc`, a failure
+    resolving `spec_id` that does not pass through, read from the status its `resolve_endpoint`
+    gives its code. A code no endpoint registers is the server's own rendering failing, an
     `internal_error`. Nothing is classified here, so the door classifies the failure once."""
-    if passes_through(exc):
-        return exc
     assert isinstance(exc, Refusal)
     detail = f"the newest version of {spec_id} cannot be served: {exc.code}: {exc.detail or exc}"
-    status = _status(exc.code, "datasets.analysis")
+    endpoint = resolve_endpoint(exc)
+    status = None if endpoint is None else _status(exc.code, endpoint)
     if status is None:
         return NewestVersionUnservable(
             code="internal_error",
@@ -524,22 +626,87 @@ def _unservable(spec_id: str, exc: Exception) -> Exception:
     return NewestVersionUnservable(code="snapshot_not_found", detail=detail)
 
 
-def recorded_export(*, request: ExportRequest, store: ExportStore) -> dict[str, Any] | None:
+def _served_ids(id: str, *, current: Deps) -> tuple[str, ...]:
+    """`id` and each served id bound to it, whose revocations withdraw a version named `id`.
+    An `ops_` id, or an id the registry no longer holds, binds none.
+
+    Raises:
+        IdentityQuarantined: `id` or a served id bound to it is quarantined.
+    """
+    return (*(current.spec_reader.read_served_spec_ids(id) or ()), id)
+
+
+def _check_version(
+    subject_id: str, content_version: str, *, named: str, frame: ExportFrame, current: Deps
+) -> None:
+    """Refuse the export of `frame` when the version `subject_id` records, or its base version,
+    is revoked under `subject_id`, under `named` or under a served id bound to `named`.
+
+    Raises:
+        IdentityQuarantined: `named` or a served id bound to it is quarantined.
+        SnapshotRevoked: The version is revoked.
+    """
+    state = current.snapshot_reader.read_version_state(
+        subject_id, content_version, revoked_under=_served_ids(named, current=current)
+    )
+    if state is not None and state.revocation is not None:
+        raise SnapshotRevoked(
+            id=frame.spec_id,
+            content_version=frame.content_version,
+            reason=state.revocation.reason,
+        )
+
+
+def _check_roots(recipe: RecipeRecord | None, *, frame: ExportFrame, current: Deps) -> None:
+    """`_check_version` of every root of the derived frame `frame`'s stored recipe."""
+    for root in stored_recipe_roots(recipe):
+        _check_version(
+            root["spec_id"],
+            root["content_version"],
+            named=root["spec_id"],
+            frame=frame,
+            current=current,
+        )
+
+
+def _servable_facts(record: ExportRecord, *, current: Deps) -> dict[str, Any]:
+    """The facts of `record`, once every guard a served export answers to passes. See the
+    module docstring.
+
+    Raises:
+        IdentityQuarantined: The named id, or a root of a derived frame, is quarantined.
+        SnapshotRevoked: The version, its base version, or a root of a derived frame is revoked.
+        LicenceNotRedistributable: The deny-list names a source of the export.
+    """
+    body = ExportResponse.model_validate(record.body)
+    frame = body.frame
+    with phase("revocation"):
+        _check_version(
+            record.subject_id,
+            record.content_version,
+            named=frame.spec_id,
+            frame=frame,
+            current=current,
+        )
+        if frame.spec_id.startswith("ops_"):
+            recipe = current.recipe_store.read_recipe(
+                spec_id=frame.spec_id, content_version=frame.content_version
+            )
+            _check_roots(recipe, frame=frame, current=current)
+    check_licences(licence.source for licence in body.licences)
+    return body.model_dump(mode="json")
+
+
+def recorded_export(*, request: ExportRequest, current: Deps) -> dict[str, Any] | None:
     """The facts of the export recorded under the request's id, or `None` when none is.
 
     Raises:
-        LicenceNotRedistributable: The deny-list names a source of the export.
+        IdentityQuarantined, SnapshotRevoked, LicenceNotRedistributable: As `_servable_facts`.
     """
-    record = store.read_export(export_id(request))
+    record = current.export_store.read_export(export_id(request))
     if record is None:
         return None
-    return _servable_body(record)
-
-
-def _servable_body(record: ExportRecord) -> dict[str, Any]:
-    body = ExportResponse.model_validate(record.body)
-    check_licences(licence.source for licence in body.licences)
-    return body.model_dump(mode="json")
+    return _servable_facts(record, current=current)
 
 
 def prepare_export(
@@ -553,7 +720,8 @@ def prepare_export(
     Raises:
         SpecNotFound, IdentityQuarantined, SnapshotNotFound, SnapshotRevoked, ArtifactExpired:
             The version cannot be read, or its file can no longer be rendered.
-        ProvenanceUnavailable: A derived frame has no stored recipe.
+        ProvenanceUnavailable: A source of a derived frame cannot be named.
+        ExportFileIncomplete: The file rendered without its sources' documentation.
         LicenceNotRedistributable: The deny-list names a source of the frame.
         ExportOverCeiling: A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows.
         PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: The copy's units are
@@ -566,59 +734,31 @@ def prepare_export(
         record = _prepare_dataset(request, export=export, caller=caller, current=current, deps=deps)
     with phase("record"):
         stored = current.export_store.write_export(record)
-    return _servable_body(stored)
+    return _servable_facts(stored, current=current)
 
 
 def sign_export(*, export_id: str, current: Deps) -> str:
     """A URL to the export's pinned file, signed for `DOWNLOAD_SIGNED_URL_TTL` and naming the
     download by its file name.
 
-    The version is read again first, so a takedown reaches the link as it reaches every other
-    file link: a revocation of the version or its base version under the id it is recorded
-    under, or under the id the request named, refuses.
+    The version is read again first (`_servable_facts`), so a takedown reaches the link as it
+    reaches every other file link.
 
     Raises:
         ExportNotFound: No export is recorded under `export_id`.
-        SnapshotRevoked: The version, or its base version, is revoked.
-        LicenceNotRedistributable: The deny-list names a source of the export.
+        IdentityQuarantined, SnapshotRevoked, LicenceNotRedistributable: As `_servable_facts`.
         SnapshotSigningFailed: Signing failed.
     """
     record = current.export_store.read_export(export_id)
     if record is None:
         raise ExportNotFound(export_id=export_id)
-    named = cast(Mapping[str, str], record.body["frame"])
-    with phase("revocation"):
-        state = current.snapshot_reader.read_version_state(
-            record.subject_id, record.content_version, revoked_under=(named["spec_id"],)
-        )
-    # Version records are never deleted, and the export row's foreign key names one.
-    assert state is not None
-    if state.revocation is not None:
-        raise SnapshotRevoked(
-            id=named["spec_id"],
-            content_version=record.content_version,
-            reason=state.revocation.reason,
-        )
-    body = _servable_body(record)
-    try:
-        with phase("sign"):
-            return current.artifact_store.signed_location_url(
-                record.artifact_digest,
-                tier=Tier.pinned,
-                bucket=record.bucket,
-                object_name=record.object_name,
-                ttl=DOWNLOAD_SIGNED_URL_TTL,
-                response_type=body["media_type"],
-                response_disposition=artifact_content_disposition(body["file_name"]),
-            )
-    except ArtifactSigningError as exc:
-        # Copy safe fields here, then raise outside the handler so Python leaves `__context__`
-        # unset, as the files door does.
-        failure = (exc.error_class_name, exc.status_code)
-    raise SnapshotSigningFailed(
+    body = _servable_facts(record, current=current)
+    return signed_download_url(
+        record.artifact_digest,
+        tier=Tier.pinned,
         bucket=record.bucket,
         object_name=record.object_name,
-        digest=record.artifact_digest,
-        error_class_name=failure[0],
-        status_code=failure[1],
+        media_type=body["media_type"],
+        file_name=body["file_name"],
+        artifact_store=current.artifact_store,
     )

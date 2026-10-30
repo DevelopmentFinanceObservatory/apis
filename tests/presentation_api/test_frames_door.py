@@ -22,6 +22,7 @@ from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
+from materialise.reshape import ColumnUnknownError
 from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_FRAMES_TIMEOUT_SECONDS
 from presentation_api.doors.frames import classify_frames_exception
@@ -449,6 +450,12 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             404,
             False,
             id="quarantined",
+        ),
+        pytest.param(
+            ColumnUnknownError("no such column", column="x"),
+            404,
+            False,
+            id="code-analysis-does-not-map",
         ),
     ],
 )

@@ -621,6 +621,7 @@ class ArtifactReferenceWriter(Protocol):
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> datetime:
         """Same write as `record_reference`, made in one statement that also checks
         `datasets.version_revocation` for the version and its base version, under `subject_id`
@@ -633,6 +634,9 @@ class ArtifactReferenceWriter(Protocol):
         version. A digest no longer linked, because a re-render replaced its expired link, raises
         `ArtifactNotFound` and writes nothing. A link write after
         this one commits sees the pinned location its caller recorded first, and keeps the link.
+
+        `require_link=False` skips the lock and that check, for a reference to a file its caller
+        serves by its own record, such as an export, which no snapshot reads by link.
         """
         ...
 

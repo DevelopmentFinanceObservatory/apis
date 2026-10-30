@@ -1,6 +1,6 @@
 """The exports door prepares a frame as a file and serves the link to it (`datasets_api.exports`).
 
-- `POST /api/datasets/exports`, body `ExportRequest`, answers 200 `ExportResponse`. A request
+- `POST /api/datasets/exports`, body `ExportRequestBody`, answers 200 `ExportResponse`. A request
   whose export is recorded answers the record on the read executor, rendering and spending
   nothing. Any other prepares on the work executor under the definition deadline, as the file
   selector renders. It admits every caller, and the site's proxy forwards it. The caller is
@@ -12,7 +12,8 @@
   then runs as one naming that pair.
 - `GET /api/datasets/exports/{export_id}` answers 302 to a URL signed for five minutes to the
   export's pinned file, with `Cache-Control: no-store`. It admits every caller and never
-  renders. A version revoked since the export was prepared refuses `snapshot_revoked`.
+  renders. A version revoked since the export was prepared refuses `snapshot_revoked`, and a
+  quarantined identity `identity_quarantined`.
 
 The prepare (`build_exports_door`) binds the `datasets.exports` registry endpoint and the link
 (`build_export_link_door`) `datasets.export_link`.
@@ -32,6 +33,7 @@ from dataset_store.snapshot import SnapshotNotFound, SnapshotRevoked
 from datasets_api.allowance import AllowanceExhausted, AllowanceKind
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_exports import (
+    ExportFileIncomplete,
     ExportNotFound,
     ExportOverCeiling,
     LicenceNotRedistributable,
@@ -44,6 +46,7 @@ from datasets_api.current import StoredTraceMissingResolvedStatVars
 from datasets_api.deps import DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
 from datasets_api.doors.files import (
+    REDIRECT_RESPONSE,
     SELECTOR_RENDERING_EXCEPTION_TYPES,
     classify_files_exception,
 )
@@ -81,17 +84,6 @@ class ExportBackpressure(Backpressure):
     code = "service_unavailable"
 
     detail = "the exports door is at its concurrent-call capacity right now; retry"
-
-
-_REDIRECT_RESPONSE = {
-    "description": "a redirect to the export's file",
-    "headers": {
-        "Location": {
-            "description": "a GET URL signed for at most five minutes",
-            "schema": {"type": "string"},
-        }
-    },
-}
 
 
 def build_exports_door(
@@ -139,7 +131,7 @@ def build_exports_door(
                     recorded_export,
                     call.timings,
                     request=export_request,
-                    store=current.export_store,
+                    current=current,
                 ),
                 refuse=ExportBackpressure,
             )
@@ -170,6 +162,7 @@ def build_exports_door(
             ProvenanceUnavailable,
             LicenceNotRedistributable,
             ExportOverCeiling,
+            ExportFileIncomplete,
             NewestVersionUnservable,
             CallerHeaderInvalid,
             CallerUnresolved,
@@ -191,6 +184,7 @@ def build_exports_door(
             ProvenanceUnavailable(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
             ExportOverCeiling(format="csv", count=1, cap=0),
+            ExportFileIncomplete(id="spec_exemplar", content_version="cv_exemplar"),
             NewestVersionUnservable(code="service_unavailable", detail="exemplar"),
             NewestVersionUnservable(code="internal_error", detail="exemplar"),
             NewestVersionUnservable(code="snapshot_not_found", detail="exemplar"),
@@ -231,7 +225,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
         LINK_PATH,
         status_code=302,
         response_class=RedirectResponse,
-        responses={302: _REDIRECT_RESPONSE},
+        responses={302: REDIRECT_RESPONSE},
     )
     async def get_export(export_id: str) -> RedirectResponse:
         """Redirect to the export's file, signed for five minutes. Renders nothing."""
@@ -257,6 +251,9 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
         classify=classify_files_exception,
         exception_types=(
             ExportNotFound,
+            # The recorded id resolves through the spec registry, which raises it for a
+            # quarantined id or served id bound to it.
+            IdentityQuarantined,
             SnapshotRevoked,
             LicenceNotRedistributable,
             ExportBackpressure,
@@ -267,6 +264,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
         ),
         exception_exemplars=(
             ExportNotFound(export_id="exp_exemplar"),
+            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
             SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
             LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
             ExportBackpressure(),

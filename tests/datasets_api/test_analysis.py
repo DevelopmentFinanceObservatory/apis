@@ -36,6 +36,7 @@ from datasets_api.analysis import (
 from datasets_api.doors.analysis import classify_analysis_exception
 from datasets_api.output_digest import output_digest
 from datasets_api.recipe_store import ReplayedFrame
+from dfo_analysis_engine import execution_identity
 from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import derived_nodes, pair
@@ -266,6 +267,23 @@ def test_a_stored_answer_stands_while_its_frame_file_is_served_and_is_recomputed
     again = run_prepared(prepared, source=roots, stores=stores.analysis())
     assert roots.reads > reads
     assert stored_answer(prepared, stores=stores.analysis()) == again.body()
+
+
+def test_an_answer_stored_before_rolling_counted_both_sides_is_not_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engine 0.9.0 sized a rolling tree's population from one side of a pairing, so a request
+    key under it names an answer the same request no longer computes."""
+    stores = Stores()
+    roots = source(stores)
+    request = AnalysisRequest.model_validate({"tree": _PER_PERSON})
+    with monkeypatch.context() as engine:
+        engine.setattr(execution_identity, "ENGINE_VERSION", "0.9.0")
+        run_analysis(request, source=roots, stores=stores.analysis())
+
+    prepared = prepare_analysis(request, source=roots)
+
+    assert stored_answer(prepared, stores=stores.analysis()) is None
 
 
 def test_a_revoked_output_refuses_its_stored_answer_and_a_run_that_reuses_it() -> None:

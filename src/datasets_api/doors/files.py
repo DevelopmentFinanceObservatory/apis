@@ -167,21 +167,27 @@ def artifact_file_name(location: StoredArtifactLocation, *, stored: ServableVers
     )
 
 
-def _signed_url(
-    location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
+def signed_download_url(
+    digest: str,
+    *,
+    tier: Tier,
+    bucket: str,
+    object_name: str,
+    media_type: str,
+    file_name: str,
+    artifact_store: ArtifactStore,
 ) -> str:
-    """A URL signed for `DOWNLOAD_SIGNED_URL_TTL` over the location in hand, naming the download
-    as the mint names it. Raises `SnapshotSigningFailed` when signing fails."""
-    file_name = artifact_file_name(location, stored=stored)
+    """A URL signed for `DOWNLOAD_SIGNED_URL_TTL` over a location the caller holds, naming the
+    download `file_name`. Raises `SnapshotSigningFailed` when signing fails."""
     try:
         with phase("sign"):
             url = artifact_store.signed_location_url(
-                location.artifact_digest,
-                tier=Tier(location.tier),
-                bucket=location.bucket,
-                object_name=location.object_name,
+                digest,
+                tier=tier,
+                bucket=bucket,
+                object_name=object_name,
                 ttl=DOWNLOAD_SIGNED_URL_TTL,
-                response_type=location.media_type,
+                response_type=media_type,
                 response_disposition=artifact_content_disposition(file_name),
             )
     except ArtifactSigningError as exc:
@@ -191,11 +197,27 @@ def _signed_url(
     else:
         return url
     raise SnapshotSigningFailed(
-        bucket=location.bucket,
-        object_name=location.object_name,
-        digest=location.artifact_digest,
+        bucket=bucket,
+        object_name=object_name,
+        digest=digest,
         error_class_name=failure[0],
         status_code=failure[1],
+    )
+
+
+def _signed_url(
+    location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
+) -> str:
+    """`signed_download_url` over the location in hand, naming the download as the mint names
+    it."""
+    return signed_download_url(
+        location.artifact_digest,
+        tier=Tier(location.tier),
+        bucket=location.bucket,
+        object_name=location.object_name,
+        media_type=location.media_type,
+        file_name=artifact_file_name(location, stored=stored),
+        artifact_store=artifact_store,
     )
 
 
@@ -682,7 +704,7 @@ SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
     },
 ]
 
-_REDIRECT_RESPONSE = {
+REDIRECT_RESPONSE = {
     "description": "a redirect to the artifact's bytes",
     "headers": {
         "Location": {
@@ -702,7 +724,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         "/api/datasets/{id:dfo_spec_id}/{content_version}/files/{digest}",
         status_code=302,
         response_class=RedirectResponse,
-        responses={302: _REDIRECT_RESPONSE},
+        responses={302: REDIRECT_RESPONSE},
     )
     async def get_file(id: str, content_version: str, digest: str) -> RedirectResponse:
         current = deps.get()
@@ -738,7 +760,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         "/api/datasets/{id:dfo_spec_id}/{content_version}/file",
         status_code=302,
         response_class=RedirectResponse,
-        responses={302: _REDIRECT_RESPONSE},
+        responses={302: REDIRECT_RESPONSE},
         openapi_extra={"parameters": SELECTOR_QUERY_PARAMETERS},
     )
     async def get_version_file(id: str, content_version: str, request: Request) -> RedirectResponse:

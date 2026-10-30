@@ -1,8 +1,8 @@
 """Admission of new pinned copies against the daily pin budgets.
 
 Every new pinned copy a caller asks for goes through `copy_to_pinned`: the pin door's named
-artifact, and each frame and derived root a share's create, replace or snapshot conversion pins
-(`presentation_store.LiveFrameStore.pin`). The serving-frame copies a pin makes (`doors.pin`)
+artifact, an export's file (`exports`), and each frame and derived root a share's create, replace
+or snapshot conversion pins (`presentation_store.LiveFrameStore.pin`). The serving-frame copies a pin makes (`doors.pin`)
 and the canonical frames `maintenance` renders again copy without it and spend nothing. A copy spends one unit of the day's pin budget
 (`AllowanceKind.pin_budget`, `DATASETS_PIN_DAILY_MAX`) and, for an open caller, one unit of the
 open callers' budget (`AllowanceKind.open_pin_budget`, `DATASETS_PIN_OPEN_DAILY_MAX`) and one of

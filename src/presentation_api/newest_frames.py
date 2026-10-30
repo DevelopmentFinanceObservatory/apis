@@ -27,6 +27,8 @@ states the slot `stale`.
 create accept in place of a pair, with the dataset version the analysis runner reads
 for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`). That is the
 served definition's newest version in the root's default rendering, rebuilt when its head is stale.
+A rebuild too large for the call's budget (`doors.definition.inline_definition_deps`) goes to an
+operation, so a retry finds it, and the call answers `NewestPending`.
 `resolve_bare_spec` turns its refusals into the `frame_unavailable` the presentation doors serve.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
@@ -63,8 +65,9 @@ from datasets_api.doors.analysis import (
     analysis_permit,
     analysis_stores,
 )
-from datasets_api.doors.definition import definition_deps
+from datasets_api.doors.definition import definition_deps, inline_definition_deps
 from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
+from datasets_api.exports import resolve_endpoint
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.trace import get_trace_id
 
@@ -155,7 +158,7 @@ class DatasetsNewestFrames:
 
     def newest_of_spec(self, spec_id: str) -> FrameRef | NewestPending:
         current = self._cell.get()
-        deps = definition_deps(current, deadline=time.monotonic() + self._budget_seconds)
+        deps = inline_definition_deps(current, seconds=self._budget_seconds)
         try:
             dataset = newest_spec_version(
                 spec_id, deps=deps, recipes=current.recipe_store, trace_id=get_trace_id()
@@ -215,8 +218,10 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
     try:
         resolved = newest.newest_of_spec(spec_id)
     except Exception as exc:
-        # The resolve is the analysis runner's, so its refusals classify as that door's do.
-        with bound_registry_endpoint("datasets.analysis"):
+        endpoint = resolve_endpoint(exc)
+        if endpoint is None:
+            raise
+        with bound_registry_endpoint(endpoint):
             problem = classify_datasets_exception(exc)
         if problem is None:
             raise

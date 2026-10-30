@@ -14,6 +14,7 @@ from datetime import timedelta
 import pytest
 
 from artifact_store import (
+    ArtifactLocation,
     ArtifactSink,
     ArtifactStore,
     LiveArtifactInventory,
@@ -263,6 +264,9 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         return self._record(super().copy(digest, from_tier=from_tier, to_tier=to_tier))
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        return self._inventory.get_location(digest, tier=tier)
 
     def deferred(self, batch: InventoryBatch) -> ArtifactStore:
         return _DeferredRecordingView(self, batch=batch)

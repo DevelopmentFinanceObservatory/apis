@@ -127,6 +127,7 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> datetime:
         for subject in (subject_id, *revoked_under):
             if (subject, content_version) in self.revoked:
@@ -135,7 +136,7 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
                     content_version=content_version,
                     reason=self.revoked[(subject, content_version)],
                 )
-        if (subject_id, content_version, artifact_digest) in self.unlinked:
+        if require_link and (subject_id, content_version, artifact_digest) in self.unlinked:
             raise ArtifactNotFound(
                 id=subject_id, content_version=content_version, artifact_digest=artifact_digest
             )

@@ -15,8 +15,8 @@ from dfo_platform.problem import Refusal
 EXPORTS_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "provenance_unavailable": (
         "Provenance Unavailable",
-        "This derived frame was stored without a recipe, so its sources and their licences "
-        "cannot be named, and it cannot be exported.",
+        "The sources of this derived frame and their licences cannot be named, so it cannot be "
+        "exported.",
     ),
     "licence_not_redistributable": (
         "Licence Not Redistributable",
@@ -27,8 +27,9 @@ EXPORTS_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
 
 
 class ProvenanceUnavailable(Refusal):
-    """A derived frame with no stored recipe names no sources, so no licence can be checked.
-    Maps to `provenance_unavailable`, 422."""
+    """A derived frame with no stored recipe, a recipe with no roots, or a root that cannot be
+    cited, leaves a source unnamed, so its licence cannot be checked. Maps to
+    `provenance_unavailable`, 422."""
 
     code = "provenance_unavailable"
 
@@ -36,8 +37,8 @@ class ProvenanceUnavailable(Refusal):
         self.spec_id = spec_id
         self.content_version = content_version
         super().__init__(
-            f"{spec_id!r} at content_version {content_version!r} was stored without a recipe, "
-            "so its sources and licences are unknown and it cannot be exported"
+            f"the sources of {spec_id!r} at content_version {content_version!r} cannot all be "
+            "named, so their licences are unknown and it cannot be exported"
         )
 
 
@@ -66,6 +67,23 @@ class ExportOverCeiling(Refusal):
         super().__init__(
             f"a {format} export holds at most {cap} rows and this frame has {count}; export it "
             "as parquet"
+        )
+
+
+class ExportFileIncomplete(Refusal):
+    """The file a render gave is linked incomplete (`render.incomplete_rendering`): a graph
+    metadata read failed, and an export is kept for good, so none is prepared. Maps to
+    `service_unavailable`, 503. A retry renders again once the read answers."""
+
+    code = "service_unavailable"
+    retryable = True
+
+    def __init__(self, *, id: str, content_version: str) -> None:
+        self.id = id
+        self.content_version = content_version
+        super().__init__(
+            f"the file of {id!r} at content_version {content_version!r} rendered without its "
+            "sources' documentation; retry"
         )
 
 

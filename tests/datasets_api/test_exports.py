@@ -9,7 +9,10 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -18,6 +21,7 @@ import openpyxl
 import pyarrow.parquet as pq
 import pytest
 
+import datasets_api.current as current_module
 import datasets_api.doors.analysis as analysis_door
 import datasets_api.doors.exports as exports_door
 import datasets_api.exports as exports_module
@@ -25,7 +29,12 @@ from artifact_store import LiveArtifactInventory, Tier
 from code_index import CodeIndex, IndexStamp
 from code_index.types import PartyRow, StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.allowance import BUDGET_KEY, LiveAllowanceLedger
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceExhausted,
+    AllowanceKind,
+    LiveAllowanceLedger,
+)
 from datasets_api.analysis import AnalysisPending
 from datasets_api.codes_materialise import SpecNotExportable
 from datasets_api.config import DatasetsBuildSettings
@@ -34,6 +43,9 @@ from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.recipe import RecipeNotFound
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.export_store import LiveExportStore
+from datasets_api.exports import BareExportFrame
+from datasets_api.reconciliation import sweep_tier
+from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.caller import address_key
@@ -45,7 +57,7 @@ from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
-from ._analysis_doubles import Stores
+from ._analysis_doubles import AID, AID_V1, POPULATION, POPULATION_V1, Stores
 from ._app_factories import make_client
 from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -54,7 +66,7 @@ from .test_definition_door import _BASE_URL
 from .test_definition_door_currency import _FakeHeadStore
 from .test_derived import _roots
 from .test_derived import _stored as _stored_derived
-from .test_pin_door import FakeArtifactReferenceWriter, _ledger, _spent
+from .test_pin_door import _ledger, _spent
 from .test_serve_groupby_collapse import _mint
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
@@ -298,16 +310,21 @@ class _Rig:
             monkeypatch.setattr(analysis_door, "LiveRootSource", lambda **_: _roots(stores))
             self.store = stores.store
             self.artifact_store = stores.artifact_store
+            self.spec_store = spec_store = FakeDatasetStore()
+            for spec_id, content_version in _DERIVED_ROOTS:
+                _store_root(self.store, spec_id, content_version)
             # The fake GCS client cannot sign, so the derived rig records signings as the fake
             # artifact store does.
             self.signings: list[tuple[str, Tier, str, Any]] = []
             monkeypatch.setattr(stores.artifact_store, "signed_location_url", self._sign)
             self.client = make_client(
-                registry=LiveSpecRegistry(store=FakeDatasetStore()),
+                registry=LiveSpecRegistry(store=spec_store),
+                spec_reader=LiveSpecReader(store=spec_store),
                 settings=DatasetsBuildSettings.from_env(),
                 artifact_store=stores.artifact_store,
                 snapshot_reader=stores.snapshot_reader,
                 version_writer=stores.version_writer,
+                reference_writer=LiveArtifactReferenceWriter(store=stores.store),
                 recipe_store=stores.recipe_store,
                 export_store=LiveExportStore(store=stores.store),
                 version_lister=LiveVersionLister(store=stores.store),
@@ -332,7 +349,7 @@ class _Rig:
             version_writer=LiveVersionRecordWriter(store=self.store),
             head_writer=_FakeHeadStore(),
             artifact_store=self.artifact_store,
-            reference_writer=FakeArtifactReferenceWriter(),
+            reference_writer=LiveArtifactReferenceWriter(store=self.store),
             export_store=LiveExportStore(store=self.store),
             allowances=self.ledger,
             **_DATASETS[dataset].stores(),
@@ -373,14 +390,32 @@ class _Rig:
         state.spec_alias.append((posted, self.frame["spec_id"]))
         return posted
 
-    def revoke(self, subject_id: str) -> None:
+    def revoke(self, subject_id: str, content_version: str | None = None) -> None:
         with self.store.transaction() as tx:
             tx.execute(
                 "INSERT INTO datasets.version_revocation "
                 "(subject_id, content_version, reason, trace_id, revoked_at) "
                 "VALUES (%s, %s, %s, %s, %s)",
-                (subject_id, self.frame["content_version"], "taken down", None, "2026-10-30"),
+                (
+                    subject_id,
+                    content_version or self.frame["content_version"],
+                    "taken down",
+                    None,
+                    "2026-10-30",
+                ),
             )
+
+    def references(self) -> list[tuple[str, str, str]]:
+        with self.store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT principal, artifact_digest, reference_kind "
+                "FROM datasets.artifact_reference",
+                (),
+            )
+        return [
+            (str(row["principal"]), str(row["artifact_digest"]), str(row["reference_kind"]))
+            for row in rows
+        ]
 
     def recorded_subject(self, export_id: str) -> str:
         with self.store.transaction() as tx:
@@ -393,6 +428,27 @@ class _Rig:
     def forget_exports(self) -> None:
         with self.store.transaction() as tx:
             tx.execute("DELETE FROM datasets.export")
+
+
+_DERIVED_ROOTS = ((AID, AID_V1), (POPULATION, POPULATION_V1))
+
+
+def _store_root(store: Any, spec_id: str, content_version: str) -> None:
+    """Record the root dataset version a derived frame's recipe names, with a citation."""
+    with store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record (subject_id, subject_kind, content_version, "
+            "schema_version, immutable_body, recorded_at, prepared_at, definition, coverage, "
+            "citation, trace, warnings) "
+            "VALUES (%s, 'spec', %s, 1, '{}', %s, %s, '{}', '{}', %s, '{}', '[]')",
+            (
+                spec_id,
+                content_version,
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                {"text": f"{spec_id}.", "sources": [{"ref": f"dcid:{spec_id}", "label": spec_id}]},
+            ),
+        )
 
 
 @pytest.fixture(params=["fetched", "derived"])
@@ -491,6 +547,142 @@ def test_an_open_caller_past_its_pin_allowance_refuses_429_until_utc_midnight(
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_file_pinned_already_asks_for_no_copy(kind: str, monkeypatch: pytest.MonkeyPatch):
+    """The first prepare spends the caller's last unit. The second finds the pinned copy first,
+    so it spends nothing and copies nothing."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=1))
+    first = rig.prepare("csv")
+    assert first.status_code == 200, first.text
+    spent = _spent(rig.ledger)
+    rig.forget_exports()
+    monkeypatch.setattr(exports_module, "copy_to_pinned", _forbidden)
+
+    again = rig.prepare("csv")
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+    assert _spent(rig.ledger) == spent
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_the_loser_of_the_last_unit_answers_the_copy_the_winner_landed(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    rig = _Rig(kind, monkeypatch)
+
+    def lost_the_spend(artifacts: Any, digest: str, *, now: Any, **_: object) -> Any:
+        artifacts.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        raise AllowanceExhausted(kind=AllowanceKind.pin, limit=1, now=now)
+
+    monkeypatch.setattr(exports_module, "copy_to_pinned", lost_the_spend)
+
+    resp = rig.prepare("csv")
+
+    assert resp.status_code == 200, resp.text
+    assert rig.pinned_bytes(resp.json()["sha256"])
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_every_export_holds_a_reference_the_sweep_counts(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    """A derived frame's file is linked to no version, and a reference needs no link."""
+    rig = _Rig(kind, monkeypatch)
+    bodies = [rig.prepare(fmt, bundle=bundle).json() for fmt, bundle in _FORMATS]
+
+    assert sorted(rig.references()) == sorted(
+        (f"export:{body['export_id']}", f"sha256:{body['sha256']}", "export") for body in bodies
+    )
+    report = sweep_tier(
+        store=rig.store, artifact_store=rig.artifact_store, tier=Tier.pinned, now=datetime.now(UTC)
+    )
+    assert report.unreferenced_pinned_digests == frozenset()
+
+
+def test_a_revocation_during_the_copy_refuses_the_export_and_records_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rig = _Rig("fetched", monkeypatch)
+    copy = exports_module.copy_to_pinned
+
+    def revoked_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        rig.revoke(rig.frame["spec_id"])
+        return copy(*args, **kwargs)
+
+    monkeypatch.setattr(exports_module, "copy_to_pinned", revoked_meanwhile)
+
+    resp = rig.prepare("csv")
+
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["code"] == "snapshot_revoked"
+    assert rig.references() == []
+    assert rig.link(_export_id(rig.frame, "csv", bundle=False)).status_code == 404
+
+
+def test_the_pinned_file_is_read_and_measured_inside_one_slot_and_stays_there(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rig = _Rig("fetched", monkeypatch)
+    read = rig.artifact_store.get
+    held: set[int] = set()
+    held_at_release: list[int] = []
+
+    class _Bytes(bytes):
+        def __del__(self) -> None:
+            held.discard(id(self))
+
+    def get(*, artifact_digest: str, tier: Tier) -> bytes:
+        data = read(artifact_digest=artifact_digest, tier=tier)
+        if tier != Tier.pinned:
+            return data
+        tracked = _Bytes(data)
+        held.add(id(tracked))
+        return tracked
+
+    slot = exports_module.bounded_materialise_slot
+
+    @contextmanager
+    def watched(*args: Any, **kwargs: Any) -> Iterator[None]:
+        with slot(*args, **kwargs):
+            yield
+            held_at_release.append(len(held))
+
+    monkeypatch.setattr(rig.artifact_store, "get", get)
+    monkeypatch.setattr(exports_module, "bounded_materialise_slot", watched)
+
+    assert rig.prepare("csv").status_code == 200
+
+    assert held_at_release == [0]
+
+
+def test_a_render_linked_incomplete_refuses_retryably_and_pins_and_records_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An export is kept for good, so a bundle whose documentation read failed is never pinned.
+    A retry once the read answers renders the complete file."""
+    rig = _Rig("fetched", monkeypatch)
+
+    with monkeypatch.context() as graph:
+        graph.setattr(
+            current_module,
+            "bundle_citations",
+            lambda citation, **_: (citation.sources_by_ref(), False),
+        )
+        refused = rig.prepare("csv", bundle=True)
+
+    assert refused.status_code == 503, refused.text
+    assert (refused.json()["code"], refused.json()["retryable"]) == ("service_unavailable", True)
+    assert _spent(rig.ledger) == {}
+    assert rig.references() == []
+    assert rig.link(_export_id(rig.frame, "csv", bundle=True)).status_code == 404
+
+    retried = rig.prepare("csv", bundle=True)
+
+    assert retried.status_code == 200, retried.text
+    assert rig.pinned_bytes(retried.json()["sha256"])
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
 def test_a_re_render_of_a_forgotten_export_gives_the_same_id_and_bytes_and_spends_nothing(
     kind: str, monkeypatch: pytest.MonkeyPatch
 ):
@@ -541,12 +733,26 @@ def test_a_csv_or_xlsx_over_the_row_ceiling_refuses_over_ceiling_and_parquet_ser
     assert rig.prepare("parquet").status_code == 200
 
 
-def test_a_derived_frame_without_a_recipe_refuses_provenance_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "statement",
+    [
+        pytest.param("DELETE FROM datasets.frame_recipe", id="no-recipe"),
+        pytest.param(
+            "UPDATE datasets.frame_recipe SET recipe = json_set(recipe, '$.roots', json('[]'))",
+            id="no-roots",
+        ),
+        pytest.param(
+            f"DELETE FROM datasets.version_record WHERE subject_id = '{POPULATION}'",
+            id="a-root-with-no-record",
+        ),
+    ],
+)
+def test_a_derived_frame_with_an_unnamed_source_refuses_provenance_unavailable(
+    statement: str, monkeypatch: pytest.MonkeyPatch
 ):
     rig = _Rig("derived", monkeypatch)
     with rig.store.transaction() as tx:
-        tx.execute("DELETE FROM datasets.frame_recipe")
+        tx.execute(statement)
 
     resp = rig.prepare("csv")
 
@@ -587,20 +793,66 @@ def test_a_posted_id_records_the_served_id_and_answers_the_frame_it_named(
     assert rig.link(body["export_id"]).status_code == 302
 
 
-@pytest.mark.parametrize("revoked", ["served", "posted"])
-def test_a_version_revoked_after_its_export_refuses_the_link_and_signs_nothing(
+@pytest.mark.parametrize("revoked", ["served", "posted", "bound-later"])
+def test_a_version_revoked_after_its_export_refuses_the_link_and_a_repeat_prepare(
     revoked: str, monkeypatch: pytest.MonkeyPatch
 ):
     rig = _Rig("fetched", monkeypatch)
     served = rig.frame["spec_id"]
     posted = rig.bind_posted_id()
-    body = rig.prepare("csv", frame={**rig.frame, "spec_id": posted}).json()
-    rig.revoke(served if revoked == "served" else posted)
+    frame = {**rig.frame, "spec_id": posted}
+    body = rig.prepare("csv", frame=frame).json()
+    if revoked == "bound-later":
+        rig.spec_store.state.spec_alias.append((posted, "spec_later"))
+    rig.revoke({"served": served, "posted": posted, "bound-later": "spec_later"}[revoked])
 
-    resp = rig.link(body["export_id"])
+    link = rig.link(body["export_id"])
+    repeat = rig.prepare("csv", frame=frame)
 
-    assert resp.status_code == 410, resp.text
-    assert resp.json()["code"] == "snapshot_revoked"
+    for resp in (link, repeat):
+        assert resp.status_code == 410, resp.text
+        assert resp.json()["code"] == "snapshot_revoked"
+    assert rig.signings == []
+
+
+def test_a_quarantined_identity_refuses_the_link_and_a_repeat_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rig = _Rig("fetched", monkeypatch)
+    body = rig.prepare("csv").json()
+    rig.spec_store.state.identity_quarantine.append(
+        {
+            "id_kind": "spec",
+            "subject_id": rig.frame["spec_id"],
+            "held_bytes": b"a",
+            "incoming_bytes": b"b",
+        }
+    )
+
+    link = rig.link(body["export_id"])
+    repeat = rig.prepare("csv")
+
+    for resp in (link, repeat):
+        assert resp.status_code == 500, resp.text
+        assert resp.json()["code"] == "identity_quarantined"
+    assert rig.signings == []
+
+
+def test_a_root_revoked_after_a_derived_export_refuses_the_link_and_a_repeat_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A derived frame holds its roots' data, so a root's takedown reaches its export."""
+    rig = _Rig("derived", monkeypatch)
+    body = rig.prepare("csv").json()
+    rig.revoke(POPULATION, POPULATION_V1)
+
+    link = rig.link(body["export_id"])
+    repeat = rig.prepare("csv")
+    fresh = rig.prepare("parquet")
+
+    for resp in (link, repeat, fresh):
+        assert resp.status_code == 410, resp.text
+        assert resp.json()["code"] == "snapshot_revoked"
     assert rig.signings == []
 
 
@@ -677,7 +929,7 @@ def _export_id(frame: dict[str, str], fmt: str, *, bundle: bool) -> str:
     )
 
 
-def _forbidden(**_: object) -> object:
+def _forbidden(*_args: object, **_: object) -> object:
     raise AssertionError("a recorded export renders nothing")
 
 
@@ -783,6 +1035,23 @@ def test_a_bare_spec_id_that_cannot_be_resolved_refuses_with_a_code_exports_regi
         assert resp.status_code == status, resp.text
     assert resp.json()["code"] == code, resp.text
     assert resp.json()["retryable"] is retryable
+
+
+def test_a_refusal_that_passes_through_carries_no_cause_of_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal = SpecNotFound(id=_BARE)
+    _resolving(monkeypatch, refusal)
+
+    with pytest.raises(SpecNotFound) as raised:
+        exports_module.resolve_export_frame(
+            BareExportFrame(spec_id=_BARE),
+            current=SimpleNamespace(recipe_store=None),  # ty: ignore[invalid-argument-type]
+            deps=None,  # ty: ignore[invalid-argument-type]
+        )
+
+    assert raised.value is refusal
+    assert raised.value.__cause__ is None
 
 
 def _table(data: bytes, fmt: str) -> list[dict[str, Any]]:
