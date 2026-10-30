@@ -110,6 +110,8 @@ alone.
 
 ### frame_unavailable outcome by reason
 
+The problem body's `cause.code` carries the reason.
+
 | Reason            | HTTP | retryable |
 | ------------------ | ---- | --------- |
 | expired            | 404  | true      |

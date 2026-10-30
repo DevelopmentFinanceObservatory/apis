@@ -198,6 +198,48 @@ def test_an_unpublished_ops_prefixed_spec_id_maps_the_typed_refusal_to_not_found
     assert body["retryable"] is True
 
 
+class _RefusingFrameStore(FakeFrameStore):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    def load(self, *, frame_ref: FrameRef) -> Never:
+        raise FrameUnavailable(reason=self.reason, detail="exemplar")
+
+
+@pytest.mark.parametrize(
+    ("reason", "status", "retryable"),
+    [
+        pytest.param("unknown", 404, False, id="lost-never-stored"),
+        pytest.param("expired", 404, True, id="lost-aged-out"),
+        pytest.param("revoked", 404, False, id="permanent-taken-down"),
+        pytest.param("quarantined", 404, False, id="permanent-quarantined"),
+    ],
+)
+def test_a_frame_that_does_not_load_names_its_reason_as_the_cause(
+    release: CatalogueRelease, reason: str, status: int, retryable: bool
+):
+    app = create_app(
+        [
+            presentation_surface(
+                frame_store=_RefusingFrameStore(reason),
+                revision_store=FakeRevisionStore(),
+                release_registry=FakeReleaseRegistry(release=release),
+            )
+        ]
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get(
+            "/api/presentation/frames/spec_00000000000000000000000000000000/"
+            "cv_00000000000000000000000000000000",
+        )
+
+    assert resp.status_code == status, resp.text
+    body = resp.json()
+    assert (body["code"], body["retryable"]) == ("frame_unavailable", retryable)
+    assert body["cause"]["code"] == reason
+
+
 def test_an_ocv_prefixed_content_version_reaches_the_frame_store(
     release: CatalogueRelease,
 ):
