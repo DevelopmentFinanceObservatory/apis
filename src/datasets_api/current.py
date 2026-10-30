@@ -83,6 +83,7 @@ from datasets_api.admission import (
 from datasets_api.capabilities import build_capabilities
 from datasets_api.codes_materialise import ExcludedByRegistry
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.snapshot import read_snapshot_currency, read_snapshot_manifest
 from datasets_api.manifest import (
     collapsed_head_manifest,
@@ -965,7 +966,9 @@ def head_rendering(
     revoked_under: Sequence[str] = (),
 ) -> Manifest | None:
     """Load the stored version, narrowed to the rendering `options` names. `options` `None`
-    loads the version without its artifacts. `revoked_under` is `load_stored`'s.
+    loads the version without its artifacts. `revoked_under` is `load_stored`'s. Options asking
+    for the default enrichment are resolved against the version first (`resolve_enrichment`),
+    which reads its record once more.
 
     A rendering not linked to the version renders from the stored frame when `render`
     (`_render_stored_rendering`). Return `None`
@@ -980,6 +983,16 @@ def head_rendering(
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
     caller made from this version, so the render does not make it again.
     """
+    if options is not None and options.enrichment is not None:
+        # The default enrichment follows the version's roles, read before its rendering is keyed.
+        version = load_stored(
+            subject_id=subject_id,
+            content_version=content_version,
+            deps=deps,
+            include_artifacts=False,
+            revoked_under=revoked_under,
+        )
+        options = resolve_enrichment(options, coverage=version.coverage)
     keys = (
         artifact_rendering_keys(
             options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest

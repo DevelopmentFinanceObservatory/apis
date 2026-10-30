@@ -8,7 +8,7 @@ the analysis runner reads for a Spec root of that id (`resolve_export_frame`), t
 default enrichment, as the Presentation frames door reads a bare id. The request then runs, and
 is keyed and answered, as one naming that pair. A dataset version's file is the one its file
 selector serves (`doors.files`) in the long layout with the version's default enrichment columns
-(`analysis_roots.enrichment_columns` of the roles the version holds), the columns a Spec root of
+(`default_enrichment`, from the roles the version holds), the columns a Spec root of
 it reads: each typed role's `_type` cells beside the layout's own `_label` and `_kind` cells.
 It is the file the version lists under that rendering, else one rendered from its stored frame.
 A derived frame's file is the one its file route renders (`derived.render_derived_file`). The file is then copied to the pinned tier through
@@ -64,7 +64,7 @@ from artifact_store import ArtifactNotFoundError, ArtifactSigningError, Tier
 from dataset_store.snapshot import SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
 from datasets_api.analysis import AnalysisPending
-from datasets_api.analysis_roots import coverage_roles, enrichment_columns, newest_spec_version
+from datasets_api.analysis_roots import newest_spec_version
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.codes_exports import (
     ExportNotFound,
@@ -76,6 +76,7 @@ from datasets_api.codes_exports import (
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed
 from datasets_api.config import DOWNLOAD_SIGNED_URL_TTL
 from datasets_api.current import DefinitionDeps
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.deps import Deps
 from datasets_api.derived import recipe_citation
 from datasets_api.doors.derived import derived_file
@@ -304,9 +305,9 @@ def _prepare_dataset(
 
     # The file holds the enrichment a client's frame of the version holds: the columns a Spec
     # root reads it with, added to the long layout's own.
-    roles = coverage_roles(CoverageModel.model_validate(facts.coverage))
-    requested = MintOptions(
-        format=request.format, bundle=request.bundle, columns=list(enrichment_columns(roles))
+    requested = resolve_enrichment(
+        MintOptions(format=request.format, bundle=request.bundle, enrichment="default"),
+        coverage=CoverageModel.model_validate(facts.coverage),
     )
     location = listed_file_location(
         stored,

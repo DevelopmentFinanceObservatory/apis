@@ -377,6 +377,11 @@ class MintOptions(BaseModel):
     as it does for pivot output. It refuses with `bundle: true`, a `pivot`,
     or a format other than parquet.
 
+    `enrichment: "default"` asks for the version's default enrichment columns
+    (`datasets_api.default_enrichment`), resolved once the version is built: they join `columns`,
+    or are `columns` when it names none, and the option is dropped before the rendering is keyed,
+    rendered or recorded, so the answer is that of a request naming the resolved columns.
+
     `without_party_totals: true` leaves out the rows whose party, on a flow party role the
     served identity binds no entity on, the code index declares a group total
     (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
@@ -394,6 +399,17 @@ class MintOptions(BaseModel):
         default=None, json_schema_extra={"uniqueItems": True}
     )
     without_party_totals: bool = False
+    # Left out of every dump while unset, so options that do not ask for it dump, key and
+    # identify operations as they did before it existed.
+    enrichment: Literal["default"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description='"default" adds the version\'s default enrichment columns, chosen once it is '
+        "built from the roles its frame holds: each of observationAbout, financingProvider and "
+        "financingRecipient it holds takes its _type column, and a flow party role adds "
+        "party_kind, party_class and party_whole. They join `columns`, or are the columns when "
+        "it names none, so the result is the request that names them",
+    )
 
     @field_validator("columns")
     @classmethod

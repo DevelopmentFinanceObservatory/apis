@@ -77,10 +77,12 @@ from datasets_api.config import (
     DatasetsBuildSettings,
 )
 from datasets_api.current import served_trace
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.deps import DepsCell
 from datasets_api.doors.snapshot import read_snapshot_manifest
 from datasets_api.headers import no_store_headers
-from datasets_api.manifest_models import Manifest
+from datasets_api.manifest import stored_manifest_facts
+from datasets_api.manifest_models import CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import (
     Operation,
@@ -227,6 +229,14 @@ def _load_done_manifest(
     """
     assert operation.subject_id is not None and operation.content_version is not None
     options = MintOptions.model_validate(operation.options)
+    if options.enrichment is not None:
+        # The worker resolved the default enrichment against the version it built.
+        version = snapshot_reader.read_version(operation.subject_id, operation.content_version)
+        if version is not None:
+            options = resolve_enrichment(
+                options,
+                coverage=CoverageModel.model_validate(stored_manifest_facts(version).coverage),
+            )
     keys = artifact_rendering_keys(options, site=settings.site, enrichment_digest=enrichment_digest)
     try:
         manifest = read_snapshot_manifest(

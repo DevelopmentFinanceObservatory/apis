@@ -89,7 +89,7 @@ def _options(rendering: RootRendering) -> dict[str, Any]:
     no enrichment columns where `rendering` names none."""
     if rendering.columns is None:
         rendering = rendering.model_copy(update={"columns": ()})
-    return mint_options(rendering, roles=())
+    return mint_options(rendering)
 
 
 def _record(dataset: FrameRef, options: Mapping[str, Any]) -> dict[str, Any]:

@@ -21,13 +21,13 @@ from datasets_api import analysis_roots
 from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
 from datasets_api.analysis_roots import (
     LiveRootSource,
-    coverage_roles,
-    enrichment_columns,
     frame_from_frame_layout,
     frame_ref_for,
     mint_options,
+    record_options,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.default_enrichment import coverage_roles, enrichment_columns
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import CoverageModel
 from datasets_api.operations.submit import OperationSubmitted
@@ -100,30 +100,60 @@ def test_a_version_s_roles_are_its_coverage_dimensions_less_the_years() -> None:
     assert coverage_roles(coverage) == ("financingProvider", "financingRecipient")
 
 
-def test_mint_options_name_the_root_s_columns_cut_and_sorted_groupby() -> None:
-    flow = ("financingProvider", "financingRecipient")
+def _coverage(*roles: str) -> CoverageModel:
+    dimensions = [{"label": role, "count": 1} for role in (*roles, "years")]
+    return CoverageModel(rows=1, dimensions=dimensions)
 
-    assert mint_options(RootRendering(columns=()), roles=flow) == {
+
+def test_mint_options_name_the_root_s_columns_cut_and_sorted_groupby() -> None:
+    assert mint_options(RootRendering(columns=())) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
     }
-    assert mint_options(RootRendering(without_party_totals=True), roles=flow) == {
+    assert mint_options(RootRendering(without_party_totals=True)) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
-        "columns": list(_FLOW_COLUMNS),
+        "enrichment": "default",
         "without_party_totals": True,
     }
     assert mint_options(
-        RootRendering(columns=(), groupby={"by": ["time_period", "origin"], "op": "sum"}),
-        roles=flow,
+        RootRendering(columns=(), groupby={"by": ["time_period", "origin"], "op": "sum"})
     ) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
         "groupby": {"by": ["origin", "time_period"], "op": "sum"},
     }
+
+
+@pytest.mark.parametrize(
+    ("roles", "expected"),
+    [
+        pytest.param(
+            ("financingProvider", "financingRecipient"),
+            {"columns": list(_FLOW_COLUMNS), "without_party_totals": True},
+            id="flow",
+        ),
+        pytest.param(
+            ("observationAbout",),
+            {"columns": ["observationAbout_type"], "without_party_totals": True},
+            id="place",
+        ),
+        pytest.param(("recipient",), {"without_party_totals": True}, id="untyped-role"),
+    ],
+)
+def test_a_record_keeps_the_columns_a_default_enrichment_resolved_to(
+    roles: tuple, expected: dict
+) -> None:
+    """In the key order a root naming those columns records."""
+    options = mint_options(RootRendering(without_party_totals=True))
+
+    recorded = record_options(options, coverage=_coverage(*roles))
+
+    assert recorded == {"format": "parquet", "bundle": False, "layout": "frame", **expected}
+    assert list(recorded) == ["format", "bundle", "layout", *expected]
 
 
 @pytest.mark.parametrize(
@@ -143,21 +173,16 @@ def test_mint_options_name_the_root_s_columns_cut_and_sorted_groupby() -> None:
         ),
     ],
 )
-def test_a_spec_root_reads_the_enrichment_of_the_roles_its_served_version_holds(
+def test_a_spec_root_is_one_serve_of_the_default_enrichment_of_its_version(
     monkeypatch: pytest.MonkeyPatch, identity: dict, roles: tuple, columns: list
 ) -> None:
-    """The identity names no role for a total over a role's members, so the version the head
-    serves with no rendering names them, and the root is then served in their enrichment."""
-    served: list[dict | None] = []
+    """The identity names no role for a total over a role's members, so the mint resolves the
+    enrichment from the version it serves, and the record keeps the columns it resolved."""
+    served: list[dict] = []
 
     def serve(*, options: object, **_: object) -> object:
-        served.append(None if options is None else options.model_dump(exclude_defaults=True))
-        dimensions = [{"label": role, "count": 1} for role in (*roles, "years")]
-        return SimpleNamespace(
-            content_version=_CV,
-            coverage=CoverageModel(rows=1, dimensions=dimensions),
-            artifacts=[],
-        )
+        served.append(options.model_dump(exclude_defaults=True))  # ty: ignore[unresolved-attribute]
+        return SimpleNamespace(content_version=_CV, coverage=_coverage(*roles), artifacts=[])
 
     monkeypatch.setattr(
         analysis_roots,
@@ -169,8 +194,9 @@ def test_a_spec_root_reads_the_enrichment_of_the_roles_its_served_version_holds(
 
     resolved = roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)
 
-    assert served[0] is None
-    assert served[1]["columns"] == columns
+    assert served == [
+        {"format": "parquet", "bundle": False, "layout": "frame", "enrichment": "default"}
+    ]
     assert resolved.record["options"]["columns"] == columns
 
 

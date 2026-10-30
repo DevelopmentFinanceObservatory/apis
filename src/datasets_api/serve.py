@@ -84,6 +84,7 @@ from datasets_api.adapter import (
 )
 from datasets_api.admission import MaterialisePermits, bounded_materialise_slot
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.manifest import (
     assemble_manifest,
     collapsed_citation,
@@ -1092,6 +1093,9 @@ def _write_definition_artifacts(
     _check_work_deadline(deps, "rendering the canonical frame and the series statistics")
     stored = prewrite.stored
     result = prewrite.result
+    if options is not None:
+        # The default enrichment follows the roles of the version just built.
+        options = resolve_enrichment(options, coverage=prewrite.manifest.coverage)
     batch = InventoryBatch()
     artifact_store = deps.artifact_store.deferred(batch)
     # Copy the caller's timing and trace context before submission. Workers use separate contexts.

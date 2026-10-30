@@ -20,18 +20,14 @@ root asks for enrichment, `without_party_totals: true` when it leaves party tota
 The frame is named by the pair `frame_ref_for` derives from the columns, the groupby and the
 party-totals cut, as data-mcp names it, so two renderings of one version are two frames.
 
-`enrichment_columns` gives the default `columns` from the roles the version's frame holds
-(`coverage_roles`, its coverage dimensions, which count each declared role): the type column of
-each typed role it holds, `observationAbout`, `financingProvider` or `financingRecipient`, and the
-party kind, class and whole columns when it holds a flow party role. The verbs read them to keep
-group totals out of a sum or rank and to rank places at one level. The roles are the version's,
-so a flow identity that binds and opens no role, a total over a role's members, takes its flow
-columns, and a dataset holding one party role takes that role's alone.
+A root that leaves `columns` to the default is read with the version's default enrichment
+(`default_enrichment`): the root asks the mint for `enrichment: "default"`, which resolves the
+columns from the roles the version's frame holds, and its record keeps the resolved `columns`
+(`record_options`). The verbs read them to keep group totals out of a sum or rank and to rank
+places at one level.
 
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
-newest version of the rendering, rebuilt when its head is stale. A root of the default enrichment
-is first served with no rendering, which names the version and so its roles, and then in the
-rendering they give. A dataset root under `latest`
+newest version of the rendering, rebuilt when its head is stale, in one serve. A dataset root under `latest`
 is served the same way with the rendering it records, so it is read by its rendering, since its
 version alone can record two renderings that the newest data splits. A rebuild
 over the inline budget answers `AnalysisPending` naming its operation, and a rebuild that failed
@@ -43,7 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -79,22 +75,23 @@ from datasets_api.analysis import (
     recorded_dataset_root,
 )
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
+from datasets_api.default_enrichment import (
+    KIND_COLUMNS,
+    coverage_roles,
+    with_default_enrichment,
+)
 from datasets_api.derived import root_rendering
 from datasets_api.doors.definition import serve_spec, served_spec
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
-from datasets_api.party_totals import YEARS_DIMENSION
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import is_statistics_rendering, stored_frame_location
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
-    PARTY_ROLES,
-    TYPED_ROLES,
     UNTYPED,
     enrichment_role,
-    type_column,
 )
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
@@ -107,29 +104,11 @@ from spec_registry.reader import StoredDefinition
 
 # The bare frame-layout Parquet data-mcp mints a frame with.
 _BASE_OPTIONS: Mapping[str, Any] = {"format": "parquet", "bundle": False, "layout": "frame"}
-KIND_COLUMNS: tuple[str, ...] = ("party_kind", "party_class", "party_whole")
 _RESERVED_COLUMNS = frozenset(
     {"stat_var", "time_period", "value", "unit", "measurementMethod", "provenance", "status"}
 )
 _OPTIONAL_COLUMNS = frozenset({UNIT_COLUMN, "measurementMethod", "provenance"})
 _UNIT_TYPE = canonical_frame_schema((UNIT_COLUMN,)).field(UNIT_COLUMN).type
-
-
-def coverage_roles(coverage: CoverageModel) -> tuple[str, ...]:
-    """The role columns of a version's frame: its coverage dimensions, which count each role
-    the frame declares (`materialise.columnar.coverage`), less the years."""
-    return tuple(
-        dimension.label for dimension in coverage.dimensions if dimension.label != YEARS_DIMENSION
-    )
-
-
-def enrichment_columns(roles: Collection[str]) -> tuple[str, ...]:
-    """The enrichment columns a root of a frame holding `roles` is read with by default, sorted:
-    the type column of each typed role among them, and the party kind, class and whole columns
-    when one is a flow party role."""
-    typed = {type_column(role) for role in roles if role in TYPED_ROLES}
-    kinds = KIND_COLUMNS if not PARTY_ROLES.isdisjoint(roles) else ()
-    return tuple(sorted({*typed, *kinds}))
 
 
 def requests_kinds(columns: Sequence[str]) -> bool:
@@ -169,24 +148,39 @@ def frame_ref_for(
     return FrameRef(spec_id=spec_id, content_version=f"cv_{digest}")
 
 
-def mint_options(rendering: RootRendering, *, roles: Collection[str]) -> dict[str, Any]:
-    """The mint `options` a root of `rendering` is read with, as its record keeps them, the
-    default enrichment taken from the frame's `roles`.
+def mint_options(rendering: RootRendering) -> dict[str, Any]:
+    """The mint `options` a root of `rendering` is read with. A rendering that leaves `columns`
+    to the default asks for `enrichment: "default"` in their place, which `record_options`
+    resolves against the version read, as the mint resolves it.
 
     `columns` are sorted and each listed once, the order `frame_ref_for` names the frame by, so
     the frame pair, the frame-layout file, the record and the recipe's normal form all see one
     order, and two roots that list the same columns in another order are one root. `groupby.by`
     is sorted for the same reason."""
-    columns = enrichment_columns(roles) if rendering.columns is None else tuple(rendering.columns)
     options: dict[str, Any] = dict(_BASE_OPTIONS)
-    if columns:
-        options["columns"] = sorted(set(columns))
+    if rendering.columns is None:
+        options["enrichment"] = "default"
+    elif rendering.columns:
+        options["columns"] = sorted(set(rendering.columns))
     if rendering.without_party_totals:
         options["without_party_totals"] = True
     if rendering.groupby is not None:
         groupby = rendering.groupby.model_dump(mode="json", exclude_none=True)
         options["groupby"] = {**groupby, "by": sorted(groupby["by"])}
     return options
+
+
+def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> dict[str, Any]:
+    """`options` as a root's record keeps them once read from a version of `coverage`: an
+    `enrichment: "default"` replaced in place by the `columns` it resolves to
+    (`default_enrichment.with_default_enrichment`), or dropped when it resolves to none."""
+    resolved: dict[str, Any] = {}
+    for key, value in options.items():
+        if key != "enrichment":
+            resolved[key] = value
+        elif columns := with_default_enrichment(None, roles=coverage_roles(coverage)):
+            resolved["columns"] = columns
+    return resolved
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -304,16 +298,10 @@ class LiveRootSource:
             # The newest data is read in the rendering the root names, as a fresh root of
             # that rendering reads it, so a version recording two renderings stays readable.
             served = served_spec(spec_id=root.spec_id, deps=deps, trace_id=trace_id)
-            # The default enrichment follows the roles of the version the head serves, which
-            # a serve with no rendering names, rebuilding it when stale as the rendered serve
-            # below would.
-            roles = (
-                coverage_roles(self._serve(served, None, trace_id=trace_id).coverage)
-                if root.rendering.columns is None
-                else ()
-            )
-            options = mint_options(root.rendering, roles=roles)
-            manifest = self._serve(served, MintOptions.model_validate(options), trace_id=trace_id)
+            requested = mint_options(root.rendering)
+            manifest = self._serve(served, MintOptions.model_validate(requested), trace_id=trace_id)
+            # The mint resolved a default enrichment against the version it served.
+            options = record_options(requested, coverage=manifest.coverage)
             return self._resolved(
                 spec_id=served.spec_id,
                 content_version=manifest.content_version,
@@ -324,7 +312,7 @@ class LiveRootSource:
         stored = load_stored(
             subject_id=spec_id, content_version=content_version, deps=deps, include_artifacts=False
         )
-        options = mint_options(root.rendering, roles=coverage_roles(stored.coverage))
+        options = record_options(mint_options(root.rendering), coverage=stored.coverage)
         manifest = stored
         if options.keys() - _BASE_OPTIONS.keys():
             rendered = head_rendering(
@@ -351,9 +339,9 @@ class LiveRootSource:
         )
 
     def _serve(
-        self, served: StoredDefinition, options: MintOptions | None, *, trace_id: str | None
+        self, served: StoredDefinition, options: MintOptions, *, trace_id: str | None
     ) -> Manifest:
-        """The served definition's head in the rendering `options` names, or with none.
+        """The served definition's head in the rendering `options` names.
 
         Raises:
             AnalysisPending: A rebuild runs past the inline budget.
@@ -469,12 +457,11 @@ def _pending(operation_id: str) -> AnalysisPending:
 __all__ = [
     "KIND_COLUMNS",
     "LiveRootSource",
-    "coverage_roles",
-    "enrichment_columns",
     "frame_from_frame_layout",
     "frame_of_stored",
     "frame_ref_for",
     "mint_options",
     "newest_spec_version",
+    "record_options",
     "requests_kinds",
 ]

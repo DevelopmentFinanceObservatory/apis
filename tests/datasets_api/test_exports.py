@@ -171,6 +171,9 @@ _PLACE_SDMX_BODY = (
 )
 
 
+_BARE_FILE: dict[str, Any] = {"bundle": False}
+
+
 class _Dataset:
     """A dataset the fetched rig mints: the stores its app reads it through, and its mint."""
 
@@ -189,10 +192,10 @@ def _flow_stores() -> dict[str, Any]:
 
 
 def _flow_mint(identity: dict[str, Any]) -> Any:
-    def mint(client: Any) -> dict[str, Any]:
+    def mint(client: Any, options: dict[str, Any] = _BARE_FILE) -> dict[str, Any]:
         spec_id = recompute_identity(identity).spec_id
         sidecar = {"schema_version": 1, "spec_id": spec_id, "identity": identity}
-        return _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+        return _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
 
     return mint
 
@@ -232,7 +235,7 @@ def _place_stores() -> dict[str, Any]:
     return {"graph": graph, "sdmx": SdmxClient(base_url=_BASE_URL, transport=transport)}
 
 
-def _place_mint(client: Any) -> dict[str, Any]:
+def _place_mint(client: Any, options: dict[str, Any] = _BARE_FILE) -> dict[str, Any]:
     resp = client.post(
         "/api/datasets",
         json={
@@ -249,7 +252,7 @@ def _place_mint(client: Any) -> dict[str, Any]:
                     },
                 },
             },
-            "options": {"bundle": False},
+            "options": options,
         },
     )
     assert resp.status_code == 200, resp.text
