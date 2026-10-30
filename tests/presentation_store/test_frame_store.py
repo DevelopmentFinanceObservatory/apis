@@ -454,6 +454,9 @@ class _FakeReferenceWriter:
         # WHERE removed_at IS NULL` that matches zero rows commits fine).
         self.records.pop(key, None)
 
+    def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
+        return any(key[2:4] == (subject_id, content_version) for key in self.records)
+
 
 class _LegacyReferenceWriter:
     """Writer with `record_reference_unless_revoked` but no claim method."""
@@ -4160,6 +4163,66 @@ def test_pin_of_a_derived_frame_whose_roots_cannot_be_named_refuses_and_pins_not
     assert excinfo.value.reason == reason
     assert (Tier.pinned, digest) not in artifacts.objects
     assert reference_writer.records == {}
+
+
+def test_pin_of_a_derived_frame_with_no_recipe_whose_bytes_are_pinned_still_refuses():
+    """Another pair holding the same bytes pinned them, and no reference names this pair, so
+    its recipe may still be on its way."""
+    snapshots, artifacts, frame_ref, digest, _, _ = _derived_over_a_root()
+    artifacts.seed(tier=Tier.pinned, data=artifacts.objects[(Tier.working, digest)])
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    snapshots.locations[key] = [_location(digest=digest, tier=Tier.pinned.value)]
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=_FakeRecipeReader(),
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+    assert excinfo.value.reason == "recipe_pending"
+    assert reference_writer.records == {}
+
+
+class _RecipeWrittenAfterFirstRead(_FakeRecipeReader):
+    """Answers no recipe on its first read and the stored one after, as a recipe write
+    landing between two reads would."""
+
+    def read_recipe(self, *, spec_id: str, content_version: str) -> RecipeRecord | None:
+        first = self.reads == 0
+        recipe = super().read_recipe(spec_id=spec_id, content_version=content_version)
+        return None if first else recipe
+
+
+def test_pin_of_a_referenced_derived_frame_whose_recipe_lands_meanwhile_pins_its_roots():
+    """A reference names the frame, and its recipe is written after the first read, so the
+    second read names the root."""
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _RecipeWrittenAfterFirstRead()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    reference_writer = _FakeReferenceWriter()
+    reference_writer.records[
+        (
+            "presentation:cmp_earlier",
+            digest,
+            frame_ref.spec_id,
+            frame_ref.content_version,
+            PRESENTATION_PIN_REFERENCE_KIND,
+        )
+    ] = _NOW
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+    assert (Tier.pinned, root_digest) in artifacts.objects
 
 
 def _root_aged_out(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:

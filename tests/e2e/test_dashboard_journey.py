@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
 from presentation_api.newest_frames import FRESHNESS_WINDOW
+from presentation_store import PRESENTATION_PIN_REFERENCE_KIND
 from tests.live_refresh.composed_app import (
     DATASET,
     GRANTS,
@@ -63,6 +64,7 @@ _DOOR_PINS = 2
 _PIN_ALLOWANCE = _SHARE_COPIES + _DOOR_PINS
 _START = datetime(2026, 10, 28, 9, 0, tzinfo=UTC)
 _KENYA = "country/KEN"
+_IMPORT_PRINCIPAL = "dashboard-journey-import"
 _MOVED_LOAN = 4321.0
 
 Pair = dict[str, str]
@@ -137,6 +139,24 @@ class _Journey:
             headers=_CALLER | {_TOKEN: token},
         )
 
+    def import_share(self, share_id: str, component_id: str) -> Response:
+        """Import a guest's live share of the card, as the website's migration job does."""
+        body = {
+            "kind": "card",
+            "mode": "live",
+            "owner": None,
+            "created_at": "2026-09-01T10:00:00Z",
+            "title": "Imported",
+            "slots": [{"component_id": component_id, "revision": 1, "frame": None}],
+            "payload": None,
+            "write_token_sha256": None,
+        }
+        return self.client.put(
+            f"{_SHARES}/{share_id}/import",
+            json=body,
+            headers={"x-dfo-principal": _IMPORT_PRINCIPAL},
+        )
+
     def pin(self, frame: Pair, digest: str) -> Response:
         return self.client.post(
             f"/api/datasets/{frame['spec_id']}/{frame['content_version']}/pin",
@@ -165,6 +185,7 @@ def journey(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Journey]:
     # An open caller is named by its address under this key, and pins within this allowance.
     monkeypatch.setenv("DFO_CALLER_HMAC_KEY", "dashboard-journey-caller-key")
     monkeypatch.setenv("DATASETS_PIN_DAILY_ALLOWANCE", str(_PIN_ALLOWANCE))
+    monkeypatch.setenv("PRESENTATION_SHARE_IMPORT_PRINCIPAL", _IMPORT_PRINCIPAL)
     composed = compose()
     with TestClient(composed.app, raise_server_exceptions=False) as client:
         walk = _Journey(composed=composed, client=client)
@@ -405,3 +426,48 @@ def test_a_derived_frame_over_a_sum_equal_to_its_plain_frame_follows_new_data(jo
     assert resp.status_code == 200, resp.text
     (moved,) = resp.json()["ref"]["members"]
     assert _member_pair(moved) != _member_pair(member)
+
+
+def test_a_derived_frame_with_no_recipe_is_shared_alone_once_a_reference_names_it(
+    journey: _Journey,
+):
+    """A derived frame with no recipe refuses a share and an import, since its recipe may still
+    be on its way. A reference recorded before recipes were stored names a frame that never
+    gains one: then both pin the frame and none of its roots, and the share serves its rows."""
+    _, member = _derive(journey)
+    frame = _member_pair(member)
+    pair = (frame["spec_id"], frame["content_version"])
+    with journey.composed.version_store.transaction() as tx:
+        tx.execute(
+            "DELETE FROM datasets.frame_recipe WHERE subject_id = %s AND content_version = %s",
+            pair,
+        )
+    component_id = journey.card(frame)["component_id"]
+
+    refused = [journey.share(component_id), journey.import_share("Lgcy0001", component_id)]
+
+    assert [
+        (resp.status_code, resp.json()["code"], resp.json()["retryable"]) for resp in refused
+    ] == [(503, "service_unavailable", True)] * 2
+    assert journey.pinned() == set()
+
+    with journey.composed.version_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.artifact_reference (principal, artifact_digest, subject_id, "
+            "content_version, reference_kind, created_at) "
+            "SELECT %s, artifact_digest, subject_id, content_version, %s, %s "
+            "FROM datasets.version_artifact WHERE subject_id = %s AND content_version = %s",
+            ("presentation:cmp_earlier", PRESENTATION_PIN_REFERENCE_KIND, _START, *pair),
+        )
+    created = journey.share(component_id)
+    imported = journey.import_share("Lgcy0001", component_id)
+
+    assert created.status_code == 201, created.text
+    assert imported.status_code == 201, imported.text
+    assert journey.pinned() == {pair}
+    # The live slot cannot draw the frame on newer data, so it serves the stored rows as stale.
+    assert _stated(journey.data(created.json()["id"])) == (
+        "stale",
+        frame["content_version"],
+        "live",
+    )

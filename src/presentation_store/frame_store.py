@@ -139,7 +139,9 @@ recipe reader, has none.
 
 `pin()` records a presentation reference and promotes working artifacts to pinned. A derived
 frame pins with the root versions its recipe names, and theirs in turn, by the rule
-`LiveFrameStore.pin` states: the frame itself must pin, and each root pins while it is held.
+`LiveFrameStore.pin` states: the frame itself must pin, and each root pins while it is held. A
+derived frame with no recipe that a reference already names pins alone, and once a recipe
+is written for it a pin names the roots again (`LiveFrameStore._recipe_roots`).
 Each new pinned copy, the frame's or a root's, is admitted by
 `datasets_api.retention_admission.copy_to_pinned` against the store's allowance ledger, and a
 copy skipped because its frame is pinned already spends nothing.
@@ -1248,12 +1250,13 @@ class LiveFrameStore:
         without them. The recipes are read first, so a refusal over them pins nothing. A
         derived frame, or a derived root, whose recipe is not written yet refuses
         `recipe_pending`, since the recipe a publish writes after its frame, or a later recipe
-        write, makes a retry pin the roots. A store with no recipe reader, and a recipe root
-        that names no dataset version, refuse `recipe_unreadable`, a server fault. Both answer
-        a retryable 503 (`presentation_api.refusals`). Then the frame pins, and a refusal there
-        pins nothing either. Then each root pins while it is still held: a root that aged out of
-        the working tier, was revoked, or cannot be read is left unpinned and logged. A root
-        whose pin fails on I/O raises `io`, and a retry pins what is left.
+        write, makes a retry pin the roots. A derived frame with no recipe that a reference
+        already names pins with no roots (`_recipe_roots`). A store with no recipe reader, and
+        a recipe root that names no dataset version, refuse `recipe_unreadable`, a server
+        fault. Both answer a retryable 503 (`presentation_api.refusals`). Then the frame pins,
+        and a refusal there pins nothing either. Then each root pins while it is still held: a
+        root that aged out of the working tier, was revoked, or cannot be read is left unpinned
+        and logged. A root whose pin fails on I/O raises `io`, and a retry pins what is left.
 
         Raises:
             FrameUnavailable: The frame cannot be pinned, its roots cannot be named, or a
@@ -1299,6 +1302,15 @@ class LiveFrameStore:
         """The root versions a derived frame's recipe names (each root's `dataset`), none for a
         dataset frame.
 
+        A derived frame with no recipe that a reference row already names, live or removed
+        (`ArtifactReferenceWriter.holds_reference`), has none either. Every pin reads a derived
+        frame's recipe before it writes a reference, and the datasets pin door names `spec_`
+        ids alone, so only a pin made before recipes were stored references a derived frame
+        with no recipe. A share of it draws the frame's stored rows. The recipe is read again
+        after the reference is found, so a recipe written between the two reads names the
+        roots, and one written later (the recipe write route, `datasets_api.doors.recipe`)
+        makes the next pin name them.
+
         Raises:
             FrameUnavailable: `recipe_pending` for a derived frame with no recipe yet, and
                 `recipe_unreadable` for a store with no recipe reader or a root naming no
@@ -1317,6 +1329,21 @@ class LiveFrameStore:
         recipe = self._recipe_reader.read_recipe(
             spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
         )
+        if recipe is None and self._reference_writer.holds_reference(
+            subject_id=frame_ref.spec_id, content_version=frame_ref.content_version
+        ):
+            # A recipe written after the first read names the roots after all.
+            recipe = self._recipe_reader.read_recipe(
+                spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
+            )
+            if recipe is None:
+                logger.info(
+                    "derived frame %s at %s holds no recipe and a reference already names it, "
+                    "so it pins with no roots",
+                    frame_ref.spec_id,
+                    frame_ref.content_version,
+                )
+                return []
         if recipe is None:
             raise FrameUnavailable(
                 reason="recipe_pending",

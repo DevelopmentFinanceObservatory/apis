@@ -10,7 +10,8 @@ under the subject id and every id in `revoked_under`, in the upsert statement, a
 for a digest the version keeps. A pin naming a served id honours revocations under it, and a
 pin naming a posted id passes both ids. An export's reference (`EXPORT_REFERENCE_KIND`) passes
 `require_link=False`, since its record names its file and a derived frame's file is linked to no
-version. `remove_reference` soft-deletes a live row.
+version. `remove_reference` soft-deletes a live row. `holds_reference` asks whether any row, live
+or removed, names a version.
 `list_live_reference_principals` is a read-only diagnostic query.
 """
 
@@ -288,6 +289,26 @@ class LiveArtifactReferenceWriter:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+
+    def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
+        failure: str | None = None
+        sqlstate: str | None = None
+        try:
+            with self._store.transaction() as tx:
+                row = tx.fetch_one(
+                    "SELECT 1 FROM datasets.artifact_reference "
+                    "WHERE subject_id = %s AND content_version = %s LIMIT 1",
+                    (subject_id, content_version),
+                )
+        except Exception as exc:
+            failure = (
+                f"reading artifact_reference for subject_id {subject_id!r} content_version "
+                f"{content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return row is not None
 
 
 def list_live_reference_principals(*, store: DatasetStore, reference_kind: str) -> tuple[str, ...]:
