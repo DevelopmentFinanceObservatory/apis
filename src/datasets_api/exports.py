@@ -8,11 +8,10 @@ the analysis runner reads for a Spec root of that id (`resolve_export_frame`), t
 default enrichment, as the Presentation frames door reads a bare id. The request then runs, and
 is keyed and answered, as one naming that pair. A dataset version's file is the one its file
 selector serves (`doors.files`) in the long layout with the version's default enrichment columns
-(`analysis_roots.enrichment_columns`), the columns a Spec root of it reads: each flow party
-role's `_type` cells, else `observationAbout_type`, beside the layout's own `_label` and `_kind`
-cells. It is the file the version lists under that rendering, else one rendered from its stored
-frame. A derived frame's file is the one its file route renders
-(`derived.render_derived_file`). The file is then copied to the pinned tier through
+(`analysis_roots.enrichment_columns` of the roles the version holds), the columns a Spec root of
+it reads: each typed role's `_type` cells beside the layout's own `_label` and `_kind` cells.
+It is the file the version lists under that rendering, else one rendered from its stored frame.
+A derived frame's file is the one its file route renders (`derived.render_derived_file`). The file is then copied to the pinned tier through
 `retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
 pin budgets as a pin does. A file already pinned spends nothing. The record keeps the pinned
 copy's location and the facts the prepare answered.
@@ -65,7 +64,7 @@ from artifact_store import ArtifactNotFoundError, ArtifactSigningError, Tier
 from dataset_store.snapshot import SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
 from datasets_api.analysis import AnalysisPending
-from datasets_api.analysis_roots import enrichment_columns, newest_spec_version
+from datasets_api.analysis_roots import coverage_roles, enrichment_columns, newest_spec_version
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.codes_exports import (
     ExportNotFound,
@@ -89,7 +88,7 @@ from datasets_api.doors.files import (
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
 from datasets_api.export_store import ExportRecord, ExportStore
 from datasets_api.manifest import stored_manifest_facts
-from datasets_api.manifest_models import CitationModel
+from datasets_api.manifest_models import CitationModel, CoverageModel
 from datasets_api.mint_models import MintOptions
 from datasets_api.retention_admission import copy_to_pinned
 from datasets_api.timings import phase
@@ -305,11 +304,9 @@ def _prepare_dataset(
 
     # The file holds the enrichment a client's frame of the version holds: the columns a Spec
     # root reads it with, added to the long layout's own.
-    identity = cast("Mapping[str, Any]", facts.definition["identity"])
+    roles = coverage_roles(CoverageModel.model_validate(facts.coverage))
     requested = MintOptions(
-        format=request.format,
-        bundle=request.bundle,
-        columns=sorted(set(enrichment_columns(identity))),
+        format=request.format, bundle=request.bundle, columns=list(enrichment_columns(roles))
     )
     location = listed_file_location(
         stored,

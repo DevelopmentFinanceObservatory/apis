@@ -37,6 +37,7 @@ from datasets_api.export_store import LiveExportStore
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.caller import address_key
+from materialise.graph import Facet
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
 from spec_registry.errors import IdentityCollision
@@ -158,14 +159,114 @@ def _code_index() -> CodeIndex:
     )
 
 
-def _spec_id_and_sidecar() -> tuple[str, dict]:
-    recomputed = recompute_identity(_FLOW_IDENTITY)
-    return recomputed.spec_id, {
-        "schema_version": 1,
-        "spec_id": recomputed.spec_id,
-        "identity": _FLOW_IDENTITY,
+# A place dataset as the World Bank serves one: Kenya's life expectancy.
+_PLACE_STAT_VAR = "LifeExpectancy_Person"
+_PLACE_SDMX_BODY = (
+    "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,observationAbout,unit,measurementMethod,"
+    "observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,facetId\r\n"
+) + "".join(
+    f"dataflow,DC:DF_OBS(1.0.0),I,dcid:{_PLACE_STAT_VAR},{_KENYA},Years,dc-aggregate,"
+    f"NotApplicable,WorldBank,{year},{value},,facet1\r\n"
+    for year, value in (("2015", "61.4"), ("2016", "61.8"))
+)
+
+
+class _Dataset:
+    """A dataset the fetched rig mints: the stores its app reads it through, and its mint."""
+
+    def __init__(self, *, stores: Any, mint: Any) -> None:
+        self.stores = stores
+        self.mint = mint
+
+
+def _flow_stores() -> dict[str, Any]:
+    return {
+        "graph": _graph(),
+        "sdmx": SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
+        "code_index": _code_index(),
+        "coverage": _coverage_service(),
     }
 
+
+def _flow_mint(identity: dict[str, Any]) -> Any:
+    def mint(client: Any) -> dict[str, Any]:
+        spec_id = recompute_identity(identity).spec_id
+        sidecar = {"schema_version": 1, "spec_id": spec_id, "identity": identity}
+        return _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+
+    return mint
+
+
+def _place_stores() -> dict[str, Any]:
+    graph = FakeMintGraphReader(
+        arcs={
+            _PLACE_STAT_VAR: {
+                "typeOf": ("StatisticalVariable",),
+                "measuredProperty": ("lifeExpectancy",),
+                "populationType": ("Person",),
+            },
+            _KENYA: {"typeOf": ("Country",)},
+        },
+        facets={
+            (_PLACE_STAT_VAR, _KENYA): [
+                Facet(
+                    facet_id="facet1",
+                    provenance_id="WorldBank",
+                    measurement_method="dc-aggregate",
+                    unit="Years",
+                    obs_count=2,
+                    earliest_date="2015",
+                    latest_date="2016",
+                )
+            ]
+        },
+        labels={"WorldBank": "World Bank", _KENYA: "Kenya"},
+    )
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=_PLACE_SDMX_BODY,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+    return {"graph": graph, "sdmx": SdmxClient(base_url=_BASE_URL, transport=transport)}
+
+
+def _place_mint(client: Any) -> dict[str, Any]:
+    resp = client.post(
+        "/api/datasets",
+        json={
+            "schema_version": 1,
+            "input": {
+                "kind": "statvar_set",
+                "statvars": [f"dcid:{_PLACE_STAT_VAR}"],
+                "scope": {
+                    "entities": {"observationAbout": [_KENYA]},
+                    "facets": {
+                        "provenance": {"ref": "WorldBank"},
+                        "measurementMethod": {"ref": "dc-aggregate"},
+                        "unit": {"ref": "Years"},
+                    },
+                },
+            },
+            "options": {"bundle": False},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+_DATASETS = {
+    "flow": _Dataset(stores=_flow_stores, mint=_flow_mint(_FLOW_IDENTITY)),
+    # A total over each role's members: the identity binds and opens no role.
+    "flow-binding-no-role": _Dataset(
+        stores=_flow_stores,
+        mint=_flow_mint(
+            {k: v for k, v in _FLOW_IDENTITY.items() if k != "open_roles"} | {"entities": {}}
+        ),
+    ),
+    "place": _Dataset(stores=_place_stores, mint=_place_mint),
+}
 
 _HMAC_KEY = "test-caller-key"
 _CLIENT_ADDRESS = "203.0.113.7"
@@ -184,7 +285,9 @@ class _Rig:
     """A client over one SQLite-backed store, with a frame to export: a minted dataset version
     (`fetched`) or a frame the runner stored (`derived`)."""
 
-    def __init__(self, kind: str, monkeypatch: pytest.MonkeyPatch, *, ledger=None) -> None:
+    def __init__(
+        self, kind: str, monkeypatch: pytest.MonkeyPatch, *, ledger=None, dataset: str = "flow"
+    ) -> None:
         self.ledger: LiveAllowanceLedger = ledger if ledger is not None else _ledger()
         if kind == "derived":
             stores = Stores()
@@ -225,18 +328,17 @@ class _Rig:
             snapshot_reader=LiveSnapshotReader(store=self.store),
             version_writer=LiveVersionRecordWriter(store=self.store),
             head_writer=_FakeHeadStore(),
-            graph=_graph(),
-            sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
             artifact_store=self.artifact_store,
             reference_writer=FakeArtifactReferenceWriter(),
             export_store=LiveExportStore(store=self.store),
-            code_index=_code_index(),
-            coverage=_coverage_service(),
             allowances=self.ledger,
+            **_DATASETS[dataset].stores(),
         )
-        spec_id, sidecar = _spec_id_and_sidecar()
-        minted = _mint(self.client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
-        self.frame = {"spec_id": spec_id, "content_version": minted["content_version"]}
+        minted = _DATASETS[dataset].mint(self.client)
+        self.frame = {
+            "spec_id": minted["definition"]["spec_id"],
+            "content_version": minted["content_version"],
+        }
         self.coverage_rows = minted["coverage"]["rows"]
 
     def _sign(self, digest: str, *, tier: Tier, object_name: str, ttl: Any, **_: object) -> str:
@@ -692,17 +794,27 @@ def _table(data: bytes, fmt: str) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("fmt", ["csv", "xlsx", "parquet"])
-def test_a_fetched_flow_frame_exports_the_enrichment_a_client_frame_holds(
-    fmt: str, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("dataset", "roles", "kinds"),
+    [
+        pytest.param("flow", _ROLE_COLUMNS, True, id="flow"),
+        pytest.param("flow-binding-no-role", _ROLE_COLUMNS, True, id="flow-binding-no-role"),
+        pytest.param("place", ("observationAbout",), False, id="place"),
+    ],
+)
+def test_a_fetched_frame_exports_the_enrichment_a_client_frame_holds(
+    fmt: str, dataset: str, roles: tuple[str, ...], kinds: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each party role's `_type` cells, which the Spec root's default enrichment adds, beside
-    the long layout's own `_label` and `_kind` cells."""
-    rig = _Rig("fetched", monkeypatch)
+    """Each role's `_type` cells, which the Spec root's default enrichment of the roles the
+    version holds adds, beside the long layout's own `_label` cells and a party's `_kind`."""
+    rig = _Rig("fetched", monkeypatch, dataset=dataset)
 
-    body = rig.prepare(fmt).json()
+    resp = rig.prepare(fmt)
 
-    rows = _table(rig.pinned_bytes(body["sha256"]), fmt)
-    assert len(rows) == body["rows"] == 2
-    for role in _ROLE_COLUMNS:
-        assert {f"{role}_label", f"{role}_kind", f"{role}_type"} <= rows[0].keys()
+    assert resp.status_code == 200, resp.text
+    rows = _table(rig.pinned_bytes(resp.json()["sha256"]), fmt)
+    assert len(rows) == resp.json()["rows"] == 2
+    for role in roles:
+        assert {f"{role}_label", f"{role}_type"} <= rows[0].keys()
+        assert (f"{role}_kind" in rows[0]) is kinds
         assert {row[f"{role}_type"] for row in rows} == {"Country"}
