@@ -343,7 +343,7 @@ def _pinned_copy(
     """The bucket and object name of the pinned copy of `digest`, stored at `tier`, copying it
     from the working tier unless a pinned copy exists (`_copied_to_pinned`), and record the
     export's reference to it under the version `subject_id` records, unless a revocation under
-    it or `subject_ids` now refuses."""
+    it or `subject_ids` refuses."""
     pinned = (
         (bucket, object_name) if tier == Tier.pinned else _pinned_location(digest, current=current)
     )
@@ -615,7 +615,7 @@ def resolve_endpoint(exc: BaseException) -> str | None:
     """The registry endpoint whose statuses classify `exc`, a failure resolving a bare
     `spec_id`, `None` for a refusal neither reads: `datasets.analysis`, whose resolve this is,
     else `datasets.exports`, which registers the rendering refusals a rebuild raises and the
-    analysis door serves none of. Anything that is no refusal classifies under the first."""
+    analysis door serves none of. A non-refusal classifies under the first."""
     if not isinstance(exc, Refusal):
         return "datasets.analysis"
     for endpoint in ("datasets.analysis", "datasets.exports"):
@@ -649,7 +649,7 @@ def _unservable(spec_id: str, exc: Exception) -> NewestVersionUnservable:
 
 def _served_ids(id: str, *, current: Deps) -> tuple[str, ...]:
     """`id` and each served id bound to it, whose revocations withdraw a version named `id`
-    (`served_subject_ids`). An `ops_` id, or an id the registry no longer holds, binds none.
+    (`served_subject_ids`). An `ops_` id, or an id the registry does not hold, binds none.
 
     Raises:
         IdentityQuarantined: `id` or a served id bound to it is quarantined.
