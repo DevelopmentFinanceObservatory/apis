@@ -10,9 +10,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from code_index.scope_conventions import BASIS_MEASURES, ODA_FLOW, ODA_FLOW_SYSTEM, BasisMeasure
+from code_index.scope_conventions import (
+    BASIS_MEASURES,
+    NETTING_BASIS_SLOT,
+    ODA_FLOW,
+    ODA_FLOW_SYSTEM,
+    BasisMeasure,
+)
 
-_NETTING_BASIS = "nettingBasis"
 _FLOW_TYPE_PROPERTIES = frozenset(row.flow_type[0] for row in BASIS_MEASURES)
 _BASIS_POPULATIONS = frozenset(row.population_type for row in BASIS_MEASURES)
 _DESCRIBED = "statvar_schema"
@@ -55,11 +60,11 @@ def edit_basis(
         basis = None
     slots = list(cast("Sequence[IdentitySlotDocument]", identity.get("slots", ())))
     if netting_basis is None:
-        slots = [slot for slot in slots if slot["property"] != _NETTING_BASIS]
+        slots = [slot for slot in slots if slot["property"] != NETTING_BASIS_SLOT]
     else:
         slots = with_slot(
             slots,
-            {"property": _NETTING_BASIS, "binding": {"state": "value", "ref": netting_basis}},
+            {"property": NETTING_BASIS_SLOT, "binding": {"state": "value", "ref": netting_basis}},
         )
     if basis is not None:
         slots = _basis_slots(slots, basis)
