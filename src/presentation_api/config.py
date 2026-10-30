@@ -18,6 +18,7 @@ from dfo_platform.config import env_validation_error_message
 __all__ = [
     "PRESENTATION_COMPONENTS_MAX_CONCURRENCY",
     "PRESENTATION_COMPONENTS_TIMEOUT_SECONDS",
+    "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY",
     "PRESENTATION_FRAMES_MAX_CONCURRENCY",
     "PRESENTATION_FRAMES_TIMEOUT_SECONDS",
     "PresentationSettings",
@@ -46,6 +47,10 @@ class _PresentationDefaults(BaseSettings):
     # Separate capacity keeps frame reads independent of component writes.
     frames_max_concurrency: int = Field(default=4, ge=1)
 
+    # A bare `spec_id` read can rebuild its dataset, so it has its own executor and pair reads
+    # keep theirs.
+    frames_bare_max_concurrency: int = Field(default=2, ge=1)
+
     frames_timeout_seconds: int = Field(default=30, ge=1)
 
 
@@ -57,6 +62,7 @@ except ValidationError as exc:
 PRESENTATION_COMPONENTS_MAX_CONCURRENCY: int = _defaults.components_max_concurrency
 PRESENTATION_COMPONENTS_TIMEOUT_SECONDS: int = _defaults.components_timeout_seconds
 PRESENTATION_FRAMES_MAX_CONCURRENCY: int = _defaults.frames_max_concurrency
+PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY: int = _defaults.frames_bare_max_concurrency
 PRESENTATION_FRAMES_TIMEOUT_SECONDS: int = _defaults.frames_timeout_seconds
 
 

@@ -136,7 +136,7 @@ def test_a_summary_states_the_verbs_counts_as_json() -> None:
     assert summary["right_dropped_key_count"] == 0
     assert summary["time"] == {"kind": "observation"}
     assert "frame" not in summary["result"]
-    assert summary["execution_identity"]["engine_version"] == "0.9.0"
+    assert summary["execution_identity"]["engine_version"] == "0.9.1"
 
 
 def _reporter_years(cells: list[tuple[str, str, float]]) -> Frame:

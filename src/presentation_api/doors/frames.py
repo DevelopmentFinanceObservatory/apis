@@ -2,8 +2,17 @@
 filtered by query. It checks `spec_id` and `content_version` formats before calling
 `assembler.pipeline.get_frame_view`. Frames are shared, so the door takes no caller or session.
 
+`GET /api/presentation/frames/{spec_id}` names a dataset id alone and reads the version the
+analysis runner reads for a Spec root of that id
+(`presentation_api.newest_frames.resolve_bare_spec`), answering the pair route's body, read from
+that version's canonical frame, with the `spec_id` and `content_version` it resolved. Only a `spec_` id of 32 hex digits resolves. A
+derived `ops_` id names its version.
+
 Its executor and non-blocking semaphore are independent of the components door. Saturation
-returns retryable 503. Each permit covers the pipeline call and JSON encoding.
+returns retryable 503. Each permit covers the pipeline call and JSON encoding. The bare route
+can rebuild a dataset, so it runs on a smaller executor and semaphore of its own, shared with a
+component create's bare resolve, and bare reads of stale datasets refuse among themselves while
+pair reads keep their permits.
 """
 
 from __future__ import annotations
@@ -19,10 +28,10 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 
 from assembler.errors import BindingInvalid, FrameUnavailable
-from assembler.pipeline import get_frame_view
+from assembler.pipeline import BARE_SPEC_ID, get_frame_view
 from assembler.ports import FrameRef, FrameStore
 from dataset_store import close_shared_pool as close_dataset_pool
-from datasets_api.door_executor import build_door_executor
+from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import ProblemSpec
@@ -35,7 +44,8 @@ from presentation_api.config import (
     PresentationSettings,
 )
 from presentation_api.live import build_live_frame_store
-from presentation_api.models import FrameViewResponse
+from presentation_api.models import FrameViewResponse, NewestFrameViewResponse
+from presentation_api.newest_frames import NewestFrames, resolve_bare_spec
 from presentation_api.path_params import (
     PathParamInvalid,
     require_content_version,
@@ -107,19 +117,31 @@ class FramesDeps:
     frame_store: FrameStore
 
 
+_VIEW_DESCRIPTION = (
+    "Neither `dimension` nor `query` given returns the frame's structural view. `dimension` "
+    "alone returns that one dimension's full value list. `query` alone returns every dimension "
+    "filtered to values matching the query. `dimension` and `query` together return that one "
+    "dimension's values filtered to the query."
+)
+
+
 def build_frames_door(
     *,
     frame_store: FrameStore | None = None,
+    newest: NewestFrames | None = None,
+    bare_reads: DoorExecutor,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
 ) -> DoorContribution:
-    """Build a live frame store in this door's lifespan when none is injected."""
+    """Build a live frame store in this door's lifespan when none is injected. `newest`
+    resolves a bare `spec_id`; with none, the bare route refuses `frame_unavailable`.
+    `bare_reads` runs the bare route and the components door's bare resolve, and this door's
+    lifespan shuts it down."""
     _budget = budget if budget is not None else ShutdownBudget()
     effective_pool_size = (
         pool_size if pool_size is not None else PRESENTATION_FRAMES_MAX_CONCURRENCY
     )
     door_executor = build_door_executor(effective_pool_size, "frames", surface="presentation")
-    executor = door_executor.executor
 
     deps = FramesDeps(frame_store=cast(FrameStore, frame_store))
 
@@ -149,14 +171,18 @@ def build_frames_door(
         try:
             yield
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            door_executor.executor.shutdown(wait=False, cancel_futures=True)
+            bare_reads.executor.shutdown(wait=False, cancel_futures=True)
             await asyncio.to_thread(door_executor.drain, _budget)
+            await asyncio.to_thread(bare_reads.drain, _budget)
             _close_live_clients_built_here()
 
-    async def _run(job: Callable[[], JSONResponse], /) -> JSONResponse:
+    async def _run(
+        job: Callable[[], JSONResponse], /, *, on: DoorExecutor = door_executor
+    ) -> JSONResponse:
         with frame_reads_bounded_by(timeout_seconds=PRESENTATION_FRAMES_TIMEOUT_SECONDS):
             return await asyncio.wait_for(
-                door_executor.run(job, refuse=FramesBackpressure),
+                on.run(job, refuse=FramesBackpressure),
                 timeout=PRESENTATION_FRAMES_TIMEOUT_SECONDS,
             )
 
@@ -164,16 +190,7 @@ def build_frames_door(
 
     @router.get(
         "/api/presentation/frames/{spec_id}/{content_version}",
-        responses={
-            200: {
-                "model": FrameViewResponse,
-                "description": "Neither `dimension` nor `query` given returns the frame's "
-                "structural view. `dimension` alone returns that one dimension's full value "
-                "list. `query` alone returns every dimension filtered to values matching the "
-                "query. `dimension` and `query` together return that one dimension's values "
-                "filtered to the query.",
-            }
-        },
+        responses={200: {"model": FrameViewResponse, "description": _VIEW_DESCRIPTION}},
     )
     async def get_frame(
         spec_id: str,
@@ -194,6 +211,46 @@ def build_frames_door(
             return JSONResponse(document, status_code=200)
 
         return await _run(job)
+
+    @router.get(
+        "/api/presentation/frames/{spec_id}",
+        responses={
+            200: {
+                "model": NewestFrameViewResponse,
+                "description": f"{_VIEW_DESCRIPTION} The frame is the newest version of the "
+                "dataset `spec_id` names, the version the analysis runner reads for a Spec "
+                "root; `spec_id` and `content_version` name it. The view reads that version's "
+                "canonical frame, as the pair route does, so it holds no default enrichment "
+                "column, and a `dimension` naming one refuses `binding_invalid`.",
+            }
+        },
+    )
+    async def get_newest_frame(
+        spec_id: str,
+        dimension: str | None = None,
+        query: str | None = None,
+    ) -> JSONResponse:
+        if not BARE_SPEC_ID.fullmatch(spec_id):
+            raise PathParamInvalid(name="spec_id", value=spec_id)
+
+        def job() -> JSONResponse:
+            frame_ref = resolve_bare_spec(spec_id, newest=newest)
+            document = get_frame_view(
+                frame_ref=frame_ref,
+                dimension=dimension,
+                query=query,
+                frame_store=deps.frame_store,
+            )
+            return JSONResponse(
+                {
+                    **document,
+                    "spec_id": frame_ref.spec_id,
+                    "content_version": frame_ref.content_version,
+                },
+                status_code=200,
+            )
+
+        return await _run(job, on=bare_reads)
 
     return DoorContribution(
         router=router,

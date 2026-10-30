@@ -38,6 +38,7 @@ from datasets_api.allowance import LiveAllowanceLedger, SharedAllowanceLedger, a
 from datasets_api.config import DatasetsBuildSettings, DatasetsSettings
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.door_executor import DoorExecutor, build_door_executor
+from datasets_api.export_store import ExportStore, LiveExportStore
 from datasets_api.generation import (
     PLACE_SCOPE_MEMO_NAME,
     enter_shared_generation,
@@ -88,6 +89,8 @@ class Deps:
     version_lister: VersionLister
     operation_store: OperationStore
     recipe_store: RecipeStore
+    # Prepared exports (`datasets_api.exports`), read by the export link.
+    export_store: ExportStore
     description_store: LiveDescriptionStore
     reference_writer: ArtifactReferenceWriter
     # The daily allowances of callers without a grant (`datasets_api.allowance`).
@@ -170,6 +173,7 @@ class DepsOverrides:
     version_lister: VersionLister | None = None
     operation_store: OperationStore | None = None
     recipe_store: RecipeStore | None = None
+    export_store: ExportStore | None = None
     description_store: LiveDescriptionStore | None = None
     reference_writer: ArtifactReferenceWriter | None = None
     allowances: SharedAllowanceLedger | None = None
@@ -192,6 +196,7 @@ class DepsOverrides:
                 self.version_lister,
                 self.operation_store,
                 self.recipe_store,
+                self.export_store,
                 self.description_store,
                 self.reference_writer,
                 self.allowances,
@@ -356,6 +361,7 @@ async def open_deps(
                 lambda: LiveOperationStore(store=_store(), settings=settings),
             ),
             recipe_store=_given_or(overrides.recipe_store, lambda: LiveRecipeStore(store=_store())),
+            export_store=_given_or(overrides.export_store, lambda: LiveExportStore(store=_store())),
             description_store=_given_or(
                 overrides.description_store,
                 lambda: LiveDescriptionStore(store=_store(), now=overrides.now),

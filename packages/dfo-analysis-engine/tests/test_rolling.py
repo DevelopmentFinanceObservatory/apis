@@ -326,13 +326,313 @@ _AID_GNI = [_root(_AID), _root(_GNI)]
 _GNI_COLUMNS = ["stat_var", "observationAbout", "time_period", "value", "unit"]
 
 
-def test_a_keyed_pairing_whose_sides_both_count_gives_one_pairing_population() -> None:
+@pytest.mark.parametrize(
+    ("right_columns", "right"),
+    [
+        pytest.param(
+            [*_GNI_COLUMNS, "observationAbout_type"],
+            {
+                "spec_id": _GNI,
+                "bindings": {"observationAbout": ["dcid:GHA"]},
+                "levels": {"observationAbout_type": "Country"},
+            },
+            id="second-side-holds-the-column",
+        ),
+        pytest.param(
+            _GNI_COLUMNS,
+            {"spec_id": _GNI, "bindings": {"observationAbout": ["dcid:GHA"]}},
+            id="second-side-lacks-the-column",
+        ),
+    ],
+)
+def test_a_narrowing_above_a_keyed_pairing_crosses_its_key_map(
+    right_columns: list[str], right: dict[str, Any]
+) -> None:
+    """The slots are left out of the parameters, as the runner writes a tree."""
+    quotient = _quotient(
+        numerator_by=["recipient"], denominator_by={"recipient": "observationAbout"}
+    )
+    del quotient["op_spec"]["parameters"]["denominator_frame_ref"]
+    tree = _node(
+        "filter",
+        {
+            "predicates": [
+                {"kind": "place_level", "column": "recipient_type", "level": "Country"},
+                _match("recipient", "dcid:GHA"),
+            ]
+        },
+        frame_ref=quotient,
+    )
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[[*_COLUMNS, "recipient_type"], right_columns]
+    )
+
+    assert populations == [
+        {
+            "pair": [
+                [
+                    {
+                        "spec_id": _AID,
+                        "bindings": {"recipient": ["dcid:GHA"]},
+                        "levels": {"recipient_type": "Country"},
+                    }
+                ],
+                [right],
+            ],
+            "keys": {"recipient": "observationAbout"},
+        }
+    ]
+
+
+_FLOW_COLUMNS = [
+    "stat_var",
+    "financingProvider",
+    "financingRecipient",
+    "time_period",
+    "value",
+    "unit",
+]
+_SHAPES = pytest.mark.parametrize(
+    "stored", [True, False], ids=["stored-shape", "runner-shape-slots-left-out"]
+)
+
+
+def _one_frame(verb: str, slot: str, *, stored: bool, **parameters: Any) -> dict[str, Any]:
+    """`verb` reading root 0 on both sides, with the null second slot the stored shape keeps."""
+    return _node(verb, {**parameters, **({slot: None} if stored else {})}, frame_ref={"root": 0})
+
+
+def _two_frames(verb: str, slot: str, *, stored: bool, **parameters: Any) -> dict[str, Any]:
+    """`verb` over roots 0 and 1, with the second slot's pair the stored shape keeps."""
+    return _node(
+        verb,
+        {**parameters, **({slot: _RIGHT} if stored else {})},
+        frame_ref={"root": 0},
+        **{slot: {"root": 1}},
+    )
+
+
+@_SHAPES
+@pytest.mark.parametrize(
+    ("verb", "slot", "parameters"),
+    [
+        pytest.param(
+            "compare",
+            "right_frame_ref",
+            {
+                "left_entity": {"recipient": "dcid:GHA"},
+                "right_entity": {"recipient": "dcid:KEN"},
+            },
+            id="compare",
+        ),
+        pytest.param(
+            "share_of",
+            "denominator_frame_ref",
+            {
+                "numerator_entity": {"recipient": "dcid:GHA"},
+                "denominator_entity": {"recipient": "dcid:KEN"},
+            },
+            id="share_of",
+        ),
+    ],
+)
+def test_a_one_frame_two_sided_verb_counts_both_sides_in_either_tree_shape(
+    stored: bool, verb: str, slot: str, parameters: dict[str, Any]
+) -> None:
+    tree = _one_frame(verb, slot, stored=stored, **parameters)
+
+    assert anchor_populations(_rolled(tree), [_root(_AID)], root_columns=[_COLUMNS]) == [
+        {"spec_id": _AID, "bindings": {"recipient": ["dcid:GHA"]}},
+        {"spec_id": _AID, "bindings": {"recipient": ["dcid:KEN"]}},
+    ]
+
+
+@_SHAPES
+def test_a_column_outside_the_key_map_stays_on_the_output_s_side(stored: bool) -> None:
+    keyed = _two_frames(
+        "share_of",
+        "denominator_frame_ref",
+        stored=stored,
+        numerator_by=["financingRecipient"],
+        denominator_by={"financingRecipient": "financingRecipient"},
+    )
+    level = {"kind": "place_level", "column": "financingProvider_type", "level": "Country"}
+    tree = _node(
+        "filter",
+        {"predicates": [_match("financingProvider", "dcid:USA"), level]},
+        frame_ref=keyed,
+    )
+    columns = [*_FLOW_COLUMNS, "financingProvider_type"]
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[columns, columns])
+
+    assert populations == [
+        {
+            "pair": [
+                [
+                    {
+                        "spec_id": _AID,
+                        "bindings": {"financingProvider": ["dcid:USA"]},
+                        "levels": {"financingProvider_type": "Country"},
+                    }
+                ],
+                [{"spec_id": _GNI, "bindings": {}}],
+            ],
+            "keys": {"financingRecipient": "financingRecipient"},
+        }
+    ]
+
+
+@_SHAPES
+def test_a_pooled_denominator_takes_no_narrowing_from_above(stored: bool) -> None:
+    pooled = _two_frames("share_of", "denominator_frame_ref", stored=stored)
+    tree = _node(
+        "filter", {"predicates": [_match("financingProvider", "dcid:USA")]}, frame_ref=pooled
+    )
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[_FLOW_COLUMNS, _FLOW_COLUMNS]
+    )
+
+    assert populations == [
+        {"spec_id": _AID, "bindings": {"financingProvider": ["dcid:USA"]}},
+        {"spec_id": _GNI, "bindings": {}},
+    ]
+
+
+@_SHAPES
+def test_a_key_column_crosses_under_its_mapped_name_and_its_namesake_stays(stored: bool) -> None:
+    """The key maps recipients to the denominator's `financingProvider`, so the numerator's
+    providers bind nothing there, and its recipients bind that column."""
+    keyed = _two_frames(
+        "share_of",
+        "denominator_frame_ref",
+        stored=stored,
+        numerator_by=["financingRecipient"],
+        denominator_by={"financingRecipient": "financingProvider"},
+    )
+    tree = _node(
+        "filter",
+        {
+            "predicates": [
+                _match("financingProvider", "dcid:USA"),
+                _match("financingRecipient", "dcid:GHA"),
+            ]
+        },
+        frame_ref=keyed,
+    )
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[_FLOW_COLUMNS, _FLOW_COLUMNS]
+    )
+
+    assert populations == [
+        {
+            "pair": [
+                [
+                    {
+                        "spec_id": _AID,
+                        "bindings": {
+                            "financingProvider": ["dcid:USA"],
+                            "financingRecipient": ["dcid:GHA"],
+                        },
+                    }
+                ],
+                [{"spec_id": _GNI, "bindings": {"financingProvider": ["dcid:GHA"]}}],
+            ],
+            "keys": {"financingRecipient": "financingProvider"},
+        }
+    ]
+
+
+@_SHAPES
+def test_a_join_that_states_no_keys_crosses_a_narrowing_under_its_own_names(stored: bool) -> None:
+    joined = _two_frames("join", "right_frame_ref", stored=stored)
+    level = {"kind": "place_level", "column": "financingRecipient_type", "level": "Country"}
+    tree = _node(
+        "filter",
+        {"predicates": [_match("financingRecipient", "dcid:KEN"), level]},
+        frame_ref=joined,
+    )
+    typed = [*_FLOW_COLUMNS, "financingRecipient_type"]
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[typed, _FLOW_COLUMNS])
+
+    assert populations == [
+        {
+            "spec_id": _AID,
+            "bindings": {"financingRecipient": ["dcid:KEN"]},
+            "levels": {"financingRecipient_type": "Country"},
+        },
+        {"spec_id": _GNI, "bindings": {"financingRecipient": ["dcid:KEN"]}},
+    ]
+
+
+def test_a_compare_takes_its_output_columns_from_its_right_side() -> None:
+    compare = {
+        "op_spec": {
+            "verb": "compare",
+            "parameters": {"on": {"observationAbout": "recipient"}},
+        },
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
+    tree = _node("filter", {"predicates": [_level("Country")]}, frame_ref=compare)
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[_COLUMNS, [*_GNI_COLUMNS, "observationAbout_type"]]
+    )
+
+    assert populations == [
+        {
+            "pair": [
+                [{"spec_id": _AID, "bindings": {}}],
+                [
+                    {
+                        "spec_id": _GNI,
+                        "bindings": {},
+                        "levels": {"observationAbout_type": "Country"},
+                    }
+                ],
+            ],
+            "keys": {"recipient": "observationAbout"},
+        }
+    ]
+
+
+def test_a_level_above_a_verb_of_no_keys_holds_only_where_a_side_carries_it() -> None:
+    sums = {
+        "op_spec": {"verb": "sum_of", "parameters": {}},
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
+    tree = _node("filter", {"predicates": [_level("Country")]}, frame_ref=sums)
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_TYPED, _COLUMNS])
+
+    assert populations == [
+        {"spec_id": _AID, "bindings": {}, "levels": {"observationAbout_type": "Country"}},
+        {"spec_id": _GNI, "bindings": {}},
+    ]
+    # The side the output takes its columns from must carry what is filtered on.
+    with pytest.raises(PopulationLevelColumnMissingError):
+        anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _TYPED])
+
+
+@pytest.mark.parametrize(
+    "slots_named", [True, False], ids=["slots-named", "slots-left-out-as-the-runner-writes"]
+)
+def test_a_keyed_pairing_whose_sides_both_count_gives_one_pairing_population(
+    slots_named: bool,
+) -> None:
     tree = _quotient(
         numerator_by=["recipient"],
         denominator_by={"recipient": "observationAbout"},
         numerator_entity={"reporter": "dcid:USA"},
     )
+    if not slots_named:
+        del tree["op_spec"]["parameters"]["denominator_frame_ref"]
 
+    assert [node["root"] for node in rolling_roots(_rolled(tree))] == [0, 1]
     assert anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _GNI_COLUMNS]) == [
         {
             "pair": [
@@ -441,21 +741,25 @@ def test_a_join_pairs_its_keys_through_right_keys_and_nests_a_pairing_on_a_side(
     assert [node["root"] for node in rolling_roots(_rolled(tree))] == [0, 1]
 
 
-@pytest.mark.parametrize(
-    "op_spec",
-    [
-        {"verb": "join", "parameters": {"right_frame_ref": _RIGHT}},
-        # A plan tree's op-spec carries parameters alone, and `on` runs one way
-        # for sum_of and the other for compare.
-        {"parameters": {"right_frame_ref": _RIGHT, "on": {"recipient": "observationAbout"}}},
-    ],
-    ids=["join-without-join_keys", "on-without-verb"],
-)
-def test_a_pairing_whose_keys_the_tree_leaves_open_raises_when_both_sides_count(
-    op_spec: dict[str, Any],
-) -> None:
+def test_a_join_that_leaves_its_keys_to_the_engine_counts_each_side_flat() -> None:
     tree = {
-        "op_spec": op_spec,
+        "op_spec": {"verb": "join", "parameters": {"right_frame_ref": _RIGHT}},
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
+
+    assert anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _COLUMNS]) == [
+        {"spec_id": _AID, "bindings": {}},
+        {"spec_id": _GNI, "bindings": {}},
+    ]
+
+
+def test_an_on_with_no_verb_raises_when_both_sides_count() -> None:
+    # A plan tree's op-spec carries parameters alone, and `on` runs one way
+    # for sum_of and the other for compare.
+    tree = {
+        "op_spec": {
+            "parameters": {"right_frame_ref": _RIGHT, "on": {"recipient": "observationAbout"}}
+        },
         "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
     }
 

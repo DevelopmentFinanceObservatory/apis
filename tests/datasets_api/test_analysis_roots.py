@@ -20,15 +20,16 @@ from dfo_frame_grammar.grammar import UnitRequest
 from datasets_api import analysis_roots
 from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
 from datasets_api.analysis_roots import (
-    FLOW_ENRICHMENT_COLUMNS,
     LiveRootSource,
-    enrichment_columns,
     frame_from_frame_layout,
     frame_ref_for,
     mint_options,
+    record_options,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.default_enrichment import coverage_roles, enrichment_columns
 from datasets_api.doors.refresh import RefreshRebuildFailed
+from datasets_api.manifest_models import CoverageModel
 from datasets_api.operations.submit import OperationSubmitted
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
@@ -60,51 +61,143 @@ _SPEC = "spec_" + "a" * 32
 _CV = "cv_" + "1" * 32
 
 
+_FLOW_COLUMNS = (
+    "financingProvider_type",
+    "financingRecipient_type",
+    "party_class",
+    "party_kind",
+    "party_whole",
+)
+
+
 @pytest.mark.parametrize(
-    ("identity", "columns"),
+    ("roles", "columns"),
     [
-        pytest.param({"entities": {"origin": ["country/DEU"]}}, FLOW_ENRICHMENT_COLUMNS, id="flow"),
+        pytest.param(("financingProvider", "financingRecipient"), _FLOW_COLUMNS, id="flow"),
         pytest.param(
-            {"entities": {"financingProvider": ["country/DEU"]}},
-            FLOW_ENRICHMENT_COLUMNS,
-            id="flow-column",
+            ("financingProvider",),
+            ("financingProvider_type", "party_class", "party_kind", "party_whole"),
+            id="one-party-role",
         ),
-        pytest.param({"open_roles": ["destination"]}, FLOW_ENRICHMENT_COLUMNS, id="open-flow"),
-        pytest.param(
-            {"entities": {"observationAbout": ["country/KEN"]}},
-            ("observationAbout_type",),
-            id="place",
-        ),
+        pytest.param(("observationAbout",), ("observationAbout_type",), id="place"),
+        pytest.param(("recipient",), (), id="untyped-role"),
     ],
 )
-def test_a_root_takes_the_enrichment_its_roles_need(identity: dict, columns: tuple) -> None:
-    assert enrichment_columns(identity) == columns
+def test_a_root_takes_the_enrichment_its_frame_s_roles_need(roles: tuple, columns: tuple) -> None:
+    assert enrichment_columns(roles) == columns
+
+
+def test_a_version_s_roles_are_its_coverage_dimensions_less_the_years() -> None:
+    coverage = CoverageModel(
+        rows=2,
+        dimensions=[
+            {"label": "financingProvider", "count": 2},
+            {"label": "financingRecipient", "count": 1},
+            {"label": "years", "count": 1},
+        ],
+    )
+
+    assert coverage_roles(coverage) == ("financingProvider", "financingRecipient")
+
+
+def _coverage(*roles: str) -> CoverageModel:
+    dimensions = [{"label": role, "count": 1} for role in (*roles, "years")]
+    return CoverageModel(rows=1, dimensions=dimensions)
 
 
 def test_mint_options_name_the_root_s_columns_cut_and_sorted_groupby() -> None:
-    flow = {"entities": {"origin": ["country/DEU"]}}
-
-    assert mint_options(RootRendering(columns=()), identity=flow) == {
+    assert mint_options(RootRendering(columns=())) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
     }
-    assert mint_options(RootRendering(without_party_totals=True), identity=flow) == {
+    assert mint_options(RootRendering(without_party_totals=True)) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
-        "columns": list(FLOW_ENRICHMENT_COLUMNS),
+        "enrichment": "default",
         "without_party_totals": True,
     }
     assert mint_options(
-        RootRendering(columns=(), groupby={"by": ["time_period", "origin"], "op": "sum"}),
-        identity=flow,
+        RootRendering(columns=(), groupby={"by": ["time_period", "origin"], "op": "sum"})
     ) == {
         "format": "parquet",
         "bundle": False,
         "layout": "frame",
         "groupby": {"by": ["origin", "time_period"], "op": "sum"},
     }
+
+
+@pytest.mark.parametrize(
+    ("roles", "expected"),
+    [
+        pytest.param(
+            ("financingProvider", "financingRecipient"),
+            {"columns": list(_FLOW_COLUMNS), "without_party_totals": True},
+            id="flow",
+        ),
+        pytest.param(
+            ("observationAbout",),
+            {"columns": ["observationAbout_type"], "without_party_totals": True},
+            id="place",
+        ),
+        pytest.param(("recipient",), {"without_party_totals": True}, id="untyped-role"),
+    ],
+)
+def test_a_record_keeps_the_columns_a_default_enrichment_resolved_to(
+    roles: tuple, expected: dict
+) -> None:
+    """In the key order a root naming those columns records."""
+    options = mint_options(RootRendering(without_party_totals=True))
+
+    recorded = record_options(options, coverage=_coverage(*roles))
+
+    assert recorded == {"format": "parquet", "bundle": False, "layout": "frame", **expected}
+    assert list(recorded) == ["format", "bundle", "layout", *expected]
+
+
+@pytest.mark.parametrize(
+    ("identity", "roles", "columns"),
+    [
+        pytest.param(
+            {"entities": {}},
+            ("financingProvider", "financingRecipient"),
+            list(_FLOW_COLUMNS),
+            id="flow-binding-and-opening-no-role",
+        ),
+        pytest.param(
+            {"entities": {"observationAbout": ["country/KEN"]}},
+            ("observationAbout",),
+            ["observationAbout_type"],
+            id="place",
+        ),
+    ],
+)
+def test_a_spec_root_is_one_serve_of_the_default_enrichment_of_its_version(
+    monkeypatch: pytest.MonkeyPatch, identity: dict, roles: tuple, columns: list
+) -> None:
+    """The identity names no role for a total over a role's members, so the mint resolves the
+    enrichment from the version it serves, and the record keeps the columns it resolved."""
+    served: list[dict] = []
+
+    def serve(*, options: object, **_: object) -> object:
+        served.append(options.model_dump(exclude_defaults=True))  # ty: ignore[unresolved-attribute]
+        return SimpleNamespace(content_version=_CV, coverage=_coverage(*roles), artifacts=[])
+
+    monkeypatch.setattr(
+        analysis_roots,
+        "served_spec",
+        lambda **_: SimpleNamespace(spec_id=_SPEC, identity=identity),
+    )
+    monkeypatch.setattr(analysis_roots, "serve_spec", serve)
+    roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
+
+    resolved = roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)
+
+    assert served == [
+        {"format": "parquet", "bundle": False, "layout": "frame", "enrichment": "default"}
+    ]
+    assert resolved.record["options"]["columns"] == columns
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:

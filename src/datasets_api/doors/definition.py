@@ -45,6 +45,7 @@ surface's `Deps` (`datasets_api.deps`) and builds none.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import logging
 import time
@@ -568,6 +569,25 @@ def definition_deps(deps: Deps, *, deadline: float | None) -> DefinitionDeps:
         rebuilds=deps.rebuilds,
         version_lister=deps.version_lister,
         variable_breadth=deps.variable_breadth,
+    )
+
+
+def inline_definition_deps(deps: Deps, *, seconds: float) -> DefinitionDeps:
+    """`definition_deps` for a caller that waits `seconds`, less than the
+    `definition_timeout_seconds` the sync budgets are sized for, and retries. The budgets shrink
+    in the same proportion, so a rebuild too large to finish in `seconds` is submitted as an
+    operation a retry finds. Read inline, it would reach the deadline, record nothing, and start
+    again on every retry."""
+    settings = deps.settings
+    share = min(1.0, seconds / settings.definition_timeout_seconds)
+    return dataclasses.replace(
+        definition_deps(deps, deadline=time.monotonic() + seconds),
+        settings=settings.model_copy(
+            update={
+                "sync_budget_rows": max(1, int(settings.sync_budget_rows * share)),
+                "sync_budget_requests": max(1, int(settings.sync_budget_requests * share)),
+            }
+        ),
     )
 
 

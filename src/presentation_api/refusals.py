@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi.exceptions import RequestValidationError
 
 from assembler.errors import BindingInvalid, FrameUnavailable
-from dfo_platform import Alternative, ProblemIssue, ProblemSpec
+from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec
 from dfo_platform.validation import validation_problem
 from presentation_api.codes import retryable_for
 
@@ -79,11 +79,18 @@ EXPIRED_FRAME_FIX = (
 
 
 def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
-    """`frame_unavailable`, at the status and retryability `exc.reason` gives. An expired frame's
-    detail ends with `EXPIRED_FRAME_FIX`."""
+    """`frame_unavailable`, at the status and retryability `exc.reason` gives, with the reason as
+    `cause.code`, so a client tells a frame it can rebuild from one taken down. An expired
+    frame's detail ends with `EXPIRED_FRAME_FIX`."""
     status, retryable = _FRAME_UNAVAILABLE_OUTCOME.get(exc.reason, (503, True))
     detail = f"{exc.detail}; {EXPIRED_FRAME_FIX}" if exc.reason == "expired" else exc.detail
-    return ProblemSpec(status=status, code="frame_unavailable", detail=detail, retryable=retryable)
+    return ProblemSpec(
+        status=status,
+        code="frame_unavailable",
+        detail=detail,
+        retryable=retryable,
+        cause=Cause(code=exc.reason),
+    )
 
 
 def request_validation_spec(exc: BaseException) -> ProblemSpec | None:

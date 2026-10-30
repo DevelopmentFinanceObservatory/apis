@@ -34,6 +34,7 @@ from assembler.catalogue import BakedReleaseRegistry
 from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, VocabularySource
 from dataset_store.snapshot import SnapshotReader
 from datasets_api.allowance import SharedAllowanceLedger
+from datasets_api.door_executor import build_door_executor
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.principals import Principals
 from datasets_api.recipe_store import RecipeReader
@@ -46,6 +47,7 @@ from graph_release.service import get_release_service
 from origin_catalogue import bound_catalogue
 from origin_catalogue.service import get_catalogue_service
 from presentation_api.codes import PRESENTATION_CODE_CATALOGUE, SHARE_CODE_CATALOGUE
+from presentation_api.config import PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY
 from presentation_api.doors.components import build_components_door
 from presentation_api.doors.frames import build_frames_door
 from presentation_api.doors.meta import build_meta_door
@@ -97,7 +99,9 @@ def presentation_surface(
     shares door mounts with a share store given or with no `revision_store` given, and builds
     whichever of the three is left out. `newest_frames` answers a live share slot's check for
     newer data (`presentation_api.newest_frames`); with none, every live slot serves its card's
-    own frame and states it stale.
+    own frame and states it stale. The frames door's bare `spec_id` route and a component create
+    whose `frame_ref` names a dataset id alone resolve through it too, and refuse
+    `frame_unavailable` without one.
 
     Each request binds the origin catalogue's loaded snapshot and the release service's served
     graph release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup.
@@ -115,6 +119,9 @@ def presentation_surface(
         capability_version,
     )
 
+    bare_reads = build_door_executor(
+        PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY, "frames-bare", surface="presentation"
+    )
     doors: tuple[DoorContribution, ...] = (
         build_meta_door(
             capability_version=capability_version, catalog_version=release.catalog_version
@@ -130,8 +137,10 @@ def presentation_surface(
             allowances=allowances,
             caller=caller_settings,
             principals=principals,
+            newest=newest_frames,
+            bare_reads=bare_reads,
         ),
-        build_frames_door(frame_store=frame_store),
+        build_frames_door(frame_store=frame_store, newest=newest_frames, bare_reads=bare_reads),
         build_release_door(release_registry=effective_release_registry),
     )
     if share_store is not None or revision_store is None:

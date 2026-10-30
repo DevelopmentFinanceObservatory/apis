@@ -92,6 +92,7 @@ from datasets_api.deps import DepsCell
 from datasets_api.description_store import LiveDescriptionStore
 from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.definition import DefinitionDeps
+from datasets_api.export_store import LiveExportStore
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
@@ -958,6 +959,7 @@ def compose(
                 reference_writer=reference_writer,
                 allowances=allowances,
                 recipe_store=recipe_store,
+                export_store=LiveExportStore(store=version_store),
                 description_store=description_store,
                 version_lister=version_lister,
                 code_index=code_index,

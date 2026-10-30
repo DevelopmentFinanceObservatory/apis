@@ -8,8 +8,10 @@ failures and empty `RETURNING` results raise `DatasetsStoreUnavailable`.
 under the subject id and every id in `revoked_under`, in the upsert statement, and under
 `lock_version_links` checks that the version still links the digest, so a pin completes only
 for a digest the version keeps. A pin naming a served id honours revocations under it, and a
-pin naming a posted id passes both ids. `remove_reference` soft-deletes a live row.
-`holds_reference` asks whether any row, live or removed, names a version.
+pin naming a posted id passes both ids. An export's reference (`EXPORT_REFERENCE_KIND`) passes
+`require_link=False`, since its record names its file and a derived frame's file is linked to no
+version. `remove_reference` soft-deletes a live row. `holds_reference` asks whether any row, live
+or removed, names a version.
 `list_live_reference_principals` is a read-only diagnostic query.
 """
 
@@ -32,6 +34,10 @@ from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
 # The pin door writes `pin` to the free-text kind column.
 PIN_REFERENCE_KIND = "pin"
+
+# The exports door writes `export`, under the principal `export:<export_id>`, so every deletion
+# keyed on references keeps an export's pinned copy.
+EXPORT_REFERENCE_KIND = "export"
 
 # Alerts use this marker when a pinned copy succeeds but its reference write fails. A retry writes
 # the reference without copying again. Keep the marker stable for alert policies.
@@ -125,6 +131,7 @@ class LiveArtifactReferenceWriter:
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> datetime:
         return self.claim_reference_unless_revoked(
             principal=principal,
@@ -134,6 +141,7 @@ class LiveArtifactReferenceWriter:
             reference_kind=reference_kind,
             now=now,
             revoked_under=revoked_under,
+            require_link=require_link,
         ).created_at
 
     def claim_reference_unless_revoked(
@@ -146,6 +154,7 @@ class LiveArtifactReferenceWriter:
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> ReferenceWrite:
         failure: str | None = None
         revocations_sql, revocations_params = _revocations(
@@ -156,21 +165,23 @@ class LiveArtifactReferenceWriter:
         changed = False
         try:
             with self._store.transaction() as tx:
-                # Under the lock, a re-render either replaced the link already, and this refuses,
-                # or sees the pinned location this reference's caller wrote, and keeps the link.
-                lock_version_links(tx, subject_id=subject_id, content_version=content_version)
-                linked = tx.fetch_one(
-                    "SELECT 1 AS linked FROM datasets.version_artifact "
-                    "WHERE subject_id = %s AND content_version = %s AND artifact_digest = %s "
-                    "LIMIT 1",
-                    (subject_id, content_version, artifact_digest),
-                )
-                if linked is None:
-                    raise ArtifactNotFound(
-                        id=subject_id,
-                        content_version=content_version,
-                        artifact_digest=artifact_digest,
+                if require_link:
+                    # Under the lock, a re-render either replaced the link already, and this
+                    # refuses, or sees the pinned location this reference's caller wrote, and
+                    # keeps the link.
+                    lock_version_links(tx, subject_id=subject_id, content_version=content_version)
+                    linked = tx.fetch_one(
+                        "SELECT 1 AS linked FROM datasets.version_artifact "
+                        "WHERE subject_id = %s AND content_version = %s AND artifact_digest = %s "
+                        "LIMIT 1",
+                        (subject_id, content_version, artifact_digest),
                     )
+                    if linked is None:
+                        raise ArtifactNotFound(
+                            id=subject_id,
+                            content_version=content_version,
+                            artifact_digest=artifact_digest,
+                        )
                 # Revocation check and upsert share a statement snapshot, and the check covers
                 # the version and its base version. Removed rows reactivate. Live rows remain
                 # unchanged and return no row.

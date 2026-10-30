@@ -19,7 +19,7 @@ from datasets_api.versions import MaterialisationRecord, Trigger
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
 # The schema covers version records, artifacts, revocations, references, caller allowances,
-# inventory, frame recipes, analysis answers, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# inventory, frame recipes, analysis answers, exports, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -115,6 +115,16 @@ CREATE TABLE datasets.analysis_answer (
     request_key TEXT PRIMARY KEY,
     subject_id TEXT NOT NULL,
     content_version TEXT NOT NULL,
+    body TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE TABLE datasets.export (
+    export_id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    artifact_digest TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    object_name TEXT NOT NULL,
     body TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );

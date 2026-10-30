@@ -1,8 +1,8 @@
 """Admission of new pinned copies against the daily pin budgets.
 
 Every new pinned copy a caller asks for goes through `copy_to_pinned`: the pin door's named
-artifact, and each frame and derived root a share's create, replace or snapshot conversion pins
-(`presentation_store.LiveFrameStore.pin`). The serving-frame copies a pin makes (`doors.pin`)
+artifact, an export's file (`exports`), and each frame and derived root a share's create, replace
+or snapshot conversion pins (`presentation_store.LiveFrameStore.pin`). The serving-frame copies a pin makes (`doors.pin`)
 and the canonical frames `maintenance` renders again copy without it and spend nothing. A copy spends one unit of the day's pin budget
 (`AllowanceKind.pin_budget`, `DATASETS_PIN_DAILY_MAX`) and, for an open caller, one unit of the
 open callers' budget (`AllowanceKind.open_pin_budget`, `DATASETS_PIN_OPEN_DAILY_MAX`) and one of
@@ -25,7 +25,7 @@ import logging
 from datetime import datetime
 from types import MappingProxyType
 
-from artifact_store import ArtifactNotFoundError, ArtifactStore, Tier
+from artifact_store import ArtifactNotFoundError, ArtifactStore, StoredArtifact, Tier
 from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceExhausted,
@@ -91,11 +91,12 @@ def copy_to_pinned(
     allowances: SharedAllowanceLedger | None,
     caller: Caller | None,
     now: datetime,
-) -> None:
+) -> StoredArtifact:
     """Copy `artifact_digest` from the working tier to the pinned tier, spending the units one
-    new pinned copy takes (see the module docstring) before it. `caller` names an open caller,
-    and `None` a caller holding the pin grant or a service write, which spends the pin budget
-    alone. `allowances=None` copies without spending, for an operator's run.
+    new pinned copy takes (see the module docstring) before it, and return the pinned copy.
+    `caller` names an open caller, and `None` a caller holding the pin grant or a service
+    write, which spends the pin budget alone. `allowances=None` copies without spending, for an
+    operator's run.
 
     Raises:
         PinBudgetExhausted: The day's pin budget is spent. Nothing is copied.
@@ -105,8 +106,7 @@ def copy_to_pinned(
         ArtifactNotFoundError: The working bytes are gone. The units are given back.
     """
     if allowances is None:
-        artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
-        return
+        return artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
     spends = [Spend(BUDGET_KEY, AllowanceKind.pin_budget)]
     if caller is not None:
         spends += [
@@ -127,6 +127,7 @@ def copy_to_pinned(
         raise
     if copied.deduplicated:
         _refund(allowances, spends, now=now)
+    return copied
 
 
 def _refund(allowances: SharedAllowanceLedger, spends: list[Spend], *, now: datetime) -> None:

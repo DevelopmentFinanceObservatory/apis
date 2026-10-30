@@ -1,10 +1,12 @@
 """Checks `DatasetsNewestFrames` sends a dataset frame through the frame refresh under the
 rendering its card recorded, and a derived frame through the analysis door's keyed path as a
 bare derived root with `latest=true`: a stored answer computes nothing, and a key another check
-is computing joins it. Both pending answers read as `NewestPending`."""
+is computing joins it. Both pending answers read as `NewestPending`. A bare dataset id reads the
+dataset version the runner's Spec root of it reads."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,12 +14,17 @@ import pytest
 
 import presentation_api.newest_frames as newest_frames
 from assembler.ports import FrameRef
-from datasets_api.analysis import AnalysisPending, AnalysisRequest, DerivedRoot
+from datasets_api import analysis_roots
+from datasets_api.admission import within_sync_budget
+from datasets_api.analysis import AnalysisPending, AnalysisRequest, DerivedRoot, SpecRoot
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
+from datasets_api.doors import definition as definition_door
 from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.refresh import FrameMoved, FramePair, FramePending, StoredRendering
 from datasets_api.recorded_rendering import MintingOptions
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
+from series_coverage.index import Estimate
 
 _DATASET = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32)
 _DATASET_NOW = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "c" * 32)
@@ -44,6 +51,7 @@ class _Calls:
         self.refresh: list[tuple[str, str, StoredRendering | None]] = []
         self.prepared: list[AnalysisRequest] = []
         self.run: int = 0
+        self.inline_seconds: list[float] = []
         # Called inside a run, as another check arriving while it computes.
         self.during_run: Any = None
 
@@ -77,7 +85,12 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> _Calls:
             during()
         return SimpleNamespace(body=lambda: _answer_body(seen.answers["run"]))
 
+    def inline(current: object, *, seconds: float):
+        seen.inline_seconds.append(seconds)
+        return current
+
     monkeypatch.setattr(newest_frames, "definition_deps", lambda current, deadline: current)
+    monkeypatch.setattr(newest_frames, "inline_definition_deps", inline)
     monkeypatch.setattr(newest_frames, "answer_frame_refresh", refresh)
     monkeypatch.setattr(newest_frames, "prepare_analysis", prepare)
     monkeypatch.setattr(newest_frames, "stored_answer", stored)
@@ -156,3 +169,83 @@ def test_a_rebuild_over_budget_is_pending_with_its_retry_time_on_either_path(cal
 
     assert newest.newest(_DATASET, rendering=None) == NewestPending(retry_after_s=2.0)
     assert newest.newest(_DERIVED, rendering=None) == NewestPending(retry_after_s=3.5)
+
+
+class _SpecRoots:
+    """`LiveRootSource` resolving every root to `answer`'s dataset, or raising `answer`."""
+
+    def __init__(self, answer: FrameRef | Exception) -> None:
+        self.answer = answer
+        self.resolved: list[tuple[object, bool]] = []
+
+    def resolve(self, root: object, *, latest: bool, trace_id: object) -> Any:
+        self.resolved.append((root, latest))
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return SimpleNamespace(dataset=self.answer)
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        pytest.param(_DATASET_NOW, _DATASET_NOW, id="served"),
+        pytest.param(
+            AnalysisPending(operations=["op_3"], retry_after_s=2.0),
+            NewestPending(retry_after_s=2.0),
+            id="building",
+        ),
+    ],
+)
+def test_a_bare_spec_id_reads_the_dataset_the_runner_reads_for_its_spec_root(
+    calls: _Calls,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: FrameRef | Exception,
+    expected: FrameRef | NewestPending,
+):
+    """The runner's Spec root of the id in its default rendering, its dataset version named."""
+    roots = _SpecRoots(answer)
+    monkeypatch.setattr(analysis_roots, "LiveRootSource", lambda **_: roots)
+
+    assert _newest().newest_of_spec(_DATASET.spec_id) == expected
+    assert roots.resolved == [(SpecRoot(spec_id=_DATASET.spec_id), False)]
+    assert calls.inline_seconds == [5]
+
+
+@dataclass
+class _DefinitionView:
+    settings: DatasetsBuildSettings
+
+
+@pytest.mark.parametrize(
+    ("seconds", "requests", "inline"),
+    [
+        pytest.param(15, 5, True, id="fits-the-wait"),
+        pytest.param(15, 6, False, id="fits-the-door-budget-alone"),
+        pytest.param(120, 40, True, id="the-door-budget-itself"),
+        pytest.param(600, 41, False, id="a-longer-wait-keeps-the-door-budget"),
+    ],
+)
+def test_a_rebuild_too_large_for_the_callers_wait_goes_to_an_operation(
+    monkeypatch: pytest.MonkeyPatch, seconds: float, requests: int, inline: bool
+):
+    """An inline rebuild past the wait reaches the deadline and records nothing, so every retry
+    would start it again. Sized to the wait, it is submitted, and a retry finds it."""
+    settings = DatasetsBuildSettings(
+        definition_timeout_seconds=120, sync_budget_rows=100_000, sync_budget_requests=40
+    )
+    monkeypatch.setattr(
+        definition_door, "definition_deps", lambda deps, deadline: _DefinitionView(settings)
+    )
+
+    view = definition_door.inline_definition_deps(
+        SimpleNamespace(settings=settings), seconds=seconds
+    )
+
+    assert (
+        within_sync_budget(
+            Estimate(rows=1, requests=requests),
+            sync_budget_rows=view.settings.sync_budget_rows,
+            sync_budget_requests=view.settings.sync_budget_requests,
+        )
+        is inline
+    )

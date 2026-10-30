@@ -6,8 +6,8 @@ validation codes stay with the contract whose request model determines them.
 The contract-wide comparison misses a code served at the wrong endpoint or status, as when the
 publish door emitted `identity_collision` (409) and `pin_not_permitted` (403), which other Datasets
 endpoints already registered. The per-endpoint check compares `(code, status)` for
-`datasets.publish` and `datasets.operations`, the Datasets doors with reproducible exception
-exemplars. Other endpoints also serve validation codes or codes raised outside their door
+`datasets.publish`, `datasets.operations`, `datasets.exports` and `datasets.export_link`, the
+Datasets doors with reproducible exception exemplars. Other endpoints also serve validation codes or codes raised outside their door
 classifiers, so comparing them would report false gaps. Shared Search observation warnings must
 list every resolve door. A mismatch fails in either direction.
 """
@@ -32,8 +32,10 @@ import skills_api.codes as skills_codes
 from datasets_api.app import classify_datasets_exception
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
+from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.publish import build_publish_door
+from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
 from search.engine.config import SEARCH_RESOLVE_DOORS
 from search.models import NoDataReason
@@ -185,7 +187,7 @@ def test_shared_observations_warnings_name_every_resolve_door():
 
 # One `DoorContribution` per Datasets endpoint this module can verify
 # byte-for-byte against the registry's own per-(code, http_status) mapping
-# -- see this module's own docstring for why only these two, and why every
+# -- see this module's own docstring for why only these, and why every
 # other Datasets endpoint (and every other contract) stays out.
 _ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
     "datasets.publish": build_publish_door(
@@ -194,14 +196,22 @@ _ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
     "datasets.operations": build_meta_door(
         deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
     ),
+    "datasets.exports": build_exports_door(
+        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
+    ),
+    "datasets.export_link": build_export_link_door(deps=DepsCell()),
 }
 
 
-def _served_status_codes(contribution: DoorContribution) -> frozenset[tuple[str, int]]:
-    """Returns classifier `(code, status)` pairs; an unrecognized exemplar signals a test mismatch."""
+def _served_status_codes(
+    contribution: DoorContribution, *, endpoint: str
+) -> frozenset[tuple[str, int]]:
+    """Returns classifier `(code, status)` pairs under `endpoint`, bound as the route binds it;
+    an unrecognized exemplar signals a test mismatch."""
     outcomes: set[tuple[str, int]] = set()
     for exemplar in contribution.exception_exemplars:
-        spec = classify_datasets_exception(exemplar)
+        with bound_registry_endpoint(endpoint):
+            spec = classify_datasets_exception(exemplar)
         assert spec is not None, (
             f"{exemplar!r} (type {type(exemplar).__name__}) was declared as this door's own "
             "exception_exemplars but classify_datasets_exception returned None for it"
@@ -227,7 +237,7 @@ def _registered_status_codes(endpoint: str) -> frozenset[tuple[str, int]]:
 
 
 def _assert_endpoint_bijection(*, endpoint: str, contribution: DoorContribution) -> None:
-    served = frozenset(_served_status_codes(contribution))
+    served = frozenset(_served_status_codes(contribution, endpoint=endpoint))
     registered = _registered_status_codes(endpoint)
     unregistered = sorted(served - registered)
     unserved = sorted(registered - served)
@@ -248,6 +258,11 @@ def test_datasets_operations_served_codes_match_registry_by_status():
     _assert_endpoint_bijection(
         endpoint="datasets.operations", contribution=_ENDPOINT_DOOR_EXEMPLARS["datasets.operations"]
     )
+
+
+@pytest.mark.parametrize("endpoint", ["datasets.exports", "datasets.export_link"])
+def test_datasets_exports_served_codes_match_registry_by_status(endpoint: str):
+    _assert_endpoint_bijection(endpoint=endpoint, contribution=_ENDPOINT_DOOR_EXEMPLARS[endpoint])
 
 
 def test_no_served_code_resolves_to_a_retired_registry_entry():

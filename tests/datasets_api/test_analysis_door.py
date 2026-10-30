@@ -94,7 +94,7 @@ def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same_reading_no
     assert body["summary"]["verb"] == "quotient_of"
     assert body["rows"] == body["summary"]["rows"] == 4
     assert body["role_keys"] == ["financingRecipient", "financingRecipient_party_kind"]
-    assert body["execution_identity"]["engine_version"] == "0.9.0"
+    assert body["execution_identity"]["engine_version"] == "0.9.1"
     assert first.headers["cache-control"] == "no-store"
     assert stores.snapshot_reader.read_version(member["spec"]["spec_id"], member["content_version"])
     assert again.json() == body
@@ -168,6 +168,48 @@ def test_the_anchor_route_answers_the_latest_period_and_stores_nothing(
         "roots": [{"spec_id": AID, "content_version": AID_V1}],
     }
     assert stores.version_count() == 0
+
+
+def test_a_rolling_step_over_a_two_sided_verb_stores_its_slots_and_replays_on_latest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored recipe names each frame slot in its op-specs, so a `latest` replay walks both
+    sides of the `quotient_of` as the first run did and, with no newer version of either
+    dataset, answers the same frame."""
+    stores = Stores()
+    roots = source(stores, newest={AID: AID_V1, POPULATION: POPULATION_V1})
+    tree = step(
+        "growth",
+        _TREE,
+        entity_by=["destination"],
+        window_start={"anchor": "latest", "offset": -1},
+        window_end={"anchor": "latest", "offset": 0},
+    )
+    with _client(stores, roots, monkeypatch) as client:
+        first = client.post(_PATH, json={"tree": tree})
+        assert first.status_code == 200, first.text
+        member = first.json()["ref"]["members"][0]
+        stored = {
+            "spec_id": member["spec"]["spec_id"],
+            "content_version": member["content_version"],
+        }
+        replayed = client.post(_PATH, json={"tree": stored, "latest": True})
+
+    recipe = stores.recipe_store.read_recipe(**stored)
+    assert recipe is not None
+    growth = recipe.body["tree"]["op_spec"]
+    quotient = recipe.body["tree"]["inputs"]["frame_ref"]["op_spec"]
+    assert "frame_ref" in growth
+    assert "frame_ref" in quotient
+    assert "denominator_frame_ref" in quotient["parameters"]
+    assert growth["parameters"]["rolling"]["population"] == [
+        {
+            "pair": [[{"spec_id": AID, "bindings": {}}], [{"spec_id": POPULATION, "bindings": {}}]],
+            "keys": {"financingRecipient": "observationAbout"},
+        }
+    ]
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["ref"] == first.json()["ref"]
 
 
 def test_the_anchor_route_refuses_roots_past_the_root_row_bound(

@@ -56,6 +56,24 @@
   {
     "has_description": true,
     "method": "POST",
+    "name": "post_export",
+    "operation_id": "datasets_post_export",
+    "path": "/api/datasets/exports",
+    "summary": "Post Export",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_export",
+    "operation_id": "datasets_get_export",
+    "path": "/api/datasets/exports/{export_id}",
+    "summary": "Get Export",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
     "name": "post_publish",
     "operation_id": "datasets_post_publish",
     "path": "/api/datasets/frames/publish",
@@ -708,6 +726,15 @@
     "operation_id": "presentation_read_rendered_component_data",
     "path": "/api/presentation/components/{component_id}/revisions/{revision}/render/data",
     "summary": "Read Rendered Component Data",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_newest_frame",
+    "operation_id": "presentation_get_newest_frame",
+    "path": "/api/presentation/frames/{spec_id}",
+    "summary": "Get Newest Frame",
     "surface": "presentation"
   },
   {

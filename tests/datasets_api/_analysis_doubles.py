@@ -40,7 +40,12 @@ _STAT_VAR = "dcid:Amount_ODA"
 _POPULATION_STAT_VAR = "dcid:Count_Person"
 
 
-def aid_frame(*, scale: float = 1.0, stat_var: str = _STAT_VAR) -> Frame:
+def aid_frame(
+    *,
+    scale: float = 1.0,
+    stat_var: str = _STAT_VAR,
+    years: tuple[str, ...] = ("2021", "2022"),
+) -> Frame:
     """ODA from one donor to two recipients over 2021 and 2022, each recipient a party."""
     rows = [
         {
@@ -58,6 +63,7 @@ def aid_frame(*, scale: float = 1.0, stat_var: str = _STAT_VAR) -> Frame:
             ("country/NGA", "country/DEU", "2021", 20.0),
             ("country/NGA", "country/DEU", "2022", 30.0),
         )
+        if year in years
     ]
     return build_frame(
         role_keys=["financingRecipient", "financingRecipient_party_kind", "origin"], rows=rows
@@ -89,7 +95,7 @@ def _options(rendering: RootRendering) -> dict[str, Any]:
     no enrichment columns where `rendering` names none."""
     if rendering.columns is None:
         rendering = rendering.model_copy(update={"columns": ()})
-    return mint_options(rendering, identity={})
+    return mint_options(rendering)
 
 
 def _record(dataset: FrameRef, options: Mapping[str, Any]) -> dict[str, Any]:
