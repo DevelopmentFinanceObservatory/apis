@@ -191,10 +191,9 @@ def build_exports_door(
             ProvenanceUnavailable(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
             ExportOverCeiling(format="csv", count=1, cap=0),
-            *(
-                NewestVersionUnservable(code=code, detail="exemplar")
-                for code in ("service_unavailable", "internal_error", "snapshot_not_found")
-            ),
+            NewestVersionUnservable(code="service_unavailable", detail="exemplar"),
+            NewestVersionUnservable(code="internal_error", detail="exemplar"),
+            NewestVersionUnservable(code="snapshot_not_found", detail="exemplar"),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
             PinBudgetExhausted(limit=0, now=exemplar_day),
