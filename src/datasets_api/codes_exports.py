@@ -2,12 +2,13 @@
 
 `provenance_unavailable` and `licence_not_redistributable` are the door's own. Its other refusals
 reuse codes other doors own: `over_ceiling` (`codes_materialise`), and the platform's
-`not_found` and `allowance_exhausted`.
+`not_found` and `allowance_exhausted`. `NewestVersionUnservable` carries whichever registered
+code stands for why a bare `spec_id` could not be resolved.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from dfo_platform.problem import Refusal
 
@@ -76,3 +77,24 @@ class ExportNotFound(Refusal):
     def __init__(self, *, export_id: str) -> None:
         self.export_id = export_id
         super().__init__(f"no export is recorded under {export_id!r}")
+
+
+class NewestVersionUnservable(Refusal):
+    """A bare `spec_id`'s newest version cannot be served (`exports.resolve_export_frame`).
+    It carries a code `datasets.exports` registers: `service_unavailable` (503, retryable)
+    while the version builds or for a cause a retry may clear, `internal_error` (500) for a
+    server fault, and `snapshot_not_found` (404) for any other cause, whose own code and
+    detail its detail names."""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        detail: str,
+        retryable: bool = False,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        self.code = code
+        self.retryable = retryable
+        self.headers = headers
+        super().__init__(detail)

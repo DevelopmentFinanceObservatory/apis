@@ -13,6 +13,7 @@ import pytest
 
 import presentation_api.newest_frames as newest_frames
 from assembler.ports import FrameRef
+from datasets_api import analysis_roots
 from datasets_api.analysis import AnalysisPending, AnalysisRequest, DerivedRoot, SpecRoot
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses
@@ -192,7 +193,7 @@ def test_a_bare_spec_id_reads_the_dataset_the_runner_reads_for_its_spec_root(
 ):
     """The runner's Spec root of the id in its default rendering, its dataset version named."""
     roots = _SpecRoots(answer)
-    monkeypatch.setattr(newest_frames, "LiveRootSource", lambda **_: roots)
+    monkeypatch.setattr(analysis_roots, "LiveRootSource", lambda **_: roots)
 
     assert _newest().newest_of_spec(_DATASET.spec_id) == expected
     assert roots.resolved == [(SpecRoot(spec_id=_DATASET.spec_id), False)]

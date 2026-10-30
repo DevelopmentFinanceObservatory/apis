@@ -35,6 +35,7 @@ from datasets_api.deps import DepsCell
 from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.publish import build_publish_door
+from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
 from search.engine.config import SEARCH_RESOLVE_DOORS
 from search.models import NoDataReason
@@ -202,11 +203,15 @@ _ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
 }
 
 
-def _served_status_codes(contribution: DoorContribution) -> frozenset[tuple[str, int]]:
-    """Returns classifier `(code, status)` pairs; an unrecognized exemplar signals a test mismatch."""
+def _served_status_codes(
+    contribution: DoorContribution, *, endpoint: str
+) -> frozenset[tuple[str, int]]:
+    """Returns classifier `(code, status)` pairs under `endpoint`, bound as the route binds it;
+    an unrecognized exemplar signals a test mismatch."""
     outcomes: set[tuple[str, int]] = set()
     for exemplar in contribution.exception_exemplars:
-        spec = classify_datasets_exception(exemplar)
+        with bound_registry_endpoint(endpoint):
+            spec = classify_datasets_exception(exemplar)
         assert spec is not None, (
             f"{exemplar!r} (type {type(exemplar).__name__}) was declared as this door's own "
             "exception_exemplars but classify_datasets_exception returned None for it"
@@ -232,7 +237,7 @@ def _registered_status_codes(endpoint: str) -> frozenset[tuple[str, int]]:
 
 
 def _assert_endpoint_bijection(*, endpoint: str, contribution: DoorContribution) -> None:
-    served = frozenset(_served_status_codes(contribution))
+    served = frozenset(_served_status_codes(contribution, endpoint=endpoint))
     registered = _registered_status_codes(endpoint)
     unregistered = sorted(served - registered)
     unserved = sorted(registered - served)

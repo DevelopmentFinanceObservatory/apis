@@ -25,7 +25,7 @@ states the slot `stale`.
 
 `NewestFrames.newest_of_spec` answers a bare `spec_` id, which the frames door and a component
 create accept in place of a pair, with the dataset version the analysis runner reads
-for a Spec root `{spec_id}` (`datasets_api.analysis_roots.LiveRootSource.resolve`): the served
+for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`): the served
 definition's newest version in the root's default rendering, rebuilt when its head is stale.
 `resolve_bare_spec` turns its refusals into the `frame_unavailable` the presentation doors serve.
 
@@ -49,12 +49,11 @@ from datasets_api.analysis import (
     AnalysisPending,
     AnalysisRequest,
     DerivedRoot,
-    SpecRoot,
     prepare_analysis,
     run_prepared,
     stored_answer,
 )
-from datasets_api.analysis_roots import LiveRootSource
+from datasets_api.analysis_roots import LiveRootSource, newest_spec_version
 from datasets_api.app import classify_datasets_exception
 from datasets_api.current import DefinitionDeps
 from datasets_api.deps import Deps, DepsCell
@@ -157,12 +156,13 @@ class DatasetsNewestFrames:
     def newest_of_spec(self, spec_id: str) -> FrameRef | NewestPending:
         current = self._cell.get()
         deps = definition_deps(current, deadline=time.monotonic() + self._budget_seconds)
-        source = LiveRootSource(deps=deps, recipes=current.recipe_store)
         try:
-            root = source.resolve(SpecRoot(spec_id=spec_id), latest=False, trace_id=get_trace_id())
+            dataset = newest_spec_version(
+                spec_id, deps=deps, recipes=current.recipe_store, trace_id=get_trace_id()
+            )
         except AnalysisPending as pending:
             return NewestPending(retry_after_s=pending.retry_after_s)
-        return FrameRef(spec_id=root.dataset.spec_id, content_version=root.dataset.content_version)
+        return FrameRef(spec_id=dataset.spec_id, content_version=dataset.content_version)
 
     def _derived_answer(
         self, frame: FrameRef, *, current: Deps, deps: DefinitionDeps, trace_id: str | None

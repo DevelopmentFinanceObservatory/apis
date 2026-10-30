@@ -6,7 +6,10 @@
   selector renders. It admits every caller, and the site's proxy forwards it. The caller is
   named as the pin door names it: a holder of the `pin` grant spends the
   day's pin budget alone, and any other caller is resolved (`resolve_caller`) and spends its
-  `pin` allowance, so data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`.
+  `pin` allowance, so data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`. A frame
+  of a dataset id alone (`{spec_id}`) is first resolved on the work executor to the version the
+  analysis runner reads for a Spec root of it (`exports.resolve_export_frame`), and the request
+  then runs as one naming that pair.
 - `GET /api/datasets/exports/{export_id}` answers 302 to a URL signed for five minutes to the
   export's pinned file, with `Cache-Control: no-store`. It admits every caller and never
   renders. A version revoked since the export was prepared refuses `snapshot_revoked`.
@@ -32,6 +35,7 @@ from datasets_api.codes_exports import (
     ExportNotFound,
     ExportOverCeiling,
     LicenceNotRedistributable,
+    NewestVersionUnservable,
     ProvenanceUnavailable,
 )
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, SpecNotFound
@@ -43,13 +47,15 @@ from datasets_api.doors.files import (
     SELECTOR_RENDERING_EXCEPTION_TYPES,
     classify_files_exception,
 )
-from datasets_api.doors.mint_errors import MintBackpressure
+from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.exports import (
-    ExportRequest,
+    BareExportFrame,
+    ExportRequestBody,
     ExportResponse,
     prepare_export,
     recorded_export,
+    resolve_export_frame,
     sign_export,
 )
 from datasets_api.headers import no_store_headers
@@ -58,8 +64,10 @@ from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetEx
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, run_with_timings
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
+from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
 from spec_registry import IdentityQuarantined
+from spec_registry.errors import IdentityCollision
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +94,16 @@ _REDIRECT_RESPONSE = {
 }
 
 
+def _passes_through(exemplar: BaseException) -> bool:
+    """Whether a refusal a bare `spec_id`'s rebuild raises reaches the caller unchanged: its
+    code is one `datasets.exports` registers, as `exports.resolve_export_frame` decides."""
+    try:
+        with bound_registry_endpoint("datasets.exports"):
+            return classify_mint_exception(exemplar) is not None
+    except LookupError:
+        return False
+
+
 def build_exports_door(
     *,
     deps: DepsCell,
@@ -98,10 +116,12 @@ def build_exports_door(
     router = APIRouter(route_class=granted_route_class(principals.parse))
 
     @router.post(PREPARE_PATH, response_model=ExportResponse)
-    async def post_export(body: ExportRequest, request: Request) -> JSONResponse:
+    async def post_export(body: ExportRequestBody, request: Request) -> JSONResponse:
         """Prepare one exact frame version as a file in the pinned tier and answer its facts
-        and its link's path. A repeat request answers the same facts and spends nothing; a new
-        pinned copy spends one unit of the caller's daily pin allowance."""
+        and its link's path. A frame of a dataset id alone exports that dataset's newest
+        version, which the answer's `frame` names. A repeat request answers the same facts and
+        spends nothing; a new pinned copy spends one unit of the caller's daily pin
+        allowance."""
         current = deps.get()
         granted: Principal = request.state.principal
         caller: Caller | None = (
@@ -109,13 +129,26 @@ def build_exports_door(
             if Grant.pin in granted.grants
             else resolve_caller(request, current.settings.caller)
         )
+        retrieval = request_definition_deps(current)
         with door_call("export", logger=logger) as call:
+            frame = body.frame
+            if isinstance(frame, BareExportFrame):
+                frame = await _run_retrieval(
+                    current.work_executor,
+                    resolve_export_frame,
+                    deps=retrieval,
+                    timings=call.timings,
+                    refuse=ExportBackpressure,
+                    frame=frame,
+                    current=current,
+                )
+            export_request = body.resolved(frame)
             facts = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
                     recorded_export,
                     call.timings,
-                    request=body,
+                    request=export_request,
                     store=current.export_store,
                 ),
                 refuse=ExportBackpressure,
@@ -124,10 +157,10 @@ def build_exports_door(
                 facts = await _run_retrieval(
                     current.work_executor,
                     prepare_export,
-                    deps=request_definition_deps(current),
+                    deps=retrieval,
                     timings=call.timings,
                     refuse=ExportBackpressure,
-                    request=body,
+                    request=export_request,
                     caller=caller,
                     current=current,
                 )
@@ -147,6 +180,7 @@ def build_exports_door(
             ProvenanceUnavailable,
             LicenceNotRedistributable,
             ExportOverCeiling,
+            NewestVersionUnservable,
             CallerHeaderInvalid,
             CallerUnresolved,
             PinBudgetExhausted,
@@ -167,6 +201,10 @@ def build_exports_door(
             ProvenanceUnavailable(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
             ExportOverCeiling(format="csv", count=1, cap=0),
+            *(
+                NewestVersionUnservable(code=code, detail="exemplar")
+                for code in ("service_unavailable", "internal_error", "snapshot_not_found")
+            ),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),
             PinBudgetExhausted(limit=0, now=exemplar_day),
@@ -181,6 +219,16 @@ def build_exports_door(
                 exemplar
                 for exemplar in MINT_EXCEPTION_EXEMPLARS
                 if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
+            ),
+            # A bare `spec_id`'s rebuild raises what a mint and the registry raise, and the
+            # ones whose codes this endpoint registers pass through.
+            *(
+                exemplar
+                for exemplar in (
+                    *MINT_EXCEPTION_EXEMPLARS,
+                    IdentityCollision(subject_id="spec_exemplar"),
+                )
+                if _passes_through(exemplar)
             ),
         ),
     )

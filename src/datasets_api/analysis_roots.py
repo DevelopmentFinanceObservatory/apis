@@ -27,7 +27,7 @@ group totals out of a sum or rank and to rank places at one level.
 A Spec root is served as the definition door serves a registered id (`doors.definition`): its
 newest version of the rendering, rebuilt when its head is stale. A dataset root under `latest`
 is served the same way with the rendering it records, so it is read by its rendering, since its
-version alone can record two renderings that the newest data splits. A rebuild
+version alone can record two renderings that the newest data splits. `newest_spec_version` names the dataset version a Spec root reads. A rebuild
 over the inline budget answers `AnalysisPending` naming its operation, and a rebuild that failed
 and will not be retried refuses as the refresh door refuses it (`RefreshRebuildFailed`).
 """
@@ -417,6 +417,23 @@ class LiveRootSource:
         return recorded_dataset_root(record)
 
 
+def newest_spec_version(
+    spec_id: str, *, deps: DefinitionDeps, recipes: RecipeReader, trace_id: str | None
+) -> FrameRef:
+    """The dataset version a Spec root `{spec_id}` reads, in its default rendering, named by the
+    served id it is recorded under. A bare `spec_id` read by the Presentation frames door, a
+    component create or an export resolves through this.
+
+    Raises:
+        AnalysisPending: The version is building.
+        Exception: Any refusal of the serve, as `LiveRootSource.resolve` raises it.
+    """
+    root = LiveRootSource(deps=deps, recipes=recipes).resolve(
+        SpecRoot(spec_id=spec_id), latest=False, trace_id=trace_id
+    )
+    return root.dataset
+
+
 def _pending(operation_id: str) -> AnalysisPending:
     return AnalysisPending(
         operations=(operation_id,), retry_after_s=OPERATION_SUBMIT_RETRY_AFTER_MS / 1000
@@ -432,5 +449,6 @@ __all__ = [
     "frame_of_stored",
     "frame_ref_for",
     "mint_options",
+    "newest_spec_version",
     "requests_kinds",
 ]

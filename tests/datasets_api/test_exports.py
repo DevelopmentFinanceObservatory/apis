@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,12 +19,19 @@ import datasets_api.exports as exports_module
 from artifact_store import LiveArtifactInventory, Tier
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.allowance import BUDGET_KEY, LiveAllowanceLedger
+from datasets_api.analysis import AnalysisPending
+from datasets_api.codes_materialise import SpecNotExportable
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.doors.definition import SpecNotFound
+from datasets_api.doors.mint_errors import MintBackpressure
+from datasets_api.doors.recipe import RecipeNotFound
+from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.export_store import LiveExportStore
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.caller import address_key
-from spec_registry import LiveSpecRegistry
+from spec_registry import IdentityQuarantined, LiveSpecRegistry
+from spec_registry.errors import IdentityCollision
 from spec_registry.reader import LiveSpecReader
 
 from ._analysis_doubles import Stores
@@ -428,8 +436,10 @@ def test_an_unknown_export_id_refuses_not_found(rig: _Rig):
         {"frame": {"spec_id": "x_1", "content_version": "cv_1"}},
         {"frame": {"spec_id": "spec_1", "content_version": "cv_1"}, "format": "json"},
         {"frame": {"spec_id": "spec_1", "content_version": "cv_1"}, "labels": True},
+        {"frame": {"spec_id": "ops_" + "d" * 32}},
+        {"frame": {"spec_id": "spec_1"}},
     ],
-    ids=["unknown-id-kind", "unknown-format", "unknown-key"],
+    ids=["unknown-id-kind", "unknown-format", "unknown-key", "bare-derived", "bare-short"],
 )
 def test_a_malformed_request_refuses_request_invalid(body: dict[str, Any], monkeypatch):
     rig = _Rig("fetched", monkeypatch)
@@ -450,3 +460,107 @@ def _export_id(frame: dict[str, str], fmt: str, *, bundle: bool) -> str:
 
 def _forbidden(**_: object) -> object:
     raise AssertionError("a recorded export renders nothing")
+
+
+def _resolving(monkeypatch: pytest.MonkeyPatch, answer: Any) -> list[str]:
+    """Answer every bare id's resolve with `answer`, a pair or an exception to raise, and
+    return the ids asked about."""
+    asked: list[str] = []
+
+    def newest(spec_id: str, **_: object) -> Any:
+        asked.append(spec_id)
+        if isinstance(answer, Exception):
+            raise answer
+        return SimpleNamespace(**answer)
+
+    monkeypatch.setattr(exports_module, "newest_spec_version", newest)
+    return asked
+
+
+def test_a_bare_spec_id_exports_the_newest_pair_as_a_request_naming_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One export, id, file and sha256, whichever names the version."""
+    rig = _Rig("fetched", monkeypatch)
+    asked = _resolving(monkeypatch, rig.frame)
+
+    bare = rig.prepare("xlsx", frame={"spec_id": rig.frame["spec_id"]})
+    monkeypatch.setattr(exports_module, "prepare_export", _forbidden)
+    pair = rig.prepare("xlsx")
+
+    assert bare.status_code == 200, bare.text
+    assert bare.json() == pair.json()
+    assert bare.json()["frame"] == rig.frame
+    assert bare.json()["export_id"] == _export_id(rig.frame, "xlsx", bundle=False)
+    assert asked == [rig.frame["spec_id"]]
+
+
+_BARE = "spec_" + "c" * 32
+
+
+@pytest.mark.parametrize(
+    ("answer", "status", "code", "retryable"),
+    [
+        pytest.param(
+            AnalysisPending(operations=("op_1",), retry_after_s=2.0),
+            503,
+            "service_unavailable",
+            True,
+            id="building",
+        ),
+        pytest.param(MintBackpressure(), 503, "service_unavailable", True, id="backpressure"),
+        pytest.param(
+            IdentityQuarantined(subject_id=_BARE, id_kind="spec"),
+            None,
+            "identity_quarantined",
+            False,
+            id="quarantined",
+        ),
+        pytest.param(SpecNotFound(id=_BARE), 404, "spec_not_found", False, id="unregistered"),
+        pytest.param(
+            RefreshRebuildFailed(operation_id="op_1", refusal_code="over_ceiling"),
+            500,
+            "internal_error",
+            False,
+            id="rebuild-failed",
+        ),
+        pytest.param(
+            SpecNotExportable(spec_id=_BARE, detail="exemplar"),
+            409,
+            "spec_not_exportable",
+            False,
+            id="registered-rebuild-4xx",
+        ),
+        pytest.param(
+            IdentityCollision(subject_id=_BARE),
+            500,
+            "identity_collision",
+            False,
+            id="registered-rebuild-5xx",
+        ),
+        pytest.param(
+            RecipeNotFound(spec_id=_BARE, content_version="cv_" + "d" * 32),
+            404,
+            "snapshot_not_found",
+            False,
+            id="code-exports-does-not-register",
+        ),
+    ],
+)
+def test_a_bare_spec_id_that_cannot_be_resolved_refuses_with_a_code_exports_registers(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Exception,
+    status: int | None,
+    code: str,
+    retryable: bool,
+) -> None:
+    rig = _Rig("fetched", monkeypatch)
+    _resolving(monkeypatch, answer)
+    monkeypatch.setattr(exports_module, "prepare_export", _forbidden)
+
+    resp = rig.prepare(frame={"spec_id": _BARE})
+
+    if status is not None:
+        assert resp.status_code == status, resp.text
+    assert resp.json()["code"] == code, resp.text
+    assert resp.json()["retryable"] is retryable

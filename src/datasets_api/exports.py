@@ -3,7 +3,10 @@
 `prepare_export` turns one exact frame version, a dataset's (`spec_`) or a derived frame's
 (`ops_`), into a CSV, xlsx or Parquet file, alone or in a bundle zip, and records it under
 `export_id`, a hash of the request alone. It resolves the version the request names and no
-other. A dataset version's file is the one its file selector serves (`doors.files`): the file
+other. A request naming a dataset id alone (`BareExportFrame`) is first resolved to the version
+the analysis runner reads for a Spec root of that id (`resolve_export_frame`), the newest in its
+default enrichment, as the Presentation frames door reads a bare id; the request then runs, and
+is keyed and answered, as one naming that pair. A dataset version's file is the one its file selector serves (`doors.files`): the file
 the version lists under that rendering, else one rendered from its stored frame. A derived
 frame's file is the one its file route renders (`derived.render_derived_file`). The file is then
 copied to the pinned tier through `retention_admission.copy_to_pinned`, which spends the
@@ -43,6 +46,7 @@ import functools
 import hashlib
 import io
 import json
+import math
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -56,11 +60,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from artifact_store import ArtifactNotFoundError, ArtifactSigningError, Tier
 from dataset_store.snapshot import SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
+from datasets_api.analysis import AnalysisPending
+from datasets_api.analysis_roots import newest_spec_version
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.codes_exports import (
     ExportNotFound,
     ExportOverCeiling,
     LicenceNotRedistributable,
+    NewestVersionUnservable,
     ProvenanceUnavailable,
 )
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed
@@ -83,6 +90,8 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.retention_admission import copy_to_pinned
 from datasets_api.timings import phase
 from dfo_platform.caller import Caller
+from dfo_platform.codes import bound_registry_endpoint
+from dfo_platform.trace import get_trace_id
 from materialise.formats import DATA_SHEET_TITLE
 
 EXPORT_MAX_ROWS = PUBLISH_MAX_ROWS
@@ -105,6 +114,14 @@ class ExportFrame(BaseModel):
     content_version: str = Field(min_length=1)
 
 
+class BareExportFrame(BaseModel):
+    """A dataset named by its id alone, which stands for its newest version
+    (`resolve_export_frame`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    spec_id: str = Field(pattern=r"^spec_[0-9a-f]{32}$")
+
+
 class ExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     frame: ExportFrame
@@ -114,6 +131,27 @@ class ExportRequest(BaseModel):
         description="true for a zip bundle of the file beside its README, datapackage.json and "
         "CITATION.cff",
     )
+
+
+class ExportRequestBody(BaseModel):
+    """`POST /api/datasets/exports`'s body: an `ExportRequest` whose frame may name a dataset id
+    alone."""
+
+    model_config = ConfigDict(extra="forbid")
+    frame: ExportFrame | BareExportFrame = Field(
+        description="the frame version to export, or `{spec_id}` alone for a dataset's newest "
+        "version, which the answer's `frame` names"
+    )
+    format: ExportFormat = Field(default="csv", description="the file format")
+    bundle: bool = Field(
+        default=False,
+        description="true for a zip bundle of the file beside its README, datapackage.json and "
+        "CITATION.cff",
+    )
+
+    def resolved(self, frame: ExportFrame) -> ExportRequest:
+        """The request of this body's format and bundle for `frame`."""
+        return ExportRequest(frame=frame, format=self.format, bundle=self.bundle)
 
 
 class ExportLicence(BaseModel):
@@ -149,7 +187,8 @@ class ExportResponse(BaseModel):
 
 def export_id(request: ExportRequest) -> str:
     """`exp_` and the first 32 hex digits of the SHA-256 of the RFC 8785 form of the request's
-    `{spec_id, content_version, format, bundle}`."""
+    `{spec_id, content_version, format, bundle}`. A bare request is keyed by the pair it
+    resolved to, so it shares its export with a request naming that pair."""
     preimage = {
         "spec_id": request.frame.spec_id,
         "content_version": request.frame.content_version,
@@ -402,6 +441,69 @@ def _record(
         object_name=object_name,
         body=body.model_dump(mode="json"),
     )
+
+
+def resolve_export_frame(
+    frame: ExportFrame | BareExportFrame, *, current: Deps, deps: DefinitionDeps
+) -> ExportFrame:
+    """`frame` itself when it names its version, else the dataset version its bare `spec_id`
+    reads, as the analysis runner reads a Spec root of it (`analysis_roots.newest_spec_version`)
+    and the Presentation frames door reads a bare id.
+
+    Raises:
+        NewestVersionUnservable: The version is building, or the serve refused with a code
+            `datasets.exports` does not register.
+        Exception: A refusal of the serve whose code `datasets.exports` registers, unchanged.
+    """
+    if isinstance(frame, ExportFrame):
+        return frame
+    try:
+        dataset = newest_spec_version(
+            frame.spec_id, deps=deps, recipes=current.recipe_store, trace_id=get_trace_id()
+        )
+    except AnalysisPending as pending:
+        raise NewestVersionUnservable(
+            code="service_unavailable",
+            retryable=True,
+            detail=f"the newest version of {frame.spec_id} is building; retry",
+            headers={"Retry-After": str(math.ceil(pending.retry_after_s))},
+        ) from None
+    except Exception as exc:
+        raise _unservable(frame.spec_id, exc) from exc
+    return ExportFrame(spec_id=dataset.spec_id, content_version=dataset.content_version)
+
+
+def _unservable(spec_id: str, exc: Exception) -> Exception:
+    """The refusal the exports door answers for `exc`, a failure resolving `spec_id`: `exc`
+    itself when it is no refusal or `datasets.exports` registers its code, else a
+    `NewestVersionUnservable` of the registered code that stands for it, read from how the
+    analysis door, whose resolve this is, classifies it. A refusal neither endpoint registers
+    is the server's own rendering failing, an `internal_error`."""
+    # `datasets_api.app` composes this module's door, so its classifier is read at call time.
+    from datasets_api.app import classify_datasets_exception
+
+    try:
+        with bound_registry_endpoint("datasets.exports"):
+            classify_datasets_exception(exc)
+        return exc
+    except LookupError:
+        pass
+    detail = f"the newest version of {spec_id} cannot be served: {exc}"
+    try:
+        with bound_registry_endpoint("datasets.analysis"):
+            problem = classify_datasets_exception(exc)
+    except LookupError:
+        return NewestVersionUnservable(code="internal_error", detail=detail)
+    if problem is None:
+        return exc
+    detail = f"the newest version of {spec_id} cannot be served: {problem.code}: {problem.detail}"
+    if problem.retryable:
+        return NewestVersionUnservable(
+            code="service_unavailable", retryable=True, detail=detail, headers=problem.headers
+        )
+    if problem.status >= 500:
+        return NewestVersionUnservable(code="internal_error", detail=detail)
+    return NewestVersionUnservable(code="snapshot_not_found", detail=detail)
 
 
 def recorded_export(*, request: ExportRequest, store: ExportStore) -> dict[str, Any] | None:
