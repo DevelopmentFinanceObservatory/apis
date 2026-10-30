@@ -251,8 +251,8 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is 0041a4a on spec-kit's feat/public-mcp-codes branch, which merges
-# dev's 5132aa0, the share import route's refusal codes. It adds ref format 2 (derived
+# The pin is spec-kit 0041a4a, which includes dev's 5132aa0, the share import
+# route's refusal codes. It adds ref format 2 (derived
 # members) with roots that may carry the groupby DFO read them with, `mv_`
 # minted variable names, the output-digest and analysis rule vectors, the
 # datasets.analysis and presentation.shares endpoints and their refusal codes.
