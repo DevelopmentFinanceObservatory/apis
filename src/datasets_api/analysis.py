@@ -51,7 +51,8 @@ follow the larger tree instead: its overlay's `population` is dropped, each lite
 overlay governs is left to fill (`_follow_tree`), and its `anchor_roots` are dropped, so the
 runner fills one population list from the whole tree and every period from its one latest
 period, and the inputs are computed again under that period. A request whose whole `tree` is a
-derived root computes that recipe again under its own ids, which is how a client reads a derived frame on its datasets' newest versions.
+derived root computes that recipe again under its own ids, which is how a client reads a derived
+frame on its datasets' newest versions.
 With `latest` false every root is read at the version it names. With `latest` true a Spec or dataset root is read at its dataset's current version of the same rendering, and
 each rolling literal follows the latest period of that data. Both read their roots through one
 `RootSource`.
@@ -383,7 +384,7 @@ class AnalysisRequest(BaseModel):
     stored recipe again, so `latest` reads it on its datasets' newest versions under the
     recipe's own ids. `rolling` `"tree"` takes the populations and the latest period of every
     rolling overlay a derived root's recipe holds from the whole tree, so derived rolling inputs
-    are computed again under one latest period; left out, each keeps its stored populations and
+    are computed again under one latest period. Left out, each keeps its stored populations and
     periods."""
 
     model_config = ConfigDict(extra="forbid")

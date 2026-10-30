@@ -25,8 +25,8 @@ states the slot `stale`.
 
 `NewestFrames.newest_of_spec` answers a bare `spec_` id, which the frames door and a component
 create accept in place of a pair, with the dataset version the analysis runner reads
-for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`): the served
-definition's newest version in the root's default rendering, rebuilt when its head is stale.
+for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`). That is the
+served definition's newest version in the root's default rendering, rebuilt when its head is stale.
 `resolve_bare_spec` turns its refusals into the `frame_unavailable` the presentation doors serve.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
@@ -225,7 +225,7 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         elif problem.code == "identity_quarantined":
             reason = "quarantined"
         elif problem.status >= 500:
-            # A server fault stays one; the surface answers it `internal_error`.
+            # A server fault stays a server fault, which the surface answers `internal_error`.
             raise
         else:
             reason = "unknown"

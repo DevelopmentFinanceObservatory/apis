@@ -1,10 +1,10 @@
 """The export store keeps one row per prepared export in `datasets.export`, keyed by its
 `export_id` (`exports.export_id`).
 
-A row names the version the export renders, under the id its record is keyed by, the pinned copy of its file by digest, bucket
-and object name, which the export link signs without another read, and `body`, the facts the
-prepare answered (`exports.ExportFacts`), sources and licences included, as they stood when the
-file was prepared.
+A row names the version the export renders under the id its record is keyed by. It also holds
+the pinned copy of the file by digest, bucket and object name, which the export link signs
+without another read, and `body`, the facts the prepare answered (`exports.ExportResponse`),
+sources and licences included, as they stood when the file was prepared.
 
 `write_export` stores a row once. A write under an id that already holds a row changes nothing
 and returns the stored row, so two concurrent prepares of one request answer one record.

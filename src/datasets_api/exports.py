@@ -5,13 +5,14 @@
 `export_id`, a hash of the request alone. It resolves the version the request names and no
 other. A request naming a dataset id alone (`BareExportFrame`) is first resolved to the version
 the analysis runner reads for a Spec root of that id (`resolve_export_frame`), the newest in its
-default enrichment, as the Presentation frames door reads a bare id; the request then runs, and
-is keyed and answered, as one naming that pair. A dataset version's file is the one its file selector serves (`doors.files`): the file
-the version lists under that rendering, else one rendered from its stored frame. A derived
-frame's file is the one its file route renders (`derived.render_derived_file`). The file is then
-copied to the pinned tier through `retention_admission.copy_to_pinned`, which spends the
-caller's `pin` allowance and the day's pin budgets as a pin does; a file already pinned spends
-nothing. The record keeps the pinned copy's location and the facts the prepare answered.
+default enrichment, as the Presentation frames door reads a bare id. The request then runs, and
+is keyed and answered, as one naming that pair. A dataset version's file is the one its file
+selector serves (`doors.files`): the file the version lists under that rendering, else one
+rendered from its stored frame. A derived frame's file is the one its file route renders
+(`derived.render_derived_file`). The file is then copied to the pinned tier through
+`retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
+pin budgets as a pin does. A file already pinned spends nothing. The record keeps the pinned
+copy's location and the facts the prepare answered.
 
 A request whose id holds a record answers that record, rendering and spending nothing. Two
 concurrent prepares of one request compute one id, and, since every render is deterministic

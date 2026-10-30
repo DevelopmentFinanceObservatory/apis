@@ -5,7 +5,7 @@ filtered by query. It checks `spec_id` and `content_version` formats before call
 `GET /api/presentation/frames/{spec_id}` names a dataset id alone and reads the version the
 analysis runner reads for a Spec root of that id
 (`presentation_api.newest_frames.resolve_bare_spec`), answering the pair route's body with the
-`spec_id` and `content_version` it resolved. Only a `spec_` id of 32 hex digits resolves; a
+`spec_id` and `content_version` it resolved. Only a `spec_` id of 32 hex digits resolves. A
 derived `ops_` id names its version.
 
 Its executor and non-blocking semaphore are independent of the components door. Saturation

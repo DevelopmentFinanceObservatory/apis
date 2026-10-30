@@ -168,8 +168,8 @@ def datasets_surface(
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
     defaulting to `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` and `DATASETS_FIRST_PARTY_PRINCIPAL`.
     Pinning has no delete route, so publish permission grants no pin permission. The exports
-    door admits the pin allowlist's holders as the pin door does. The recipe
-    door admits the publish allowlist. The frame refresh door admits
+    door reads the pin allowlist as the pin door does: its holders spend the daily pin budget
+    alone. The recipe door admits the publish allowlist. The frame refresh door admits
     `settings.live_refresh_principal` alone.
 
     Each request binds `catalogue`'s loaded snapshot. It defaults to the process-wide service,

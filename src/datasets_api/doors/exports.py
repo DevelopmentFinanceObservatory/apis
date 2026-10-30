@@ -4,9 +4,9 @@
   whose export is recorded answers the record on the read executor, rendering and spending
   nothing. Any other prepares on the work executor under the definition deadline, as the file
   selector renders. It admits every caller, and the site's proxy forwards it. The caller is
-  named as the pin door names it: a holder of the `pin` grant spends the
-  day's pin budget alone, and any other caller is resolved (`resolve_caller`) and spends its
-  `pin` allowance, so data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`. A frame
+  named as the pin door names it: a holder of the `pin` grant spends the day's pin budget
+  alone, and any other caller is resolved (`resolve_caller`) and spends its `pin` allowance, so
+  data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`. A frame
   of a dataset id alone (`{spec_id}`) is first resolved on the work executor to the version the
   analysis runner reads for a Spec root of it (`exports.resolve_export_frame`), and the request
   then runs as one naming that pair.
@@ -110,7 +110,7 @@ def build_exports_door(
         """Prepare one exact frame version as a file in the pinned tier and answer its facts
         and its link's path. A frame of a dataset id alone exports that dataset's newest
         version, which the answer's `frame` names. A repeat request answers the same facts and
-        spends nothing; a new pinned copy spends one unit of the caller's daily pin
+        spends nothing. A new pinned copy spends one unit of the caller's daily pin
         allowance."""
         current = deps.get()
         granted: Principal = request.state.principal

@@ -1,5 +1,5 @@
 """`POST /api/datasets/exports` prepares one exact frame version as a pinned file and records it;
-`GET /api/datasets/exports/{export_id}` answers 302 to that file and never renders. Both run
+`GET /api/datasets/exports/{export_id}` answers 302 to that file and renders nothing. Both run
 through the app factory over live store SQL: a minted dataset version for a fetched frame, and a
 frame the analysis runner stored for a derived one.
 """
@@ -199,7 +199,7 @@ def test_a_prepare_pins_the_file_and_answers_facts_that_match_its_bytes(
     assert body["file_name"].endswith(".zip" if bundle else f".{fmt}")
     assert (body["media_type"] == "application/zip") is bundle
     assert body["rows"] > 0 and body["columns"] > 0
-    # The prepare answers no signed URL; only the link signs.
+    # Only the link signs a URL, so the prepare answer carries none.
     assert "fake://" not in resp.text and "pinned-bucket" not in resp.text
     assert "no-store" in resp.headers["cache-control"]
 
@@ -352,7 +352,7 @@ def test_a_posted_id_records_the_served_id_and_answers_the_frame_it_named(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """The record's version is keyed by the id `version_record` holds, the served one, which the
-    row's foreign key needs; the facts and the export id keep the id the request named."""
+    row's foreign key needs. The facts and the export id keep the id the request named."""
     rig = _Rig("fetched", monkeypatch)
     served = rig.frame["spec_id"]
     posted = rig.bind_posted_id()

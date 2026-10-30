@@ -55,7 +55,7 @@ class LicenceNotRedistributable(Refusal):
 
 class ExportOverCeiling(Refusal):
     """A CSV or xlsx export of more rows than `exports.EXPORT_MAX_ROWS`. Maps to `over_ceiling`
-    with `ceiling_kind` `rows`; a Parquet export of the same frame has no row ceiling."""
+    with `ceiling_kind` `rows`. A Parquet export of the same frame has no row ceiling."""
 
     code = "over_ceiling"
     ceiling_kind = "rows"
