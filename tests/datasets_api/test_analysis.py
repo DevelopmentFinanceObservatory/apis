@@ -13,6 +13,7 @@ from importlib.resources import files
 import jsonschema
 import pytest
 import rfc8785
+from dfo_frame_grammar import Frame
 
 from dataset_store.snapshot import SnapshotRevoked
 from datasets_api import analysis, publish_models
@@ -41,6 +42,7 @@ from dfo_analysis_engine.evaluate import RootFrame, evaluate
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import derived_nodes, pair
 from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode
+from materialise.frame_build import build_frame
 
 from ._analysis_doubles import (
     AID,
@@ -692,6 +694,63 @@ def test_rolling_tree_counts_both_sides_of_a_join_that_leaves_its_keys_to_the_en
         [{"spec_id": spec_id, "bindings": {}} for spec_id in sorted((AID, POPULATION))]
     ] * 2
     assert [period["period"] for period in result.resolved_periods] == ["2021"]
+
+
+def _recipient_frame(stat_var: str, series: dict[str, tuple[str, ...]]) -> Frame:
+    rows = [
+        {
+            "stat_var": stat_var,
+            "financingRecipient": recipient,
+            "origin": "country/DEU",
+            "time_period": year,
+            "value": 1.0,
+            "unit": "USDollar",
+        }
+        for recipient, years in series.items()
+        for year in years
+    ]
+    return build_frame(role_keys=["financingRecipient", "origin"], rows=rows)
+
+
+def test_a_filter_above_a_join_that_leaves_its_keys_to_the_engine_narrows_both_sides() -> None:
+    """Three recipients of the right side stop at 2021, but the filter keeps Kenya alone, so
+    they cannot hold the period back."""
+    stores = Stores()
+    both_years = ("2021", "2022")
+    right = {
+        "country/KEN": both_years,
+        "country/NGA": ("2021",),
+        "country/TZA": ("2021",),
+        "country/UGA": ("2021",),
+    }
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): _recipient_frame("dcid:Aid", {"country/KEN": both_years}),
+            (POPULATION, POPULATION_V1): _recipient_frame("dcid:Other", right),
+        },
+    )
+    tree = step(
+        "filter",
+        step("join", dataset(AID, AID_V1), dataset(POPULATION, POPULATION_V1)),
+        predicates=[
+            {"kind": "category_match", "column": "financingRecipient", "values": ["country/KEN"]},
+            {
+                "kind": "ordered_threshold",
+                "column": "time_period",
+                "op": "gte",
+                "value": _LATEST_YEAR,
+            },
+        ],
+    )
+
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": tree, "rolling": "tree"}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+
+    assert [period["period"] for period in result.resolved_periods] == ["2022"]
 
 
 def test_derived_rolling_inputs_of_different_populations_refuse_without_rolling_tree() -> None:

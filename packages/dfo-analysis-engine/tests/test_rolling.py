@@ -546,6 +546,29 @@ def test_a_key_column_crosses_under_its_mapped_name_and_its_namesake_stays(store
     ]
 
 
+@_SHAPES
+def test_a_join_that_states_no_keys_crosses_a_narrowing_under_its_own_names(stored: bool) -> None:
+    joined = _two_frames("join", "right_frame_ref", stored=stored)
+    level = {"kind": "place_level", "column": "financingRecipient_type", "level": "Country"}
+    tree = _node(
+        "filter",
+        {"predicates": [_match("financingRecipient", "dcid:KEN"), level]},
+        frame_ref=joined,
+    )
+    typed = [*_FLOW_COLUMNS, "financingRecipient_type"]
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[typed, _FLOW_COLUMNS])
+
+    assert populations == [
+        {
+            "spec_id": _AID,
+            "bindings": {"financingRecipient": ["dcid:KEN"]},
+            "levels": {"financingRecipient_type": "Country"},
+        },
+        {"spec_id": _GNI, "bindings": {"financingRecipient": ["dcid:KEN"]}},
+    ]
+
+
 def test_a_compare_takes_its_output_columns_from_its_right_side() -> None:
     compare = {
         "op_spec": {

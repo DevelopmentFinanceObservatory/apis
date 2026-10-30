@@ -62,7 +62,10 @@ holds only through the verb's key map: a binding on a key column takes the name
 that side gives it, and so does a level on an enrichment column of a key
 (`dfo_analysis_engine.place_type.enrichment_role`), held only where that side's
 root carries the column. Anything else stays on the output's side, since a
-column of one name on the other side need not hold the same thing.
+column of one name on the other side need not hold the same thing. A `join` with
+no `join_keys` differs: the engine pairs the role columns both frames declare,
+so its keys are same-name columns no tree records, and all it keeps crosses
+under its own names, levels only where that side's root carries the column.
 
 A binding counts only where the root carries its column, and never on
 `time_period`, `value` or `status`, which are no part of a series. Two bindings
@@ -364,6 +367,13 @@ class _Narrowing:
         if strict:
             self.strict_levels.add(column)
 
+    def by_name(self) -> _Narrowing:
+        """This narrowing on the right side of a `join` that states no keys. See the module
+        docstring."""
+        crossed = _Narrowing(self)
+        crossed.optional_levels = set(crossed.levels)
+        return crossed
+
     def across(self, keys: Mapping[str, str]) -> _Narrowing:
         """What holds of this narrowing on the side of a two-sided verb its output does not
         take its columns from, `keys` mapping each output column to that side's. See the module
@@ -406,7 +416,12 @@ def _sides(
     slots = [_PRIMARY_SLOT, *sorted((named | set(inputs)) - {_PRIMARY_SLOT})]
     for slot in slots:
         keys = _output_keys(node["op_spec"], slot)
-        kept = _Narrowing(above) if keys is None else above.across(keys)
+        if keys is None:
+            kept = _Narrowing(above)
+        elif keys or node["op_spec"].get("verb") != "join":
+            kept = above.across(keys)
+        else:
+            kept = above.by_name()
         for predicate in parameters.get("predicates", ()):
             if not isinstance(predicate, Mapping):
                 raise AnalysisRefused(
