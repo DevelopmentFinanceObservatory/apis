@@ -338,6 +338,30 @@ def test_remove_reference_soft_deletes_a_live_row(store):
     assert row["created_at"] == _FIRST_PIN  # Soft deletion preserves the creation time.
 
 
+def test_holds_reference_counts_a_removed_row_and_only_its_own_version(store):
+    writer = LiveArtifactReferenceWriter(store=store)
+
+    def held() -> tuple[bool, bool]:
+        return (
+            writer.holds_reference(subject_id=_SUBJECT_ID, content_version=_CONTENT_VERSION),
+            writer.holds_reference(subject_id=_SUBJECT_ID, content_version="cv2"),
+        )
+
+    before = held()
+    _record(store, now=_FIRST_PIN)
+    recorded = held()
+    writer.remove_reference(
+        principal=_PRINCIPAL,
+        artifact_digest=_DIGEST,
+        subject_id=_SUBJECT_ID,
+        content_version=_CONTENT_VERSION,
+        reference_kind=PIN_REFERENCE_KIND,
+        now=_LATER,
+    )
+
+    assert (before, recorded, held()) == ((False, False), (True, False), (True, False))
+
+
 def test_remove_reference_is_a_no_op_when_no_row_matches(store):
     # Removing an absent reference is idempotent.
     writer = LiveArtifactReferenceWriter(store=store)
