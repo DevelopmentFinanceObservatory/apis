@@ -17,6 +17,7 @@ from assembler.catalogue import CatalogueRelease
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, FrameUnavailable
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
+from dataset_store.snapshot import SnapshotRevoked
 from datasets_api.doors.definition import SpecNotFound
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import RefreshRebuildFailed
@@ -482,21 +483,30 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
 
 
 @pytest.mark.parametrize(
-    ("answer", "status", "retryable"),
+    ("answer", "status", "retryable", "cause"),
     [
-        pytest.param(NewestPending(retry_after_s=2.0), 503, True, id="building"),
-        pytest.param(SpecNotFound(id=BARE_SPEC_ID), 404, False, id="not-registered"),
-        pytest.param(MintBackpressure(), 503, True, id="mint-backpressure"),
+        pytest.param(NewestPending(retry_after_s=2.0), 503, True, "io", id="building"),
+        pytest.param(SpecNotFound(id=BARE_SPEC_ID), 404, False, "unknown", id="not-registered"),
+        pytest.param(MintBackpressure(), 503, True, "io", id="mint-backpressure"),
         pytest.param(
             IdentityQuarantined(subject_id=BARE_SPEC_ID, id_kind="spec"),
             404,
             False,
+            "quarantined",
             id="quarantined",
+        ),
+        pytest.param(
+            SnapshotRevoked(id=BARE_SPEC_ID, content_version="cv", reason=None),
+            404,
+            False,
+            "revoked",
+            id="revoked",
         ),
         pytest.param(
             ColumnUnknownError("no such column", column="x"),
             404,
             False,
+            "unknown",
             id="code-analysis-does-not-map",
         ),
     ],
@@ -507,6 +517,7 @@ def test_a_bare_spec_id_that_cannot_be_served_is_frame_unavailable(
     answer: object,
     status: int,
     retryable: bool,
+    cause: str,
 ):
     newest_specs.answer = answer  # ty: ignore[invalid-assignment]
 
@@ -515,6 +526,7 @@ def test_a_bare_spec_id_that_cannot_be_served_is_frame_unavailable(
     assert resp.status_code == status, resp.text
     assert resp.json()["code"] == "frame_unavailable"
     assert resp.json()["retryable"] is retryable
+    assert resp.json()["cause"]["code"] == cause
 
 
 def test_a_bare_spec_id_without_a_datasets_surface_is_frame_unavailable(client: TestClient):

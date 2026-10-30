@@ -84,7 +84,7 @@ from datasets_api.codes_exports import (
     NewestVersionUnservable,
     ProvenanceUnavailable,
 )
-from datasets_api.codes_snapshot import ArtifactExpired
+from datasets_api.codes_snapshot import ArtifactExpired, SpecNotFound
 from datasets_api.current import DefinitionDeps
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.deps import Deps
@@ -111,6 +111,7 @@ from datasets_api.retention_admission import (
     PinBudgetExhausted,
     copy_to_pinned,
 )
+from datasets_api.subject_ids import served_subject_ids
 from datasets_api.timings import phase
 from dfo_platform.caller import Caller
 from dfo_platform.codes import bound_registry_endpoint, registered_status
@@ -211,8 +212,8 @@ class ExportResponse(BaseModel):
 
 def export_id(request: ExportRequest) -> str:
     """`exp_` and the first 32 hex digits of the SHA-256 of the RFC 8785 form of the request's
-    `{spec_id, content_version, format, bundle}`. A bare request is keyed by the pair it
-    resolved to, so it shares its export with a request naming that pair."""
+    `{spec_id, content_version, format, bundle}`. A bare request is keyed by the id it names and
+    the version it resolved to, so it shares its export with a request naming that pair."""
     preimage = {
         "spec_id": request.frame.spec_id,
         "content_version": request.frame.content_version,
@@ -547,7 +548,8 @@ def resolve_export_frame(
 ) -> ExportFrame:
     """`frame` itself when it names its version, else the dataset version its bare `spec_id`
     reads, as the analysis runner reads a Spec root of it (`analysis_roots.newest_spec_version`)
-    and the Presentation frames door reads a bare id.
+    and the Presentation frames door reads a bare id. The pair keeps the id sent in place of the
+    served id, so `_servable_facts` keeps honouring a revocation or quarantine under it.
 
     Raises:
         NewestVersionUnservable: The version is building, or the serve refused with a code
@@ -571,7 +573,7 @@ def resolve_export_frame(
         if passes_through(exc):
             raise
         raise _unservable(frame.spec_id, exc) from exc
-    return ExportFrame(spec_id=dataset.spec_id, content_version=dataset.content_version)
+    return ExportFrame(spec_id=frame.spec_id, content_version=dataset.content_version)
 
 
 def passes_through(exc: BaseException) -> bool:
@@ -627,13 +629,16 @@ def _unservable(spec_id: str, exc: Exception) -> NewestVersionUnservable:
 
 
 def _served_ids(id: str, *, current: Deps) -> tuple[str, ...]:
-    """`id` and each served id bound to it, whose revocations withdraw a version named `id`.
-    An `ops_` id, or an id the registry no longer holds, binds none.
+    """`id` and each served id bound to it, whose revocations withdraw a version named `id`
+    (`served_subject_ids`). An `ops_` id, or an id the registry no longer holds, binds none.
 
     Raises:
         IdentityQuarantined: `id` or a served id bound to it is quarantined.
     """
-    return (*(current.spec_reader.read_served_spec_ids(id) or ()), id)
+    try:
+        return served_subject_ids(id, spec_reader=current.spec_reader)
+    except SpecNotFound:
+        return (id,)
 
 
 def _check_version(
@@ -645,11 +650,17 @@ def _check_version(
     Raises:
         IdentityQuarantined: `named` or a served id bound to it is quarantined.
         SnapshotRevoked: The version is revoked.
+        RuntimeError: No version record stands behind the export, which no write allows.
     """
     state = current.snapshot_reader.read_version_state(
         subject_id, content_version, revoked_under=_served_ids(named, current=current)
     )
-    if state is not None and state.revocation is not None:
+    if state is None:
+        raise RuntimeError(
+            f"the export of {frame.spec_id!r} at {frame.content_version!r} rests on "
+            f"{subject_id!r} at {content_version!r}, which no version record holds"
+        )
+    if state.revocation is not None:
         raise SnapshotRevoked(
             id=frame.spec_id,
             content_version=frame.content_version,
@@ -658,8 +669,19 @@ def _check_version(
 
 
 def _check_roots(recipe: RecipeRecord | None, *, frame: ExportFrame, current: Deps) -> None:
-    """`_check_version` of every root of the derived frame `frame`'s stored recipe."""
-    for root in stored_recipe_roots(recipe):
+    """`_check_version` of every root of the derived frame `frame`'s stored recipe.
+
+    Raises:
+        RuntimeError: The frame has no recipe or a recipe with no roots, so no root can be
+            checked. A prepare refuses such a frame first, so no export rests on one.
+    """
+    roots = stored_recipe_roots(recipe)
+    if not roots:
+        raise RuntimeError(
+            f"the export of {frame.spec_id!r} at {frame.content_version!r} has no recipe roots "
+            "to check"
+        )
+    for root in roots:
         _check_version(
             root["spec_id"],
             root["content_version"],
@@ -677,6 +699,8 @@ def _servable_facts(record: ExportRecord, *, current: Deps) -> dict[str, Any]:
         IdentityQuarantined: The named id, or a root of a derived frame, is quarantined.
         SnapshotRevoked: The version, its base version, or a root of a derived frame is revoked.
         LicenceNotRedistributable: The deny-list names a source of the export.
+        RuntimeError: The version record or the recipe the export rests on is gone
+            (`_check_version`, `_check_roots`), which answers `internal_error`.
     """
     body = ExportResponse.model_validate(record.body)
     frame = body.frame

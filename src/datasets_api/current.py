@@ -109,7 +109,6 @@ from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
     DerivedVersion,
     FrameMode,
-    artifact_rendering_keys,
     entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
@@ -117,6 +116,7 @@ from datasets_api.render import (
     render_and_store,
     render_and_store_canonical_frame,
     render_and_store_series_statistics,
+    resolved_rendering_keys,
     servable_frame_location,
     stored_frame_sha256,
 )
@@ -349,7 +349,7 @@ def load_stored(
     content_version: str,
     deps: DefinitionDeps,
     include_artifacts: bool,
-    rendering_keys: tuple[str, ...] | None = None,
+    rendering_keys: Callable[[Manifest], tuple[str, ...]] | None = None,
     revoked_under: Sequence[str] = (),
 ) -> Manifest:
     """Load a stored version of the served definition through the snapshot loaders.
@@ -967,8 +967,8 @@ def head_rendering(
 ) -> Manifest | None:
     """Load the stored version, narrowed to the rendering `options` names. `options` `None`
     loads the version without its artifacts. `revoked_under` is `load_stored`'s. Options asking
-    for the default enrichment are resolved against the version first (`resolve_enrichment`),
-    which reads its record once more.
+    for the default enrichment resolve against the version this one read returns
+    (`resolve_enrichment`).
 
     A rendering not linked to the version renders from the stored frame when `render`
     (`_render_stored_rendering`). Return `None`
@@ -983,18 +983,8 @@ def head_rendering(
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
     caller made from this version, so the render does not make it again.
     """
-    if options is not None and options.enrichment is not None:
-        # The default enrichment follows the version's roles, read before its rendering is keyed.
-        version = load_stored(
-            subject_id=subject_id,
-            content_version=content_version,
-            deps=deps,
-            include_artifacts=False,
-            revoked_under=revoked_under,
-        )
-        options = resolve_enrichment(options, coverage=version.coverage)
     keys = (
-        artifact_rendering_keys(
+        resolved_rendering_keys(
             options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
         )
         if options is not None
@@ -1017,7 +1007,7 @@ def head_rendering(
     return _render_stored_rendering(
         subject_id=subject_id,
         content_version=content_version,
-        options=options,
+        options=resolve_enrichment(options, coverage=manifest.coverage),
         manifest=manifest,
         deps=deps,
         trace_id=trace_id,

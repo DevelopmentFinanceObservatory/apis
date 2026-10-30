@@ -4,8 +4,8 @@ filtered by query. It checks `spec_id` and `content_version` formats before call
 
 `GET /api/presentation/frames/{spec_id}` names a dataset id alone and reads the version the
 analysis runner reads for a Spec root of that id
-(`presentation_api.newest_frames.resolve_bare_spec`), answering the pair route's body with the
-`spec_id` and `content_version` it resolved. Only a `spec_` id of 32 hex digits resolves. A
+(`presentation_api.newest_frames.resolve_bare_spec`), answering the pair route's body, read from
+that version's canonical frame, with the `spec_id` and `content_version` it resolved. Only a `spec_` id of 32 hex digits resolves. A
 derived `ops_` id names its version.
 
 Its executor and non-blocking semaphore are independent of the components door. Saturation
@@ -209,8 +209,10 @@ def build_frames_door(
             200: {
                 "model": NewestFrameViewResponse,
                 "description": f"{_VIEW_DESCRIPTION} The frame is the newest version of the "
-                "dataset `spec_id` names, in its default enrichment, as the analysis runner "
-                "reads a Spec root; `spec_id` and `content_version` name it.",
+                "dataset `spec_id` names, the version the analysis runner reads for a Spec "
+                "root; `spec_id` and `content_version` name it. The view reads that version's "
+                "canonical frame, as the pair route does, so it holds no default enrichment "
+                "column, and a `dimension` naming one refuses `binding_invalid`.",
             }
         },
     )

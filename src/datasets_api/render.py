@@ -106,6 +106,7 @@ from datasets_api.capabilities import ENABLED_ENRICHMENTS
 from datasets_api.codes_materialise import CapabilityUnavailable
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.decode import build_decode_plan
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.failures import FoldPermitWaitExpired
 from datasets_api.groupby import (
     collapse_axes,
@@ -3335,7 +3336,13 @@ def artifact_rendering(options: MintOptions, *, site: PublicSiteSettings) -> dic
     options dump as sent. The rendering key hashes this dict
     (`version_store.rendering_key`), so a layout or settings change gives new artifacts a new
     key and leaves old links matching only themselves.
+
+    Raises:
+        ValueError: `options` holds an unresolved `enrichment`, which names no rendering until
+            it is resolved against a version (`default_enrichment.resolve_enrichment`).
     """
+    if options.enrichment is not None:
+        raise ValueError(f"enrichment {options.enrichment!r} is unresolved, so it keys no file")
     rendering = options.model_dump(mode="json", exclude_none=True)
     if not options.without_party_totals:
         del rendering[_WITHOUT_PARTY_TOTALS_KEY]
@@ -3382,6 +3389,23 @@ def artifact_rendering_keys(
     a caller selects an artifact by is the same under every digest.
     """
     return current_rendering_keys(artifact_rendering(options, site=site), enrichment_digest)
+
+
+def resolved_rendering_keys(
+    options: MintOptions, *, site: PublicSiteSettings, enrichment_digest: str | None
+) -> Callable[[Manifest], tuple[str, ...]]:
+    """`artifact_rendering_keys` as a function of the version it is read on: `options`, a
+    default enrichment among them, resolve against that version's coverage
+    (`default_enrichment.resolve_enrichment`), so its one read also picks its rendering."""
+
+    def keys(version: Manifest) -> tuple[str, ...]:
+        return artifact_rendering_keys(
+            resolve_enrichment(options, coverage=version.coverage),
+            site=site,
+            enrichment_digest=enrichment_digest,
+        )
+
+    return keys
 
 
 def current_enrichment_locations(

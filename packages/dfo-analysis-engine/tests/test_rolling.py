@@ -449,21 +449,25 @@ def test_a_join_pairs_its_keys_through_right_keys_and_nests_a_pairing_on_a_side(
     assert [node["root"] for node in rolling_roots(_rolled(tree))] == [0, 1]
 
 
-@pytest.mark.parametrize(
-    "op_spec",
-    [
-        {"verb": "join", "parameters": {"right_frame_ref": _RIGHT}},
-        # A plan tree's op-spec carries parameters alone, and `on` runs one way
-        # for sum_of and the other for compare.
-        {"parameters": {"right_frame_ref": _RIGHT, "on": {"recipient": "observationAbout"}}},
-    ],
-    ids=["join-without-join_keys", "on-without-verb"],
-)
-def test_a_pairing_whose_keys_the_tree_leaves_open_raises_when_both_sides_count(
-    op_spec: dict[str, Any],
-) -> None:
+def test_a_join_that_leaves_its_keys_to_the_engine_counts_each_side_flat() -> None:
     tree = {
-        "op_spec": op_spec,
+        "op_spec": {"verb": "join", "parameters": {"right_frame_ref": _RIGHT}},
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
+
+    assert anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _COLUMNS]) == [
+        {"spec_id": _AID, "bindings": {}},
+        {"spec_id": _GNI, "bindings": {}},
+    ]
+
+
+def test_an_on_with_no_verb_raises_when_both_sides_count() -> None:
+    # A plan tree's op-spec carries parameters alone, and `on` runs one way
+    # for sum_of and the other for compare.
+    tree = {
+        "op_spec": {
+            "parameters": {"right_frame_ref": _RIGHT, "on": {"recipient": "observationAbout"}}
+        },
         "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
     }
 

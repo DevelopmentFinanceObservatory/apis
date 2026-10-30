@@ -347,7 +347,7 @@ def read_snapshot_manifest(
     snapshot_reader: SnapshotReader,
     now: Clock,
     settings: DatasetsBuildSettings,
-    rendering_keys: tuple[str, ...] | None = None,
+    rendering_keys: Callable[[Manifest], tuple[str, ...]] | None = None,
     enrichment_digest: str | None,
     revoked_under: Sequence[str] = (),
 ) -> Manifest:
@@ -360,7 +360,9 @@ def read_snapshot_manifest(
 
     The default read raises `ArtifactExpired` for an empty servable set. A
     rendering-specific read returns matching renderings and statistics
-    artifacts (`_narrow_to_rendering`). An empty result tells the definition door to
+    artifacts (`_narrow_to_rendering`). `rendering_keys` gives the keys from the version read,
+    since a default enrichment follows it (`render.resolved_rendering_keys`), so one read
+    answers both. An empty result tells the definition door to
     render that variant fresh. `rendering_servable` answers whether this read lists
     a non-statistics artifact. A bundle under a superseded rendition and an
     incomplete artifact are listed only when pinned, after the current artifacts
@@ -393,7 +395,7 @@ def read_snapshot_manifest(
         if not servable:
             raise ArtifactExpired(id=id, content_version=content_version)
     else:
-        servable = _narrow_to_rendering(servable, rendering_keys=rendering_keys)
+        servable = _narrow_to_rendering(servable, rendering_keys=rendering_keys(manifest))
     artifacts = [
         stored_artifact_entry(
             location,

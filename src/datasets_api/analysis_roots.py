@@ -299,7 +299,12 @@ class LiveRootSource:
             # that rendering reads it, so a version recording two renderings stays readable.
             served = served_spec(spec_id=root.spec_id, deps=deps, trace_id=trace_id)
             requested = mint_options(root.rendering)
-            manifest = self._serve(served, MintOptions.model_validate(requested), trace_id=trace_id)
+            manifest = self._serve(
+                served,
+                MintOptions.model_validate(requested),
+                posted=root.spec_id,
+                trace_id=trace_id,
+            )
             # The mint resolved a default enrichment against the version it served.
             options = record_options(requested, coverage=manifest.coverage)
             return self._resolved(
@@ -339,9 +344,10 @@ class LiveRootSource:
         )
 
     def _serve(
-        self, served: StoredDefinition, options: MintOptions, *, trace_id: str | None
+        self, served: StoredDefinition, options: MintOptions, *, posted: str, trace_id: str | None
     ) -> Manifest:
-        """The served definition's head in the rendering `options` names.
+        """The served definition's head in the rendering `options` names, honouring revocations
+        under `posted`, the id the root names, as a request naming that id does.
 
         Raises:
             AnalysisPending: A rebuild runs past the inline budget.
@@ -349,7 +355,12 @@ class LiveRootSource:
         """
         try:
             return serve_spec(
-                stored=served, options=options, trigger="get", deps=self._deps, trace_id=trace_id
+                stored=served,
+                options=options,
+                trigger="get",
+                deps=self._deps,
+                trace_id=trace_id,
+                revoked_under=(posted,),
             )
         except OperationSubmitted as submitted:
             operation = submitted.operation

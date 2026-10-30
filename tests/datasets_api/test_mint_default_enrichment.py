@@ -10,11 +10,16 @@ from typing import Any
 import pyarrow.parquet as pq
 import pytest
 
+import datasets_api.doors.snapshot as snapshot_module
 from artifact_store import Tier
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.mint_models import MintOptions
+from datasets_api.render import artifact_rendering
 
 from .test_exports import _DATASETS, _Rig
 
 _FRAME = {"format": "parquet", "bundle": False, "layout": "frame"}
+_SITE = DatasetsBuildSettings().site
 _FLOW = [
     "financingProvider_type",
     "financingRecipient_type",
@@ -91,3 +96,30 @@ def test_a_first_mint_resolves_the_default_enrichment_against_the_version_it_bui
 
     assert minted["trace"]["served_from"] == "materialise"
     assert _file(minted)["rendering"]["columns"] == _FLOW
+
+
+def test_a_default_enrichment_head_hit_reads_its_version_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hot path of a Spec root: the one read keys the rendering and lists its file."""
+    rig = _Rig("fetched", monkeypatch, dataset="flow")
+    _DATASETS["flow"].mint(rig.client, {**_FRAME, "enrichment": "default"})
+    reads: list[str] = []
+    read = snapshot_module.read_stored_version
+
+    def counted(**kwargs: Any) -> object:
+        reads.append(kwargs["content_version"])
+        return read(**kwargs)
+
+    monkeypatch.setattr(snapshot_module, "read_stored_version", counted)
+
+    minted = _DATASETS["flow"].mint(rig.client, {**_FRAME, "enrichment": "default"})
+
+    assert minted["trace"]["served_from"] != "materialise"
+    assert _file(minted)["rendering"]["columns"] == _FLOW
+    assert reads == [minted["content_version"]]
+
+
+def test_an_unresolved_enrichment_keys_no_rendering() -> None:
+    with pytest.raises(ValueError, match="unresolved"):
+        artifact_rendering(MintOptions(format="parquet", enrichment="default"), site=_SITE)

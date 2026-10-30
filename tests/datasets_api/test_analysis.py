@@ -661,6 +661,39 @@ def test_derived_rolling_inputs_of_different_latest_years_follow_the_tree_under_
     )
 
 
+def test_rolling_tree_counts_both_sides_of_a_join_that_leaves_its_keys_to_the_engine() -> None:
+    """The right side's latest year holds the period back, as a left-only count would not."""
+    stores = Stores()
+    other = aid_frame(stat_var="dcid:Other", years=("2021",))
+    roots = source(stores, frames={(AID, AID_V1): aid_frame(), (POPULATION, POPULATION_V1): other})
+    tree = step(
+        "join",
+        _rolling_rank(dataset(AID, AID_V1), "financingRecipient"),
+        _rolling_rank(dataset(POPULATION, POPULATION_V1), "financingRecipient"),
+    )
+
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": tree, "rolling": "tree"}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+
+    ref = result.evaluation.ref
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    assert recipe is not None
+    ranks = [
+        node["op_spec"]["parameters"]
+        for node in derived_nodes(recipe.body["tree"])
+        if node["op_spec"]["verb"] == "rank"
+    ]
+    assert [rank["rolling"]["population"] for rank in ranks] == [
+        [{"spec_id": spec_id, "bindings": {}} for spec_id in sorted((AID, POPULATION))]
+    ] * 2
+    assert [period["period"] for period in result.resolved_periods] == ["2021"]
+
+
 def test_derived_rolling_inputs_of_different_populations_refuse_without_rolling_tree() -> None:
     stores = Stores()
     roots, _, joined = _rolling_pair(stores)

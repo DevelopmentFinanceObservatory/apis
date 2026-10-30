@@ -203,8 +203,9 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
 
     Raises:
         FrameUnavailable: `io` (503, retryable) while the version builds or for a refusal a
-            retry may clear; `quarantined` for a quarantined identity; `unknown` (404) for any
-            other refusal below status 500, the Datasets code and detail in its detail; and
+            retry may clear; `quarantined` for a quarantined identity; `revoked` for a revoked
+            version; `unknown` (404) for any other refusal below status 500, the Datasets code
+            and detail in its detail; and
             `unknown` when no Datasets surface is mounted beside this one, so no bare id
             resolves.
         Exception: Any other Datasets refusal the Datasets surface answers at 500 or above,
@@ -229,6 +230,8 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             reason = "io"
         elif problem.code == "identity_quarantined":
             reason = "quarantined"
+        elif problem.code == "snapshot_revoked":
+            reason = "revoked"
         elif problem.status >= 500:
             # A server fault stays a server fault, which the surface answers `internal_error`.
             raise

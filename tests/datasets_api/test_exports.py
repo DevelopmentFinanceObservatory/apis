@@ -21,6 +21,7 @@ import openpyxl
 import pyarrow.parquet as pq
 import pytest
 
+import datasets_api.analysis_roots as analysis_roots
 import datasets_api.current as current_module
 import datasets_api.doors.analysis as analysis_door
 import datasets_api.doors.exports as exports_door
@@ -36,6 +37,7 @@ from datasets_api.allowance import (
     LiveAllowanceLedger,
 )
 from datasets_api.analysis import AnalysisPending
+from datasets_api.codes_exports import LicenceNotRedistributable
 from datasets_api.codes_materialise import SpecNotExportable
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import SpecNotFound
@@ -378,15 +380,15 @@ class _Rig:
     def pinned_bytes(self, sha256: str) -> bytes:
         return self.artifact_store.get(artifact_digest=f"sha256:{sha256}", tier=Tier.pinned)
 
-    def bind_posted_id(self) -> str:
+    def bind_posted_id(self, posted: str = "spec_posted") -> str:
         """Register a posted id the registry binds to the minted served id, as a resolution of
         a posted definition does, and return it."""
-        posted = "spec_posted"
         state = self.spec_store.state
         [definition] = [
             row for key, row in state.spec_definition.items() if key[0] == self.frame["spec_id"]
         ]
         state.spec_definition[(posted, 1)] = dict(definition)
+        state.spec_registry[posted] = dict(state.spec_registry[self.frame["spec_id"]])
         state.spec_alias.append((posted, self.frame["spec_id"]))
         return posted
 
@@ -820,14 +822,7 @@ def test_a_quarantined_identity_refuses_the_link_and_a_repeat_prepare(
 ):
     rig = _Rig("fetched", monkeypatch)
     body = rig.prepare("csv").json()
-    rig.spec_store.state.identity_quarantine.append(
-        {
-            "id_kind": "spec",
-            "subject_id": rig.frame["spec_id"],
-            "held_bytes": b"a",
-            "incoming_bytes": b"b",
-        }
-    )
+    _quarantine(rig, rig.frame["spec_id"])
 
     link = rig.link(body["export_id"])
     repeat = rig.prepare("csv")
@@ -836,6 +831,31 @@ def test_a_quarantined_identity_refuses_the_link_and_a_repeat_prepare(
         assert resp.status_code == 500, resp.text
         assert resp.json()["code"] == "identity_quarantined"
     assert rig.signings == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "table"),
+    [
+        pytest.param("fetched", "version_record", id="version-record"),
+        pytest.param("derived", "frame_recipe", id="recipe"),
+    ],
+)
+def test_an_export_whose_record_is_gone_refuses_rather_than_signing(
+    kind: str, table: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard refuses what it cannot establish, in place of reading absence as cleared."""
+    rig = _Rig(kind, monkeypatch)
+    body = rig.prepare("csv").json()
+    with rig.store.transaction() as tx:
+        tx.execute(f"DELETE FROM datasets.{table}")
+
+    link = rig.link(body["export_id"])
+    repeat = rig.prepare("csv")
+
+    for resp in (link, repeat):
+        assert resp.status_code == 500, resp.text
+        assert resp.json()["code"] == "internal_error"
+    assert not [signed for signed in rig.signings if signed[0] == f"sha256:{body['sha256']}"][1:]
 
 
 def test_a_root_revoked_after_a_derived_export_refuses_the_link_and_a_repeat_prepare(
@@ -885,13 +905,10 @@ def test_a_source_on_the_licence_deny_list_refuses_the_prepare_and_the_link(
     for resp in (fresh, repeat, link):
         assert resp.status_code == 403, resp.text
         assert resp.json()["code"] == "licence_not_redistributable"
-        assert licence["source"] in resp.json()["detail"]
     assert rig.link(_export_id(rig.frame, "parquet", bundle=False)).status_code == 404
-
-
-def test_the_committed_licence_deny_list_is_empty():
-    exports_module.restricted_sources.cache_clear()
-    assert exports_module.restricted_sources() == {}
+    with pytest.raises(LicenceNotRedistributable) as raised:
+        exports_module.check_licences([licence["source"]])
+    assert raised.value.sources == ((licence["source"], "terms forbid it"),)
 
 
 def test_an_unknown_export_id_refuses_not_found(rig: _Rig):
@@ -967,6 +984,79 @@ def test_a_bare_spec_id_exports_the_newest_pair_as_a_request_naming_it(
 
 
 _BARE = "spec_" + "c" * 32
+
+
+def _quarantine(rig: _Rig, subject_id: str) -> None:
+    rig.spec_store.state.identity_quarantine.append(
+        {
+            "id_kind": "spec",
+            "subject_id": subject_id,
+            "held_bytes": b"a",
+            "incoming_bytes": b"b",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("takedown", "status", "code"),
+    [
+        pytest.param("revoked", 410, "snapshot_revoked", id="revoked"),
+        pytest.param("quarantined", 500, "identity_quarantined", id="quarantined"),
+    ],
+)
+def test_a_later_takedown_of_the_id_a_bare_request_sent_refuses_the_link(
+    takedown: str, status: int, code: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig = _Rig("fetched", monkeypatch)
+    served = rig.frame["spec_id"]
+    posted = rig.bind_posted_id(_BARE)
+    _resolving(monkeypatch, rig.frame)
+
+    body = rig.prepare("csv", frame={"spec_id": posted}).json()
+
+    assert body["frame"] == {**rig.frame, "spec_id": posted}
+    assert body["export_id"] == _export_id(body["frame"], "csv", bundle=False)
+    assert rig.recorded_subject(body["export_id"]) == served
+    assert rig.link(body["export_id"]).status_code == 302
+    rig.signings.clear()
+    if takedown == "revoked":
+        rig.revoke(posted)
+    else:
+        _quarantine(rig, posted)
+
+    link = rig.link(body["export_id"])
+
+    assert link.status_code == status, link.text
+    assert link.json()["code"] == code
+    assert rig.signings == []
+
+
+def test_a_spec_root_refuses_a_version_revoked_under_the_id_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resolve a bare frames read, a bare create and a bare export share
+    (`analysis_roots.newest_spec_version`) honours the id sent, as a request naming it does."""
+    rig = _Rig("fetched", monkeypatch)
+    posted = rig.bind_posted_id(_BARE)
+    canonical = analysis_roots.served_spec
+    monkeypatch.setattr(
+        analysis_roots,
+        "served_spec",
+        lambda *, spec_id, **kwargs: canonical(spec_id=rig.frame["spec_id"], **kwargs),
+    )
+    request = {
+        "tree": {
+            "verb": "aggregate",
+            "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+            "inputs": {"data": {"spec_id": posted}},
+        }
+    }
+    rig.revoke(posted)
+
+    resp = rig.client.post("/api/datasets/analysis", json=request)
+
+    assert resp.status_code == 410, resp.text
+    assert resp.json()["code"] == "snapshot_revoked"
 
 
 @pytest.mark.parametrize(

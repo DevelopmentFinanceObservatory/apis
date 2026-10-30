@@ -66,13 +66,13 @@ population in place of its sides' populations, with the key map read from its
 own arguments: `denominator_by` for a `share_of` or `quotient_of`,
 `join_keys`, each paired through `right_keys` or else with itself, for a
 `join`, and `on` for a `compare` or `sum_of`, turned to run from the
-`frame_ref` side for a `compare`, whose `data` is its right side. A `join`
-with no `join_keys` leaves its keys to the engine's auto-detection, which no
-tree records, and an `on` on an op-spec that names no verb leaves its
-direction open, so both raise `PairingKeysUnstatedError`. A verb that pairs no
-keys (`compare` and `sum_of` with no `on`, and a `share_of` or `quotient_of`
-with no `denominator_by`, whose keys share one pooled denominator), and a
-keyed verb with one side counted, pass each side's populations through flat. A side that is itself a keyed pairing nests.
+`frame_ref` side for a `compare`, whose `data` is its right side. An `on` on an
+op-spec that names no verb leaves its direction open, so it raises
+`PairingKeysUnstatedError`. A verb that states no keys (`compare` and `sum_of`
+with no `on`, a `share_of` or `quotient_of` with no `denominator_by`, whose keys
+share one pooled denominator, and a `join` with no `join_keys`, whose keys the
+engine detects from the frames it joins, which no tree holds), and a keyed verb
+with one side counted, pass each side's populations through flat. A side that is itself a keyed pairing nests.
 
 `anchor_key` is `rak_` and 32 hex digits of the SHA-256 of the RFC 8785 form of
 `{"populations", "roots", "rule"}`: the canonical populations, the
@@ -150,15 +150,14 @@ class PopulationEmptyError(ValueError):
 
 
 class PairingKeysUnstatedError(ValueError):
-    """A verb whose two sides both hold a counted path pairs keys the tree does
-    not state: a `join` with no `join_keys`, which leaves them to the engine, or
-    an `on` with no verb, which leaves open whether it runs from the `frame_ref`
-    side (`sum_of`) or to it (`compare`). No population can say which keys pair."""
+    """An op-spec whose two sides both hold a counted path sets `on` and names no
+    verb, which leaves open whether `on` runs from the `frame_ref` side (`sum_of`)
+    or to it (`compare`). No population can say which keys pair."""
 
     def __init__(self) -> None:
         super().__init__(
             "a pairing over two rolling sides states no keys its population can carry: "
-            "a join names no join_keys, or an op-spec sets on without naming its verb"
+            "an op-spec sets on without naming its verb"
         )
 
 
@@ -382,8 +381,8 @@ def _sides(
 
 def _pairing(op_spec: Mapping[str, Any]) -> tuple[str, dict[str, str]] | None:
     """The second frame slot of a verb that pairs keys, and the key map its
-    arguments state, empty for a `join` that leaves its keys to auto-detection.
-    `None` for a verb that pairs no keys."""
+    arguments state, empty for an `on` whose direction no verb settles. `None`
+    for a verb that states no keys."""
     parameters = op_spec.get("parameters", {})
     if denominator_by := parameters.get("denominator_by"):
         return "denominator_frame_ref", dict(denominator_by)
@@ -398,9 +397,8 @@ def _pairing(op_spec: Mapping[str, Any]) -> tuple[str, dict[str, str]] | None:
         if DATA_SIDE[verb] == "right":
             return "right_frame_ref", {left: right for right, left in on.items()}
         return "right_frame_ref", dict(on)
-    if verb == "join" or "join_keys" in parameters:
+    if join_keys := parameters.get("join_keys"):
         right_keys = parameters.get("right_keys") or {}
-        join_keys = parameters.get("join_keys") or ()
         return "right_frame_ref", {key: right_keys.get(key, key) for key in join_keys}
     return None
 
@@ -486,9 +484,8 @@ def anchor_populations(
             column, or hold one place-type column to two levels.
         PopulationLevelColumnMissingError: A `place_level` predicate on a path
             tests a column that path's root does not carry.
-        PairingKeysUnstatedError: A `join` whose sides both hold a counted
-            path states no `join_keys`, or an op-spec whose sides both do sets
-            `on` and names no verb.
+        PairingKeysUnstatedError: An op-spec whose sides both hold a counted
+            path sets `on` and names no verb.
         AnalysisRefused: `op_spec_invalid`, for a predicate that is no object.
     """
 
