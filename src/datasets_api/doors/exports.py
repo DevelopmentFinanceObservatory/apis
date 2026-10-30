@@ -47,12 +47,13 @@ from datasets_api.doors.files import (
     SELECTOR_RENDERING_EXCEPTION_TYPES,
     classify_files_exception,
 )
-from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
+from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.exports import (
     BareExportFrame,
     ExportRequestBody,
     ExportResponse,
+    passes_through,
     prepare_export,
     recorded_export,
     resolve_export_frame,
@@ -64,7 +65,6 @@ from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetEx
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, run_with_timings
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
-from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
 from spec_registry import IdentityQuarantined
 from spec_registry.errors import IdentityCollision
@@ -92,16 +92,6 @@ _REDIRECT_RESPONSE = {
         }
     },
 }
-
-
-def _passes_through(exemplar: BaseException) -> bool:
-    """Whether a refusal a bare `spec_id`'s rebuild raises reaches the caller unchanged: its
-    code is one `datasets.exports` registers, as `exports.resolve_export_frame` decides."""
-    try:
-        with bound_registry_endpoint("datasets.exports"):
-            return classify_mint_exception(exemplar) is not None
-    except LookupError:
-        return False
 
 
 def build_exports_door(
@@ -228,7 +218,7 @@ def build_exports_door(
                     *MINT_EXCEPTION_EXEMPLARS,
                     IdentityCollision(subject_id="spec_exemplar"),
                 )
-                if _passes_through(exemplar)
+                if passes_through(exemplar)
             ),
         ),
     )

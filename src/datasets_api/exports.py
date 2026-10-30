@@ -90,7 +90,8 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.retention_admission import copy_to_pinned
 from datasets_api.timings import phase
 from dfo_platform.caller import Caller
-from dfo_platform.codes import bound_registry_endpoint
+from dfo_platform.codes import bound_registry_endpoint, registered_status
+from dfo_platform.problem import Refusal
 from dfo_platform.trace import get_trace_id
 from materialise.formats import DATA_SHEET_TITLE
 
@@ -473,35 +474,43 @@ def resolve_export_frame(
     return ExportFrame(spec_id=dataset.spec_id, content_version=dataset.content_version)
 
 
+def passes_through(exc: BaseException) -> bool:
+    """Whether the exports door answers `exc`, a failure resolving a bare `spec_id`, unchanged:
+    it is no refusal, so the surface classifies it, or a refusal whose code `datasets.exports`
+    registers."""
+    return not isinstance(exc, Refusal) or _status(exc.code, "datasets.exports") is not None
+
+
+def _status(code: str, endpoint: str) -> int | None:
+    """The status the code registry gives `code` on `endpoint`, `None` where it gives none."""
+    try:
+        with bound_registry_endpoint(endpoint):
+            return registered_status(code)
+    except LookupError:
+        return None
+
+
 def _unservable(spec_id: str, exc: Exception) -> Exception:
     """The refusal the exports door answers for `exc`, a failure resolving `spec_id`: `exc`
-    itself when it is no refusal or `datasets.exports` registers its code, else a
-    `NewestVersionUnservable` of the registered code that stands for it, read from how the
-    analysis door, whose resolve this is, classifies it. A refusal neither endpoint registers
-    is the server's own rendering failing, an `internal_error`."""
-    # `datasets_api.app` composes this module's door, so its classifier is read at call time.
-    from datasets_api.app import classify_datasets_exception
-
-    try:
-        with bound_registry_endpoint("datasets.exports"):
-            classify_datasets_exception(exc)
+    itself when it `passes_through`, else a `NewestVersionUnservable` of the registered code
+    that stands for it, read from the status the analysis door, whose resolve this is, gives
+    its code. A code neither endpoint registers is the server's own rendering failing, an
+    `internal_error`. Nothing is classified here, so the door classifies the failure once."""
+    if passes_through(exc):
         return exc
-    except LookupError:
-        pass
-    detail = f"the newest version of {spec_id} cannot be served: {exc}"
-    try:
-        with bound_registry_endpoint("datasets.analysis"):
-            problem = classify_datasets_exception(exc)
-    except LookupError:
-        return NewestVersionUnservable(code="internal_error", detail=detail)
-    if problem is None:
-        return exc
-    detail = f"the newest version of {spec_id} cannot be served: {problem.code}: {problem.detail}"
-    if problem.retryable:
+    assert isinstance(exc, Refusal)
+    detail = f"the newest version of {spec_id} cannot be served: {exc.code}: {exc.detail or exc}"
+    status = _status(exc.code, "datasets.analysis")
+    if status is None:
         return NewestVersionUnservable(
-            code="service_unavailable", retryable=True, detail=detail, headers=problem.headers
+            code="internal_error",
+            detail=f"the newest version of {spec_id} cannot be served: {exc}",
         )
-    if problem.status >= 500:
+    if exc.retryable:
+        return NewestVersionUnservable(
+            code="service_unavailable", retryable=True, detail=detail, headers=exc.headers
+        )
+    if status >= 500:
         return NewestVersionUnservable(code="internal_error", detail=detail)
     return NewestVersionUnservable(code="snapshot_not_found", detail=detail)
 
