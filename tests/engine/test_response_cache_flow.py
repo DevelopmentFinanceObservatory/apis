@@ -16,6 +16,7 @@ from search.engine.envelope import now_ms
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
+from search.engine.stated_scope import part_scope_intakes
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     bound_conversion_catalogue,
@@ -30,6 +31,7 @@ from search.models import (
     ResubmitParsedEntry,
     Warning,
 )
+from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import KeyedBinder
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -266,6 +268,55 @@ def test_single_variable_queries_cannot_share_an_unindexed_value_grounding_resul
         extraction["query_text"] = male
         assert await reader.lookup_parsed(query=male, **extraction) is None
         await reader.release()
+
+    asyncio.run(run())
+
+
+def test_queries_whose_words_state_another_scope_never_share_a_layer2_entry():
+    """Two queries of several variables with one extraction, one of them stating
+    "bilateral" in a variable's words, key apart, and a repeat of the scope shares."""
+    base = _base_response()
+
+    async def run():
+        cache = _new_cache()
+        extraction = _population_india_extraction()
+        extraction.update(
+            variables=["ODA to India", "GDP of India"],
+            variable_qualifiers=[(), ()],
+            operations=[(), ()],
+            sources=[(), ()],
+        )
+        bilateral = part_scope_intakes(
+            message=None, part_texts=["bilateral ODA to India", "GDP of India"]
+        )
+        plain = [ScopeIntake(), ScopeIntake()]
+        writer = _make_scope(cache)
+        assert await writer.lookup_raw("bilateral ODA and GDP of India") is None
+        assert (
+            await writer.lookup_parsed(
+                query="bilateral ODA and GDP of India", stated_scopes=bilateral, **extraction
+            )
+            is None
+        )
+        await writer.store(base)
+
+        reader = _make_scope(cache)
+        assert await reader.lookup_raw("ODA and GDP of India") is None
+        assert (
+            await reader.lookup_parsed(
+                query="ODA and GDP of India", stated_scopes=plain, **extraction
+            )
+            is None
+        )
+        await reader.release()
+
+        repeat = _make_scope(cache)
+        assert await repeat.lookup_raw("bilateral ODA, and GDP of India") is None
+        hit = await repeat.lookup_parsed(
+            query="bilateral ODA, and GDP of India", stated_scopes=bilateral, **extraction
+        )
+        await repeat.release()
+        assert hit is not None
 
     asyncio.run(run())
 

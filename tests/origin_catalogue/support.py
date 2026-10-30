@@ -22,7 +22,7 @@ from origin_catalogue.catalogue import (
     SourceDocumentation,
 )
 from origin_catalogue.families import FamilyKey, FamilySummary, ReleaseFamilies
-from origin_catalogue.graph import _wire
+from origin_catalogue.frozen_arcs import served_arcs
 from origin_catalogue.schema import FORMAT_ROOT, UnAgencyCounts
 from origin_catalogue.un_mirror import UnArc, UnMirror, UnVariable
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
@@ -103,7 +103,7 @@ class JobTables:
 def held_wire_arcs(tables: ArcTables, dcid: str) -> dict | None:
     """`dcid`'s held arcs as the origin client serves them, `None` for a node no table holds."""
     arcs = tables.arcs(dcid)
-    return None if arcs is None else _wire(arcs)
+    return None if arcs is None else served_arcs(arcs)
 
 
 CRS = "provenance/OECDCreditorReportingSystem"

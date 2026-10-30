@@ -11,12 +11,14 @@ run times to it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 from typing import Any, NoReturn
@@ -29,7 +31,7 @@ from materialise.rate_tables import RateTableCache
 from origin_catalogue import note_un_blocked_places
 from search.engine import enrichment
 from search.engine.app import create_app
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import DegradedReads, note_degraded_read
 from search.engine.deps import SEARCH_DEPS_SLOT
 from search.engine.errors import EngineInfraError, EngineInputError, GraphInfraError
 from search.engine.events import DoneEvent, Event, ResponseEvent
@@ -37,9 +39,10 @@ from search.engine.options import surface
 from search.engine.options.options_response_cache import OptionsResponseCache
 from search.engine.options.population_memo import PopulationInFlight
 from search.engine.options.surface import ComputedOptions
-from search.engine.region import option_coverage, place_options
+from search.engine.region import option_coverage, pipeline, place_options
 from search.engine.region.observations import dispatch as obs_dispatch
 from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.result import RegionResult
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_keys import is_bundle_storable
 from search.eval.cases import Case, load_cases
@@ -497,6 +500,19 @@ def _target(exc: BaseException) -> _Fault:
     return fault
 
 
+def _target_degraded(mp: pytest.MonkeyPatch, fired: list[str]) -> None:
+    real = place_options.resolve_options_target
+
+    def resolve(*args: Any, **kwargs: Any) -> Any:
+        target = real(*args, **kwargs)
+        fired.append("target")
+        note_degraded_read("population")
+        return target
+
+    mp.setattr(place_options, "resolve_options_target", resolve)
+    _scope_record_closes_inside_the_region(mp)
+
+
 def _scope_graph_failure(mp: pytest.MonkeyPatch, fired: list[str]) -> None:
     mp.setattr(place_options, "compute_options", _raising(EngineInfraError("x"), fired))
 
@@ -516,8 +532,33 @@ def _scope(*, degraded: bool) -> _Fault:
             )
 
         mp.setattr(place_options, "compute_options", build)
+        if degraded:
+            _scope_record_closes_inside_the_region(mp)
 
     return fault
+
+
+def _scope_record_closes_inside_the_region(mp: pytest.MonkeyPatch) -> None:
+    """Hold the region's resolution open until a place-options job has closed its
+    degraded-reads record, so the job's notes would reach the region's record if they
+    passed to it, the order the worker threads run in now and then on CI."""
+    closed = threading.Event()
+    record = place_options.recording_degraded_reads
+    fill_gap = pipeline._fill_gap
+
+    @contextmanager
+    def recorded(**kwargs: Any) -> Iterator[DegradedReads]:
+        with record(**kwargs) as lost:
+            yield lost
+        closed.set()
+
+    async def filled_after_a_scope_closed(*args: Any, **kwargs: Any) -> RegionResult:
+        result = await fill_gap(*args, **kwargs)
+        assert await asyncio.to_thread(closed.wait, 5), "no place-options job closed"
+        return result
+
+    mp.setattr(place_options, "recording_degraded_reads", recorded)
+    mp.setattr(pipeline, "_fill_gap", filled_after_a_scope_closed)
 
 
 @pytest.mark.parametrize(
@@ -531,6 +572,7 @@ def _scope(*, degraded: bool) -> _Fault:
         (_target(PopulationInFlight()), True),
         (_target(EngineInfraError("x")), True),
         (_target(TimeoutError()), True),
+        (_target_degraded, True),
         (_scope_graph_failure, True),
         (_scope(degraded=True), True),
         (_scope(degraded=False), True),
@@ -544,6 +586,7 @@ def _scope(*, degraded: bool) -> _Fault:
         "population-in-flight",
         "target-graph-failure",
         "target-timeout",
+        "target-degraded",
         "scope-graph-failure",
         "scope-degraded",
         "scope-warned",
@@ -647,6 +690,30 @@ def test_place_options_naming_refused_places_are_stored_and_served_on_a_hit(
     assert (compute.calls == calls) is options_stored
     assert _replays(_from_response(first), _from_response(second))
     assert _place_options(_from_response(second)) == fresh
+
+
+@pytest.mark.parametrize("degraded", [False, True], ids=["clean-target", "degraded-target"])
+def test_a_degraded_place_options_target_keeps_both_scopes_out_of_the_options_cache(
+    monkeypatch: pytest.MonkeyPatch, degraded: bool
+) -> None:
+    """Every scope's options stand on the resolved target, so a read the target's resolution
+    lost marks both scopes degraded and the options cache stores neither. The bundle is
+    stored either way, since place options are not in it."""
+    real = place_options.resolve_options_target
+
+    def resolve(*args: Any, **kwargs: Any) -> Any:
+        target = real(*args, **kwargs)
+        if degraded:
+            note_degraded_read("population")
+        return target
+
+    monkeypatch.setattr(place_options, "resolve_options_target", resolve)
+    cache, options_cache = ResponseCache(), OptionsResponseCache(enabled=True, max_entries=10)
+
+    _kenya_events(cache, _SUBMIT_OPTIONS, stream=True, options_cache=options_cache)
+
+    assert cache.stats().entries > 0
+    assert options_cache.stats()["entries"] == (0 if degraded else 2)
 
 
 def test_a_cold_run_past_the_place_options_budget_stores_and_fills_the_options_cache(

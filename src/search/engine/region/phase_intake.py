@@ -14,6 +14,7 @@ from code_index.shared import get_index
 from code_index.types import PartyClass
 from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Entity, Group, Resolved
+from entity_resolution.membership import MembershipPolicy
 from origin_catalogue import note_un_unserved, recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets
 from search.engine.config import settings
@@ -42,12 +43,18 @@ from search.engine.region.result import (
 )
 from search.engine.region.source_choice import allows_un_system
 from search.engine.region.state import ResolveState, UnLeg, UnPool
-from search.engine.region.whole_totals import named_whole, population_totals, side_classes
+from search.engine.region.whole_totals import (
+    containing_totals,
+    named_whole,
+    population_totals,
+    side_classes,
+)
 from search.engine.retrieval.bound_values import declared_datasets
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
 from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
 from search.render.no_data import UnlistedPopulation
+from search.scope.region import oecd_region_reading
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
 # expansion. derive_shapes checks the confirmed count to bound the actual read.
@@ -227,7 +234,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     for name, entity in resolved.items():
         region = membership.holds_region(entity.dcid)
         expansion = expansions.get(entity.dcid) if region else None
-        place_sets[name] = PlaceSet(
+        place_set = PlaceSet(
             name=name,
             kind="region" if region else "place",
             node=PlaceNode(dcid=entity.dcid, graph_type=entity.graph_type),
@@ -237,10 +244,37 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             reading=reading(name),
             total=total(entity.dcid) if expansion is not None else None,
         )
+        place_sets[name] = replace(place_set, oecd=oecd_reading(place_set, membership=membership))
     state.place_sets = place_sets
     state.party_sets = await _party_word_sets(state)
     state.whole_named = whole_named
     state.whole_sets = _whole_total_sets(state)
+
+
+def oecd_reading(place_set: PlaceSet, *, membership: MembershipPolicy) -> PlaceSet | None:
+    """The OECD's reading of `place_set` (`PlaceSet.oecd`), None for a set no row of
+    `scope_conventions.REGION_READINGS` names or whose DAC group the membership policy holds
+    no members for: the set with the members of the group the row's DAC total sums
+    (`code_index.declarations.TOTAL_GROUPS`), that total and the group's registry id."""
+    if place_set.node is None or place_set.members is None:
+        return None
+    row = oecd_region_reading(place_set.node.dcid)
+    if row is None:
+        return None
+    total = get_index().parties.get(row.total)
+    if total is None or total.totals is None or total.totals not in membership:
+        return None
+    held = membership.members(total.totals).members
+    if not isinstance(held, tuple) or not held:
+        return None
+    return replace(
+        place_set,
+        members=held,
+        member_type="Country",
+        total=total.dcid,
+        group_id=total.totals,
+        oecd_read=True,
+    )
 
 
 def _whole_named(state: ResolveState, resolved: Mapping[str, Entity]) -> dict[str, tuple[str, ...]]:
@@ -259,7 +293,8 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
     """The place set of each whole total the part can bind (`ResolveState.whole_sets`), by
     dcid: each party a text names as a whole population (`ResolveState.whole_named`), and
     the totals of every party on each side the part totals (`place_roles.totalled_axes`,
-    `whole_totals.population_totals`). Each is its node, named by the code index's label
+    `whole_totals.population_totals`), and the containing totals of those sides
+    (`whole_totals.containing_totals`). Each is its node, named by the code index's label
     for the party.
 
     A total of a side the part totals binds where the code index marks it on a side its
@@ -269,6 +304,7 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
     (`place_roles.set_choices`), and its node carries no graph type, so no graph read runs
     for it."""
     named = [dcid for dcids in state.whole_named.values() for dcid in dcids]
+    axes = totalled_axes(state)
     rows = get_index().parties
 
     def label(dcid: str) -> str:
@@ -277,7 +313,7 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
 
     return {
         dcid: PlaceSet(name=label(dcid), kind="place", node=PlaceNode(dcid=dcid, graph_type=""))
-        for dcid in dict.fromkeys((*named, *population_totals(totalled_axes(state))))
+        for dcid in dict.fromkeys((*named, *population_totals(axes), *containing_totals(axes)))
     }
 
 
@@ -666,6 +702,7 @@ async def _derive_pool(
                 sv_scores={c.dcid: c.score for c in pool},
                 sv_types={c.dcid: c.type_of for c in pool},
                 rival_svs=frozenset(c.dcid for c in pool if c.rival),
+                basis_of={c.dcid: c.basis_of for c in pool if c.basis_of},
                 # Use recall's country snapshot. Place sets and Group members stay off the
                 # floor.
                 place_dcids=state.recall_only_place_dcids,

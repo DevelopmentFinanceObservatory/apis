@@ -27,7 +27,6 @@ from materialise.facets import (
     FacetBinding,
     PlaceAdmission,
     joint_dispatch_facet_ids,
-    served_facets,
     subject_probe,
 )
 from materialise.generation import (
@@ -41,6 +40,7 @@ from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.group_facets import select_group_facets
 from materialise.window import RequestedWindow
 
+from ._group_support import served_alone
 from .conftest import FakeGraphReader, only_chunk
 
 _RATE = "UnemploymentRate_ILO"
@@ -405,7 +405,7 @@ def test_a_chunk_serves_nothing_for_a_member_whose_populated_probe_dispatches_no
     quarterly = _facet(_QUARTERLY_ID, _QUARTERLY)
     selections = select_group_facets(
         [rate, youth], [[quarterly], [quarterly]], graph=FakeGraphReader()
-    ).selections
+    ).election.selections
     admission = PlaceAdmission(places_by_facet={_QUARTERLY_ID: frozenset({_KENYA})})
     fetched: list[set[str]] = []
     sdmx = _sdmx(
@@ -563,7 +563,7 @@ def test_a_group_judges_an_unstated_facet_id_by_each_members_own_copies(members,
     ]
     election = select_group_facets(
         [_request(stat_var) for stat_var in stat_vars], candidates, graph=FakeGraphReader()
-    )
+    ).election
 
     assert [
         joint_dispatch_facet_ids(member, election, member=index)
@@ -707,7 +707,7 @@ def test_a_groups_cadence_ranks_over_its_members_matching_facets(declares, candi
     }
     graph = FakeGraphReader(policies=declared if declares else {})
 
-    election = select_group_facets(requests, candidates, graph=graph)
+    election = select_group_facets(requests, candidates, graph=graph).election
 
     assert [
         joint_dispatch_facet_ids(member, election, member=index)
@@ -813,7 +813,7 @@ def test_a_tie_goes_to_the_period_of_the_best_ranked_facet_a_counted_member_hold
     expected = [("X",), ()] if month_first else [(), ("X",)]
     requests = [replace(_request(stat_var), window=_EARLY_WINDOW) for stat_var in (_RATE, _YOUTH)]
 
-    election = select_group_facets(requests, candidates, graph=FakeGraphReader())
+    election = select_group_facets(requests, candidates, graph=FakeGraphReader()).election
 
     assert election.cadence == Cadence(facet_id="X")
     assert [
@@ -824,8 +824,8 @@ def test_a_tie_goes_to_the_period_of_the_best_ranked_facet_a_counted_member_hold
 
 @pytest.mark.parametrize("annual_first", [True, False])
 def test_a_null_provenance_read_cites_only_facets_its_served_group_holds(annual_first):
-    # Search binds the provenance axis to the null ref when the top facet carries none
-    # (`served_facets`), and refuses a pair whose selection witnesses fall outside the
+    # A search read does not require provenance, so an unsourced top facet is selected
+    # (`group_served`), and search refuses a pair whose selection witnesses fall outside the
     # served group. The annual facet carries no provenance either and comes first in graph
     # order, but the quarterly one is elected and served, so every witness must name it.
     def unsourced(facet_id: str, period: str, obs_count: int, latest: str) -> Facet:
@@ -840,10 +840,10 @@ def test_a_null_provenance_read_cites_only_facets_its_served_group_holds(annual_
 
     facets = [unsourced("fA", "P1Y", 3, "2022"), unsourced("fQ", "P3M", 12, "2022-10")]
     candidates = facets if annual_first else facets[::-1]
-    request = _request(_RATE, provenance=FacetBinding(state="bound", ref=None))
+    request = replace(_request(_RATE), requires_provenance=False)
 
     election = _select_member_facets(request, candidates, graph=FakeGraphReader())
-    group = served_facets(candidates, stat_vars=[request.stat_var], window=request.window)
+    group = served_alone(candidates, stat_var=request.stat_var, window=request.window)
 
     assert joint_dispatch_facet_ids(candidates, election, member=0) == ("fQ",)
     assert [facet.facet_id for facet in group] == ["fQ"]

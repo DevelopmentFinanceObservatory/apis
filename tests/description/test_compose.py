@@ -30,6 +30,7 @@ from description.stored import TEXT_MAX_LENGTH
 from description.vocabulary import Vocabulary, build_vocabulary
 from tests.description.test_accept_compose import (
     _BASIC_HEALTH,
+    _EDUCATION,
     _FIXED,
     _GRANT,
     _HEALTH,
@@ -117,6 +118,59 @@ def test_title_words_a_fixed_code_as_the_search_heading_does(
     )
 
     assert served["title"] == title
+
+
+_PROVIDER_DIMENSION = DimensionFacts(
+    property="financingProvider",
+    within=None,
+    values=[DimensionValue(value="dc/o/provider00", variables=1)],
+    undeclared_variables=0,
+    partial=False,
+)
+_SECTOR_VALUES = [{"value": _EDUCATION, "variables": 1}, {"value": _HEALTH, "variables": 1}]
+
+
+@pytest.mark.parametrize(
+    ("sector", "title"),
+    [
+        pytest.param(
+            {"within_set": [_EDUCATION, _HEALTH], "values": _SECTOR_VALUES},
+            "Gross disbursements to Nigeria for education and health",
+            id="set-binding",
+        ),
+        pytest.param(
+            {"within_set": [_EDUCATION, _HEALTH], "values": []},
+            "Gross disbursements to Nigeria for education and health",
+            id="set-binding-summed-to-its-total",
+        ),
+        pytest.param(
+            {"values": _SECTOR_VALUES},
+            "Gross disbursements to Nigeria",
+            id="stored-before-sets-were-recorded",
+        ),
+    ],
+)
+def test_title_names_each_code_of_a_set_binding(sector: dict[str, Any], title: str) -> None:
+    """A dimension narrowed to a set names its codes as a list after the property's
+    connective, whether it still varies or a collapse summed it to the set's total. A record
+    stored before sets were recorded holds no `within_set` and keeps its title."""
+    from description.compose import describe_version
+
+    dimension = {
+        "property": _SECTOR,
+        "within": None,
+        "undeclared_variables": 0,
+        "partial": False,
+        **sector,
+    }
+    stored = _dataset_record(
+        variables=_variables([_PROVIDER_DIMENSION, DimensionFacts.model_validate(dimension)])
+    ).model_dump_json()
+
+    record = DescriptionRecord.model_validate_json(stored)
+
+    assert ("within_set" in stored) == ("within_set" in sector)
+    assert describe_version(record, _words())["title"] == title
 
 
 @pytest.mark.parametrize(

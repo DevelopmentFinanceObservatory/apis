@@ -1112,6 +1112,59 @@ class TestScopeSurgeryRoleRefusals:
         assert problem["issues"][0]["member"] == "donor"
         assert len(store.state.spec_registry) == rows_before
 
+    @pytest.mark.parametrize(
+        ("dcid", "types", "kind"),
+        [
+            pytest.param(
+                "Count_Person", ("StatisticalVariable",), "a statistical variable", id="variable"
+            ),
+            pytest.param(
+                "geoId/06",
+                ("AdministrativeArea1", "Place", "State"),
+                "a place other than a country or region",
+                id="state",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("entry", ["scope", "statvar_set", "sidecar"])
+    def test_a_recipient_of_a_kind_no_recipient_takes_refuses_with_no_registry_write(
+        self, entry: str, dcid: str, types: tuple[str, ...], kind: str
+    ):
+        """A recipient whose kind none of the code index's recipients take
+        (`search.role_kinds`) refuses before any registry write, whether a scope, a statvar
+        set or a sidecar's identity binds it."""
+        store = FakeDatasetStore()
+        graph = _graph({**_arcs(), dcid: {"typeOf": types}})
+        client = _client(artifact_store=FakeArtifactStore(), store=store, graph=graph)
+        scope = {**_SCOPE_DICT, "entities": {"recipient": [dcid]}}
+        pointer = "/input/scope/entities/recipient"
+        if entry == "scope":
+            base = client.post("/api/datasets", json=_STATVAR_SET_BODY)
+            assert base.status_code == 200, base.text
+            body = _spec_id_body(base.json()["definition"]["spec_id"], scope=scope)
+        elif entry == "statvar_set":
+            body = {
+                **_STATVAR_SET_BODY,
+                "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": scope},
+            }
+        else:
+            shape = resolve_shape(_STAT_VAR_REF, graph=graph)
+            document = build_identity_document(shape, scope=Scope.model_validate(scope))
+            spec_id = recompute_identity(document).spec_id
+            definition = {"schema_version": 1, "spec_id": spec_id, "identity": document}
+            body = _spec_id_body(spec_id, definition=definition)
+            pointer = "/input/definition/identity/entities/recipient"
+        rows_before = len(store.state.spec_registry)
+
+        resp = client.post("/api/datasets", json=body)
+
+        assert resp.status_code == 422, resp.text
+        problem = resp.json()
+        assert problem["code"] == "invalid_role_ref"
+        assert problem["pointer"] == pointer
+        assert problem["detail"].startswith(f"{dcid} is {kind}; a recipient is a country")
+        assert len(store.state.spec_registry) == rows_before
+
     def test_a_slot_pinned_role_refuses_role_incompatible_with_no_registry_write(self):
         store = FakeDatasetStore()
         arcs: dict[str, dict[str, tuple[str, ...]]] = {

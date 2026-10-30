@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Literal, cast
 
+from code_index.composites import composite_ref, without_composite
 from code_index.members import elected_pins, identity_family_query
 from code_index.query import CodeIndex, IndexFamily
 from code_index.types import MeasureIndex, MeasureValueRow, PartitionLabelMatch, label_for_pairs
@@ -208,9 +209,13 @@ def family_label(
     `value` and `exact` bindings contribute their one ref, and a `set` binding joins its
     refs' labels with `/`. Measure-axis slots, slots pinned by the dataset the identity
     elects (`code_index.members.elected_pins`), unbound slots and refs the index holds no
-    row for contribute nothing. Returns `None` when neither part has a label. The
-    presentation door labels a collapsed family's `dcid:<spec_id>` ref with this, and the
-    datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
+    row for contribute nothing. A composite identity elects as its own shape and slots do,
+    with no provenance pin (`code_index.composites.without_composite`), and is named by its
+    declaration (`CompositeDeclaration.label`): after the measure label for a stacked
+    composite, whose components share the measure, and in its place for a spliced one, whose
+    measure changes between its periods (the OECD headline). Returns `None` when neither part
+    has a label. The presentation door labels a collapsed family's `dcid:<spec_id>` ref with
+    this, and the datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
     """
     shape = cast("Mapping[str, object]", identity.get("shape", {}))
     slots = cast("Sequence[Mapping[str, object]]", identity.get("slots", ()))
@@ -228,8 +233,12 @@ def family_label(
     ]
     match = label_for_pairs(pairs, measure_index.partition_labels)
     parts = [compose_measure_label(match, measure_index.values)] if match is not None else []
+    ref = composite_ref(identity)
+    composite = index.composite(ref) if ref is not None else None
+    if composite is not None:
+        parts = [*(parts if composite.kind == "stacked" else []), composite.label]
 
-    pinned = elected_pins(index, identity_family_query(index, identity))
+    pinned = elected_pins(index, identity_family_query(index, without_composite(identity)))
     for prop, refs in bound.items():
         if prop in measure_axes or prop in pinned:
             continue

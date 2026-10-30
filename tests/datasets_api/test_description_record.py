@@ -18,9 +18,10 @@ from functools import cache
 from typing import Any
 
 import pytest
+from pydantic.experimental.missing_sentinel import MISSING
 
 from code_index.shared import get_index, get_measure_index
-from code_index.types import MeasureIndex
+from code_index.types import MeasureAxis, MeasureIndex, MeasurePartitionLabel
 from dataset_store.snapshot import FrameLineage, ManifestFacts
 from datasets_api.description_record import (
     CHOICE_RANKING,
@@ -37,7 +38,7 @@ from datasets_api.description_record import (
 )
 from datasets_api.version_descriptions import mint_title
 from datasets_api.versions import VersionRecord
-from description.compose import describe_version
+from description.compose import describe_version, version_title
 from description.facts import (
     CaveatFact,
     CodeIndexStamp,
@@ -156,6 +157,36 @@ def _with_trace(manifest: Mapping[str, Any], **members: Any) -> dict[str, Any]:
 # Mint
 
 
+def family_raw_bound(binding: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The family fixture's raw mint, its test axis bound by `binding` in place of the set of
+    both its members when `binding` is given."""
+    manifest = _family_raw()
+    if binding is not None:
+        (slot,) = manifest["definition"]["identity"]["slots"]
+        slot["binding"] = dict(binding)
+    return manifest
+
+
+# The family fixture binds its test axis to a set; an unbound axis narrows to nothing.
+STAMPED_BINDINGS = [
+    pytest.param(None, 2, id="set-bound"),
+    pytest.param({"state": "unbound"}, 1, id="unbound"),
+]
+
+
+@pytest.mark.parametrize(("binding", "stamp"), STAMPED_BINDINGS)
+def test_a_record_is_stamped_the_lowest_schema_version_that_describes_it(
+    binding: Mapping[str, Any] | None, stamp: int
+) -> None:
+    """Version 1 lacks `within_set`, so only a record narrowing a dimension to a set is
+    stamped 2, and an image of version 1 reads every other record. A collapse is stamped by
+    what it holds, not by its base, which a read of a version 1 row lifts to version 2."""
+    raw = _mint(family_raw_bound(binding))
+    collapsed = _collapse(raw.model_copy(update={"schema_version": 2}))
+
+    assert (raw.schema_version, collapsed.schema_version) == (stamp, stamp)
+
+
 def test_a_mint_record_holds_the_versions_variables_series_and_evidence() -> None:
     manifest = _family_raw()
 
@@ -165,7 +196,7 @@ def test_a_mint_record_holds_the_versions_variables_series_and_evidence() -> Non
         manifest["definition"]["spec_id"],
         manifest["content_version"],
         "mint",
-        1,
+        2,
     )
     assert record.computed is None
     assert record.index_stamp == _FIXTURE_STAMP
@@ -710,8 +741,9 @@ def _collapse(base: DescriptionRecord) -> DescriptionRecord:
 def test_a_collapsed_record_keeps_its_bases_facts_and_adds_one_step_naming_what_was_summed() -> (
     None
 ):
-    """The groupby sums the test axis away, so the collapse holds no dimension and keeps
-    only the labels of what it still names."""
+    """The groupby sums the test axis away. The definition binds it to the set of A and B, so
+    the collapse is that set's total: it keeps the axis narrowed to the set, varying over no
+    value, and only the labels of what it still names."""
     read = datetime.date(2026, 10, 11)
     base = with_labels(
         _mint(_family_raw()), {"TestAxisA": "Axis value A", "country/KEN": "Kenya"}, read=read
@@ -724,14 +756,29 @@ def test_a_collapsed_record_keeps_its_bases_facts_and_adds_one_step_naming_what_
     assert record.content_version != base.content_version
     assert base.variables is not None
     assert base.variables.dimensions
+    (axis,) = base.variables.dimensions
+    assert axis.within_set == ["TestAxisA", "TestAxisB"]
     assert (record.id, record.basis, record.variables, record.caveats) == (
         base.id,
         base.basis,
-        base.variables.model_copy(update={"dimensions": []}),
+        base.variables.model_copy(
+            update={
+                "dimensions": [
+                    axis.model_copy(
+                        update={"values": [], "undeclared_variables": 0, "partial": False}
+                    )
+                ]
+            }
+        ),
         base.caveats,
     )
     assert record.evidence == base.evidence.model_copy(
-        update={"labels": [LabelEvidence(ref="country/KEN", label="Kenya", read=read)]}
+        update={
+            "labels": [
+                LabelEvidence(ref="TestAxisA", label="Axis value A", read=read),
+                LabelEvidence(ref="country/KEN", label="Kenya", read=read),
+            ]
+        }
     )
     assert (record.series.series, record.series.rows) == (1, 1)
     assert record.steps is not None
@@ -757,25 +804,39 @@ _COLLAPSED_RECIPIENT = _role("recipient", ("country/KEN", 1))
 _COLLAPSED_PROVIDERS = _role("financingProvider", ("dcid:dc/o/p1", 1), ("dcid:dc/o/p2", 1))
 
 
+_UNNARROWED: dict[str, Any] = {"within": None, "within_set": MISSING}
+_NARROWED_TO_ALL: dict[str, Any] = {"within": "TestAxisAll", "within_set": MISSING}
+
+
 @pytest.mark.parametrize(
-    ("within", "kept_axis", "dimensions", "fixed"),
+    ("narrowing", "kept_axis", "dimensions", "fixed"),
     [
         pytest.param(
-            None,
+            _UNNARROWED,
             (),
             [("financingProvider", None, [("dc/o/p1", 1), ("dc/o/p2", 1)])],
             [],
             id="axis-summed-away",
         ),
         pytest.param(
-            "TestAxisAll",
+            {},
+            (),
+            [
+                ("financingProvider", None, [("dc/o/p1", 1), ("dc/o/p2", 1)]),
+                ("testAxis", None, []),
+            ],
+            [],
+            id="set-bound-axis-summed-to-the-sets-total",
+        ),
+        pytest.param(
+            _NARROWED_TO_ALL,
             (),
             [("financingProvider", None, [("dc/o/p1", 1), ("dc/o/p2", 1)])],
             [("testAxis", "TestAxisAll")],
             id="narrowed-axis-summed-to-its-code",
         ),
         pytest.param(
-            "TestAxisAll",
+            _NARROWED_TO_ALL,
             (_role("stat_var_testAxis", ("dcid:TestAxisA", 1)),),
             [
                 ("financingProvider", None, [("dc/o/p1", 1), ("dc/o/p2", 1)]),
@@ -787,13 +848,15 @@ _COLLAPSED_PROVIDERS = _role("financingProvider", ("dcid:dc/o/p1", 1), ("dcid:dc
     ],
 )
 def test_a_collapse_keeps_the_dimensions_its_frame_holds_with_its_own_values(
-    within: str | None,
+    narrowing: dict[str, Any],
     kept_axis: tuple[RoleFigure, ...],
     dimensions: list[tuple[str, str | None, list[tuple[str, int]]]],
     fixed: list[tuple[str, str]],
 ) -> None:
     """Each role stays a column of the collapse, a kept code axis is its `stat_var_` column,
-    and every other axis is summed away; a kept dimension's values are the collapse's."""
+    and every other axis is summed away; a kept dimension's values are the collapse's. An
+    axis summed away is dropped, becomes a fixed value when narrowed to one code, and stays
+    narrowed to the set, over no value, when the definition binds a set (the fixture's)."""
     base = _mint(_family_raw(), figures=_figures(roles=(_RECIPIENT, _PROVIDERS)))
     assert base.variables is not None
     assert base.variables.dimensions is not None
@@ -802,7 +865,7 @@ def test_a_collapse_keeps_the_dimensions_its_frame_holds_with_its_own_values(
             "variables": base.variables.model_copy(
                 update={
                     "dimensions": [
-                        dimension.model_copy(update={"within": within})
+                        dimension.model_copy(update=narrowing)
                         if dimension.property == FAMILY_AXIS
                         else dimension
                         for dimension in base.variables.dimensions
@@ -831,6 +894,47 @@ def test_a_collapse_keeps_the_dimensions_its_frame_holds_with_its_own_values(
     assert [(item.property, item.value) for item in record.variables.fixed] == [
         (item.property, item.value) for item in base.variables.fixed
     ] + fixed
+
+
+@pytest.mark.parametrize("collapsed", [False, True], ids=["minted", "summed-collapse"])
+def test_a_set_binding_names_its_codes_in_the_version_title(collapsed: bool) -> None:
+    """The fixture's definition binds the test axis to the set of A and B, so its title names
+    both codes, and so does its multi-contributor collapse, the set's total, which a computed
+    version names an input by."""
+    base = with_labels(
+        _mint(_family_raw()),
+        {"TestAxisA": "Axis value A", "TestAxisB": "Axis value B", "country/KEN": "Kenya"},
+        read=datetime.date(2026, 10, 11),
+    )
+    record = _collapse(base) if collapsed else base
+    vocabulary = build_vocabulary(
+        index=family_fixture._code_index(),
+        measure_index=MeasureIndex(
+            axes=(
+                MeasureAxis(axis="populationType", kind="shape", role="free", prefer=()),
+                MeasureAxis(axis="measuredProperty", kind="shape", role="basis", prefer=()),
+            ),
+            values=(),
+            partition_labels=(
+                MeasurePartitionLabel(
+                    axis_values=(
+                        ("measuredProperty", "amount"),
+                        ("populationType", "DevelopmentFinance"),
+                    ),
+                    label="development finance",
+                ),
+            ),
+        ),
+        labels={},
+        sources={},
+        currency_units={},
+        graph_generation="gen-1",
+        catalogue_build="fake-catalogue",
+    )
+
+    assert version_title(record, vocabulary) == (
+        "Development finance to Kenya for Axis value A and Axis value B"
+    )
 
 
 _A, _B = family_fixture._MEMBER_A, family_fixture._MEMBER_B

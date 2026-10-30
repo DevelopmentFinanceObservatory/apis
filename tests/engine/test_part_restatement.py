@@ -617,6 +617,10 @@ class TestPartCarriesRestatementOnEveryStatus:
         assert response.parts[0].restatement == restatement
 
 
+_DRC = "Democratic Republic of the Congo"
+_ROC = "Republic of the Congo"
+
+
 class TestEntityRefs:
     def test_a_resolved_country_states_its_node(self):
         """The part names the node its entity text bound, once per text."""
@@ -634,25 +638,45 @@ class TestEntityRefs:
             EntityRefs(text="Kenya", refs=[]),
         ]
 
-    def test_a_text_on_two_axes_is_stated_once(self):
-        """A text the restatement echoes on both axes names one binding."""
-        restatement = ParsedPart(
-            variable_text="trade",
-            entities=[
-                ParsedEntity(text="Kenya", role_text="from"),
-                ParsedEntity(text="Kenya", role_text="to"),
-            ],
-        )
+    @pytest.mark.parametrize(
+        ("entities", "bound", "refs"),
+        [
+            (
+                [
+                    ParsedEntity(text="Kenya", role_text="from"),
+                    ParsedEntity(text="Kenya", role_text="to"),
+                ],
+                {"Kenya": ("country/KEN",)},
+                [("Kenya", ["country/KEN"]), ("Kenya", ["country/KEN"])],
+            ),
+            (
+                [
+                    ParsedEntity(text="Congo", name=_DRC, role_text="from"),
+                    ParsedEntity(text="Congo", name=_ROC, role_text="to"),
+                ],
+                {_DRC: ("country/COD",), _ROC: ("country/COG",)},
+                [("Congo", ["country/COD"]), ("Congo", ["country/COG"])],
+            ),
+            (
+                [
+                    ParsedEntity(text="Congo", role_text="from", dcid="country/COG"),
+                    ParsedEntity(text="Congo [Republic]", role_text="to", dcid="country/COG"),
+                ],
+                {"country/COG": ("country/COG",)},
+                [("Congo", ["country/COG"]), ("Congo [Republic]", ["country/COG"])],
+            ),
+        ],
+        ids=["self-flow", "congo-to-congo", "one-pin-two-texts"],
+    )
+    def test_each_restatement_row_states_its_binding(self, entities, bound, refs):
+        """One entry per restatement row, in row order, under the row's text, with the refs
+        of the row's identity: a self-flow's two rows state the same refs, and two rows
+        written alike state each end's."""
+        restatement = ParsedPart(variable_text="trade", entities=entities)
         spec = _spec(_PERSON_SHAPE, "Val", sv_dcid="sv")
-        region = _rr(
-            "trade",
-            "definite",
-            spec,
-            restatement=restatement,
-            entity_refs={"Kenya": ("country/KEN",)},
-        )
+        region = _rr("trade", "definite", spec, restatement=restatement, entity_refs=bound)
         assert _assemble(region).parts[0].entity_refs == [
-            EntityRefs(text="Kenya", refs=["country/KEN"])
+            EntityRefs(text=text, refs=list(nodes)) for text, nodes in refs
         ]
 
 

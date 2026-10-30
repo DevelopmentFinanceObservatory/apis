@@ -324,7 +324,9 @@ def test_candidates_bound_unit_graph_failure_raises_infra_error_not_definite():
     """
 
     class _RaisingGraphReader(FakeGraphReader):
-        def variable_facets_batch(self, *, stat_var, entities, deadline: float | None = None):
+        def variable_facets_batch(
+            self, *, stat_var, entities, needs_dates: bool = False, deadline: float | None = None
+        ):
             raise GraphInfraError("graph down")
 
         def default_facet_policy(self, *, stat_var, axis):

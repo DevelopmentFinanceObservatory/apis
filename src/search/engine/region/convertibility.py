@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from dc_sdmx import EntityFilter
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
-from materialise import FacetBinding, GraphReader, MaterialisationRequest, decide_member_unit
+from materialise import FacetBinding, GraphReader, MaterialisationRequest, decide_group_unit
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import FacetSelection, MemberProbe, UnitRequest, native_currency_iso
 from materialise.finish import (
@@ -52,7 +52,7 @@ from search.engine.departures import (
     deflator_omission_undecided_fact,
 )
 from search.engine.errors import GraphInfraError
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.codes import (
     CURRENCY_UNMAPPED_OMITTED,
     DATE_COVERAGE_PARTIAL,
@@ -136,7 +136,7 @@ def unit_request_for_materialise(request: IdentityUnitRequest) -> UnitRequest:
     """Convert the identity request to a materialise unit request.
 
     A string currency passes through; a role-object currency becomes its bare
-    role key. ``decide_member_unit`` checks whether that role is declared.
+    role key. ``decide_group_unit`` checks whether that role is declared.
     """
     currency = request.currency if isinstance(request.currency, str) else request.currency.role
     return UnitRequest(currency=currency, prices=request.prices, base_year=request.base_year)
@@ -148,8 +148,8 @@ across every Set-bound axis in one `bound_facets` mapping (`provenance`/
 `measurementMethod`, the only two Set-capable bound_facets axes -- `unit`
 is always `state="request"`, never Set-bound). Checked at the point of
 enumeration, before a single combination is yielded: each yielded
-combination drives one real, unbatched `decide_member_unit` network probe
-in `decide_part_unit`'s own per-sv loop, so counting or filtering
+combination drives one real, unbatched network probe per StatVar
+in a unit decision's own per-combination loop, so counting or filtering
 afterwards would leave the peak probe count untouched. The ceiling is on
 the product across every Set-bound axis together, not on any one axis
 alone.
@@ -178,14 +178,14 @@ graph probes."""
 
 _REQUEST_PROBE_BUDGET_MAX = 10_000
 """Ceiling on `len(sv_dcids) * _combination_count(bound_facets)`: the total
-`decide_member_unit` probe count one `decide_part_unit` call would pay
-across every `sv_dcids` entry, checked once before the per-`sv` loop
+probe count one `decide_spec_unit` or `decide_option_units` call would pay
+across every StatVar it decides, checked once before the combination loop
 starts. `_BOUND_FACET_COMBINATIONS_MAX` bounds the product for a single
 `sv_dcids` entry; since `bound_facets` does not vary by `sv`, that bound is
 already sound on its own. What it leaves open is the UNDER-ceiling case:
 a legitimate combination width multiplied across every StatVar in a large
 population, which nothing bounded before this guard. `options/surface.py`
-calls `decide_part_unit` with its full server-derived population, which
+calls `decide_option_units` with its full server-derived population, which
 carries no StatVar-count precheck of its own (see that module's own
 docstring), and the code index's own population is deliberately
 never capped at all (see `options/population.py`'s own docstring) -- both
@@ -238,7 +238,7 @@ axis, or a sequence of refs."""
 def bound_facet_refs(
     facets: Mapping[str, IdentityFacetBinding] | None, source_dcids: Sequence[str]
 ) -> dict[str, BoundFacetRefs]:
-    """The non-unit pins a unit decision runs under (`decide_part_unit`'s `bound_facets`).
+    """The non-unit pins a unit decision runs under (`decide_spec_unit`'s `bound_facets`).
 
     Provenance comes from `source_dcids`: one ref, or a sequence for a set. The method
     comes from `facets`: a ref, a sequence for a set, or `None` for a null ref, which pins
@@ -290,8 +290,8 @@ def _bound_facet_combinations(
         yield dict(combo)
 
 
-def decide_part_unit(
-    sv_dcids: Sequence[str],
+def decide_spec_unit(
+    members: Sequence[str],
     *,
     unit_request: IdentityUnitRequest,
     role_bindings: Mapping[str, EntityFilter],
@@ -305,84 +305,194 @@ def decide_part_unit(
     datasets: ElectedDatasets = NO_DATASETS,
     deadline: float | None = None,
 ) -> Mapping[str, tuple[Mapping[str, FacetSelection], ...]]:
-    """Decide unit conversion for every StatVar and bound-facet combination.
+    """Decide unit conversion for the members of one Spec under every bound-facet
+    combination, as a mint of the Spec decides it: one election per combination across
+    every member (`materialise.pipeline.decide_group_unit`, the election
+    `generation._plan_group_members` runs), then each served member's conversion under it.
 
-    `datasets` holds the elected dataset of each StatVar of an index-resolved family. Each
+    `datasets` holds the elected dataset of each member of an index-resolved family. Each
     decision's request carries it (`MaterialisationRequest.dataset`), so the decision ranks
-    that dataset's facets alone, over `probes` or over its own probe, as a mint does.
+    that dataset's facets alone, over `probes` or over its own probe, as a mint does. When
+    every member has one the family is index-resolved, and the election agrees on
+    provenance and unit (`MaterialisationRequest.index_sourced`).
 
-    `probes` holds each StatVar's election input from the answer's read plan
+    `probes` holds each member's election input from the answer's read plan
     (`read_plan.plan_probes`): its candidates merged across the places and role tuples the
-    answer names, and each facet's count of those it holds a point at. A StatVar with a
+    answer names, and each facet's count of those it holds a point at. A member with a
     dispatchable candidate there decides over it and makes no graph read, so the decision
-    ranks what the plan ranks. Any other StatVar probes.
+    ranks what the plan ranks. Any other member probes, once per combination, and joins
+    the same election.
 
     Role bindings and declared roles describe the resolved shape. Non-unit
     axes such as provenance and measurementMethod hold a ref, `None` for the facets
-    without a value, or a sequence of refs. The unit axis is always a request. ``coverage`` is forwarded unchanged.
+    without a value, or a sequence of refs. The unit axis is always a request. ``coverage``
+    is forwarded unchanged.
 
-    Return each StatVar's selection mappings in combination order. Skip
-    ``FacetNotAvailableError`` and ``DefaultFacetUndefinedError`` combinations,
-    but try all combinations. Raise the first other error in encounter order,
-    even after a prior success. If all combinations are skipped, re-raise the
-    last skip. Empty ``sv_dcids`` is a no-op.
+    Return each served member's selection mappings in combination order, the election's,
+    every served member holding the same ones. A member the group of a combination leaves
+    out holds none of that combination's, and one no combination serves is absent, so
+    `elected_unit_refs` admits none of its facets: the requested currency decides which
+    members serve, native data first among the groups serving the most members
+    (`materialise.group_facets.elect_group`). Skip ``FacetNotAvailableError`` and
+    ``DefaultFacetUndefinedError`` combinations, but try all combinations. Raise the first
+    other error in encounter order, even after a prior success. If all combinations are
+    skipped, re-raise the last skip. Empty ``members`` is a no-op.
 
     Raise ``BoundFacetCombinationsCeilingExceededError`` before any probe when
-    either the per-StatVar product exceeds 60 or
-    ``len(sv_dcids) * combination_count`` exceeds 10,000.
+    either the per-member product exceeds 60 or
+    ``len(members) * combination_count`` exceeds 10,000.
 
-    Decisions read the graph through one ``conversion_graph_reader``: the first StatVar
-    read fetches every StatVar's conversion arcs in one batch, then each provenance,
+    Decisions read the graph through one ``conversion_graph_reader``: the first member
+    read fetches every member's conversion arcs in one batch, then each provenance,
     dataset and currency node is read once. A decision that needs no graph read makes none.
     """
-    combination_count = _combination_count(bound_facets)
-    probe_budget = len(sv_dcids) * combination_count
+    _check_probe_budget(len(members), bound_facets)
+    if not members:
+        return {}
+    return _decide_group(
+        members,
+        unit_request=unit_request,
+        role_bindings=role_bindings,
+        declared_roles=declared_roles,
+        bound_facets=bound_facets,
+        years=years,
+        graph=conversion_graph_reader(graph, stat_vars=members),
+        sdmx=sdmx,
+        coverage=coverage,
+        probes=probes,
+        datasets=datasets,
+        deadline=deadline,
+    )
+
+
+def decide_option_units(
+    sv_dcids: Sequence[str],
+    *,
+    unit_request: IdentityUnitRequest,
+    role_bindings: Mapping[str, EntityFilter],
+    declared_roles: tuple[str, ...],
+    bound_facets: Mapping[str, BoundFacetRefs] = {},
+    years: PlanYears,
+    graph: GraphReader,
+    sdmx: MaterialiseSdmxClient,
+    coverage: CoverageIndex,
+    datasets: ElectedDatasets = NO_DATASETS,
+    deadline: float | None = None,
+) -> Mapping[str, tuple[Mapping[str, FacetSelection], ...]]:
+    """Decide unit conversion for each of `sv_dcids` alone, as `decide_spec_unit` decides a
+    Spec of that one StatVar: the options door's StatVars are alternatives to one another,
+    not members of one Spec, so each elects its own unit. Every StatVar is returned or the
+    first refusal raises, in `sv_dcids` order.
+
+    Raise ``BoundFacetCombinationsCeilingExceededError`` before any probe when the
+    per-StatVar product exceeds 60 or ``len(sv_dcids) * combination_count`` exceeds 10,000,
+    the probes the call pays across every StatVar. One ``conversion_graph_reader`` serves
+    every decision, as `decide_spec_unit` describes."""
+    _check_probe_budget(len(sv_dcids), bound_facets)
+    graph = conversion_graph_reader(graph, stat_vars=sv_dcids)
+    decided: dict[str, tuple[Mapping[str, FacetSelection], ...]] = {}
+    for sv in sv_dcids:
+        decided.update(
+            _decide_group(
+                [sv],
+                unit_request=unit_request,
+                role_bindings=role_bindings,
+                declared_roles=declared_roles,
+                bound_facets=bound_facets,
+                years=years,
+                graph=graph,
+                sdmx=sdmx,
+                coverage=coverage,
+                probes=None,
+                datasets=datasets,
+                deadline=deadline,
+            )
+        )
+    return decided
+
+
+def _check_probe_budget(stat_vars: int, bound_facets: Mapping[str, BoundFacetRefs]) -> None:
+    """Refuse a decision whose probes, `stat_vars` times the bound-facet combinations,
+    pass `_REQUEST_PROBE_BUDGET_MAX`, before any probe."""
+    probe_budget = stat_vars * _combination_count(bound_facets)
     if probe_budget > _REQUEST_PROBE_BUDGET_MAX:
         raise BoundFacetCombinationsCeilingExceededError(probe_budget, _REQUEST_PROBE_BUDGET_MAX)
-    graph = conversion_graph_reader(graph, stat_vars=sv_dcids)
+
+
+def _decide_group(
+    members: Sequence[str],
+    *,
+    unit_request: IdentityUnitRequest,
+    role_bindings: Mapping[str, EntityFilter],
+    declared_roles: tuple[str, ...],
+    bound_facets: Mapping[str, BoundFacetRefs],
+    years: PlanYears,
+    graph: GraphReader,
+    sdmx: MaterialiseSdmxClient,
+    coverage: CoverageIndex,
+    probes: Mapping[str, MemberProbe] | None,
+    datasets: ElectedDatasets,
+    deadline: float | None,
+) -> dict[str, tuple[Mapping[str, FacetSelection], ...]]:
+    """`decide_spec_unit` over non-empty `members`, reading through `graph`, a
+    `conversion_graph_reader` the caller built."""
     unit_binding = FacetBinding(state="request", request=unit_request_for_materialise(unit_request))
     requested_window = plan_window(years)
-    elected: dict[str, tuple[Mapping[str, FacetSelection], ...]] = {}
-    for sv in sv_dcids:
-        probe = probes.get(sv) if probes is not None else None
-        if probe is not None and not any(c.facet_id is not None for c in probe.candidates):
-            probe = None
-        last_unavailable: FacetNotAvailableError | DefaultFacetUndefinedError | None = None
-        decided_selections: list[Mapping[str, FacetSelection]] = []
-        for combo in _bound_facet_combinations(bound_facets):
-            facet_bindings: dict[str, FacetBinding] = {
-                axis: FacetBinding(state="bound", ref=ref) for axis, ref in combo.items()
-            }
-            facet_bindings["unit"] = unit_binding
-            request = MaterialisationRequest(
+    index_sourced = all(sv in datasets for sv in members)
+    member_probes = [
+        _dispatchable(probes.get(sv) if probes is not None else None) for sv in members
+    ]
+    last_unavailable: FacetNotAvailableError | DefaultFacetUndefinedError | None = None
+    decided = False
+    by_member: dict[str, list[Mapping[str, FacetSelection]]] = {}
+    for combo in _bound_facet_combinations(bound_facets):
+        facet_bindings: dict[str, FacetBinding] = {
+            axis: FacetBinding(state="bound", ref=ref) for axis, ref in combo.items()
+        }
+        facet_bindings["unit"] = unit_binding
+        requests = [
+            MaterialisationRequest(
                 stat_var=f"{_STAT_VAR_REF_PREFIX}{sv}",
                 role_bindings=role_bindings,
                 declared_roles=declared_roles,
                 facet_bindings=facet_bindings,
                 window=requested_window,
+                index_sourced=index_sourced,
                 dataset=datasets.get(sv),
+                # The decision selects as the answer's reads do (`observations.fetch`).
+                requires_provenance=False,
             )
-            try:
-                selections = decide_member_unit(
-                    request,
-                    graph=graph,
-                    sdmx=sdmx,
-                    coverage=coverage,
-                    settle=False,
-                    precomputed=probe.candidates if probe is not None else None,
-                    breadth=probe.breadth_in(requested_window) if probe is not None else None,
-                    variable_breadth=probe.variable_breadth if probe is not None else None,
-                    deadline=deadline,
-                )
-            except (FacetNotAvailableError, DefaultFacetUndefinedError) as exc:
-                last_unavailable = exc
-                continue
-            decided_selections.append(selections)
-        if not decided_selections:
-            assert last_unavailable is not None
-            raise last_unavailable
-        elected[sv] = tuple(decided_selections)
-    return elected
+            for sv in members
+        ]
+        try:
+            served = decide_group_unit(
+                requests,
+                member_probes,
+                graph=graph,
+                sdmx=sdmx,
+                coverage=coverage,
+                settle=False,
+                deadline=deadline,
+            )
+        except (FacetNotAvailableError, DefaultFacetUndefinedError) as exc:
+            last_unavailable = exc
+            continue
+        decided = True
+        for sv, selections in zip(members, served, strict=True):
+            if selections is not None:
+                by_member.setdefault(sv, []).append(selections)
+    if not decided:
+        assert last_unavailable is not None
+        raise last_unavailable
+    return {sv: tuple(by_member[sv]) for sv in members if sv in by_member}
+
+
+def _dispatchable(probe: MemberProbe | None) -> MemberProbe | None:
+    """`probe` when a candidate of it carries a facet id, which a decision can dispatch, and
+    None otherwise, so the decision probes the member itself."""
+    if probe is None or not any(c.facet_id is not None for c in probe.candidates):
+        return None
+    return probe
 
 
 def option_pins(
@@ -390,7 +500,7 @@ def option_pins(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
 ) -> FacetPins:
     """The pins a spec's facet options are judged against: its identity's facets, with a
-    request-form unit admitted per StatVar by the units `decide_part_unit` elected, the same
+    request-form unit admitted per StatVar by the units `decide_spec_unit` elected, the same
     units its pin refusal admits. With no election the request is tested literally. A first
     resolve, a candidate and a resubmit all build their option pins here."""
     return facet_pins(
@@ -491,7 +601,8 @@ def _served_keys(plan: ReadPlan) -> dict[str, dict[_FacetKey, Callable[[], _Serv
     A per-series read keys each served series' group facets, and under `latest` reads each
     series in the year of its StatVar's one period alone (`PairPlan.series_dates`), the
     period a latest read serves and every served series holds (`PairPlan.served`). A bulk
-    read keys its served members under the elected facet, which the facets continuing it
+    read keys its served members under the lead's unit and provenance, which every facet
+    its group's selection serves (`BulkPlan.selected`) and every facet continuing the lead
     share."""
     if isinstance(plan, BulkPlan):
         best = plan.elected
@@ -846,8 +957,9 @@ def _fetched_entities(
 ) -> dict[str, dict[_FacetKey, Callable[[str], frozenset[str]]]]:
     """Each StatVar's facet keys among the rows `plan`'s read fetches before it omits any,
     each with the entities those rows bind on a graph role. A bulk read fetches its served
-    members' pairs under the elected facet and the facets continuing it
-    (`BulkPlan.served_candidates`), over every year under `latest`, the pairs each
+    members' pairs under the facets its group's selection serves and the facets continuing
+    the lead (`BulkPlan.served_candidates`), keyed by the unit and provenance they share,
+    over every year under `latest`, the pairs each
     member's year is elected or dated from before the read reduces it to that year, and
     the member's years (`BulkPlan.member_years`) otherwise. A per-series read fetches its
     held series (`PairPlan.held`), every series with data under `latest`, under their group
@@ -984,7 +1096,8 @@ def unit_gate(
         if omitted and not isinstance(omitted, NonCurrencyUnitError):
             gate_plan = plan.omitting(omitted)
     return UnitGate(
-        plan=gate_plan, reason=bound_unit_gate_reason(gate_plan, obs_entities, mat.sv_dcids)
+        plan=gate_plan,
+        reason=bound_unit_gate_reason(gate_plan, obs_entities, unit_served(elected, mat.sv_dcids)),
     )
 
 

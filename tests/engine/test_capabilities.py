@@ -32,6 +32,7 @@ from search.engine.config import (
 from search.engine.schema import schema_payload
 from search.models import SCHEMA_VERSION, Axis, FacetAxis
 from search.observations import observation_settings
+from search.scope_window import scope_window_settings
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -137,8 +138,8 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps["max_unit_text_chars"] == SEARCH_MAX_UNIT_TEXT_CHARS
         assert caps["max_source_text_chars"] == SEARCH_MAX_SOURCE_TEXT_CHARS
         assert caps["region_max_members"] == settings().region_max_members
-        assert caps["scope_min_year"] == settings().scope_min_year
-        assert caps["scope_max_window_years"] == settings().scope_max_window_years
+        assert caps["scope_min_year"] == scope_window_settings().scope_min_year
+        assert caps["scope_max_window_years"] == scope_window_settings().scope_max_window_years
 
     def test_max_parts_is_distinct_from_max_variables(self, capabilities_body):
         # raw_text clamps an over-limit extraction (variables_clamped) and keeps
@@ -254,20 +255,21 @@ class TestCapabilityVersionPerturbation:
 
     def test_changing_each_role_scope_cap_moves_the_capability_version(self):
         # The role-scope discovery caps must each be individually wired
-        # into the hash too, the same as the parsed-door caps above. These
-        # are SearchSettings fields, so each is perturbed on a model_copy
-        # rather than patched on the config module.
-        role_scope_field_names = [
-            "region_max_members",
-            "scope_min_year",
-            "scope_max_window_years",
-        ]
+        # into the hash too, the same as the parsed-door caps above.
+        # region_max_members is a SearchSettings field, perturbed on a model_copy;
+        # the scope window's are ScopeWindowSettings fields, installed by the fixture.
         base = config.settings()
         baseline = base._compute_capability_version()
-        for field in role_scope_field_names:
-            perturbed_settings = base.model_copy(update={field: getattr(base, field) + 1})
-            perturbed = perturbed_settings._compute_capability_version()
-            assert perturbed != baseline, f"{field} is not wired into the capability_version hash"
+        perturbed_settings = base.model_copy(
+            update={"region_max_members": base.region_max_members + 1}
+        )
+        assert perturbed_settings._compute_capability_version() != baseline
+
+    @pytest.mark.parametrize("cap", ["scope_min_year", "scope_max_window_years"])
+    def test_changing_a_scope_window_cap_moves_the_capability_version(self, search_settings, cap):
+        original = config.settings().capability_version
+        search_settings(**{cap: getattr(scope_window_settings(), cap) + 1})
+        assert config.settings().capability_version != original
 
     @pytest.mark.parametrize("cap", ["obs_inline_max", "role_bulk_rank_max_rows"])
     def test_changing_an_observation_cap_moves_the_capability_version(self, search_settings, cap):

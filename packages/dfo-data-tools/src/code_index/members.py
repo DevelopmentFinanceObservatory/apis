@@ -23,6 +23,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
+from code_index.composites import composite_ref, refuse_composite_refs
 from code_index.query import CodeIndex, IndexFamily, row_five_tuple
 from dfo_platform.roles import declared_role_for
 from statvar_members import (
@@ -252,12 +253,20 @@ def identity_family_query(index: CodeIndex, identity: Mapping[str, object]) -> F
 def pinned_refs(facets: Mapping[str, Mapping[str, object]]) -> tuple[str, ...]:
     """The distinct refs an identity's provenance facet binds, as a value or a set, in
     posted order. Every reader of a provenance pin (the Datasets mint, Search resubmit and
-    the options door) reads it here."""
+    the options door) reads it here.
+
+    Raises `code_index.composites.CompositeProvenanceRead` for a pin naming a declared
+    composite, which no table publishes. Its reader reads the composite's components
+    (`code_index.composites.component_identities`)."""
     binding = facets.get(_SOURCE_FACET, {})
     ref = binding.get("ref")
-    if isinstance(ref, str):
-        return (ref,)
-    return tuple(dict.fromkeys(cast("Sequence[str]", binding.get("refs", ()))))
+    refs = (
+        (ref,)
+        if isinstance(ref, str)
+        else tuple(dict.fromkeys(cast("Sequence[str]", binding.get("refs", ()))))
+    )
+    refuse_composite_refs(refs)
+    return refs
 
 
 @dataclass(frozen=True)
@@ -1116,9 +1125,11 @@ def canonical_identity(index: CodeIndex, identity: Mapping[str, object]) -> Mapp
     row of the dataset holds exactly that code, so the two spellings select the same rows;
     the family query cannot tell `exact` from a value with no descendants, so the document
     is read here. Returns `identity` itself when nothing changes, as for a pinned arm
-    (`shape.kind` `stat_var`), which binds no slot."""
+    (`shape.kind` `stat_var`), which binds no slot, and for a composite
+    (`code_index.composites.composite_ref`), which names no one dataset whose invariants
+    it could bind."""
     shape = cast("Mapping[str, object]", identity.get("shape", {}))
-    if shape.get("kind") == "stat_var":
+    if shape.get("kind") == "stat_var" or composite_ref(identity) is not None:
         return identity
     query = identity_family_query(index, identity)
     invariants = elected_invariants(index, query)

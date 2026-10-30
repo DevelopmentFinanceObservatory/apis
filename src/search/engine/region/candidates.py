@@ -74,7 +74,13 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.standard import FacetBatch, facets_at_own_places
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.engine.source_scope import SourceScope
-from search.models import CandidateBasis, SpecObservations, Warning, omitted_observations
+from search.models import (
+    CandidateBasis,
+    ResolvedQualifier,
+    SpecObservations,
+    Warning,
+    omitted_observations,
+)
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -99,7 +105,9 @@ class _Candidate:
     context it is grounded and read over (`PlaceContext.settled` on `mat`), what the
     mint states of the members its walk settled (`MembershipResolution.walked`), and why the
     status rule offers it beside the elected shape (`status_rule`), `None` for the elected
-    shape itself and for a reading that rides on a refusal."""
+    shape itself and for a reading that rides on a refusal, and the records of the words its
+    own read leaves unread, its coverage records (`phase_election.judge_answer_coverage`), `None`
+    for the elected shape, which reads the elected answer's (`requirements.judge`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
@@ -107,6 +115,7 @@ class _Candidate:
     place: PlaceContext
     walked: WalkedMembers | None
     basis: CandidateBasis | None = None
+    uncovered: tuple[ResolvedQualifier, ...] | None = None
 
 
 def _prewarm_places(

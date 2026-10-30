@@ -1,8 +1,9 @@
 """Validate a resubmitted identity.
 
 A posted identity passes the identity core before any door reads it, and Search doors
-refuse the `exact` binding, the pinned-StatVar arm and an identity binding more places
-than a Spec holds. The resubmit and options doors share these checks.
+refuse the `exact` binding, the pinned-StatVar arm and an identity binding more places than
+a Spec holds. A composite provenance is read as the identity its option was set on
+(`composite_table_identity`). The resubmit and options doors share these checks.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from collections.abc import Mapping, Sequence
 
 from dfo_spec_kit import identity as _identity
 
+from code_index.composites import CompositeNotServable, composite_ref, table_identity
+from code_index.shared import get_index
 from dfo_platform.named import cut
 from dfo_platform.roles import role_key_axis
 from search.engine.config import settings
@@ -114,6 +117,43 @@ def refuse_over_place_bound(
         raise EngineInputError(
             f"{total} places across {len(counts)} roles exceed the {bound}-place limit a "
             "dataset binds; re-post with fewer places",
+            code="request_invalid",
+            pointer=pointer,
+        )
+
+
+def composite_table_identity(identity: BaseIdentity, *, pointer: str) -> BaseIdentity:
+    """The identity a Search door reads for `identity`. For a composite
+    (`code_index.composites`) that is the identity its option was set on
+    (`code_index.composites.table_identity`), whose one table every graph and index read
+    names, and otherwise `identity` itself. Refuses a composite whose components cannot be derived
+    (`CompositeNotServable`) as `request_invalid`, at `pointer`, the posted identity, joined
+    with the member at fault."""
+    document = identity.model_dump(mode="json", exclude_none=True)
+    try:
+        read = table_identity(get_index(), document)
+    except CompositeNotServable as exc:
+        raise EngineInputError(
+            str(exc), code="request_invalid", pointer=f"{pointer}{exc.pointer}"
+        ) from exc
+    return identity if read is document else BaseIdentity.model_validate(read)
+
+
+def check_not_composite(identity: BaseIdentity, *, pointer: str) -> None:
+    """Refuse an identity whose `facets.provenance` names a declared composite
+    (`code_index.composites`), at `pointer`, the posted identity's provenance facet.
+
+    No table publishes a composite, so its pin scopes every read to nothing. A Search door
+    resolves the identity its option was set on (`composite_table_identity`) in its place,
+    and this guards the resolve that reads it."""
+    try:
+        ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    except CompositeNotServable as exc:
+        raise EngineInputError(str(exc), code="request_invalid", pointer=pointer) from exc
+    if ref is not None:
+        raise EngineInputError(
+            f"provenance {ref!r} is a composite of other tables' series; post each of its "
+            "component identities instead",
             code="request_invalid",
             pointer=pointer,
         )

@@ -422,6 +422,85 @@ class DatasetDeclaration:
     ratio_base_axis: RoleAxis | None = None
 
 
+ComponentRole = Literal["bilateral", "imputed", "headline_net", "headline_ge"]
+"""What one component of a composite holds: the bilateral or imputed multilateral part of a
+provider-inclusive total, or the net or grant-equivalent years of the OECD headline basis."""
+
+CompositeKind = Literal["stacked", "spliced"]
+"""How a composite's components make one frame. `stacked` components cover the same years
+and their rows sum to the total. `spliced` components each serve their own declared years,
+which neither overlap nor leave a year out."""
+
+
+@dataclass(frozen=True, slots=True)
+class YearPeriod:
+    """A closed span of years. `first` or `last` is `None` for an open end."""
+
+    first: int | None
+    last: int | None
+
+    def holds(self, year: int) -> bool:
+        """Whether `year` lies in the span."""
+        return (self.first is None or year >= self.first) and (
+            self.last is None or year <= self.last
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentRecipe:
+    """How one component's identity derives from its composite's identity.
+
+    `dataset` is the provenance of the table the component reads, and `provenance` the
+    provenance its identity binds, `dataset` itself for a table a question answers from only
+    when it names it (the imputed table) and `None` where the component's shape elects the
+    table as an unpinned identity does (the CRS, DAC1). `periods` limits the component to its own
+    years, `None` for every year of the composite.
+
+    `measured_property` replaces the shape's measured property and leaves every slot as it
+    is. `basis` sets a declared measure basis instead (`code_index.measure_basis.edit_basis`):
+    its measured property and netting basis, `None` for a measure that carries none, with the
+    population and flow-type slots the basis declares. A recipe sets one of the two at most.
+    `bind` binds each named slot to its code. `drop_unbound` names the slots the component's
+    rows do not declare. An unbound slot on them is removed, and a bound one makes the
+    composite unservable (`code_index.composites.CompositeNotServable`).
+
+    `zero_absent` says the component's absence in a covered cell is a zero. The composite
+    writes a zero row for each of its members holding no row in a cell another component
+    fills, inside the composite's years. A component without it contributes nothing where it
+    holds no row. Only a stacked composite's component sets it: a spliced one's zeros would
+    fill years it does not cover, and the loader refuses it."""
+
+    role: ComponentRole
+    dataset: str
+    provenance: str | None = None
+    periods: YearPeriod | None = None
+    measured_property: str | None = None
+    basis: tuple[str, str | None] | None = None
+    bind: Mapping[str, str] = field(default_factory=dict)
+    drop_unbound: frozenset[str] = frozenset()
+    zero_absent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeDeclaration:
+    """A provenance declared as the composite of its components.
+
+    An identity whose `facets.provenance` binds `provenance` as a value is served as one frame
+    composed from one materialisation per component (`code_index.composites`), every row
+    carrying `provenance`. The graph holds no node for it: every graph or catalogue read uses
+    the component provenances. `label` names the composite for a reader. `measure_noun` is
+    the words a sentence names its measure by. It follows the measure label of a stacked
+    composite, whose components share the measure, and replaces it for a spliced one, whose
+    measure changes between its periods. Each component table gives a provider's account of
+    a flow, and so does the composite."""
+
+    provenance: str
+    label: str
+    measure_noun: str
+    kind: CompositeKind
+    components: tuple[ComponentRecipe, ...]
+
+
 PartyKind = Literal["party", "total", "residual"]
 """What one party of a flow is beside the other parties on its side.
 

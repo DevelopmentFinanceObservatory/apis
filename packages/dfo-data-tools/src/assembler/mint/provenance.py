@@ -200,6 +200,7 @@ _REF_FIELDS = (
     _RefField(
         "out_of_window_members", "No observations in the requested years", "series", "series"
     ),
+    _RefField("unserved_members", "Under another source, unit or method", "series", "series"),
     _RefField("omitted_entities", "Left out", "entity", "entities"),
     _RefField("omitted_entity_years", "Left out", "entity", "entities", with_years=True),
 )

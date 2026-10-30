@@ -26,6 +26,7 @@ import pyarrow.compute as pc
 from dfo_frame_grammar.rolling import ANCHOR_SHARE
 
 from dc_sdmx import DEFAULT_PLANNING_LANES, plan_request_chunks
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.roles import RoleAxis
 from materialise.roles import axis_for_role
 from origin_catalogue.context import current_catalogue, current_source_scope
@@ -54,6 +55,7 @@ from series_coverage.schema import (
     FacetMetadata,
     RoleNames,
     YearHorizon,
+    is_sub_annual,
 )
 from series_coverage.summary import CoverageSummary
 
@@ -64,6 +66,10 @@ _CURRENCY_UNIT = re.compile(r"Currency([A-Z]{3})")
 # The calendar years `Headline.recent_years` counts and `elected_year` elects among, the
 # latest year with data included.
 _HEADLINE_YEARS = 3
+# How many admitted facet sets (`CoverageIndex._admitted_facets`) an index keeps, one per
+# distinct set of provenances a catalogue admits: the unscoped catalogue's and one per source
+# scope requests name. Each holds at most the index's facet ids.
+_ADMITTED_FACET_SETS = 64
 
 
 def elected_year(series_by_year: Mapping[int, int]) -> int | None:
@@ -133,6 +139,62 @@ def _mask_matrix(table: pa.Table, horizon: YearHorizon) -> np.ndarray:
             for name in horizon.mask_columns
         ]
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _PairYears:
+    """The years each `(variable, facet_id)` pair of an index holds, in the index's row order:
+    `masks` its `(pairs, mask_words)` uint64 year masks, `variable_codes` (non-decreasing) and
+    `facet_codes` its codes in the index's key dictionaries (`CoverageIndex.years_held`)."""
+
+    masks: np.ndarray
+    variable_codes: np.ndarray
+    facet_codes: np.ndarray
+
+
+def _pair_year_masks(table: pa.Table, horizon: YearHorizon) -> _PairYears:
+    """The years each `(variable, facet_id)` pair of one-chunk `table` holds (`_PairYears`),
+    OR-ed over the pair's rows. `table`'s rows sort by `(variable, facet_id)` codes
+    (`_group_rows`), so each pair's rows form one run, and one `bitwise_or.reduceat` per mask
+    word reads every row once."""
+    if table.num_rows == 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return _PairYears(np.zeros((0, horizon.mask_words), dtype=np.uint64), empty, empty)
+    variables = _codes(table[VARIABLE_COLUMN])
+    facets = _codes(table[FACET_COLUMN])
+    starts = np.flatnonzero(
+        np.r_[True, (variables[1:] != variables[:-1]) | (facets[1:] != facets[:-1])]
+    )
+    masks = np.column_stack(
+        [
+            np.bitwise_or.reduceat(
+                table[name].to_numpy(zero_copy_only=False).astype(np.uint64, copy=False), starts
+            )
+            for name in horizon.mask_columns
+        ]
+    )
+    return _PairYears(masks, variables[starts], facets[starts])
+
+
+def _years_of(words: Sequence[int], horizon: YearHorizon) -> frozenset[int]:
+    """The years whose bits `words`, one year mask on `horizon`, sets."""
+    years: list[int] = []
+    for word, value in enumerate(words):
+        start = horizon.epoch_year + MASK_WORD_BITS * word
+        while value:
+            low = value & -value
+            years.append(start + low.bit_length() - 1)
+            value ^= low
+    return frozenset(years)
+
+
+def _series_holding(masks: np.ndarray, year: int, horizon: YearHorizon) -> int:
+    """How many rows of `(rows, mask_words)` year masks hold `year`; zero for a year outside
+    `horizon`. Reads one word column, so no row copy is made."""
+    if not horizon.epoch_year <= year <= horizon.max_year:
+        return 0
+    word, bit = divmod(year - horizon.epoch_year, MASK_WORD_BITS)
+    return int(np.count_nonzero(masks[:, word] & (np.uint64(1) << np.uint64(bit))))
 
 
 def _window_words(
@@ -232,6 +294,18 @@ def _run(codes: np.ndarray, code: int) -> tuple[int, int]:
     )
 
 
+def _runs(codes: np.ndarray, wanted: Collection[int]) -> np.ndarray:
+    """The positions every code of `wanted` occupies in `codes`, a non-decreasing code
+    array, in code order: `_run` of each code, found by one binary search for all of them."""
+    needles = np.fromiter(sorted(wanted), dtype=codes.dtype, count=len(wanted))
+    starts = np.searchsorted(codes, needles, side="left")
+    lengths = np.searchsorted(codes, needles, side="right") - starts
+    # Position `k` of the result lies in run `i` and is `starts[i]` plus its offset into
+    # the run, `k` less the lengths of the runs before it.
+    before = np.cumsum(lengths) - lengths
+    return np.arange(int(lengths.sum()), dtype=np.int64) + np.repeat(starts - before, lengths)
+
+
 def _code_lookup(column: pa.ChunkedArray) -> dict[str, int]:
     """Each value of a one-chunk dictionary column's dictionary -> its
     code. O(distinct values)."""
@@ -263,13 +337,13 @@ def _key_values(column: pa.ChunkedArray) -> list[str]:
     return values
 
 
-def _key_is_in(column: pa.ChunkedArray, values: Iterable[str]) -> pa.ChunkedArray:
+def _key_is_in(column: pa.ChunkedArray, values: Iterable[str] | pa.Array) -> pa.ChunkedArray:
     """Returns a row mask for `values`, testing dictionary entries once per code.
 
     On 1.78M rows, this takes 3 ms without allocation. `pc.is_in` on the
     dictionary column takes 20 ms and 135 MB because it decodes every row.
     """
-    value_set = pa.array(list(values), type=pa.string())
+    value_set = values if isinstance(values, pa.Array) else pa.array(list(values), pa.string())
     chunks = []
     for chunk in column.chunks:
         if pa.types.is_dictionary(chunk.type):
@@ -472,14 +546,10 @@ type KeptYears = Callable[[str, str], Collection[int] | None]
 it does not bind), None for every year it serves (`CoverageIndex.series_years`)."""
 
 
-# A whole number of years (`P1Y`, `P5Y`); any other stated period is shorter than a year.
-_YEARLY_PERIOD = re.compile(r"P\d+Y")
-
-
 def _sub_annual(metadata: FacetMetadata | None) -> bool:
-    """Whether `metadata` states an observation period shorter than a year."""
-    period = metadata.observation_period if metadata is not None else None
-    return period is not None and _YEARLY_PERIOD.fullmatch(period) is None
+    """Whether `metadata` states an observation period shorter than a year
+    (`schema.is_sub_annual`)."""
+    return is_sub_annual(metadata.observation_period if metadata is not None else None)
 
 
 def _at_variable_latest(masks: np.ndarray, variable_codes: np.ndarray) -> np.ndarray:
@@ -507,7 +577,8 @@ class CoverageIndex:
         horizon: YearHorizon,
         build_year: int | None = None,
     ) -> None:
-        """Dictionary-encodes key columns and sorts rows by `(variable, facet_id)`.
+        """Dictionary-encodes key columns, sorts rows by `(variable, facet_id)` and ORs each
+        pair's year masks into one (`_pair_year_masks`), which `years_held` reads.
 
         `build_year` is the calendar year the coverage was read in, the last year a
         `latest` read elects (`elected_years`). None sets no last year.
@@ -529,6 +600,8 @@ class CoverageIndex:
         # Non-decreasing after `_group_rows`, so `_run` finds a variable's rows.
         self._variable_code_column = _codes(self._table[VARIABLE_COLUMN])
         self._facet_codes = _code_lookup(self._table[FACET_COLUMN])
+        self._facet_ids = cast("pa.DictionaryArray", self._table[FACET_COLUMN].chunk(0)).dictionary
+        self._pair_years = _pair_year_masks(self._table, horizon)
         distinct = self._table.group_by(list(_SERIES_KEY_COLUMNS)).aggregate([]).num_rows
         if distinct != self._table.num_rows:
             raise ValueError(
@@ -543,6 +616,13 @@ class CoverageIndex:
         self._provenance_shapes = views.shapes
         self._facet_summary = CoverageSummary(
             self._table, variable_codes=self._variable_codes, facet_metadata=self._facet_metadata
+        )
+        facets_by_provenance: dict[str | None, list[str]] = {}
+        for facet_id, metadata in self._facet_metadata.items():
+            facets_by_provenance.setdefault(metadata.provenance_id, []).append(facet_id)
+        self._facets_by_provenance = facets_by_provenance
+        self._admitted_facet_sets: LruMemo[tuple[bool, frozenset[str]], pa.Array] = LruMemo(
+            _ADMITTED_FACET_SETS
         )
 
     @property
@@ -673,9 +753,8 @@ class CoverageIndex:
         bound roles over those rows, so the cost follows the variables'
         rows rather than the table. Unknown variables contribute no rows.
         """
-        codes = sorted({self._variable_codes[v] for v in variables if v in self._variable_codes})
-        blocks = [np.arange(*_run(self._variable_code_column, code)) for code in codes]
-        rows = self._table.take(np.concatenate(blocks) if blocks else np.empty(0, dtype=np.int64))
+        codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
+        rows = self._table.take(_runs(self._variable_code_column, codes))
         for role, column in _ROLE_COLUMNS.items():
             if role in bound:
                 rows = rows.filter(_key_is_in(rows[column], bound[role]))
@@ -689,19 +768,38 @@ class CoverageIndex:
         This deliberately skips per-series source admission, which remains a
         served-read concern in :meth:`_member_rows`.
         """
-        codes = sorted({self._variable_codes[v] for v in variables if v in self._variable_codes})
-        blocks = [np.arange(*_run(self._variable_code_column, code)) for code in codes]
-        rows = self._table.take(np.concatenate(blocks) if blocks else np.empty(0, dtype=np.int64))
+        codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
+        rows = self._table.take(_runs(self._variable_code_column, codes))
         for role, column in _ROLE_COLUMNS.items():
             if role in bound:
                 rows = rows.filter(_key_is_in(rows[column], bound[role]))
-        catalogue = current_catalogue()
-        admitted = [
-            (metadata := self._facet_metadata.get(facet_id)) is not None
-            and (metadata.provenance_id is None or catalogue.is_admitted(metadata.provenance_id))
-            for facet_id in _key_values(rows[FACET_COLUMN])
-        ]
-        return rows.filter(pa.array(admitted, type=pa.bool_()))
+        admitted = self._admitted_facets(current_catalogue().is_admitted, unattributed=True)
+        return rows.filter(_key_is_in(rows[FACET_COLUMN], admitted))
+
+    def _admitted_facets(self, admits: Callable[[str], bool], *, unattributed: bool) -> pa.Array:
+        """The ids of the facets whose provenance `admits` admits, and, with `unattributed`,
+        of those with no provenance. The catalogue judges each of the index's provenances
+        once a call, and the ids of each distinct admitted set are kept
+        (`_ADMITTED_FACET_SETS`)."""
+        admitted = frozenset(
+            provenance
+            for provenance in self._facets_by_provenance
+            if provenance is not None and admits(provenance)
+        )
+        key = (unattributed, admitted)
+        found = self._admitted_facet_sets.get(key)
+        if found is None:
+            kept = (*admitted, None) if unattributed else admitted
+            found = pa.array(
+                [
+                    facet_id
+                    for provenance in kept
+                    for facet_id in self._facets_by_provenance.get(provenance, ())
+                ],
+                type=pa.string(),
+            )
+            self._admitted_facet_sets.put(key, found)
+        return found
 
     def _admit_scoped_rows(self, rows: pa.Table) -> pa.Table:
         """Keeps only facets the request's source-scoped catalogue admits per series.
@@ -712,41 +810,16 @@ class CoverageIndex:
         bound pairs.  Every provenance the scoped catalogue admits is kept,
         whichever origin it comes from, and the facet election chooses between
         DFO and base (`materialise.facets.dfo_precedence`).
+
+        A series' admission judges each of its provenances alone
+        (`Catalogue.admits_in_scope`), so a row survives exactly when its facet has a
+        provenance the catalogue admits in scope, and the rows are filtered by facet in one
+        pass (`_admitted_facets`).
         """
         if rows.num_rows == 0 or current_source_scope() is None:
             return rows
-
-        rows = rows.combine_chunks()
-        variables = _key_values(rows[VARIABLE_COLUMN])
-        recipients = _key_values(rows[RECIPIENT_COLUMN])
-        donors = _key_values(rows[DONOR_COLUMN])
-        facet_ids = _key_values(rows[FACET_COLUMN])
-        facets_by_series: dict[tuple[str, str, str], set[str]] = {}
-        for variable, recipient, donor, facet_id in zip(
-            variables, recipients, donors, facet_ids, strict=True
-        ):
-            facets_by_series.setdefault((variable, recipient, donor), set()).add(facet_id)
-
-        catalogue = current_catalogue()
-        admitted_by_series: dict[tuple[str, str, str], frozenset[str]] = {}
-        for series, series_facet_ids in facets_by_series.items():
-            provenances = [
-                metadata.provenance_id
-                for facet_id in series_facet_ids
-                if (metadata := self._facet_metadata.get(facet_id)) is not None
-                and metadata.provenance_id is not None
-            ]
-            admitted_by_series[series] = frozenset(catalogue.admit_series(provenances).admitted)
-        admitted = [
-            (
-                (metadata := self._facet_metadata.get(facet_id)) is not None
-                and metadata.provenance_id in admitted_by_series[(variable, recipient, donor)]
-            )
-            for variable, recipient, donor, facet_id in zip(
-                variables, recipients, donors, facet_ids, strict=True
-            )
-        ]
-        return rows.filter(pa.array(admitted, type=pa.bool_()))
+        admitted = self._admitted_facets(current_catalogue().admits_in_scope, unattributed=False)
+        return rows.filter(_key_is_in(rows[FACET_COLUMN], admitted))
 
     def admitted_pairs(
         self, *, variable: str, bound: BoundRoles = _NO_BINDING
@@ -1421,7 +1494,7 @@ class CoverageIndex:
             newest = int(_year_bounds(held[None, :], self._horizon)[1][0])
             year = elected_year(
                 {
-                    year: int(self._year_only(masks, year).any(axis=1).sum())
+                    year: _series_holding(masks, year, self._horizon)
                     for year in range(newest, newest - _HEADLINE_YEARS, -1)
                 }
             )
@@ -1446,10 +1519,33 @@ class CoverageIndex:
         found = self.series_years(
             variables=variables, bound=bound, served=served, excluded=excluded
         )
-        return {
-            year: 0 if found is None else int(self._year_only(found.masks, year).any(axis=1).sum())
-            for year in range(first_year, last_year + 1)
-        }
+        counts = dict.fromkeys(range(first_year, last_year + 1), 0)
+        if found is None:
+            return counts
+        held = _years_of(np.bitwise_or.reduce(found.masks, axis=0).tolist(), self._horizon)
+        for year in held.intersection(counts):
+            counts[year] = _series_holding(found.masks, year, self._horizon)
+        return counts
+
+    def years_held(self, *, variables: Iterable[str]) -> frozenset[int]:
+        """The years any row of `variables` holds, under every place: the years
+        `series_by_year` counts a series in over the whole horizon, with no binding,
+        `served` or `excluded`, and the source-scope admission every read applies
+        (`_admit_scoped_rows`). Read from the per-pair year masks the index builds once
+        (`_pair_year_masks`), so the cost follows the variables' facets, not their rows."""
+        codes = {self._variable_codes[v] for v in variables if v in self._variable_codes}
+        if not codes:
+            return frozenset()
+        pairs = self._pair_years
+        selected = _runs(pairs.variable_codes, codes)
+        if current_source_scope() is not None:
+            admitted = self._admitted_facets(
+                current_catalogue().admits_in_scope, unattributed=False
+            )
+            kept = pc.is_in(self._facet_ids, value_set=admitted).to_numpy(zero_copy_only=False)
+            selected = selected[kept[pairs.facet_codes[selected]]]
+        held = np.bitwise_or.reduce(pairs.masks[selected], axis=0)
+        return _years_of(held.tolist(), self._horizon)
 
     def covers(self, variable: str) -> bool:
         """Whether the index holds any row of `variable`."""
@@ -1644,6 +1740,13 @@ class CoverageIndex:
             last_year=int(last[0]),
         )
 
+    def variables_with_rows(self, *, variables: Sequence[str], bound: BoundRoles) -> frozenset[str]:
+        """The `variables` holding a coverage row under `bound` in any year. A mint's facet
+        probe (`materialise.facets.coverage_probe`) finds no candidate for any other, so its
+        fetch never names them (`materialise.generation._plan_collection_chunks`)."""
+        rows = self._member_rows(variables=variables, bound=bound)
+        return frozenset(cast("list[str]", pc.unique(rows[VARIABLE_COLUMN]).to_pylist()))
+
     def estimate(
         self,
         *,
@@ -1729,6 +1832,34 @@ class CoverageIndex:
             )
             requests += len(chunks)
         return Estimate(rows=rows, requests=requests)
+
+    def cell_count(
+        self,
+        *,
+        variables: Sequence[str],
+        bound: BoundRoles,
+        first_year: int | None = None,
+        last_year: int | None = None,
+    ) -> int:
+        """How many distinct cells, a donor and recipient pair and a year, any series of
+        `variables` under `bound` holds data in inside `[first_year, last_year]`. A read of
+        `variables` serves rows in no other cell, so this bounds the cells a frame composed
+        from them holds (`datasets_api.admission.sync_estimate`)."""
+        rows = self._filtered(
+            variables=variables, bound=bound, first_year=first_year, last_year=last_year
+        )
+        if rows.num_rows == 0:
+            return 0
+        rows = rows.combine_chunks()
+        width = len(cast("pa.DictionaryArray", rows[RECIPIENT_COLUMN].chunk(0)).dictionary)
+        keys = _codes(rows[DONOR_COLUMN]).astype(np.int64) * width + _codes(
+            rows[RECIPIENT_COLUMN]
+        ).astype(np.int64)
+        order = np.argsort(keys, kind="stable")
+        sorted_keys = keys[order]
+        starts = np.flatnonzero(np.r_[True, sorted_keys[1:] != sorted_keys[:-1]])
+        masks = np.bitwise_or.reduceat(_mask_matrix(rows, self._horizon)[order], starts)
+        return int(popcount64(masks).sum())
 
     def exhaustive_single_axis_filter(
         self,

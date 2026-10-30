@@ -1,24 +1,28 @@
-"""Description-arc fallback for misses from resolvekit or dcid mapping.
+"""Description-arc lookups: the fallback for misses from resolvekit or dcid mapping, and the
+places that share a resolvekit hit's name.
 
-Try Country, Continent, UNGeoRegion, then unrestricted description arcs. Accept candidates only
-when their normalized `name` or `alternateName` lists the query. Keep every match for
-ambiguity handling. Description arcs avoid unrelated `name` matches from
+The fallback tries Country, Continent, UNGeoRegion, then unrestricted description arcs. Accept
+candidates only when their normalized `name` or `alternateName` lists the query. Keep every
+match for ambiguity handling. Description arcs avoid unrelated `name` matches from
 `SDG_CounterpartEnum`, `Source`, `DebtFinancerEnum`, and EIA facilities.
-Each rung batches remaining queries into one `resolve_by_arc` and one `node_names_many` call."""
+Each rung batches remaining queries into one `resolve_by_arc` call, and one `node_names_many`
+call when the arc answers any node."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 
 from resolvekit.core.util import NormalizationError
 
 from entity_resolution.types import GraphLookup
 
+_DESCRIPTION_ARC = "<-description->dcid"
+
 _LADDER_ARCS: tuple[str, ...] = (
     "<-description{typeOf:Country}->dcid",
     "<-description{typeOf:Continent}->dcid",
     "<-description{typeOf:UNGeoRegion}->dcid",
-    "<-description->dcid",
+    _DESCRIPTION_ARC,
 )
 
 
@@ -42,36 +46,75 @@ def resolve_fallback(
     for arc in _LADDER_ARCS:
         if not remaining:
             break
-        names = list(dict.fromkeys(remaining.values()))
-        answers = graph.resolve_by_arc(names, arc=arc, deadline=deadline)
-        answered_dcids = dict.fromkeys(
-            dcid for text in remaining.values() for dcid in answers.get(text) or []
+        listed = _listing_nodes(
+            graph, arc, remaining, known={}, normalize=normalize, deadline=deadline
         )
-        if not answered_dcids:
+        found |= listed
+        remaining = {index: text for index, text in remaining.items() if index not in listed}
+    return found
+
+
+def resolve_sharing(
+    graph: GraphLookup,
+    texts: Mapping[int, str],
+    *,
+    known: Mapping[int, Collection[str]],
+    normalize: Callable[[str], str],
+    deadline: float | None = None,
+) -> dict[int, tuple[str, ...]]:
+    """The other nodes that list each indexed text, beside the dcids `known` holds for it.
+
+    Reads the fallback's last, unrestricted rung, which reaches the places resolvekit's packs
+    leave out (the US state `geoId/13` beside the country Georgia). One `resolve_by_arc` call
+    covers every text, and one `node_names_many` call follows only when the arc answers a node
+    outside `known`. A text with no such node is left out. `deadline` follows
+    `resolve_fallback`."""
+    return _listing_nodes(
+        graph, _DESCRIPTION_ARC, texts, known=known, normalize=normalize, deadline=deadline
+    )
+
+
+def _listing_nodes(
+    graph: GraphLookup,
+    arc: str,
+    texts: Mapping[int, str],
+    *,
+    known: Mapping[int, Collection[str]],
+    normalize: Callable[[str], str],
+    deadline: float | None,
+) -> dict[int, tuple[str, ...]]:
+    """The nodes `arc` answers for each text, outside `known`, whose normalized names list the
+    text, in the arc's order. A text with none is left out."""
+    names = list(dict.fromkeys(texts.values()))
+    answers = graph.resolve_by_arc(names, arc=arc, deadline=deadline)
+    answered: dict[int, list[str]] = {
+        index: [dcid for dcid in answers.get(text) or [] if dcid not in known.get(index, ())]
+        for index, text in texts.items()
+    }
+    answered_dcids = dict.fromkeys(dcid for dcids in answered.values() for dcid in dcids)
+    if not answered_dcids:
+        return {}
+    node_names = graph.node_names_many(list(answered_dcids), deadline=deadline)
+    distinct_strings = set(names) | {
+        name for names_for_dcid in node_names.values() for name in names_for_dcid
+    }
+    normalized = {value: normalize_or_none(normalize, value) for value in distinct_strings}
+    normalized_names_by_dcid = {
+        dcid: {normalized[name] for name in names_for_dcid if normalized[name] is not None}
+        for dcid, names_for_dcid in node_names.items()
+    }
+    found: dict[int, tuple[str, ...]] = {}
+    for index, text in texts.items():
+        normalized_text = normalized[text]
+        if normalized_text is None:
             continue
-        node_names = graph.node_names_many(list(answered_dcids), deadline=deadline)
-        distinct_strings = set(names) | {
-            name for names_for_dcid in node_names.values() for name in names_for_dcid
-        }
-        normalized = {value: normalize_or_none(normalize, value) for value in distinct_strings}
-        normalized_names_by_dcid = {
-            dcid: {normalized[name] for name in names_for_dcid if normalized[name] is not None}
-            for dcid, names_for_dcid in node_names.items()
-        }
-        still_remaining: dict[int, str] = {}
-        for index, text in remaining.items():
-            normalized_text = normalized[text]
-            listed = tuple(
-                dcid
-                for dcid in answers.get(text) or []
-                if normalized_text is not None
-                and normalized_text in normalized_names_by_dcid.get(dcid, set())
-            )
-            if listed:
-                found[index] = listed
-            else:
-                still_remaining[index] = text
-        remaining = still_remaining
+        listed = tuple(
+            dcid
+            for dcid in answered[index]
+            if normalized_text in normalized_names_by_dcid.get(dcid, set())
+        )
+        if listed:
+            found[index] = listed
     return found
 
 

@@ -756,6 +756,9 @@ class _RaisingGraphNodeReader:
     def node_names_many(self, dcids, *, deadline=None):
         raise self._exc
 
+    def resolve_by_arc(self, names, *, arc, deadline=None):
+        raise self._exc
+
 
 def test_graph_read_error_end_to_end_maps_to_502(caplog: pytest.LogCaptureFixture, shared_resolver):
     graph = _RaisingGraphNodeReader(GraphReadError("upstream refused", upstream_status=404))

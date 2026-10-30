@@ -328,7 +328,12 @@ class TestObservationFacetsViaMaterialise:
 
         class _RaisingGraphReader(FakeGraphReader):
             def observation_facets_batch_many(
-                self, *, stat_vars, entities, deadline: float | None = None
+                self,
+                *,
+                stat_vars,
+                entities,
+                needs_dates: bool = False,
+                deadline: float | None = None,
             ):
                 raise GraphReadError("upstream 502", upstream_status=502)
 
@@ -364,7 +369,9 @@ class TestFacetProbeSemaphore:
         never_set = threading.Event()
 
         class _BlockingGraphReader(FakeGraphReader):
-            def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+            def observation_facets_batch_many(
+                self, *, stat_vars, entities, needs_dates: bool = False, deadline=None
+            ):
                 nonlocal in_flight, max_in_flight
                 with lock:
                     in_flight += 1
@@ -397,7 +404,9 @@ class TestFacetProbeSemaphore:
         monkeypatch.setattr(materialise_bridge, "_FACET_PROBE_SEMAPHORE", held)
 
         class _UnreachedGraphReader(FakeGraphReader):
-            def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+            def observation_facets_batch_many(
+                self, *, stat_vars, entities, needs_dates: bool = False, deadline=None
+            ):
                 raise AssertionError(
                     "observation_facets_batch_many must not run: the permit wait times out first"
                 )
@@ -420,7 +429,9 @@ class TestFacetProbeSemaphore:
         monkeypatch.setattr(materialise_bridge, "_FACET_PROBE_SEMAPHORE", held)
 
         class _UnreachedGraphReader(FakeGraphReader):
-            def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+            def observation_facets_batch_many(
+                self, *, stat_vars, entities, needs_dates: bool = False, deadline=None
+            ):
                 raise AssertionError(
                     "observation_facets_batch_many must not run: the permit wait times out first"
                 )
@@ -442,7 +453,9 @@ class TestFacetProbeSemaphore:
         search_settings(graph_timeout_s=30.0)
 
         class _UnreachedGraphReader(FakeGraphReader):
-            def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+            def observation_facets_batch_many(
+                self, *, stat_vars, entities, needs_dates: bool = False, deadline=None
+            ):
                 raise AssertionError(
                     "observation_facets_batch_many must not run: the deadline has already passed"
                 )

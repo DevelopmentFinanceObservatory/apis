@@ -29,9 +29,11 @@ if TYPE_CHECKING:
 class ApplyPolicies(Protocol):
     """The engine's house-policy step (`house_policy.apply_house_policies`): from the pool a
     binder elects among, its pick first in `PolicyPool.measuring`, the binder's rating of
-    each pool shape when it rates them, and whether each pool shape holds the constraints
-    the binder recognised on its pick (`holds`), the shape the part answers with. A binder
-    calls it once on a reply that elects a menu shape and never on one that does not."""
+    each pool shape when it rates them, whether each pool shape holds the constraints
+    the binder recognised on its pick (`holds`), and the binder's drafts on its pick
+    (`drafts`), against which the step judges the shapes it adds to the pool, the shape the
+    part answers with. A binder calls it once on a reply that elects a menu shape and never
+    on one that does not."""
 
     def __call__(
         self,
@@ -39,6 +41,7 @@ class ApplyPolicies(Protocol):
         *,
         ratings: Mapping[int, float] | None = None,
         holds: Mapping[int, bool] | None = None,
+        drafts: Sequence[SlotBindingDraft] | None = None,
     ) -> PolicyChoice: ...
 
 
@@ -148,9 +151,12 @@ class StatedWordsRequest:
     phrase, the elected shape and its index in the bind menu (None for a refused reading
     standing in for a declined menu), the casefolded words, each among the shape's
     `BindRequest.nominated_words`, the final bindings, and the bind call's result. `served`
-    names the members the answer serves (`phase_rank_bind.served_member_names`) when it
-    serves more than one name, and is empty otherwise. `part` and `pool` join a binder's log
-    lines to the part's, as on `QuantityRequest`."""
+    names the members the read served (`phase_rank_bind.served_member_names`), and is
+    empty before a read; the binder names them only when they differ from the shape's
+    label (`stated_words_read.serves_beyond_label`). `on_bind_menu` is False only for the
+    basis sibling the house policies moved the election to, which the binder did not read
+    (`phase_rank_bind._answer_on_basis_sibling`), so the bind rated none of its words. `part` and `pool` join a binder's log lines to the
+    part's, as on `QuantityRequest`."""
 
     variable: str
     shape: ShapeDraft
@@ -159,6 +165,7 @@ class StatedWordsRequest:
     bindings: tuple[SlotBindingDraft, ...]
     decision: BindResult | None
     served: tuple[str, ...] = ()
+    on_bind_menu: bool = True
     part: int | None = None
     pool: Pool | None = None
 

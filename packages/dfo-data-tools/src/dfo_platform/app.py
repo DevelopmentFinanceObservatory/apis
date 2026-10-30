@@ -36,7 +36,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
 from dfo_platform.build import build_commit
-from dfo_platform.caller import log_request
+from dfo_platform.caller import CLIENT_HEADER, log_request
 from dfo_platform.codes import (
     PLATFORM_CODE_CATALOGUE,
     CodeCatalogue,
@@ -534,7 +534,8 @@ async def _trace_id_dispatch(
 
     Also binds the Cloud Trace ID parsed from the request's trace headers,
     which `dfo_platform.cloud_logging` stamps on every log record, and logs one
-    line per request with the caller's claimed identity (`dfo_platform.caller`).
+    line per request with the caller's claimed identity and SDK client
+    (`dfo_platform.caller`).
 
     This outermost layer also runs on CORS preflights. Only non-cacheable
     responses receive the request's trace ID. HSTS and build commit stamp
@@ -966,7 +967,7 @@ def create_app(
     *,
     cors_origins: Sequence[str] = (),
     cors_methods: Sequence[str] = ("GET", "POST", "OPTIONS"),
-    cors_headers: Sequence[str] = ("Content-Type",),
+    cors_headers: Sequence[str] = ("Content-Type", CLIENT_HEADER),
     cors_expose_headers: Sequence[str] = (TRACE_ID_HEADER, COMMIT_HEADER, "Server-Timing"),
     executor_max_workers: int | None = None,
     title: str = "DFO APIs",

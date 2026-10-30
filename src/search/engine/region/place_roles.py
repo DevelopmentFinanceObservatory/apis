@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -33,8 +33,8 @@ from typing import TYPE_CHECKING, Literal
 from code_index.members import family_declares_roles
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, tokenize, word_tokens
-from code_index.types import PartyWord
-from entity_resolution.types import Kind, Resolved, entity_kind
+from code_index.types import PartyRow, PartyWord
+from entity_resolution.types import Group, Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import stated_words_negated, word_stated
@@ -51,6 +51,7 @@ from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetToo
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.whole_totals import (
     WholeReading,
+    containing_reading,
     covers_unpublished,
     named_whole_label,
     requested_years,
@@ -75,7 +76,15 @@ from search.engine.shape import (
     role_names_by_axis,
 )
 from search.engine.spec_build import NamedGroup
-from search.models import EntityRoleKey, RoleAxis
+from search.models import EntityRoleKey, Entry, RoleAxis
+from search.scope.region import (
+    REGION_RULE,
+    counts_oecd_region,
+    published_residuals,
+    sums_recipients,
+)
+from search.scope.state import AxisRecord
+from search.scope.vocabulary import REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS_ONLY
 
 if TYPE_CHECKING:
     # `ResolveState` holds a `PlaceContext`, which holds `PlaceRoles`.
@@ -98,6 +107,9 @@ class PlaceAssignment:
     # The place keys of the sets whose members the request asks for: a set named for its
     # members, and one a rank runs over (`_members_asked`).
     members_asked: frozenset[str] = frozenset()
+    # The residual buckets each recipient set read as one sum binds beside its members,
+    # by place key (`_with_region_residuals`). A set absent here binds its members alone.
+    residuals: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The flow axes the request asks every member of that no set fills. A subject-only
     # shape leaves it empty.
     open_axes: frozenset[RoleAxis] = frozenset()
@@ -107,6 +119,9 @@ class PlaceAssignment:
     # The texts in `discarded_directions` whose direction the request's words did not state
     # (`DoorRole.stated`), so the extractor inferred it.
     inferred_directions: frozenset[str] = frozenset()
+    # The request's words for each text in `discarded_directions` they differ from
+    # (`ResolveState.words_of`), which its warning and departure quote.
+    direction_words: Mapping[str, str] = field(default_factory=dict)
     # The side the shape reads as its whole population, whose parties' sets fill its role in
     # `sets` (`whole_total_candidates`), `None` when it reads none.
     whole: WholeReading | None = None
@@ -160,6 +175,9 @@ class PlaceRoles:
     # The names in `discarded_directions` whose direction the request's words did not state
     # (`DoorRole.stated`), so the extractor inferred it.
     inferred_directions: frozenset[str] = frozenset()
+    # The request's words for each name in `discarded_directions` they differ from
+    # (`PlaceAssignment.direction_words`), which its warning and departure quote.
+    direction_words: Mapping[str, str] = field(default_factory=dict)
     # The flow axes the request asks every member of that no place binds, until the
     # members are elected, and then those of them the elected members declare
     # (`PlaceContext.settled`). The role keys read them (`bound_values.entity_role_keys`),
@@ -175,6 +193,10 @@ class PlaceRoles:
     # The sides a named whole population reads as left unnamed
     # (`PlaceAssignment.unnamed_wholes`).
     unnamed_wholes: frozenset[RoleAxis] = frozenset()
+    # The OECD reading each request set the binding read as the OECD's region
+    # (`PlaceSet.oecd`, `_with_region_residuals`), by the set's place key, so the groups and
+    # refs the answer names read the set as the binding did (`request_named_groups`).
+    readings: Mapping[str, PlaceSet] = field(default_factory=dict)
 
 
 def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
@@ -265,8 +287,8 @@ def direction_assignments(
 
 
 def undirected_place_name(state: ResolveState) -> str | None:
-    """The request's text for the one place set it names without a direction, `None` when
-    it names none or several."""
+    """The request's words for the one place set it names without a direction
+    (`ResolveState.words_of`), `None` when it names none or several."""
     named = part_sets(state)
     directed = {
         place_key(state.place_sets[name])
@@ -274,7 +296,7 @@ def undirected_place_name(state: ResolveState) -> str | None:
         if name in state.place_sets and state.entity_roles.get(name)
     }
     undirected = [key for key in named if key not in directed]
-    return named[undirected[0]].name if len(undirected) == 1 else None
+    return state.words_of(named[undirected[0]].name) if len(undirected) == 1 else None
 
 
 def subject_shapes_refused(state: ResolveState) -> bool:
@@ -503,8 +525,8 @@ def part_sets(state: ResolveState) -> dict[str, PlaceSet]:
     place, in whatever order they come. It expands when any text's set does: it takes that
     set's kind, members and graph label, so a group's node pinned by dcid beside the
     group's name is the group. Its reading is the members when any text asked for them. Its
-    name is the first text that is not a pinned dcid's key, else the graph's label for the
-    node, else the first text: a pin's key names the node for the caller and no more.
+    name is the identity of its first text that is no pin, else of its first text, so a
+    refusal quotes it in the request's words (`ResolveState.words_of`).
     """
     texts: dict[str, list[PlaceSet]] = {}
     for name in state.entities:
@@ -516,13 +538,9 @@ def part_sets(state: ResolveState) -> dict[str, PlaceSet]:
         # The first text's set that expands, else the first text's.
         whole = next((place_set for place_set in named if place_set.expands), named[0])
         asked = any(place_set.reading == "members" for place_set in named)
-        first = named[0].name
         sets[key] = dataclasses.replace(
             whole,
-            name=next(
-                (s.name for s in named if _pin_label(state, s.name) is None),
-                whole.label or _pin_label(state, first) or first,
-            ),
+            name=next((s.name for s in named if _pin_label(state, s.name) is None), named[0].name),
             reading="members" if asked else whole.reading,
         )
     return sets
@@ -817,6 +835,7 @@ def bind_place_roles(
     assignment = assign_named_places(state, shape, direction=direction)
     if isinstance(assignment, str):
         return assignment
+    assignment = _with_region_residuals(state, shape, assignment)
     assignment = _named_wholes(state, shape, assignment)
     # A side a listed population opens was named in the request's words.
     listed = frozenset(state.whole_listed.values()) - assignment.sets.keys()
@@ -831,6 +850,127 @@ def bind_place_roles(
     if not parties:
         return assignment
     return _in_axis_order(dataclasses.replace(assignment, sets={**assignment.sets, **parties}))
+
+
+def _region_sets(assignment: PlaceAssignment) -> tuple[tuple[PlaceSet, PartyRow], ...]:
+    """Each recipient set of `assignment` that holds members, with the total that sums them
+    with residuals (`PartyRow.sums_members`, `PartyRow.residuals`)."""
+    parties = get_index().parties
+    found = []
+    for place_set in assignment.sets.get("destination", ()):
+        total = None if place_set.total is None else parties.get(place_set.total)
+        if place_set.members and total is not None and total.sums_members and total.residuals:
+            found.append((place_set, total))
+    return tuple(found)
+
+
+def region_selection(state: ResolveState, assignment: PlaceAssignment) -> tuple[str, Entry | None]:
+    """The region option the part's recipient sets take (`scope.region`), and the entry
+    that settled it, None for the default.
+
+    An explicit region entry wins. Next comes a set the request names for its members
+    ("African countries"), which makes an explicit members-only entry from the request's
+    words for it, then a carried entry, then the default, the members and residuals. The residuals hold only
+    where the part sums the recipients (`region.sums_recipients`); elsewhere the part takes
+    the members alone by default, whatever an entry asked."""
+    entries = state.scope_selection.entries_on("region")
+    named = next(
+        (place_set for place_set, _ in _region_sets(assignment) if place_set.reading == "members"),
+        None,
+    )
+    if entries and entries[0].provenance == "explicit":
+        entry: Entry | None = entries[0]
+    elif named is not None:
+        entry = _members_entry(state, named)
+    else:
+        entry = entries[0] if entries else None
+    wanted = REGION_MEMBERS_AND_RESIDUALS if entry is None else entry.option_id
+    if wanted == REGION_MEMBERS_AND_RESIDUALS and not sums_recipients(state.operations):
+        return REGION_MEMBERS_ONLY, None
+    return wanted, entry
+
+
+def _with_region_residuals(
+    state: ResolveState, shape: ShapeDraft, assignment: PlaceAssignment
+) -> PlaceAssignment:
+    """`assignment` with the residuals each recipient set binds beside its members where
+    the part takes `region:members_and_residuals` (`region_selection`): those its total
+    counts that a dataset `shape` answers from publishes on the recipient axis
+    (`region.published_residuals`), in `PlaceAssignment.residuals`.
+
+    The first shape that binds a recipient region writes the part's region record
+    (`ResolveState.scope_selection`), with the entry that settled it. An entry read from
+    the request's words rides on the record, and `scope.build.build_part_scope` applies it
+    where the answer's identity holds the option the record settled.
+
+    A recipient set with an OECD reading (`PlaceSet.oecd`, a graph region the OECD counts
+    with other members) on a shape answering from a dataset that counts the OECD's region
+    (`region.counts_oecd_region`) reads as the OECD's region where the part takes the
+    members and residuals: its DAC members, total and registry group replace the graph
+    region's. Elsewhere it keeps the graph region's members, as a ranking over the region
+    does."""
+    index = get_index()
+    datasets = shape_part_datasets(shape, index)
+    as_oecd = _with_oecd_readings(assignment, datasets)
+    regions = _region_sets(as_oecd)
+    if not regions:
+        return assignment
+    option, entry = region_selection(state, as_oecd)
+    if "region" not in state.scope_selection.records:
+        state.scope_selection.write(
+            AxisRecord(
+                axis="region",
+                rule=REGION_RULE,
+                active=option,
+                provenance="default" if entry is None else entry.provenance,
+                entry=entry,
+            )
+        )
+    if option != REGION_MEMBERS_AND_RESIDUALS:
+        return assignment
+    residuals = {
+        place_key(place_set): found
+        for place_set, total in regions
+        if (found := published_residuals(total, datasets=datasets, index=index))
+    }
+    return dataclasses.replace(as_oecd, residuals=residuals) if residuals else as_oecd
+
+
+def _with_oecd_readings(assignment: PlaceAssignment, datasets: Collection[str]) -> PlaceAssignment:
+    """`assignment` with each recipient set that has an OECD reading (`PlaceSet.oecd`) whose
+    region one of `datasets` counts (`region.counts_oecd_region`) replaced by that reading
+    on every role it fills. The reading keeps the set's node, so its place key is the
+    set's."""
+    index = get_index()
+    readings = {
+        place_key(place_set): place_set.oecd
+        for place_set in assignment.sets.get("destination", ())
+        if place_set.oecd is not None
+        and place_set.oecd.total is not None
+        and (total := index.parties.get(place_set.oecd.total)) is not None
+        and counts_oecd_region(total, datasets=datasets, index=index)
+    }
+    if not readings:
+        return assignment
+    return dataclasses.replace(
+        assignment,
+        sets={
+            key: tuple(readings.get(place_key(s), s) for s in sets)
+            for key, sets in assignment.sets.items()
+        },
+    )
+
+
+def _members_entry(state: ResolveState, place_set: PlaceSet) -> Entry:
+    """The explicit members-only entry a set named for its members makes, read from the
+    request's words for it, at their offset in the text the part's scope was read from
+    (`ScopeState.origin_of`)."""
+    return Entry(
+        axis="region",
+        option_id=REGION_MEMBERS_ONLY,
+        provenance="explicit",
+        origin=state.scope_selection.origin_of(state.words_of(place_set.name)),
+    )
 
 
 def _in_axis_order(assignment: PlaceAssignment) -> PlaceAssignment:
@@ -943,8 +1083,9 @@ def whole_total_candidates(
     The candidates read no binding and no coverage, so the role keys each gives are fixed
     before any binding is settled under them. A side offers a total where every dataset the
     shape answers from (`bound_values.declared_datasets`) reads its parties whole over the
-    part's period (`whole_totals.whole_reading`), the shape declares a role on that side,
-    and `assignment` leaves it unnamed. Each side the part totals (`totalled_axes`) offers
+    part's period (`whole_totals.whole_reading`), or serves it as the side's containing
+    total (`whole_totals.containing_reading`: DAC1's DAC countries' total), the shape
+    declares a role on that side, and `assignment` leaves it unnamed. Each side the part totals (`totalled_axes`) offers
     the total of every party there, origin first: both sides unnamed offer the donors'
     total, then the recipients' total, one at a time, since the source publishes no figure
     between two whole totals. For the same reason a side a text names a whole population on
@@ -960,6 +1101,8 @@ def whole_total_candidates(
 
     def offered(dcids: Sequence[str]) -> WholeReading | None:
         reading = whole_reading(dcids, datasets=datasets, years=years)
+        if reading is None and len(dcids) == 1:
+            reading = containing_reading(dcids[0], datasets=datasets)
         if reading is None or reading.axis not in declared or reading.axis in assignment.sets:
             return None
         return reading
@@ -1098,6 +1241,11 @@ def assign_named_places(
         members_asked=_members_asked(state, sets, named),
         discarded_directions=tuple(discarded),
         inferred_directions=frozenset(inferred),
+        direction_words={
+            name: words
+            for name, _axis, _key in discarded
+            if (words := state.words_of(name)) != name
+        },
     )
 
 
@@ -1105,9 +1253,12 @@ def assign_named_places(
 type PlaceLists = dict[EntityRoleKey, tuple[str, ...]]
 
 
-def _members_reading(place_set: PlaceSet) -> tuple[str, ...]:
-    """The set's members, or its node when it does not expand or holds no member."""
-    return place_set.members or place_set.dcids("default")
+def _members_reading(place_set: PlaceSet, residuals: tuple[str, ...] = ()) -> tuple[str, ...]:
+    """The set's members and the `residuals` it binds beside them as one sum
+    (`PlaceAssignment.residuals`), or its node when it does not expand or holds no member."""
+    if not place_set.members:
+        return place_set.dcids("default")
+    return (*place_set.members, *residuals)
 
 
 # The readings one Spec can give a set: one of node or members, or either, which the
@@ -1225,7 +1376,10 @@ def settle_place_sets(
         for s in assignment.distinct_sets
         if choices[place_key(s)] == "node" and s.node is not None
     }
-    readings = {place_key(s): _members_reading(s) for s in assignment.distinct_sets} | nodes
+    readings = {
+        place_key(s): _members_reading(s, assignment.residuals.get(place_key(s), ()))
+        for s in assignment.distinct_sets
+    } | nodes
 
     def places(readings: Mapping[str, tuple[str, ...]]) -> PlaceLists:
         return {
@@ -1288,6 +1442,7 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
         for place_set in placed
         if place_set.node is not None and not place_set.expands
     )
+    readings = {place_key(s): s for s in assignment.distinct_sets if s.oecd_read}
     if is_role_bearing(shape):
         destination_dcids = list(places.get("destination", ()))
         origin_dcids = list(places.get("origin", ()))
@@ -1305,6 +1460,7 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
             + [(dcid, "origin") for dcid in origin_dcids],
             where_dcids=destination_dcids,
             obs_destination_dcid=destination_dcids[0] if destination_dcids else None,
+            readings=readings,
         )
     subject = list(places.get("observationAbout", ()))
     bound = set(subject)
@@ -1338,6 +1494,7 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
             for name, axis, key in sorted(assignment.discarded_directions, key=place_order_of)
         ),
         inferred_directions=assignment.inferred_directions,
+        direction_words=assignment.direction_words,
         named_alone=named_alone,
     )
 
@@ -1355,6 +1512,30 @@ def untold_direction_groups(state: ResolveState) -> tuple[tuple[str, ...], ...]:
     flow direction of, one tuple per untold group (`_untold_groups`), each in query order,
     so a refusal names one place set read under several texts as one place."""
     return tuple(tuple(texts) for texts in _untold_groups(state, _text_groups(state)).values())
+
+
+def untold_direction_labels(state: ResolveState) -> tuple[str | None, ...]:
+    """The graph's label for each place `untold_direction_groups` names, parallel to it:
+    the set's own label (`PlaceSet.label`), else the resolver's name for its entity, else
+    the registry's label for its group. ``None`` for a text that resolved to no set. A
+    refusal names a place by it where two places are written alike."""
+    return tuple(
+        _place_label(state, texts[0])
+        for texts in _untold_groups(state, _text_groups(state)).values()
+    )
+
+
+def _place_label(state: ResolveState, name: str) -> str | None:
+    """The graph's label for the place set `name` resolved to (`untold_direction_labels`)."""
+    place_set = state.place_sets.get(name)
+    if place_set is None:
+        return None
+    if place_set.label:
+        return place_set.label
+    resolution = None if state.rcl is None else state.rcl.resolutions.get(name)
+    if isinstance(resolution, Resolved):
+        return resolution.entity.name
+    return resolution.label if isinstance(resolution, Group) else None
 
 
 def _text_groups(state: ResolveState) -> dict[str, list[str]]:
@@ -1467,25 +1648,32 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     binding reads on one side (`PlaceRoles.whole`, `WholeReading.named_group`).
 
     `build_spec` names a role by one of these when the role binds exactly its members or its
-    total (`PlaceSet.total`). A group with its own graph node takes that node's type and the
+    total (`PlaceSet.total`). A set the binding read as the OECD's region
+    (`PlaceRoles.readings`) is that reading, named by its registry group (`PlaceSet.group_id`)
+    with no node, so a resubmit restores it from the registry. A group with its own graph node takes that node's type and the
     graph's label for it. One without, or one the graph gives no label, keeps the query's
     name, and one without names its registry id (`PlaceSet.group_id`). Each states the
     members the query also named as places of their own, on the role `roles`, one Spec's
     binding, puts each of those places on (`PlaceRoles.named_alone`).
     """
+    named = [roles.readings.get(key, place_set) for key, place_set in part_sets(state).items()]
     return tuple(
         NamedGroup(
-            label=place_set.name if place_set.label is None else place_set.label,
-            dcid=None if place_set.node is None else place_set.node.dcid,
-            entity_type=None if place_set.node is None else place_set.node.graph_type,
+            label=place_set.label or _pin_label(state, place_set.name) or place_set.name,
+            dcid=None if place_set.node is None or place_set.oecd_read else place_set.node.dcid,
+            entity_type=(
+                None if place_set.node is None or place_set.oecd_read else place_set.node.graph_type
+            ),
             member_dcids=frozenset(place_set.members),
             named_alone=frozenset(
                 (role, dcid) for role, dcid in roles.named_alone if dcid in place_set.members
             ),
             total=place_set.total,
-            group_id=place_set.group_id if place_set.node is None else None,
+            group_id=(
+                place_set.group_id if place_set.node is None or place_set.oecd_read else None
+            ),
         )
-        for place_set in part_sets(state).values()
+        for place_set in named
         if place_set.members
     ) + (() if roles.whole is None else (roles.whole.named_group(),))
 
@@ -1526,14 +1714,17 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     every text before the part's places are bound.
     """
     bound = {dcid for dcid, _role in state.place.roles.roles}
+    readings = state.place.roles.readings
     refs: dict[str, tuple[str, ...]] = {}
-    for text, place_set in state.place_sets.items():
+    for text, request_set in state.place_sets.items():
+        place_set = readings.get(place_key(request_set), request_set)
         node = None if place_set.node is None else place_set.node.dcid
         whole = next((d for d in (node, place_set.total) if d is not None and d in bound), None)
         if whole is not None:
             refs[text] = (whole,)
         elif held := place_order(d for d in place_set.members or () if d in bound):
-            own = next((d for d in (node, place_set.total, place_set.group_id) if d), None)
+            owns = (place_set.total, place_set.group_id) if place_set.oecd_read else (node,)
+            own = next((d for d in (*owns, place_set.total, place_set.group_id) if d), None)
             refs[text] = tuple(held) if own is None else (own, *held)
     for text, dcids in state.whole_named.items():
         if held := place_order(d for d in dcids if d in bound):

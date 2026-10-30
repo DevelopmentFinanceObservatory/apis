@@ -2799,7 +2799,7 @@ class TestBreakdownDecision:
             pytest.param(
                 _ACTIVITY_ARCS,
                 [_activity_source("unbound"), _SECTOR_OPENED],
-                Candidates((_ACTIVITY_AND_SECTOR,)),
+                Candidates({_ACTIVITY_AND_SECTOR: (_GVA_CONSTRUCTION,)}),
                 id="opened_slots_leaving_no_member_offer_the_signatures_holding_them",
             ),
             pytest.param(
@@ -2833,7 +2833,12 @@ class TestBreakdownDecision:
             pytest.param(
                 _ACTIVITY_ARCS,
                 [_activity_source("unbound")],
-                Candidates((_ACTIVITY_ONLY, _ACTIVITY_AND_SECTOR)),
+                Candidates(
+                    {
+                        _ACTIVITY_ONLY: (_GDP_NOMINAL, _GVA_NOMINAL, _NDP_NOMINAL),
+                        _ACTIVITY_AND_SECTOR: (_GVA_CONSTRUCTION,),
+                    }
+                ),
                 id="several_signatures_with_nothing_opened_are_candidates",
             ),
         ],
@@ -3212,8 +3217,9 @@ class TestNamedMemberBinding:
 
     def test_the_named_member_answers_over_recall(self, bind_catalogue):
         """Recall scores the GDP and the gross value added member, so its evidence binds
-        nothing (`bind_partition_values`). The phrase is the second one's name, so the
-        part serves it, definite, with the activity source bound."""
+        nothing (`bind_partition_values`). The phrase names the second one's activity
+        source, so settlement binds it as text-recognised (`_with_named_values`) and the
+        part serves that member, definite."""
         arcs = {
             **_ACTIVITY_ARCS,
             _GVA_NOMINAL: {
@@ -3235,7 +3241,7 @@ class TestNamedMemberBinding:
         assert region.status == "definite"
         assert _served(region) == [_GVA_NOMINAL]
         assert _bound_slot(region, "activitySource").value.ref.ref == "GrossValueAdded"
-        assert _slot_provenance(region, "activitySource") == "binder"
+        assert _slot_provenance(region, "activitySource") == "text_recognized"
 
 
 def _slot_provenance(region, prop: str) -> str:

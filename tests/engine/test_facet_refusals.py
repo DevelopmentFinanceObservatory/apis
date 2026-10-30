@@ -395,18 +395,29 @@ def test_elected_units_admits_a_facet_the_literal_request_would_refuse():
     assert result is None
 
 
-def test_elected_units_stat_var_absent_from_the_map_refuses():
-    """A StatVar absent from `elected_units` has no admitted unit facets."""
+@pytest.mark.parametrize(
+    ("elected_units", "refuses"),
+    [
+        pytest.param({_SV_A: frozenset({"CurrencyUSD"})}, False, id="one-served"),
+        pytest.param({}, True, id="none-served"),
+    ],
+)
+def test_elected_units_judge_only_the_stat_vars_the_decision_serves(
+    elected_units: dict[str, frozenset[str]], refuses: bool
+):
+    """A StatVar absent from `elected_units` is one the unit decision's group leaves out:
+    it is unserved, not refused, as a mint names it. The request refuses only when the
+    decision serves no StatVar."""
     graph = FakeGraph(
         obs={
             f"{_SV_A}|{_ENTITY}": [
                 {"earliestDate": "2015", "latestDate": "2020", "obsCount": 3, "unit": "CurrencyUSD"}
             ],
             f"{_SV_B}|{_ENTITY}": [
-                {"earliestDate": "2015", "latestDate": "2020", "obsCount": 3, "unit": "CurrencyUSD"}
+                {"earliestDate": "2015", "latestDate": "2020", "obsCount": 3, "unit": "CurrencyEUR"}
             ],
         },
-        currency_units={"CurrencyUSD": "USD"},
+        currency_units={"CurrencyUSD": "USD", "CurrencyEUR": "EUR"},
     )
     request = IdentityUnitRequest(currency="USD", prices="current")
     result = facet_refusal(
@@ -414,12 +425,14 @@ def test_elected_units_stat_var_absent_from_the_map_refuses():
         [_SV_A, _SV_B],
         [_ENTITY],
         {"unit": IdentityFacetValueRequest(request=request)},
-        elected_units={_SV_A: frozenset({"CurrencyUSD"})},
+        elected_units=elected_units,
         deadline=None,
     )
-    assert result is not None
-    assert result.code == "facet_not_available"
-    assert result.pointer == "/input/facets/unit"
+    if refuses:
+        assert result is not None
+        assert (result.code, result.pointer) == ("facet_not_available", "/input/facets/unit")
+    else:
+        assert result is None
 
 
 def test_provenance_set_member_absent_still_refuses_with_elected_units_unit_admitted():

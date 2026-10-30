@@ -14,6 +14,7 @@ points). Inside 2020 to 2022 the short series covers three years and the long on
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 
 import pytest
 
@@ -25,7 +26,7 @@ from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.convertibility import decide_part_unit
+from search.engine.region.convertibility import decide_spec_unit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.read_plan import facets_served, plan_standard
@@ -122,7 +123,8 @@ def _search_answer() -> Spec:
 
 def test_a_search_answer_and_a_mint_of_its_spec_serve_the_same_source() -> None:
     """The answer cites the short series, and a preview of its unpinned identity, the
-    selection a mint runs over an undated probe, elects the short series too."""
+    selection a mint runs, elects the short series too. A probe reads no dates unless it
+    asks, and the preview's range window asks."""
     spec = _search_answer()
     identity = spec.definition.identity
 
@@ -237,7 +239,7 @@ def test_a_converting_unit_decision_dispatches_the_facet_the_plan_cites(from_ans
         arcs=_UNIT_ARCS,
     )
     _unused_graph, materialise_sdmx = materialise_double_from_obs({})
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_AMOUNT],
         unit_request=IdentityUnitRequest.model_validate({"currency": "EUR", "prices": "current"}),
         role_bindings={"observationAbout": [_KEN]},
@@ -256,14 +258,18 @@ def test_a_converting_unit_decision_dispatches_the_facet_the_plan_cites(from_ans
 
 
 _GHA = "country/GHA"
-# What one place holds: each facet's id, source and years. Every range is unbroken, so an
-# undated probe and a dated read see the same points (the gap case is the known limit below).
-_HELD: list[tuple[tuple[str, str, range], ...]] = [
+# What one place holds: each facet's id, source and years. The fifth row's long series
+# holds nothing from 2011 to 2021, a gap across the 2015 to 2020 window its span covers.
+_HELD: list[tuple[tuple[str, str, Sequence[int]], ...]] = [
     (("f-long", _LONG, range(2005, 2023)), ("f-short", _SHORT, range(2019, 2022))),
     (("f-short", _SHORT, range(2000, 2024)), ("f-long", _LONG, range(2018, 2021))),
     (("f-long", _LONG, range(2010, 2021)), ("f-short", _SHORT, range(2015, 2025))),
     (("f-long", _LONG, range(2010, 2021)),),
     (("f-short", _SHORT, range(2015, 2025)),),
+    (
+        ("f-long", _LONG, (*range(2005, 2011), *range(2022, 2025))),
+        ("f-short", _SHORT, range(2015, 2019)),
+    ),
     (),
 ]
 _TWO_PLACE_WINDOWS: dict[str, tuple[TimeWindow | str | None, dict]] = {
@@ -292,19 +298,19 @@ def test_at_two_places_every_election_names_the_answers_one_group(
 ) -> None:
     """Whatever Kenya and Ghana hold and whatever the window, the answer's plan elects one
     group for the variable across both places, and a mint of its unpinned identity, a
-    datasets read of that identity and the unit decision, over an undated probe and over
-    the plan's own probes, all select that group."""
+    datasets read of that identity and the unit decision, over their own probe, which reads
+    dates under a range alone, and over the plan's own probes, all select that group."""
     years, requested_window = _TWO_PLACE_WINDOWS[window]
     held = {_KEN: _HELD[kenya], _GHA: _HELD[ghana]}
 
-    def facets(place: str, *, dated: bool) -> list[Facet]:
+    def facets(place: str) -> list[Facet]:
         return [
-            _dollar_facet(facet_id, provenance, [str(y) for y in span], dated=dated)
+            _dollar_facet(facet_id, provenance, [str(y) for y in span], dated=True)
             for facet_id, provenance, span in held[place]
         ]
 
     plan = plan_standard(
-        {(_AMOUNT, place): facets(place, dated=True) for place in held if held[place]},
+        {(_AMOUNT, place): facets(place) for place in held if held[place]},
         members=[_AMOUNT],
         years=years,
     )
@@ -315,7 +321,7 @@ def test_at_two_places_every_election_names_the_answers_one_group(
     group_ids = frozenset().union(*groups)
 
     materialise_graph = FakeGraphReader(
-        facets={(_AMOUNT, place): facets(place, dated=False) for place in held},
+        facets={(_AMOUNT, place): facets(place) for place in held},
         arcs=_UNIT_ARCS,
     )
     _unused_graph, materialise_sdmx = materialise_double_from_obs({})
@@ -342,7 +348,7 @@ def test_at_two_places_every_election_names_the_answers_one_group(
     assert (minted.ref, minted.dispatch_facet_id in group_ids) == (source, True)
 
     for probes in (None, plan.probes):
-        (selections,) = decide_part_unit(
+        (selections,) = decide_spec_unit(
             [_AMOUNT],
             unit_request=IdentityUnitRequest.model_validate(
                 {"currency": "EUR", "prices": "current"}
@@ -370,12 +376,12 @@ _GAP_OBS = {
 }
 
 
-def test_an_undated_mint_elects_a_facet_with_a_gap_across_the_window_and_reads_no_rows() -> None:
-    """The known limit of the shared election. One facet is recorded to 2015 and projected
-    from 2027, another holds 2021 and 2022, and the request asks for 2018 to 2026. Search
-    reads dates, sees the gapped facet holds no point there, and serves the recent one. A
-    mint's probe carries spans alone, so the gapped facet, whose span covers all nine years,
-    is elected and its read returns no row in the window."""
+def test_a_mint_passes_over_a_facet_with_a_gap_across_the_window_as_the_answer_does() -> None:
+    """One facet is recorded to 2015 and projected from 2027, another holds 2021 and 2022,
+    and the request asks for 2018 to 2026. Search reads dates, sees the gapped facet holds
+    no point there, and serves the recent one. A mint's probe reads dates under a range
+    window too, so it passes over the gapped facet, whose span covers all nine years, elects
+    the recent one and reads its two rows."""
     window = TimeWindow(start_year=2018, end_year=2026)
     dated = [
         Facet(
@@ -405,5 +411,6 @@ def test_an_undated_mint_elects_a_facet_with_a_gap_across_the_window_and_reads_n
         limit=100,
     )
 
-    assert preview.selections["provenance"].ref == _GAP
-    assert preview.total_rows == 0
+    assert preview.selections["provenance"].ref == _RECENT
+    assert preview.selections["provenance"].dispatch_facet_id == "f-recent"
+    assert preview.total_rows == 2

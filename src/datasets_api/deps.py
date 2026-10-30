@@ -54,7 +54,7 @@ from datasets_api.reference_store import LiveArtifactReferenceWriter, PinReferen
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
-from dc_sdmx import SdmxClient
+from dc_sdmx import DATA_HEDGE_AFTER_SECONDS, SdmxClient
 from dfo_platform.build import build_commit
 from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
@@ -268,6 +268,8 @@ async def open_deps(
                 base_url=live().sdmx_base_url,
                 token=settings.graph_token,
                 timeout=settings.sdmx_timeout_seconds,
+                hedge_after=DATA_HEDGE_AFTER_SECONDS,
+                total_concurrency=settings.mint_member_max_concurrency,
             )
             stack.callback(sdmx.close)
 

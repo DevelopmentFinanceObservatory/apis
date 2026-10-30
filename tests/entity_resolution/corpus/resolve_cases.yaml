@@ -1,8 +1,8 @@
 # Resolve regression corpus. Each case posts `text` to `POST /api/graph/resolve` with `kinds` and
 # `code_system` when set, and expects the four-status wire: `status`; `ref` (the resolved entity's
 # `ref`), or `candidates` (the refs an ambiguous result lists); `kind`; `matched_as`; `reading`;
-# `member_count`, a group's or region's count under the real membership policy. A null
-# expectation is not checked. tests/graph_api/test_resolve_corpus.py runs every case.
+# `member_count`, a group's or region's count under the real membership policy; `near_matches`,
+# the refs listed there, in order. A null expectation is not checked. tests/graph_api/test_resolve_corpus.py runs every case.
 #
 # `graph.held` maps each dcid the fake graph holds to its `typeOf`. `graph.last_rung` lists the
 # dcids the resolver's last fallback rung (`<-description->dcid`) answers for `text`; each is
@@ -150,6 +150,21 @@ cases:
       held: { wikidataId/Q3870: City }
       last_rung: [wikidataId/Q3870]
     note: "A city found only by the description fallback resolves as place_other."
+  - text: Georgia
+    expect:
+      { status: resolved, ref: country/GEO, kind: country, near_matches: [geoId/13] }
+    graph:
+      held: { country/GEO: Country, geoId/13: State }
+      last_rung: [country/GEO, geoId/13]
+    note: "A country name a US state shares resolves to the country, with the state as a near match."
+  - text: Georgia
+    kinds: [place_other]
+    expect:
+      { status: resolved, ref: geoId/13, kind: place_other, near_matches: [country/GEO] }
+    graph:
+      held: { country/GEO: Country, geoId/13: State }
+      last_rung: [country/GEO, geoId/13]
+    note: "A kinds filter that removes the country resolves to the state sharing its name, with the country as a near match."
   - text: California
     expect:
       status: ambiguous

@@ -258,7 +258,7 @@ def interpret_materialised(
 
     Returns ``UnsupportedMaterialise`` for a scope refusal, ``NoDataMaterialise`` for
     ``NoDataDraft``, and ``None`` for materialised outcomes. A ``Materialised`` also adds
-    its scope-defaulted warnings, on no axis of ``unnamed_wholes``
+    its scope-defaulted warnings, uncounted and on no axis of ``unnamed_wholes``
     (`grounding.role_scope_defaulted_warnings`), and its role-declaration and membership
     warnings. Its
     ``family_total_absent`` fact describes one Spec, so the terminal that holds that
@@ -275,6 +275,10 @@ def interpret_materialised(
                 boundary_roles=boundary_roles,
                 label_of=label_of,
                 unnamed_wholes=unnamed_wholes,
+                # The count is the answer's: its success paths restate the warning with the
+                # members its plan serves (`grounding.restate_role_scope_warnings`), and a
+                # refusal serves none.
+                state_count=False,
             )
         )
         warnings.extend(

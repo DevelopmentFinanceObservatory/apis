@@ -384,6 +384,24 @@ def test_scope_binding_an_unresolvable_key_on_an_ambiguous_axis_shape_keeps_the_
     assert "does not declare" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("shape", "keys"),
+    [
+        (_SHAPE, ["destination", "recipient"]),
+        # `origin` names both roles, so it binds neither and is not offered.
+        (_AMBIGUOUS_AXIS_SHAPE, ["provider", "creditor"]),
+    ],
+)
+def test_undeclared_role_refusal_offers_every_key_that_binds_a_declared_role(shape, keys):
+    with pytest.raises(InvalidRoleRef) as exc_info:
+        build_identity_document(shape, scope=Scope(entities={"donor": ["country/FRA"]}))
+
+    (issue,) = exc_info.value.issues
+    assert [a.ref for a in issue.alternatives] == keys
+    for key in keys:
+        build_identity_document(shape, scope=Scope(entities={key: ["country/FRA"]}))
+
+
 def test_scope_binding_a_flow_axis_alias_of_a_declared_role_succeeds():
     # `destination` aliases `_SHAPE`'s declared `recipient` role.
     scope = Scope(entities={"destination": ["country/KEN"]})
@@ -627,6 +645,8 @@ def test_to_materialisation_request_refuses_a_role_shaped_currency_naming_an_amb
     assert "origin" in message
     assert exc_info.value.role == "origin"
     assert exc_info.value.declared_roles == ("provider", "creditor")
+    # Neither role is reachable through a currency role, so none is offered.
+    assert exc_info.value.alternatives == []
     assert isinstance(exc_info.value.__cause__, RoleAxisConflictError)
 
 

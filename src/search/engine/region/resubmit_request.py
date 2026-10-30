@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 
+from code_index.composites import DECLARED_COMPOSITES
 from code_index.members import pinned_refs
 from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
@@ -31,7 +32,7 @@ from search.engine.region.grounding import (
 )
 from search.engine.region.refs import provenance_labels
 from search.engine.region.result import FacetAxisFilter
-from search.engine.region.whole_totals import identity_years, whole_reading
+from search.engine.region.whole_totals import containing_reading, identity_years, whole_reading
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.retrieval.facts import read_constraints
 from search.engine.spec_build import NamedGroup
@@ -70,6 +71,7 @@ from search.models import (
     TimeWindow,
     ValueKind,
 )
+from search.scope.region import without_residuals
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +160,12 @@ def pinned_provenance_scope(
     """Bind the request's catalogue narrowed to the posted `facets.provenance` refs
     (`origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence
     and a base pin serves at a place where a DFO table also holds data. Binds nothing when
-    provenance is unbound."""
+    provenance is unbound, or binds a declared composite, whose reads are those of the
+    identity its option was set on (`code_index.composites.table_identity`), which pins no
+    provenance."""
+    binding = (facets or {}).get("provenance")
+    if isinstance(binding, IdentityBindingValue) and binding.ref in DECLARED_COMPOSITES:
+        return scoped_reads(None)
     return scoped_reads(frozenset(_source_dcids_from_facets_provenance(facets)) or None)
 
 
@@ -480,10 +487,13 @@ def resubmit_named_groups(
 
     A role whose entities the identity's dataset reads as the whole population of its side
     (`_whole_named_groups`) carries that population, whatever group the request posts on it,
-    so a first answer's whole total survives a resubmit that posts no group.
+    so a first answer's whole total survives a resubmit that posts no group. A role bound
+    to its side's containing total carries the total's group only where the request posts
+    none on it, as on a side the posted identity left open, so a resubmit of "ODA from DAC
+    donor countries" keeps the group its first answer named.
     """
     kept: list[tuple[str, EntityGroup, frozenset[str], str | None]] = []
-    whole = _whole_named_groups(inp.identity)
+    whole = _whole_named_groups(inp.identity, posted=(inp.entity_groups or {}).keys())
     named: list[NamedGroup] = list(whole.values())
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
@@ -499,6 +509,9 @@ def resubmit_named_groups(
             )
             continue
         role_entities = frozenset(entities[role])
+        # A summed region binds its residual buckets beside its members; the group stands
+        # for the members (`scope.region.is_residual`).
+        role_members = frozenset(without_residuals(role_entities, get_index())) or role_entities
         total = _bound_total(group, role, role_entities)
         if group.total is not None and total is None:
             logger.info(
@@ -521,7 +534,7 @@ def resubmit_named_groups(
                     )
                 )
             elif registry_group is not None:
-                if restored := _registry_named_group(group, registry_group, role, role_entities):
+                if restored := _registry_named_group(group, registry_group, role, role_members):
                     named.append(restored)
             else:
                 logger.info(
@@ -530,7 +543,7 @@ def resubmit_named_groups(
                     role,
                 )
             continue
-        kept.append((group.ref, group, role_entities, total))
+        kept.append((group.ref, group, role_entities if total is not None else role_members, total))
     if not kept:
         return tuple(named)
     dcids = sorted({dcid for dcid, _, _, _ in kept})
@@ -580,12 +593,16 @@ def resubmit_named_groups(
     return tuple(named)
 
 
-def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
+def _whole_named_groups(
+    identity: BaseIdentity, *, posted: Collection[str]
+) -> dict[str, NamedGroup]:
     """The group of each flow role whose entities the dataset elected for `identity`
     (`bound_values.identity_dataset`) reads as the whole population of the role's side over
     its requested window (`whole_totals.whole_reading`), by role key: one whole total ("ODA
-    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set. Empty for
-    an identity whose dataset the code index does not elect."""
+    to Ethiopia" binds `DACOfficialDonors`) or the members of one whole total set, or, on a
+    role the request posts no group on (`posted` names those it does), the containing total
+    of the side (`whole_totals.containing_reading`: DAC1's `DACCountriesTotal`) with its
+    registry group. Empty for an identity whose dataset the code index does not elect."""
     dataset = identity_dataset(identity)
     if dataset is None:
         return {}
@@ -593,6 +610,8 @@ def _whole_named_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
     groups: dict[str, NamedGroup] = {}
     for role, dcids in identity.entities.items():
         reading = whole_reading(dcids, datasets=(dataset,), years=years)
+        if reading is None and len(dcids) == 1 and role not in posted:
+            reading = containing_reading(dcids[0], datasets=(dataset,))
         if reading is not None and reading.axis == role_key_axis(role):
             groups[role] = reading.named_group()
     return groups

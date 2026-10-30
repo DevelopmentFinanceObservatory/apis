@@ -289,6 +289,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -381,11 +382,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -470,7 +473,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1011,6 +1014,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -1140,6 +1144,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -1169,6 +1174,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -1244,7 +1250,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1326,6 +1332,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -1418,11 +1425,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -1507,7 +1516,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1591,7 +1600,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 2 recipients with data from Norway.",
+     "No recipient was named, so the answer covers both recipients with data from Norway.",
      null
     ],
     [
@@ -1888,6 +1897,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -2025,6 +2035,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -2054,6 +2065,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -2129,7 +2141,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2208,7 +2220,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 2 recipients with data from Norway.",
+     "No recipient was named, so the answer covers both recipients with data from Norway.",
      null
     ]
    ]
@@ -2239,6 +2251,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -2274,11 +2287,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -2360,7 +2375,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2783,6 +2798,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -2818,11 +2834,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -2904,7 +2922,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -3401,6 +3419,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -3429,11 +3448,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -3515,7 +3536,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4328,6 +4349,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -4455,11 +4477,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -4544,7 +4568,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4631,6 +4655,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "dimensions": [
@@ -4723,11 +4748,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -4812,7 +4839,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5342,6 +5369,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -5480,11 +5508,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -5569,7 +5599,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5661,6 +5691,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -5760,11 +5791,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -5861,7 +5894,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6377,6 +6410,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -6469,11 +6503,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -6558,7 +6594,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6645,6 +6681,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "dimensions": [
@@ -6772,11 +6809,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -6861,7 +6900,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7210,6 +7249,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -7302,11 +7342,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -7367,7 +7409,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7812,6 +7854,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -7904,11 +7947,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -7969,7 +8014,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8476,6 +8521,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -8568,11 +8614,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -8633,7 +8681,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8702,6 +8750,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -8794,11 +8843,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -8859,7 +8910,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8946,6 +8997,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -8974,11 +9026,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -9036,7 +9090,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -9870,6 +9924,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -9962,11 +10017,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -10027,7 +10084,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10471,6 +10528,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -10578,11 +10636,13 @@
        "truncated": false
       },
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -10643,7 +10703,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11239,6 +11299,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -11331,11 +11392,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -11396,7 +11459,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11465,6 +11528,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -11557,11 +11621,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -11622,7 +11688,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12040,6 +12106,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -12154,11 +12221,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -12240,7 +12309,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12680,6 +12749,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -12793,11 +12863,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -12888,7 +12960,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -13473,6 +13545,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -13587,11 +13660,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -13673,7 +13748,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14035,6 +14110,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -14134,11 +14210,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -14211,7 +14289,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14531,6 +14609,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -14615,6 +14694,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -14631,6 +14711,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -14682,7 +14763,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15066,6 +15147,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -15150,6 +15232,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -15166,6 +15249,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -15217,7 +15301,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15531,6 +15615,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -15615,6 +15700,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -15638,6 +15724,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -15689,7 +15776,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15997,6 +16084,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -16081,6 +16169,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -16097,6 +16186,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -16148,7 +16238,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16462,6 +16552,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -16546,6 +16637,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -16569,6 +16661,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -16620,7 +16713,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16952,6 +17045,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -17051,6 +17145,7 @@
        "truncated": false
       },
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -17074,6 +17169,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -17125,7 +17221,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17433,6 +17529,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -17517,6 +17614,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -17533,6 +17631,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -17584,7 +17683,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17659,6 +17758,7 @@
      "alternative_measures": null,
      "available_at_place": null,
      "basis": null,
+     "concept_label": null,
      "confidence": "high",
      "coverage": {
       "dimensions": [
@@ -17717,6 +17817,7 @@
      "measure_label_axes": [],
      "observations": null,
      "open_axis_facts": null,
+     "published_tables": null,
      "related_group": null,
      "related_measures": null,
      "rendered_sentence": null,
@@ -17733,6 +17834,7 @@
        }
       ]
      },
+     "scope_choices": null,
      "sentence_plan": null,
      "skills": null,
      "slot_options": [],
@@ -17784,7 +17886,7 @@
       "served_count": 1
      },
      "trace": {
-      "capability_version": "cap_9deef72763b45f40",
+      "capability_version": "cap_ae1c69fd89331e26",
       "conversion": null,
       "default_reading": {
        "applied": true,
@@ -18580,6 +18682,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -18664,6 +18767,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -18680,6 +18784,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -18731,7 +18836,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -18786,6 +18891,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -18870,6 +18976,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -18886,6 +18993,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -18937,7 +19045,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19410,6 +19518,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -19494,6 +19603,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -19510,6 +19620,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -19561,7 +19672,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19616,6 +19727,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -19700,6 +19812,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -19716,6 +19829,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -19767,7 +19881,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20152,6 +20266,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -20236,6 +20351,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -20252,6 +20368,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -20303,7 +20420,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20613,6 +20730,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -20697,6 +20815,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -20713,6 +20832,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -20764,7 +20884,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21074,6 +21194,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -21158,6 +21279,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -21174,6 +21296,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -21225,7 +21348,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21305,6 +21428,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -21325,6 +21449,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -21333,6 +21458,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -21381,7 +21507,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21971,6 +22097,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -22055,6 +22182,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -22078,6 +22206,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -22129,7 +22258,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22553,6 +22682,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -22637,6 +22767,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -22653,6 +22784,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -22704,7 +22836,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23153,6 +23285,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -23252,6 +23385,7 @@
        "truncated": false
       },
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -23275,6 +23409,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -23326,7 +23461,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23915,6 +24050,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -23999,6 +24135,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -24015,6 +24152,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -24066,7 +24204,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24121,6 +24259,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -24205,6 +24344,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -24221,6 +24361,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -24272,7 +24413,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24874,6 +25015,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -24958,6 +25100,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -24981,6 +25124,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -25032,7 +25176,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25087,6 +25231,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -25171,6 +25316,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -25187,6 +25333,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -25238,7 +25385,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25746,6 +25893,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -25830,6 +25978,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -25853,6 +26002,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -25904,7 +26054,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26504,6 +26654,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -26588,6 +26739,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -26611,6 +26763,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -26662,7 +26815,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26717,6 +26870,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -26801,6 +26955,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -26824,6 +26979,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -26875,7 +27031,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26961,6 +27117,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -26981,6 +27138,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -26989,6 +27147,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -27037,7 +27196,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27864,6 +28023,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -27948,6 +28108,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -27964,6 +28125,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -28015,7 +28177,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28070,6 +28232,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -28154,6 +28317,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -28170,6 +28334,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -28221,7 +28386,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28873,6 +29038,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -28957,6 +29123,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -28973,6 +29140,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -29024,7 +29192,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29079,6 +29247,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -29163,6 +29332,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -29179,6 +29349,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -29230,7 +29401,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29316,6 +29487,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -29336,6 +29508,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -29344,6 +29517,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -29392,7 +29566,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30169,6 +30343,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -30253,6 +30428,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -30269,6 +30445,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -30320,7 +30497,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30406,6 +30583,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -30426,6 +30604,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -30434,6 +30613,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -30506,7 +30686,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31303,6 +31483,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -31387,6 +31568,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -31403,6 +31585,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -31478,7 +31661,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31551,6 +31734,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -31668,6 +31852,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -31690,6 +31875,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -31765,7 +31951,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32333,6 +32519,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -32417,6 +32604,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -32433,6 +32621,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -32508,7 +32697,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32581,6 +32770,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -32698,6 +32888,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -32720,6 +32911,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -32795,7 +32987,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33337,6 +33529,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -33421,6 +33614,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -33444,6 +33638,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -33519,7 +33714,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34133,6 +34328,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -34217,6 +34413,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -34240,6 +34437,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -34291,7 +34489,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34346,6 +34544,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -34430,6 +34629,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -34446,6 +34646,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -34497,7 +34698,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35093,6 +35294,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -35177,6 +35379,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -35200,6 +35403,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -35251,7 +35455,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35306,6 +35510,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -35390,6 +35595,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -35406,6 +35612,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -35457,7 +35664,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36032,6 +36239,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -36116,6 +36324,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -36132,6 +36341,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -36183,7 +36393,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36238,6 +36448,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -36322,6 +36533,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -36338,6 +36550,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -36389,7 +36602,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36639,6 +36852,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -36764,6 +36978,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -36786,6 +37001,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -36861,7 +37077,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36935,7 +37151,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ]
    ]
@@ -37323,6 +37539,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -37440,6 +37657,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -37462,6 +37680,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -37537,7 +37756,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37610,6 +37829,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -37694,6 +37914,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -37710,6 +37931,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -37785,7 +38007,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37859,7 +38081,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ],
     [
@@ -38251,6 +38473,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -38368,6 +38591,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -38390,6 +38614,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -38465,7 +38690,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38538,6 +38763,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -38622,6 +38848,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -38638,6 +38865,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -38713,7 +38941,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38787,7 +39015,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ],
     [
@@ -39603,6 +39831,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -39720,6 +39949,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -39742,6 +39972,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -39817,7 +40048,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -39890,6 +40121,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -39974,6 +40206,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -39990,6 +40223,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -40065,7 +40299,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40139,7 +40373,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ],
     [
@@ -40521,6 +40755,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -40605,6 +40840,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -40621,6 +40857,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -40696,7 +40933,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40769,6 +41006,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -40886,6 +41124,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -40908,6 +41147,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -40983,7 +41223,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41474,6 +41714,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -41558,6 +41799,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -41574,6 +41816,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -41625,7 +41868,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41680,6 +41923,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -41764,6 +42008,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -41780,6 +42025,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -41831,7 +42077,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_9deef72763b45f40",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,

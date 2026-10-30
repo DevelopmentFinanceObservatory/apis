@@ -353,6 +353,50 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="member_unavailable",
+            binding_ref="source:",
+            asked="Aid flow B",
+            shown="Source A",
+            members=("Aid flow B",),
+            unit="US dollars",
+        ),
+        None,
+        "You asked for Aid flow B. Source A holds no values for it under the unit and method "
+        "read (US dollars).",
+    ),
+    (
+        DepartureFact(
+            code="member_unavailable",
+            binding_ref="how:financingSource",
+            asked="Aid flow B, Aid flow C",
+            shown="Source A",
+            members=("Aid flow B", "Aid flow C"),
+        ),
+        None,
+        "You asked for Aid flow B and Aid flow C. Source A holds no values for them under the "
+        "unit and method read.",
+    ),
+    (
+        DepartureFact(
+            code="member_unavailable",
+            binding_ref=None,
+            asked="Aid flow B, Aid flow C",
+            members=("Aid flow B", "Aid flow C"),
+            unit="Percent",
+        ),
+        None,
+        "You asked for Aid flow B and Aid flow C. They hold no values under the source, unit "
+        "and method read (Percent).",
+    ),
+    (
+        DepartureFact(
+            code="member_unavailable", binding_ref=None, asked="Aid flow B", members=("Aid flow B",)
+        ),
+        None,
+        "You asked for Aid flow B. It holds no values under the source, unit and method read.",
+    ),
+    (
+        DepartureFact(
             code="entity_unavailable",
             binding_ref="where:",
             asked="Somaliland",
@@ -558,6 +602,23 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You asked for Africa. This shows the countries in it, each on its own, "
         "and leaves out what the data allocates to no single country: Africa, unallocated by "
         "country (DAC); North of Sahara, unallocated by country (DAC).",
+    ),
+    # Africa summed on the CRS counts its residual buckets beside its countries.
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="where:",
+            asked="Africa",
+            group_dcid="africa",
+            included=(
+                "Africa, unallocated by country (DAC)",
+                "North of Sahara, unallocated by country (DAC)",
+            ),
+        ),
+        "aid",
+        "You asked for Africa. This shows the countries in it, each on its own, with what the "
+        "data allocates to no single country: Africa, unallocated by country (DAC); North of "
+        "Sahara, unallocated by country (DAC).",
     ),
     (
         DepartureFact(
@@ -823,6 +884,17 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
     ),
     (
         DepartureFact(
+            code="member_unavailable",
+            binding_ref="source:",
+            asked="Aid flow B",
+            shown="Source A",
+            members=("Aid flow B",),
+        ),
+        None,
+        "You asked for Aid flow B. Source A holds no values for it under the unit and method read.",
+    ),
+    (
+        DepartureFact(
             code="entity_unavailable",
             binding_ref="where:",
             asked="Somaliland",
@@ -1043,6 +1115,7 @@ def test_departures_follow_precedence_and_carry_the_fact():
         ),
         # With nothing asked, the text has only the measure shown to state.
         (DepartureFact(code="closest_match", binding_ref=None), "measure shown"),
+        (DepartureFact(code="member_unavailable", binding_ref=None), "variables"),
     ],
 )
 def test_a_fact_missing_its_value_raises(fact, missing):

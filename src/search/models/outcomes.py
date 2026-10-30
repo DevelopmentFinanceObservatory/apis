@@ -187,6 +187,17 @@ class NoDataOption(StrictModel):
             "for it is not checked"
         )
     )
+    entity_choice: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "for an entity_ambiguous option, the index into NoData.ambiguous_entities of "
+            "the group this option settles; null on every other option. Two groups can "
+            "share one wording ('aid from Congo to Congo' asks 'Congo' for each end), so "
+            "a client groups an entity menu by this index, never by mentions, and joins it "
+            "to the sentence slot token with the same entity_choice"
+        ),
+    )
 
 
 class NoDataDenominator(StrictModel):

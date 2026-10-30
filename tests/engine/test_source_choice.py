@@ -55,6 +55,7 @@ from search.engine.spec_id import (
     build_identity_projection,
     build_spec_identity,
 )
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     BindingUnbound,
     GraphRef,
@@ -69,12 +70,13 @@ from search.models import (
     SlotKey,
     SourceMention,
 )
+from search.observations import provenance_facet_ref
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_pool_election as pools
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_admissibility_table import _FACETS, _GDP_SOLE_OPTION, _node, _SoleOptionLLM
 from tests.engine.test_ids_index_sourcing import _crs_arcs, _derive_one, _ids_shape
 from tests.engine.test_parsed_pipeline import _fertility_kenya_part
@@ -712,17 +714,35 @@ def test_the_options_door_reads_under_the_target_s_provenance_pin(monkeypatch):
 
 @pytest.mark.parametrize(
     ("provenance", "account"),
-    [("provenance/OECDCreditorReportingSystem", "provider"), (_WDI, None)],
-    ids=["declared-dataset", "base-provenance"],
+    [
+        ("provenance/OECDCreditorReportingSystem", "provider"),
+        ("provenance/ONEBilateralAndImputedMultilateral", "provider"),
+        (_WDI, None),
+    ],
+    ids=["declared-dataset", "composite", "base-provenance"],
 )
 def test_the_provenance_facet_states_the_account_of_a_declared_dataset(provenance, account):
     """A client reads whose account of a flow the answer gives from the served provenance:
-    the code index's declaration for a dataset it declares, none for any other."""
+    the code index's declaration for a dataset it declares, the one account a composite's
+    component tables share, none for any other."""
     facets = _resolved_facets(
         [{"provenance": SeriesFacetRef(ref=provenance, label=provenance)}], {}
     )
 
     assert facets["provenance"].account == account
+
+
+def test_a_composite_provenance_facet_takes_its_declared_label():
+    composite = get_index().composite("provenance/ONEBilateralAndImputedMultilateral")
+    assert composite is not None
+
+    facet = provenance_facet_ref(composite.provenance, {})
+
+    assert (facet.ref, facet.label, facet.documentation) == (
+        composite.provenance,
+        composite.label,
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +876,8 @@ class _NominatingLLM(pools._ElectLLM):
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         output, usage = await super().generate_structured(
             prompt=prompt, system=system, schema=schema
         )
@@ -1007,6 +1029,8 @@ class _MenuLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         self.prompts.append(prompt)
         return schema(
             chosen_shape_index=0,
@@ -1171,6 +1195,8 @@ class _AskLLM(_MenuLLM):
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         self.prompts.append(prompt)
         return schema(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask="Which flow?"

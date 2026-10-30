@@ -15,7 +15,7 @@ from collections.abc import Iterator, Mapping
 import httpx
 import pytest
 
-from dc_sdmx.client import SdmxClient
+from dc_sdmx.client import SdmxClient, _DeadlineGuard, _ReadStoppedError
 from dc_sdmx.errors import SdmxCapExceededError, SdmxHttpError
 from dc_sdmx.results import parse_availability_json
 from dfo_platform.timings import PhaseTimings, collecting
@@ -741,3 +741,54 @@ def test_close_keeps_an_already_admitted_availability_call_safe_while_queued(mon
     assert client._client.is_closed
     with pytest.raises(RuntimeError, match="closed"):
         client.availability(variables=[_VAR_A], component="observationAbout")
+
+
+def _stopped_availability_read(client: SdmxClient, guard: _DeadlineGuard) -> None:
+    client._fetch_availability_chunk(
+        variables=[_VAR_A],
+        component="financingProvider",
+        filters=None,
+        time_period=None,
+        max_bytes=None,
+        guard=guard,
+    )
+
+
+def _stopped_data_read(client: SdmxClient, guard: _DeadlineGuard) -> None:
+    with client._open_data_response(
+        variables=[_VAR_A],
+        entities={"observationAbout": ["country/USA"]},
+        facet_ids=None,
+        time_period=None,
+        max_bytes=None,
+        guard=guard,
+    ):
+        pass
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        pytest.param(_stopped_availability_read, id="availability"),
+        pytest.param(_stopped_data_read, id="data"),
+    ],
+)
+def test_a_stopped_read_that_takes_its_own_slot_leaves_the_slot_count_unchanged(read):
+    """A read stopped before it gets a total-concurrency slot sends nothing and releases no
+    slot, so the semaphore keeps its bound."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"a stopped read sent {request.url}")
+
+    client = SdmxClient(
+        base_url=_BASE_URL, transport=httpx.MockTransport(refuse), total_concurrency=2
+    )
+    assert client._total_semaphore.acquire(blocking=False)
+    guard = _DeadlineGuard(None)
+    guard.abort()
+
+    with pytest.raises(_ReadStoppedError):
+        read(client, guard)
+
+    # One of the two slots is still taken, so exactly one more can be acquired.
+    assert [client._total_semaphore.acquire(blocking=False) for _ in range(2)] == [True, False]

@@ -30,9 +30,14 @@ from .vocab import (
 
 
 class EntityRefs(StrictModel):
-    """The graph nodes one entity text of a part's restatement binds in the answer."""
+    """The graph nodes one entity row of a part's restatement binds in the answer."""
 
-    text: str = Field(description="the entity text, equal to some restatement.entities[i].text")
+    text: str = Field(
+        description=(
+            "the entity text, equal to restatement.entities[i].text, where i is this "
+            "entry's position in Part.entity_refs"
+        )
+    )
     refs: list[str] = Field(
         description=(
             "the refs the part's answer binds for `text`: a place gives its node; a "
@@ -149,8 +154,8 @@ class _PartBase(StrictModel):
     entity_refs: list[EntityRefs] = Field(
         default_factory=list,
         description=(
-            "the binding of each entity text of `restatement`, once per text in "
-            "restatement order, so a client can tell which node a text such as 'G7' "
+            "the binding of each entity of `restatement`, one per restatement.entities "
+            "row, in row order, so a client can tell which node a text such as 'G7' "
             "bound. A response field kept off `restatement`, which posts back "
             "unchanged. The binding is the one the answer reads: for a candidates part, "
             "the elected reading's; for a part folded into an earlier part's spec, its "
@@ -164,7 +169,7 @@ class _PartBase(StrictModel):
             "every way this part's answer differs from what its request asked, "
             "ordered by how much each changes the number: closest_match, "
             "measure_not_applied, operation_not_applied, breakdown_not_applied, "
-            "entity_unavailable, year_unavailable, modelled_values, "
+            "entity_unavailable, member_unavailable, year_unavailable, modelled_values, "
             "group_read_as_members, whole_total_read, whole_total_unpublished, "
             "direction_discarded, "
             "direction_inferred, scope_limited. [] when the answer is what was asked. A "

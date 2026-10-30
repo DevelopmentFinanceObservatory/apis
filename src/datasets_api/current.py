@@ -9,9 +9,13 @@ compare-and-set in the run's transaction (`HeadStore.advance_head`). Every head,
 version, and operation is keyed on the served definition's `spec_id`, the one
 `kinds.spec_id.resolve_served_definition` returns.
 
-A head is current for `head_recheck_interval` after it was confirmed, with no read. Past that
-window, a head whose `materialised_at` is older than `head_max_age` rebuilds. Otherwise one
-graph read of the `lastDataRefreshDate` of every source and conversion source the head's
+A head whose run was keyed on an import (`imported_data`, the release's import key that
+`materialise.dependencies.run_imported_data` records) rebuilds once the bound graph release
+carries another key, inside the recheck window or past it. Otherwise a head is current for
+`head_recheck_interval` after it was confirmed, with no read. Past that window, a head whose
+`materialised_at` is older than its maximum age rebuilds: `head_max_age`, or
+`head_imported_data_max_age_seconds` for a head keyed on the bound release's import.
+Otherwise one graph read of the `lastDataRefreshDate` of every source and conversion source the head's
 dependency fingerprint names builds the fingerprint a run would record now
 (`materialise.dependencies.refreshed_dependencies`), and `dependency_changes` compares it with
 the head's source by source: a match confirms and serves the head, a difference rebuilds. A
@@ -39,9 +43,13 @@ executor and hands every other call to the work executor.
 Each serve sets the `trigger` and `served_from` labels of the call's `datasets.timings` line, the
 `rebuild_reason` label of a rebuild, and starts the counts the clients, the store, the signer and
 the permit wait add to (`dfo_platform.timings.count`): `sdmx_requests`, `graph_requests`,
-`db_transactions`, `sign_blob_calls` and `permit_wait_ms`. The reason is the fingerprint members
-that differed, joined by commas (`dependency_changes`), `schema` for a head with no readable
-fingerprint, `max_age`, `no_head`, or `unservable` for a current head that cannot answer the call.
+`db_transactions`, `sign_blob_calls` and `permit_wait_ms`. `sdmx_requests` counts every SDMX
+request sent, hedge duplicates included. A read that hedges also counts `sdmx_hedges`, the
+duplicates' share, and `sdmx_hedge_wins`, the duplicates whose 2xx CSV response won
+(`SdmxClient`). The reason is the fingerprint members that differed, joined by commas
+(`dependency_changes`), `schema` for a head with no readable fingerprint, `imported_data`
+for a head keyed on an import the bound release no longer carries, `max_age`, `no_head`, or
+`unservable` for a current head that cannot answer the call.
 """
 
 from __future__ import annotations
@@ -58,7 +66,7 @@ from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import SnapshotReader, StoredArtifactLocation, StoredVersion
-from datasets_api.adapter import pinned_provenance_scope
+from datasets_api.adapter import definition_read_scope, identity_composite
 from datasets_api.admission import (
     MaterialisePermits,
     RebuildFlights,
@@ -81,6 +89,7 @@ from datasets_api.manifest import (
     provenance_refs_of,
     record_collapsed_head_version,
     reshape_warning_models,
+    source_refs_of,
     stored_manifest_facts,
     stored_output_profile,
 )
@@ -140,6 +149,7 @@ from datasets_api.versions import (
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.problem import Refusal
+from graph_release.context import bound_release_or_none
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
@@ -152,6 +162,7 @@ from materialise.dependencies import (
     decode_dependencies,
     dependency_changes,
     refreshed_dependencies,
+    run_imported_data,
 )
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
@@ -441,9 +452,7 @@ def _record_head_hit_derived(
             identity=manifest.definition.identity,
             capabilities=capabilities,
             parties=deps.code_index.parties,
-            datasets=provenance_refs_of(
-                cast("list[dict[str, object]]", manifest.trace.get("facets", []))
-            ),
+            datasets=source_refs_of(manifest.trace),
         ),
         extra_warnings=call_warnings,
     )
@@ -615,9 +624,7 @@ def _stored_xlsx_splits_totals(
         identity=identity,
         role_columns=role_columns,
         parties=deps.code_index.parties,
-        datasets=provenance_refs_of(
-            cast("list[dict[str, object]]", manifest.trace.get("facets", []))
-        ),
+        datasets=source_refs_of(manifest.trace),
     )
 
 
@@ -696,9 +703,11 @@ def _render_frame(
     )
     rendered = render_and_store(
         frame_chunks=lambda: iter((table,)),
+        frame_rows=table.table.num_rows if isinstance(table, Frame) else len(table.rows),
         options=options,
         spec=spec_dict,
         provenance_refs=provenance_refs,
+        citation_refs=source_refs_of(manifest.trace),
         citations=citations,
         reproducing_call=(
             ReproducingCall(
@@ -715,6 +724,8 @@ def _render_frame(
         entity_columns=entity_columns,
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
+        groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
+        groupby_row_fold_max_rows=deps.settings.groupby_row_fold_max_rows,
         code_index=deps.code_index,
         resolved_stat_var_refs=resolved_stat_var_refs,
         # A pivot reads the stored pivot facts. They check its caps before the scan and let a
@@ -1019,14 +1030,38 @@ def _rebuild_mark(head: SubjectHead | None) -> tuple[str, datetime] | None:
     return None if head is None else (head.content_version, head.materialised_at)
 
 
+def _head_import(head: SubjectHead) -> str | None:
+    """The `imported_data` digest `head`'s run was keyed on (`run_imported_data`), or `None`."""
+    keyed = head.dependencies.get("imported_data") if head.dependencies is not None else None
+    return keyed if isinstance(keyed, str) else None
+
+
+def _import_replaced(head: SubjectHead) -> bool:
+    """Whether `head` is keyed on an import other than the one the bound graph release
+    carries. A head keyed on none, or a call with no release bound, has none to compare."""
+    keyed = _head_import(head)
+    bound = bound_release_or_none()
+    return keyed is not None and bound is not None and keyed != bound.imported_data
+
+
+def _max_age(head: SubjectHead, *, deps: DefinitionDeps) -> timedelta:
+    """The age past which `head` rebuilds: `head_imported_data_max_age_seconds` for a head
+    keyed on the bound release's import, `head_max_age` for any other."""
+    if _head_import(head) is not None and bound_release_or_none() is not None:
+        return timedelta(seconds=deps.settings.head_imported_data_max_age_seconds)
+    return deps.head_max_age
+
+
 def _head_is_fresh(head: SubjectHead, *, now: datetime, deps: DefinitionDeps) -> bool:
-    """Whether `head` was confirmed inside the recheck window."""
-    return now - head.confirmed_at < deps.head_recheck_interval
+    """Whether `head` was confirmed inside the recheck window and the import it is keyed
+    on, if any, is still the bound release's."""
+    return now - head.confirmed_at < deps.head_recheck_interval and not _import_replaced(head)
 
 
 # The rebuild reasons that name no fingerprint member (`serve_current`).
 _NO_HEAD = "no_head"
 _MAX_AGE = "max_age"
+_IMPORTED_DATA = "imported_data"
 _UNSERVABLE = "unservable"
 _YEAR_COVERAGE = "year_coverage"
 
@@ -1051,6 +1086,22 @@ def _fingerprint_changes(
     )
 
 
+def _catalogue_unkeys(head: SubjectHead, requests: Sequence[MaterialisationRequest]) -> bool:
+    """Whether `head` is keyed on an import the bound origin catalogue would no longer key a
+    run over `requests` on: `run_imported_data` over their StatVars and the head's sources and
+    rate tables differs from the head's key, as when a catalogue built since lists base Data
+    Commons as holding a member. Reads memory alone."""
+    keyed = _head_import(head)
+    stored = decode_dependencies(head.dependencies) if head.dependencies is not None else None
+    if keyed is None or stored is None:
+        return False
+    current = run_imported_data(
+        stat_vars=(request.stat_var for request in requests),
+        provenances=[ref for ref, _ in (*stored.sources, *stored.conversion_sources)],
+    )
+    return current != keyed
+
+
 @dataclass(frozen=True)
 class _Freshness:
     """A head freshness verdict: the head to serve, or `None` and why the call rebuilds."""
@@ -1069,20 +1120,30 @@ def _judge_head(
     coverage: CoverageIndex,
 ) -> _Freshness:
     """Whether `head`, the head of the served definition `stored`, is current (`serve_current`'s
-    head rule). A head past the recheck window and younger than `head_max_age` whose
-    fingerprint matches is confirmed, and the verdict serves the head the confirmation wrote,
+    head rule). A head keyed on an import the bound release no longer carries rebuilds, and so
+    does one the bound catalogue would key on none now (`_catalogue_unkeys`). A head past the
+    recheck window and younger than its maximum age (`_max_age`) whose fingerprint matches is
+    confirmed, and the verdict serves the head the confirmation wrote,
     or the head a concurrent update left. The fingerprint read and its election from
     `coverage` run under the definition's pinned provenances
-    (`adapter.pinned_provenance_scope`), as its materialisation does."""
+    (`adapter.definition_read_scope`), as its materialisation does."""
     subject_id = stored.spec_id
     if head is None:
         return _Freshness(head=None, rebuild_reason=_NO_HEAD)
     if _head_is_fresh(head, now=now, deps=deps):
         return _Freshness(head=head)
-    if now - head.materialised_at >= deps.head_max_age:
+    if _import_replaced(head):
+        return _Freshness(head=None, rebuild_reason=_IMPORTED_DATA)
+    if now - head.materialised_at >= _max_age(head, deps=deps):
         return _Freshness(head=None, rebuild_reason=_MAX_AGE)
-    with pinned_provenance_scope(stored.identity), phase("fingerprint"):
-        changes = _fingerprint_changes(head, requests(), graph=deps.graph, coverage=coverage)
+    with (
+        definition_read_scope(stored.identity, code_index=deps.code_index),
+        phase("fingerprint"),
+    ):
+        resolved = requests()
+        if _catalogue_unkeys(head, resolved):
+            return _Freshness(head=None, rebuild_reason=_IMPORTED_DATA)
+        changes = _fingerprint_changes(head, resolved, graph=deps.graph, coverage=coverage)
     if changes:
         return _Freshness(head=None, rebuild_reason=",".join(changes))
     written = deps.head_store.confirm_head(
@@ -1473,7 +1534,10 @@ def _admitted_ceiling(
     if admitted is not None:
         return raw_fetch_guard(admitted, floor=deps.ceiling)
     estimate = sync_estimate(
-        requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
+        requests,
+        index=coverage_snapshot.index,
+        member_concurrency=deps.member_concurrency,
+        composite=identity_composite(stored.identity, code_index=deps.code_index),
     )
     if options is None:
         refuse_inline_over_ceiling(estimate, ceiling=deps.ceiling)

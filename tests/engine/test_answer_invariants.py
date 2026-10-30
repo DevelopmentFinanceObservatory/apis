@@ -33,14 +33,15 @@ the world holds, and returns one message per disagreement naming both sides:
   the walked family, and no resubmit warns `slot_defaulted`.
 
 The grid test runs a strength-4 covering array of the cells (`GRID`,
-`_grid_cells.ANSWER_INVARIANTS`), and every cell under `DFO_FULL_GRIDS=1`.
+`_grid_cells.ANSWER_INVARIANTS`), and every cell under `DFO_FULL_GRIDS=1`. `i9_latency`
+holds a door to a recorded bound, so it runs on the covering array's cells only
+(`checks_for`), and every other invariant runs on every cell the test runs.
 """
 
 from __future__ import annotations
 
 import itertools
 import json
-import os
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -61,8 +62,8 @@ from search.engine.departures import spec_departure_facts
 from search.engine.region.result import RegionResult
 from search.models import IdentityBindingValue, Spec
 from tests._covering_array import Grid, uncovered
+from tests.engine import _answer_invariants_record, _grid_cells
 from tests.engine import _answer_invariants_world as fixture_world
-from tests.engine import _grid_cells
 from tests.engine._answer_invariants_world import (
     ALAND,
     ALT,
@@ -133,15 +134,6 @@ def cannot_exist(cell: Cell) -> str | None:
     if cell.pin == "unit" and cell.unit != "none":
         return "an identity's unit axis holds a request or a ref, never both"
     return None
-
-
-# The cells each declared exemption passed over, by issue. A check records a cell here when
-# it drops a disagreement that the issue describes.
-PASSED_OVER: dict[str, set[Cell]] = {}
-
-
-def _pass_over(issue: str, cell: Cell) -> None:
-    PASSED_OVER.setdefault(issue, set()).add(cell)
 
 
 # ---------------------------------------------------------------------------
@@ -758,16 +750,23 @@ def _window_gap_fact_agrees(cell: Cell, world: World, door: str, answer: Answer)
 
 def _scope_warning_agrees(answer: Answer) -> Iterator[str]:
     """A scope count in a response's warning against the scope each of its Specs lists. No
-    warning counts an empty scope: a response that lists no member resolved across none."""
+    warning counts an empty scope: a response that lists no member resolved across none. A
+    response that states no Spec serves no member, so its warning counts none."""
     if answer.result is None:
         return
-    scopes = {len(spec.scope) for spec in statements(answer) if spec.scope}
+    specs = statements(answer)
+    scopes = {len(spec.scope) for spec in specs if spec.scope}
     for warning in answer.result.warnings:
         match = _SCOPE_COUNT.search(warning.message)
         if warning.code != "role_scope_defaulted" or match is None:
             continue
         if int(match.group(1)) == 0:
             yield f"the warning states a scope of no member: {warning.message!r}"
+        elif not specs:
+            yield (
+                f"the warning counts {match.group(1)} with data and the {_status(answer)} "
+                f"response states no Spec: {warning.message!r}"
+            )
         elif scopes and scopes != {int(match.group(1))}:
             yield (
                 f"the warning counts {match.group(1)} with data and the Specs' scopes list "
@@ -817,37 +816,10 @@ def i1_plan_is_the_source(run: Doors) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _suggestion_omissions(cell: Cell, answer: Answer, suggestion: Stated, full: Stated) -> set[str]:
-    """The fields in which a nearest-real suggestion differs from `full`, the answer the
-    same Spec gives elsewhere, only as issue #1054 describes: the suggestion's sentence
-    lacks the phrase naming the constraint its variable holds, and is otherwise the same
-    sentence, and the suggestion carries no headline year where `full` carries one. Empty
-    for an answer that states its own Specs."""
-    if cell.kind != "nearest_real" or answer.result is None or answer.result.specs:
-        return set()
-    omitted = set()
-    short, long = suggestion.sentence, full.sentence
-    prefix = os.path.commonprefix([short, long])
-    rest = short[len(prefix) :]
-    if short != long and long.endswith(rest):
-        phrase = long[len(prefix) : len(long) - len(rest)]
-        if phrase.strip().startswith("for ") and "." not in phrase:
-            omitted.add("sentence")
-    if suggestion.headline_year is None and full.headline_year is not None:
-        omitted.add("headline_year")
-    if omitted:
-        _pass_over("#1054", cell)
-    return omitted
-
-
 def i2_door_equality(run: Doors) -> list[str]:
     """An answer and the unchanged resubmit of each Spec it states say the same things; an
     answer with no Spec and the resubmit asking the dateless Spec for the same years end
-    alike, warnings included.
-
-    The one expected difference is issue #1054: a nearest-real suggestion omits the
-    constraint phrase and the headline year its own resubmit states
-    (`_suggestion_omissions`)."""
+    alike, warnings included."""
     found: list[str] = []
     door = FIRST if run.cell.pin == "none" else PINNED
     for opened, index, again in run.again:
@@ -859,7 +831,6 @@ def i2_door_equality(run: Doors) -> list[str]:
         first, second = statements(opened)[index], statements(again)[0]
         # A candidates response carries no preview on its Specs.
         ignoring = _PREVIEW_FIELDS if first.preview is None else frozenset()
-        ignoring |= _suggestion_omissions(run.cell, opened, first, second)
         found += [
             f"{door} against its unchanged resubmit states {difference}"
             for difference in differences(first, second, ignoring=ignoring)
@@ -963,32 +934,6 @@ def _datasets_read(
     return _READS[key]
 
 
-def _is_undated_gap_election(
-    cell: Cell, world: World, stat_vars: Iterable[str], elected: str | None
-) -> bool:
-    """Whether a datasets read electing `elected` is issue #1049, the declared limit of the
-    shared election: a subject-only read probes spans with no dates, so it elects a facet
-    whose span reaches the years the election ranks under (`_read`, an open end stopping at
-    the clock) while it holds no point in them. A facet whose span lies wholly outside those
-    years is no such election."""
-    read = _read(cell.date)
-    if world.role or read is None:
-        return False
-    reaches = any(
-        _within(first, (None, read[1])) and _within(last, (read[0], None))
-        for first, last in _spans(world, stat_vars, provenance=elected)
-    )
-    holds = any(_holds_points(world, stat_var, read, provenance=elected) for stat_var in stat_vars)
-    return reaches and not holds
-
-
-def _is_multi_member(spec: Stated) -> bool:
-    """Whether a Spec is issue #1060: it lists more than one variable. The answer elects
-    each member's group on its own and a mint elects one group across the members, so no
-    one datasets read stands for the answer."""
-    return len(spec.stat_vars) != 1
-
-
 def _unserved_places_stated(world: World, spec: Stated) -> Iterator[str]:
     """An answer naming places serves one group across them, and states as unserved
     (`ResolvedSpec.unserved_entities`) exactly the named places its preview serves no
@@ -1012,21 +957,12 @@ def i3_one_election(run: Doors) -> list[str]:
     """The source an answer cites is the source a datasets read of its Spec elects, the
     election a mint runs, and the source every unit decision behind the answer elects. The
     rows that read returns lie inside the years the answer states. A named place the one
-    group does not serve is stated as unserved, at each door that previews.
-
-    The two expected differences are issue #1049, where on the standard route a datasets
-    read probes spans with no dates, so it can elect a facet with a gap across the whole
-    window and read no row, while the answer read dates and serves a sibling facet
-    (`_is_undated_gap_election`), and issue #1060, a Spec with more than one variable
-    (`_is_multi_member`)."""
+    group does not serve is stated as unserved, at each door that previews."""
     cell, world = run.cell, run.world
     found: list[str] = []
     for door, answer in run.answers():
         for spec, said in zip(answer.specs, statements(answer), strict=True):
             found += [f"in {door}, {message}" for message in _unserved_places_stated(world, said)]
-            if _is_multi_member(said):
-                _pass_over("#1060", cell)
-                continue
             read = _datasets_read(world, spec)
             if isinstance(read, str):
                 # A provenance-less top facet refuses a read that binds no provenance (`i5`).
@@ -1040,13 +976,10 @@ def i3_one_election(run: Doors) -> list[str]:
                     f"its Spec elects {read[0]} alone and reads {read[2]} rows"
                 )
             elif said.sources != (read[0],):
-                if _is_undated_gap_election(cell, world, said.stat_vars, read[0]):
-                    _pass_over("#1049", cell)
-                else:
-                    found.append(
-                        f"{door} cites {said.sources} and a datasets read of its Spec elects "
-                        f"{read[0]} and reads {read[2]} rows"
-                    )
+                found.append(
+                    f"{door} cites {said.sources} and a datasets read of its Spec elects "
+                    f"{read[0]} and reads {read[2]} rows"
+                )
             elif (
                 read[3] is not None
                 and said.window is not None
@@ -1081,25 +1014,11 @@ def i3_one_election(run: Doors) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _is_unsourced_native_refusal(cell: Cell, first: Answer) -> bool:
-    """Whether a first answer's refusal is issue #1055: over the `unsourced` rows a native
-    unit request answers `facet_not_available`, while the facet with no provenance holds
-    that unit."""
-    return (
-        cell.row_set == "unsourced"
-        and cell.unit == "native"
-        and outcome(first)[:2] == ("no_data", "facet_not_available")
-    )
-
-
 def i4_dates(run: Doors) -> list[str]:
     """`latest` names the latest year the cited sources hold at the places served, every
     cited source holds a point in the years read, and an answer holds data exactly when the
     world holds a point there, so a wholly future window answers from the facet holding
-    those years.
-
-    The one expected difference is issue #1055: a native unit request over the `unsourced`
-    rows answers `facet_not_available` (`_is_unsourced_native_refusal`)."""
+    those years."""
     cell, world = run.cell, run.world
     read = _read(cell.date)
     found: list[str] = []
@@ -1138,9 +1057,7 @@ def i4_dates(run: Doors) -> list[str]:
     if cell.pin == "none":
         with_points = [sv for sv in world.stat_vars if _holds_points(world, sv, read, **admitted)]
         expected = {0: "no_data", 1: "definite"}.get(len(with_points), "candidates")
-        if _status(run.first) != expected and _is_unsourced_native_refusal(cell, run.first):
-            _pass_over("#1055", cell)
-        elif _status(run.first) != expected:
+        if _status(run.first) != expected:
             found.append(
                 f"{FIRST} is {outcome(run.first)[:3]} and {len(with_points)} variables "
                 f"hold a point of {admitted or 'any facet'} in the years {cell.date} reads"
@@ -1198,10 +1115,7 @@ def i5_provenance_less_dispatch(run: Doors) -> list[str]:
 def i6_nearest_real_is_the_relaxed_answer(run: Doors) -> list[str]:
     """A nearest-real suggestion states what the same query answers with the relaxed
     binding left out, and an answer that found no observation at its named places suggests
-    exactly the Specs that query answers with.
-
-    The one expected difference is issue #1054: the suggestion omits the constraint phrase
-    and the headline year the relaxed query's answer states (`_suggestion_omissions`)."""
+    exactly the Specs that query answers with."""
     cell = run.cell
     if cell.kind != "nearest_real" or cell.pin != "none":
         return []
@@ -1224,11 +1138,7 @@ def i6_nearest_real_is_the_relaxed_answer(run: Doors) -> list[str]:
     return [
         f"the suggestion against the relaxed query's answer states {difference}"
         for suggestion, direct in zip(statements(run.first), statements(relaxed), strict=True)
-        for difference in differences(
-            suggestion,
-            direct,
-            ignoring=frozenset(_suggestion_omissions(cell, run.first, suggestion, direct)),
-        )
+        for difference in differences(suggestion, direct)
     ]
 
 
@@ -1317,6 +1227,8 @@ _TYPE_READ = "graph.node_type"
 _TYPE_LABEL_READ = "graph.node_label"
 _TYPE_BATCH_READ = "graph.node_types_batch"
 _BULK_READ = "sdmx.role_series"
+_ROLE_KIND_READ = "graph.node_arcs_many"
+_RESUBMIT_DOORS = frozenset({PINNED, RESUBMIT, WINDOWED})
 
 
 def measured(answer: Answer) -> dict[str, Any]:
@@ -1355,10 +1267,12 @@ def _measurements(path: Path) -> dict[str, Any]:
 
 
 def _measurement(path: Path, cell: Cell, door: str, index: int) -> dict[str, Any] | None:
-    """The measurement `path` holds for one door of `cell`, None when it holds none."""
+    """The measurement `path` holds for one door of `cell`, None when it holds none. A
+    door's list holds None at each position the file does not hold."""
     held = _measurements(path)
     indices = held["doors"].get(str(cell), {}).get(_DOOR_KEYS[door], ())
-    return held["records"][indices[index]] if index < len(indices) else None
+    record = indices[index] if index < len(indices) else None
+    return held["records"][record] if record is not None else None
 
 
 def _same_answer(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -1371,14 +1285,15 @@ def _beyond(
     source: str,
     *,
     granted: Mapping[str, int] | None = None,
+    granted_steps: int = 0,
 ) -> Iterator[str]:
     """Each way `now` requests more or runs deeper than `limit`, past the reads of the
     member walks its nearest-real relaxations, alternates and re-election siblings ran
     beyond those `limit` records, the reads of its facet-option builds beyond those
     `limit` records, the serial steps by which its deepest relaxation walk and its deepest
-    facet-option build exceed `limit`'s (`measured`), and the reads `granted` adds. The
-    walks of alternates and siblings run beside the elected shape's, so they earn no serial
-    step."""
+    facet-option build exceed `limit`'s (`measured`), and the reads `granted` and the serial
+    steps `granted_steps` add. The walks of alternates and siblings run beside the elected
+    shape's, so they earn no serial step."""
     none = {"requests": {}, "depth": 0}
     walk, held = now.get("relaxation_walk", none), limit.get("relaxation_walk", none)
     facets = now.get("facet_options", none)
@@ -1398,7 +1313,7 @@ def _beyond(
         yield f"makes more requests than {source}: {over}"
     deeper = max(0, walk["depth"] - held["depth"])
     built = max(0, facets["depth"] - held_facets["depth"])
-    if now["depth"] > limit["depth"] + deeper + built:
+    if now["depth"] > limit["depth"] + deeper + built + granted_steps:
         yield (
             f"runs {now['depth']} serial steps against {limit['depth']} {source}, "
             f"{deeper} for its relaxations' walks and {built} for its facet options"
@@ -1432,6 +1347,16 @@ def _batched_type_read(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, 
     return {batch: count for batch, count in granted.items() if count > 0}
 
 
+def _role_kind_read(door: str, now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
+    """The read a resubmit makes after its label read to type the flow-role entities the code
+    index lists on no axis they are posted on (`search.role_kinds.check_role_kinds`), one
+    request and one serial step. The grid's places are no party of the fixture index, so a
+    resubmit door makes it, and no other door does. Empty for a door that made no such read
+    beyond `limit`."""
+    read = now["requests"].get(_ROLE_KIND_READ, 0) - limit["requests"].get(_ROLE_KIND_READ, 0)
+    return {_ROLE_KIND_READ: 1} if door in _RESUBMIT_DOORS and read > 0 else {}
+
+
 def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
     """Grant a pair read only when a narrowed discovered scope drops a bulk read.
 
@@ -1443,6 +1368,21 @@ def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> d
         max(0, limit["requests"].get(_BULK_READ, 0) - now["requests"].get(_BULK_READ, 0)),
     )
     return {_PAIR_READ: count} if count else {}
+
+
+def _held_grants(
+    door: str, now: dict[str, Any], limit: dict[str, Any]
+) -> tuple[dict[str, int], int]:
+    """The reads and serial steps `door` may make beyond a recorded door with its answer:
+    batched reads in place of per-node reads (`_batched_type_read`), pair reads in place of
+    bulk reads (`_pair_read_in_place_of_bulk`), and a resubmit's role-kind read with its one
+    step (`_role_kind_read`). `i9_latency` and the record's rewrite both hold a door by
+    these."""
+    role_kind_read = _role_kind_read(door, now, limit)
+    granted = (
+        _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit) | role_kind_read
+    )
+    return granted, len(role_kind_read)
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1531,9 +1471,11 @@ def i9_latency(run: Doors) -> list[str]:
       measured there.
     - For a door c669cc874 answered differently or not at all, the measurement recorded for
       it on this branch in `answer_invariants_requests_uncompared.json`, under the same
-      condition. That file holds the preview-off doors with no comparable door at c669cc874.
-      A re-recording may lower an entry and never raise one. `_answer_invariants_record`
-      regenerates both files and refuses a list that grows.
+      condition. That file holds the covering array's doors with no comparable door at
+      c669cc874 and either no preview-off door with their outcome or a record held from
+      before one matched. A re-recording keeps an entry while its door passes it, drops one
+      c669cc874 now bounds, and replaces one only with `--grow`.
+      `_answer_invariants_record` regenerates both files and refuses a list that grows.
 
     A preview-on door is also held to its own preview-off door plus the reads its preview
     may make (`_preview_reads`), which is the whole bound of one neither file answers for.
@@ -1556,7 +1498,8 @@ def i9_latency(run: Doors) -> list[str]:
     (`_window_answer_reads`).
 
     A door may make a batched read in place of each per-node type or type-label read its
-    bound holds (`_batched_type_read`).
+    bound holds (`_batched_type_read`), and a resubmit one read and one serial step typing its
+    flow-role entities for their roles' kinds (`_role_kind_read`).
 
     A discovered bulk source pin may narrow the scope below the bulk cap, replacing each
     removed bulk read with at most one pair read (`_pair_read_in_place_of_bulk`).
@@ -1585,13 +1528,12 @@ def i9_latency(run: Doors) -> list[str]:
         for path, source in ((_BASE_PATH, "at c669cc874"), (_BRANCH_PATH, "as recorded")):
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
-                granted = _batched_type_read(now, limit)
-                granted |= _pair_read_in_place_of_bulk(now, limit)
+                granted, steps = _held_grants(door, now, limit)
                 if path == _BASE_PATH:
                     granted |= _rate_table_reads(now)
                 found += [
                     f"{door} ({_status(answer)}) {line}"
-                    for line in _beyond(now, limit, source, granted=granted)
+                    for line in _beyond(now, limit, source, granted=granted, granted_steps=steps)
                 ]
                 bounded = True
                 break
@@ -1716,19 +1658,12 @@ def i10_election_warnings(run: Doors) -> list[str]:
 def i11_download_is_the_datasets_read(run: Doors) -> list[str]:
     """The rows and years a Spec states for its file (`ResolvedSpec.download`) are those a
     datasets read of its Spec reads: the same rows when stated exact, at least as many when
-    stated as an upper bound. A Spec whose read refuses has no file to state. The read and
-    the answer elect apart in issues #1049 and #1060, as `i3_one_election` passes over."""
+    stated as an upper bound. A Spec whose read refuses has no file to state."""
     found: list[str] = []
     for door, answer in run.answers():
-        for spec, said in zip(answer.specs, statements(answer), strict=True):
-            if _is_multi_member(said):
-                continue
+        for spec in answer.specs:
             read = _datasets_read(run.world, spec)
             if isinstance(read, str):
-                continue
-            if said.sources != (read[0],) and _is_undated_gap_election(
-                run.cell, run.world, said.stat_vars, read[0]
-            ):
                 continue
             download = spec.resolved.download
             if download is None or download.rows is None:
@@ -1812,6 +1747,19 @@ def _cells_run() -> dict[tuple[str, ...], list[Cell]]:
 
 CELLS_RUN = _cells_run()
 
+# The cells `i9_latency` checks: the covering array its recorded bound holds.
+_I9_CELLS = frozenset(_grid_cells.ANSWER_INVARIANTS)
+
+
+def checks_for(cell: Cell) -> dict[str, Callable[[Doors], list[str]]]:
+    """The checks the grid test runs on `cell`: every check in `CHECKS`, less I9 on a cell
+    outside the covering array."""
+    return {
+        invariant: check
+        for invariant, check in CHECKS.items()
+        if invariant != "I9" or str(cell) in _I9_CELLS
+    }
+
 
 @pytest.fixture(scope="module")
 def door_loop() -> Iterator[None]:
@@ -1842,18 +1790,12 @@ def test_every_cell_holds_every_invariant(
     """Each cell the grid runs (`CELLS_RUN`) runs its doors once and every invariant's
     check reads them. The cells of one block share their first doors. A
     failure lists one line per disagreement: the cell, the invariant and the two statements
-    that disagree. The grid expects four differences, each passed over by one predicate
-    tied to its issue: #1049, an undated datasets read electing a facet with a gap across
-    the window (`i3_one_election`); #1054, a nearest-real suggestion omitting the constraint
-    phrase and the headline year (`i2_door_equality`,
-    `i6_nearest_real_is_the_relaxed_answer`); #1055, a native unit request over the
-    `unsourced` rows answering `facet_not_available` (`i4_dates`); and #1060, a Spec with
-    more than one variable (`i3_one_election`)."""
+    that disagree. I9 runs on the covering array's cells only (`checks_for`)."""
     recorded_engine(route)
     failures: list[str] = []
     for cell in CELLS_RUN[route, row_set, kind, unit, date]:
         run = doors(cell)
-        for invariant, check in CHECKS.items():
+        for invariant, check in checks_for(cell).items():
             failures += [f"{cell} | {invariant} | {message}" for message in check(run)]
     assert not failures, "\n".join(failures)
 
@@ -1882,25 +1824,6 @@ def test_a_bulk_read_substitution_does_not_excuse_extra_pair_reads_or_serial_dep
     ]
 
 
-def test_the_1049_exemption_needs_a_span_that_reaches_the_window_and_holds_no_point() -> None:
-    """In the `gap` rows IDS runs 2010 to 2030 and holds no point from 2016 to 2026. An
-    undated read electing it for 2019 to 2024 is issue #1049. Its span lies wholly outside
-    1950 to 1955 and it holds points in 2027 to 2029, so neither of those elections is
-    passed over, and none is on a role route, whose read probes dates."""
-
-    def passed_over(route: str, date: str) -> bool:
-        cell = Cell(route, "gap", "definite", "none", date, True, "none", "dcid_order")
-        world = _world(route, "gap", "definite")
-        return _is_undated_gap_election(cell, world, world.stat_vars, IDS)
-
-    assert passed_over("standard", "clip_end")
-    assert passed_over("standard", "since")
-    assert not passed_over("standard", "unreached")
-    assert not passed_over("standard", "future")
-    assert not passed_over("standard", "dateless")
-    assert not passed_over("named_pair", "clip_end")
-
-
 def test_the_grid_skips_only_combinations_no_request_can_form() -> None:
     """Of the full product of routes, row sets, kinds, unit requests, date requests,
     previews, pins and place orders, the grid leaves out two kinds of combination, each
@@ -1922,6 +1845,130 @@ def test_the_grid_skips_only_combinations_no_request_can_form() -> None:
         for cell, _reason in skipped
     )
     assert len(BLOCKS) * len(PREVIEWS) * len(PINS) * len(ORDERS) - len(skipped) == 21_504
+
+
+def test_i9_checks_exactly_the_committed_cells() -> None:
+    """Every committed cell runs I9 beside every other check, and every other cell runs
+    every check but I9."""
+    committed = frozenset(_grid_cells.ANSWER_INVARIANTS)
+    every = [cell for _row, cell in GRID.cells()]
+    assert committed <= {str(cell) for cell in every}
+    for cell in every:
+        expected = set(CHECKS) - (set() if str(cell) in committed else {"I9"})
+        assert set(checks_for(cell)) == expected, cell
+    assert set(_measurements(_BRANCH_PATH)["doors"]) <= committed
+
+
+_HELD = {
+    "outcome": ["definite", None, None, None],
+    "served": [[1, 3, None]],
+    "requests": {_LABEL_READ: 3},
+    "depth": 2,
+}
+
+
+@pytest.mark.parametrize(
+    ("old", "now", "bound_by", "written", "grows"),
+    [
+        pytest.param(None, _HELD, None, "now", True, id="added"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "outcome": ["no_data", None, None, None]},
+            None,
+            "now",
+            True,
+            id="answer",
+        ),
+        pytest.param(
+            _HELD, {**_HELD, "requests": {_LABEL_READ: 4}}, None, "now", True, id="requests"
+        ),
+        pytest.param(_HELD, {**_HELD, "depth": 3}, None, "now", True, id="depth"),
+        pytest.param(
+            _HELD,
+            {
+                **_HELD,
+                "requests": {_LABEL_READ: 4},
+                "facet_options": {"requests": {_LABEL_READ: 1}, "depth": 1},
+            },
+            None,
+            "old",
+            False,
+            id="facet_read_within_bound",
+        ),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {_LABEL_READ: 2}, "depth": 1},
+            None,
+            "old",
+            False,
+            id="fewer",
+        ),
+        pytest.param(_HELD, _HELD, None, "old", False, id="identical"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {**_HELD["requests"], _ROLE_KIND_READ: 1}, "depth": 3},
+            None,
+            "old",
+            False,
+            id="role_kind_read_within_bound",
+        ),
+        pytest.param(_HELD, _HELD, "off", "old", False, id="preview_off_now_matches"),
+        pytest.param(
+            _HELD,
+            {**_HELD, "requests": {_LABEL_READ: 4}},
+            "off",
+            "now",
+            True,
+            id="preview_off_now_matches_and_exceeds",
+        ),
+        pytest.param(_HELD, _HELD, "base", None, False, id="base_now_bounds"),
+        pytest.param(_HELD, None, None, None, True, id="not_measured"),
+    ],
+)
+def test_a_rerecord_keeps_a_held_record_its_door_passes(
+    old: dict[str, Any] | None,
+    now: dict[str, Any] | None,
+    bound_by: str | None,
+    written: str | None,
+    grows: bool,
+) -> None:
+    """`_answer_invariants_record.rerecord` keeps a door's held record while the door passes
+    I9 against it, so a re-record never loosens the bound: a facet-option read the old
+    record lacks leaves the old record, which still refuses a fourth label read outside a
+    facet build, and a held door its preview-off door now bounds stays held. A door the
+    base record now bounds drops. A door added, not measured, answering differently or
+    exceeding its record grows the list."""
+    cell = "route/preview_on/pin_none"
+    key = (cell, "resubmit", 0)
+    held = {} if old is None else {key: old}
+    branch = {} if now is None else {key: now}
+    base = {key: now} if bound_by == "base" else {}
+    if bound_by == "off":
+        branch[cell.replace("/preview_on/", "/preview_off/"), "resubmit", 0] = now
+    doors, grown = _answer_invariants_record.rerecord(held, base, branch, cells=frozenset({cell}))
+    assert doors == ({} if written is None else {key: old if written == "old" else now})
+    assert bool(grown) == grows
+
+
+def test_the_recorder_lists_only_committed_doors_at_their_positions(tmp_path: Path) -> None:
+    """`_answer_invariants_record` lists the doors of the committed cells alone, and a door
+    whose earlier position is bounded keeps its own position in the written list."""
+    committed, other = sorted(_grid_cells.ANSWER_INVARIANTS)[:2]
+    same = {"outcome": ["definite", None, None, None], "served": [], "requests": {}, "depth": 1}
+    changed = {**same, "served": [[1, 3, None]]}
+    base = {(committed, "resubmit", 0): same, (committed, "resubmit", 1): same}
+    branch = {
+        (committed, "resubmit", 0): same,
+        (committed, "resubmit", 1): changed,
+        (other, "resubmit", 0): changed,
+    }
+    listed = _answer_invariants_record.uncompared(base, branch, cells=frozenset({committed}))
+    assert listed == {(committed, "resubmit", 1): changed}
+    path = tmp_path / "uncompared.json"
+    path.write_text(_answer_invariants_record._dump(listed))
+    cell = next(cell for _row, cell in GRID.cells() if str(cell) == committed)
+    assert _measurement(path, cell, RESUBMIT, 0) is None
+    assert _measurement(path, cell, RESUBMIT, 1) == changed
 
 
 def test_the_committed_cells_cover_every_four_values_a_request_can_form() -> None:

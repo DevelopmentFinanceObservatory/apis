@@ -5,6 +5,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pytest
 
+from graph_release.context import bound_release
 from materialise.errors import UpstreamResponseError, UpstreamVersionChangedError
 from materialise.rate_tables import (
     RateTable,
@@ -13,6 +14,7 @@ from materialise.rate_tables import (
     RateTableKind,
     load_table,
 )
+from tests.graph_release.support import release_with
 
 from ._rate_table_support import RateTableServer, query_params, rate_csv, rate_row
 from .conftest import FakeGraphReader
@@ -479,6 +481,22 @@ def test_a_moved_refresh_date_loads_a_new_table_and_keeps_the_old_one():
     assert len(server.data_requests()) == 2
     assert _load(server=server, graph=_graph(version="v1"), cache=cache) is first
     assert len(server.data_requests()) == 2
+
+
+def test_a_same_day_reimport_loads_a_new_table_and_keeps_the_old_one():
+    """A second import on one UTC day leaves `lastDataRefreshDate` where it was, and moves only
+    the bound release's import key."""
+    corrected = _usd_and_kes(kes="111.0")
+    server = RateTableServer({_STAT_VAR: [_usd_and_kes(), corrected]})
+    cache = RateTableCache()
+
+    first = _load(server=server, graph=_graph(version="v1"), cache=cache)
+    with bound_release(release_with(import_execution_id="import-next")):
+        second = _load(server=server, graph=_graph(version="v1"), cache=cache)
+
+    assert first.version != second.version
+    assert len(server.data_requests()) == 2
+    assert _load(server=server, graph=_graph(version="v1"), cache=cache) is first
 
 
 def test_two_stat_vars_under_one_provenance_cache_apart():

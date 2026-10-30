@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal, get_args
 
+from code_index.scope_conventions import ProviderScope  # noqa: F401 -- re-exported by search.models
 from dfo_platform import RoleAxis  # noqa: F401 -- re-exported by search.models
 
 SCHEMA_VERSION = 1
@@ -38,8 +39,13 @@ CoverageKind = Literal["exact", "breadth", "bare"]
 # graph code named by the query. "measure_elected" comes from the elected
 # measure partition. "declared_default" fills an open slot from its code
 # system's declared default when another slot binds within that subtree, or
-# from the default its shape's population type declares.
-BindingProvenance = Literal["binder", "text_recognized", "measure_elected", "declared_default"]
+# from the default its shape's population type declares. "declared_grouping" is
+# a sector concept the query named, bound to the codes its declared grouping
+# reads it as (`code_index.scope_conventions.SECTOR_GROUPINGS`): "health" binds
+# CRS 120 and 130.
+BindingProvenance = Literal[
+    "binder", "text_recognized", "measure_elected", "declared_default", "declared_grouping"
+]
 
 # ---------------------------------------------------------------------------
 # FacetAxis describes observation facets. Axis describes request slots.
@@ -114,6 +120,7 @@ DepartureCode = Literal[
     "operation_not_applied",
     "breakdown_not_applied",
     "entity_unavailable",
+    "member_unavailable",
     "year_unavailable",
     "modelled_values",
     "group_read_as_members",
@@ -130,7 +137,44 @@ departure code is a `Warning.code` or a refusal code, so the platform
 code registry does not list them."""
 DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
 """`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
-AssumptionKind = Literal["declared_default", "open_role", "place_scope"]
+ScopeAxis = Literal["sector", "region", "measure_basis", "provider"]
+"""Every axis a scope choice settles (see `models.scope.ScopeChoice`), in the order its
+default is derived: a provider scope fixes the basis a measure basis default follows."""
+SCOPE_AXES: tuple[ScopeAxis, ...] = get_args(ScopeAxis)
+"""`ScopeAxis` in derivation order."""
+EntryProvenance = Literal["explicit", "carried"]
+"""Where a scope entry comes from: the request's own words or switch (`explicit`), or a
+choice the conversation settled earlier (`carried`)."""
+ChoiceProvenance = Literal["explicit", "carried", "default"]
+"""What settled a scope choice, in precedence order: an explicit entry, a carried entry,
+or the declared default derived after both."""
+OptionStatus = Literal["available", "partial", "unavailable"]
+"""Whether a scope option can be served: in full, for some of the years asked, or not."""
+ScopeReasonCode = Literal[
+    "provider_not_offered",
+    "imputed_coverage",
+    "basis_not_published",
+    "residuals_need_summed_region",
+    "conflicts_with",
+    "carried_choice_not_applied",
+    "stated_choice_not_applied",
+    "option_not_covered",
+    "contributions_counted",
+]
+"""Every reason a scope option is partial or unavailable, or a carried or stated entry is
+not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
+of its own, like `DepartureCode`, separate from `Warning.code` and the refusal codes. The
+two refusals a scope entry can draw, `requested_option_unavailable` and
+`conflicting_requested_options`, are registry codes in `engine.codes`."""
+ComponentRole = Literal["whole", "bilateral", "imputed", "headline_net", "headline_ge"]
+"""What one component of a compiled scope holds: the whole answer of a plain Spec, the
+bilateral or imputed multilateral part of a composite, or the net or grant-equivalent
+years of the OECD headline basis."""
+SCOPE_OPTION_ID_PATTERN = r"^(sector|region|measure_basis|provider):[A-Za-z0-9_+]+$"
+"""An option id: its axis, a colon and the option's declared value (`sector:120+130`,
+`region:members_and_residuals`, `measure_basis:gross`, `provider:inclusive`). One option
+has one id on every part, so carried entries and calculations compare ids."""
+AssumptionKind = Literal["name_corrected", "declared_default", "open_role", "place_scope"]
 """Every kind of value an answer fills that its request did not ask for (see
 `models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed
 vocabulary of its own, like `DepartureCode`, outside the platform code registry."""

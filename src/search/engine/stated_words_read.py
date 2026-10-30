@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from code_index.labels import without_property_suffix
+from code_index.scope_conventions import grouping_of
 from code_index.shared import get_index
 from search.engine.bind import stated_reading
 from search.engine.clients.llm import SupportsLLM, for_stage, generate_structured_async
@@ -71,7 +72,7 @@ Answer each word once, by its number in the WORDS list.
 
 WORDS_HEADER = "WORDS (words of the variable phrase):"
 
-# The most series names a prompt lists for an answer serving several (`served_series`): a
+# The most series names a prompt lists for an answer serving several (`served_series`). A
 # held family with no total can serve thousands of members, and the first names show what
 # they differ on.
 SERVED_SERIES_SHOWN = 10
@@ -88,8 +89,8 @@ def build_stated_words_prompt(
     """The user prompt: the variable phrase, the series as the bind menu states the shape's
     reading (`bind.stated_reading`), the values `bindings` restrict it to
     (`_restricted_values`), those its measure's definition fixes (`implied_values`), and
-    the `served` series the answer serves when it serves several (`served_series`), then the
-    numbered WORDS list."""
+    the `served` series the answer serves when they differ from the shape's label
+    (`serves_beyond_label`, `served_series`), then the numbered WORDS list."""
     stated = stated_reading(shape)
     lines = [
         f"Variable phrase: {variable}",
@@ -117,23 +118,36 @@ def build_stated_words_prompt(
     # without the line a word naming that value reads as narrower than the series.
     if implied := implied_values(shape, bindings):
         lines.append(f"  fixed by the measure's definition: {implied}")
-    # The label names one series; an answer serving several counts what each of them counts,
-    # so a word only one of them states names less than the answer.
-    if served:
-        lines.append(f"  the answer serves each of these series: {served_series(served)}")
+    # The label names the series the bind elected. An answer serving other series counts
+    # what each of them counts, so a word they do not all state names less than the answer.
+    if serves_beyond_label(shape, served):
+        lines.append(f"  the answer serves {served_series(served)}")
     lines.extend(["", WORDS_HEADER])
     lines.extend(f"  {number}: {word}" for number, word in enumerate(words))
     lines.append("")
     return "\n".join(lines)
 
 
+def serves_beyond_label(shape: ShapeDraft, served: Sequence[str]) -> bool:
+    """Whether the `served` names, those of the series an answer serves, differ from the
+    label the bind menu states `shape` by (`bind.stated_reading`): several names, or one
+    name other than the label. The bind rated each word on the label alone, so Gemini's
+    prompt and Jev's questions name the served series (`served_series`), and Jev rates
+    every word again (`JevBinder.restated`), exactly when this holds."""
+    return bool(served) and tuple(served) != (stated_reading(shape).label,)
+
+
 def served_series(served: Sequence[str]) -> str:
-    """The names of the series an answer serves as a prompt lists them, each quoted, joined
-    by "; ", the first `SERVED_SERIES_SHOWN` with a count of the rest. Jev's stated-word
-    questions quote the same list (`jev_menu.describe`)."""
+    """The series an answer serves as a prompt names them: "the series 'Total population'"
+    for one, else "each of these series: " and the names, each quoted, joined by "; ", the
+    first `SERVED_SERIES_SHOWN` with a count of the rest. Jev's stated-word questions quote
+    the same words (`jev_menu.describe`)."""
+    if len(served) == 1:
+        return f"the series '{served[0]}'"
     shown = "; ".join(f"'{name}'" for name in served[:SERVED_SERIES_SHOWN])
-    rest = len(served) - SERVED_SERIES_SHOWN
-    return f"{shown}; and {rest} more" if rest > 0 else shown
+    if (rest := len(served) - SERVED_SERIES_SHOWN) > 0:
+        shown += f"; and {rest} more"
+    return f"each of these series: {shown}"
 
 
 def _restricted_values(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> str:
@@ -166,8 +180,7 @@ def _property_values(shape: ShapeDraft, values: Iterable[tuple[str, Sequence[str
     label on `shape`."""
     slot_labels = {key.property_dcid: key.label for key in shape.slot_keys}
     return "; ".join(
-        f"{_humanize_ref(prop, slot_labels.get(prop))}="
-        + " or ".join(bound_value_label(shape, prop, dcid) for dcid in dcids)
+        f"{_humanize_ref(prop, slot_labels.get(prop))}=" + bound_values_label(shape, prop, dcids)
         for prop, dcids in values
     )
 
@@ -184,6 +197,16 @@ def restricting(bindings: Sequence[SlotBindingDraft]) -> dict[str, tuple[str, ..
         and (prop := binding.property_dcid) is not None
         and binding.value_dcids
     }
+
+
+def bound_values_label(shape: ShapeDraft, prop: str, dcids: Sequence[str]) -> str:
+    """Values `dcids` of `shape`'s slot `prop` as a prompt names them: the label of the
+    declared grouping they are (`scope_conventions.grouping_of`, "health incl. population
+    and reproductive health (CRS 120 + 130)"), since the grouping is what the part asked
+    for, else each value's label (`bound_value_label`) joined by "or"."""
+    if len(dcids) > 1 and (grouping := grouping_of(prop, dcids)) is not None:
+        return grouping.label
+    return " or ".join(bound_value_label(shape, prop, dcid) for dcid in dcids)
 
 
 def bound_value_label(shape: ShapeDraft, prop: str, dcid: str) -> str:
@@ -220,11 +243,11 @@ async def read_stated_words(
     llm: SupportsLLM,
 ) -> tuple[dict[str, float], dict | None]:
     """Rate whether `shape`'s series, restricted to the values `bindings` bind and served as
-    each of the `served` series when the answer serves several, states each of `words`
-    (`word_ratings`), and the call's usage. The call runs with minimal thinking. A call that fails or whose output fails
-    validation raises `LLMInfraError`, which the caller reads as no rating. The prompt
-    holds only the variable phrase, the shape's graph-sourced reading and the phrase's own
-    words."""
+    the `served` series when they differ from its label (`serves_beyond_label`), states
+    each of `words` (`word_ratings`), and the call's usage. The call runs with minimal
+    thinking. A call that fails or whose output fails validation raises `LLMInfraError`,
+    which the caller reads as no rating. The prompt holds only the variable phrase, the
+    shape's graph-sourced reading and the phrase's own words."""
     output, usage = await generate_structured_async(
         for_stage(llm, "stated_words"),
         prompt=build_stated_words_prompt(variable, shape, words, bindings=bindings, served=served),

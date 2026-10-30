@@ -75,6 +75,8 @@ from datasets_api.adapter import (
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_materialise import (
     CapabilityUnavailable,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     ExcludedByRegistry,
@@ -101,6 +103,8 @@ from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.doors.register import classify_register_exception
 from datasets_api.headers import no_store_headers
 from datasets_api.kinds.spec_id import (
+    EntityKindRefused,
+    WindowOverCap,
     admit_sidecar,
     register_sidecar,
     resolve_served_definition,
@@ -176,6 +180,9 @@ from materialise.reshape import (
     PivotOverColumnCapError,
     RollupNotSummableError,
 )
+from search.models import TimeWindow
+from search.role_kinds import RoleKindRefused
+from search.scope_window import WindowTooLong
 from spec_registry import SpecIdMismatch, SpecRegistryUnavailable
 from spec_registry.errors import IdentityCollision, IdentityQuarantined
 from spec_registry.reader import StoredDefinition
@@ -337,7 +344,12 @@ def _register_posted_definition(
     """
     try:
         registered, shapes = register_sidecar(
-            body.definition, spec_id=spec_id, scope=None, deps=deps, trace_id=trace_id
+            body.definition,
+            spec_id=spec_id,
+            scope=None,
+            deps=deps,
+            trace_id=trace_id,
+            definition_pointer=_DEFINITION_POINTER,
         )
     except MemberNotResolvable as exc:
         raise DefinitionMemberNotResolvable.wrapping(exc) from exc
@@ -462,7 +474,13 @@ def _resolve_spec_members(
                 )
                 return stored.spec_id, stored.identity, shapes
             assert definition is not None
-            recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=None, deps=deps)
+            recomputed, shapes = admit_sidecar(
+                definition,
+                spec_id=spec_id,
+                scope=None,
+                deps=deps,
+                definition_pointer=_DEFINITION_POINTER,
+            )
         except MemberNotResolvable as exc:
             raise DefinitionMemberNotResolvable.wrapping(exc) from exc
     return spec_id, recomputed.identity, shapes
@@ -768,6 +786,10 @@ _RESOLUTION_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     GraphDeadlineExceededError,
     MemberReadDeadline,
     CurrencyRoleUndeclared,
+    # A composite identity's components are derived and resolved with its members
+    # (`adapter.resolve_definition_members`).
+    CompositeUnservable,
+    CompositeWindowUnsupported,
 )
 
 # The failures of a materialisation run, which the definition and options routes make.
@@ -816,6 +838,7 @@ _ANY_ROUTE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     SpecNotExportable,
     RoleSignatureIncompatible,
     OverCeilingError,
+    WindowOverCap,
     # The surface composes the store classifier. Version and head writes can raise this type.
     DatasetsStoreUnavailable,
     # Resolving a registered id registers its served identity when that one is new
@@ -878,8 +901,10 @@ SERVING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
 
 ROUTE_EXCEPTION_TYPES: Mapping[str, tuple[type[Exception], ...]] = {
     "datasets.definition": (*SERVING_EXCEPTION_TYPES, *_RENDERING_EXCEPTION_TYPES),
-    # A posted body is verified against the path id on the options and members routes.
-    "datasets.options": (*SERVING_EXCEPTION_TYPES, SpecIdMismatch),
+    # A posted body is verified against the path id on the options and members routes. The
+    # options route registers a posted definition, refusing a flow-role entity of a kind its
+    # role does not take (`kinds.spec_id.register_sidecar`).
+    "datasets.options": (*SERVING_EXCEPTION_TYPES, SpecIdMismatch, EntityKindRefused),
     "datasets.members": (*_ANY_ROUTE_EXCEPTION_TYPES, SpecIdMismatch),
 }
 """The refusals each route of this door can raise, keyed by the code registry's endpoint name.
@@ -992,6 +1017,29 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
                 spec_id="spec_exemplar", roles_by_stat_var={"dcid:exemplar": ("recipient",)}
             ),
             OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
+            WindowOverCap(
+                pointer=f"{_DEFINITION_POINTER}/identity/requested_window",
+                start_year=1960,
+                end_year=2060,
+                too_long=WindowTooLong(
+                    read=TimeWindow(start_year=1960, end_year=2060),
+                    years=101,
+                    cap=80,
+                    first_year=1960,
+                    last_year=2087,
+                ),
+            ),
+            EntityKindRefused(
+                pointer=f"{_DEFINITION_POINTER}/identity/entities/origin",
+                refused=RoleKindRefused(
+                    role="origin",
+                    axis="origin",
+                    dcid="Count_Person",
+                    kind="stat_var",
+                    allowed=("country", "organisation"),
+                    family=None,
+                ),
+            ),
             RecipeNotDeclaredError("exemplar", cause="recipe_undeclared"),
             RateCoverageGapError(
                 "exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)

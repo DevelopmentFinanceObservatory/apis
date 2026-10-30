@@ -15,6 +15,7 @@ from search.engine.region import (
 from search.engine.region.scope import build_scope
 from search.engine.region.state import EngineOptions
 from search.engine.spec_build import build_spec
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     CoverageBare,
     CoverageExact,
@@ -27,7 +28,7 @@ from tests.engine._builders import shape_five_tuple
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, walk_options
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
 
@@ -61,6 +62,8 @@ class _FixedBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0, also_plausible=None), None
 
@@ -71,6 +74,8 @@ class _CandidatesBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0, also_plausible=[1]), None
 

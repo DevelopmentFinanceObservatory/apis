@@ -19795,5 +19795,21 @@
         "rating": 1.0
       }
     ]
+  },
+  "StatedWordsOutput@e3e465c89a54:b09127b25dce54a2f873444e4614709abddb71dd": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:ef142387f67a6ff8dfb175ba965c03ec16012133": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
   }
 }

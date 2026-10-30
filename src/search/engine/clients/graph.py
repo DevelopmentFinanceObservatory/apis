@@ -25,6 +25,7 @@ from code_index.types import StatVarRow
 from dc_graph import Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
+from search.scope.basis import sibling_measures
 from statvar_members import FiveTuple
 
 if TYPE_CHECKING:
@@ -66,6 +67,10 @@ class DetectedSV:
     sentence: str | None  # candidate.metadata.sentence, carried for diagnostics and labels.
     # A row `with_rival_families` adds for its five-tuple, which the resolve did not return.
     rival: bool = False
+    # On a rival row of a family measuring another convention basis of recalled families
+    # (`with_rival_families`), those families (`family_ref`). Its shape joins the house
+    # policies' pool only beside one of them.
+    basis_of: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,16 +206,33 @@ def with_rival_families(
     of a five-tuple whose CRS variables filled the cut. A five-tuple with a recalled family
     in scope gains none, so a part naming the DAC tables answers from the DAC2a family it
     recalled as the unscoped question does, and an exclusion that removes no recalled family
-    leaves recall as it is without the exclusion."""
+    leaves recall as it is without the exclusion.
+
+    A family among the hits that a dataset the measure-basis conventions read publishes
+    gains a row of each family of that dataset measuring a basis the conventions count it on
+    (`scope.basis.convention_measures`) on the hit's statistic, qualifier and denominator,
+    when no family among the hits measures that basis there. The conventions elect the basis
+    from the part's shape and window, so its family must reach the house policies whatever
+    words recalled the other. "ODA" from the United States, for example, recalls DAC1's ODA
+    amounts and none of its grant equivalents, the headline basis from 2018. A row added
+    this way is marked `DetectedSV.rival`, names the recalled families it measures another
+    basis of (`DetectedSV.basis_of`) and takes their best score. A basis is a scope choice
+    of the reading the binder elects, so the binder does not read its shape while one of
+    those families stands on the menu, and the shape joins the policies' pool only beside
+    one of them (`phase_rank_bind._HousePolicyStep`): DAC1's ODA amounts at the tail of the
+    cut for "greenhouse gas emissions" put no grant equivalents before the binder."""
     scope = catalogue.scope
     best: dict[FiveTuple, float] = {}
     present: dict[FiveTuple, set[frozenset[str]]] = {}
     held: set[int] = set()
     recalled_in_scope: set[FiveTuple] = set()
+    recalled: list[IndexFamily] = []
     for hit in hits:
         family = index.family_by_dcid.get(hit.dcid)
         if family is None:
             continue
+        if id(family) not in held:
+            recalled.append(family)
         held.add(id(family))
         present.setdefault(family.five_tuple, set()).add(_family_roles(family))
         best[family.five_tuple] = max(best.get(family.five_tuple, hit.score), hit.score)
@@ -232,8 +254,7 @@ def with_rival_families(
             )
             if not (rival or in_scope):
                 continue
-            rows = _rows_broadest_first(index)[five_tuple, family.properties]
-            row = next((r for r in rows if catalogue.admit_candidate(r.dcid) is not None), None)
+            row = _broadest_admitted_row(family, catalogue=catalogue, index=index)
             if row is not None:
                 covered.add(roles)
                 held.add(id(family))
@@ -246,9 +267,70 @@ def with_rival_families(
                         rival=True,
                     )
                 )
+    for sibling, sources in _basis_siblings(recalled, index=index):
+        if id(sibling) in held:
+            continue
+        row = _broadest_admitted_row(sibling, catalogue=catalogue, index=index)
+        if row is not None:
+            held.add(id(sibling))
+            rivals.append(
+                DetectedSV(
+                    dcid=row.dcid,
+                    score=max(best[source.five_tuple] for source in sources),
+                    type_of="StatisticalVariable",
+                    sentence=None,
+                    rival=True,
+                    basis_of=frozenset(family_ref(source) for source in sources),
+                )
+            )
     if not rivals:
         return tuple(hits)
     return tuple(sorted((*hits, *rivals), key=lambda c: c.score, reverse=True))
+
+
+def _broadest_admitted_row(
+    family: IndexFamily, *, catalogue: Catalogue, index: CodeIndex
+) -> StatVarRow | None:
+    """`family`'s first row in index order among those `catalogue` admits with the fewest
+    constraint properties, None when it admits none."""
+    rows = _rows_broadest_first(index)[family.five_tuple, family.properties]
+    return next((r for r in rows if catalogue.admit_candidate(r.dcid) is not None), None)
+
+
+def family_ref(family: IndexFamily) -> str:
+    """The dcid that names `family`: its first row in index order, which belongs to no
+    other family."""
+    return family.rows[0].dcid
+
+
+def _basis_siblings(
+    recalled: Sequence[IndexFamily], *, index: CodeIndex
+) -> list[tuple[IndexFamily, list[IndexFamily]]]:
+    """The families measuring a convention basis that `recalled`, the families among the
+    hits, leave out, each with the recalled families it is a sibling of
+    (`with_rival_families`), in recalled order and each once."""
+    measured = {(dataset, family.five_tuple) for family in recalled for dataset in family.datasets}
+    found: dict[int, tuple[IndexFamily, list[IndexFamily]]] = {}
+    for family in recalled:
+        five_tuple = family.five_tuple
+        for dataset in family.datasets:
+            for population_type, measured_property in sibling_measures(
+                five_tuple.population_type, five_tuple.measured_property, dataset
+            ):
+                sibling = dataclasses.replace(
+                    five_tuple,
+                    population_type=population_type,
+                    measured_property=measured_property,
+                )
+                if (dataset, sibling) in measured:
+                    continue
+                for candidate in index.families_by_five_tuple.get(sibling, ()):
+                    if dataset not in candidate.datasets:
+                        continue
+                    sources = found.setdefault(id(candidate), (candidate, []))[1]
+                    if all(source is not family for source in sources):
+                        sources.append(family)
+    return list(found.values())
 
 
 def recall_hits(

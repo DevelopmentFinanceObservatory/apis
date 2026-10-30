@@ -770,10 +770,10 @@ _ALT_SIBLING = "Test_UnitGate_AltSibling"
 
 
 def _alternate_survivor() -> Coroutine[Any, Any, object]:
-    """A bound USD unit drops the elected SET group, whose SourceB member holds only EUR, and
-    the alternate answers alone over a streamed preview
-    (`test_candidate_with_partial_coverage_is_dropped_leaving_the_full_alternate`). The
-    alternate belongs to a two-member group whose other member has data at Kenya."""
+    """A bound USD unit drops the elected SET group, whose members hold only EUR and the rate
+    table no euro rate, so its conversion refuses, and the alternate answers alone over a
+    streamed preview. The alternate belongs to a two-member group whose other member has
+    data at Kenya."""
     usd = [_obs_facet(unit="CurrencyUSD", value=20.0)]
     alternate = _UNIT_GATE_NODES[_UNIT_GATE_ALT]
     nodes = {
@@ -787,7 +787,7 @@ def _alternate_survivor() -> Coroutine[Any, Any, object]:
     }
     resolution = _unit_gate_resolution(
         obs={
-            f"{_UNIT_GATE_A}|{_KEN}": [_obs_facet(unit="CurrencyUSD", value=10.0)],
+            f"{_UNIT_GATE_A}|{_KEN}": [_obs_facet(unit="CurrencyEUR", value=10.0)],
             f"{_UNIT_GATE_B}|{_KEN}": [_obs_facet(unit="CurrencyEUR", value=5.0)],
             f"{_UNIT_GATE_ALT}|{_KEN}": usd,
             f"{_ALT_SIBLING}|{_KEN}": usd,

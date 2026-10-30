@@ -779,7 +779,7 @@ def test_empty_requests_raises_usage_error():
 
 
 def test_mismatched_unit_bindings_raise_usage_error_before_any_network_call():
-    # `_group_shared_candidates` narrows the merged candidate pool using
+    # `group_facets._group_pool` narrows the merged candidate pool using
     # only `requests[0].facet_bindings` -- correct only because every
     # member is required to carry the same bindings. Two members differing
     # on the unit axis alone must be refused here, before that trust is

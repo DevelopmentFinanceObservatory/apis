@@ -284,6 +284,8 @@ def test_render_and_store_never_builds_a_concatenated_frame_chunks_for_this_comb
         code_index=_INDEX_ONE_CONTRIBUTOR,
         resolved_stat_var_refs=("dcid:SV_A",),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )

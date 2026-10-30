@@ -23,6 +23,7 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import every_member_phrases
 from search.engine.region.state import EngineOptions
 from search.models import CoverageBreadth, DateRange, ResubmitIdentityPayload, TimeWindow
+from search.render.plan import render_sentence
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
@@ -49,6 +50,7 @@ _FRA = "country/FRA"
 _DEU = "country/DEU"
 _CAN = "country/CAN"
 _JPN = "country/JPN"
+_UGA = "country/UGA"
 
 
 def _facet(*, obs_count: int = 3, facet_id: str = "f1", latest_date: str = "2020") -> Facet:
@@ -311,13 +313,8 @@ def test_no_entity_named_discovers_the_recipient_scope(monkeypatch):
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert len(role_scope_warnings) == 2
     messages = {w.message for w in role_scope_warnings}
-    assert (
-        "no recipient was named; the answer was resolved across the 2 recipients with data."
-        in messages
-    )
-    assert "no provider was named; the answer was resolved across every provider with data." in (
-        messages
-    )
+    assert "No recipient was named, so the answer covers both recipients with data." in messages
+    assert "No provider was named, so the answer covers every provider with data." in (messages)
     # The plan serves each pair's 2020 point, so the StatVar is dated 2020 to 2020.
     assert spec.resolved.members[0].data_date_range == DateRange(start="2020", end="2020")
 
@@ -362,7 +359,7 @@ def test_origin_bound_and_recipient_open_discovers_the_recipient_scope(monkeypat
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert len(role_scope_warnings) == 1
     assert (
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         "from France." in role_scope_warnings[0].message
     )
 
@@ -525,7 +522,7 @@ def test_several_bound_origins_are_all_named_in_the_role_scope_warning(
     assert [e.ref for e in result.specs[0].resolved.entities] == sorted(dcid for _, dcid in origins)
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in role_scope_warnings] == [
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         f"from {expected_named}."
     ]
 
@@ -589,7 +586,7 @@ def test_resubmit_names_every_bound_origin_in_the_role_scope_warning(
     assert region.status == "definite", region
     role_scope_warnings = [w for w in region.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in role_scope_warnings] == [
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         f"from {expected_named}."
     ]
 
@@ -1507,3 +1504,51 @@ def test_candidates_path_buffered_discovered_scope_single_survivor_reuses_the_in
     assert len(spec.resolved.observations.series) == 2
     for series in spec.resolved.observations.series:
         assert [p.date for p in series.points] == ["2020"]
+
+
+def test_a_discovered_recipient_scope_counts_its_parties_alike_everywhere(monkeypatch):
+    """DAC Africa is a group total, so the heading, the warning, the breadth dimension and the
+    role fact count two recipients, while the scope still lists all three."""
+    filters = {"creditor": [_FRA]}
+    rows, role_names = _coverage_seed_for(
+        "debtor", [_KEN, _UGA, "DACAfrica"], [_SV_DCID], filters=filters
+    )
+    observations = {
+        _SV_DCID: {
+            (("creditor", _FRA), ("debtor", member)): [_facet()]
+            for member in (_KEN, _UGA, "DACAfrica")
+        }
+    }
+
+    result = _run(
+        entities=["France"],
+        sv_dcid=_SV_DCID,
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        resolve={"France": _FRA},
+        sv_score=0.9,
+        role_query="aid from France",
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        monkeypatch=monkeypatch,
+        coverage_rows=rows,
+        coverage_role_names=role_names,
+    )
+
+    assert result.status == "definite", result
+    spec = result.specs[0]
+    assert spec.resolved.scope is not None
+    assert [m.ref for m in spec.resolved.scope.members] == ["DACAfrica", _KEN, _UGA]
+    assert isinstance(spec.resolved.coverage, CoverageBreadth)
+    dims = {d.label: d.count for d in spec.resolved.coverage.dimensions}
+    assert spec.resolved.role_axis_facts is not None
+    (warning,) = [w for w in result.warnings if w.code == "role_scope_defaulted"]
+    assert (
+        render_sentence(spec),
+        dims["recipients"],
+        [fact.member_count for fact in spec.resolved.role_axis_facts],
+        warning.message,
+    ) == (
+        "France's test flow to 2 recipients in 2020.",
+        2,
+        [2],
+        "No recipient was named, so the answer covers both recipients with data from France.",
+    )

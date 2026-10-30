@@ -19,7 +19,7 @@ from search.engine.region.convertibility import (
     BoundFacetCombinationsCeilingExceededError,
     _bound_facet_combinations,
     _combination_count,
-    decide_part_unit,
+    decide_spec_unit,
 )
 from search.models import IdentityUnitRequest
 from tests.engine._fake_coverage import build_coverage_index, empty_coverage_snapshot
@@ -122,7 +122,7 @@ def test_32x32_binding_rejected_with_zero_graph_probes():
     measurement_method_refs = [f"mm{i}" for i in range(32)]
     reader = FakeGraphReader()
     with pytest.raises(BoundFacetCombinationsCeilingExceededError) as exc_info:
-        decide_part_unit(
+        decide_spec_unit(
             ["Count_Person"],
             unit_request=IdentityUnitRequest(currency="USD", prices="current"),
             role_bindings={"observationAbout": ["country/KEN"]},
@@ -146,7 +146,7 @@ def test_multiple_sv_dcids_never_probe_when_product_over_ceiling():
     provenance_refs = [f"prov{i}" for i in range(_BOUND_FACET_COMBINATIONS_MAX + 1)]
     reader = FakeGraphReader()
     with pytest.raises(BoundFacetCombinationsCeilingExceededError):
-        decide_part_unit(
+        decide_spec_unit(
             ["Count_Person", "Count_Household"],
             unit_request=IdentityUnitRequest(currency="USD", prices="current"),
             role_bindings={"observationAbout": ["country/KEN"]},
@@ -177,7 +177,7 @@ def test_request_level_probe_budget_rejected_with_zero_graph_probes():
     sv_dcids = [f"Count_Person_{i}" for i in range(sv_count)]
     reader = FakeGraphReader()
     with pytest.raises(BoundFacetCombinationsCeilingExceededError) as exc_info:
-        decide_part_unit(
+        decide_spec_unit(
             sv_dcids,
             unit_request=IdentityUnitRequest(currency="USD", prices="current"),
             role_bindings={"observationAbout": ["country/KEN"]},

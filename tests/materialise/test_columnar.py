@@ -740,24 +740,51 @@ def test_admission_mask_keeps_a_row_only_where_its_facet_was_admitted_at_its_pla
     assert mask.to_pylist() == [False, True, False]
 
 
-def test_scoped_coverage_admission_keeps_only_its_facets_admitted_role_pairs():
-    """A shared facet id cannot let a source-scoped flow serve another source's pair."""
+class _CountedPairs(dict[str, frozenset[tuple[str, str]]]):
+    """`pairs_by_facet` counting its lookups."""
+
+    lookups = 0
+
+    def get(self, key, default=None):
+        self.lookups += 1
+        return super().get(key, default)
+
+
+@pytest.mark.parametrize(
+    ("role_names", "admitted_pair"),
+    [
+        pytest.param(
+            RoleNames(donor="donor", recipient="recipient"),
+            ("country/NOR", "country/KEN"),
+            id="both",
+        ),
+        pytest.param(
+            RoleNames(donor=None, recipient="recipient"), ("", "country/KEN"), id="recipient"
+        ),
+        pytest.param(RoleNames(donor="donor", recipient=None), ("country/NOR", ""), id="donor"),
+    ],
+)
+def test_scoped_coverage_admission_keeps_only_its_facets_admitted_role_pairs(
+    role_names, admitted_pair
+):
+    """A shared facet id cannot let a source-scoped flow serve another source's pair. A role
+    the variable lacks reads as "", and each distinct facet and pair is looked up once."""
+    cells = [
+        {"facetId": "f-source-b", "donor": "country/NOR", "recipient": "country/KEN"},
+        {"facetId": "f-source-b", "donor": "country/USA", "recipient": "country/UGA"},
+        {"facetId": "f-source-a", "donor": "country/NOR", "recipient": "country/KEN"},
+    ]
     table = table_from_cells(
-        [
-            {"facetId": "f-source-b", "donor": "country/NOR", "recipient": "country/KEN"},
-            {"facetId": "f-source-b", "donor": "country/USA", "recipient": "country/KEN"},
-            {"facetId": "f-source-a", "donor": "country/NOR", "recipient": "country/KEN"},
-        ],
-        roles=("donor", "recipient"),
+        [{role: cell[role] for role in ("facetId", *role_names.declared)} for cell in cells * 3],
+        roles=role_names.declared,
     )
-    admission = CoverageAdmission(
-        pairs_by_facet={"f-source-b": frozenset({("country/NOR", "country/KEN")})},
-        role_names=RoleNames(donor="donor", recipient="recipient"),
-    )
+    pairs = _CountedPairs({"f-source-b": frozenset({admitted_pair})})
+    admission = CoverageAdmission(pairs_by_facet=pairs, role_names=role_names)
 
     mask = columnar.admission_mask(table, admission=admission)
 
-    assert mask.to_pylist() == [True, False, False]
+    assert mask.to_pylist() == [True, False, False] * 3
+    assert pairs.lookups == 3
 
 
 def test_scoped_two_role_coverage_admission_refuses_a_missing_declared_role_column():

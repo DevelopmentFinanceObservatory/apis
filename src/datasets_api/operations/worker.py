@@ -41,6 +41,7 @@ import dataclasses
 import logging
 import threading
 
+from datasets_api.adapter import identity_composite
 from datasets_api.admission import (
     refuse_async_over_ceiling,
     sync_estimate,
@@ -195,6 +196,7 @@ def run_operation(
                 requests,
                 index=coverage_snapshot.index,
                 member_concurrency=deps.member_concurrency,
+                composite=identity_composite(stored.identity, code_index=deps.code_index),
             )
             recorded = operation_store.record_estimate(
                 operation.id, attempt=operation.attempt_count, estimate=estimate

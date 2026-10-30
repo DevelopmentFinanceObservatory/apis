@@ -3,13 +3,17 @@ default its bindings (`_phase_settle`)."""
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 
+from code_index.scope_conventions import ODA_FLOW, ODA_FLOW_SYSTEM
 from code_index.shared import get_index, get_measure_index
+from code_index.types import MeasureAxis
 from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_broad_readings,
@@ -19,6 +23,7 @@ from search.engine.bind_repair import (
     defaulted_slots_named,
 )
 from search.engine.binders import StatedWordsRequest
+from search.engine.binders.house_policy import slot_values
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.envelope import _sum_usage
@@ -35,11 +40,13 @@ from search.engine.region.codes import (
     SLOT_DEFAULT_NOT_APPLIED,
     SLOT_DEFAULTED,
 )
+from search.engine.region.coverage_series import holds_series
 from search.engine.region.named_source import with_named_source, without_dataset_drafts
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
     _bound_code_records,
     _coverage_reading,
+    _coverage_records,
     _coverage_terms,
     _elected_index,
     _force_qualifier_bindings,
@@ -47,12 +54,15 @@ from search.engine.region.phase_rank_bind import (
     _menu_choices,
     _open_breakdown_slots,
     _open_operation_slots,
+    _query_records,
     _resolve_query_qualifiers,
+    _selected_members,
     _shape_qualifiers,
     _unchosen_matches,
     _unheld_bound_codes,
     _unrated_words,
     _unread_qualifier_phrases,
+    _with_named_values,
     _withheld_qualifiers,
     judge_value_requirements,
     operation_slot_phrases,
@@ -61,6 +71,7 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.place_roles import (
     PlaceAssignment,
+    PlaceRoleRefusal,
     bind_place_roles,
     holds_whole_total,
     whole_total_candidates,
@@ -70,7 +81,11 @@ from search.engine.region.qualifier_readings import (
     bound_value_reads_measure,
     reading_for_shape,
 )
-from search.engine.region.requirements import record_reading, settle_unanswered
+from search.engine.region.requirements import (
+    record_coverage,
+    record_reading,
+    settle_unanswered,
+)
 from search.engine.region.result import RegionResult
 from search.engine.region.source_choice import source_record
 from search.engine.region.state import (
@@ -97,11 +112,13 @@ from search.engine.retrieval.bound_values import (
     shape_datasets,
     shape_for_part,
     shape_invariants,
+    shape_part_datasets,
     shape_query,
     sole_shared_value,
     without_values,
 )
 from search.engine.retrieval.member_facts import MemberFacts, asserted_constraint_properties
+from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import (
     BreakdownDecision,
     Narrow,
@@ -114,6 +131,19 @@ from search.engine.retrieval.standard import (
 from search.engine.shape import ShapeDraft
 from search.engine.written_phrase import written_phrase
 from search.models import ResolvedQualifier, Warning
+from search.scope.basis import (
+    BASIS_RULE,
+    HEADLINE_OPTION,
+    SERVED_DIFFERS_RULE,
+    BasisElection,
+    elect_part_basis,
+    measure_of,
+    oda_flows,
+    sector_systems,
+)
+from search.scope.sector import SECTOR_PROPERTIES, read_sector
+from search.scope.state import AxisRecord
+from search.scope.vocabulary import measure_basis_option_id
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +336,10 @@ def _settle_bindings(
     `_settle_role_bindings`, which leaves an opened slot open. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
     shape admits, with the codes the model chose from a phrase's candidate menu, are
-    forced into the bindings (`_force_qualifier_bindings`).
+    forced into the bindings (`_force_qualifier_bindings`). A slot still left ``unbound``,
+    and not asked for in full, binds the one value of it the variable phrase names by its
+    label (`_with_named_values`), as text-recognised: "greenhouse gas emissions" binds
+    `emittedThing` to GreenhouseGas whatever the reply drafted for it.
     """
     bindings = _with_every_slot_drafted(
         without_dataset_drafts(state.bind_result.bindings), shape_draft
@@ -329,7 +362,7 @@ def _settle_bindings(
         state.variable,
         state.dropped_qualifier_phrases,
         shape_draft,
-        entities=(*state.entities, *state.entity_surfaces.values()),
+        entities=state.entity_texts,
     )
 
     # The elected shape's own qualifiers: the matches its vocabulary reads and admits, and its
@@ -391,6 +424,7 @@ def _settle_bindings(
     admitted_qualifiers = _unchosen_matches(terms, choices)
     state.admitted_qualifiers = admitted_qualifiers
     state.text_recognized_properties = frozenset()
+    state.grouped_properties = frozenset()
     if admitted_qualifiers or choices:
         bindings, forced = _force_qualifier_bindings(
             bindings,
@@ -405,10 +439,57 @@ def _settle_bindings(
         # property forced only by a menu choice at `binder` provenance, since the model
         # chose its code.
         state.text_recognized_properties = forced & {m.code_system for m in admitted_qualifiers}
+        bindings = _settle_sector(state, bindings, admitted_qualifiers)
         _log_admitted_qualifiers(admitted_qualifiers)
+    bindings, named = _with_named_values(bindings, shape_draft, state.variable)
+    state.text_recognized_properties |= named
     state.bind_result.bindings = with_sampled_claims(bindings, claims)
 
     return unresolved, readings
+
+
+def _settle_sector(
+    state: ResolveState,
+    bindings: list[SlotBindingDraft],
+    matches: tuple[QualifierMatch, ...],
+) -> list[SlotBindingDraft]:
+    """`bindings` with each text-recognised sector binding read as the sector axis reads it
+    (`scope.sector.read_sector`), and the axis recorded on `ResolveState.scope_selection`.
+
+    A sector concept the admitted `matches` name binds its declared grouping's codes, or
+    the option an explicit or carried entry made for it chose, and its property joins
+    `ResolveState.grouped_properties`: "health aid" binds CRS 120 and 130. A code the text
+    named, "basic health" or "purpose code 120", keeps its binding and is recorded as an
+    explicit entry of the words that named it."""
+    settled: list[SlotBindingDraft] = []
+    grouped: set[str] = set()
+    for draft in bindings:
+        prop = draft.property_dcid
+        if (
+            prop not in SECTOR_PROPERTIES
+            or prop not in state.text_recognized_properties
+            or not draft.value_dcids
+        ):
+            settled.append(draft)
+            continue
+        reading = read_sector(
+            codes=draft.value_dcids,
+            matches=[match for match in matches if match.code_system == prop],
+            variable=state.variable,
+            scope=state.scope_selection,
+        )
+        state.scope_selection.write(reading.record)
+        if reading.grouped:
+            grouped.add(prop)
+            draft = SlotBindingDraft(
+                axis=draft.axis,
+                property_dcid=prop,
+                kind="value" if len(reading.codes) == 1 else "set",
+                value_dcids=list(reading.codes),
+            )
+        settled.append(draft)
+    state.grouped_properties = frozenset(grouped)
+    return settled
 
 
 def _with_every_slot_drafted(
@@ -886,18 +967,21 @@ def narrowed_to_breakdown(shape: ShapeDraft, properties: frozenset[str]) -> Shap
     )
 
 
-def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
+async def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionResult | None:
     """Settle the dataset the part is served from under its final bindings
     (`ResolveState.bindings`), or return the refusal of a part no table serves.
 
     An unbinding at materialise can leave bindings that select another table than the one
     binding repair named, so the rule runs again there (`_served`), on the bindings every
     identity of the part is minted from. A part none of whose tables holds a row for the
-    bindings together refuses (`_unserved_refusal`).
+    bindings together refuses (`_unserved_refusal`), with stated-word coverage judged first
+    (`judge_coverage`). No read has served a member, so the judgement reads the shape's
+    named members, and each term the judgement records is named or departs.
     """
     try:
         shape, state.bindings = _served(state, state.shape_draft, state.bindings, role_keys)
     except PartNotServed:
+        await judge_coverage(state)
         return _unserved_refusal(state)
     _install_served_shape(state, shape)
     return None
@@ -962,9 +1046,10 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     the bindings under them (`_bind_query_places`): the measure election, the shape's slot
     defaults, the named-member and partition binds, the canonical pins, the slots the
     identity carries (`standard.breakdown_decision`), and the dataset the part is served
-    from, where a part no table serves refuses ``qualifier_not_bound``. The binder then
-    rates the words the coverage rule leaves unrated on the shape and bindings so settled
-    (`_rate_unread_words`), and the query qualifiers resolve against the final bindings.
+    from, where a part no table serves refuses ``qualifier_not_bound``. The query records
+    the coverage rule reads as recorded (`_query_records`) are then kept, so an unbinding
+    reads the terms that name its values (`unrealisable._asked_terms`). Stated-word
+    coverage is judged once the pass reaches its answer (`judge_coverage`).
 
     Every rule up to the slots the identity carries reads each claim a recall sample alone
     backs open (`without_sampled_claims`), so a default, a shared value, the measure election or a
@@ -1101,25 +1186,42 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     if refused is not None:
         return refused
 
-    # Resolve query qualifiers against the final bindings, each one no binding covers a
-    # requirement (`requirements.record_reading`). In "refuse" coverage mode a word of the
-    # variable no reader covers is a record and the part refuses on it. In log mode the
-    # record is kept once here, outside `unrealisable.unbind_unrealisable`'s re-read, for
-    # the line the pass logs when it ends (`log_would_refuse`), and a word of a qualifier
-    # term the elected shape's own reading leaves unread is a term no answer is judged on
-    # (`_unread_qualifier_phrases`). In refuse mode a record already
-    # covers that word. In log mode a term of a part naming no dataset that names only codes
-    # no shape can bind is withheld (`_withheld_qualifiers`), kept here alike, and is a
-    # term no answer is judged on, whatever its property. Each value the request names by
-    # its graph label is recorded once as a requirement (`value_requirements`) in refuse
-    # mode, and in log mode the elected answer's unmet ones are kept by the same
-    # rule (`judge_value_requirements`). Each value the bind drafted on a slot the elected
-    # shape lacks is a requirement judged by the same rule, which bind recorded
-    # (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
-    # requirement departs only if the final answer leaves it unapplied
-    # (`requirements.with_requirement_departures`). The coverage rule reads a word beside
-    # no code as unread only on the binder's rating, read first (`record_coverage`).
-    await record_coverage(state)
+    # The records no rating reads stand until the coverage judgement replaces them
+    # (`judge_coverage`), so an unbinding before it reads the terms naming its values.
+    record_reading(state, _query_records(state))
+    return None
+
+
+async def judge_coverage(state: ResolveState) -> None:
+    """Judge stated-word coverage on the elected shape over the final bindings, once per
+    pass, before its answer is first judged. That is once the read serves members, or on a
+    refusal returned before it (`pipeline._run_phases`, `phase_shared._elected_flagged_match`).
+    The coverage rule reads the members the read served (`served_member_names`), so the
+    lexical readers, the binder's rating and the answer describe one list.
+
+    The binder rates the words the rule leaves unrated (`_rate_unread_words`) and the query
+    records over both replace those binding repair kept (`requirements.record_reading`).
+    In "refuse" coverage mode a word of the variable no reader covers is a record and the
+    part refuses on it. In log mode the records are kept for the line the pass logs when it
+    ends (`log_would_refuse`), and a word of a qualifier term the elected shape's own
+    reading leaves unread is a term no answer is judged on (`_unread_qualifier_phrases`).
+    In refuse mode a record already covers that word. In log mode a term of a part naming
+    no dataset that names only codes no shape can bind is withheld (`_withheld_qualifiers`),
+    kept here alike, and is a term no answer is judged on, whatever its property. Each value
+    the request names by its graph label is recorded once as a requirement
+    (`value_requirements`) in refuse mode, and in log mode the elected answer's unmet ones
+    are kept by the same rule (`judge_value_requirements`). Each value the bind drafted on
+    a slot the elected shape lacks is a requirement judged by the same rule, which bind
+    recorded (`phase_rank_bind._stray_requirements`), so its query record adds none. Every
+    requirement departs only if the final answer leaves it unapplied
+    (`requirements.with_requirement_departures`). Each candidate the part offers beside or
+    in place of the elected answer is judged by the same rule on its own read
+    (`judge_answer_coverage`)."""
+    if state.coverage_judged:
+        return
+    state.coverage_judged = True
+    await _rate_unread_words(state)
+    record_reading(state, _resolve_query_qualifiers(state))
     withheld = _withheld_qualifiers(state)
     log_mode = settings().qualifier_coverage == "log"
     recorded = (*state.query_qualifiers, *withheld)
@@ -1155,54 +1257,114 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     for phrase in _unread_qualifier_phrases(state, withheld):
         state.require_unapplied(phrase, asked=phrase, property_dcid=None, origin="bind")
 
-    return None
+
+async def judge_answer_coverage(
+    state: ResolveState,
+    answers: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft], Materialised]],
+) -> tuple[tuple[ResolvedQualifier, ...], ...]:
+    """Judge stated-word coverage on each of `answers`, a candidate the part offers beside
+    or in place of the elected answer: its shape, the bindings it is read under and its
+    read. The rule is the elected answer's (`judge_coverage`), read on the members the
+    candidate's own read served (`answer_view`), so "refugee" in "refugee assistance" is
+    unread on "Assistance received" and read on "Refugee assistance given", whichever of
+    the two was elected. The binder rates the words the lexical readers leave on each
+    candidate, one call per candidate that leaves any, all at once (`_rated_words`).
+
+    Each record no requirement of the part's ledger holds a phrase of is recorded as the
+    elected reading's records are (`requirements.record_coverage`). Return each answer's
+    records, in the order of `answers`, which the judgement reads it on and its trace names
+    its phrases by, as two answers can name different codes for one phrase
+    (`requirements.judge`). In log mode no record is a requirement, so no binder is asked
+    and every answer holds no record."""
+    if settings().qualifier_coverage != "refuse":
+        return tuple(() for _answer in answers)
+    views = [answer_view(state, shape, bindings, read) for shape, bindings, read in answers]
+    ratings = await asyncio.gather(*(_rated_words(state, view) for view in views))
+    uncovered: list[tuple[ResolvedQualifier, ...]] = []
+    for view, rated in zip(views, ratings, strict=True):
+        view.stated_word_ratings = rated
+        records = tuple(
+            record
+            for record in _coverage_records(view, _query_records(view))
+            if record.evidence == "uncovered"
+        )
+        record_coverage(state, records)
+        uncovered.append(records)
+    return tuple(uncovered)
 
 
-async def record_coverage(state: ResolveState) -> None:
-    """Rate the words the coverage rule leaves unrated on the elected shape over the final
-    bindings (`_rate_unread_words`), then record the query records over both
-    (`requirements.record_reading`). Binding repair and each unbinding at materialise
-    (`phase_place_materialise._unbind`) record by it, so every reading of the rule rests on
-    ratings of the shape and bindings it reads."""
-    await _rate_unread_words(state)
-    record_reading(state, _resolve_query_qualifiers(state))
+def answer_view(
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    read: Materialised,
+) -> ResolveState:
+    """A copy of `state` whose elected answer is `shape` read under `bindings` and served
+    by `read`, with no word rated, for the coverage rule, which reads the elected answer
+    from the state. Nothing writes to it but the ratings `judge_answer_coverage` keeps."""
+    view = copy.copy(state)
+    view.shape_draft = shape
+    view.bindings = list(bindings)
+    view.mat_result = read
+    view.stated_word_ratings = {}
+    return view
 
 
 async def _rate_unread_words(state: ResolveState) -> None:
     """Keep the binder's rating of each word the coverage rule leaves unrated on the
-    elected shape over the final bindings (`_unrated_words`) as
-    `ResolveState.stated_word_ratings`, with the read's usage added to the part's. Ratings
-    of an earlier shape or bindings are dropped first, so each word is rated on the series
-    the answer reads, and the binder is asked only when such a word remains. A read that fails
+    elected shape over the final bindings (`_rated_words`) as
+    `ResolveState.stated_word_ratings`."""
+    state.stated_word_ratings = await _rated_words(state, state)
+
+
+async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, float]:
+    """The binder's rating of each word the coverage rule leaves unrated on the elected
+    answer of `answer`, `state` or a view of one of its candidates (`answer_view`), over
+    its final bindings (`_unrated_words`), with the read's usage added to `state`'s. The
+    binder is asked only when such a word remains. A read that fails
     (`LLMInfraError`) rates no word, so each counts as stated, and is noted as lost
     (`note_degraded_read`), so the response cache stores no answer read without it. A read
     that leaves a word unrated is noted the same way, once: Jev leaving its question
     unanswered or holding none for a shape outside the menu, or Gemini answering no index
-    for the word or answering it both ways. The request names the members the answer serves
-    when it serves more than one name (`served_member_names`), a member with no name by its
-    dcid, so a word one of them states and another does not reads as narrower than the
-    answer."""
-    state.stated_word_ratings = {}
-    words = _unrated_words(state)
+    for the word or answering it both ways. The basis sibling the house policies moved the
+    election to (`ResolveState.basis_seat`) is off the binder's menu
+    (`StatedWordsRequest.on_bind_menu`), and the bind rated none of its words. The request names every member the read served
+    (`served_member_names`), and the binder rates the words on them wherever they differ
+    from the shape's label (`stated_words_read.serves_beyond_label`), so a word one of them
+    does not state reads as narrower than the answer. Where a served member has no name,
+    the request names none and the bind's rating on the label stands, as the coverage rule
+    then reads the named members' words (`phase_rank_bind._member_measure_words`). A read
+    serving the one series the shape holds under the bindings serves the series the label
+    names (`_serves_the_labelled_series`), so the request names none."""
+    words = _unrated_words(answer)
     if not words:
-        return
-    shape = state.shape_draft
-    served = tuple(dict.fromkeys(name or dcid for dcid, name in served_member_names(state).items()))
+        return {}
+    shape = answer.shape_draft
+    served_names = served_member_names(answer)
+    names = list(served_names.values())
+    named = [name for name in names if name is not None]
+    served = (
+        tuple(dict.fromkeys(named))
+        if len(named) == len(names) and not _serves_the_labelled_series(answer, served_names)
+        else ()
+    )
+    index = next(
+        (
+            index
+            for index, menu_shape in enumerate(state.capped_shapes)
+            if menu_shape.shape_id == shape.shape_id
+        ),
+        None,
+    )
     request = StatedWordsRequest(
         variable=state.variable,
         shape=shape,
-        shape_index=next(
-            (
-                index
-                for index, menu_shape in enumerate(state.capped_shapes)
-                if menu_shape.shape_id == shape.shape_id
-            ),
-            None,
-        ),
+        shape_index=index,
         words=words,
-        bindings=tuple(state.bindings),
+        bindings=tuple(answer.bindings),
         decision=state.bind_decision,
-        served=served if len(served) > 1 else (),
+        served=served,
+        on_bind_menu=index is None or index != state.basis_seat,
         part=state.variable_index,
         pool=state.pool,
     )
@@ -1211,11 +1373,28 @@ async def _rate_unread_words(state: ResolveState) -> None:
     except LLMInfraError:
         logger.warning("stated words read failed; each word reads as stated", exc_info=True)
         note_degraded_read("stated words read")
-        return
-    state.stated_word_ratings = {word: ratings[word] for word in words if word in ratings}
+        return {}
+    rated = {word: ratings[word] for word in words if word in ratings}
     state.var_usage = _sum_usage(state.var_usage, usage)
-    if len(state.stated_word_ratings) < len(words):
+    if len(rated) < len(words):
         note_degraded_read("stated words unrated")
+    return rated
+
+
+def _serves_the_labelled_series(answer: ResolveState, served: Mapping[str, str | None]) -> bool:
+    """Whether the read of `answer`'s elected answer served, as `served`
+    (`served_member_names`), the one member the elected shape holds under the final
+    bindings (`phase_rank_bind._selected_members`). The label names that series however
+    its own name reads: "net disbursements (interest received on OOF and export credits,
+    non-grant (DAC type of finance))" is the series named "Interest received on OOF and
+    export credits (net disbursements)", and naming it again drops what the label states.
+    A shape holding another member under the bindings, as "Refugee population" beside the
+    total population does, labels the series the bind elected, which the read may not
+    serve."""
+    return (
+        len(served) == 1
+        and served.keys() == _selected_members(answer.shape_draft, answer.bindings).keys()
+    )
 
 
 def log_would_refuse(state: ResolveState, result: RegionResult) -> None:
@@ -1275,34 +1454,94 @@ def _bind_query_places(
     claims: Mapping[str, SlotBindingDraft],
 ) -> RegionResult | None:
     """Bind the query's places to the elected shape (`ResolveState.query_place_roles`) and
-    settle the bindings under the role keys they give (`_settle_role_bindings`), or return
-    the refusal of a part no table serves.
+    settle the bindings under the role keys they give (`_settle_places`), or return the
+    refusal of a part no table serves.
 
-    The places bind as named (`place_roles.bind_place_roles`). Where the shape offers whole
-    totals on sides they leave unnamed (`place_roles.whole_total_candidates`), the bindings
-    are settled under each total's role keys in the order offered, and the first total
-    binds whose bindings a table serves and, read without the claims, hold its series
+    The bindings are settled on the measure basis the part is counted on (`_part_basis`).
+    Where the convention elected that basis and no entry asked for it, the coverage snapshot
+    judges it against the shape's declared default basis at the places (`_coverage_rank`):
+    when the default's members hold a series there and the convention's do not, or the
+    snapshot holds members of the default and none of the convention's, the part is settled
+    on the default. A convention so never leaves unanswered a part its shape answers, nor
+    refuses it on a basis the shape's dataset holds no series of. The basis record of an
+    answer then names the served basis as differing from the convention's
+    (`_record_basis`). `bindings` hold `claims`, the claims a recall sample alone backs,
+    open, and each settling returns them (`_settle_role_bindings`)."""
+    shape = state.shape_draft
+    basis = _part_basis(state, shape)
+    assignment = bind_place_roles(state, shape)
+    place_roles, settled = _settle_places(state, shape, assignment, bindings, claims, basis)
+    if basis is not None and basis.entry is None:
+        rank = _coverage_rank(state, place_roles, settled)
+        if rank < _HELD:
+            default_roles, default = _settle_places(
+                state, shape, assignment, bindings, claims, None
+            )
+            if _coverage_rank(state, default_roles, default) > rank:
+                place_roles, settled = default_roles, default
+    state.query_place_roles = place_roles
+    return _install_settled(state, settled, basis=basis)
+
+
+def _settle_places(
+    state: ResolveState,
+    shape: ShapeDraft,
+    assignment: PlaceAssignment | PlaceRoleRefusal,
+    bindings: list[SlotBindingDraft],
+    claims: Mapping[str, SlotBindingDraft],
+    basis: BasisElection | None,
+) -> tuple[PlaceAssignment | PlaceRoleRefusal, _SettledBindings]:
+    """The place roles `bindings` settle under and the bindings settled on `basis`
+    (`_settle_role_bindings`), writing nothing to `state`.
+
+    The places bind as named (`assignment`). Where the shape offers whole totals on sides
+    they leave unnamed (`place_roles.whole_total_candidates`), the bindings are settled under
+    each total's role keys in the order offered, and the first total binds whose bindings a
+    table serves and, read without the claims, hold its series
     (`place_roles.holds_whole_total`). Where none does, they are settled under the named
     places' role keys, where no total remains to judge. With at most one total per side,
     the part settles at most three times: once per offered total, and once without. Each
-    run starts from the same `bindings` and writes nothing to the state, and the bindings
-    installed are those the bound total was judged under. Places that refuse to bind
-    settle under no role keys, as the flagged identity of a role refusal binds no entity
-    and leaves no axis open. `bindings` hold `claims`, the claims a recall sample alone
-    backs, open, and each settling returns them (`_settle_role_bindings`)."""
-    shape = state.shape_draft
-    assignment = bind_place_roles(state, shape)
+    run starts from the same `bindings`. Places that refuse to bind settle under no role
+    keys, as the flagged identity of a role refusal binds no entity and leaves no axis
+    open."""
     if isinstance(assignment, PlaceAssignment):
         for whole in whole_total_candidates(state, shape, assignment):
-            settled = _settle_role_bindings(state, shape, bindings, claims, whole.role_keys)
+            settled = _settle_role_bindings(
+                state, shape, bindings, claims, whole.role_keys, basis=basis
+            )
             if settled.served and holds_whole_total(
                 state, settled.shape, whole, without_sampled_claims(settled.bindings)
             ):
-                state.query_place_roles = whole
-                return _install_settled(state, settled)
-    state.query_place_roles = assignment
+                return whole, settled
     role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
-    return _install_settled(state, _settle_role_bindings(state, shape, bindings, claims, role_keys))
+    settled = _settle_role_bindings(state, shape, bindings, claims, role_keys, basis=basis)
+    return assignment, settled
+
+
+# How far the coverage snapshot shows settled bindings answer at the places
+# (`_coverage_rank`): it holds no member of their family, it holds members and no series at
+# the places, it holds a series there.
+_UNKNOWN, _UNHELD, _HELD = 0, 1, 2
+
+
+def _coverage_rank(
+    state: ResolveState,
+    place_roles: PlaceAssignment | PlaceRoleRefusal,
+    settled: _SettledBindings,
+) -> int:
+    """How far the coverage snapshot shows the family `settled` elects, read without the
+    claims, holds a series at the places `place_roles` binds (`coverage_series.holds_series`):
+    `_HELD`, `_UNHELD` for bindings no table serves and a family with no series there, and
+    `_UNKNOWN` for places that refuse to bind, no place bound on a flow role, and a family
+    the snapshot holds no member of."""
+    if not isinstance(place_roles, PlaceAssignment):
+        return _UNKNOWN
+    if not settled.served:
+        return _UNHELD
+    held = holds_series(
+        state, settled.shape, place_roles.sets, bindings=without_sampled_claims(settled.bindings)
+    )
+    return _UNKNOWN if held is None else _HELD if held else _UNHELD
 
 
 def _settle_role_bindings(
@@ -1311,14 +1550,19 @@ def _settle_role_bindings(
     bindings: list[SlotBindingDraft],
     claims: Mapping[str, SlotBindingDraft],
     role_keys: RoleKeys,
+    *,
+    basis: BasisElection | None = None,
 ) -> _SettledBindings:
     """Settle `bindings`, the elected `shape`'s after the declared defaults, under the
-    query's `role_keys`, writing nothing to `state`. `bindings` hold `claims`, the claims a
-    recall sample alone backs, open, and every step up to the slots the identity carries
-    reads them so; the claims then return to the slots those steps leave open
-    (`with_sampled_claims`).
+    query's `role_keys`, writing nothing to `state`. `basis` is the measure basis the part
+    is counted on (`_part_basis`), None where the conventions do not read it. `bindings`
+    hold `claims`, the claims a recall sample alone backs, open, and every step up to the
+    slots the identity carries reads them so; the claims then return to the slots those
+    steps leave open (`with_sampled_claims`).
 
-    In order: force the measure axes the bindings leave open (`elect_measure_family`), bind
+    In order: force the measure axes the bindings leave open (`elect_measure_family`, with
+    the netting basis of `basis` first, `_basis_axes`), read an ODA flow binding as the flows
+    the shape's basis counts (`_with_basis_flows`), bind
     the shape's slot defaults (`apply_shape_slot_defaults`), bind each open slot that
     partitions the served members to the value of the one member the variable phrase names
     (`bind_named_member_values`) and each that partitions a standard family to the one value
@@ -1334,7 +1578,7 @@ def _settle_role_bindings(
     election = elect_measure_family(
         shape,
         get_index(),
-        get_measure_index().axes,
+        _basis_axes(get_measure_index().axes, basis),
         shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open),
     )
     forced_pairs = election.forced if election is not None else ()
@@ -1360,6 +1604,7 @@ def _settle_role_bindings(
     bindings, shape_defaulted, relaxed = apply_shape_slot_defaults(
         bindings, shape, index=get_index()
     )
+    bindings = _with_basis_flows(shape, bindings)
     warnings: list[Warning] = []
     for default in relaxed:
         value = (shape.value_labels or {}).get(default.value_dcid, default.value_dcid)
@@ -1428,9 +1673,12 @@ def _settle_role_bindings(
     )
 
 
-def _install_settled(state: ResolveState, settled: _SettledBindings) -> RegionResult | None:
+def _install_settled(
+    state: ResolveState, settled: _SettledBindings, *, basis: BasisElection | None = None
+) -> RegionResult | None:
     """Install `settled` on the state, or return the refusal of a part no table serves
-    under its bindings (`_unserved_refusal`)."""
+    under its bindings (`_unserved_refusal`). A served part counted on `basis` records its
+    measure-basis axis (`_record_basis`)."""
     state.bindings = settled.bindings
     _install_served_shape(state, settled.shape)
     state.measure_dropped_axes = settled.measure_dropped_axes
@@ -1441,4 +1689,141 @@ def _install_settled(state: ResolveState, settled: _SettledBindings) -> RegionRe
     state.defaulted_properties |= settled.shape_defaulted
     state.breakdown = settled.breakdown
     state.breakdown_shape = settled.breakdown_shape
-    return None if settled.served else _unserved_refusal(state)
+    if not settled.served:
+        return _unserved_refusal(state)
+    if basis is not None:
+        _record_basis(state, settled, basis)
+    return None
+
+
+def _part_basis(state: ResolveState, shape: ShapeDraft) -> BasisElection | None:
+    """The measure basis the part is counted on (`scope.basis.elect_part_basis`): read from
+    the shape its places and admitted codes give it, its window and the datasets `shape` is
+    answered from (`scope.basis.applicable_convention`), or from its explicit or
+    carried measure-basis entry when `shape` measures the basis the entry asks for, else
+    from the convention alone. None for a part the conventions read no shape of, and for a
+    `shape` no dataset the conventions read publishes."""
+    index = get_index()
+    election = elect_part_basis(
+        datasets=shape_part_datasets(shape, index),
+        directions=[place.direction for place in state.frame.places],
+        admitted_systems={match.code_system for match in state.admitted_qualifiers},
+        sector_systems=sector_systems(index),
+        window=state.frame.window.value,
+        entries=state.scope_selection.entries_on("measure_basis"),
+    )
+    if election is None:
+        return None
+    netting = slot_values(shape.slot_taxonomy or {}, "nettingBasis")
+    if election.entry is None or election.measured_by(
+        shape.pop_type_dcid, shape.meas_prop_dcid, netting
+    ):
+        return election
+    return election.by_convention()
+
+
+def _basis_axes(
+    axes: Sequence[MeasureAxis], basis: BasisElection | None
+) -> tuple[MeasureAxis, ...]:
+    """`axes` with the netting basis `basis` binds preferred first on its axis, so an open
+    netting basis is elected as the basis counts it. `axes` as they are for no basis or a
+    basis that binds no netting basis."""
+    netting = basis.measure.netting_basis if basis is not None else None
+    if netting is None:
+        return tuple(axes)
+    return tuple(
+        replace(axis, prefer=(netting, *(v for v in axis.prefer if v != netting)))
+        if axis.axis == "nettingBasis"
+        else axis
+        for axis in axes
+    )
+
+
+def _with_basis_flows(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+) -> list[SlotBindingDraft]:
+    """`bindings` with an ODA flow binding (CRS flow 10) read as the flows the basis
+    `shape` measures counts (`BasisMeasure.oda_flows`) that its flow slot offers: grant
+    equivalents count the private sector instruments of flow 60 beside it. Keyed on the
+    served shape alone, however its basis was elected, so a part served on grant
+    equivalents binds what a switch to them binds (`scope.edits`)."""
+    measure = measure_of(shape.pop_type_dcid, shape.meas_prop_dcid, None)
+    if measure is None:
+        return list(bindings)
+    offered = {
+        code
+        for key, codes in (shape.slot_taxonomy or {}).items()
+        if key.endswith(f":{ODA_FLOW_SYSTEM}")
+        for code in codes
+    }
+    flows = oda_flows(measure, offered)
+    if len(flows) < 2:
+        return list(bindings)
+    return [
+        draft.model_copy(update={"kind": "set", "value_dcids": list(flows)})
+        if draft.property_dcid == ODA_FLOW_SYSTEM
+        and draft.kind == "value"
+        and draft.value_dcids == [ODA_FLOW]
+        else draft
+        for draft in bindings
+    ]
+
+
+def _record_basis(state: ResolveState, settled: _SettledBindings, basis: BasisElection) -> None:
+    """Record the measure basis the part's served bindings hold
+    (`ResolveState.scope_selection`), with the entry that settled it when they hold the
+    option the entry asked for. A part whose convention is the OECD headline per year and
+    which holds its net shape records the headline option, which the scope serves from the
+    headline composite. A basis no entry settled that is not the convention's, served
+    because no shape of the pool measures the convention's or because the coverage shows
+    only the shape's default basis at the places (`_bind_query_places`), records
+    `SERVED_DIFFERS_RULE` in place of the convention's rule and is logged with the part's
+    shape, so the choice does not claim the convention settled it. A shape whose measure no
+    declared basis names records none."""
+    shape = settled.shape
+    netting = next(
+        (
+            draft.value_dcids[0]
+            for draft in settled.bindings
+            if draft.property_dcid == "nettingBasis"
+            and draft.kind == "value"
+            and len(draft.value_dcids) == 1
+        ),
+        None,
+    )
+    held = measure_of(shape.pop_type_dcid, shape.meas_prop_dcid, netting)
+    if held is None:
+        return
+    active = measure_basis_option_id(held.basis)
+    if basis.entry is None and basis.convention.basis == "oecd_headline" and held == basis.measure:
+        # The headline's net shape stands for the headline per year, which the scope serves
+        # from the headline composite (`scope.basis.HEADLINE_BINDING`).
+        active = HEADLINE_OPTION
+    entry = basis.entry if basis.entry is not None and basis.entry.option_id == active else None
+    rule = BASIS_RULE
+    if entry is None and held != basis.by_convention().measure:
+        rule = SERVED_DIFFERS_RULE
+        logger.info(
+            "measure basis served differs from convention: %s",
+            json.dumps(
+                {
+                    "part_shape": basis.convention.shape,
+                    "window": basis.convention.window,
+                    "convention": basis.by_convention().basis,
+                    "served": held.basis,
+                    "population_type": shape.pop_type_dcid,
+                    "measured_property": shape.meas_prop_dcid,
+                    "netting": netting,
+                },
+                separators=(",", ":"),
+            ),
+        )
+    state.scope_selection.write(
+        AxisRecord(
+            axis="measure_basis",
+            rule=rule,
+            active=active,
+            provenance="default" if entry is None else entry.provenance,
+            entry=entry,
+        )
+    )

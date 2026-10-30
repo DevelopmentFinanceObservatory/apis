@@ -531,6 +531,9 @@ _DELIBERATE_DIFFS: dict[str, dict[str, object]] = {
     "extra-134-FacetNotAvailableError": {
         "alternatives": [{"ref": "Exemplar", "label": "Exemplar"}],
     },
+    # A role-shaped currency refusal offers only the currency roles that bind a declared role,
+    # and the exemplar's declared role `exemplar` is reachable through none.
+    "mint_errors-10-CurrencyRoleUndeclared": {"alternatives": []},
     # `/facets/unit` locates the failure in the materialisation request, not the posted body,
     # so it stays the refusal's `facet_pointer` and leaves the top level.
     "extra-136-DefaultFacetUndefinedError": {"pointer": None},

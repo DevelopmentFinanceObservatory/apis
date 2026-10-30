@@ -104,8 +104,9 @@ class PlaceContext:
         stated, under the key of its `DIRECTION_DISCARDED` warning. A direction the
         extractor inferred (`PlaceRoles.inferred_directions`) keeps its warning and writes
         no departure, since the request named no role to depart from."""
+        words = self.roles.direction_words
         return {
-            warning_key(warning): direction_discarded(name, axis)
+            warning_key(warning): direction_discarded(words.get(name, name), axis)
             for warning, (name, axis) in zip(
                 direction_discarded_warnings(self.roles),
                 self.roles.discarded_directions,
@@ -264,14 +265,16 @@ def takes_default_scope(shape: ShapeDraft, roles: PlaceRoles | PlaceAssignment) 
 
 def direction_discarded_warnings(roles: PlaceRoles) -> tuple[Warning, ...]:
     """One `DIRECTION_DISCARDED` warning per directed place a subject-only shape reads as its
-    subject, in place order, each name at its first place (`place_roles.bind_place_roles`)."""
+    subject, in place order, each name at its first place (`place_roles.bind_place_roles`)
+    and in the request's words (`PlaceRoles.direction_words`)."""
+    words = roles.direction_words
     return tuple(
         Warning(
             code=DIRECTION_DISCARDED,
             severity="warn",
             message=(
-                f"{name} was named as the {axis_noun(axis)}; this shape reports the place as "
-                "its own subject, so the direction was dropped."
+                f"{words.get(name, name)} was named as the {axis_noun(axis)}; this shape "
+                "reports the place as its own subject, so the direction was dropped."
             ),
         )
         for name, axis in roles.discarded_directions
