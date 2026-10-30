@@ -77,7 +77,7 @@ Each pool's width is its own setting. The Datasets doors submit to a read execut
 - `SEARCH_SDMX_CHUNK_CONCURRENCY` (8): how many chunk GETs one chunked `SdmxClient.data()` call runs at once.
 - `SEARCH_SDMX_TOTAL_CONCURRENCY` (16): how many SDMX GETs run at once across every concurrent call in the process, regardless of how many chunks any one of them submits.
 - `GRAPH_NODE_POOL_SIZE` (4 by default, 16 in the deployed service): the graph door's own pool.
-- `PRESENTATION_COMPONENTS_MAX_CONCURRENCY` and `PRESENTATION_FRAMES_MAX_CONCURRENCY` (4 each).
+- `PRESENTATION_COMPONENTS_MAX_CONCURRENCY` and `PRESENTATION_FRAMES_MAX_CONCURRENCY` (4 each), and `PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY` (2), the bare frames route's own pool, since a read there can rebuild a dataset.
 
 Inside one group materialise, resolve stays a single sequential pass over the batched shape read described above. The fan-out that overlaps work is the member or chunk fetch. A fresh thread pool sized to `DATASETS_MINT_MEMBER_MAX_CONCURRENCY` primes with that many chunks and refills one at a time as each resolves, waited on in submission order. The overlap is real. It is not just apparent from totals. Measured with per-call timestamps, a fetch's own SDMX calls summed 9.9 to 10.3 seconds of work across a wall span of about 4 seconds, roughly 2.4 times the span, the signature of several fetches genuinely running at once.
 

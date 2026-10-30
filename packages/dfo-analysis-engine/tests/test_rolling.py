@@ -327,6 +327,114 @@ _GNI_COLUMNS = ["stat_var", "observationAbout", "time_period", "value", "unit"]
 
 
 @pytest.mark.parametrize(
+    ("right_columns", "right"),
+    [
+        pytest.param(
+            [*_GNI_COLUMNS, "observationAbout_type"],
+            {
+                "spec_id": _GNI,
+                "bindings": {"observationAbout": ["dcid:GHA"]},
+                "levels": {"observationAbout_type": "Country"},
+            },
+            id="second-side-holds-the-column",
+        ),
+        pytest.param(
+            _GNI_COLUMNS,
+            {"spec_id": _GNI, "bindings": {"observationAbout": ["dcid:GHA"]}},
+            id="second-side-lacks-the-column",
+        ),
+    ],
+)
+def test_a_narrowing_above_a_keyed_pairing_crosses_its_key_map(
+    right_columns: list[str], right: dict[str, Any]
+) -> None:
+    """The slots are left out of the parameters, as the runner writes a tree."""
+    quotient = _quotient(
+        numerator_by=["recipient"], denominator_by={"recipient": "observationAbout"}
+    )
+    del quotient["op_spec"]["parameters"]["denominator_frame_ref"]
+    tree = _node(
+        "filter",
+        {
+            "predicates": [
+                {"kind": "place_level", "column": "recipient_type", "level": "Country"},
+                _match("recipient", "dcid:GHA"),
+            ]
+        },
+        frame_ref=quotient,
+    )
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[[*_COLUMNS, "recipient_type"], right_columns]
+    )
+
+    assert populations == [
+        {
+            "pair": [
+                [
+                    {
+                        "spec_id": _AID,
+                        "bindings": {"recipient": ["dcid:GHA"]},
+                        "levels": {"recipient_type": "Country"},
+                    }
+                ],
+                [right],
+            ],
+            "keys": {"recipient": "observationAbout"},
+        }
+    ]
+
+
+def test_a_compare_takes_its_output_columns_from_its_right_side() -> None:
+    compare = {
+        "op_spec": {
+            "verb": "compare",
+            "parameters": {"on": {"observationAbout": "recipient"}},
+        },
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
+    tree = _node("filter", {"predicates": [_level("Country")]}, frame_ref=compare)
+
+    populations = anchor_populations(
+        _rolled(tree), _AID_GNI, root_columns=[_COLUMNS, [*_GNI_COLUMNS, "observationAbout_type"]]
+    )
+
+    assert populations == [
+        {
+            "pair": [
+                [{"spec_id": _AID, "bindings": {}}],
+                [
+                    {
+                        "spec_id": _GNI,
+                        "bindings": {},
+                        "levels": {"observationAbout_type": "Country"},
+                    }
+                ],
+            ],
+            "keys": {"recipient": "observationAbout"},
+        }
+    ]
+
+
+def test_a_level_above_a_verb_of_no_keys_holds_only_where_a_side_carries_it() -> None:
+    sums = {
+        "op_spec": {"verb": "sum_of", "parameters": {}},
+        "inputs": {"frame_ref": {"root": 0}, "right_frame_ref": {"root": 1}},
+    }
+    tree = _node("filter", {"predicates": [_level("Country")]}, frame_ref=sums)
+
+    populations = anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_TYPED, _COLUMNS])
+
+    assert populations == [
+        {"spec_id": _AID, "bindings": {}, "levels": {"observationAbout_type": "Country"}},
+        {"spec_id": _GNI, "bindings": {}},
+    ]
+    # The side the output takes its columns from must carry what is filtered on.
+    with pytest.raises(PopulationLevelColumnMissingError):
+        anchor_populations(_rolled(tree), _AID_GNI, root_columns=[_COLUMNS, _TYPED])
+
+
+@pytest.mark.parametrize(
     "slots_named", [True, False], ids=["slots-named", "slots-left-out-as-the-runner-writes"]
 )
 def test_a_keyed_pairing_whose_sides_both_count_gives_one_pairing_population(

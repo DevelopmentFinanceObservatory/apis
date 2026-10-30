@@ -9,7 +9,9 @@ that version's canonical frame, with the `spec_id` and `content_version` it reso
 derived `ops_` id names its version.
 
 Its executor and non-blocking semaphore are independent of the components door. Saturation
-returns retryable 503. Each permit covers the pipeline call and JSON encoding.
+returns retryable 503. Each permit covers the pipeline call and JSON encoding. The bare route
+can rebuild a dataset, so it has its own smaller executor and semaphore, and bare reads of stale
+datasets refuse among themselves while pair reads keep their permits.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from assembler.errors import BindingInvalid, FrameUnavailable
 from assembler.pipeline import BARE_SPEC_ID, get_frame_view
 from assembler.ports import FrameRef, FrameStore
 from dataset_store import close_shared_pool as close_dataset_pool
-from datasets_api.door_executor import build_door_executor
+from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import ProblemSpec
@@ -36,6 +38,7 @@ from dfo_platform.doors import DoorContribution
 from dfo_platform.store_errors import store_failure_is_permanent
 from presentation_api.codes import retryable_for
 from presentation_api.config import (
+    PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY,
     PRESENTATION_FRAMES_MAX_CONCURRENCY,
     PRESENTATION_FRAMES_TIMEOUT_SECONDS,
     PresentationSettings,
@@ -136,7 +139,9 @@ def build_frames_door(
         pool_size if pool_size is not None else PRESENTATION_FRAMES_MAX_CONCURRENCY
     )
     door_executor = build_door_executor(effective_pool_size, "frames", surface="presentation")
-    executor = door_executor.executor
+    bare_executor = build_door_executor(
+        PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY, "frames-bare", surface="presentation"
+    )
 
     deps = FramesDeps(frame_store=cast(FrameStore, frame_store))
 
@@ -166,14 +171,18 @@ def build_frames_door(
         try:
             yield
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            door_executor.executor.shutdown(wait=False, cancel_futures=True)
+            bare_executor.executor.shutdown(wait=False, cancel_futures=True)
             await asyncio.to_thread(door_executor.drain, _budget)
+            await asyncio.to_thread(bare_executor.drain, _budget)
             _close_live_clients_built_here()
 
-    async def _run(job: Callable[[], JSONResponse], /) -> JSONResponse:
+    async def _run(
+        job: Callable[[], JSONResponse], /, *, on: DoorExecutor = door_executor
+    ) -> JSONResponse:
         with frame_reads_bounded_by(timeout_seconds=PRESENTATION_FRAMES_TIMEOUT_SECONDS):
             return await asyncio.wait_for(
-                door_executor.run(job, refuse=FramesBackpressure),
+                on.run(job, refuse=FramesBackpressure),
                 timeout=PRESENTATION_FRAMES_TIMEOUT_SECONDS,
             )
 
@@ -241,7 +250,7 @@ def build_frames_door(
                 status_code=200,
             )
 
-        return await _run(job)
+        return await _run(job, on=bare_executor)
 
     return DoorContribution(
         router=router,

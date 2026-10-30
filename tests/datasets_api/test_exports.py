@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -856,6 +857,25 @@ def test_an_export_whose_record_is_gone_refuses_rather_than_signing(
         assert resp.status_code == 500, resp.text
         assert resp.json()["code"] == "internal_error"
     assert not [signed for signed in rig.signings if signed[0] == f"sha256:{body['sha256']}"][1:]
+
+
+def test_a_lasting_link_outlives_a_change_to_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stored body holds the reply of its day: a field since dropped, and none added since."""
+    rig = _Rig("fetched", monkeypatch)
+    body = rig.prepare("csv").json()
+    stored = {key: value for key, value in body.items() if key != "rows"} | {"retired": 1}
+    with rig.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.export SET body = %s WHERE export_id = %s",
+            (json.dumps(stored), body["export_id"]),
+        )
+
+    link = rig.link(body["export_id"])
+    repeat = rig.prepare("csv")
+
+    assert link.status_code == 302, link.text
+    assert repeat.status_code == 200, repeat.text
+    assert repeat.json() == stored
 
 
 def test_a_root_revoked_after_a_derived_export_refuses_the_link_and_a_repeat_prepare(

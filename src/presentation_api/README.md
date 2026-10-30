@@ -535,6 +535,7 @@ The surface mounts through the platform application factory when `DFO_PRESENTATI
 | `PRESENTATION_COMPONENTS_MAX_CONCURRENCY` | `4`               | Worker thread pool size and backpressure limit for component read/write routes. |
 | `PRESENTATION_COMPONENTS_TIMEOUT_SECONDS` | `30`              | Maximum execution timeout for component store operations.                       |
 | `PRESENTATION_FRAMES_MAX_CONCURRENCY`     | `4`               | Worker thread pool size and backpressure limit for frame inspection routes.     |
+| `PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY` | `2`             | Worker thread pool size and backpressure limit for the bare frames route.       |
 | `PRESENTATION_FRAMES_TIMEOUT_SECONDS`     | `30`              | Maximum execution timeout for frame store operations.                           |
 | `PRESENTATION_STORE_RUNTIME_DB_USER`      | _(Required)_      | Database username for presentation store connection pooling.                    |
 | `DATASET_STORE_RUNTIME_DB_USER`           | _(Required)_      | Database username for shared dataset and frame store connections.               |

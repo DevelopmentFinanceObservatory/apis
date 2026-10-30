@@ -187,6 +187,25 @@ class ExportLicence(BaseModel):
     url: str | None = Field(description="the licence's terms page; null where none is declared")
 
 
+class _StoredFrame(BaseModel):
+    spec_id: str
+    content_version: str
+
+
+class _StoredLicence(BaseModel):
+    source: str
+
+
+class _StoredFacts(BaseModel):
+    """What the guard and the link read of a stored `ExportResponse` body. Any other field is
+    ignored and may be absent, so a later change to the reply leaves lasting links working."""
+
+    frame: _StoredFrame
+    licences: list[_StoredLicence]
+    media_type: str
+    file_name: str
+
+
 class ExportResponse(BaseModel):
     """The facts of a prepared export. A repeat prepare answers the same facts."""
 
@@ -642,7 +661,12 @@ def _served_ids(id: str, *, current: Deps) -> tuple[str, ...]:
 
 
 def _check_version(
-    subject_id: str, content_version: str, *, named: str, frame: ExportFrame, current: Deps
+    subject_id: str,
+    content_version: str,
+    *,
+    named: str,
+    frame: ExportFrame | _StoredFrame,
+    current: Deps,
 ) -> None:
     """Refuse the export of `frame` when the version `subject_id` records, or its base version,
     is revoked under `subject_id`, under `named` or under a served id bound to `named`.
@@ -668,7 +692,9 @@ def _check_version(
         )
 
 
-def _check_roots(recipe: RecipeRecord | None, *, frame: ExportFrame, current: Deps) -> None:
+def _check_roots(
+    recipe: RecipeRecord | None, *, frame: ExportFrame | _StoredFrame, current: Deps
+) -> None:
     """`_check_version` of every root of the derived frame `frame`'s stored recipe.
 
     Raises:
@@ -691,8 +717,8 @@ def _check_roots(recipe: RecipeRecord | None, *, frame: ExportFrame, current: De
         )
 
 
-def _servable_facts(record: ExportRecord, *, current: Deps) -> dict[str, Any]:
-    """The facts of `record`, once every guard a served export answers to passes. See the
+def _servable_facts(record: ExportRecord, *, current: Deps) -> Mapping[str, Any]:
+    """The facts of `record`, as stored, once every guard a served export answers to passes. See the
     module docstring.
 
     Raises:
@@ -702,8 +728,8 @@ def _servable_facts(record: ExportRecord, *, current: Deps) -> dict[str, Any]:
         RuntimeError: The version record or the recipe the export rests on is gone
             (`_check_version`, `_check_roots`), which answers `internal_error`.
     """
-    body = ExportResponse.model_validate(record.body)
-    frame = body.frame
+    facts = _StoredFacts.model_validate(record.body)
+    frame = facts.frame
     with phase("revocation"):
         _check_version(
             record.subject_id,
@@ -717,11 +743,11 @@ def _servable_facts(record: ExportRecord, *, current: Deps) -> dict[str, Any]:
                 spec_id=frame.spec_id, content_version=frame.content_version
             )
             _check_roots(recipe, frame=frame, current=current)
-    check_licences(licence.source for licence in body.licences)
-    return body.model_dump(mode="json")
+    check_licences(licence.source for licence in facts.licences)
+    return record.body
 
 
-def recorded_export(*, request: ExportRequest, current: Deps) -> dict[str, Any] | None:
+def recorded_export(*, request: ExportRequest, current: Deps) -> Mapping[str, Any] | None:
     """The facts of the export recorded under the request's id, or `None` when none is.
 
     Raises:
@@ -735,7 +761,7 @@ def recorded_export(*, request: ExportRequest, current: Deps) -> dict[str, Any] 
 
 def prepare_export(
     *, request: ExportRequest, caller: Caller | None, current: Deps, deps: DefinitionDeps
-) -> dict[str, Any]:
+) -> Mapping[str, Any]:
     """Prepare the file `request` names, pin it, record it, and return its facts. See the
     module docstring. `caller` names an open caller, whose `pin` allowance a new pinned copy
     spends, and `None` a caller holding the pin grant. `deps` is the request's retrieval view of

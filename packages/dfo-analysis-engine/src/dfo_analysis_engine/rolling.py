@@ -54,12 +54,21 @@ path gives one population over its root's dataset, bound by:
   `frame_ref` twice, so the paths under it are walked once for each side;
 - the card's selection.
 
+What a step above a two-sided verb keeps is stated on the verb's output, which
+takes its columns from one side: `right_frame_ref` for a `compare`, whose `data`
+is its right side, and `frame_ref` for any other verb. On the other side it
+holds under the verb's key map, so a key column, or an enrichment column of one
+(`dfo_analysis_engine.place_type.enrichment_role`), takes the name that side
+gives it, and a level holds only where that side's root carries the column.
+
 A binding counts only where the root carries its column, and never on
 `time_period`, `value` or `status`, which are no part of a series. Two bindings
 on one column keep the values both allow. A level differs. A `place_level`
 predicate on a path whose root lacks the place-type column raises
 `PopulationLevelColumnMissingError`, since the population would otherwise count
-places the filter drops.
+places the filter drops. A level that reached the path from above a two-sided
+verb, on the side that verb's output does not take its columns from, does not
+raise: the filter reads the output, which holds the column.
 
 A keyed pairing verb whose two sides both hold a counted path gives one pairing
 population in place of its sides' populations, with the key map read from its
@@ -96,6 +105,7 @@ from typing import Any
 import rfc8785
 
 from dfo_analysis_engine.engine.paired import DATA_SIDE
+from dfo_analysis_engine.place_type import enrichment_role
 from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
 
 __all__ = [
@@ -317,7 +327,8 @@ def anchor_key(
 class _Narrowing:
     """What the verbs on one path keep of a root's series: `bindings`, each
     column to the values kept, and `levels`, each place-type column to the
-    levels it is held to."""
+    levels it is held to. `optional_levels` are the columns of `levels` held
+    only if the root carries them."""
 
     def __init__(self, above: _Narrowing | None = None) -> None:
         self.bindings: dict[str, set[str]] = (
@@ -327,6 +338,7 @@ class _Narrowing:
             {column: set(levels) for column, levels in above.levels.items()} if above else {}
         )
         self.strict_levels: set[str] = set(above.strict_levels) if above else set()
+        self.optional_levels: set[str] = set(above.optional_levels) if above else set()
 
     def bind(self, column: str, values: Iterable[str]) -> None:
         """Bind `column` to `values`, keeping what an earlier binding on it also allows."""
@@ -336,8 +348,28 @@ class _Narrowing:
     def hold(self, column: str, level: str, *, strict: bool = False) -> None:
         """Hold the place-type `column` to `level`, beside any level it is already held to."""
         self.levels.setdefault(column, set()).add(level)
+        self.optional_levels.discard(column)
         if strict:
             self.strict_levels.add(column)
+
+    def across(self, keys: Mapping[str, str]) -> _Narrowing:
+        """This narrowing on the side of a two-sided verb its output does not take its
+        columns from, `keys` mapping each output column to that side's."""
+
+        def named(column: str) -> str:
+            if column in keys:
+                return keys[column]
+            role = enrichment_role(column, roles=keys)
+            return column if role is None else keys[role] + column.removeprefix(role)
+
+        crossed = _Narrowing()
+        for column, values in self.bindings.items():
+            crossed.bind(named(column), values)
+        for column, levels in self.levels.items():
+            for level in levels:
+                crossed.hold(named(column), level, strict=column in self.strict_levels)
+        crossed.optional_levels = set(crossed.levels)
+        return crossed
 
 
 def _sides(
@@ -357,7 +389,8 @@ def _sides(
     named = {name for name in parameters if name.endswith(_SLOT_SUFFIX)}
     slots = [_PRIMARY_SLOT, *sorted((named | set(inputs)) - {_PRIMARY_SLOT})]
     for slot in slots:
-        kept = _Narrowing(above)
+        keys = _output_keys(node["op_spec"], slot)
+        kept = _Narrowing(above) if keys is None else above.across(keys)
         for predicate in parameters.get("predicates", ()):
             if not isinstance(predicate, Mapping):
                 raise AnalysisRefused(
@@ -401,6 +434,20 @@ def _pairing(op_spec: Mapping[str, Any]) -> tuple[str, dict[str, str]] | None:
         right_keys = parameters.get("right_keys") or {}
         return "right_frame_ref", {key: right_keys.get(key, key) for key in join_keys}
     return None
+
+
+def _output_keys(op_spec: Mapping[str, Any], slot: str) -> dict[str, str] | None:
+    """The map from the output columns of a verb to the columns of its side `slot`, `None`
+    for the side the output takes its columns from, and empty for a verb that states no
+    keys. See the module docstring."""
+    data_right = DATA_SIDE.get(op_spec.get("verb", "")) == "right"
+    if slot == ("right_frame_ref" if data_right else _PRIMARY_SLOT):
+        return None
+    pairing = _pairing(op_spec)
+    if pairing is None:
+        return {}
+    _, keys = pairing
+    return {right: left for left, right in keys.items()} if data_right else keys
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,7 +530,8 @@ def anchor_populations(
         PopulationEmptyError: The bindings on one path share no value for a
             column, or hold one place-type column to two levels.
         PopulationLevelColumnMissingError: A `place_level` predicate on a path
-            tests a column that path's root does not carry.
+            tests a column that path's root does not carry, on any side but the
+            one a two-sided verb's output does not take its columns from.
         PairingKeysUnstatedError: An op-spec whose sides both hold a counted
             path sets `on` and names no verb.
         AnalysisRefused: `op_spec_invalid`, for a predicate that is no object.
@@ -513,6 +561,8 @@ def anchor_populations(
         levels: dict[str, str] = {}
         for column, held in kept.levels.items():
             if column not in carried:
+                if column in kept.optional_levels:
+                    continue
                 raise PopulationLevelColumnMissingError(spec_id=spec_id, column=column)
             if len(held) > 1:
                 # No place sits at two of the levels a filter keeps.

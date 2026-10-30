@@ -529,6 +529,51 @@ def test_a_bare_spec_id_that_cannot_be_served_is_frame_unavailable(
     assert resp.json()["cause"]["code"] == cause
 
 
+def test_bare_reads_at_their_limit_refuse_and_leave_pair_reads_their_permits(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    frame_ref: FrameRef,
+):
+    """A rebuild holds a bare read's permit for seconds, so pair reads run beside it."""
+    monkeypatch.setattr(frames_door, "PRESENTATION_FRAMES_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(frames_door, "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY", 1)
+    rebuilding = threading.Event()
+    finish_rebuild = threading.Event()
+
+    class Rebuilding(FakeNewestSpecs):
+        def newest_of_spec(self, spec_id: str) -> FrameRef:
+            rebuilding.set()
+            finish_rebuild.wait(timeout=5.0)
+            return frame_ref
+
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        newest_frames=Rebuilding(),
+    )
+    url = f"/api/presentation/frames/{BARE_SPEC_ID}"
+    with (
+        TestClient(create_app([surface]), raise_server_exceptions=False) as client,
+        ThreadPoolExecutor(max_workers=1) as caller,
+    ):
+        first = caller.submit(client.get, url)
+        try:
+            assert rebuilding.wait(timeout=5.0)
+            concurrent = client.get(url)
+            pair = _get_frame(client, frame_ref)
+        finally:
+            finish_rebuild.set()
+        first_resp = first.result(timeout=5.0)
+
+    assert concurrent.status_code == 503, concurrent.text
+    assert concurrent.json()["code"] == "service_unavailable"
+    assert pair.status_code == 200, pair.text
+    assert first_resp.status_code == 200, first_resp.text
+
+
 def test_a_bare_spec_id_without_a_datasets_surface_is_frame_unavailable(client: TestClient):
     resp = client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
 
