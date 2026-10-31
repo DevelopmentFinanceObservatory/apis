@@ -16,7 +16,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from dfo_platform.app import Surface
-from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
+from dfo_platform.doors import (
+    DoorContribution,
+    check_endpoint_exemplars,
+    combine_classifiers,
+    endpoint_exemplars,
+    flatten,
+)
 from skills_api.codes import SKILLS_CODE_CATALOGUE
 from skills_api.deps import SKILLS_DEPS_SLOT, SkillsDeps
 from skills_api.doors._response_cache import GenerationBodyCache
@@ -46,6 +52,8 @@ def skills_surface(
     )
 
     router = flatten(doors)
+    classify = combine_classifiers(*(door.classify for door in doors))
+    check_endpoint_exemplars(doors, classify)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -78,10 +86,11 @@ def skills_surface(
         router=router,
         capability_version=SKILLS_CAPABILITY_VERSION,
         codes=SKILLS_CODE_CATALOGUE,
-        classify=combine_classifiers(*(door.classify for door in doors)),
+        classify=classify,
         exception_types=tuple(exc_type for door in doors for exc_type in door.exception_types),
-        exception_exemplars=tuple(
-            exemplar for door in doors for exemplar in door.exception_exemplars
-        ),
+        exception_exemplars=endpoint_exemplars(doors),
         lifespan=lifespan,
+        registry_endpoints={
+            key: endpoint for door in doors for key, endpoint in door.registry_endpoints.items()
+        },
     )

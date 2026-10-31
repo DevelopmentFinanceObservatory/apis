@@ -18,7 +18,6 @@ pair reads keep their permits.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -34,7 +33,7 @@ from dataset_store import close_shared_pool as close_dataset_pool
 from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.doors import DoorContribution
 from dfo_platform.store_errors import store_failure_is_permanent
 from presentation_api.codes import retryable_for
@@ -45,17 +44,30 @@ from presentation_api.config import (
 )
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import FrameViewResponse, NewestFrameViewResponse
-from presentation_api.newest_frames import NewestFrames, resolve_bare_spec
+from presentation_api.newest_frames import (
+    NewestFrames,
+    NewestNotReady,
+    newest_not_ready_spec,
+    resolve_bare_spec,
+)
 from presentation_api.path_params import (
     PathParamInvalid,
     require_content_version,
     require_spec_id,
 )
-from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
+from presentation_api.refusals import (
+    FRAME_UNAVAILABLE_EXEMPLARS,
+    binding_invalid_spec,
+    frame_unavailable_spec,
+)
+from presentation_api.routes import (
+    BARE_FRAME_PATH,
+    FRAME_PATH,
+    FRAMES_ENDPOINT,
+    door_registry_endpoints,
+)
 from presentation_store import frame_reads_bounded_by
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
-
-logger = logging.getLogger(__name__)
 
 
 class FramesBackpressure(Exception):
@@ -64,9 +76,8 @@ class FramesBackpressure(Exception):
 
 def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, PathParamInvalid):
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=str(exc),
             retryable=False,
         )
@@ -74,38 +85,33 @@ def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
         return binding_invalid_spec(exc)
     if isinstance(exc, FrameUnavailable):
         return frame_unavailable_spec(exc)
+    if isinstance(exc, NewestNotReady):
+        return newest_not_ready_spec(exc)
     if isinstance(exc, FramesBackpressure):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
             detail="the frames door is at its concurrent-read capacity right now; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, (SpecRegistryUnavailable, SpecRegistryStoreError)):
         # A frame load reads the registry to scope its revocation check, and fails closed.
-        logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
+            log=f"Spec registry read scoping a frame load's revocation check failed: {exc}",
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error(
-                "Datasets store call underlying a frame load failed with a permanent cause: %s",
-                exc,
-            )
-            return ProblemSpec(
-                status=500,
-                code="internal_error",
+            return refused(
+                "internal_error",
+                log=f"Datasets store call underlying a frame load failed with a permanent cause: {exc}",
                 detail="a frame store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
-        logger.error("Datasets store call underlying a frame load failed: %s", exc)
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
+            log=f"Datasets store call underlying a frame load failed: {exc}",
             detail="a frame store call failed; retry",
             retryable=retryable_for("service_unavailable"),
         )
@@ -189,7 +195,7 @@ def build_frames_door(
     router = APIRouter()
 
     @router.get(
-        "/api/presentation/frames/{spec_id}/{content_version}",
+        FRAME_PATH,
         responses={200: {"model": FrameViewResponse, "description": _VIEW_DESCRIPTION}},
     )
     async def get_frame(
@@ -213,7 +219,7 @@ def build_frames_door(
         return await _run(job)
 
     @router.get(
-        "/api/presentation/frames/{spec_id}",
+        BARE_FRAME_PATH,
         responses={
             200: {
                 "model": NewestFrameViewResponse,
@@ -254,31 +260,36 @@ def build_frames_door(
 
     return DoorContribution(
         router=router,
+        registry_endpoints=door_registry_endpoints(router),
         classify=classify_frames_exception,
         exception_types=(
             PathParamInvalid,
             BindingInvalid,
             FrameUnavailable,
+            NewestNotReady,
             FramesBackpressure,
             DatasetsStoreUnavailable,
             SpecRegistryUnavailable,
             SpecRegistryStoreError,
         ),
-        exception_exemplars=(
-            PathParamInvalid(name="spec_id", value="exemplar"),
-            BindingInvalid(
-                pointer="/dimension",
-                dimension="exemplar",
-                legal_values=("recipient",),
-                truncated=False,
-                detail="exemplar",
-            ),
-            FrameUnavailable(reason="io", detail="exemplar"),
-            FramesBackpressure(),
-            DatasetsStoreUnavailable("exemplar"),
-            DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
-            SpecRegistryUnavailable(),
-            SpecRegistryStoreError("exemplar"),
-        ),
+        endpoint_exemplars={
+            FRAMES_ENDPOINT: (
+                PathParamInvalid(name="spec_id", value="exemplar"),
+                BindingInvalid(
+                    pointer="/dimension",
+                    dimension="exemplar",
+                    legal_values=("recipient",),
+                    truncated=False,
+                    detail="exemplar",
+                ),
+                *FRAME_UNAVAILABLE_EXEMPLARS,
+                NewestNotReady("exemplar", retry_after_s=1.0),
+                FramesBackpressure(),
+                DatasetsStoreUnavailable("exemplar"),
+                DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
+                SpecRegistryUnavailable(),
+                SpecRegistryStoreError("exemplar"),
+            )
+        },
         lifespan=lifespan,
     )

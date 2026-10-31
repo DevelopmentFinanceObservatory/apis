@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import httpx
 
+from artifact_store import LiveArtifactInventory
 from code_index import CodeIndex, IndexStamp
 from code_index.types import PartyRow, StatVarRow
 from datasets_api.recorded_rendering import MintingOptions, recorded_mintings
@@ -18,10 +19,12 @@ from spec_registry.identity import recompute_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
 from ._description_doubles import read_record
+from ._frame_doubles import link_frame1_only
 from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
 from .test_definition_door_currency import _FakeHeadStore
+from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
 _MEMBER = "FlowMember"
 _FRANCE = "country/FRA"
@@ -239,3 +242,45 @@ def test_a_cut_read_on_a_head_hit_and_by_query_parameter_serves_the_cut_version(
     assert head_record is not None and cut_record is not None
     assert cut_record.series.rows == 1
     assert cut_record.steps == head_record.steps
+
+
+def test_a_cut_read_of_a_head_stored_as_a_frame1_document_cuts_it_as_a_rebuild_would():
+    """A head whose stored frame is a frame1 document is cut from that document on a head hit,
+    and the cut is the version a fresh cut mint records."""
+    version_store = FakeVersionRecordDatasetStore()
+    artifact_store = _InventoryRecordingArtifactStore(
+        inventory=LiveArtifactInventory(store=version_store)
+    )
+    client = _client(
+        artifact_store=artifact_store,
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+        head_writer=_FakeHeadStore(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    minted = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    link_frame1_only(
+        version_store,
+        artifact_store,
+        subject_id=spec_id,
+        content_version=minted["content_version"],
+    )
+
+    read = client.get(
+        f"/api/datasets/{spec_id}",
+        params={"format": "csv", "bundle": "false", "without_party_totals": "true"},
+    )
+    assert read.status_code == 200, read.text
+    cut = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_CUT)
+
+    assert read.json()["trace"]["served_from"] == "head"
+    assert read.json()["content_version"] == cut["content_version"]
+    assert _csv_digest(read.json()) == _csv_digest(cut)
+
+
+def _csv_digest(manifest: dict) -> str:
+    (csv,) = (a for a in manifest["artifacts"] if a["media_type"].startswith("text/csv"))
+    return csv["artifact_digest"]

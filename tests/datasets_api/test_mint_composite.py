@@ -12,7 +12,6 @@ import csv
 import gc
 import io
 import threading
-import time
 import weakref
 from collections import Counter
 from collections.abc import Mapping
@@ -256,9 +255,9 @@ def test_a_composite_mints_one_frame_over_the_years_both_components_hold():
 
 
 def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
-    """The first SDMX request stalls past the hedge and then answers other values, so its
-    duplicate answers it. The pooled mint's frame, CSV and content version match a mint that
-    reads one request at a time, so the duplicate's answer is the one the mint used."""
+    """The first SDMX request stalls until the mint has returned and then answers other values,
+    so its duplicate answers it. The pooled mint's frame, CSV and content version match a mint
+    that reads one request at a time, so the duplicate's answer is the one the mint used."""
     populated = _populated()
     stale = {
         dcid: (facet, value + 1000, years) for dcid, (facet, value, years) in populated.items()
@@ -266,6 +265,7 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
     lock = threading.Lock()
     sent: Counter[str] = Counter()
     stalled: list[str] = []
+    stalled_until_done = threading.Event()
 
     def stall_first(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -275,7 +275,7 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
             if stall:
                 stalled.append(url)
         if stall:
-            time.sleep(0.3)
+            stalled_until_done.wait(5)
             return _sdmx_response(stale, request)
         return _sdmx_response(populated, request)
 
@@ -293,7 +293,10 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
         manifest = minted.json()
         return manifest["content_version"], _csv_rows(artifacts, manifest)
 
-    pooled = mint(4, httpx.MockTransport(stall_first), 0.05)
+    try:
+        pooled = mint(4, httpx.MockTransport(stall_first), 0.05)
+    finally:
+        stalled_until_done.set()
     serial = mint(1, _sdmx_transport(populated), None)
 
     [stalled_url] = stalled

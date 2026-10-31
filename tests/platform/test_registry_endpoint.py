@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import APIRouter, Request
 from fastapi.testclient import TestClient
 
-from dfo_platform import ProblemSpec, codes
+from dfo_platform import ProblemSpec, codes, refused
 from dfo_platform.app import Surface, SurfaceConfigurationError, create_app
 from dfo_platform.codes import bound_registry_endpoint, registered_status
+from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.problem import Refusal, classify_refusal
 
 _CODE = "facet_binding_unsupported"
@@ -31,7 +34,7 @@ def _two_statuses(monkeypatch: pytest.MonkeyPatch) -> None:
 def _admit(request: Request) -> ProblemSpec | None:
     if request.url.path != "/api/t/a/admitted":
         return None
-    return classify_refusal(_Unsupported())
+    return refused(_CODE, retryable=False, log="exemplar", log_level=logging.WARNING)
 
 
 def _client(**overrides: object) -> TestClient:
@@ -39,6 +42,10 @@ def _client(**overrides: object) -> TestClient:
 
     @router.get("/api/t/a")
     async def route_a() -> None:
+        raise _Unsupported()
+
+    @router.post("/api/t/a")
+    async def route_a_posted() -> None:
         raise _Unsupported()
 
     @router.get("/api/t/a/admitted")
@@ -59,12 +66,17 @@ def _client(**overrides: object) -> TestClient:
         router=router,
         capability_version="v-t",
         codes={},
-        classify=classify_refusal,
+        classify=overrides.get("classify", classify_refusal),
         exception_types=(_Unsupported,),
         middleware=(_admit,),
         registry_endpoints=overrides.get(
             "registry_endpoints",
-            {"/api/t/a": "t.a", "/api/t/a/admitted": "t.a", "/api/t/b/{item}": "t.b"},
+            {
+                ("GET", "/api/t/a"): "t.a",
+                ("POST", "/api/t/a"): "t.b",
+                ("GET", "/api/t/a/admitted"): "t.a",
+                ("GET", "/api/t/b/{item}"): "t.b",
+            },
         ),
     )
     return TestClient(create_app([surface]), raise_server_exceptions=False)
@@ -86,9 +98,46 @@ def test_a_refusal_renders_at_the_status_of_its_routes_endpoint(path: str, statu
     assert response.status_code == status, response.text
 
 
+@pytest.mark.parametrize(
+    "path",
+    [pytest.param("/api/t/a", id="classified"), pytest.param("/api/t/a/admitted", id="admission")],
+)
+def test_a_refused_log_line_is_logged_on_the_request_path(
+    caplog: pytest.LogCaptureFixture, path: str
+) -> None:
+    def classify(exc: BaseException) -> ProblemSpec | None:
+        return refused(_CODE, retryable=False, log="exemplar", log_level=logging.WARNING)
+
+    with caplog.at_level(logging.WARNING):
+        _client(classify=classify).get(path)
+
+    (record,) = [record for record in caplog.records if record.name == "dfo_platform.app"]
+    assert (record.levelno, record.args) == (logging.WARNING, ("t", "exemplar"))
+
+
+def test_a_path_binding_covers_every_method_and_refuses_an_unrouted_path() -> None:
+    router = APIRouter()
+
+    @router.get("/api/t/a")
+    @router.post("/api/t/a")
+    async def route_a() -> None:
+        return None
+
+    assert path_registry_endpoints(router, {"/api/t/a": "t.a"}) == {
+        ("GET", "/api/t/a"): "t.a",
+        ("POST", "/api/t/a"): "t.a",
+    }
+    with pytest.raises(ValueError, match="/api/t/missing"):
+        path_registry_endpoints(router, {"/api/t/missing": "t.a"})
+
+
+def test_two_methods_on_one_path_serve_their_own_endpoints() -> None:
+    assert _client().post("/api/t/a").status_code == 501
+
+
 def test_a_registry_endpoint_naming_no_route_is_refused() -> None:
     with pytest.raises(SurfaceConfigurationError):
-        _client(registry_endpoints={"/api/t/missing": "t.a"})
+        _client(registry_endpoints={("GET", "/api/t/missing"): "t.a"})
 
 
 @pytest.mark.parametrize(

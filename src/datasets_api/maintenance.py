@@ -32,8 +32,9 @@ reads the runtime database settings and `DATASETS_OPERATION_DEADLINE_SECONDS`, w
 the API's own.
 
 `backfill-frame1` runs once per environment. For every version linking a pinned frame1 document
-and no pinned canonical frame, it reads the document, rebuilds its frame, checks the frame's
-frame1 digest equals the document's, stores the canonical frame, copies it to the pinned tier
+and no pinned canonical frame, it reads the document's frame (`store_errors.read_stored_frame`),
+stores it as the canonical frame, checks the stored frame reads back as the same frame, copies
+it to the pinned tier
 and, in one transaction, links it under `render.CANONICAL_FRAME_RENDERING` and copies every
 `artifact_reference` row the frame1 held under the version to it, so the sweep counts the
 canonical frame referenced exactly as the frame1 was. A second run finds nothing to convert. It
@@ -93,6 +94,21 @@ failed transiently and left for the next run. It exits 1 when the store is unrea
 it read no version and at least one failed for a cause a retry clears (`_clears_on_retry`).
 It reads the settings `sweep` reads.
 
+`backfill-warnings [--dry-run]` rewrites each stored `coverage_below_scope` member sentence
+that names members by ref into the counts and member fields a mint writes, in the `warnings`
+column and in `immutable_body`, reading each row's members from the graph
+(`warning_backfill`), one row per transaction, starting none once
+`BACKFILL_DESCRIPTIONS_BUDGET` has passed. It writes one `datasets_warning_backfill_failed`
+`ERROR` line per row it leaves, saying whether a later run can get past the failure, and one
+`datasets_warnings_backfilled` line with the counts. It stops at a store outage
+(`_clears_on_retry`), and exits 1 when a row failed transiently, lost the compare or was left.
+A row refused for good is refused again on every run from what it stores, so it is reported
+each time and sets no exit code. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
+per row, and compares its split with the stored one on rows a mint already split. When no row
+matches it opens no release and builds no client. It reads the runtime database settings,
+`DatasetsSettings`, `DATASETS_GRAPH_TOKEN`, `DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph
+release and `ORIGIN_CATALOGUE_URI`.
+
 `backfill-frame-summed` runs by hand once the deploy that applies migration 0038 has moved the
 services to the new image, since the previous image records derived rows without `frame_summed`
 until then. A later run is safe and fills any row the previous image wrote after an earlier one.
@@ -124,15 +140,21 @@ their version already holds the frame or file (`recipe_replay.StoredRootSource`)
 and nothing is published, pinned or recorded. It writes one JSON line per recipe that is not
 equal to `PATH` (default `recipe-diff.jsonl`), each `{spec_id, content_version, family, outcome,
 stored, computed, detail}`, and one `datasets_recipes_diffed` line holding the count of each
-outcome (`equal`, `differs`, `roots_unreadable`, `frame_unreadable`) per family (`compare`,
+outcome (`equal`, `differs`, `roots_unreadable`, `over_ceiling`, `frame_unreadable`, as
+`recipe_replay` defines them) per family (`compare`,
 `sum_of`, `other`) and in total. It exits 1 when any recipe differs, with that line at `ERROR`
 severity. It reads the settings `sweep` reads.
 
 `record-recipe-golden --out DIR [--limit N] [--max-bytes B] [--origin NAME]` writes up to `N`
 (default 50) recipes whose roots and stored frame it can read, with those frames, into `DIR`, one
 case directory each labelled `NAME` (default `dfo-dev`) (`recipe_golden.record_case`), skipping
-a recipe whose frames together pass `B` bytes (default 2,000,000). It reads the stores as `diff-recipes` does and writes only under
-`DIR`, one `datasets_recipe_golden_recorded` line counting the cases written and skipped.
+a recipe whose frames together pass `B` bytes (default 2,000,000), one whose frame, roots or
+root frames are no longer held, and one whose roots pass the root-row cap or hold a frame1
+document past the decode bound. It reads the stores as `diff-recipes` does and writes only
+under `DIR`, one `datasets_recipe_golden_skipped` line per recipe skipped past a bound, naming
+its `spec_id`, `content_version` and `ceiling_kind`, and one `datasets_recipe_golden_recorded`
+line counting the cases written and skipped, and the skipped by reason
+(`recipe_golden.CaseOutcome`).
 
 `normalise-recipes [--dry-run]` runs by hand once, after the website's share migration job.
 For each recipe in `datasets.frame_recipe` whose root `options.columns` are not sorted and
@@ -167,6 +189,7 @@ import json
 import sys
 import traceback
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
@@ -209,8 +232,13 @@ from dataset_store.snapshot import (
 )
 from dataset_store.store import LiveDatasetStore
 from datasets_api.allowance import LiveAllowanceLedger
-from datasets_api.analysis import FrameUnavailable
-from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
+from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable
+from datasets_api.config import (
+    DEFAULT_OPERATION_DEADLINE_SECONDS,
+    DatasetsConfigError,
+    DatasetsSettings,
+    FoldCeilingSettings,
+)
 from datasets_api.description_record import backfill_record, computed_inputs
 from datasets_api.description_store import (
     insert_description,
@@ -228,7 +256,7 @@ from datasets_api.operation_store import (
 )
 from datasets_api.party_totals import TRACE_KEY as PARTY_TOTALS_TRACE_KEY
 from datasets_api.party_totals import PartyTotalsCut, cut_frame
-from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, record_case
+from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, CaseOutcome, record_case
 from datasets_api.recipe_replay import ReplayOutcome, StoredRootSource, replay_recipe
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reconciliation import sweep
@@ -248,9 +276,20 @@ from datasets_api.render import (
 )
 from datasets_api.retention_admission import sweep_copy_claims
 from datasets_api.serve import refs_from_resolved_stat_vars
-from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.store_errors import (
+    DatasetsStoreUnavailable,
+    StoredFrameUnreadable,
+    read_stored_frame,
+)
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
+from datasets_api.warning_backfill import (
+    Readers,
+    emit_nothing_backfilled,
+    run_backfill_warnings,
+    select_rows,
+)
+from dc_sdmx import SdmxClient
 from description.facts import SCHEMA_VERSION, DescriptionRecord
 from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
@@ -258,21 +297,22 @@ from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
 from materialise.content_version import mint_version_from_digest
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
+from materialise.errors import OverCeilingError
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
-    read_canonical_frame,
-    read_frame1_table,
-    write_frame1,
 )
-from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from materialise.reshape import RollupNotSummableError
 from materialise.statistics import (
     SERIES_STATISTICS_SCHEMA,
     SeriesFigures,
     SeriesStatisticsSink,
 )
+from origin_catalogue import bound_catalogue
+from origin_catalogue.graph import build_graph_client
+from origin_catalogue.service import get_catalogue_service
+from series_coverage.shared import get_coverage_service
 
 if TYPE_CHECKING:
     from presentation_store import ShareStore
@@ -503,13 +543,6 @@ def _settle() -> int:
     return 1 if unsettled else 0
 
 
-class _DiscardSink:
-    """A writer sink that keeps no bytes, for a digest alone."""
-
-    def write(self, data: bytes, /) -> int:
-        return len(data)
-
-
 def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
     """`(subject_id, content_version, frame1 digest)` of every version linking a pinned frame1
     document and no pinned canonical frame."""
@@ -536,41 +569,49 @@ def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
     ]
 
 
-def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
-    """The frame a frame1 document holds, rebuilt through the grammar. Raises `ValueError` when
-    the rebuilt frame's frame1 digest differs from `digest`, so a conversion never changes
-    content."""
-    table = read_frame1_table(data)
-    frame = build_frame(
-        role_keys=frame_entity_columns(table.columns),
-        rows=[
-            {
-                column: unit_cell_for_rebuild(cell)
-                for column, cell in zip(table.columns, row, strict=True)
-                if column != "status"
-            }
-            for row in table.rows
-        ],
+def _stored_canonical_frame(
+    frame: Frame, *, subject_id: str, content_version: str, artifact_store: ArtifactStore
+) -> ArtifactRecord:
+    """Store `frame`, read from a frame1 document, as the version's canonical frame, and check
+    that the stored frame reads back as `frame`, so a conversion never changes content. The
+    frame is compared, not the document's digest: a document that predates a column the frame
+    holds has another digest than the frame's own frame1 bytes.
+
+    Raises:
+        ValueError: The stored canonical frame reads back as another frame.
+    """
+    record = render_and_store_canonical_frame(
+        frame_chunks=(frame,),
+        subject_id=subject_id,
+        content_version=content_version,
+        artifact_store=artifact_store,
     )
-    rebuilt = write_frame1((frame,), sink=_DiscardSink()).digest
-    if rebuilt != digest:
-        raise ValueError(f"the frame rebuilt from {digest} writes frame1 digest {rebuilt}")
-    return frame
+    stored = read_stored_frame(
+        artifact_store.get(artifact_digest=record.artifact_digest, tier=Tier.working),
+        media_type=record.media_type,
+        digest=record.artifact_digest,
+    )
+    if stored != frame:
+        raise ValueError(f"canonical frame {record.artifact_digest} reads back as another frame")
+    return record
 
 
 def run_backfill_frame1(*, store: DatasetStore, artifact_store: ArtifactStore) -> int:
     """Link a pinned canonical frame, holding the frame1's references, under every version
     holding only a pinned frame1 document, emit the counts, and return the number of versions
-    it could not convert."""
+    it could not convert. A version that fails, its document unreadable included, emits
+    `datasets_frame1_backfill_failed` naming it, and the run goes on to the next."""
     writer = LiveVersionRecordWriter(store=store)
     converted = failed = 0
     for subject_id, content_version, digest in _pinned_frame1_versions(store):
         try:
-            frame = _frame_of_frame1(
-                artifact_store.get(artifact_digest=digest, tier=Tier.pinned), digest=digest
+            frame = read_stored_frame(
+                artifact_store.get(artifact_digest=digest, tier=Tier.pinned),
+                media_type=FRAME1_MEDIA_TYPE,
+                digest=digest,
             )
-            record = render_and_store_canonical_frame(
-                frame_chunks=(frame,),
+            record = _stored_canonical_frame(
+                frame,
                 subject_id=subject_id,
                 content_version=content_version,
                 artifact_store=artifact_store,
@@ -586,7 +627,12 @@ def run_backfill_frame1(*, store: DatasetStore, artifact_store: ArtifactStore) -
                 ),
                 replaces=digest,
             )
-        except (ArtifactStoreError, DatasetsStoreUnavailable, ValueError) as exc:
+        except (
+            ArtifactStoreError,
+            DatasetsStoreUnavailable,
+            StoredFrameUnreadable,
+            ValueError,
+        ) as exc:
             failed += 1
             emit(
                 "datasets_frame1_backfill_failed",
@@ -770,9 +816,7 @@ def _stored_frame(
     data = _held_bytes(artifact_store, location)
     if location is None or data is None:
         return None
-    if location.media_type == FRAME1_MEDIA_TYPE:
-        return _frame_of_frame1(data, digest=location.artifact_digest)
-    return read_canonical_frame(data)
+    return read_stored_frame(data, media_type=location.media_type, digest=location.artifact_digest)
 
 
 def run_backfill_continuations(*, store: DatasetStore, deadline: datetime, now: Clock) -> None:
@@ -988,6 +1032,95 @@ def _backfill_descriptions() -> int:
         )
 
 
+class WarningBackfillSettings(BaseSettings):
+    """The graph token and SDMX timeout a mint reads with, under the API's own names.
+    `DatasetsBuildSettings` holds both but also reads `DFO_PUBLIC_SITE_URL`, which the job does
+    not set."""
+
+    model_config = SettingsConfigDict(env_prefix="DATASETS_")
+
+    graph_token: str = ""
+    sdmx_timeout_seconds: int = Field(default=90, ge=1)
+
+
+def _backfill_warnings(dry_run: bool) -> int:
+    """Run `warning_backfill.run_backfill_warnings` over the rows it rewrites, and with
+    `dry_run` the rows in the new format. With none it opens no release and builds no client.
+    It refuses to start without a graph token, since every read would then answer 401 or 403,
+    which a later run can get past, and leave every row."""
+    deadline = utc_now() + BACKFILL_DESCRIPTIONS_BUDGET
+    try:
+        backfill = WarningBackfillSettings()
+    except ValidationError as exc:
+        emit(
+            "datasets_maintenance_failed",
+            severity="ERROR",
+            task="backfill-warnings",
+            error=str(exc),
+        )
+        return 1
+    if not backfill.graph_token:
+        emit(
+            "datasets_maintenance_failed",
+            severity="ERROR",
+            task="backfill-warnings",
+            error="DATASETS_GRAPH_TOKEN is empty, so no graph or SDMX read can authenticate",
+        )
+        return 1
+    store = LiveDatasetStore(connections=shared_pool())
+    try:
+        rows = select_rows(store, new_format=dry_run)
+        if not rows:
+            emit_nothing_backfilled(dry_run=dry_run)
+            return 0
+        try:
+            settings = DatasetsSettings.from_env()
+        except DatasetsConfigError as exc:
+            emit(
+                "datasets_maintenance_failed",
+                severity="ERROR",
+                task="backfill-warnings",
+                error=str(exc),
+            )
+            return 1
+        with ExitStack() as stack:
+            stack.enter_context(bound_served_release(get_release_service()))
+            stack.enter_context(bound_catalogue(get_catalogue_service().snapshot()))
+            graph = build_graph_client(
+                base_url=settings.graph_base_url,
+                token=backfill.graph_token,
+                un_base_url=settings.un_graph_base_url,
+                un_availability=SdmxClient(
+                    base_url=settings.un_graph_base_url, timeout=backfill.sdmx_timeout_seconds
+                ),
+                **settings.graph_cache_options(),
+            )
+            stack.callback(graph.close)
+            sdmx = SdmxClient(
+                base_url=settings.sdmx_base_url,
+                token=backfill.graph_token,
+                timeout=backfill.sdmx_timeout_seconds,
+            )
+            stack.callback(sdmx.close)
+            unfinished = run_backfill_warnings(
+                rows,
+                store=store,
+                readers=Readers(
+                    graph=graph,
+                    availability=sdmx,
+                    code_index=get_index(),
+                    coverage=get_coverage_service().snapshot().index,
+                ),
+                dry_run=dry_run,
+                deadline=deadline,
+                now=utc_now,
+                clears_on_retry=_clears_on_retry,
+            )
+    finally:
+        close_shared_pool()
+    return 1 if unfinished else 0
+
+
 class FrameSummedOutcome(StrEnum):
     """What `run_backfill_frame_summed` found for one derived version holding no
     `frame_summed`. `SUMMED` and `CUT` are set on the row; every other outcome leaves it NULL."""
@@ -1193,13 +1326,14 @@ def stored_recipe_pairs(store: DatasetStore) -> list[tuple[str, str]]:
 
 
 def _replay_source(
-    store: DatasetStore, *, artifact_store: ArtifactStore, now: Clock
+    store: DatasetStore, *, artifact_store: ArtifactStore, now: Clock, fold_max_rows: int
 ) -> StoredRootSource:
     return StoredRootSource(
         snapshot_reader=LiveSnapshotReader(store=store),
         artifact_store=artifact_store,
         recipes=LiveRecipeStore(store=store),
         now=now,
+        fold_max_rows=fold_max_rows,
     )
 
 
@@ -1209,6 +1343,7 @@ def run_diff_recipes(
     """Replay every stored recipe, write each one that is not equal to `report` and emit the
     counts. Return how many differ."""
     counts = {family: dict.fromkeys(ReplayOutcome, 0) for family in ("compare", "sum_of", "other")}
+    fold_max_rows = FoldCeilingSettings.from_env().groupby_fold_max_rows
     recipes = LiveRecipeStore(store=store)
     for spec_id, content_version in stored_recipe_pairs(store):
         record = recipes.read_recipe(spec_id=spec_id, content_version=content_version)
@@ -1218,7 +1353,9 @@ def run_diff_recipes(
             spec_id=spec_id,
             content_version=content_version,
             recipe=record.body,
-            source=_replay_source(store, artifact_store=artifact_store, now=now),
+            source=_replay_source(
+                store, artifact_store=artifact_store, now=now, fold_max_rows=fold_max_rows
+            ),
         )
         counts[replay.family][replay.outcome] += 1
         if replay.outcome is not ReplayOutcome.EQUAL:
@@ -1254,24 +1391,40 @@ def run_record_recipe_golden(
 ) -> None:
     """Write up to `limit` readable recipes with their frames under `out`, one case each,
     labelled `origin`."""
-    written = skipped = 0
+    outcomes = dict.fromkeys(CaseOutcome, 0)
+    fold_max_rows = FoldCeilingSettings.from_env().groupby_fold_max_rows
     for spec_id, content_version in stored_recipe_pairs(store):
-        if written >= limit:
+        if outcomes[CaseOutcome.WRITTEN] >= limit:
             break
         try:
-            kept = record_case(
+            outcome = record_case(
                 spec_id=spec_id,
                 content_version=content_version,
-                source=_replay_source(store, artifact_store=artifact_store, now=now),
+                source=_replay_source(
+                    store, artifact_store=artifact_store, now=now, fold_max_rows=fold_max_rows
+                ),
                 out=out / f"{spec_id}-{content_version}",
                 origin=origin,
                 max_bytes=max_bytes,
             )
         except FrameUnavailable:
-            kept = False
-        written += kept
-        skipped += not kept
-    emit("datasets_recipe_golden_recorded", written=written, skipped=skipped)
+            outcome = CaseOutcome.NOT_HELD
+        except (AnalysisTooLarge, OverCeilingError) as bounded:
+            emit(
+                "datasets_recipe_golden_skipped",
+                spec_id=spec_id,
+                content_version=content_version,
+                ceiling_kind=bounded.ceiling_kind,
+            )
+            outcome = CaseOutcome.OVER_CEILING
+        outcomes[outcome] += 1
+    written = outcomes.pop(CaseOutcome.WRITTEN)
+    emit(
+        "datasets_recipe_golden_recorded",
+        written=written,
+        skipped=sum(outcomes.values()),
+        skipped_by={outcome.value: count for outcome, count in outcomes.items()},
+    )
 
 
 def _record_recipe_golden(out: Path, limit: int, max_bytes: int, origin: str) -> int:
@@ -1490,6 +1643,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backfill-descriptions",
         help="write a description record for every version made before records existed",
     ).set_defaults(run=_backfill_descriptions)
+    warnings = tasks.add_parser(
+        "backfill-warnings",
+        help="rewrite stored member sentences into the counts and fields a mint writes",
+    )
+    warnings.add_argument("--dry-run", action="store_true")
+    warnings.set_defaults(run=_backfill_warnings)
     tasks.add_parser(
         "backfill-frame-summed",
         help="record whether each derived version recorded without it stores its collapse",

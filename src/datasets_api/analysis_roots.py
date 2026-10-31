@@ -40,7 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import pyarrow as pa
@@ -63,10 +63,11 @@ from dfo_frame_grammar.grammar import (
 
 from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
-from dataset_store.snapshot import select_servable_locations
+from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.analysis import (
     AnalysisPending,
     DatasetRoot,
+    LocatedRoot,
     ResolvedRoot,
     RootExpired,
     RootNotStored,
@@ -87,19 +88,17 @@ from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Mani
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
-from datasets_api.render import is_statistics_rendering, stored_frame_location
+from datasets_api.render import (
+    is_statistics_rendering,
+    refuse_frame1_past_decode_bound,
+    servable_frame_location,
+)
+from datasets_api.store_errors import read_stored_frame
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
     enrichment_role,
 )
-from materialise.formats import (
-    FRAME1_MEDIA_TYPE,
-    frame_entity_columns,
-    read_canonical_frame,
-    read_frame1_table,
-)
-from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from spec_registry.reader import StoredDefinition
 
 # The bare frame-layout Parquet data-mcp mints a frame with.
@@ -183,11 +182,23 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
     return resolved
 
 
-@dataclass(frozen=True, kw_only=True)
-class _Handle:
-    """What `read` reads: the frame-layout file, or the version's stored frame."""
+@dataclass(frozen=True)
+class _FrameLayoutFile:
+    """A root read from its frame-layout file `artifact`."""
 
-    artifact: ArtifactEntryModel | None
+    artifact: ArtifactEntryModel
+
+
+@dataclass(frozen=True)
+class _LocatedFrame:
+    """A root read from its version's stored frame at `location`, as `locate` found it."""
+
+    location: StoredArtifactLocation
+
+
+_Handle = _FrameLayoutFile | _LocatedFrame
+"""What `read` reads. `resolve` gives a root read from its stored frame no handle, so a root
+`locate` has not located holds none `read` accepts."""
 
 
 def _data_artifact(manifest: Manifest) -> ArtifactEntryModel | None:
@@ -247,29 +258,6 @@ def frame_from_frame_layout(data: bytes) -> Frame:
         table = table.drop_columns(STATUS_COLUMN)
     role_keys = [name for name in table.schema.names if name not in _RESERVED_COLUMNS]
     return build_frame_from_arrow(table, role_keys=role_keys)
-
-
-def _frame_of_frame1(data: bytes) -> Frame:
-    table = read_frame1_table(data)
-    return build_frame(
-        role_keys=frame_entity_columns(table.columns),
-        rows=[
-            {
-                column: unit_cell_for_rebuild(cell)
-                for column, cell in zip(table.columns, row, strict=True)
-                if column != STATUS_COLUMN
-            }
-            for row in table.rows
-        ],
-    )
-
-
-def frame_of_stored(data: bytes, *, media_type: str) -> Frame:
-    """The frame a version's stored frame `data` holds: its frame1 document when `media_type`
-    names one, else its canonical frame."""
-    if media_type == FRAME1_MEDIA_TYPE:
-        return _frame_of_frame1(data)
-    return read_canonical_frame(data)
 
 
 class LiveRootSource:
@@ -400,15 +388,47 @@ class LiveRootSource:
             record=record,
             rendering=root_rendering(options),
             rows=manifest.coverage.rows,
-            source=_Handle(artifact=artifact),
+            source=None if artifact is None else _FrameLayoutFile(artifact),
         )
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
+        """`root`, with the version's servable stored frame located when `read` reads it, and a
+        frame1 document past `render.frame1_decode_max_bytes` refused on its recorded size. A
+        root read from its frame-layout file returns as it is.
+
+        Raises:
+            RootExpired: The version has no servable stored frame.
+            OverCeilingError: `bytes`, for a frame1 document past the bound.
+        """
+        if isinstance(root.source, _Handle):
+            return LocatedRoot.of(root)
+        spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
+        locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
+        location = servable_frame_location(locations, now=self._deps.now())
+        if location is None:
+            raise RootExpired(
+                spec_id=spec_id,
+                content_version=content_version,
+                reason="its stored frame has expired",
+            )
+        refuse_frame1_past_decode_bound(
+            location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
+        )
+        return LocatedRoot.of(replace(root, source=_LocatedFrame(location)))
+
+    def read(self, root: LocatedRoot) -> Frame:
+        """The frame of `root` as `locate` returned it.
+
+        Raises:
+            RootExpired: Its file or stored frame is gone.
+            TypeError: `root` is not located.
+        """
         handle = root.source
-        assert isinstance(handle, _Handle)
+        if not isinstance(handle, _Handle):
+            raise TypeError(f"a root is read only once `locate` locates it, not from {handle!r}")
         store = self._deps.artifact_store
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
-        if handle.artifact is not None:
+        if isinstance(handle, _FrameLayoutFile):
             try:
                 data = store.get(
                     artifact_digest=handle.artifact.artifact_digest, tier=Tier(handle.artifact.tier)
@@ -418,21 +438,16 @@ class LiveRootSource:
                     spec_id=spec_id, content_version=content_version, reason="its file is gone"
                 ) from None
             return frame_from_frame_layout(data)
-        locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
-        location = stored_frame_location(select_servable_locations(locations, now=self._deps.now()))
-        if location is None:
-            raise RootExpired(
-                spec_id=spec_id,
-                content_version=content_version,
-                reason="its stored frame has expired",
-            )
+        location = handle.location
         try:
             data = store.get(artifact_digest=location.artifact_digest, tier=Tier(location.tier))
         except ArtifactNotFoundError:
             raise RootExpired(
                 spec_id=spec_id, content_version=content_version, reason="its stored frame is gone"
             ) from None
-        return frame_of_stored(data, media_type=location.media_type)
+        return read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        )
 
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:
         record = self._recipes.read_recipe(spec_id=spec_id, content_version=content_version)
@@ -469,7 +484,6 @@ __all__ = [
     "KIND_COLUMNS",
     "LiveRootSource",
     "frame_from_frame_layout",
-    "frame_of_stored",
     "frame_ref_for",
     "mint_options",
     "newest_spec_version",

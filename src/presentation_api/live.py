@@ -88,6 +88,7 @@ def build_live_frame_store(
             read_budget_seconds=min(
                 PRESENTATION_COMPONENTS_TIMEOUT_SECONDS, PRESENTATION_FRAMES_TIMEOUT_SECONDS
             ),
+            fold_max_rows=settings.groupby_fold_max_rows,
         )
         unmetered_frame_store = LiveFrameStore(
             snapshots=snapshot_reader,
@@ -97,6 +98,7 @@ def build_live_frame_store(
             allowances=None,
             spec_reader=spec_reader,
             recipe_reader=recipe_reader,
+            fold_max_rows=settings.groupby_fold_max_rows,
         )
     except BaseException:
         if graph is not None:

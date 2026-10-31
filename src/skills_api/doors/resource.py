@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform import ProblemSpec, refused
+from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from skills_api.deps import (
     CACHE_CONTROL,
     SkillIdTooLong,
@@ -54,9 +54,8 @@ class SkillResourceNotFound(Exception):
 
 def classify_resource_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, ResourcePathTooLong):
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=(
                 f"path exceeds the {RESOURCE_PATH_MAX_LENGTH}-character ceiling "
                 f"(received {exc.length} characters)"
@@ -65,9 +64,8 @@ def classify_resource_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
         )
     if isinstance(exc, SkillResourceNotFound):
-        return ProblemSpec(
-            status=404,
-            code="skill_resource_not_found",
+        return refused(
+            "skill_resource_not_found",
             detail=str(exc),
             pointer="/path",
             retryable=False,
@@ -128,6 +126,7 @@ def build_resource_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
+        registry_endpoints=route_registry_endpoints(router, "skills.resource"),
         classify=classify_resource_exception,
         exception_types=(
             SkillIdTooLong,
@@ -136,11 +135,13 @@ def build_resource_door() -> DoorContribution:
             SkillResourceNotFound,
             SkillsIndexNotBuilt,
         ),
-        exception_exemplars=(
-            SkillIdTooLong(SKILL_ID_MAX_LENGTH + 1),
-            ResourcePathTooLong(RESOURCE_PATH_MAX_LENGTH + 1),
-            SkillNotFound("exemplar-skill"),
-            SkillResourceNotFound("exemplar-skill", "references/exemplar.md"),
-            SkillsIndexNotBuilt(),
-        ),
+        endpoint_exemplars={
+            "skills.resource": (
+                SkillIdTooLong(SKILL_ID_MAX_LENGTH + 1),
+                ResourcePathTooLong(RESOURCE_PATH_MAX_LENGTH + 1),
+                SkillNotFound("exemplar-skill"),
+                SkillResourceNotFound("exemplar-skill", "references/exemplar.md"),
+                SkillsIndexNotBuilt(),
+            )
+        },
     )

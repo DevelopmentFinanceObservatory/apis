@@ -24,7 +24,7 @@ from enum import Enum
 from functools import partial, reduce
 from itertools import chain, groupby
 from threading import Lock
-from typing import TYPE_CHECKING, Literal, Protocol, final
+from typing import TYPE_CHECKING, Literal, Protocol, cast, final
 
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
@@ -366,6 +366,28 @@ class FacetSelection:
             "selection_reason": self.selection_reason,
             "dispatch_facet_id": self.dispatch_facet_id,
         }
+
+    @classmethod
+    def of_trace_entry(
+        cls, entry: Mapping[str, object], *, continued_by: str | None = None
+    ) -> FacetSelection:
+        """The selection a stored `trace.facets` entry (`as_trace_entry`) records, with the
+        method `trace.continuations` names on its axis as `continued_by`. The entry keeps no
+        unit `request`, `national_currency` or `ranked_values`. Of those `admits` reads only
+        `national_currency`, which no group binds (`pipeline._refuse_group_national_currency`),
+        so a group's rebuilt selection admits what its stored one did."""
+        return cls(
+            axis=cast(str, entry["axis"]),
+            ref=cast("str | None", entry["ref"]),
+            basis=cast(
+                'Literal["bound", "declared_default", "deployment_fallback"]', entry["basis"]
+            ),
+            default_policy=cast("str | None", entry["default_policy"]),
+            default_policy_version=cast("str | None", entry["default_policy_version"]),
+            selection_reason=cast("str | None", entry["selection_reason"]),
+            dispatch_facet_id=cast(str, entry["dispatch_facet_id"]),
+            continued_by=continued_by,
+        )
 
     def choice_entry(self) -> dict[str, object] | None:
         """The trace's `choices` entry for a value chosen over disagreeing candidates: `axis`
@@ -2103,41 +2125,68 @@ def continuation(
     `measurementMethod`. A served value wins any period both hold, and estimated rows
     serve only the periods after a series' last served one
     (`columnar.continuation_mask`), so a series reaching the window's end takes none."""
-    if window is None or window.kind != "range" or window.end_year is None or not served:
+    if not served:
         return ()
     head = served[0]
-    if status_of(head.measurement_method, head.provenance_id) == "estimated":
-        return ()
     ends = [y for f in served if (y := _leading_year(f.earliest_series_end)) is not None]
-    if not ends or min(ends) >= window.end_year:
+    if not ends:
         return ()
-    units = {f.unit for f in served}
-    continuing = [
-        c
-        for c in candidates
-        if _continues(head, c, after=min(ends), units=units)
-        and c.facet_id is not None
-        and serves(c.facet_id)
-        and overlaps_window(c, window=window)
-    ]
+    continuing = continuing_candidates(
+        candidates,
+        provenance=head.provenance_id,
+        method=head.measurement_method,
+        units={f.unit for f in served},
+        after=min(ends),
+        window=window,
+        serves=serves,
+    )
     if not continuing:
         return ()
     method = rank_candidates(continuing, window=window, breadth=breadth)[0].measurement_method
     return tuple(c for c in continuing if c.measurement_method == method)
 
 
-def _continues(base: Facet, candidate: Facet, *, after: int, units: set[str | None]) -> bool:
-    """Whether `candidate` can continue `base`'s series past the year `after`: it shares
-    `base`'s provenance and one of the served `units`, holds estimated values
-    (`method_status.status_of`) and reaches a later year. The served facets share one unit
+def continuing_candidates(
+    candidates: Sequence[Facet],
+    *,
+    provenance: str | None,
+    method: str | None,
+    units: set[str | None],
+    after: int | None,
+    window: RequestedWindow | None,
+    serves: Callable[[str], bool],
+) -> list[Facet]:
+    """The `candidates` that can continue a series of `method` under `provenance` in one of
+    `units` that ends in the year `after` (`continuation`), in candidate order: those that
+    share the provenance and a unit, sit at the served cadence (`serves`, by facet id), hold
+    estimated values (`method_status.status_of`), reach a later year than `after` and hold a
+    point in the window. An empty list under a window that is not a range with an end year,
+    for an estimated `method`, or when `after` reaches the window's end. The units share one value
     except under a national-currency binding, where each place's admission keeps its own.
-    `base` itself must not be estimated; the callers check it."""
-    return (
-        candidate.provenance_id == base.provenance_id
-        and candidate.unit in units
-        and status_of(candidate.measurement_method, candidate.provenance_id) == "estimated"
-        and (_leading_year(candidate.latest_date) or 0) > after
-    )
+    `after` None sets no lower bound, for a series whose end is unknown."""
+    if window is None or window.kind != "range" or window.end_year is None:
+        return []
+    if status_of(method, provenance) == "estimated":
+        return []
+    if after is not None and after >= window.end_year:
+        return []
+    return [
+        c
+        for c in candidates
+        if c.provenance_id == provenance
+        and c.unit in units
+        and status_of(c.measurement_method, c.provenance_id) == "estimated"
+        and (after is None or (_leading_year(c.latest_date) or 0) > after)
+        and c.facet_id is not None
+        and serves(c.facet_id)
+        and overlaps_window(c, window=window)
+    ]
+
+
+def continues_selection(selection: FacetSelection) -> bool:
+    """Whether a `measurementMethod` selection can be continued (`continued_election`): one
+    the request does not bind."""
+    return selection.basis != "bound"
 
 
 def continued_election(
@@ -2157,7 +2206,7 @@ def continued_election(
     returned as it is. `joint_matches`, and so every member's dispatch, then admits the
     continuing facets beside the served ones."""
     selection = election.selections.get("measurementMethod")
-    if selection is None or selection.basis == "bound":
+    if selection is None or not continues_selection(selection):
         return election
     by_id: dict[str, list[Facet]] = {}
     for member, candidates in enumerate(members):
@@ -2723,6 +2772,22 @@ def joint_matches(
             selection.admits(facet_axis_value(c, axis)) for axis, selection in selections.items()
         )
     ]
+
+
+def facets_in_window(
+    candidates: Sequence[Facet],
+    *,
+    selections: Mapping[str, FacetSelection],
+    window: RequestedWindow | None,
+) -> bool | None:
+    """Whether a candidate jointly matching `selections` (`joint_matches`) holds a point in
+    `window` (`overlaps_window`), `None` when none jointly matches. Its one caller,
+    `group_facets.classify_uncounted`, calls a member the election did not count off cadence
+    when this is true and out of the window when it is false."""
+    matches = joint_matches(candidates, selections)
+    if not matches:
+        return None
+    return any(overlaps_window(facet, window=window) for facet in matches)
 
 
 def joint_dispatch_facet_ids(

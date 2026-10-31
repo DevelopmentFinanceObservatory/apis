@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+from contextvars import copy_context
 
 from assembler.catalogue import CatalogueRelease
 from presentation_api import version
+from presentation_api.routes import COMPONENT_PATH
 
 
 def test_adding_a_constraint_id_moves_the_token(release: CatalogueRelease):
@@ -117,13 +119,69 @@ def test_code_catalogue_title_change_moves_the_token(release: CatalogueRelease):
 
 def test_frame_unavailable_outcome_change_moves_the_token(release: CatalogueRelease):
     baseline = version.compute_presentation_capability_version(release=release)
-    mutated_outcome = dict(version._FRAME_UNAVAILABLE_OUTCOME)
+    mutated_outcome = dict(version.FRAME_UNAVAILABLE_OUTCOME)
     reason = next(iter(sorted(mutated_outcome)))
-    status, retryable = mutated_outcome[reason]
-    mutated_outcome[reason] = (status, not retryable)
+    mutated_outcome[reason] = mutated_outcome[reason]._replace(
+        retryable=not mutated_outcome[reason].retryable
+    )
 
     perturbed = version.compute_presentation_capability_version(
         release=release, frame_unavailable_outcome=mutated_outcome
+    )
+
+    assert perturbed != baseline
+
+
+def test_the_hashed_refusal_exemplar_renders_a_cause():
+    exemplars = copy_context().run(
+        version._render_refusal_exemplars,
+        version.PRESENTATION_CODE_CATALOGUE,
+        version.CODE_RETRY_MODE,
+    )
+
+    assert "cause" in next(iter(exemplars.values()))
+
+
+def test_bare_spec_outcome_change_moves_the_token(release: CatalogueRelease):
+    baseline = version.compute_presentation_capability_version(release=release)
+    code, retryable = version.NEWEST_NOT_READY_OUTCOME
+
+    perturbed = version.compute_presentation_capability_version(
+        release=release, newest_not_ready_outcome=(code, not retryable)
+    )
+
+    assert perturbed != baseline
+
+
+def test_a_registry_status_change_on_any_endpoint_moves_the_token(release: CatalogueRelease):
+    """A pin bump that changes what the render routes serve moves the token."""
+    baseline = version.compute_presentation_capability_version(release=release)
+    statuses = {endpoint: dict(codes) for endpoint, codes in version.PRESENTATION_STATUSES.items()}
+    statuses["presentation.render"]["frame_unavailable"] = (410,)
+
+    perturbed = version.compute_presentation_capability_version(
+        release=release, registry_statuses=statuses
+    )
+
+    assert perturbed != baseline
+
+
+def test_a_route_bound_to_another_endpoint_moves_the_token(release: CatalogueRelease):
+    baseline = version.compute_presentation_capability_version(release=release)
+    rebound = {**version.ROUTE_ENDPOINTS, ("GET", COMPONENT_PATH): "presentation.write"}
+
+    perturbed = version.compute_presentation_capability_version(
+        release=release, route_endpoints=rebound
+    )
+
+    assert perturbed != baseline
+
+
+def test_a_change_to_the_replay_rule_moves_the_token(release: CatalogueRelease):
+    baseline = version.compute_presentation_capability_version(release=release)
+
+    perturbed = version.compute_presentation_capability_version(
+        release=release, replay_modes=frozenset({"retry_after_delay"})
     )
 
     assert perturbed != baseline

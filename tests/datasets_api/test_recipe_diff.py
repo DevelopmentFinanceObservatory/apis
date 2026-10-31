@@ -4,6 +4,7 @@ written."""
 
 from __future__ import annotations
 
+import functools
 import io
 import json
 from datetime import timedelta
@@ -12,7 +13,13 @@ from typing import Any
 import pytest
 from dfo_frame_grammar import Frame
 
-from datasets_api.analysis import AnalysisRequest, run_analysis
+from datasets_api import analysis, recipe_replay
+from datasets_api.analysis import (
+    AnalysisBounds,
+    AnalysisRequest,
+    compute_analysis,
+    run_analysis,
+)
 from datasets_api.doors.publish import publish_built_frame
 from datasets_api.maintenance import main, run_diff_recipes
 
@@ -28,6 +35,7 @@ from ._analysis_doubles import (
     source,
     step,
 )
+from ._frame_doubles import link_frame1_only
 from ._render_inputs import ENRICHMENT, PREPARED_AT, SITE
 
 _PER_PERSON = step(
@@ -139,6 +147,71 @@ def test_a_stored_frame_past_retention_is_unreadable(capsys: pytest.CaptureFixtu
     assert differs == 0
     assert [line["outcome"] for line in lines] == ["frame_unreadable"]
     assert _counts(capsys)["frame_unreadable"] == 1
+
+
+def test_a_root_past_the_decode_bound_is_over_ceiling_and_compared_with_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A root stored as a frame1 document recorded at 250 MB refuses as it is located, before
+    any root is read, so the replay compares nothing and differs from nothing."""
+    stores = Stores()
+    _store_root(stores, AID, AID_V1, aid_frame())
+    _store_root(stores, POPULATION, POPULATION_V1, population_frame())
+    _analysed(stores, _PER_PERSON)
+    digest = link_frame1_only(
+        stores.store, stores.artifact_store, subject_id=AID, content_version=AID_V1
+    )
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (250_000_000, digest),
+        )
+
+    differs, lines = _diff(stores)
+
+    assert differs == 0
+    (line,) = lines
+    assert (line["outcome"], line["computed"]) == ("over_ceiling", None)
+    assert line["detail"].startswith("bytes: ")
+    assert _counts(capsys)["severity"] == "INFO"
+
+
+@pytest.mark.parametrize(
+    ("bound", "outcome", "differs"),
+    [
+        pytest.param("root_rows", "over_ceiling", 0, id="root-rows-over-ceiling"),
+        pytest.param("output_rows", "differs", 1, id="output-rows-differs"),
+    ],
+)
+def test_a_row_cap_refusal_is_over_ceiling_unless_the_output_outgrew_the_stored_one(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    bound: str,
+    outcome: str,
+    differs: int,
+) -> None:
+    """Roots past the root-row cap refuse before anything is compared. An output past the rows
+    the publish door stores differs, since the stored output was published under that cap."""
+    stores = Stores()
+    _store_root(stores, AID, AID_V1, aid_frame())
+    _store_root(stores, POPULATION, POPULATION_V1, population_frame())
+    _analysed(stores, _PER_PERSON)
+    if bound == "root_rows":
+        monkeypatch.setattr(
+            recipe_replay,
+            "compute_analysis",
+            functools.partial(compute_analysis, bounds=AnalysisBounds(max_root_rows=1)),
+        )
+    else:
+        monkeypatch.setattr(analysis, "PUBLISH_MAX_ROWS", 1)
+
+    found, lines = _diff(stores)
+
+    assert found == differs
+    (line,) = lines
+    assert (line["outcome"], line["computed"]) == (outcome, None)
+    assert line["detail"].startswith(f"analysis_{bound}: ")
+    assert _counts(capsys)[outcome] == 1
 
 
 def _objects(stores: Stores) -> dict[str, dict[str, bytes]]:

@@ -33,6 +33,7 @@ from assembler.testing import (
     malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
+from dfo_platform.codes import bound_registry_endpoint
 from presentation_api.refusals import binding_invalid_spec
 
 from ._pipeline_support import _malaria_intent
@@ -292,7 +293,8 @@ def test_a_span_frame_refuses_binding_invalid_where_it_cannot_bind(
             revision_store=revision_store,
             release_registry=release_registry,
         )
-    problem = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        problem = binding_invalid_spec(excinfo.value)
     assert (problem.code, problem.pointer) == ("binding_invalid", pointer)
     assert [one.ref for one in problem.alternatives or ()] == alternatives
 
@@ -442,7 +444,8 @@ def test_a_span_refusal_with_nothing_to_compare_offers_a_table_and_a_stat_card(
             revision_store=revision_store,
             release_registry=release_registry,
         )
-    problem = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        problem = binding_invalid_spec(excinfo.value)
     assert [one.ref for one in problem.alternatives or ()] == ["table", "stat_card"]
 
 

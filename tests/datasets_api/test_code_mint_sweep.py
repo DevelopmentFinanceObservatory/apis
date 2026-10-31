@@ -64,6 +64,8 @@ _KNOWN_PASSTHROUGHS: frozenset[tuple[str, str | None, str]] = frozenset(
         ),
         # The code `classify_analysis_exception` gave.
         ("src/datasets_api/doors/analysis.py", "_refused", "spec.code"),
+        # The door's exemplars, one per `RefusalCode`.
+        ("src/datasets_api/doors/analysis.py", "build_analysis_door", "code"),
         # A codes-table entry's `code` is a data cell, not an error code.
         ("packages/dfo-data-tools/src/materialise/bundle_columns.py", "bundle_codes", "code"),
     }

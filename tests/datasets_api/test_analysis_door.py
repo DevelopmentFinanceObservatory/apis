@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 import datasets_api.doors.analysis as analysis_door
 import presentation_api.newest_frames as newest_frames
 from assembler.ports import FrameRef
-from datasets_api.analysis import ResolvedRoot, RootExpired
+from datasets_api.analysis import LocatedRoot, RootExpired
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses
@@ -264,7 +264,7 @@ class _ReadBlockingSource(FakeRootSource):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def read(self, root: LocatedRoot) -> Frame:
         self.entered.set()
         assert self.release.wait(5)
         return super().read(root)
@@ -360,7 +360,7 @@ class _FailingOnceSource(FakeRootSource):
         super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
         self.failed = False
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def read(self, root: LocatedRoot) -> Frame:
         if not self.failed:
             self.failed = True
             raise RootExpired(

@@ -64,11 +64,12 @@ from datasets_api.publish_models import Recipe
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.render import (
     frame_file_location,
+    refuse_frame1_past_decode_bound,
     render_and_store_frame_file,
     stored_frame_location,
 )
 from datasets_api.retention import version_retention
-from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.store_errors import DatasetsStoreUnavailable, read_stored_frame
 from datasets_api.versions import VersionRecordWriter
 from dfo_platform.config import PublicSiteSettings
 from materialise import EnrichmentLookup
@@ -87,7 +88,6 @@ from materialise.formats import (
     Table,
     column_cells,
     frame_entity_columns,
-    read_stored_frame,
     table_schema_for,
     write_csv,
     write_excel,
@@ -115,6 +115,9 @@ class DerivedReads:
     recipe_reader: RecipeReader
     enrichment: EnrichmentLookup
     now: Clock
+    fold_max_rows: int
+    """`DatasetsBuildSettings.groupby_fold_max_rows`, which bounds the frame1 document a read
+    decodes (`render.frame1_decode_max_bytes`)."""
 
 
 def root_rendering(options: Mapping[str, Any]) -> dict[str, Any]:
@@ -304,17 +307,32 @@ class _StoredFrame:
     """The derived version's stored frame, when its bytes were first stored, and the version's
     servable locations."""
 
-    table: Table
+    table: Frame
     stored_on: datetime
     servable: Sequence[StoredArtifactLocation]
 
 
-def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedReads) -> _StoredFrame:
-    """The stored frame of the derived version.
+@dataclass(frozen=True, kw_only=True)
+class DerivedFrameSource:
+    """Where the derived version's stored frame is read from (`locate_derived_frame`): its
+    location and the version's servable locations."""
+
+    spec_id: str
+    content_version: str
+    location: StoredArtifactLocation
+    servable: Sequence[StoredArtifactLocation]
+
+
+def locate_derived_frame(
+    *, spec_id: str, content_version: str, reads: DerivedReads
+) -> DerivedFrameSource:
+    """The stored frame of the derived version, located from its record before any byte is
+    read, so a caller makes these refusals before it takes a materialise permit.
 
     Raises:
         SnapshotNotFound, SnapshotRevoked: The version has no record, or is taken down.
-        ArtifactExpired: No servable stored frame is left, or its bytes are gone.
+        ArtifactExpired: No servable stored frame is left.
+        OverCeilingError: `bytes`, for a frame1 document past `render.frame1_decode_max_bytes`.
     """
     stored = read_servable_version(
         reads.snapshot_reader, subject_id=spec_id, content_version=content_version, now=reads.now()
@@ -322,19 +340,38 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     location = stored_frame_location(stored.servable)
     if location is None:
         raise ArtifactExpired(id=spec_id, content_version=content_version)
+    refuse_frame1_past_decode_bound(location, fold_max_rows=reads.fold_max_rows)
+    return DerivedFrameSource(
+        spec_id=spec_id,
+        content_version=content_version,
+        location=location,
+        servable=stored.servable,
+    )
+
+
+def _read_stored_frame(source: DerivedFrameSource, *, reads: DerivedReads) -> _StoredFrame:
+    """The stored frame `source` locates.
+
+    Raises:
+        ArtifactExpired: The stored frame's bytes are gone.
+        StoredFrameUnreadable: The stored frame's bytes do not read as a frame.
+    """
+    location = source.location
     try:
         data = reads.artifact_store.get(
             artifact_digest=location.artifact_digest, tier=Tier(location.tier)
         )
     except ArtifactNotFoundError:
-        raise ArtifactExpired(id=spec_id, content_version=content_version) from None
+        raise ArtifactExpired(id=source.spec_id, content_version=source.content_version) from None
     created = location.created_at
     # A store that drops the zone records UTC, as every write stamps it.
     stored_on = created if created.tzinfo is not None else created.replace(tzinfo=UTC)
     return _StoredFrame(
-        table=read_stored_frame(data, media_type=location.media_type),
+        table=read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        ),
         stored_on=stored_on,
-        servable=stored.servable,
+        servable=source.servable,
     )
 
 
@@ -387,24 +424,23 @@ def _provenance_refs(table: Table) -> list[str]:
 
 
 def render_derived_file(
+    source: DerivedFrameSource,
     *,
-    spec_id: str,
-    content_version: str,
     options: MintOptions,
     reads: DerivedReads,
     site: PublicSiteSettings,
 ) -> DerivedFile:
-    """The derived frame's file in `options`' format, alone or in a bundle. See the module
-    docstring.
+    """The derived frame's file in `options`' format, alone or in a bundle, from the frame
+    `source` locates (`locate_derived_frame`). See the module docstring.
 
     Raises:
-        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `_read_stored_frame`.
+        ArtifactExpired, StoredFrameUnreadable: As `_read_stored_frame`.
         ExcelLimitError, ExcelIllegalCharacterError, ParquetSizeBoundError: The writer's.
     """
-    frame = _read_stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
+    spec_id, content_version = source.spec_id, source.content_version
+    frame = _read_stored_frame(source, reads=reads)
     table, prepared_at = frame.table, frame.stored_on
-    rows = table.num_rows if isinstance(table, Frame) else len(table.rows)
-    columns = len(table.columns)
+    rows, columns = table.num_rows, len(table.columns)
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
     sources = tuple(

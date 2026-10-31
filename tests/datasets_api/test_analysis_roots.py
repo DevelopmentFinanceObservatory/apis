@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,6 +18,7 @@ import pytest
 import rfc8785
 from dfo_frame_grammar.grammar import UnitRequest
 
+from artifact_store import LiveArtifactInventory
 from datasets_api import analysis_roots
 from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
 from datasets_api.analysis_roots import (
@@ -35,10 +37,14 @@ from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from dfo_analysis_engine.frame_ref import FrameRef
 
-from ._deps_doubles import Unwired
+from ._deps_doubles import Unwired, closable_permits
+from ._frame_doubles import link_frame1_only
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
-from .test_definition_door_groupby_collapse import _hierarchical_code_index
+from .test_definition_door_groupby_collapse import (
+    _hierarchical_code_index,
+    _RenderableArtifactStore,
+)
 from .test_meta_doors import _operation
 from .test_refresh_door import (
     _GROUPBY,
@@ -198,6 +204,31 @@ def test_a_spec_root_is_one_serve_of_the_default_enrichment_of_its_version(
         {"format": "parquet", "bundle": False, "layout": "frame", "enrichment": "default"}
     ]
     assert resolved.record["options"]["columns"] == columns
+
+
+def test_a_root_read_from_its_stored_frame_is_read_only_once_located(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`resolve` leaves a root read from its stored frame unlocated, so a reader that skips
+    `analysis.locate_roots` refuses before it reads a store."""
+    monkeypatch.setattr(
+        analysis_roots,
+        "served_spec",
+        lambda **_: SimpleNamespace(spec_id=_SPEC, identity={"entities": {}}),
+    )
+    monkeypatch.setattr(
+        analysis_roots,
+        "serve_spec",
+        lambda **_: SimpleNamespace(
+            content_version=_CV, coverage=_coverage("recipient"), artifacts=[]
+        ),
+    )
+    roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
+    resolved = roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)
+    assert "columns" not in resolved.record["options"]
+
+    with pytest.raises(TypeError):
+        roots.read(resolved)  # ty: ignore[invalid-argument-type] -- the unlocated read under test
 
 
 def test_a_frame_of_columns_is_named_by_them_and_by_its_kinds_stamp() -> None:
@@ -478,9 +509,25 @@ def test_a_frame_stored_before_its_root_pair_named_the_cut_answers_a_run_of_its_
     assert again == stored
 
 
-def test_a_live_root_s_recorded_rows_refuse_a_run_before_its_frame_is_read(
-    monkeypatch: pytest.MonkeyPatch,
+def _route_call(route: str, root: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The path and body of a call reading `root` alone: a run summing it, or its anchor."""
+    if route == "anchor":
+        populations = [{"spec_id": root["spec_id"], "bindings": {}}]
+        return "/api/datasets/analysis/anchor", {"roots": [root], "populations": populations}
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": root},
+    }
+    return "/api/datasets/analysis", {"tree": tree}
+
+
+@pytest.mark.parametrize("route", ["analysis", "anchor"])
+def test_a_live_root_s_recorded_rows_refuse_a_run_before_its_frame_is_located(
+    monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
+    """A run and an anchor refuse on the rows the root's version records before they locate or
+    read it."""
     store = FakeVersionRecordDatasetStore()
     client = _client(
         graph=_graph(),
@@ -497,25 +544,135 @@ def test_a_live_root_s_recorded_rows_refuse_a_run_before_its_frame_is_read(
     assert minted["coverage"]["rows"] > 1
 
     def unread(self, root):
-        raise AssertionError("a root past the row bound was read")
+        raise AssertionError("a root past the row bound was located or read")
 
+    monkeypatch.setattr(LiveRootSource, "locate", unread)
     monkeypatch.setattr(LiveRootSource, "read", unread)
-    root = {"spec_id": spec_id, "content_version": minted["content_version"]}
-    tree = {
-        "verb": "aggregate",
-        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
-        "inputs": {"data": {**root, "rendering": {"columns": []}}},
+    root = {
+        "spec_id": spec_id,
+        "content_version": minted["content_version"],
+        "rendering": {"columns": []},
     }
-    response = client.post("/api/datasets/analysis", json={"tree": tree})
+    path, body = _route_call(route, root)
+    response = client.post(path, json=body)
 
     assert response.status_code == 422, response.text
-    body = response.json()
-    assert body["code"] == "over_ceiling"
-    assert body["fix"] == {
+    problem = response.json()
+    assert problem["code"] == "over_ceiling"
+    assert problem["fix"] == {
         "ceiling_kind": "analysis_root_rows",
         "count": minted["coverage"]["rows"],
         "cap": 1,
     }
+
+
+@pytest.mark.parametrize("route", ["analysis", "anchor"])
+def test_a_frame1_root_past_the_decode_bound_refuses_with_every_permit_held(
+    monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """A root stored as a frame1 document recorded at 250 MB is past the 216,600,000 bytes a
+    read that decodes it alone takes. A run and an anchor locate the root's stored frame
+    (`analysis.locate_roots`) before they take a materialise permit, so each refuses
+    `over_ceiling` (`bytes`) with every permit held, where a wait for one would refuse a
+    retryable 503."""
+    permits = closable_permits(monkeypatch)
+    store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        artifact_store=artifact_store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    minted = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)
+    digest = link_frame1_only(
+        store, artifact_store, subject_id=spec_id, content_version=minted["content_version"]
+    )
+    with store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (250_000_000, digest),
+        )
+    for held in permits:
+        held.closed = True
+    root = {
+        "spec_id": spec_id,
+        "content_version": minted["content_version"],
+        "rendering": {"columns": []},
+    }
+    path, body = _route_call(route, root)
+
+    response = client.post(path, json=body)
+
+    assert response.status_code == 422, response.text
+    assert (response.json()["code"], response.json()["ceiling_kind"]) == ("over_ceiling", "bytes")
+
+
+@pytest.mark.parametrize("change", ["oversized", "aged"])
+def test_a_stored_answer_serves_whatever_has_become_of_its_root_s_stored_frame(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A run whose key holds a stored answer reads no root frame, so it answers the stored body
+    once the root's stored frame is a frame1 document past the decode bound, or has aged out of
+    retention. Only a run that computes locates its roots' frames (`analysis.locate_roots`)."""
+    store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        artifact_store=artifact_store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    content_version = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)[
+        "content_version"
+    ]
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {
+            "data": {
+                "spec_id": spec_id,
+                "content_version": content_version,
+                "rendering": {"columns": []},
+            }
+        },
+    }
+    first = client.post("/api/datasets/analysis", json={"tree": tree})
+    assert first.status_code == 200, first.text
+    digest = link_frame1_only(
+        store, artifact_store, subject_id=spec_id, content_version=content_version
+    )
+    with store.transaction() as tx:
+        if change == "oversized":
+            tx.execute(
+                "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+                (250_000_000, digest),
+            )
+        else:
+            tx.execute(
+                "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest IN "
+                "(SELECT artifact_digest FROM datasets.version_artifact WHERE subject_id = %s)",
+                (datetime.now(UTC) - timedelta(days=31), spec_id),
+            )
+
+    def unread(self, root):
+        raise AssertionError("a run with a stored answer read a root")
+
+    monkeypatch.setattr(LiveRootSource, "read", unread)
+    again = client.post("/api/datasets/analysis", json={"tree": tree})
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
 
 
 @pytest.mark.parametrize(

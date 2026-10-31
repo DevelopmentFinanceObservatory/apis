@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 import dc_graph.client as graph_module
-from dc_graph import GraphClient, GraphReadError
+from dc_graph import GraphClient, GraphNotAdvancingError, GraphOmittedDcidsError, GraphReadError
 from dc_graph.client import UNRESOLVED_NODE
 from entity_resolution import GraphLookup
 from graph_generation import FakeGeneration
@@ -100,8 +100,10 @@ def test_node_arcs_many_dcid_omitted_from_retry_raises(monkeypatch) -> None:
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    with pytest.raises(GraphReadError):
+    with pytest.raises(GraphReadError) as raised:
         client.node_arcs_many(["country/KEN", "country/ETH"], properties=("typeOf",))
+    assert isinstance(raised.value.__cause__, GraphOmittedDcidsError)
+    assert raised.value.__cause__.dcids == ("country/KEN", "country/ETH")
 
 
 def test_node_arcs_many_group_retry_false_empty_caught_by_individual_probe(monkeypatch) -> None:
@@ -207,9 +209,11 @@ def test_node_arcs_many_page_budget_exhausted_raises(monkeypatch) -> None:
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    with pytest.raises(GraphReadError):
+    with pytest.raises(GraphReadError) as raised:
         client.node_arcs_many(["country/KEN"], properties=("typeOf",))
     assert len(calls) == 2
+    # The same read pages the same way again, which the cause marks.
+    assert isinstance(raised.value.__cause__, GraphNotAdvancingError)
 
 
 def test_node_arcs_many_empty_dcids_returns_empty_dict_without_network_call(monkeypatch) -> None:
@@ -353,9 +357,10 @@ def test_child_places_batch_page_budget_exhausted_raises(monkeypatch) -> None:
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    with pytest.raises(GraphReadError):
+    with pytest.raises(GraphReadError) as raised:
         client.child_places_batch(["africa"], "Country")
     assert len(calls) == 2
+    assert isinstance(raised.value.__cause__, GraphNotAdvancingError)
 
 
 def test_child_places_batch_repeated_token_raises(monkeypatch) -> None:

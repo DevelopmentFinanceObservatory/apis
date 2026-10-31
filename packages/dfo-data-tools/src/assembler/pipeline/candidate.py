@@ -125,7 +125,8 @@ def _build_candidate(
     described: DescribedRevision | None = None,
 ) -> _Candidate:
     """`load_stored_frame` is set for a render of `current` on `resolved_frame`: it returns
-    the frame `current` was written on, or `None` when that frame cannot be loaded, and the
+    the frame `current` was written on, `None` for a `FrameUnavailable` whose reason is not
+    transient (`assembler.ports.TRANSIENT_FRAME_REASONS`), and raises a transient one, and the
     select binds by `StoredSelect`'s rules. `described` names the revision the candidate's
     description describes; without it the candidate carries none."""
     if is_create:

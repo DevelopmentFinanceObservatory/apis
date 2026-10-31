@@ -19,8 +19,9 @@ check is due again after the retry time the refresh or the run gave, between one
 A snapshot slot states `current`, since its rows are the share's for good.
 
 `serve_on_slot_frame` makes that choice for both of a slot's reads, its data and its card, so
-the two serve one frame. It draws the read on the frame the check chose, and when
-that fails on a newer frame it records the slot `stale` on the card's own frame and draws there.
+the two serve one frame. It draws the read on the frame the check chose, and when that fails on
+a newer frame it serves an earlier one `stale`: the last good frame until the failure's wait
+when a later read may pass, and the card's own frame until the next check otherwise.
 
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
 the one the components door's data route serves), on the served frame as a target when it is
@@ -64,12 +65,15 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from assembler.pipeline.stored_revision import read_stored_revision
-from assembler.ports import FrameRef, RevisionRecord
+from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameRef, FrameUnavailable, RevisionRecord
+from dfo_platform.codes import bound_registry_endpoint
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
+from presentation_api.doors.components import classify_components_exception
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
+from presentation_api.routes import SHARES_ENDPOINT
 from presentation_store import (
     Freshness,
     ServedPage,
@@ -117,6 +121,10 @@ _MAX_ENTRY_ID = 2**63 - 1
 
 _MIN_RETRY_S = 1.0
 """The least a pending check waits, whatever retry time it was given."""
+
+_TRANSIENT_WAIT_S = 30.0
+"""How long a slot holds its last good frame after a transient failure: the wait of a
+`FrameUnavailable` that names none, and the least wait of any other retryable failure."""
 
 # How long a claimed check holds off other reads before any may claim it again. It is twice the
 # bound on one request, so a claim outlives the read that runs its check, and one whose reader
@@ -194,8 +202,13 @@ def serve_on_slot_frame[T](
 ) -> SlotServed[T]:
     """Draw `card`, shown in slot `slot` of `share`, with `draw` on the frame the slot serves
     now, and record the frame served. A snapshot serves its recorded frame. A live slot serves
-    its check's frame (`_live_check`), and when `draw` fails on a frame other than the card's
-    own, the slot is recorded `stale` on the card's own frame, which `draw` then draws on.
+    its check's frame (`_live_check`), stored once `draw` succeeds on it. When `draw` fails on a
+    frame other than the card's own, the slot serves an earlier frame `stale`. A transient
+    failure (`_transient_wait`) keeps the last good frame, the one the slot served before this
+    check, or the card's own when the failing frame is that one or the last good frame cannot
+    be drawn: it stores a check `stale` on it, due after the failure's wait, so the reads before it serve that frame without drawing
+    the failing one. Any other failure stores the slot `stale` on the card's own frame until the
+    next check.
     `card.frame` must be set and `record` must be the card revision.
 
     Raises:
@@ -206,7 +219,7 @@ def serve_on_slot_frame[T](
         frame, freshness, checked_at = card.frame, "current", None
         drawn = draw(frame)
     else:
-        check = _live_check(
+        check, ran, last = _live_check(
             share=share, slot=slot, card=card, rendering=record.frame_rendering, deps=deps
         )
         try:
@@ -214,22 +227,55 @@ def serve_on_slot_frame[T](
         except ExcelIllegalCharacterError:
             # The format refuses the rows, whatever frame they come from.
             raise
-        except Exception:
+        except Exception as exc:
             if check.frame == card.frame:
                 raise
-            # The newer frame does not fit the card's intent, or cannot be read. The slot
-            # serves the card's own frame, which its share pinned, until the next check.
+            failing, wait = check.frame, _transient_wait(exc)
+            # The newer frame does not fit the card's intent, or cannot be read. A permanent
+            # failure serves the card's own frame, which its share pinned, until the next check;
+            # a transient one serves the last good frame until the failure's wait.
+            if wait is None:
+                check = replace(check, frame=card.frame, freshness="stale")
+            else:
+                now = deps.now()
+                check = SlotCheck(
+                    frame=last if last != failing else card.frame,
+                    freshness="stale",
+                    checked_at=now,
+                    next_check_at=now + timedelta(seconds=wait),
+                )
             logger.warning(
-                "Share %s slot %s cannot draw %s on %s; serving its own frame",
+                "Share %s slot %s cannot draw %s on %s; serving %s%s",
                 share.id,
                 slot,
                 card.component_id,
+                failing,
                 check.frame,
+                "" if wait is None else f" for {wait:g} s",
                 exc_info=True,
             )
-            check = replace(check, frame=card.frame, freshness="stale")
+            try:
+                drawn = draw(check.frame)
+            except ExcelIllegalCharacterError:
+                raise
+            except Exception:
+                if check.frame == card.frame:
+                    raise
+                # The last good frame cannot be drawn either; the card's own frame, which its
+                # share pinned, serves in its place for the same wait.
+                logger.warning(
+                    "Share %s slot %s cannot draw %s on %s; serving its own frame",
+                    share.id,
+                    slot,
+                    card.component_id,
+                    check.frame,
+                    exc_info=True,
+                )
+                check = replace(check, frame=card.frame)
+                drawn = draw(card.frame)
+            ran = True
+        if ran:
             deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
-            drawn = draw(card.frame)
         frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
     deps.share_store.record_served(
         share_id=share.id,
@@ -438,6 +484,28 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
     return isinstance(held_until, str) and datetime.fromisoformat(held_until) > now
 
 
+def _transient_wait(exc: Exception) -> float | None:
+    """The seconds after which a later read may draw where `exc` refused with nothing done, or
+    `None` when it may not: a `FrameUnavailable` whose reason is transient
+    (`FrameOutcome.transient`) waits its `retry_after_s`, or `_TRANSIENT_WAIT_S` when it names
+    none, and any other failure the components door classifies as retryable waits its
+    `Retry-After`, at least `_TRANSIENT_WAIT_S` so a one-second header cannot drive a recheck
+    every second. Each wait is held between `_MIN_RETRY_S` and `FRESHNESS_WINDOW`."""
+    if isinstance(exc, FrameUnavailable):
+        if not FRAME_UNAVAILABLE_OUTCOME[exc.reason].transient:
+            return None
+        wait = exc.retry_after_s if exc.retry_after_s is not None else _TRANSIENT_WAIT_S
+    else:
+        # The draw runs off the request's task, where no registry endpoint is bound.
+        with bound_registry_endpoint(SHARES_ENDPOINT):
+            spec = classify_components_exception(exc)
+        if spec is None or not spec.retryable:
+            return None
+        header = (spec.headers or {}).get("Retry-After", "")
+        wait = max(float(header) if header.isdigit() else 0.0, _TRANSIENT_WAIT_S)
+    return min(max(wait, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())
+
+
 def _live_check(
     *,
     share: ShareRecord,
@@ -445,26 +513,28 @@ def _live_check(
     card: ShareCard,
     rendering: Mapping[str, object] | None,
     deps: SharesDeps,
-) -> SlotCheck:
+) -> tuple[SlotCheck, bool, FrameRef]:
     """The slot's check, run once none is stored and again once the last one is due
     (`SlotCheck.next_check_at`), asking for the newest frame of the card's frame under
     `rendering`, the one the card revision recorded. Of reads finding it due, the one whose claim succeeds runs it,
     and the others serve what the last check recorded: its frame, freshness and check time, or
     `pending` on the card's own frame before the first check ends. A claim whose reader never
-    records its check expires after `_CLAIM_TTL`."""
+    records its check expires after `_CLAIM_TTL`. Returns the check and whether this read ran
+    it, so the caller stores it once its draw succeeds, and the frame the slot served before it:
+    the prior check's frame, or the card's own before the first check."""
     assert card.frame is not None
     store = deps.share_store
     now = deps.now()
     prior = store.slot_check(share_id=share.id, slot=slot, card=card)
     if prior is not None and prior.next_check_at > now:
-        return prior
+        return prior, False, prior.frame
     if not store.claim_slot_check(
         share_id=share.id, slot=slot, card=card, now=now, claim_until=now + _CLAIM_TTL
     ):
         held = store.slot_check(share_id=share.id, slot=slot, card=card)
         # A lost claim means another read stored or claimed the check, and nothing removes one.
         assert held is not None
-        return held
+        return held, False, held.frame
     last = prior.frame if prior is not None else card.frame
     check = _check(
         card.frame,
@@ -474,8 +544,7 @@ def _live_check(
         deps=deps,
         label=f"{share.id} slot {slot}",
     )
-    store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
-    return check
+    return check, True, last
 
 
 def _check(

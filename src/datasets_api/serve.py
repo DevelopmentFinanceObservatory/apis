@@ -1409,7 +1409,6 @@ def _render_pass(
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
         groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
-        groupby_row_fold_max_rows=deps.settings.groupby_row_fold_max_rows,
         code_index=deps.code_index,
         resolved_stat_var_refs=_resolved_stat_var_refs(result),
         output_profile=result.output_profile,

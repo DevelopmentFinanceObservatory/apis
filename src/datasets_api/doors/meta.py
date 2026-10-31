@@ -110,7 +110,7 @@ from datasets_api.timings import door_call, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform import HealthResponse, ProblemSpec, health_response
 from dfo_platform.build import build_commit
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from spec_registry import IdentityQuarantined
@@ -491,5 +491,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
             OperationBackpressure(),
             OperationBacklogFull(in_flight=1, limit=1),
         ),
-        registry_endpoints={"/api/datasets/operations/{operation_id}": "datasets.operations"},
+        registry_endpoints=path_registry_endpoints(
+            router, {"/api/datasets/operations/{operation_id}": "datasets.operations"}
+        ),
     )

@@ -186,11 +186,15 @@ from datasets_api.recipe_store import (
     ReplayKeyHeld,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import render_and_store_canonical_frame, render_and_store_frame_file
+from datasets_api.render import (
+    linked_stored_frame,
+    render_and_store_canonical_frame,
+    render_and_store_frame_file,
+    stored_frame_sha256,
+)
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
 from datasets_api.version_descriptions import publish_describer
-from datasets_api.version_store import recorded_frame_sha256
 from datasets_api.versions import DescriptionDiverges, VersionRecord, VersionRecordWriter
 from description.steps import Step
 from dfo_platform import ProblemSpec
@@ -581,6 +585,10 @@ def publish_built_frame(
     """`publish_frame` for a frame already built, as the analysis runner holds one
     (`datasets_api.analysis`). Every check after the build is `publish_frame`'s: the row
     ceiling, the shared unit key, the recipe store, then the store, record and verify steps.
+
+    Raises:
+        StoredFrameUnreadable: The pair records no frame hash and its stored frame, read to
+            take one (`_recorded_frame_matches`), does not decode.
     """
     if recipe is not None and recipe_store is None:
         raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)
@@ -671,12 +679,19 @@ def publish_built_frame(
     def _recorded_frame_matches(
         stored: StoredVersion, locations: Sequence[StoredArtifactLocation] | None = None
     ) -> bool:
-        """Whether `stored` holds this call's frame: by the frame hash it records, else by the
-        digest of the pair's frame1 document, the same hash. `locations` are the pair's when
-        the caller holds them, else they are read. No stored object is read."""
+        """Whether `stored` holds this call's frame, by its frame hash
+        (`render.stored_frame_sha256`) over its links (`render.linked_stored_frame`). A version
+        with no hash to name its frame by does not match. `locations` are the pair's when the
+        caller holds them, else they are read. The read needs no decode bound: an `ops_` pair's
+        frame holds at most `PUBLISH_MAX_ROWS` rows."""
         if stored.frame_sha256 is None and locations is None:
             locations = snapshot_reader.read_artifact_locations(spec_id, content_version)
-        recorded = recorded_frame_sha256(stored.frame_sha256, locations or ())
+        links = locations or ()
+        recorded = stored_frame_sha256(
+            lambda: linked_stored_frame(links, artifact_store=artifact_store, now=prepared_at),
+            recorded=stored.frame_sha256,
+            locations=links,
+        )
         return recorded == published_frame_sha256
 
     def _raise_if_diverges(stored: StoredVersion) -> None:

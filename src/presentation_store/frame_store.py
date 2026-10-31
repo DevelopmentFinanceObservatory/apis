@@ -154,7 +154,6 @@ copy skipped because its frame is pinned already spends nothing.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import threading
 import time
@@ -167,14 +166,20 @@ from typing import Protocol, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from dfo_frame_grammar import (
+    STAT_VAR_COLUMN,
+    UNIT_COLUMN,
+)
+from dfo_frame_grammar.grammar import (
+    STAT_VAR_REF_PREFIX,
+)
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from assembler.bind import role_columns, series_label
+from assembler.errors import BindingInvalid
 from assembler.frame_view import (
     compute_structural_view,
     continuation_known,
@@ -185,11 +190,14 @@ from assembler.frame_view import (
 from assembler.limits import LABEL_MAX, joined_label
 from assembler.mint import warned_provenance_refs, warned_refs
 from assembler.ports import (
+    TRANSIENT_FRAME_REASONS,
+    Continuation,
     FrameRef,
     FrameUnavailable,
     LeftOutSeries,
     ResolvedFrame,
     RollingAnchor,
+    StructuralView,
 )
 from code_index.labels import family_label
 from code_index.query import CodeIndex
@@ -211,6 +219,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.allowance import AllowanceExhausted, SharedAllowanceLedger
 from datasets_api.codes_snapshot import SpecNotFound
+from datasets_api.config import DEFAULT_GROUPBY_FOLD_MAX_ROWS
 from datasets_api.derived import recipe_citation
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
@@ -223,7 +232,7 @@ from datasets_api.manifest import (
 from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
-from datasets_api.render import servable_frame_location
+from datasets_api.render import frame1_decode_max_bytes, servable_frame_location
 from datasets_api.retention_admission import (
     CopyClaimUnsettled,
     OpenPinBudgetExhausted,
@@ -246,8 +255,10 @@ from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
+    STORED_FRAME_DECODE_ERRORS,
     canonical_frame_document,
     read_canonical_frame_table,
+    read_frame1,
 )
 from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import (
@@ -411,38 +422,111 @@ def _revoked(*, spec_id: str, content_version: str, reason: str | None) -> Frame
     return FrameUnavailable(reason="revoked", detail=detail)
 
 
-def _io_failure(*, action: str, digest: str, exc: Exception) -> FrameUnavailable:
+def _io_failure(
+    *, action: str, digest: str, exc: Exception, retry_after_s: float | None = None
+) -> FrameUnavailable:
     """Build a retryable I/O refusal that carries only the exception class."""
     return FrameUnavailable(
-        reason="io", detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}"
+        reason="io",
+        detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}",
+        retry_after_s=retry_after_s,
     )
+
+
+# The errors Datasets refuses the same bytes by (`materialise.formats.STORED_FRAME_DECODE_ERRORS`).
+_MALFORMED_CONTENT = STORED_FRAME_DECODE_ERRORS
+
+# How long a client waits before it retries a frame this instance had no memory to decode.
+_DECODE_RETRY_AFTER_S = 30
+
+
+@contextmanager
+def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
+    """Refuse what the block raises while it reads the content `location` names.
+
+    The bytes are in memory and passed their digest check, so no failure to read them is a failed
+    read. Malformed content refuses `missing_rendering`, logged with the traceback: the parsers'
+    errors for bytes they cannot parse, and `FrameError` for content outside the grammar's
+    forms. Any other exception is a defect, which reaches `internal_error` with a note naming the
+    digest. `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing about the bytes,
+    so it refuses the retryable `io` and names a wait (`_DECODE_RETRY_AFTER_S`), since the next
+    try needs memory this instance may not have."""
+    try:
+        yield
+    except MemoryError as exc:
+        raise _io_failure(
+            action="decoding",
+            digest=location.artifact_digest,
+            exc=exc,
+            retry_after_s=_DECODE_RETRY_AFTER_S,
+        ) from exc
+    except _MALFORMED_CONTENT as exc:
+        logger.error(
+            "artifact_digest %r did not decode as a frame: %s: %s",
+            location.artifact_digest,
+            type(exc).__name__,
+            exc,
+            exc_info=exc,
+        )
+        raise FrameUnavailable(
+            reason="missing_rendering",
+            detail=(
+                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
+                f"{type(exc).__name__}"
+            ),
+        ) from exc
+    except (FrameUnavailable, BindingInvalid):
+        raise
+    except Exception as exc:
+        exc.add_note(f"while reading artifact_digest {location.artifact_digest!r}")
+        raise
+
+
+def _structural_view(
+    frame: Mapping[str, object],
+    *,
+    continuation: Continuation | None,
+    location: StoredArtifactLocation,
+) -> StructuralView:
+    """`compute_structural_view` of the frame `location` stores, a function of its stored cells."""
+    with _decoding(location):
+        return compute_structural_view(frame=frame, continuation=continuation)
 
 
 def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
-    """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
-    document parsed, at its byte length, or a canonical frame built into one, at
-    `_document_bytes`. A canonical frame whose Parquet footer counts more than `max_rows` rows
-    refuses `missing_rendering` before any row is decoded. Bytes that do not decode refuse
-    `io`."""
-    try:
+    """The frame1 document `data` holds and the bytes the cache counts for it, `_document_bytes`
+    of its rows and columns. Both stored forms read into a canonical frame table and build the
+    document from it through `canonical_frame_document`, so their cells are shared alike: a
+    canonical frame read as one (`_canonical_table`), bounded by `max_rows` before any row is
+    decoded, and a frame1 document through `materialise.formats.read_frame1`, the one reader
+    Datasets reads it by, which checks every cell. A frame1 document is not row-bounded: it
+    predates canonical frames, and `datasets_api.maintenance.run_backfill_frame1` gives such a
+    version a canonical frame. `_decoding` refuses what does not decode."""
+    with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            return cast("Mapping[str, object]", json.loads(data)), len(data)
-        rows = pq.read_metadata(pa.BufferReader(data)).num_rows
-        if rows > max_rows:
-            raise _over_row_bound(location, rows=rows, max_rows=max_rows)
-        doc = canonical_frame_document(read_canonical_frame_table(data))
-    except (ValueError, pa.ArrowException) as exc:
-        raise FrameUnavailable(
-            reason="io",
-            detail=(
-                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
-                f"{type(exc).__name__}"
-            ),
-        ) from None
+            table = read_frame1(data).table
+        else:
+            table = _canonical_table(data, location=location, max_rows=max_rows)
+        doc = canonical_frame_document(table)
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
+
+
+def _canonical_table(data: bytes, *, location: StoredArtifactLocation, max_rows: int) -> pa.Table:
+    """The table of the canonical frame `data` holds, refused past `max_rows` from its footer
+    before any row is decoded, then read by `read_canonical_frame_table`, the check Datasets
+    reads one by.
+
+    Raises:
+        FrameError, pa.ArrowException, OSError: As `read_canonical_frame_table`.
+        FrameUnavailable: `missing_rendering` past `max_rows`.
+    """
+    rows = pq.ParquetFile(pa.BufferReader(data)).metadata.num_rows
+    if rows > max_rows:
+        raise _over_row_bound(location, rows=rows, max_rows=max_rows)
+    return read_canonical_frame_table(data)
 
 
 def _over_row_bound(
@@ -453,6 +537,16 @@ def _over_row_bound(
         detail=(
             f"artifact_digest {location.artifact_digest!r} holds {rows} rows, over the "
             f"{max_rows} rows Presentation loads"
+        ),
+    )
+
+
+def _over_byte_bound(location: StoredArtifactLocation, *, max_bytes: int) -> FrameUnavailable:
+    return FrameUnavailable(
+        reason="missing_rendering",
+        detail=(
+            f"artifact_digest {location.artifact_digest!r} is a frame1 document of "
+            f"{location.size_bytes} bytes, over the {max_bytes} bytes Presentation decodes"
         ),
     )
 
@@ -716,7 +810,11 @@ class LiveFrameStore:
     docstring describes, for a caller that sets no door deadline. `frame_max_rows` bounds the
     rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A
     larger frame refuses `missing_rendering`, before its object is fetched when the version's
-    facts record its row count.
+    facts record its row count. `fold_max_rows` is Datasets' `groupby_fold_max_rows`, which
+    bounds a frame1 document by its recorded size as a Datasets read that decodes it alone
+    bounds it (`render.frame1_decode_max_bytes`). A larger document refuses
+    `missing_rendering` before its object is fetched, so one stored document is served or
+    refused by both surfaces alike.
     """
 
     def __init__(
@@ -736,6 +834,7 @@ class LiveFrameStore:
         cache_max_bytes: int = _FRAME_CACHE_MAX_BYTES,
         read_budget_seconds: float = _READ_BUDGET_SECONDS,
         frame_max_rows: int = PUBLISH_MAX_ROWS,
+        fold_max_rows: int = DEFAULT_GROUPBY_FOLD_MAX_ROWS,
     ) -> None:
         self._snapshots = snapshots
         self._artifacts = artifacts
@@ -751,6 +850,7 @@ class LiveFrameStore:
         self._cache_max_bytes = cache_max_bytes
         self._read_budget_seconds = read_budget_seconds
         self._frame_max_rows = frame_max_rows
+        self._frame1_max_bytes = frame1_decode_max_bytes(fold_max_rows, folds=False)
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[str, str], _CachedFrame] = {}
         self._cache_bytes = 0
@@ -891,9 +991,16 @@ class LiveFrameStore:
                 and recorded_rows > self._frame_max_rows
             ):
                 raise _over_row_bound(canonical, rows=recorded_rows, max_rows=self._frame_max_rows)
+            if (
+                canonical.media_type == FRAME1_MEDIA_TYPE
+                and canonical.size_bytes > self._frame1_max_bytes
+            ):
+                raise _over_byte_bound(canonical, max_bytes=self._frame1_max_bytes)
             record, inputs, description_final = self._description_records(frame_ref)
             data = self._fetch_bytes(canonical)
             doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)
+            continuation = frame_continuation(manifest=document)
+            structural_view = _structural_view(doc, continuation=continuation, location=canonical)
             graph_generation, catalogue_build = self._read_under()
             labels, descriptions, labels_resolved = self._resolve_labels(
                 doc,
@@ -904,11 +1011,10 @@ class LiveFrameStore:
                 warned_provenances=warned_provenance_refs(manifest=document),
                 deadline=deadline,
             )
-            continuation = frame_continuation(manifest=document)
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
-                structural_view=compute_structural_view(frame=doc, continuation=continuation),
+                structural_view=structural_view,
                 continuation=continuation,
                 manifest=document,
                 labels=labels,
@@ -949,8 +1055,8 @@ class LiveFrameStore:
                 # fills those of a version recorded before versions stored them.
                 frame = replace(
                     frame,
-                    structural_view=compute_structural_view(
-                        frame=frame.frame, continuation=continuation
+                    structural_view=_structural_view(
+                        frame.frame, continuation=continuation, location=canonical
                     ),
                     continuation=continuation,
                 )
@@ -1285,14 +1391,15 @@ class LiveFrameStore:
         write, makes a retry pin the roots. A derived frame with no recipe that a reference
         already names pins with no roots (`_recipe_roots`). A store with no recipe reader, and
         a recipe root that names no dataset version, refuse `recipe_unreadable`, a server
-        fault. Both answer a retryable 503 (`presentation_api.refusals`). Then the frame pins,
+        fault no retry clears (`presentation_api.refusals`). Then the frame pins,
         and a refusal there pins nothing either. Then each root pins while it is still held: a
         root that aged out of the working tier, was revoked, or cannot be read is left unpinned
-        and logged. A root whose pin fails on I/O raises `io`, and a retry pins what is left.
+        and logged. A root whose pin fails transiently (`TRANSIENT_FRAME_REASONS`) raises it, and
+        a retry pins what is left.
 
         Raises:
             FrameUnavailable: The frame cannot be pinned, its roots cannot be named, or a
-                root's pin failed on I/O.
+                root's pin failed transiently.
             PinBudgetExhausted: The day's pin budget is spent.
             OpenPinBudgetExhausted: The open callers' pin budget is spent.
             PinUnitHeld: A claim holds the last unit of a limit.
@@ -1305,7 +1412,7 @@ class LiveFrameStore:
             try:
                 changed = self._pin_frame(root, component_id=component_id, caller=caller) or changed
             except FrameUnavailable as exc:
-                if exc.reason == "io":
+                if exc.reason in TRANSIENT_FRAME_REASONS:
                     raise
                 logger.warning(
                     "root %s at %s of %s at %s left unpinned for %s: %s %s",

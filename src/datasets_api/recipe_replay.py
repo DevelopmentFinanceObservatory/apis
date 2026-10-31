@@ -4,6 +4,10 @@
 root read with no `columns` is its version's stored frame, and a root read with `columns` is
 the frame-layout file of those columns its version links, the newest one. A version with no
 record answers `RootNotStored`, and a frame or file the version no longer holds `RootExpired`.
+A root read from a stored frame1 document past `render.frame1_decode_max_bytes` refuses
+`over_ceiling` (`bytes`) when it is located, before any root is read, and each root carries the
+rows its version's coverage records, so `analysis.locate_roots` checks the run's root-row cap
+first.
 It renders nothing and refreshes nothing, so a run through it writes to no store. It serves
 expanded recipe roots alone, the dataset roots `dataset_root` gives; a Spec root, which the
 runner would serve by building it, raises `RootRenderingUnreadable`.
@@ -18,9 +22,14 @@ reports the stored frame's `cv_` alone. Its `Replay.outcome` is one of:
 
 - `equal`: both match;
 - `differs`: either differs, or the runner refuses or fails on a recipe whose roots and stored
-  frame it read;
+  frame it read, an output past the rows the publish door stores (`analysis_output_rows`)
+  included, since the stored output, published under that cap, holds fewer;
 - `roots_unreadable`: a root version or its frame is no longer held, or the recipe reads a
   root with options the runner does not read;
+- `over_ceiling`: the runner refuses past a bound before anything is compared, a tree past the
+  node cap (`analysis_nodes`), roots past the root-row cap (`analysis_root_rows`), or a root
+  stored as a frame1 document past the decode bound (`bytes`), its `detail` naming the ceiling
+  kind;
 - `frame_unreadable`: the stored frame itself is no longer held.
 
 `recipe_family` sorts a recipe as `compare` when any of its steps is a `compare`, else `sum_of`
@@ -35,7 +44,7 @@ import traceback
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from dfo_frame_grammar import Frame
 
@@ -43,16 +52,19 @@ from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactNotFoundError
 from dataset_store.clock import Clock
 from dataset_store.snapshot import (
+    ManifestFacts,
     SnapshotReader,
     StoredArtifactLocation,
     select_servable_locations,
 )
 from datasets_api.analysis import (
     AnalysisRequest,
+    AnalysisTooLarge,
     Computed,
     DatasetRoot,
     DerivedRoot,
     FrameUnavailable,
+    LocatedRoot,
     ResolvedRoot,
     RootExpired,
     RootNotStored,
@@ -61,7 +73,7 @@ from datasets_api.analysis import (
     compute_analysis,
     recorded_dataset_root,
 )
-from datasets_api.analysis_roots import frame_from_frame_layout, frame_of_stored
+from datasets_api.analysis_roots import frame_from_frame_layout
 from datasets_api.derived import root_rendering
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_digest import minted_variable_names, output_digest
@@ -70,13 +82,16 @@ from datasets_api.render import (
     artifact_rendering,
     complete_rendering,
     is_statistics_rendering,
+    refuse_frame1_past_decode_bound,
     stored_frame_location,
 )
+from datasets_api.store_errors import read_stored_frame
 from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import derived_nodes
 from dfo_analysis_engine.refusal import AnalysisRefused
 from dfo_platform.config import PublicSiteSettings
+from materialise.errors import OverCeilingError
 
 # A frame-layout file's rendering holds no site setting, which only a bundle's names.
 _NO_SITE = PublicSiteSettings(public_site_url="https://dfo.invalid")
@@ -93,12 +108,15 @@ class _Located:
 @dataclass(kw_only=True)
 class StoredRootSource:
     """`analysis.RootSource` over what the stores hold, for one replay, since it keeps the
-    root records of the recipe it expands. See the module docstring."""
+    root records of the recipe it expands. `fold_max_rows` is Datasets'
+    `groupby_fold_max_rows` (`config.FoldCeilingSettings`), which sizes the frame1 document a
+    read decodes. See the module docstring."""
 
     snapshot_reader: SnapshotReader
     artifact_store: ArtifactStore
     recipes: RecipeReader
     now: Clock
+    fold_max_rows: int
     _records: list[tuple[DatasetRoot, Mapping[str, Any]]] = field(default_factory=list)
 
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:
@@ -155,15 +173,30 @@ class StoredRootSource:
                 content_version=content_version,
                 reason="no frame of its rendering is held",
             )
+        facts = state.version.facts
         return ResolvedRoot(
             frame=FrameRef.model_validate(record["frame"]),
             dataset=dataset,
             record=record,
             rendering=root_rendering(options),
+            rows=cast(int, facts.coverage["rows"]) if isinstance(facts, ManifestFacts) else None,
             source=_Located(location=location, frame_layout=bool(columns)),
         )
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
+        """`root`, whose location is read as it resolves, with a stored frame1 document past
+        `render.frame1_decode_max_bytes` refused on its recorded size.
+
+        Raises:
+            OverCeilingError: `bytes`, for a frame1 document past the bound.
+        """
+        located = root.source
+        assert isinstance(located, _Located)
+        if not located.frame_layout:
+            refuse_frame1_past_decode_bound(located.location, fold_max_rows=self.fold_max_rows)
+        return LocatedRoot.of(root)
+
+    def read(self, root: LocatedRoot) -> Frame:
         located = root.source
         assert isinstance(located, _Located)
         data = self._bytes(
@@ -173,7 +206,11 @@ class StoredRootSource:
         )
         if located.frame_layout:
             return frame_from_frame_layout(data)
-        return frame_of_stored(data, media_type=located.location.media_type)
+        return read_stored_frame(
+            data,
+            media_type=located.location.media_type,
+            digest=located.location.artifact_digest,
+        )
 
     def _bytes(
         self, location: StoredArtifactLocation, *, spec_id: str, content_version: str
@@ -199,7 +236,9 @@ class StoredRootSource:
             data = self._bytes(location, spec_id=spec_id, content_version=content_version)
         except RootExpired:
             return None
-        return frame_of_stored(data, media_type=location.media_type)
+        return read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        )
 
 
 def _frame_layout(options: Mapping[str, Any]) -> bool:
@@ -214,6 +253,7 @@ class ReplayOutcome(StrEnum):
     EQUAL = "equal"
     DIFFERS = "differs"
     ROOTS_UNREADABLE = "roots_unreadable"
+    OVER_CEILING = "over_ceiling"
     FRAME_UNREADABLE = "frame_unreadable"
 
 
@@ -296,6 +336,16 @@ def replay_recipe(
         computed = compute_analysis(request, source=source)
     except FrameUnavailable as unreadable:
         return replay(outcome=ReplayOutcome.ROOTS_UNREADABLE, stored=stored, detail=str(unreadable))
+    except (AnalysisTooLarge, OverCeilingError) as bounded:
+        return replay(
+            outcome=(
+                ReplayOutcome.DIFFERS
+                if bounded.ceiling_kind == "analysis_output_rows"
+                else ReplayOutcome.OVER_CEILING
+            ),
+            stored=stored,
+            detail=f"{bounded.ceiling_kind}: {bounded}",
+        )
     except AnalysisRefused as refused:
         return replay(
             outcome=ReplayOutcome.DIFFERS,

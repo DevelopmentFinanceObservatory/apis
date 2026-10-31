@@ -167,7 +167,7 @@ def _route(served: _Served, method: str, path: str) -> _Route | None:
             return _Route(
                 path=schema_path,
                 method=method.lower(),
-                endpoint=surface.registry_endpoints.get(route.path),
+                endpoint=surface.registry_endpoints.get((method, route.path)),
                 operation=operation,
             )
     return None
