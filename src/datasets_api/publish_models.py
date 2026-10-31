@@ -67,7 +67,7 @@ from __future__ import annotations
 import json
 import unicodedata
 from collections.abc import Iterable, Mapping
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from dfo_descriptions import MAX_STEPS_BYTES, StepsError, StepsErrorReason, check_steps
 from dfo_frame_grammar import (
@@ -108,6 +108,9 @@ MAX_UNIT_STAT_VAR_CHARS = 200
 CATALOGUE_UNIT_BASE_YEARS = range(1900, 2101)
 MAX_ROWS = 1_000_000
 MAX_RECIPE_BYTES = 1_000_000
+MAX_RECIPE_LEFT_OUT_SERIES = 2_000
+"""The most dropped series a recipe lists. The recipe's byte bound, `MAX_RECIPE_BYTES`, cuts
+the list shorter when this many series do not fit (`analysis.left_out_of`)."""
 MAX_ECHO_CHARS = 80
 MAX_STEPS = MAX_COMPUTED_STEPS
 
@@ -384,6 +387,43 @@ class RecipeAnchor(BaseModel):
     left_out: list[RecipeLeftOutSeries]
 
 
+class RecipeStepRef(BaseModel):
+    """A derived node of a recipe's `tree`: its verb and its index in depth-first order, the
+    tree's top node first and each node before its inputs, slots in the tree's order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verb: _BoundedText
+    node: int = Field(ge=0)
+
+
+class RecipeDroppedSeries(BaseModel):
+    """One series a step of the recipe dropped for missing or unusable data (a data gap, such
+    as a growth endpoint the series lacks or a key the other side holds no partner for)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    coordinates: dict[str, str] = Field(
+        description="the series' dimension values, column name to value, as the step read them"
+    )
+    step: RecipeStepRef
+    side: Literal["data", "other"] = Field(
+        description="the step input the series came from, in the analysis call's words"
+    )
+    reason: _BoundedText = Field(description="the engine's exclusion reason")
+    rows: int = Field(ge=1, description="the rows of the series the step left out")
+
+
+class RecipeLeftOut(BaseModel):
+    """Every series the recipe's steps dropped for a data gap, at most
+    `MAX_RECIPE_LEFT_OUT_SERIES`, and whether that is all of them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    series: list[RecipeDroppedSeries] = Field(max_length=MAX_RECIPE_LEFT_OUT_SERIES)
+    complete: bool = Field(description="false when the steps dropped more series than listed")
+
+
 class Recipe(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -419,12 +459,22 @@ class Recipe(BaseModel):
     anchor: RecipeAnchor | None = Field(
         default=None, description="the rolling anchor, or null for a recipe with no rolling period"
     )
+    left_out: RecipeLeftOut | None = Field(
+        default=None,
+        description=(
+            "the series each step dropped for a data gap, as the run that stored the recipe "
+            "computed them; null for a recipe stored without them"
+        ),
+    )
+
+    def stored_body(self) -> dict[str, Any]:
+        """The recipe as the store keeps it: its JSON, without `left_out` when it has none, so
+        a recipe a client publishes is stored as posted."""
+        return self.model_dump(mode="json", exclude={"left_out"} if self.left_out is None else None)
 
     @model_validator(mode="after")
     def _bound_size(self) -> Self:
-        compact = json.dumps(
-            self.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False
-        )
+        compact = json.dumps(self.stored_body(), separators=(",", ":"), ensure_ascii=False)
         size = len(compact.encode("utf-8"))
         if size > MAX_RECIPE_BYTES:
             raise ValueError(

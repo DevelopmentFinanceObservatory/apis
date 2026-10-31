@@ -7,10 +7,12 @@ import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 
 from artifact_store import Tier
+from artifact_store.errors import ArtifactWriteError
 from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
     ArtifactNotFound,
@@ -20,23 +22,31 @@ from dataset_store.snapshot import (
     SnapshotRevoked,
 )
 from datasets_api import door_executor
+from datasets_api.allowance import BUDGET_KEY, AllowanceKind, LiveAllowanceLedger, Spend
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
     SpecNotFound,
 )
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors.pin import PinBudgetExhausted, build_pin_door, pin_artifact
+from datasets_api.doors.pin import (
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    build_pin_door,
+    pin_artifact,
+)
 from datasets_api.reference_store import (
     ARTIFACT_REFERENCE_WRITE_FAILED_MARKER,
     PIN_REFERENCE_KIND,
 )
 from datasets_api.render import servable_frame_location
+from datasets_api.retention_admission import PinUnitHeld, sweep_copy_claims
 from datasets_api.store_errors import DatasetsStoreUnavailable
+from dfo_platform.caller import Caller, address_key
 from materialise.formats import FRAME1_MEDIA_TYPE
 from spec_registry import LiveSpecRegistry
 from spec_registry.errors import SpecRegistryStoreError
 
-from ._app_factories import make_client
+from ._app_factories import make_client, offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._executor_doubles import BrokenSubmitExecutor
@@ -48,6 +58,7 @@ from ._snapshot_doubles import (
     _version,
     make_client_for_door,
 )
+from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 
 _NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -55,20 +66,42 @@ _PRINCIPAL = "first-party-key"
 _DAILY_MAX = 500
 
 
+def _ledger(
+    *, pin_budget: int = _DAILY_MAX, open_pin_budget: int = _DAILY_MAX, pin: int = _DAILY_MAX
+) -> LiveAllowanceLedger:
+    """A ledger over a fresh store, with the door's two budgets and the caller allowance."""
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={
+            AllowanceKind.pin_budget: pin_budget,
+            AllowanceKind.open_pin_budget: open_pin_budget,
+            AllowanceKind.pin: pin,
+        },
+    )
+
+
+def _spent(ledger: LiveAllowanceLedger) -> dict[tuple[str, str], int]:
+    """Each `(key, kind)` the ledger's store holds a count for, with the count."""
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
+    return {
+        (cast(str, row["caller_key"]), cast(str, row["kind"])): cast(int, row["count"])
+        for row in rows
+    }
+
+
 @dataclass
 class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
     """Live references keep `created_at`; soft-deleted references reactivate with a new time.
 
     `record_reference_unless_revoked` reads `revoked` and `unlinked` at call time for
-    copy-window tests. `pinned_copies` maps a digest to its pinned location's `stored_at`, and
-    the count includes those whose digest holds a reference of the asked kind.
+    copy-window tests.
     """
 
     records: dict[tuple[str, str, str, str, str], datetime] = field(default_factory=dict)
     removed_at: dict[tuple[str, str, str, str, str], datetime | None] = field(default_factory=dict)
     revoked: dict[tuple[str, str], str | None] = field(default_factory=dict)
     unlinked: set[tuple[str, str, str]] = field(default_factory=set)
-    pinned_copies: dict[str, datetime] = field(default_factory=dict)
 
     def record_reference(
         self,
@@ -96,6 +129,7 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> datetime:
         for subject in (subject_id, *revoked_under):
             if (subject, content_version) in self.revoked:
@@ -104,7 +138,7 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
                     content_version=content_version,
                     reason=self.revoked[(subject, content_version)],
                 )
-        if (subject_id, content_version, artifact_digest) in self.unlinked:
+        if require_link and (subject_id, content_version, artifact_digest) in self.unlinked:
             raise ArtifactNotFound(
                 id=subject_id, content_version=content_version, artifact_digest=artifact_digest
             )
@@ -115,14 +149,6 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
             content_version=content_version,
             reference_kind=reference_kind,
             now=now,
-        )
-
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
-        referenced = {key[1] for key in self.records if key[4] == reference_kind}
-        return sum(
-            1
-            for digest, stored_at in self.pinned_copies.items()
-            if digest in referenced and stored_at >= since
         )
 
     def soft_delete(self, key: tuple[str, str, str, str, str], *, removed_at: datetime) -> None:
@@ -191,7 +217,7 @@ def test_unregistered_id_refuses_spec_not_found():
             snapshot_reader=FakeSnapshotReader(),
             artifact_store=None,  # never reached
             reference_writer=FakeArtifactReferenceWriter(),
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -207,7 +233,7 @@ def test_unknown_content_version_refuses_snapshot_not_found():
             snapshot_reader=FakeSnapshotReader(versions={("spec_a", "cv1"): _version()}),
             artifact_store=None,
             reference_writer=FakeArtifactReferenceWriter(),
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -227,7 +253,7 @@ def test_a_revoked_version_refuses_snapshot_revoked():
             snapshot_reader=reader,
             artifact_store=None,
             reference_writer=FakeArtifactReferenceWriter(),
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -245,7 +271,7 @@ def test_a_digest_never_linked_to_this_version_refuses_artifact_not_found():
             snapshot_reader=reader,
             artifact_store=store_artifact_store,
             reference_writer=FakeArtifactReferenceWriter(),
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -270,7 +296,7 @@ def test_a_digest_only_in_the_working_tier_and_expired_refuses_artifact_expired(
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=FakeArtifactReferenceWriter(),
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -282,7 +308,7 @@ def test_a_revocation_landing_during_the_copy_window_is_caught_at_reference_writ
     reference_writer = FakeArtifactReferenceWriter()
 
     class _RevokingDuringCopyArtifactStore(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             reference_writer.revoked[("spec_a", "cv1")] = "revoked mid-copy"
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -303,7 +329,7 @@ def test_a_revocation_landing_during_the_copy_window_is_caught_at_reference_writ
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=reference_writer,
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -330,12 +356,14 @@ def test_pinning_a_working_tier_artifact_copies_it_and_records_a_reference():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=reference_writer,
-        daily_max=_DAILY_MAX,
+        allowances=_ledger(),
         now=lambda: _NOW,
     )
 
     assert pinned_at == _NOW
     assert (location.artifact_digest, Tier.pinned.value) in store._objects
+    # The copy reads from the location the door holds.
+    assert (location.artifact_digest, Tier.working) not in store.locations
     key = (_PRINCIPAL, location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
     assert reference_writer.records[key] == _NOW
 
@@ -348,7 +376,7 @@ def test_pinning_an_already_pinned_artifact_does_not_re_copy():
             super().__init__()
             self.copy_calls = 0
 
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             self.copy_calls += 1
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -369,7 +397,7 @@ def test_pinning_an_already_pinned_artifact_does_not_re_copy():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=reference_writer,
-        daily_max=_DAILY_MAX,
+        allowances=_ledger(),
         now=lambda: _NOW,
     )
 
@@ -420,7 +448,7 @@ def _pin_parquet(
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=writer,
-        daily_max=_DAILY_MAX,
+        allowances=_ledger(),
         now=lambda: _NOW,
     )
 
@@ -514,96 +542,167 @@ def test_a_pin_retains_an_aged_frame_while_its_bytes_survive(
     }
 
 
-def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired():
-    """The working copy aged out after the location was read, so the copy finds no object."""
+def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired_and_spends_nothing():
+    """The working copy aged out after the location was read, so the copy finds no object, and
+    the units spent for it go back."""
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
     del store._objects[(parquet.artifact_digest, Tier.working.value)]
-    reader = FakeSnapshotReader(
-        versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): [parquet]}
-    )
-    writer = FakeArtifactReferenceWriter()
+    ledger = _ledger()
 
     with pytest.raises(ArtifactExpired):
-        _pin_parquet(reader, store, writer, parquet.artifact_digest)
+        _pin_named(store, parquet, ledger, caller=_OPEN_CALLER)
 
-    assert not writer.records
-
-
-def _writer_with_pinned_copies(*stored_at: datetime) -> FakeArtifactReferenceWriter:
-    """A writer seeing one door-pinned copy per timestamp, each of a distinct digest."""
-    writer = FakeArtifactReferenceWriter()
-    for i, at in enumerate(stored_at):
-        writer.pinned_copies[f"sha256:seed{i}"] = at
-        writer.records[(_PRINCIPAL, f"sha256:seed{i}", "spec_seed", "cv1", PIN_REFERENCE_KIND)] = at
-    return writer
+    assert _spent(ledger) == {}
 
 
 class _CopyForbiddenArtifactStore(FakeArtifactStore):
-    def copy(self, digest, *, from_tier, to_tier):
+    def copy(self, digest, *, from_tier, to_tier, source=None):
         raise AssertionError("the budget refusal must come before any copy")
 
 
-def test_pin_at_the_daily_budget_refuses_before_copying():
-    store = _CopyForbiddenArtifactStore()
-    location = _store_and_locate(store, b"over-budget")
+def _pin_named(store, location, ledger: LiveAllowanceLedger, *, caller: Caller | None = None):
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
         locations={("spec_a", "cv1"): [location]},
     )
-    writer = _writer_with_pinned_copies(_NOW - timedelta(hours=1), _NOW - timedelta(hours=23))
-
-    with pytest.raises(PinBudgetExhausted):
-        pin_artifact(
-            id="spec_a",
-            content_version="cv1",
-            artifact_digest=location.artifact_digest,
-            principal=_PRINCIPAL,
-            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-            snapshot_reader=reader,
-            artifact_store=store,
-            reference_writer=writer,
-            daily_max=2,
-            now=lambda: _NOW,
-        )
-
-    assert (location.artifact_digest, Tier.pinned.value) not in store._objects
-    assert len(writer.records) == 2
-
-
-@pytest.mark.parametrize(
-    ("tier", "seeded"),
-    [
-        # A repair of an already pinned artifact makes no copy, so the budget does not apply.
-        (Tier.pinned, (_NOW - timedelta(hours=1), _NOW - timedelta(hours=2))),
-        # Pins older than the trailing 24 hours no longer count.
-        (Tier.working, (_NOW - timedelta(hours=1), _NOW - timedelta(hours=24, seconds=1))),
-    ],
-    ids=["repair-of-pinned-artifact-at-budget", "below-budget-in-window"],
-)
-def test_pin_the_budget_admits_copies_and_records_a_reference(
-    tier: Tier, seeded: tuple[datetime, ...]
-):
-    store = FakeArtifactStore()
-    location = _store_and_locate(store, b"within-budget", tier=tier)
-    reader = FakeSnapshotReader(
-        versions={("spec_a", "cv1"): _version()},
-        locations={("spec_a", "cv1"): [location]},
-    )
-    writer = _writer_with_pinned_copies(*seeded)
-
+    writer = FakeArtifactReferenceWriter()
     pinned_at = pin_artifact(
         id="spec_a",
         content_version="cv1",
         artifact_digest=location.artifact_digest,
-        principal=_PRINCIPAL,
+        principal=_PRINCIPAL if caller is None else caller.key,
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=writer,
-        daily_max=2,
+        allowances=ledger,
         now=lambda: _NOW,
+        caller=caller,
     )
+    return pinned_at, writer
+
+
+def test_a_copy_that_landed_and_raised_ends_with_one_set_of_units():
+    """The bytes can land before a copy raises, so the failed attempt keeps its units, and the
+    retry, which finds them stored, gives its own set back."""
+
+    class _LandedThenRaised(FakeArtifactStore):
+        failed = False
+
+        def copy(self, digest, *, from_tier, to_tier, source=None):
+            copied = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+            if not self.failed:
+                self.failed = True
+                raise ArtifactWriteError(object_name=digest, digest=digest)
+            return copied
+
+    store = _LandedThenRaised()
+    location = _store_and_locate(store, b"landed")
+    ledger = _ledger()
+
+    with pytest.raises(ArtifactWriteError):
+        _pin_named(store, location, ledger)
+    _pin_named(store, location, ledger)
+
+    assert _spent(ledger) == {(BUDGET_KEY, "pin_budget"): 1}
+
+
+@pytest.mark.parametrize(
+    ("landed", "bucket_read", "units", "swept"),
+    [
+        pytest.param(False, None, {}, {}, id="absent-refunds"),
+        pytest.param(
+            True,
+            None,
+            {(BUDGET_KEY, "pin_budget"): 1},
+            {(BUDGET_KEY, "pin_budget"): 1},
+            id="present-keeps",
+        ),
+        pytest.param(
+            False,
+            ArtifactWriteError(object_name="d", digest="d"),
+            {(BUDGET_KEY, "pin_budget"): 1},
+            {},
+            id="failed-read-held-for-the-sweep",
+        ),
+    ],
+)
+def test_a_copy_that_raises_is_judged_by_the_pinned_object(
+    landed: bool, bucket_read: Exception | None, units: dict, swept: dict
+):
+    class _Raises(FakeArtifactStore):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
+            if landed:
+                super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+            raise ArtifactWriteError(object_name=digest, digest=digest)
+
+        def exists(self, digest, *, tier, read=None):
+            if bucket_read is not None:
+                raise bucket_read
+            return super().exists(digest, tier=tier)
+
+    store = _Raises()
+    location = _store_and_locate(store, b"judged")
+    ledger = _ledger()
+
+    with pytest.raises(ArtifactWriteError):
+        _pin_named(store, location, ledger)
+
+    assert _spent(ledger) == units
+    bucket_read = None  # The sweep reads a bucket that answers.
+    sweep_copy_claims(allowances=ledger, artifacts=store, now=_NOW + timedelta(minutes=5))
+    assert _spent(ledger) == swept
+
+
+def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
+    """The unit can come back, so its limit reads as capacity, and not as a day that spent it."""
+    store = _CopyForbiddenArtifactStore()
+    location = _store_and_locate(store, b"held")
+    ledger = _ledger(pin_budget=1)
+    claim = ledger.claim("exp_a", now=_NOW, expires_at=_NOW + timedelta(minutes=2))
+    ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], clock=lambda: _NOW)
+
+    with pytest.raises(PinUnitHeld) as refused:
+        _pin_named(store, location, ledger)
+
+    assert (refused.value.code, refused.value.retryable) == ("service_unavailable", True)
+    assert refused.value.headers == {"Retry-After": "10"}
+
+
+def test_pin_at_the_daily_budget_refuses_before_copying_until_utc_midnight():
+    store = _CopyForbiddenArtifactStore()
+    location = _store_and_locate(store, b"over-budget")
+    ledger = _ledger(pin_budget=2)
+    for _ in range(2):
+        ledger.spend(Caller(kind="address", key=BUDGET_KEY), AllowanceKind.pin_budget, _NOW)
+
+    with pytest.raises(PinBudgetExhausted) as refused:
+        _pin_named(store, location, ledger)
+
+    assert (location.artifact_digest, Tier.pinned.value) not in store._objects
+    # `_NOW` is a UTC midnight, so the budget resets a day later.
+    assert refused.value.headers == {"Retry-After": "86400"}
+
+
+@pytest.mark.parametrize(
+    ("tier", "spent_at"),
+    [
+        # A repair of an already pinned artifact makes no copy, so the budget does not apply.
+        (Tier.pinned, _NOW),
+        # The budget is the UTC day's, so yesterday's copies no longer count.
+        (Tier.working, _NOW - timedelta(seconds=1)),
+    ],
+    ids=["repair-of-pinned-artifact-at-budget", "yesterdays-copies"],
+)
+def test_pin_the_budget_admits_copies_and_records_a_reference(tier: Tier, spent_at: datetime):
+    store = FakeArtifactStore()
+    location = _store_and_locate(store, b"within-budget", tier=tier)
+    ledger = _ledger(pin_budget=2)
+    for _ in range(2):
+        ledger.spend(Caller(kind="address", key=BUDGET_KEY), AllowanceKind.pin_budget, spent_at)
+
+    pinned_at, writer = _pin_named(store, location, ledger)
 
     assert pinned_at == _NOW
     assert (location.artifact_digest, Tier.pinned.value) in store._objects
@@ -611,37 +710,55 @@ def test_pin_the_budget_admits_copies_and_records_a_reference(
     assert writer.records[key] == _NOW
 
 
-def test_pin_budget_counts_pinned_copies_not_references():
-    """Two references sharing one pinned copy, a standalone version and a collection member,
-    spend one unit of the budget, so a new copy still fits under a budget of two."""
+_OPEN_CALLER = Caller(kind="address", key="ip:" + "0" * 32)
+
+
+@pytest.mark.parametrize(
+    ("seed", "refused"),
+    [(_OPEN_CALLER, True), (None, False)],
+    ids=["open-callers-copy-counts", "grant-holders-copy-does-not"],
+)
+def test_the_open_budget_counts_only_open_callers_copies(seed: Caller | None, refused: bool):
+    """A copy made today fills an open budget of one only when an open caller made it, and a
+    refusal by that budget, retryable after the reset, spends neither the daily budget nor
+    the caller's allowance."""
+    ledger = _ledger(open_pin_budget=1)
+    seeded = FakeArtifactStore()
+    _pin_named(seeded, _store_and_locate(seeded, b"seed"), ledger, caller=seed)
+    before = _spent(ledger)
+    store = _CopyForbiddenArtifactStore() if refused else FakeArtifactStore()
+    location = _store_and_locate(store, b"open-ceiling")
+
+    if refused:
+        with pytest.raises(OpenPinBudgetExhausted) as exhausted:
+            _pin_named(store, location, ledger, caller=_OPEN_CALLER)
+        assert _spent(ledger) == before
+        assert exhausted.value.retryable is True
+        assert exhausted.value.headers == {"Retry-After": "86400"}
+    else:
+        assert _pin_named(store, location, ledger, caller=_OPEN_CALLER)[0] == _NOW
+        assert _spent(ledger)[(_OPEN_CALLER.key, AllowanceKind.pin.value)] == 1
+
+
+@pytest.mark.parametrize("caller", [_OPEN_CALLER, None], ids=["open-caller", "grant-holder"])
+def test_a_pin_racing_another_to_one_copy_spends_nothing(caller: Caller | None):
+    """Two pins read the artifact in the working tier and both spend, but the second's copy
+    finds the pinned bytes the first made. It gives its units back, so one copy costs one
+    unit of each budget and of one allowance."""
+    ledger = _ledger()
     store = FakeArtifactStore()
-    location = _store_and_locate(store, b"shared-digest-budget")
-    reader = FakeSnapshotReader(
-        versions={("spec_a", "cv1"): _version()},
-        locations={("spec_a", "cv1"): [location]},
-    )
-    shared = "sha256:shared"
-    writer = FakeArtifactReferenceWriter(pinned_copies={shared: _NOW - timedelta(hours=1)})
-    for subject_id in ("spec_standalone", "col_member"):
-        writer.records[(_PRINCIPAL, shared, subject_id, "cv1", PIN_REFERENCE_KIND)] = (
-            _NOW - timedelta(hours=1)
-        )
+    location = _store_and_locate(store, b"raced")
+    _pin_named(store, location, ledger, caller=caller)
+    first = _spent(ledger)
 
-    pinned_at = pin_artifact(
-        id="spec_a",
-        content_version="cv1",
-        artifact_digest=location.artifact_digest,
-        principal=_PRINCIPAL,
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=writer,
-        daily_max=2,
-        now=lambda: _NOW,
-    )
+    pinned_at, writer = _pin_named(store, location, ledger, caller=caller)
 
+    assert _spent(ledger) == first
     assert pinned_at == _NOW
-    assert (location.artifact_digest, Tier.pinned.value) in store._objects
+    principal = _PRINCIPAL if caller is None else caller.key
+    assert (principal, location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND) in (
+        writer.records
+    )
 
 
 def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_marker(
@@ -652,7 +769,7 @@ def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_
     writer = FakeArtifactReferenceWriter()
 
     class _RelinkingDuringCopyArtifactStore(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             writer.unlinked.add(("spec_a", "cv1", digest))
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -673,7 +790,7 @@ def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=writer,
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: _NOW,
         )
 
@@ -681,10 +798,11 @@ def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_
     assert ARTIFACT_REFERENCE_WRITE_FAILED_MARKER not in caplog.text
 
 
-def test_pin_door_wire_refuses_an_exhausted_budget_503_with_retry_after(
+def test_pin_door_wire_refuses_an_exhausted_budget_503_retryable_after_the_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`DATASETS_PIN_DAILY_MAX` reaches the door, and the refusal is retryable with a wait."""
+    """`DATASETS_PIN_DAILY_MAX` reaches the door. The refusal names the reset in `Retry-After`
+    and is retryable once the reset passes."""
     monkeypatch.setenv("DATASETS_PIN_DAILY_MAX", "0")
     store = _CopyForbiddenArtifactStore()
     # The composed surface reads the wall clock, so the working copy must be fresh.
@@ -735,7 +853,7 @@ def test_repeat_pin_by_the_same_principal_reports_the_original_pinned_at():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=reference_writer,
-        daily_max=_DAILY_MAX,
+        allowances=_ledger(),
         now=lambda: _NOW,
     )
     later = datetime(2026, 7, 1, tzinfo=UTC)
@@ -748,7 +866,7 @@ def test_repeat_pin_by_the_same_principal_reports_the_original_pinned_at():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=reference_writer,
-        daily_max=_DAILY_MAX,
+        allowances=_ledger(),
         now=lambda: later,
     )
 
@@ -783,7 +901,7 @@ def test_reference_write_failure_after_the_copy_logs_the_marker_and_an_identical
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=writer,
-            daily_max=_DAILY_MAX,
+            allowances=_ledger(),
             now=lambda: now,
         )
 
@@ -889,6 +1007,7 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=blocking_writer,
+            allowances=_ledger(),
             now=lambda: _NOW,
         ),
         settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
@@ -944,6 +1063,7 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=FakeArtifactReferenceWriter(),
+            allowances=_ledger(),
             now=lambda: _NOW,
         ),
         settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
@@ -965,83 +1085,174 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     assert "permanently broken" in caplog.text
 
 
-def _build_client(*, allowed_principals=frozenset({_PRINCIPAL}), reference_writer=None):
-    from ._artifact_doubles import FakeArtifactStore
-
-    store = FakeArtifactStore()
-    location = _store_and_locate(store, b"pin-me-over-http")
+def _build_client(
+    *,
+    allowed_principals=frozenset({_PRINCIPAL}),
+    reference_writer=None,
+    allowances=None,
+    artifact_store=None,
+    tier: Tier = Tier.working,
+):
+    """A client over the pin door alone, with the environment's settings read now."""
+    store = artifact_store if artifact_store is not None else FakeArtifactStore()
+    location = _store_and_locate(store, b"pin-me-over-http", tier=tier)
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
         locations={("spec_a", "cv1"): [location]},
     )
+    settings = DatasetsBuildSettings.from_env()
     door = build_pin_door(
         deps=fake_deps_cell(
+            settings=settings,
             spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=reference_writer
             if reference_writer is not None
             else FakeArtifactReferenceWriter(),
+            allowances=allowances if allowances is not None else offline_allowances(settings),
             now=lambda: _NOW,
         ),
-        settings=DatasetsBuildSettings.from_env(),
+        settings=settings,
         allowed_principals=allowed_principals,
     )
     return make_client_for_door(door), location
 
 
-def test_pin_without_a_principal_header_refuses_pin_not_permitted():
-    client, location = _build_client()
+_HMAC_KEY = "test-caller-key"
+_CLIENT_ADDRESS = "203.0.113.7"
 
-    resp = client.post(
+
+@pytest.fixture
+def caller_key(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Configure the caller digest key, and return the key of a caller at `_CLIENT_ADDRESS`."""
+    monkeypatch.setenv("DFO_CALLER_HMAC_KEY", _HMAC_KEY)
+    return address_key(_CLIENT_ADDRESS, hmac_key=_HMAC_KEY)
+
+
+def _pin(client, location, headers=()):
+    return client.post(
         "/api/datasets/spec_a/cv1/pin",
         json={"schema_version": 1, "artifact_digest": location.artifact_digest},
+        headers=[("x-forwarded-for", f"198.51.100.1, {_CLIENT_ADDRESS}"), *headers],
     )
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["code"] == "pin_not_permitted"
 
-
-def test_pin_with_an_unlisted_principal_refuses_pin_not_permitted():
-    client, location = _build_client()
-
-    resp = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": "some-other-caller"},
+@pytest.mark.parametrize(
+    ("allowed_principals", "headers"),
+    [
+        (frozenset({_PRINCIPAL}), []),
+        (frozenset({_PRINCIPAL}), [("x-dfo-principal", "some-other-caller")]),
+        (
+            frozenset({_PRINCIPAL}),
+            [("x-dfo-principal", _PRINCIPAL), ("x-dfo-principal", "some-other-caller")],
+        ),
+        (frozenset({_PRINCIPAL}), [("x-dfo-principal", "presentation-mcp")]),
+        (frozenset(), [("x-dfo-principal", _PRINCIPAL)]),
+    ],
+    ids=[
+        "no-principal",
+        "unlisted-principal",
+        "repeated-principal",
+        "publish-principal",
+        "no-pin-principal-configured",
+    ],
+)
+def test_a_caller_without_the_pin_grant_pins_under_its_caller_key_and_allowance(
+    caller_key: str, allowed_principals: frozenset[str], headers: list[tuple[str, str]]
+):
+    writer = FakeArtifactReferenceWriter()
+    ledger = _ledger(pin=50)
+    client, location = _build_client(
+        allowed_principals=allowed_principals, reference_writer=writer, allowances=ledger
     )
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json()["code"] == "pin_not_permitted"
+    resp = _pin(client, location, headers)
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {caller_key}
+    assert _spent(ledger) == {
+        (caller_key, "pin"): 1,
+        (BUDGET_KEY, "pin_budget"): 1,
+        (BUDGET_KEY, "open_pin_budget"): 1,
+    }
 
 
-def test_pin_with_two_principal_header_values_refuses_regardless_of_order(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Repeated principal headers are refused in either order.
+def test_an_open_pin_without_a_caller_key_configured_refuses_503_before_copying(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("DFO_CALLER_HMAC_KEY", raising=False)
+    client, location = _build_client(artifact_store=_CopyForbiddenArtifactStore())
 
-    `Headers.get` returns only the first value, so a forged second value would pass a `get` check.
-    """
-    client, location = _build_client()
-    body = {"schema_version": 1, "artifact_digest": location.artifact_digest}
+    resp = _pin(client, location)
 
-    with caplog.at_level(logging.WARNING):
-        allowed_first = client.post(
-            "/api/datasets/spec_a/cv1/pin",
-            json=body,
-            headers=[("x-dfo-principal", _PRINCIPAL), ("x-dfo-principal", "some-other-caller")],
-        )
-    assert allowed_first.status_code == 403, allowed_first.text
-    assert allowed_first.json()["code"] == "pin_not_permitted"
-    assert "2 values" in caplog.text
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["code"] == "service_unavailable"
+    assert body["retryable"] is False
 
-    allowed_second = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json=body,
-        headers=[("x-dfo-principal", "some-other-caller"), ("x-dfo-principal", _PRINCIPAL)],
+
+def test_an_open_caller_past_its_allowance_refuses_429_until_utc_midnight(caller_key: str):
+    client, location = _build_client(
+        artifact_store=_CopyForbiddenArtifactStore(),
+        allowances=_ledger(pin=0),
     )
-    assert allowed_second.status_code == 403, allowed_second.text
-    assert allowed_second.json()["code"] == "pin_not_permitted"
+
+    resp = _pin(client, location)
+
+    assert resp.status_code == 429, resp.text
+    body = resp.json()
+    assert body["code"] == "allowance_exhausted"
+    assert body["retryable"] is False
+    # `_NOW` is a UTC midnight, so the allowance resets a day later.
+    assert resp.headers["retry-after"] == "86400"
+
+
+def test_an_open_callers_repin_of_a_pinned_artifact_spends_no_allowance(caller_key: str):
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(
+        reference_writer=writer,
+        tier=Tier.pinned,
+        allowances=_ledger(pin=0),
+    )
+
+    resp = _pin(client, location)
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {caller_key}
+
+
+def test_the_pin_grant_spends_no_allowance(caller_key: str):
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(
+        reference_writer=writer,
+        allowances=_ledger(pin=0),
+    )
+
+    resp = _pin(client, location, [("x-dfo-principal", _PRINCIPAL)])
+
+    assert resp.status_code == 200, resp.text
+    (principal,) = {key[0] for key in writer.records}
+    assert principal.startswith("secret-sha256:")
+
+
+def test_a_caller_the_website_vouches_for_pins_under_the_key_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The website's caller digest stands in for this service's own, which needs no key."""
+    monkeypatch.setenv("DFO_CALLER_PRINCIPAL", "website-secret")
+    named = "ip:" + "ab" * 16
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(reference_writer=writer)
+
+    resp = _pin(
+        client,
+        location,
+        [("x-dfo-caller-principal", "website-secret"), ("x-dfo-caller", named)],
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert {key[0] for key in writer.records} == {named}
 
 
 def test_pin_with_the_first_party_principal_succeeds():
@@ -1098,6 +1309,7 @@ def test_pin_reactivates_a_soft_deleted_reference_through_the_door():
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=reference_writer,
+            allowances=_ledger(),
             now=lambda: current_time[0],
         ),
         settings=DatasetsBuildSettings.from_env(),
@@ -1127,39 +1339,6 @@ def test_pin_reactivates_a_soft_deleted_reference_through_the_door():
     assert second.json()["pinned"]["pinned_at"] == later.isoformat()
     assert reference_writer.removed_at[key] is None
     assert reference_writer.records[key] == later
-
-
-def test_pin_with_no_allowed_principals_configured_refuses_everyone():
-    client, location = _build_client(allowed_principals=frozenset())
-
-    resp = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": _PRINCIPAL},
-    )
-
-    assert resp.status_code == 403, resp.text
-
-
-def test_pin_door_scoped_to_the_pin_principal_refuses_the_publish_principal() -> None:
-    """The pin allowlist accepts its configured principal and refuses the publish principal."""
-    publish_principal = "presentation-mcp"
-    client, location = _build_client(allowed_principals=frozenset({_PRINCIPAL}))
-
-    accepted = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": _PRINCIPAL},
-    )
-    assert accepted.status_code == 200, accepted.text
-
-    refused = client.post(
-        "/api/datasets/spec_a/cv1/pin",
-        json={"schema_version": 1, "artifact_digest": location.artifact_digest},
-        headers={"x-dfo-principal": publish_principal},
-    )
-    assert refused.status_code == 403, refused.text
-    assert refused.json()["code"] == "pin_not_permitted"
 
 
 def test_pin_body_omitting_schema_version_is_accepted():

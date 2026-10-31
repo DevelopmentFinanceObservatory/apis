@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 import entity_resolution.shared as shared_module
 from code_index.shared import get_index
-from dc_graph import FacetDefaultPolicy
+from dc_graph import ArcTarget, FacetDefaultPolicy
 from dc_graph.client import UNRESOLVED_NODE, _dedup_wire_arcs
 from entity_resolution import EntityResolver, GraphLookup, acquire_shared
 from entity_resolution.membership import (
@@ -41,7 +41,7 @@ from search.engine.clients.graph import (
     admit_legs,
 )
 from search.engine.config import settings
-from search.engine.errors import GraphInfraError
+from search.engine.errors import GraphInfraError, GraphReadFailure
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT
 from search.engine.retrieval.facts import _dcids_for
 from tests.engine._fake_sdmx import scope_availability_of
@@ -131,6 +131,20 @@ def _load_json(name: str) -> dict:
     path = _FIXTURES_DIR / name
     with open(path) as f:
         return json.load(f)
+
+
+def fixture_provenance_names(*extra: str) -> dict[str, str]:
+    """Each provenance the fixture graph's observations carry (`graph_obs.json`), and each in
+    `extra`, named by its fixture node's label, else by its dcid's last segment, the import
+    name the graph names a base provenance by. A test lists them in its catalogue
+    (`tests.origin_catalogue.fake_catalogue.listing`), as production's lists every provenance
+    it admits."""
+    found = re.findall(r'"provenanceId": "([^"]+)"', (_FIXTURES_DIR / "graph_obs.json").read_text())
+    nodes = _load_json("graph_nodes.json")
+    return {
+        dcid: (nodes.get(dcid) or {}).get("label") or dcid.rsplit("/", 1)[-1]
+        for dcid in dict.fromkeys([*found, *extra])
+    }
 
 
 def detect_leg_from_json(entry: Mapping) -> tuple[DetectedSV, ...]:
@@ -299,9 +313,12 @@ class FakeLLM:
     user prompt so the fixture can be written without a second run. Optional harvest logging
     records each call.
     Keys come from `fixture_key` over the system prompt as `_recorded_system` keys it.
+    `recorded` is whether it replays `llm_responses.json` rather than the `responses` a test
+    scripted.
     """
 
     def __init__(self, responses: dict | None = None):
+        self.recorded = responses is None
         self._responses: dict = (
             responses if responses is not None else _load_json("llm_responses.json")
         )
@@ -368,6 +385,15 @@ class _RaiseOnAny:
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         raise GraphInfraError(f"FakeGraph(raise=True): simulated transport error for {dcids!r}")
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        raise GraphReadFailure(f"FakeGraph(raise=True): simulated transport error for {dcids!r}")
 
     def node_names_many(
         self,
@@ -666,6 +692,37 @@ class FakeGraph:
                         )
                     )
             result[dcid] = entry
+        return result
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """`node_arcs_many`'s values, each node target carrying the label and type this fake
+        holds for it, as the mixer answers beside an arc's targets."""
+        arcs = self.node_arcs_many(dcids, properties=properties, deadline=deadline)
+        result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        for dcid, entry in arcs.items():
+            if entry is None:
+                result[dcid] = None
+                continue
+            result[dcid] = {}
+            for prop, values in entry.items():
+                targets = []
+                for value in values:
+                    node = self._nodes.get(value) if prop not in ("name", "typeOf") else None
+                    type_of = node.get("type") if node is not None else None
+                    targets.append(
+                        ArcTarget(
+                            value=value,
+                            name=node.get("label") if node is not None else None,
+                            types=(type_of,) if type_of else (),
+                        )
+                    )
+                result[dcid][prop] = tuple(targets)
         return result
 
     def node_names_many(

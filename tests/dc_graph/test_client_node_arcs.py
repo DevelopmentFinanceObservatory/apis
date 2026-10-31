@@ -9,7 +9,7 @@ write the exact same cache. Offline only -- the transport is monkeypatched.
 
 import pytest
 
-from dc_graph import GraphClient, GraphReadError
+from dc_graph import GraphClient, GraphOmittedDcidsError, GraphReadError
 from graph_generation.stamp import UNKNOWN_KEY
 
 
@@ -360,8 +360,10 @@ def test_node_arcs_single_call_raises_on_persistent_omission(monkeypatch) -> Non
         base_url="http://fake/core/api", arcs_cache_size=10000, obs_properties_cache_size=10000
     )
 
-    with pytest.raises(GraphReadError):
+    with pytest.raises(GraphReadError) as raised:
         client.node_arcs("absent/NODE")
+    assert isinstance(raised.value.__cause__, GraphOmittedDcidsError)
+    assert raised.value.__cause__.dcids == ("absent/NODE",)
 
 
 def test_node_arcs_and_node_arcs_batch_share_one_cache(monkeypatch) -> None:

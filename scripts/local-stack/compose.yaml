@@ -1,0 +1,34 @@
+# Postgres 18 and a GCS emulator for the local dfo-apis stack (scripts/local-stack/README.md).
+# Neither service keeps a volume: `stack.sh down` removes the containers and every row and
+# object with them, so each `up` starts from empty databases and buckets.
+name: dfo-local-stack
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: dfo_local_migrator
+      POSTGRES_PASSWORD: local-migrator
+    ports:
+      - "127.0.0.1:55418:5432"
+    volumes:
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/postgres-init.sql:ro
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test:
+        ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "dfo_local_migrator"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  gcs:
+    image: fsouza/fake-gcs-server:latest
+    command:
+      - -scheme=http
+      - -port=4443
+      - -backend=memory
+      - -public-host=127.0.0.1:54443
+      - -external-url=http://127.0.0.1:54443
+    ports:
+      - "127.0.0.1:54443:4443"

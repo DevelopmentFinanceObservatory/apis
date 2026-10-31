@@ -6,8 +6,11 @@ from pathlib import Path
 
 from assembler.catalogue import BakedReleaseRegistry
 from assembler.fakes import FakeReleaseRegistry
+from dfo_platform.codes import bound_registry_endpoint
 from presentation_api.codes import (
     CODE_RETRY_MODE,
+    SHARE_CODE_CATALOGUE,
+    WRITE_SERVED_PLATFORM_CODES,
     retryable_for,
 )
 
@@ -18,7 +21,7 @@ def test_retry_mode_mirrors_the_baked_catalogue_manifest(catalogue_dir: Path):
 
 
 def test_every_single_mode_code_a_door_can_classify_matches_retryable_for(
-    release_registry: FakeReleaseRegistry,
+    release_registry: FakeReleaseRegistry, door_refusals: list[tuple[str, BaseException]]
 ):
     """Single-mode codes derive retryability from `retryable_for`.
 
@@ -27,11 +30,15 @@ def test_every_single_mode_code_a_door_can_classify_matches_retryable_for(
     from presentation_api.app import presentation_surface
 
     codes_computed_at_the_raise_site = {"schema_invalid", "frame_unavailable", "request_invalid"}
+    # The share and allowance codes sit outside the component catalogue's manifest; their doors
+    # state their retryability themselves, and `test_shares_door` asserts it.
+    share_codes = set(SHARE_CODE_CATALOGUE) | WRITE_SERVED_PLATFORM_CODES
     surface = presentation_surface(release_registry=release_registry)
     checked = 0
-    for exemplar in surface.exception_exemplars:
-        spec = surface.classify(exemplar)
-        if spec is None or spec.code in codes_computed_at_the_raise_site:
+    for endpoint, exemplar in door_refusals:
+        with bound_registry_endpoint(endpoint):
+            spec = surface.classify(exemplar)
+        if spec is None or spec.code in codes_computed_at_the_raise_site | share_codes:
             continue
         assert spec.retryable == retryable_for(spec.code), spec.code
         checked += 1
@@ -39,15 +46,16 @@ def test_every_single_mode_code_a_door_can_classify_matches_retryable_for(
 
 
 def test_every_request_invalid_exemplar_reports_retryable_false(
-    release_registry: FakeReleaseRegistry,
+    release_registry: FakeReleaseRegistry, door_refusals: list[tuple[str, BaseException]]
 ):
     """`request_invalid` stays non-retryable despite its manifest mode."""
     from presentation_api.app import presentation_surface
 
     surface = presentation_surface(release_registry=release_registry)
     checked = 0
-    for exemplar in surface.exception_exemplars:
-        spec = surface.classify(exemplar)
+    for endpoint, exemplar in door_refusals:
+        with bound_registry_endpoint(endpoint):
+            spec = surface.classify(exemplar)
         if spec is None or spec.code != "request_invalid":
             continue
         assert spec.retryable is False

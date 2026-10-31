@@ -13,6 +13,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from code_index.shared import get_index, get_measure_index
@@ -21,7 +22,6 @@ from origin_catalogue import current_catalogue
 from search.engine.bind_repair import (
     declared_default_slots_named,
     declared_default_words_named,
-    stated_words_negated,
 )
 from search.engine.binders import Binder, Fallbacks
 from search.engine.deadline import _await_bounded
@@ -75,6 +75,9 @@ from search.models import (
 from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
+if TYPE_CHECKING:
+    from search.engine.exclusion_read import LeftOut
+
 logger = logging.getLogger(__name__)
 
 type ReplayedPlaceOptions = Callable[
@@ -88,8 +91,7 @@ type ReplayedPlaceOptions = Callable[
 # Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
 # checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
 # every member of (`role_text.every_member_axis`). Single-variable requests also read
-# qualifier vocabulary, defaults, written phrases, negated dataset words and graph value
-# names.
+# qualifier vocabulary, defaults, written phrases and graph value names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Graph value names are known only after retrieval, so their signal keeps the whole
 # query. The other signals reuse the pipeline helpers and index.
@@ -112,7 +114,6 @@ class Layer2Signals:
     declared_default_trigger_words: tuple[dict[str, str], ...]
     declared_default_slots_named: tuple[str, ...]
     written_variable_phrases: tuple[str | None, ...]
-    query_text_negated_stated_words: tuple[str, ...]
     every_member_axes: tuple[str | None, ...]
     query_text_value_source: str | None
 
@@ -163,7 +164,6 @@ def compute_layer2_signals(
             declared_default_trigger_words=(),
             declared_default_slots_named=(),
             written_variable_phrases=(),
-            query_text_negated_stated_words=(),
             every_member_axes=every_member_axes,
             query_text_value_source=None,
         )
@@ -194,7 +194,6 @@ def compute_layer2_signals(
         written_variable_phrases=tuple(
             written_phrase(variable, query_text) for variable in variables
         ),
-        query_text_negated_stated_words=stated_words_negated(query_text, index=index),
         every_member_axes=every_member_axes,
         query_text_value_source=query_text,
     )
@@ -304,6 +303,7 @@ class CacheScope:
         self._degraded_leg = False
         self._trailing_incomplete = False
         self._served_timed_out = False
+        self._served_degraded_leg = False
         self._served_storable = True
         # Events from `response` on, while this request records its bundle.
         self._recorded: list[Event] = []
@@ -318,16 +318,6 @@ class CacheScope:
         Per-request state avoids inferring outcomes from concurrent global counters.
         """
         return self._outcome
-
-    @property
-    def served_timed_out(self) -> bool:
-        """Whether a cache hit came from a leader whose run timed out.
-
-        The caller reports this in `done.timed_out`; restored diagnostics omit
-        it. Stored hits return `False`. `store()` also uses the leader's
-        `_served_storable` verdict when republishing a hit.
-        """
-        return self._served_timed_out
 
     async def _acquire(self, key: str) -> tuple[bytes | None, Lease | None]:
         """Return `key`'s value, or `None` with the leader lease this request now holds.
@@ -351,8 +341,10 @@ class CacheScope:
             except TimeoutError:
                 return None, None  # this request's own deadline is spent; proceed unleased
             if awaited is not None:
-                value, self._served_timed_out, self._served_storable = awaited
-                return value, None
+                self._served_timed_out = awaited.timed_out
+                self._served_degraded_leg = awaited.degraded_leg
+                self._served_storable = awaited.storable
+                return awaited.value, None
             value, lease = await self._cache.acquire(key)
             if value is not None:
                 return value, None
@@ -392,6 +384,8 @@ class CacheScope:
         variable_qualifiers: Sequence[tuple[CodedQualifier, ...]],
         operations: Sequence[tuple[Operation, ...]],
         query: str,
+        text: str | None = None,
+        exclusions: Sequence[tuple[LeftOut, tuple[int, ...]]] = (),
         entity_roles: Mapping[str, Sequence[DoorRole]],
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
@@ -417,7 +411,10 @@ class CacheScope:
         one asks one value per member of. `stated_scopes` runs parallel to `variables`
         and holds the scope entries and total intent each one's words state.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
-        serves as stored. This lookup
+        serves as stored. `query` is what a hit echoes, and `text` what the signals read: the
+        query with each stretch it asks to leave out blanked, `query` itself when `None`.
+        `exclusions` are those stretches that a part judges or discloses, each with the
+        positions in `variables` of the parts it qualifies. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
         A binder that reads the query's own text looks up nothing here (`CacheScope`).
 
@@ -429,7 +426,7 @@ class CacheScope:
             return None
         assert self._scope is not None
         signals = compute_layer2_signals(
-            query=query,
+            query=query if text is None else text,
             entity_roles=entity_roles,
             query_text=query_text,
             variables=variables,
@@ -454,11 +451,11 @@ class CacheScope:
             declared_default_trigger_words=signals.declared_default_trigger_words,
             declared_default_slots_named=signals.declared_default_slots_named,
             written_variable_phrases=signals.written_variable_phrases,
-            query_text_negated_stated_words=signals.query_text_negated_stated_words,
             every_member_axes=signals.every_member_axes,
             query_text_value_source=signals.query_text_value_source,
             scope=self._scope,
             separate=separate,
+            exclusions=exclusions,
             extraction_warnings=extraction_warnings,
             measure_qualifiers=measure_qualifiers,
             open_axes=open_axes,
@@ -521,11 +518,6 @@ class CacheScope:
         self._degraded_leg = self._degraded_leg or degraded_leg
         self._trailing_incomplete = self._trailing_incomplete or trailing_incomplete
 
-    @property
-    def degraded_leg(self) -> bool:
-        """Whether a fresh run noted a degraded leg. A cache hit reports False."""
-        return self._degraded_leg
-
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.
 
@@ -565,7 +557,8 @@ class CacheScope:
         verdict controls storage, not delivery. Fresh runs use `note_health`; hits carry
         the leader's verdict because degraded-leg status is absent from response bytes. A
         hit is storable only when both its served verdict and this response's checks allow
-        it. Published timeout status combines this run's and the leader's flags.
+        it. Published timeout and degraded-leg status combine this run's and the leader's
+        flags.
         """
         assert not self._bundle, "a streamed request publishes its bundle through observe()"
         await self._publish(
@@ -598,6 +591,7 @@ class CacheScope:
         try:
             verdict = not self._fallbacks.reasons and self._served_storable and storable()
             timed_out = self._timed_out or self._served_timed_out
+            degraded_leg = self._degraded_leg or self._served_degraded_leg
             entry, size = encode()
             for lease in (self._layer1_lease, self._layer2_lease):
                 if lease is not None:
@@ -607,6 +601,7 @@ class CacheScope:
                         size,
                         storable=verdict,
                         timed_out=timed_out,
+                        degraded_leg=degraded_leg,
                         max_age_s=self._stamp.max_age_s,
                     )
             self._layer1_lease = None
@@ -673,6 +668,10 @@ class CacheScope:
         the place-options budget (`enrichment.stream_place_options`), and keeps the stored
         `done` event's warnings and late departures. Any other hit sends `response` and
         `done` alone. `place_options` is `None` when the request streams no place options.
+
+        A follower's `done` reports its leader's timeout and degraded-leg verdicts. A stored
+        layer-1 or layer-2 hit has no leader and reports neither, and neither applies: no
+        layer stores a timed-out or degraded answer (`is_storable`).
         """
         yield ResponseEvent(response=response)
         if self._replay is not None:
@@ -685,13 +684,17 @@ class CacheScope:
                     async for event in streamed:
                         yield event
         _, done_event = _terminal_events(
-            response, start_ms=start_ms, llm_usage=llm_usage, timed_out=self._served_timed_out
+            response,
+            start_ms=start_ms,
+            llm_usage=llm_usage,
+            timed_out=self._served_timed_out,
+            degraded_leg=self._served_degraded_leg,
         )
         if self._replay is not None:
             done_event = done_event.model_copy(
                 update={
-                    "warnings": self._replay.done.warnings,
-                    "late_departures": self._replay.done.late_departures,
+                    "warnings": self._replay.warnings,
+                    "late_departures": self._replay.late_departures,
                 }
             )
         yield done_event

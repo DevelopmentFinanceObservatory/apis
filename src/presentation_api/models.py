@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from datasets_api.manifest_models import RetentionModel
+
 __all__ = [
     "AppliedDefaultModel",
     "CapabilitiesResponse",
@@ -25,7 +27,23 @@ __all__ = [
     "FrameFilteredViewResponse",
     "FrameStructuralViewResponse",
     "FrameViewResponse",
+    "NewestFrameDimensionValuesResponse",
+    "NewestFrameFilteredViewResponse",
+    "NewestFrameStructuralViewResponse",
+    "NewestFrameViewResponse",
     "ReleaseDocumentResponse",
+    "ShareCardModel",
+    "ShareFrameModel",
+    "ShareHistoryResponse",
+    "ShareImportResponse",
+    "ShareReadResponse",
+    "ShareRetentionModel",
+    "ShareServedModel",
+    "ShareSlotCardResponse",
+    "ShareSlotDataResponse",
+    "ShareSlotModel",
+    "ShareWriteResponse",
+    "SharedResponse",
     "WindowModel",
     "WriteReplyResponse",
 ]
@@ -231,6 +249,13 @@ class CreateReplyResponse(WriteReplyResponse):
         'this create started with composition_id "new", sent back as the x-dfo-write-token '
         "header. Present only on that create.",
     )
+    retention: RetentionModel | None = Field(
+        default=None,
+        description="how long the frame the new card draws can still be fetched, as a read "
+        "states it. The frame is held for 30 days from when DFO stored it, until a share first "
+        "includes the card. Null for a card that draws no frame, or one whose frame DFO holds no "
+        "version record of",
+    )
 
 
 # -- component read (presentation_api.doors.components) --------------------
@@ -257,6 +282,218 @@ class ComponentReadResponse(BaseModel):
         description="the closed, token-capped fact summary this revision reports"
     )
     resolved_payload: dict[str, object] = Field(description=_RESOLVED_PAYLOAD_DESCRIPTION)
+    retention: RetentionModel | None = Field(
+        default=None,
+        description="how long the frame this reply draws can still be fetched, counted from "
+        "when DFO stored it. It is the stored frame on a read and the named frame on a render. "
+        "A card's frame stays in the 30-day working tier until a share first includes the "
+        "card. Once `held_until` has passed the frame can refuse `frame_unavailable`. Fetch "
+        "the card's data with latest=True to draw from current data. Null for a card that draws no frame, "
+        "or one whose frame DFO holds no version record of",
+    )
+
+
+# -- shares (presentation_api.doors.shares) ---------------------------------
+
+
+class ShareWriteResponse(BaseModel):
+    """`PUT /api/presentation/shares/{share_id}`'s 200 body: where the replaced share lives."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id, 8 letters and digits")
+    url: str = Field(description="the share's page on the public website, /s/<id>")
+    embed_url: str = Field(description="the share's embeddable page, /embed/<id>")
+    data_urls: list[str] = Field(
+        description="one JSON data URL per slot, in slot order. A slot keeps its URL across "
+        "replacements, so data_urls[0] always reads the share's first slot"
+    )
+    revision: int = Field(description="the share revision this write made, 1 on a create")
+    latest: bool = Field(
+        description="true for a live share, which follows new data, false for a snapshot, "
+        "which keeps the versions its cards drew when it was made"
+    )
+
+
+class SharedResponse(ShareWriteResponse):
+    """`POST /api/presentation/shares`'s 201 body."""
+
+    write_token: str = Field(
+        description="the shw_ token that grants replacing and deleting this share, sent back as "
+        "the x-dfo-write-token header. It appears only in this reply, so keep it secret"
+    )
+
+
+class ShareImportResponse(BaseModel):
+    """`PUT /api/presentation/shares/{share_id}/import`'s 201 and 200 body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id, 8 letters and digits, as the path names it")
+    imported: bool = Field(
+        description="true when this call stored the share, false when an earlier import had"
+    )
+
+
+class ShareFrameModel(BaseModel):
+    """The frame a slot's card revision draws."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    spec_id: str = Field(description="the frame's spec_ or ops_ id")
+    content_version: str = Field(description="the frame's cv_ or ocv_ content version")
+
+
+class ShareCardModel(BaseModel):
+    """The card revision a slot shows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    component_id: str = Field(description="the card's cmp_ id")
+    revision: int = Field(description="the card revision the slot shows")
+    frame: ShareFrameModel | None = Field(
+        description="the frame the card revision draws, null for a card that draws none or an "
+        "imported slot whose frame was not recorded"
+    )
+
+
+class ShareSlotModel(BaseModel):
+    """One numbered slot of a share."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: int = Field(description="the slot's number, from 1")
+    card: ShareCardModel | None = Field(
+        description="the card the slot shows, null for a slot a replacement with fewer cards "
+        "left empty"
+    )
+    data_url: str = Field(description="the slot's JSON data URL")
+
+
+class ShareReadResponse(BaseModel):
+    """`GET /api/presentation/shares/{share_id}`'s 200 body. It omits the write token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id, 8 letters and digits")
+    kind: Literal["card", "canvas", "search", "conversation"] = Field(
+        description="what the share publishes"
+    )
+    mode: Literal["live", "snapshot"] = Field(
+        description="live follows new data, snapshot keeps the versions its cards drew when it "
+        "was made"
+    )
+    title: str | None = Field(description="the share's title, null when it has none")
+    revision: int = Field(description="the share's latest revision")
+    slots: list[ShareSlotModel] = Field(
+        description="every slot the share has had, in order. Search and conversation shares "
+        "have none"
+    )
+    payload: object = Field(
+        description="website-owned JSON stored with the share as given, null when there is none"
+    )
+    created_at: str = Field(description="when the share was made, as an ISO 8601 timestamp")
+
+
+class ShareSlotDataResponse(BaseModel):
+    """`GET /api/presentation/shares/{share_id}/slots/{slot}/data`'s JSON body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    share_id: str = Field(description="the share's id")
+    slot: int = Field(description="the slot's number, from 1")
+    mode: Literal["live", "snapshot"] = Field(description="the share's mode")
+    freshness: Literal["current", "stale", "pending"] = Field(
+        description="current: the newest data DFO found at its last check, at most 15 minutes "
+        "ago, or a snapshot's own rows; pending: newer data is building and these rows are the "
+        "last check's; stale: DFO could not check, or the card cannot be drawn on the newer "
+        "data, and these rows are older"
+    )
+    component_id: str = Field(description="the card the slot shows")
+    revision: int = Field(description="the card revision the slot shows")
+    frame: ShareFrameModel = Field(description="the frame these rows come from")
+    rows: list[dict[str, object]] = Field(
+        description="the rows behind every value the card shows, one object per row, keyed by "
+        "the columns of the card's data file"
+    )
+
+
+class ShareSlotCardResponse(ComponentReadResponse):
+    """`GET /api/presentation/shares/{share_id}/slots/{slot}`'s body: the slot's card as a
+    component read states it, drawn on the frame the slot serves."""
+
+    retention: RetentionModel | None = Field(
+        default=None,
+        description="how long the frame the card is drawn on can still be fetched, counted "
+        "from when DFO stored it. Null for a card that draws no frame, or one whose frame DFO "
+        "holds no version record of",
+    )
+    freshness: Literal["current", "stale", "pending"] = Field(
+        description="as the slot's data route states it: current, the newest data DFO found "
+        "at its last check or a snapshot's own frame; pending, newer data is building and the "
+        "card is drawn on the last check's frame; stale, DFO could not check, or the card "
+        "cannot be drawn on the newer data, and the card is drawn on an older frame"
+    )
+
+
+class ShareRetentionModel(BaseModel):
+    """How long a served frame can still be fetched."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool = Field(description="whether the frame is in the pinned tier, with no expiry")
+    held_until: str | None = Field(
+        default=None,
+        description="when a working-tier frame stops being guaranteed, 30 days after DFO "
+        "stored it, and absent when pinned",
+    )
+
+
+class ShareServedModel(BaseModel):
+    """One entry of what a share's slot showed: a frame it served, or no card."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slot: int = Field(description="the slot, from 1")
+    component_id: str | None = Field(
+        description="the card the slot showed, null when a replace left the slot empty"
+    )
+    revision: int | None = Field(
+        description="the card revision the slot showed, null when the slot was empty"
+    )
+    frame: ShareFrameModel | None = Field(
+        description="the frame served, null when the slot was empty"
+    )
+    rendering: dict[str, object] | None = Field(
+        description="the rendering the card revision recorded for its frame, null when "
+        "unrecorded or when the slot was empty"
+    )
+    first_served_at: str = Field(
+        description="when the slot began to show this, ISO 8601: the write or the first read "
+        "that served it"
+    )
+    retention: ShareRetentionModel | None = Field(
+        description="the frame's retention, null when DFO holds no record of it or the slot "
+        "was empty"
+    )
+    fetchable: bool = Field(
+        description="whether the frame's retention still holds, false when the slot was empty"
+    )
+
+
+class ShareHistoryResponse(BaseModel):
+    """`GET /api/presentation/shares/{share_id}/history`'s 200 body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(description="the share's id")
+    served: list[ShareServedModel] = Field(
+        description="what each slot showed, newest first, an entry each time it changed, up "
+        "to the page's limit"
+    )
+    next: str | None = Field(
+        description="the cursor of the next page, to send as before, or null on the last page"
+    )
 
 
 # -- meta (presentation_api.doors.meta) -------------------------------------
@@ -369,6 +606,36 @@ class FrameFilteredViewResponse(BaseModel):
 
 FrameViewResponse = (
     FrameStructuralViewResponse | FrameDimensionValuesResponse | FrameFilteredViewResponse
+)
+
+
+class _NewestFrame(BaseModel):
+    spec_id: str = Field(
+        description="the served id of the dataset read, which differs from the requested id "
+        "when that id now serves under another"
+    )
+    content_version: str = Field(description="the version of the dataset read, its newest")
+
+
+class NewestFrameStructuralViewResponse(FrameStructuralViewResponse, _NewestFrame):
+    """`GET /api/presentation/frames/{spec_id}`'s body with neither `dimension` nor `query`
+    given: the structural view of the frame it resolved, and that frame's pair."""
+
+
+class NewestFrameDimensionValuesResponse(FrameDimensionValuesResponse, _NewestFrame):
+    """`GET /api/presentation/frames/{spec_id}?dimension=`'s body: one dimension's values in
+    the frame it resolved, and that frame's pair."""
+
+
+class NewestFrameFilteredViewResponse(FrameFilteredViewResponse, _NewestFrame):
+    """`GET /api/presentation/frames/{spec_id}?query=`'s body: the filtered view of the frame
+    it resolved, and that frame's pair."""
+
+
+NewestFrameViewResponse = (
+    NewestFrameStructuralViewResponse
+    | NewestFrameDimensionValuesResponse
+    | NewestFrameFilteredViewResponse
 )
 
 

@@ -18,6 +18,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from typing import Protocol
 
+from dataset_store.bounds import BORROW_TIMEOUT_SECONDS, TransactionBounds
 from dataset_store.dbapi import DBAPIConnection
 from dataset_store.errors import DatasetStoreConnectionError, DatasetStoreError
 from dfo_platform.timings import count
@@ -48,9 +49,17 @@ class DatasetStore(Protocol):
         """
         ...
 
+    @property
+    def bounds(self) -> TransactionBounds:
+        """The bounds this store's transactions run under, as configured."""
+        ...
+
 
 class ConnectionSource(Protocol):
-    """Connection-pool interface required by `LiveDatasetStore`."""
+    """Connection-pool interface required by `LiveDatasetStore`. `connect_timeout` bounds a
+    dial and each read or write on a connection."""
+
+    connect_timeout: float
 
     def borrow(self, *, timeout: float | None = ...) -> AbstractContextManager[DBAPIConnection]: ...
 
@@ -87,11 +96,20 @@ class _LiveTransaction:
 class LiveDatasetStore:
     """`connections` implements `ConnectionSource`."""
 
-    def __init__(self, *, connections: ConnectionSource, borrow_timeout: float = 30.0) -> None:
+    def __init__(
+        self, *, connections: ConnectionSource, borrow_timeout: float = BORROW_TIMEOUT_SECONDS
+    ) -> None:
         self._connections = connections
         self._borrow_timeout = borrow_timeout
         # The guard is per store and thread. Worker threads start with independent state.
         self._local = threading.local()
+
+    @property
+    def bounds(self) -> TransactionBounds:
+        """The bounds this store's transactions run under, as configured."""
+        return TransactionBounds(
+            borrow=self._borrow_timeout, connect=self._connections.connect_timeout
+        )
 
     @contextmanager
     def transaction(self) -> Generator[Transaction, None, None]:

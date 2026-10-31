@@ -42,6 +42,7 @@ from tests.materialise._canonical_frame import canonical_frame_of_frame1
 from tests.materialise._packed_series_conversions import pack_series_conversions
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
+from ._app_factories import offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
@@ -284,6 +285,9 @@ class _World:
             )
         self.reader.locations[(_SPEC, _CV)] = locations
         self.graph = graph if graph is not None else _graph()
+        self.catalogue = FakeCatalogue(
+            provenances={_PROV: provenance_row(_PROV, DFO, source="OECD")}
+        )
         self.now = now
 
     def client(self) -> TestClient:
@@ -298,7 +302,7 @@ class _World:
                 materialise_semaphore=self.permits,
             )
         )
-        catalogue = FakeCatalogue(provenances={_PROV: provenance_row(_PROV, DFO, source="OECD")})
+        catalogue = self.catalogue
         surface = Surface(
             name="datasets",
             prefix="/api/datasets",
@@ -308,6 +312,9 @@ class _World:
             classify=door.classify,
             exception_types=door.exception_types,
             exception_exemplars=door.exception_exemplars,
+            # Binds `datasets.observations`, so a refusal takes its status from that endpoint's
+            # registry mappings, as it does when served.
+            registry_endpoints=door.registry_endpoints,
             request_scope=lambda: bound_catalogue(catalogue),
         )
         return TestClient(create_app([surface]), raise_server_exceptions=False)
@@ -401,6 +408,17 @@ def _graph_down(world: _World) -> str:
     return _PATH
 
 
+def _provenance_names_down(world: _World) -> str:
+    """The catalogue does not list `_PROV`, and the read that would name it fails."""
+
+    def broken(dcids, *, properties, deadline=None):
+        raise GraphReadError("graph down")
+
+    world.catalogue = FakeCatalogue()
+    world.graph.node_arc_targets_many = broken
+    return _PATH
+
+
 @pytest.mark.parametrize(
     ("arrange", "status", "code"),
     [
@@ -412,6 +430,7 @@ def _graph_down(world: _World) -> str:
         # A retired `col_` id is outside the id grammar, so it matches no route.
         (_collection, 404, "not_found"),
         (_graph_down, 503, "service_unavailable"),
+        (_provenance_names_down, 503, "service_unavailable"),
     ],
 )
 def test_snapshot_and_route_refusals(arrange, status: int, code: str):
@@ -439,6 +458,31 @@ def test_a_version_without_a_frame1_refuses_observations_unavailable():
     response = _World(body, None).get()
 
     assert (response.status_code, response.json()["code"]) == (404, "observations_unavailable")
+
+
+def test_a_frame1_document_past_the_decode_bound_refuses_before_it_is_read(frame_storage):
+    """A stored frame recorded at 250 MB is past the 216,600,000 bytes a read that decodes a
+    frame1 document alone may take, so the document refuses `over_ceiling` (`bytes`) unread, as
+    Presentation's frame store refuses it (`tests/presentation_store/test_frame_store.py`). Its
+    record decides that, so it refuses with the materialise permit held, where a wait for the
+    permit would refuse a retryable 503. A canonical frame's rows are bounded where they are
+    read, so it serves."""
+    world = _standard_world()
+    csv, frame = world.reader.locations[(_SPEC, _CV)]
+    world.reader.locations[(_SPEC, _CV)] = [csv, replace(frame, size_bytes=250_000_000)]
+
+    if frame_storage == "frame1":
+        assert world.permits.acquire(timeout=0)
+        response = world.get()
+
+        assert response.status_code == 422, response.text
+        assert (response.json()["code"], response.json()["ceiling_kind"]) == (
+            "over_ceiling",
+            "bytes",
+        )
+        assert frame.artifact_digest not in {digest for digest, _tier in world.store.gets}
+    else:
+        assert world.get().status_code == 200
 
 
 def test_a_groupby_collapse_refuses_observations_unavailable():
@@ -1009,7 +1053,7 @@ def test_a_version_pinned_then_read_31_days_later_returns_its_observations():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=FakeArtifactReferenceWriter(),
-        daily_max=1_000_000,
+        allowances=offline_allowances(),
         now=lambda: _NOW,
     )
     world.now = _NOW + timedelta(days=31)

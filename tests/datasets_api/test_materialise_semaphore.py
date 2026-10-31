@@ -55,7 +55,7 @@ from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.graph_release.support import build_test_release, sample_tables
 
-from ._app_factories import offline_recipe_stores
+from ._app_factories import offline_allowances, offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import offline_version_pair
@@ -236,6 +236,7 @@ def _client(
         task_client=NullTaskClient(),
         coverage=coverage if coverage is not None else _coverage_service(),
         release=release,
+        allowances=offline_allowances(),
         **offline_recipe_stores(),
     )
     with (

@@ -4,8 +4,9 @@ Acquire and release run on the application event loop. The singleton lock guards
 only the refcount. Task cancellation and its await happen outside that lock.
 
 The index rebuilds when the release service swaps releases, and after a build with a failed
-graph read until one has none. Its first acquirer waits for the first build attempt, bounded by
-`SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS`, so startup completes with full CPU behind the build.
+graph read until one has none. Acquirers wait for the first build attempt until one deadline,
+`SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS` after the index is created, so startup completes with
+full CPU behind the build and every acquirer together holds it no longer than one wait.
 """
 
 from __future__ import annotations
@@ -53,6 +54,8 @@ class SharedSkillsIndex:
     binds nothing.
 
     `wait_for_build_attempt` observes one additional attempt, successful or not.
+    `first_build_deadline` is the event-loop time at which acquirers stop waiting for the
+    first build, `SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS` after construction.
     `_close` cancels and awaits the refresh task. A running worker thread may finish
     after cancellation. The cancelled awaiter discards the result. The application shuts down
     the executor with `wait=False` and `cancel_futures=True`.
@@ -70,6 +73,9 @@ class SharedSkillsIndex:
         self._release = release
         self.index: SkillsIndex | None = None
         self.build_attempts = 0
+        self.first_build_deadline = (
+            asyncio.get_running_loop().time() + SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS
+        )
         # The event belongs to the running loop that constructs this instance.
         self._build_attempted = asyncio.Event()
         self._first_build_attempted = asyncio.Event()
@@ -188,9 +194,9 @@ async def acquire_shared_index(
     Later arguments are ignored. `graph=None` on the first call raises `RuntimeError`.
     Call from a running event loop, which owns the refresh task.
 
-    Returns only after the first build attempt has finished or
-    `SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS` has passed. Either shortfall logs a warning, and
-    the refresh task keeps retrying."""
+    Returns only after the first build attempt has finished or the index's
+    `first_build_deadline` has passed, so a later acquirer waits only for what remains of the
+    first one's wait. Either shortfall logs a warning, and the refresh task keeps retrying."""
     shared = _singleton.acquire(graph, catalogue, release)
     if graph is not None and graph is not shared._graph:
         logger.info(
@@ -203,7 +209,7 @@ async def acquire_shared_index(
 
 async def _wait_for_first_build(shared: SharedSkillsIndex) -> None:
     try:
-        async with asyncio.timeout(SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS):
+        async with asyncio.timeout_at(shared.first_build_deadline):
             await shared.wait_for_first_build_attempt()
     except TimeoutError:
         logger.warning(

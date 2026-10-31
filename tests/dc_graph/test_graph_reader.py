@@ -1676,7 +1676,10 @@ def test_node_subjects_page_budget_exhausted_with_real_progress_raises_graph_rea
 
     with pytest.raises(GraphReadError) as excinfo:
         reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=100)
+    # The read error itself, so a caller partitioning stuck cursors leaves it alone; its cause
+    # marks a read that pages the same way again.
     assert not isinstance(excinfo.value, GraphNotAdvancingError)
+    assert isinstance(excinfo.value.__cause__, GraphNotAdvancingError)
     assert len(requests) == 2
 
 

@@ -414,7 +414,9 @@ def _ground_answer_and_models(
     # state.source_dcids/facet_filter are already computed above, ahead of
     # grounding; only the actual source-slot rebind (labels read from the
     # graph) waits until slots exists.
-    slots = state.slots = _rebind_source_slot(slots, state.source_dcids, state.graph)
+    slots = state.slots = _rebind_source_slot(
+        slots, state.source_dcids, state.graph, deadline=state.deadline
+    )
     return t0
 
 

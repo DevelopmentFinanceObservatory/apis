@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from dataclasses import fields
 
+import pytest
+
 from code_index.shared import get_index
 from dataset_store.clock import utc_now
+from datasets_api import deps as deps_module
 from datasets_api.admission import MaterialisePermits, RebuildFlights
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.deps import Deps, DepsCell, build_executors
+from datasets_api.deps import Deps, DepsCell, build_analysis_executor, build_executors
 from datasets_api.operation_store import NullOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.versions import NullHeadWriter
@@ -59,6 +62,7 @@ def fake_deps(**overrides: object) -> Deps:
         "rebuilds": RebuildFlights(),
         "read_executor": read_executor,
         "work_executor": work_executor,
+        "analysis_executor": build_analysis_executor(settings),
     }
     defaults.update(
         offline_version_pair(
@@ -77,3 +81,33 @@ def fake_deps(**overrides: object) -> Deps:
 def fake_deps_cell(**overrides: object) -> DepsCell:
     """A `DepsCell` already holding `fake_deps(**overrides)`."""
     return DepsCell(fake_deps(**overrides))
+
+
+class ClosablePermits(MaterialisePermits):
+    """Materialise permits that grant none once `closed` is set, as a semaphore every frame
+    holds does."""
+
+    closed = False
+
+    def acquire(self, *, timeout: float, keep_waiting=None) -> bool:
+        if self.closed:
+            return False
+        return super().acquire(timeout=timeout, keep_waiting=keep_waiting)
+
+    def acquire_leaving(self, headroom: int) -> bool:
+        if self.closed:
+            return False
+        return super().acquire_leaving(headroom)
+
+
+def closable_permits(monkeypatch: pytest.MonkeyPatch) -> list[ClosablePermits]:
+    """The materialise permits each surface built from here on holds, in build order, each
+    `ClosablePermits`."""
+    built: list[ClosablePermits] = []
+
+    def build(count: int) -> ClosablePermits:
+        built.append(ClosablePermits(count))
+        return built[-1]
+
+    monkeypatch.setattr(deps_module, "MaterialisePermits", build)
+    return built

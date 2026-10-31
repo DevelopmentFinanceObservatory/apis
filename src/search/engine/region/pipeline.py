@@ -26,6 +26,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
+    carry,
     note_degraded_read,
     recording_degraded_reads,
 )
@@ -90,7 +91,7 @@ from search.engine.region.source_choice import (
     idle_inclusion_warnings,
     with_idle_inclusions,
 )
-from search.engine.region.state import EngineOptions, ResolveState
+from search.engine.region.state import EngineOptions, PartExclusions, ResolveState
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
 from search.engine.region.whole_totals import whole_total_unpublished_facts
@@ -164,6 +165,7 @@ async def resolve_variable(
     entity_roles: dict[str, list[DoorRole]] | None = None,
     member_entities: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: list[str] | None = None,
+    exclusions: PartExclusions | None = None,
     operations: Sequence[Operation] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
@@ -203,9 +205,11 @@ async def resolve_variable(
     variable's own operation phrases, which bind treats alike. `operations` are the leg's
     admitted operations; one over `category` opens the slots its phrase names on the
     elected shape whether or not bind claims them. `open_axes` are the flow axes the leg
-    asks every member of (`ResolveState.open_axes`). `query_text` adds
-    the verbatim query as a match source for a single-variable request. `qualifiers` adds a
-    typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
+    asks every member of (`ResolveState.open_axes`). `exclusions` are the stretches of the
+    request that leave something out and qualify this part, with the requirements judging
+    its answers on them (`state.exclusion_requirements`); the result names those every
+    answer meets (`RegionResult.met_exclusions`). `query_text` adds the query, each such stretch blanked,
+    as a match source for a single-variable request. `qualifiers` adds a typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
     supplies both qualifier inputs.
 
     `admission` checks derived shape roles before election. Direct callers default to
@@ -281,6 +285,8 @@ async def resolve_variable(
         else None
     )
 
+    exclusions = exclusions or PartExclusions()
+
     def new_state(
         *,
         pool: Pool,
@@ -299,6 +305,8 @@ async def resolve_variable(
             entity_roles=entity_roles or {},
             member_entities=member_entities,
             dropped_qualifier_phrases=dropped_qualifier_phrases or [],
+            requirements=exclusions.requirements,
+            exclusions=exclusions.stretches,
             operations=tuple(operations),
             open_axes=open_axes,
             query_text=query_text,
@@ -348,11 +356,15 @@ async def resolve_variable(
         )
 
     async def attempt(
-        *, party_words_off: bool, sink: EventSink | None, carried: Sequence[str] = ()
-    ) -> tuple[RegionResult, tuple[str, ...]]:
-        """One resolution of the part and the reads it swallowed, read with or without the
-        words that name a party. `carried` are reads an abandoned resolution
-        swallowed, noted on this one."""
+        *,
+        party_words_off: bool,
+        sink: EventSink | None,
+        carried: DegradedReads | None = None,
+        carried_consulted: bool = False,
+    ) -> tuple[RegionResult, DegradedReads]:
+        """One resolution of the part and its record, read with or without the words that
+        name a party. `carried` is the record of an abandoned resolution, carried into this
+        one with its consulted scopes when `carried_consulted` (`degraded_reads.carry`)."""
         state = new_state(
             pool="ours",
             emit=sink,
@@ -374,8 +386,8 @@ async def resolve_variable(
                 recording_degraded_reads() as lost,
                 scoped_reads(allowed if source_scope is not None and source_scope.named else None),
             ):
-                for read in carried:
-                    note_degraded_read(read)
+                if carried is not None:
+                    carry(carried, consulted=carried_consulted)
                 with recording_un_blocked_places() as un_blocked:
                     enter_phase("recall")
                     with scoped_reads(allowed):
@@ -412,7 +424,7 @@ async def resolve_variable(
                             result, state.graph, deadline=state.deadline
                         )
         except PartyReadingWithdrawn as exc:
-            raise PartyReadingWithdrawn(lost=tuple(lost.reads)) from exc
+            raise PartyReadingWithdrawn(lost=lost) from exc
         except Exception as exc:
             # A party reading that fails or refuses is withdrawn, whatever the cause: the
             # resolution without party words makes the reads and elections the base makes,
@@ -433,9 +445,9 @@ async def resolve_variable(
                 logger.exception(
                     "the party reading of part %d (%r) failed", variable_index, variable
                 )
-            raise PartyReadingWithdrawn(
-                lost=(*lost.reads, "party reading") if failed_read else tuple(lost.reads),
-            ) from exc
+            if failed_read:
+                lost.reads.append("party reading")
+            raise PartyReadingWithdrawn(lost=lost) from exc
         if result.specs and state.scope is not None and state.scope.named:
             # An included source none of whose provenances the answer binds served nothing of
             # it, and only the read knows which provenances served.
@@ -450,7 +462,7 @@ async def resolve_variable(
             # the exclusions that removed nothing.
             result = dataclasses.replace(result, source_scope=state.scope)
         result = dataclasses.replace(result, degraded=True) if lost.degraded else result
-        return result, tuple(lost.reads)
+        return result, lost
 
     # A part stating a word that names a party (`place_roles.stated_party_words`) is read
     # with it first. The answer stands only when every Spec binds the party on the word's
@@ -458,7 +470,9 @@ async def resolve_variable(
     # of a request that states none, so nothing of the first reading reaches the reply: its
     # events are held back until it stands. The reply reports the model usage of both
     # readings, the first's read from every call it made wherever it ended
-    # (`recording_llm_usage`), and notes the reads the first swallowed or failed.
+    # (`recording_llm_usage`), and carries the first's record: its lost reads always, and the
+    # scopes it consulted when its answer was withdrawn for want of data, which those scopes
+    # decided.
     probe = new_state(
         pool="ours", emit=None, deadline=_options.deadline, timing={}, party_words_off=False
     )
@@ -477,14 +491,17 @@ async def resolve_variable(
                 party_words_off=False, sink=None if emit is None else hold
             )
         except PartyReadingWithdrawn as withdrawn:
-            carried = withdrawn.lost
+            carried, no_data = withdrawn.lost, False
         else:
             if binds_each_party(first, named):
                 if emit is not None:
                     for event in held:
                         await emit(event)
                 return first
-    result, _lost = await attempt(party_words_off=True, sink=emit, carried=carried)
+            no_data = first.status == "no_data"
+    result, _lost = await attempt(
+        party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
+    )
     usage = functools.reduce(_sum_usage, spent.calls, result.llm_usage)
     return dataclasses.replace(result, llm_usage=usage)
 
@@ -692,11 +709,12 @@ def _union(entries: Iterable[Entry]) -> list[Entry]:
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, stating `alternates_unevaluated` when the pass left an alternate
     unevaluated, on every path that reached admission, a capped alternate's refusal
-    included. The warning alone marks the result as leaving an alternate out
-    (`RegionResult.alternates_left_out`), which keeps it out of the response cache."""
+    included. The read is noted as lost, which keeps the part out of the response cache
+    whichever pass answers it."""
     if not state.unevaluated_alternates:
         return result
     assert state.alternates_presence_failure is not None
+    note_degraded_read("alternate presence")
     warning = alternates_unevaluated_warning(state.alternates_presence_failure)
     return dataclasses.replace(result, warnings=(*result.warnings, warning))
 
@@ -787,8 +805,7 @@ async def _fill_gap(
     # our pass's menu already held them.
     if merged is None:
         note_un_unserved(pool.unserved)
-        for read in pool.lost:
-            note_degraded_read(read)
+        carry(pool.lost)
     state = un_state(bound)
     state.rcl = first.rcl
     state.shapes_found = shapes
@@ -859,7 +876,6 @@ async def _fill_gap(
         warnings=(*chosen.warnings, *carried),
         timing_by_step=timing,
         llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
-        scope_unsettled=result.scope_unsettled or second.scope_unsettled,
     )
 
 
@@ -1038,9 +1054,13 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                                 result, state.requirements, state.judgement
                             ),
                             admitted_qualifier_phrases=admitted,
+                            met_exclusions=(
+                                state.judgement.met_exclusions()
+                                if state.judgement is not None
+                                else frozenset()
+                            ),
                             every_member_axes=frozenset(every_member.values()),
                             timing_by_step={**result.timing_by_step, **unbooked},
-                            scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
                             entity_refs=bound_entity_refs(state),
                             listed_axes=frozenset(state.whole_listed.values()),
@@ -1100,12 +1120,6 @@ def _refused_pinned_phrases(state: ResolveState, result: RegionResult) -> frozen
         for interpretation in state.interpretations.interpretations
         for match in interpretation.pinned_codes
     )
-
-
-def _scope_unsettled(state: ResolveState) -> bool:
-    """Whether the pass's default-scope presence read left a StatVar's scope unsettled
-    (`RegionResult.scope_unsettled`)."""
-    return state.default_presence is not None and bool(state.default_presence.unsettled)
 
 
 def _cancel_queued_reads(state: ResolveState) -> None:

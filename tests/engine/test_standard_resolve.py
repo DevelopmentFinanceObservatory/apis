@@ -578,7 +578,7 @@ class TestUnrealisableValuesUnbound:
         from search.engine.region.candidates import _Alternate, _materialise_alt_shapes
         from tests.engine._builders import bound_place_context, subject_place_roles
 
-        results, unsupported, _presence, _unevaluated = _materialise_alt_shapes(
+        results, unsupported, _presence, _unevaluated, _consulted = _materialise_alt_shapes(
             [_Alternate(_male_only_shape(), [_gender_binding("value", "Female")])],
             places=[bound_place_context(subject_place_roles(_RECIPIENT))],
             named_place_dcids=[_RECIPIENT],

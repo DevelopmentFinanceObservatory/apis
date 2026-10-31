@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 
@@ -221,82 +221,6 @@ def test_record_reference_unless_revoked_refuses_a_digest_the_version_no_longer_
     assert rows == []
 
 
-_STANDALONE = ("first-party-key", _SUBJECT_ID)
-_MEMBER = ("first-party-key", "col_member")
-
-
-@pytest.mark.parametrize(
-    ("tier", "age", "references", "counted", "removed"),
-    [
-        pytest.param("pinned", timedelta(hours=1), [(_STANDALONE, "pin")], 1, False, id="door-pin"),
-        pytest.param(
-            "pinned",
-            timedelta(hours=1),
-            [(_STANDALONE, "pin"), (_MEMBER, "pin")],
-            1,
-            False,
-            id="shared-digest-counts-once",
-        ),
-        # Unpinning leaves the copy stored, so it still spends the budget.
-        pytest.param(
-            "pinned",
-            timedelta(hours=1),
-            [(_STANDALONE, "pin")],
-            1,
-            True,
-            id="removed-reference-still-counts",
-        ),
-        pytest.param("pinned", timedelta(hours=25), [(_STANDALONE, "pin")], 0, False, id="older"),
-        pytest.param("working", timedelta(hours=1), [(_STANDALONE, "pin")], 0, False, id="working"),
-        pytest.param(
-            "pinned",
-            timedelta(hours=1),
-            [(("presentation:cmp_a", _SUBJECT_ID), "presentation_draft")],
-            0,
-            False,
-            id="frame-store-pin",
-        ),
-    ],
-)
-def test_count_pinned_copies_since_counts_the_kinds_promotions(
-    store, tier: str, age: timedelta, references, counted: int, removed: bool
-):
-    """One pinned copy in the window counts once for the kind that references it, however many
-    references it holds and whether or not they were removed."""
-    with store.transaction() as tx:
-        tx.execute(
-            "INSERT INTO datasets.artifact_location "
-            "(artifact_digest, tier, bucket, object_name, stored_at) VALUES (%s, %s, %s, %s, %s)",
-            (_DIGEST, tier, "bucket", _DIGEST, _LATER - age),
-        )
-    writer = LiveArtifactReferenceWriter(store=store)
-    for (principal, subject_id), kind in references:
-        writer.record_reference(
-            principal=principal,
-            artifact_digest=_DIGEST,
-            subject_id=subject_id,
-            content_version=_CONTENT_VERSION,
-            reference_kind=kind,
-            now=_LATER,
-        )
-        if removed:
-            writer.remove_reference(
-                principal=principal,
-                artifact_digest=_DIGEST,
-                subject_id=subject_id,
-                content_version=_CONTENT_VERSION,
-                reference_kind=kind,
-                now=_LATER,
-            )
-
-    assert (
-        writer.count_pinned_copies_since(
-            reference_kind=PIN_REFERENCE_KIND, since=_LATER - timedelta(hours=24)
-        )
-        == counted
-    )
-
-
 def test_a_driver_failure_raises_datasets_store_unavailable_with_no_leaked_context():
     """A driver failure becomes `DatasetsStoreUnavailable` without exception context or text."""
     distinctive_driver_text = "distinctive_driver_boom_reference_write_9c2e"
@@ -412,6 +336,30 @@ def test_remove_reference_soft_deletes_a_live_row(store):
     row = _row(store)
     assert row["removed_at"] == _LATER
     assert row["created_at"] == _FIRST_PIN  # Soft deletion preserves the creation time.
+
+
+def test_holds_reference_counts_a_removed_row_and_only_its_own_version(store):
+    writer = LiveArtifactReferenceWriter(store=store)
+
+    def held() -> tuple[bool, bool]:
+        return (
+            writer.holds_reference(subject_id=_SUBJECT_ID, content_version=_CONTENT_VERSION),
+            writer.holds_reference(subject_id=_SUBJECT_ID, content_version="cv2"),
+        )
+
+    before = held()
+    _record(store, now=_FIRST_PIN)
+    recorded = held()
+    writer.remove_reference(
+        principal=_PRINCIPAL,
+        artifact_digest=_DIGEST,
+        subject_id=_SUBJECT_ID,
+        content_version=_CONTENT_VERSION,
+        reference_kind=PIN_REFERENCE_KIND,
+        now=_LATER,
+    )
+
+    assert (before, recorded, held()) == ((False, False), (True, False), (True, False))
 
 
 def test_remove_reference_is_a_no_op_when_no_row_matches(store):

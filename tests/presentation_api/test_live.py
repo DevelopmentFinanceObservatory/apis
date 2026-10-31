@@ -42,7 +42,7 @@ def test_a_construction_failure_after_the_graph_is_built_closes_it_and_the_pool(
     monkeypatch.setattr(live, "close_dataset_pool", lambda: closed.__setitem__("pool", True))
 
     with pytest.raises(RuntimeError, match="boom"):
-        live.build_live_frame_store(settings=_settings())
+        live.build_live_frame_store(settings=_settings(), allowances=None)
 
     assert closed == {"graph": True, "pool": True}
 
@@ -59,6 +59,6 @@ def test_a_construction_failure_before_the_graph_is_built_still_closes_the_pool(
     monkeypatch.setattr(live, "close_dataset_pool", lambda: closed.__setitem__("pool", True))
 
     with pytest.raises(RuntimeError, match="boom"):
-        live.build_live_frame_store(settings=_settings())
+        live.build_live_frame_store(settings=_settings(), allowances=None)
 
     assert closed == {"pool": True}

@@ -16,9 +16,8 @@ The extraction's entities and measures decide which hits are sources:
   peacekeeping", a CRS channel.
 - A hit that names an organisation (a Source, or a collection such as the DAC) and is an
   entity, or lies inside a measure's words, is a party to the flow: "ODA from the World
-  Bank", "World Bank core contributions". A data word just after it ("OECD data on aid"),
-  or "according to" or a negation cue just before it ("GDP of Kenya excluding the IMF"),
-  makes it the source of the numbers.
+  Bank", "World Bank core contributions". A data word just after it ("OECD data on aid")
+  or "according to" just before it makes it the source of the numbers.
 - A hit that names a table (a provenance or Dataset: CRS, WEO, IDS, DAC2a, imputed
   multilateral sectors) is a source wherever it stands. A table gives and receives nothing.
 
@@ -27,13 +26,11 @@ covers ("OECD" in "OECD data on education aid") leaves the part's entities
 (`SourceScan.source_entities`), so one span gets one reading. An entity whose words also
 stand elsewhere as a party stays ("World Bank data on aid from the World Bank").
 
-A source is excluded when a negation cue ("excluding", "not", "neither", "apart from")
-comes just before it, with only articles or "from" between, and included when an inclusion
-cue ("including") does. A source with no cue of its own takes the polarity of the source
-before it when both qualify the same measures and only "and", "or", "nor", articles,
-punctuation and the words of an entity stand between them: "excluding CRS and DAC2a" and
-"excluding the CRS, Norway and DAC2a" leave out both, "neither the CRS nor DAC2a" leaves
-out both, and "without CRS, from DAC2a" asks for DAC2a. Any other source is included.
+The scan reads the text with each stretch that asks to leave something out blanked
+(`exclusion_read.admit_exclusions`), so every source it finds there is asked for. A stretch
+is read on its own for the sources it leaves out (`left_out_sources`): each item of its list
+whose left-out words a source covers, so "excluding the CRS, Norway and DAC2a" leaves out the
+CRS and DAC2a, and "without IMF credit", whose "credit" no source covers, leaves out no IMF.
 
 An occurrence of an entity's words inside an occurrence of a longer entity's words belongs
 to the longer entity: in "World Bank data on World Bank IDA disbursements" the entity
@@ -49,8 +46,8 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal
 
 from code_index.query import CodeIndex
 from search.engine.qualifier_match import read_by_vocabulary
@@ -62,32 +59,17 @@ from search.engine.source_scope import (
 )
 from search.models import _PARSED_MAX_PART_SOURCES, _PARSED_MAX_SOURCE_MENTION_CHARS, SourceMention
 
+if TYPE_CHECKING:
+    from search.engine.exclusion_read import LeftOut
+
 _ABBREVIATION_MAX_CHARS = 5
 """The longest one-word key read as an abbreviation, which only capitals match."""
-
-_NEGATION_CUES: tuple[tuple[str, ...], ...] = (
-    ("excluding",),
-    ("exclude",),
-    ("excludes",),
-    ("except",),
-    ("except", "for"),
-    ("not",),
-    ("neither",),
-    ("without",),
-    ("minus",),
-    ("other", "than"),
-    ("apart", "from"),
-    ("aside", "from"),
-    ("not", "counting"),
-    ("leaving", "out"),
-)
-"""The word runs that, just before a source, leave it out."""
 
 _INCLUSION_CUES: tuple[tuple[str, ...], ...] = (("including",), ("include",), ("includes",))
 """The word runs that, just before a source, ask for it."""
 
 _COORDINATORS = frozenset({"and", "or", "nor"})
-"""Words that join a source to the one before it, so it shares that one's polarity."""
+"""Words that end one item of a stretch's list and start the next."""
 
 _ARTICLES = frozenset({"the", "a", "an", "le", "la", "el"})
 
@@ -104,7 +86,7 @@ _DATA_WORDS = frozenset(
 
 
 _SOURCE_PHRASE_WORDS = frozenset(
-    {word for cue in (*_NEGATION_CUES, *_SOURCE_CUES) for word in cue}
+    {word for cue in _SOURCE_CUES for word in cue}
     | _FILLER_BEFORE_SOURCE
     | _DATA_WORDS
     | {word for cue in _INCLUSION_CUES for word in cue}
@@ -122,9 +104,10 @@ class _Word:
 
 @dataclass(frozen=True, slots=True)
 class SourceHit:
-    """A source the query names: the query's characters `start` to `end`, its own words for
+    """A source the query names: the text's characters `start` to `end`, its own words for
     the source, whether it asks for the source's numbers or leaves them out, and the
-    positions of the measures it qualifies (`targets`)."""
+    positions of the measures it qualifies (`targets`). A source a stretch leaves out sits at
+    the stretch's blank."""
 
     start: int
     end: int
@@ -223,17 +206,6 @@ def _cued(words: Sequence[_Word], index: int, cues: Sequence[tuple[str, ...]]) -
         end -= 1
 
 
-def _coordinated(between: Sequence[_Word], entities: Sequence[tuple[int, int]]) -> bool:
-    """Whether `between`, the words separating two sources, only joins them: coordinators,
-    articles and the words of an entity occurrence (`entities`), as in "the CRS, Norway and
-    DAC2a"."""
-    return all(
-        word.folded in _COORDINATORS | _ARTICLES
-        or any(s <= word.start and word.end <= e for s, e in entities)
-        for word in between
-    )
-
-
 def _names_a_table(dictionary: SourceDictionary, text: str) -> bool:
     """Whether `text` names only provenances and Datasets, which publish numbers and are
     never a party to a flow."""
@@ -263,8 +235,8 @@ def find_source_hits(
 ) -> list[SourceHit]:
     """The sources `query` names, in query order, read against the extraction's entities
     (`entity_spans`, the query's words for each), its `measures` and the code labels
-    `index` reads in it, each with its polarity and the measures it qualifies, as the
-    module describes."""
+    `index` reads in it, each with the measures it qualifies, as the module describes. Each
+    asks for its source."""
     words = _words(query)
     (reading,) = read_by_vocabulary([query], index, vocabularies=())
     codes = [(span.start, span.end) for span in reading.everywhere.spans]
@@ -274,12 +246,10 @@ def find_source_hits(
         for phrase, spans in _entity_occurrences(entity_spans, words).items()
         for span in spans
     ]
-    entity_occurrences = [span for span, _ in entities]
     measure_words = [_folded(measure) for measure in measures]
     measure_spans = [next(iter(_occurrences(measure, words)), None) for measure in measures]
 
     hits: list[SourceHit] = []
-    previous_end = 0
     cursor = 0
     while cursor < len(words):
         first = cursor
@@ -305,25 +275,13 @@ def find_source_hits(
             continue
         if any(s <= start and end <= e and e - s > end - start for s, e in codes):
             continue
-        negated = _cued(words, first, _NEGATION_CUES)
         in_measure = any(_holds(held, key) for held in measure_words)
         if (overlapping or in_measure) and not _names_a_table(dictionary, text):
             data_word = cursor < len(words) and words[cursor].folded in _DATA_WORDS
-            if not negated and not data_word and not _cued(words, first, _SOURCE_CUES):
+            if not data_word and not _cued(words, first, _SOURCE_CUES):
                 continue
         targets = _attach(key, start, end, measure_words, measure_spans)
-        polarity: Literal["include", "exclude"] = "include"
-        if negated:
-            polarity = "exclude"
-        elif (
-            hits
-            and hits[-1].targets == targets
-            and not _cued(words, first, _INCLUSION_CUES)
-            and _coordinated(words[previous_end:first], entity_occurrences)
-        ):
-            polarity = hits[-1].polarity
-        hits.append(SourceHit(start, end, text, polarity, targets))
-        previous_end = cursor
+        hits.append(SourceHit(start, end, text, "include", targets))
     return hits
 
 
@@ -352,16 +310,130 @@ def _attach(
     return tuple(range(len(spans)))
 
 
+def _measure_positions(
+    measures: Sequence[str], words: Sequence[_Word]
+) -> list[tuple[int, int] | None]:
+    """Each measure's span in the query, `None` where the query does not write it. Spans do
+    not overlap: a longer measure takes its first occurrence first, and each shorter one the
+    first occurrence left to right that no taken span covers, so in "health ODA to Kenya and
+    ODA to Uganda" "health ODA" takes the first and "ODA" the second."""
+    spans: list[tuple[int, int] | None] = [None] * len(measures)
+    for position in sorted(range(len(measures)), key=lambda p: -len(_folded(measures[p]))):
+        spans[position] = next(
+            (
+                (start, end)
+                for start, end in _occurrences(measures[position], words)
+                if not any(s < end and start < e for s, e in filter(None, spans))
+            ),
+            None,
+        )
+    return spans
+
+
+def _stretch_attach(
+    key: tuple[str, ...],
+    at: int,
+    query: str,
+    measures: Sequence[str],
+) -> tuple[int, ...]:
+    """The positions of the measures a stretch written as `key`, blanked at `query`'s
+    character `at`, qualifies: those whose words hold it, else every measure but where the
+    blank lies in one clause of the query's measures (`_measure_positions`). Measures the
+    query writes joined only by commas and coordinators ("ODA and OOF") share a clause, which
+    runs from the first of them to the next clause's first measure; a ";" between two
+    measures parts them, a blank or one the query wrote: "aid to Kenya and education aid to Kenya, not from the OECD" leaves
+    the OECD out of education aid alone, "ODA and OOF to Kenya excluding debt relief" judges
+    both, and "ODA excluding debt relief and OOF to Kenya" judges ODA alone. A stretch before
+    every measure, or in a query with one clause or a measure it does not write, qualifies
+    every measure."""
+    words = _words(query)
+    measure_words = [_folded(measure) for measure in measures]
+    holding = tuple(position for position, held in enumerate(measure_words) if _holds(held, key))
+    if holding:
+        return holding
+    every = tuple(range(len(measures)))
+    spans = _measure_positions(measures, words)
+    located = sorted((span, position) for position, span in enumerate(spans) if span is not None)
+    if len(located) < len(measures):
+        return every
+    clauses: list[tuple[int, list[int]]] = []
+    previous_end: int | None = None
+    for (start, end), position in located:
+        joined = previous_end is not None and ";" not in query[previous_end:start]
+        if joined and all(
+            word.folded in _COORDINATORS for word in words if previous_end <= word.start < start
+        ):
+            clauses[-1][1].append(position)
+        else:
+            clauses.append((start, [position]))
+        previous_end = end if previous_end is None else max(end, previous_end)
+    if len(clauses) < 2:
+        return every
+    held = [positions for start, positions in clauses if start <= at]
+    return tuple(sorted(held[-1])) if held else every
+
+
 @dataclass(frozen=True, slots=True)
 class SourceScan:
     """What `scan_sources` reads in a query: each measure's source mentions
-    (`per_measure`, parallel to the measures) and the entity spans a source took
-    (`source_entities`, a subset of the spans passed in), which are no entity. A span is
-    taken when it occurs in the query and a source covers every occurrence of it that lies
-    inside no longer entity span's."""
+    (`per_measure`, parallel to the measures), the entity spans a source took
+    (`source_entities`, a subset of the spans passed in), which are no entity, and the
+    stretches that leave out sources and nothing else (`source_stretches`), which their
+    mentions apply. A span is taken when it occurs in the query and a source covers every
+    occurrence of it that lies inside no longer entity span's. `stretch_targets` runs
+    parallel to the stretches: the positions of the measures each qualifies, read from the
+    clause its blank lies in (`_stretch_attach`), every measure for a stretch with no
+    blank."""
 
     per_measure: list[tuple[SourceMention, ...]]
     source_entities: frozenset[str]
+    source_stretches: frozenset[str] = frozenset()
+    stretch_targets: tuple[tuple[int, ...], ...] = ()
+
+
+def left_out_sources(
+    stretch: LeftOut, *, dictionary: SourceDictionary, index: CodeIndex
+) -> tuple[list[SourceHit], bool]:
+    """The sources `stretch` leaves out, and whether it leaves out nothing else.
+
+    The stretch's own words (`LeftOut.shown`) split into the items of its list, at commas and at "and", "or" and
+    "nor". An item leaves out a source when each of its left-out words (`LeftOut.things`),
+    less the words a phrase may carry beside a source's own (`_SOURCE_PHRASE_WORDS`: articles,
+    "from", data words such as "data", "figures" and "database"), lies in a source the item
+    names: "excluding the CRS database" leaves out the CRS. A stretch the query does not
+    write (`LeftOut.at` `None`) leaves out none."""
+    if stretch.at is None:
+        return [], False
+    named = find_source_hits(
+        stretch.shown, dictionary=dictionary, entity_spans=(), measures=(), index=index
+    )
+    asked = {word for thing in stretch.things for word in _folded(thing)} - _SOURCE_PHRASE_WORDS
+    if not asked:
+        return [], False
+    items: list[list[_Word]] = [[]]
+    previous_end = 0
+    for word in _words(stretch.shown):
+        if word.folded in _COORDINATORS:
+            items.append([])
+        else:
+            if "," in stretch.shown[previous_end : word.start]:
+                items.append([])
+            items[-1].append(word)
+        previous_end = word.end
+    hits: list[SourceHit] = []
+    whole = bool(named)
+    for item in items:
+        held = [hit for hit in named if any(hit.start <= w.start < hit.end for w in item)]
+        rest = [
+            word
+            for word in item
+            if word.folded in asked and not any(h.start <= word.start < h.end for h in held)
+        ]
+        if rest:
+            whole = False
+        else:
+            hits.extend(held)
+    return hits, whole
 
 
 def scan_sources(
@@ -371,15 +443,33 @@ def scan_sources(
     measures: Sequence[str],
     entity_spans: Sequence[str],
     index: CodeIndex,
+    left_out: Sequence[LeftOut] = (),
 ) -> SourceScan:
-    """The sources `find_source_hits` finds in `query`, attached to the measures they
-    qualify, and the entity spans they cover. A measure keeps one mention per wording and
-    polarity, at most `_PARSED_MAX_PART_SOURCES`, and an entity span leaves the entities only
-    when every occurrence of it that lies inside no longer entity span's lies under a
-    source."""
+    """The sources `find_source_hits` finds in `query`, the text with each of the `left_out`
+    stretches blanked, and those each stretch leaves out (`left_out_sources`), attached to the
+    measures they qualify, and the entity spans they cover. A stretch and its sources attach
+    to the measures of the clause its blank lies in (`_stretch_attach`). A measure keeps one
+    mention per wording and polarity, at most `_PARSED_MAX_PART_SOURCES`, and an entity span
+    leaves the entities only when every occurrence of it that lies inside no longer entity
+    span's lies under a source."""
     hits = find_source_hits(
         query, dictionary=dictionary, entity_spans=entity_spans, measures=measures, index=index
     )
+    source_stretches: set[str] = set()
+    stretch_targets: list[tuple[int, ...]] = []
+    for stretch in left_out:
+        if (at := stretch.at) is None:
+            stretch_targets.append(tuple(range(len(measures))))
+            continue
+        targets = _stretch_attach(_folded(stretch.shown), at, query, measures)
+        stretch_targets.append(targets)
+        found, whole = left_out_sources(stretch, dictionary=dictionary, index=index)
+        hits += [
+            replace(hit, start=at, end=at + 1, polarity="exclude", targets=targets) for hit in found
+        ]
+        if whole:
+            source_stretches.add(stretch.phrase)
+    hits.sort(key=lambda hit: hit.start)
     attached: list[dict[tuple[str, str], SourceMention]] = [{} for _ in measures]
     read: list[SourceHit] = []
     for hit in hits:
@@ -400,13 +490,15 @@ def scan_sources(
     return SourceScan(
         per_measure=[tuple(bucket.values()) for bucket in attached],
         source_entities=source_entities,
+        source_stretches=frozenset(source_stretches),
+        stretch_targets=tuple(stretch_targets),
     )
 
 
 def source_phrases(phrases: Sequence[str], mentions: Sequence[SourceMention]) -> set[str]:
     """The `phrases` that only name one of `mentions`: their words, less cues, articles and
-    data words, lie within its words ("excluding the CRS", "selon le SNPC", "IMF"). The
-    source mention applies them, so they are no qualifier left unapplied."""
+    data words, lie within its words ("selon le SNPC", "IMF"). The source mention applies
+    them, so they are no qualifier left unapplied."""
     named = [_folded(mention.text or "") for mention in mentions]
     covered = set()
     for phrase in phrases:

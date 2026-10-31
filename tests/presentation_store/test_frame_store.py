@@ -7,19 +7,24 @@ import hashlib
 import io
 import json
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import cast
+from typing import Any, Never, cast
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
+from dfo_frame_grammar.grammar import FrameError, derive_columns
 
+from artifact_store import ArtifactLocation, CopyBounds
 from artifact_store.errors import (
     ArtifactIntegrityError,
     ArtifactInventoryError,
@@ -59,9 +64,16 @@ from dataset_store.snapshot import (
     VersionFacts,
     VersionState,
 )
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceExhausted,
+    AllowanceKind,
+    LiveAllowanceLedger,
+)
 from datasets_api.manifest import version_document
 from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import ReferenceWrite
+from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from description.citation import citation_line
 from description.facts import (
@@ -78,14 +90,16 @@ from description.facts import (
 )
 from description.steps import Step
 from description.vocabulary import SourceDocumentFacts
+from dfo_platform.caller import Caller
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
-from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_frame1
 from materialise.graph import GraphReadError
-from materialise.provenance_doc import SourceDocumentNotFound
+from materialise.provenance_doc import PROVENANCE_NAME_PROPERTIES, SourceDocumentNotFound
+from origin_catalogue import BASE
 from presentation_store import frame_store
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
@@ -102,12 +116,15 @@ from spec_registry.errors import (
 )
 from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
+from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
+from tests.fixtures.provenance import arc_targets
 from tests.graph_release.support import release_at_revision
 from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
     stored_canonical_frame_959f8bc,
 )
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue import test_graph as origin_graph
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -241,7 +258,26 @@ class _FakeArtifactStore:
     ) -> str:
         raise NotImplementedError("not exercised by LiveFrameStore")
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    copy_lands_within = CopyBounds().lands_within
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        if (tier, digest) not in self.objects:
+            return None
+        return ArtifactLocation(
+            bucket="fake-bucket", object_name=digest, stored_at=datetime.min, renewal=0
+        )
+
+    def exists(self, digest: str, *, tier: Tier, read: object = None) -> bool:
+        return (tier, digest) in self.objects
+
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         self.calls.append(("copy", from_tier, digest))
         if self.copy_raises is not None:
             raise self.copy_raises
@@ -290,6 +326,9 @@ class _FakeGraphReader:
         self.node_arcs_many_requests: list[
             tuple[tuple[str, ...], tuple[str, ...], float | None]
         ] = []
+        self.node_arc_targets_many_requests: list[
+            tuple[tuple[str, ...], tuple[str, ...], float | None]
+        ] = []
 
     def generation_stamp(self) -> GenerationStamp:
         return self._generation.stamp()
@@ -320,6 +359,23 @@ class _FakeGraphReader:
         dcids = tuple(dcids)
         self.node_arcs_many_calls.append(dcids)
         self.node_arcs_many_requests.append((dcids, tuple(properties), deadline))
+        return self._read(dcids, properties)
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline: float | None = None):
+        """The arcs `node_arcs_many` answers, each target carrying the name and type this
+        double holds, recorded apart from `node_arcs_many`'s."""
+        self.calls += 1
+        dcids = tuple(dcids)
+        self.node_arc_targets_many_requests.append((dcids, tuple(properties), deadline))
+        nodes = {
+            **{dcid: {"name": (label,)} for dcid, label in self._labels.items()},
+            **self._arcs,
+        }
+        return arc_targets(self._read(dcids, properties), nodes)
+
+    def _read(
+        self, dcids: tuple[str, ...], properties
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         if any(dcid in self.raise_for for dcid in dcids) or (
             tuple(properties) == self.raise_for_properties
         ):
@@ -445,6 +501,9 @@ class _FakeReferenceWriter:
         # WHERE removed_at IS NULL` that matches zero rows commits fine).
         self.records.pop(key, None)
 
+    def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
+        return any(key[2:4] == (subject_id, content_version) for key in self.records)
+
 
 class _LegacyReferenceWriter:
     """Writer with `record_reference_unless_revoked` but no claim method."""
@@ -460,6 +519,34 @@ class _LegacyReferenceWriter:
 
 
 # -- Fixtures -----------------------------------------------------------
+
+
+def _frame1_with(**members: object) -> bytes:
+    """The malaria frame1 document with `members` replaced; a `None` member is left out."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    doc.update(members)
+    return json.dumps({key: value for key, value in doc.items() if value is not None}).encode()
+
+
+def _frame1_with_repeated_row() -> bytes:
+    """The malaria document with its first row stored twice."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    rows = cast("list[list[object]]", doc["rows"])
+    rows.insert(1, list(rows[0]))
+    return json.dumps(doc).encode()
+
+
+def _frame1_without(column: str) -> bytes:
+    """The malaria frame1 document without `column`."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    columns = cast("list[str]", doc["columns"])
+    index = columns.index(column)
+    doc["columns"] = [name for name in columns if name != column]
+    doc["rows"] = [
+        [cell for position, cell in enumerate(row) if position != index]
+        for row in cast("list[list[object]]", doc["rows"])
+    ]
+    return json.dumps(doc).encode()
 
 
 def _frame_bytes() -> bytes:
@@ -578,6 +665,7 @@ def _store(
     artifacts: _FakeArtifactStore | None = None,
     graph=None,
     reference_writer: _FakeReferenceWriter | None = None,
+    allowances: LiveAllowanceLedger | None = None,
     now: Callable[[], datetime] = lambda: _NOW,
     **kwargs,
 ) -> LiveFrameStore:
@@ -588,6 +676,7 @@ def _store(
         reference_writer=reference_writer
         if reference_writer is not None
         else _FakeReferenceWriter(),
+        allowances=allowances,
         now=now,
         **kwargs,
     )
@@ -739,6 +828,427 @@ def test_load_refuses_a_canonical_frame_over_the_row_bound_before_fetching_it():
     assert [call for call in artifacts.calls if call[0] == "get"] == []
 
 
+@pytest.mark.parametrize(
+    ("size_bytes", "loads"),
+    [pytest.param(200_000_000, True, id="under"), pytest.param(250_000_000, False, id="past")],
+)
+def test_load_bounds_a_frame1_document_by_its_recorded_size_as_datasets_does(
+    size_bytes: int, loads: bool
+):
+    """A frame1 document recorded at 250 MB is past the 216,600,000 bytes a Datasets read that
+    decodes it alone takes (`render.frame1_decode_max_bytes` at the default fold ceiling), so it
+    refuses `missing_rendering` before its object is fetched, as the Datasets observations door
+    refuses it `over_ceiling` (`tests/datasets_api/test_observations_door.py`). One at 200 MB
+    loads."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    snapshots.locations[key] = [
+        replace(location, size_bytes=size_bytes) for location in snapshots.locations[key]
+    ]
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    if loads:
+        assert store.load(frame_ref=frame_ref)
+        return
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    assert [call for call in artifacts.calls if call[0] == "get"] == []
+
+
+def _parquet_bytes() -> bytes:
+    sink = io.BytesIO()
+    table = pa.table({"name": [f"row {index}" for index in range(5000)]})
+    pq.write_table(table, sink, compression="snappy")
+    return sink.getvalue()
+
+
+def _footer_zeroed(data: bytes) -> bytes:
+    footer = int.from_bytes(data[-8:-4], "little")
+    return data[: -8 - footer] + bytes(footer) + data[-8:]
+
+
+def _pages_flipped(data: bytes) -> bytes:
+    flipped = bytearray(data)
+    for index in range(40, 2000, 3):
+        flipped[index] ^= 0xFF
+    return bytes(flipped)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(lambda _: b"not a parquet file", id="not-parquet"),
+        pytest.param(lambda _: b"", id="empty"),
+        pytest.param(_footer_zeroed, id="footer-zeroed"),
+        pytest.param(_pages_flipped, id="pages-flipped"),
+        pytest.param(lambda data: data[: len(data) // 2], id="body-truncated"),
+        pytest.param(lambda data: data[:4] + data[len(data) // 2 :], id="tail-kept"),
+    ],
+)
+def test_load_refuses_a_canonical_frame_whose_bytes_do_not_decode(corrupt):
+    """Stored bytes that match their digest and do not decode as a frame never load, so the
+    load refuses `missing_rendering`."""
+    snapshots, artifacts, frame_ref = _canonical_frame_version(corrupt(_parquet_bytes()))
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def test_load_refuses_a_frame_of_another_schema():
+    """A Parquet file that is no canonical frame decodes, and the grammar refuses its schema."""
+    snapshots, artifacts, frame_ref = _canonical_frame_version(_parquet_bytes())
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def _frame_of_every_unit() -> Frame:
+    """The malaria rows, holding every form a `unit` cell stores in turn."""
+    units = (
+        None,
+        "USDollar",
+        {"currency": "USD", "prices": "current"},
+        {"currency": "EUR", "prices": "constant", "base_year": 2020},
+        {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+        {
+            "numerator": {"currency": "USD", "prices": "current"},
+            "denominator": {"currency": "EUR", "prices": "current"},
+        },
+    )
+    rows = (
+        {**row, "unit": units[index % len(units)]}
+        for index, row in enumerate(malaria_ethiopia_rows())
+    )
+    return Frame.build(role_keys=("recipient",), rows=rows)
+
+
+def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering():
+    """A stored frame's bytes can break anywhere, and each break is a permanent refusal."""
+    data = canonical_frame_parquet((_frame_of_every_unit(),))
+    rng = random.Random(7)
+    for _ in range(1000):
+        mutant = bytearray(data)
+        mutant[rng.randrange(len(mutant))] ^= 1 << rng.randrange(8)
+        snapshots, artifacts, frame_ref = _canonical_frame_version(bytes(mutant))
+        store = _store(snapshots=snapshots, artifacts=artifacts)
+        try:
+            store.load(frame_ref=frame_ref)
+        except FrameUnavailable as refused:
+            assert refused.reason == "missing_rendering"
+
+
+DECODE_FAILURES = [
+    pytest.param(FrameError("schema_violation", "exemplar"), id="frame-error"),
+    pytest.param(pa.ArrowInvalid("exemplar"), id="arrow-invalid"),
+    pytest.param(OSError("exemplar"), id="os-error"),
+    pytest.param(
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), id="unicode-decode-error"
+    ),
+]
+"""A failure of each kind a reader of stored frame bytes raises for bytes that do not decode,
+which Datasets refuses alike (`tests/datasets_api/test_stored_frame1.py`)."""
+
+
+@pytest.mark.parametrize("raised", DECODE_FAILURES)
+def test_a_stored_frame_that_does_not_decode_refuses_missing_rendering(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", _raises(raised))
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        pytest.param(MemoryError(), id="python-out-of-memory"),
+        pytest.param(pa.ArrowMemoryError("exemplar"), id="arrow-out-of-memory"),
+    ],
+)
+def test_load_refuses_io_when_decoding_runs_out_of_memory(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    def fail(_data: bytes, *, columns: object = None) -> Never:
+        raise raised
+
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", fail)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "io"
+    assert excinfo.value.retry_after_s == frame_store._DECODE_RETRY_AFTER_S
+
+
+def _raises(raised: Exception) -> Callable[..., Never]:
+    def fail(*_args: object, **_kwargs: object) -> Never:
+        raise raised
+
+    return fail
+
+
+def _logged_traceback_names(exc: BaseException, digest: str) -> bool:
+    """Whether the traceback the platform logs for `exc` names `digest`."""
+    return digest in logging.Formatter().formatException((type(exc), exc, exc.__traceback__))
+
+
+@pytest.mark.parametrize(
+    "site", ["read_canonical_frame_table", "canonical_frame_document", "compute_structural_view"]
+)
+@pytest.mark.parametrize(
+    "raised", [pytest.param(TypeError, id="type"), pytest.param(KeyError, id="key")]
+)
+def test_a_defect_reading_a_stored_frame_reaches_internal_error_naming_its_digest(
+    monkeypatch: pytest.MonkeyPatch, site: str, raised: type[Exception]
+):
+    """A refusal comes only from a check of the stored content, so a raised defect stays one
+    whatever its type."""
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, site, _raises(raised("exemplar")))
+
+    with pytest.raises(raised) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    ((location,),) = snapshots.locations.values()
+    assert _logged_traceback_names(excinfo.value, location.artifact_digest)
+
+
+def test_a_structural_view_out_of_memory_refuses_io(monkeypatch: pytest.MonkeyPatch):
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _raises(MemoryError()))
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "io"
+
+
+def _with_column(data: bytes, name: str, array: pa.Array) -> bytes:
+    """The canonical frame `data` with column `name` replaced, as a damaged artifact holds it."""
+    table = pq.read_table(pa.BufferReader(data))
+    sink = io.BytesIO()
+    pq.write_table(table.set_column(table.column_names.index(name), name, array), sink)
+    return sink.getvalue()
+
+
+def _stored_cell(data: bytes, name: str, cell: object) -> bytes:
+    """`data` with column `name` holding `cell` in every row."""
+    table = pq.read_table(pa.BufferReader(data))
+    return _with_column(
+        data, name, pa.array([cell] * table.num_rows, table.schema.field(name).type)
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "cell"),
+    [
+        pytest.param("unit", {"ref": None, "request": None, "composed": None}, id="no-variant"),
+        pytest.param("unit", {"ref": "USD", "composed": '{"a":1}'}, id="two-variants"),
+        pytest.param("unit", {"ref": ""}, id="empty-ref"),
+        pytest.param("unit", {"request": {"currency": None, "prices": None}}, id="empty-request"),
+        pytest.param(
+            "unit", {"request": {"currency": "USD", "prices": "constant"}}, id="no-base-year"
+        ),
+        pytest.param("unit", {"composed": "not json"}, id="composed-not-json"),
+        pytest.param("unit", {"composed": "[" * 100_000}, id="composed-past-the-parser"),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":' + "9" * 5000 + ',"denominator":"USD"}'},
+            id="composed-past-the-digit-limit",
+        ),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":"a","numerator":"b","denominator":"USD"}'},
+            id="composed-repeats-a-member",
+        ),
+        pytest.param("unit", {"composed": '"USD"'}, id="composed-a-ref"),
+        pytest.param("unit", {"composed": "null"}, id="composed-null"),
+        pytest.param("unit", {"composed": '{"numerator":"USD"}'}, id="composed-one-side"),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":"USD","denominator":{"stat_var":3}}'},
+            id="composed-bad-side",
+        ),
+        pytest.param("time_period", None, id="null-period"),
+        pytest.param("time_period", "20:0", id="unparseable-period"),
+        pytest.param("stat_var", None, id="null-stat-var"),
+        pytest.param("recipient", None, id="null-role"),
+        pytest.param("value", None, id="null-value"),
+    ],
+)
+def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(
+    caplog: pytest.LogCaptureFixture, name: str, cell: object
+):
+    data = canonical_frame_parquet((_frame_of_every_unit(),))
+    snapshots, artifacts, frame_ref = _canonical_frame_version(data)
+    assert _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    snapshots, artifacts, frame_ref = _canonical_frame_version(_stored_cell(data, name, cell))
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    ((location,),) = snapshots.locations.values()
+    (record,) = caplog.records
+    assert record.args[0] == location.artifact_digest
+    assert record.exc_info[0] is FrameError
+
+
+@pytest.mark.parametrize(
+    ("column", "cell"),
+    [
+        pytest.param("unit", ["USD"], id="unit-a-list"),
+        pytest.param("unit", {"currency": "USD"}, id="unit-no-prices"),
+        pytest.param("unit", {"numerator": "USD"}, id="unit-one-side"),
+        pytest.param("time_period", None, id="period-null"),
+        pytest.param("time_period", 2020, id="period-a-number"),
+        pytest.param("time_period", ["2020"], id="period-a-list"),
+        pytest.param("time_period", "20:0", id="period-unparseable"),
+        pytest.param("recipient", None, id="role-null"),
+        pytest.param("recipient", "country/\ud800", id="role-a-lone-surrogate"),
+        pytest.param("unit", "\ud800", id="unit-ref-a-lone-surrogate"),
+        pytest.param("value", None, id="value-null"),
+        pytest.param("value", "1.5", id="value-a-numeric-string"),
+        pytest.param("value", "abc", id="value-a-string"),
+        pytest.param("value", [1], id="value-a-list"),
+        pytest.param("value", 10**400, id="value-past-the-double-range"),
+        pytest.param("value", True, id="value-a-boolean"),
+    ],
+)
+def test_a_malformed_frame1_cell_refuses_missing_rendering(column: str, cell: object):
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    document = json.loads(artifacts.objects[(Tier.working, digest)])
+    index = document["columns"].index(column)
+    document["rows"][0][index] = cell
+    artifacts.objects[(Tier.working, digest)] = json.dumps(document).encode()
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
+    caplog: pytest.LogCaptureFixture,
+):
+    snapshots, artifacts, frame_ref = _canonical_frame_version(b"not a parquet file")
+
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    (record,) = caplog.records
+    (digest, cause, _) = record.args
+    ((location,),) = snapshots.locations.values()
+    assert digest == location.artifact_digest
+    assert cause == "ArrowInvalid"
+    assert record.exc_info[0] is pa.ArrowInvalid
+
+
+def _a_defect(**_: object) -> Never:
+    raise ValueError("a defect in the reading code")
+
+
+def test_a_value_error_in_the_structural_view_is_a_defect(monkeypatch: pytest.MonkeyPatch):
+    """A bare `ValueError` is a defect in the reading code, not malformed content
+    (`materialise.formats.STORED_FRAME_DECODE_ERRORS`). Raised in the structural view, it
+    propagates, so the door answers `internal_error` (500) and no share reads the frame as
+    gone."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _a_defect)
+
+    with pytest.raises(ValueError, match="a defect"):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"not json", id="not-json"),
+        pytest.param(b"\xff\xfe", id="not-utf8"),
+        pytest.param(b"[" * 100_000, id="nested-past-the-parser"),
+        pytest.param(b"null", id="null"),
+        pytest.param(b"[]", id="list"),
+        pytest.param(b"{}", id="no-columns"),
+        pytest.param(b'{"columns": 3, "rows": []}', id="columns-not-a-list"),
+        pytest.param(b'{"columns": ["a", "b"], "rows": [[1]]}', id="short-row"),
+        pytest.param(b"[" + b"9" * 5000 + b"]", id="integer-past-the-digit-limit"),
+        pytest.param(_frame1_with(frame_version="frame2"), id="another-version"),
+        pytest.param(_frame1_with(frame_version=None), id="no-version"),
+        pytest.param(_frame1_with(columns=["stat_var", 3], rows=[]), id="a-column-not-a-name"),
+        pytest.param(
+            json.dumps(
+                {"frame_version": "frame1", "columns": ["stat_var", "\ud800"], "rows": []}
+            ).encode(),
+            id="a-column-name-with-a-lone-surrogate",
+        ),
+        pytest.param(_frame1_with(rows=[["dcid:X"]]), id="a-short-row"),
+        pytest.param(_frame1_with_repeated_row(), id="a-repeated-grain"),
+        pytest.param(_frame1_without("provenance"), id="no-provenance-column"),
+        pytest.param(
+            _frame1_with(columns=["stat_var", "stat_var", "time_period", "value", "unit"], rows=[]),
+            id="a-repeated-column",
+        ),
+    ],
+)
+def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: bytes):
+    with pytest.raises(FrameUnavailable) as excinfo:
+        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=9)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def _frame1_with_value(value: int) -> bytes:
+    """The malaria document with `value` in its first row, as `write_frame1` writes a whole
+    number: a JSON integer."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    columns = cast("list[str]", doc["columns"])
+    cast("list[list[object]]", doc["rows"])[0][columns.index("value")] = value
+    return json.dumps(doc).encode()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(_frame1_with(), id="whole"),
+        pytest.param(_frame1_without("measurementMethod"), id="before-measurementMethod"),
+        pytest.param(_frame1_without("status"), id="before-status"),
+        pytest.param(_frame1_with_value(20_900_000_000_000_000), id="a-value-past-2-to-the-53"),
+    ],
+)
+def test_a_frame1_document_decodes_as_the_canonical_frame_of_its_rows(data: bytes):
+    """A frame1 document, of any age and past the row bound, decodes to the document of the
+    canonical frame of its rows, with its unit cells shared, and counts in the cache at that
+    frame's measure whatever its byte length. The malaria document holds 9 rows."""
+    doc, size = frame_store._decode_frame(
+        data, location=_location(digest="d", tier="working"), max_rows=1
+    )
+    canonical = canonical_frame_parquet((read_frame1(data),))
+    canonical_doc, canonical_size = frame_store._decode_frame(
+        canonical,
+        location=_location(digest="c", tier="working", media_type=CANONICAL_FRAME_MEDIA_TYPE),
+        max_rows=9,
+    )
+
+    rows, columns = cast("list[list[object]]", doc["rows"]), cast("list[str]", doc["columns"])
+    unit = columns.index("unit")
+    assert doc == canonical_doc
+    assert all(row[unit] is rows[0][unit] for row in rows)
+    assert size == canonical_size == frame_store._document_bytes(rows=9, columns=len(columns))
+    assert size != len(data)
+
+
 def test_load_decodes_a_canonical_frame_at_the_row_bound():
     snapshots, artifacts, frame_ref, frame = _canonical_frame_fixture()
     store = _store(snapshots=snapshots, artifacts=artifacts, frame_max_rows=frame.table.num_rows)
@@ -779,14 +1289,43 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     assert resolved.labels["dcid:MalariaGrantDisbursements"] == "Malaria Grant Disbursements"
     assert resolved.labels["country/ETH"] == "Ethiopia"
     assert resolved.labels["src_oecd_dac"] == "OECD DAC"
-    assert graph.calls == 1  # one batched call covers every distinct ref
-    assert sorted(graph.node_arcs_many_calls[0]) == sorted(
-        ["MalariaGrantDisbursements", "country/ETH", "src_oecd_dac"]
-    )
+    # One batched label read covers every ref but the unlisted provenance, which its name read
+    # covers.
+    assert sorted(graph.node_arcs_many_calls) == [("MalariaGrantDisbursements", "country/ETH")]
+    assert [dcids for dcids, _, _ in graph.node_arc_targets_many_requests] == [("src_oecd_dac",)]
     assert (resolved.graph_generation, resolved.catalogue_build) == (
         "gen-1",
         f"build-1@{current_release().release_id}",
     )
+
+
+def test_load_finds_its_unlisted_provenances_once_and_starts_no_pool(monkeypatch, bind_catalogue):
+    """A load beside whose label read a provenance name read runs finds the provenances the
+    catalogue does not list once, and runs the name read on the shared pool."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    graph = _FakeGraphReader(
+        labels={"MalariaGrantDisbursements": "Malaria", "src_oecd_dac": "OECD DAC"}
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+    finds: list[list[str]] = []
+    unnamed = provenance_doc.unnamed_provenances
+
+    def finding(dcids, *, catalogue):
+        finds.append(list(dcids))
+        return unnamed(dcids, catalogue=catalogue)
+
+    def no_pool(*_args, **_kwargs):
+        raise AssertionError("a load starts no thread pool")
+
+    monkeypatch.setattr(provenance_doc, "unnamed_provenances", finding)
+    monkeypatch.setattr(frame_store, "unnamed_provenances", finding)
+    monkeypatch.setattr(frame_store, "ThreadPoolExecutor", no_pool)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert finds == [["src_oecd_dac"]]
 
 
 @pytest.mark.parametrize(
@@ -842,18 +1381,122 @@ def test_load_labels_the_entities_and_members_a_coverage_warning_counts():
         resolved.labels["dcid:YouthRate"],
         resolved.labels["dcid:AdultRate"],
     ) == ("Senegal", "Youth rate", "Adult rate")
-    assert graph.calls == 1
-    assert {"country/SEN", "YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
+    (label_read,) = graph.node_arcs_many_calls
+    assert {"country/SEN", "YouthRate", "AdultRate"} <= set(label_read)
+
+
+def test_load_names_row_and_withheld_provenances_by_their_dataset_in_the_label_read():
+    """A base provenance node is named for its import, so the row's provenance and a withheld
+    one take the name of their parent Dataset, as a source citation does. Both ride one name
+    read, which carries their parents' names and is timed as `provenance_names`, and the
+    frame's other refs ride its label read."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    _with_withheld_provenance(snapshots, frame_ref)
+    graph = _FakeGraphReader(
+        labels={
+            "MalariaGrantDisbursements": "Malaria Grant Disbursements",
+            "YouthRate": "Youth rate",
+        },
+        arcs={
+            **_WHO_PROVENANCE_ARCS,
+            "src_oecd_dac": {
+                "typeOf": ("Provenance",),
+                "name": ("OECD_DAC",),
+                "isPartOf": ("dc/d/OECD_DAC",),
+            },
+            "dc/d/OECD_DAC": {"typeOf": ("Dataset",), "name": ("OECD DAC",)},
+        },
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    timings = PhaseTimings()
+
+    with collecting(timings):
+        resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert resolved.labels["dcid:dc/base/WHO_GHO"] == "WHO Global Health Observatory"
+    assert resolved.labels["dcid:YouthRate"] == "Youth rate"
+    assert [
+        (set(dcids), properties) for dcids, properties, _ in graph.node_arc_targets_many_requests
+    ] == [({"src_oecd_dac", "dc/base/WHO_GHO"}, PROVENANCE_NAME_PROPERTIES)]
+    (label_read,) = graph.node_arcs_many_calls
+    assert "YouthRate" in label_read
+    assert not {"src_oecd_dac", "dc/base/WHO_GHO", "dc/d/WHO_GHO"} & set(label_read)
+    assert "provenance_names" in timings.snapshot()
+
+
+def test_load_names_a_listed_row_provenance_from_the_catalogue_and_leaves_the_graph_read(
+    bind_catalogue,
+):
+    """The catalogue names a provenance it lists, so the row's provenance ref takes that name
+    and is left out of the graph batch, whose `name` for it is the import's."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    row = provenance_row("src_oecd_dac", BASE)
+    bind_catalogue(
+        FakeCatalogue(build_id="build-1", provenances={row.id: replace(row, name="OECD DAC")})
+    )
+    graph = _FakeGraphReader(
+        labels={
+            "MalariaGrantDisbursements": "Malaria Grant Disbursements",
+            "src_oecd_dac": "OECD_DAC",
+        }
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert "src_oecd_dac" not in graph.node_arcs_many_calls[0]
+    assert graph.node_arc_targets_many_requests == []
+
+
+def test_load_keeps_the_catalogue_name_of_a_withheld_provenance_when_the_graph_read_fails(
+    bind_catalogue,
+):
+    """The catalogue names a provenance it lists with no graph read, so a failed read of the
+    unlisted ones leaves that name, and the load is not cached as resolved."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    warning = {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": "Withheld.",
+        "withheld_provenances": {
+            "count": 2,
+            "refs": ["dcid:dc/base/WorldDevelopmentIndicators", "dcid:dc/base/WHO_GHO"],
+        },
+    }
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, warnings=[warning])
+    )
+    row = provenance_row("dc/base/WorldDevelopmentIndicators", BASE)
+    bind_catalogue(
+        FakeCatalogue(
+            build_id="build-1",
+            provenances={row.id: replace(row, name="World Development Indicators")},
+        )
+    )
+    graph = _FakeGraphReader(arcs=_WHO_PROVENANCE_ARCS, raise_for=frozenset({"dc/base/WHO_GHO"}))
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["dcid:dc/base/WorldDevelopmentIndicators"] == (
+        "World Development Indicators"
+    )
+    assert "dcid:dc/base/WHO_GHO" not in resolved.labels
 
 
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
 
 
-def _world_bank_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef]:
-    """`_happy_path_fixture` over a frame whose rows hold one World Development Indicators
-    variable."""
+def _world_bank_fixture(
+    variable: str = _WDI_GDP,
+) -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef]:
+    """`_happy_path_fixture` over a frame whose rows hold one `variable`, a World Development
+    Indicators one by default."""
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
-    rows = [{**row, "stat_var": f"dcid:{_WDI_GDP}"} for row in malaria_ethiopia_rows()]
+    rows = [{**row, "stat_var": f"dcid:{variable}"} for row in malaria_ethiopia_rows()]
     digest = artifacts.seed(
         tier=Tier.working,
         data=json.dumps(build_frame_doc(role_keys=("recipient",), rows=rows)).encode("utf-8"),
@@ -876,6 +1519,31 @@ def _world_bank_record(frame_ref: FrameRef, *, variable: str | None) -> _RecordR
             update={"variables": record.variables.model_copy(update={"variable": variable})}
         )
     )
+
+
+def test_load_labels_a_un_variable_from_the_tables_beside_an_unlisted_provenance(
+    bind_catalogue,
+):
+    """The origin client answers a UN variable's label from the catalogue's UN tables with no
+    request, so a frame naming a provenance the catalogue does not list reads only that
+    provenance's name and its other refs' labels."""
+    snapshots, artifacts, frame_ref = _world_bank_fixture(origin_graph._UN_MORTALITY)
+    graph = origin_graph._Graph(
+        labels={
+            origin_graph._UN_MORTALITY: "Under-five mortality (live)",
+            "country/ETH": "Ethiopia",
+            "src_oecd_dac": "OECD DAC",
+        }
+    )
+    bind_catalogue(origin_graph._catalogue())
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=origin_graph._client(graph))
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels[f"dcid:{origin_graph._UN_MORTALITY}"] == "Under-five mortality"
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert graph.on(origin_graph._UN_HOST) == []
+    assert origin_graph._UN_MORTALITY not in graph.dcids_sent(origin_graph._OURS_HOST)
 
 
 def test_load_reads_the_description_of_the_versions_one_world_bank_variable():
@@ -925,7 +1593,12 @@ def test_load_reads_no_description_unless_the_version_resolved_to_one_world_bank
     resolved = store.load(frame_ref=frame_ref)
 
     assert resolved.descriptions == {}
+    # The frame's provenance is one the catalogue does not list, so a name read beside the
+    # label read names it.
     assert [properties for _, properties, _ in graph.node_arcs_many_requests] == [("name",)]
+    assert [properties for _, properties, _ in graph.node_arc_targets_many_requests] == [
+        PROVENANCE_NAME_PROPERTIES
+    ]
 
 
 def test_a_failed_description_read_is_logged_not_cached_and_read_again(caplog):
@@ -1149,19 +1822,31 @@ def _stale_words_store(
     return store, frame_ref, graph, first
 
 
-def _gate_graph_reads(graph: _FakeGraphReader) -> tuple[threading.Event, threading.Event]:
-    """Hold every graph read of `graph` until the returned release event is set; the entered
-    event is set once a read is held."""
+_READER: ContextVar[str] = ContextVar("frame_store_test_reader", default="unattributed")
+
+
+def _gate_graph_reads(
+    graph: _FakeGraphReader,
+) -> tuple[threading.Event, threading.Event, list[str]]:
+    """Hold every graph read of `graph` until the returned release event is set. The entered
+    event is set once a read is held, and the list names each read's `_READER` value as the
+    read starts, so a test tells a waiting load's reads from the refresh's, whichever thread
+    of the load runs them."""
     entered, release = threading.Event(), threading.Event()
-    read = graph.node_arcs_many
+    readers: list[str] = []
 
-    def gated(*args, **kwargs):
-        entered.set()
-        release.wait(5)
-        return read(*args, **kwargs)
+    def gate(read):
+        def gated(*args, **kwargs):
+            readers.append(_READER.get())
+            entered.set()
+            release.wait(5)
+            return read(*args, **kwargs)
 
-    graph.node_arcs_many = gated
-    return entered, release
+        return gated
+
+    graph.node_arcs_many = gate(graph.node_arcs_many)
+    graph.node_arc_targets_many = gate(graph.node_arc_targets_many)
+    return entered, release, readers
 
 
 @pytest.mark.parametrize("failing", [False, True], ids=["refresh-succeeds", "refresh-fails"])
@@ -1177,7 +1862,7 @@ def test_concurrent_loads_of_a_stale_frame_refresh_it_once(failing: bool):
     one_refresh = graph.calls - calls
 
     store, frame_ref, graph, first = _stale_words_store(failing=failing)
-    entered, release = _gate_graph_reads(graph)
+    entered, release, _ = _gate_graph_reads(graph)
     calls = graph.calls
     with ThreadPoolExecutor(max_workers=4) as pool:
         loads = [pool.submit(copy_context().run, store.load, frame_ref=frame_ref) for _ in range(4)]
@@ -1198,19 +1883,23 @@ def test_a_load_waiting_on_a_refresh_past_its_deadline_serves_the_cached_words()
     """A load that waits on another load's refresh of the same frame until its door deadline
     passes serves the cached words, reading nothing."""
     store, frame_ref, graph, first = _stale_words_store(failing=False)
-    entered, release = _gate_graph_reads(graph)
+    entered, release, readers = _gate_graph_reads(graph)
+    refresh_context = copy_context()
+    refresh_context.run(_READER.set, "refresh")
     with ThreadPoolExecutor(max_workers=1) as pool:
-        refresh = pool.submit(copy_context().run, store.load, frame_ref=frame_ref)
+        refresh = pool.submit(refresh_context.run, store.load, frame_ref=frame_ref)
         assert entered.wait(5)
-        calls = graph.calls
-        with frame_reads_bounded_by(timeout_seconds=0.2):
-            waited = store.load(frame_ref=frame_ref)
-        reads_while_waiting = graph.calls - calls
+        token = _READER.set("waiter")
+        try:
+            with frame_reads_bounded_by(timeout_seconds=0.2):
+                waited = store.load(frame_ref=frame_ref)
+        finally:
+            _READER.reset(token)
         release.set()
         refreshed = refresh.result(timeout=5)
 
     assert waited is first
-    assert reads_while_waiting == 0
+    assert set(readers) == {"refresh"}
     assert refreshed.graph_generation == "gen-2"
     assert store.load(frame_ref=frame_ref) is refreshed
 
@@ -1320,6 +2009,48 @@ def test_load_cache_hit_skips_the_byte_fetch_but_still_rechecks_state():
     assert len(artifacts.calls) == artifact_calls_after_first
 
 
+def test_load_states_the_rendering_the_versions_linked_files_record_at_each_load():
+    """A cut file alone makes the version that rendering. A plain file linked later makes it
+    ambiguous, and the next load says so though the frame is cached."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    (stored_frame,) = snapshots.locations[key]
+    snapshots.locations[key] = [replace(stored_frame, rendering={"format": "frame1"})]
+    csv = {"format": "csv", "bundle": False}
+    snapshots.locations[key].append(
+        _location(
+            digest=digest,
+            tier=Tier.working.value,
+            media_type="text/csv",
+            rendering_key="cut",
+            rendering={**csv, "without_party_totals": True},
+        )
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    cut = store.load(frame_ref=frame_ref).rendering
+    snapshots.locations[key].append(
+        _location(
+            digest=digest,
+            tier=Tier.working.value,
+            media_type="text/csv",
+            rendering_key="plain",
+            rendering=csv,
+        )
+    )
+    ambiguous = store.load(frame_ref=frame_ref).rendering
+
+    minting = {"groupby": None, "without_party_totals": True}
+    assert cut == {
+        "base_content_version": frame_ref.content_version,
+        "minting": minting,
+        "ambiguous": False,
+        "collapsed": False,
+        "mintings": [minting],
+    }
+    assert ambiguous == {**cut, "ambiguous": True}
+
+
 def test_load_cache_hit_refuses_once_the_frame_is_revoked_after_the_first_load():
     snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
     store = _store(snapshots=snapshots, artifacts=artifacts)
@@ -1362,6 +2093,44 @@ def _graph_label_failure() -> _LabelFailure:
         graph.raise_for = frozenset()
 
     return store, frame_ref, recover, {"country/ETH": "Ethiopia"}
+
+
+_WHO_PROVENANCE_ARCS = {
+    "dc/base/WHO_GHO": {
+        "typeOf": ("Provenance",),
+        "name": ("WHO_GHO",),
+        "isPartOf": ("dc/d/WHO_GHO",),
+    },
+    "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("WHO Global Health Observatory",)},
+}
+
+
+def _with_withheld_provenance(snapshots: _FakeSnapshotReader, frame_ref: FrameRef) -> None:
+    """Give the fixture version a `withheld_by_registry` warning over `dc/base/WHO_GHO`."""
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    warning = {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": "Withheld.",
+        "withheld_members": {"count": 1, "refs": ["dcid:YouthRate"]},
+        "withheld_provenances": {"count": 1, "refs": ["dcid:dc/base/WHO_GHO"]},
+    }
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, warnings=[warning])
+    )
+
+
+def _provenance_name_failure() -> _LabelFailure:
+    """A store whose read of a withheld provenance's citation fails until `recover` runs."""
+    snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
+    _with_withheld_provenance(snapshots, frame_ref)
+    graph = _FakeGraphReader(arcs=_WHO_PROVENANCE_ARCS, raise_for=frozenset({"dc/base/WHO_GHO"}))
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    def recover() -> None:
+        graph.raise_for = frozenset()
+
+    return store, frame_ref, recover, {"dcid:dc/base/WHO_GHO": "WHO Global Health Observatory"}
 
 
 def _family_label_failure() -> _LabelFailure:
@@ -1412,6 +2181,7 @@ def _family_label_failure() -> _LabelFailure:
     "failure",
     [
         pytest.param(_graph_label_failure, id="graph-label-batch"),
+        pytest.param(_provenance_name_failure, id="withheld-provenance-citation"),
         pytest.param(_family_label_failure, id="spec-registry-unavailable"),
     ],
 )
@@ -1466,9 +2236,18 @@ def test_load_labels_unit_refs_under_their_own_cap_after_the_dimension_refs(monk
     }
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "columns": list(derive_columns(["recipient"])),
         "rows": [
-            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            [
+                "dcid:MalariaGrantDisbursements",
+                "country/ETH",
+                period,
+                1.0,
+                unit,
+                None,
+                "src_oecd_dac",
+                None,
+            ]
             for period, unit in units.items()
         ],
     }
@@ -1510,7 +2289,6 @@ def test_load_labels_unit_refs_under_their_own_cap_after_the_dimension_refs(monk
                 "Count_Person",
                 "MalariaGrantDisbursements",
                 "country/ETH",
-                "src_oecd_dac",
                 "USDollar",
                 "CurrencyEUR",
             ),
@@ -1560,9 +2338,18 @@ def test_load_labels_each_side_of_a_composed_unit(monkeypatch, caps, graph_refs,
     }
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "columns": list(derive_columns(["recipient"])),
         "rows": [
-            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            [
+                "dcid:MalariaGrantDisbursements",
+                "country/ETH",
+                period,
+                1.0,
+                unit,
+                None,
+                "src_oecd_dac",
+                None,
+            ]
             for period, unit in units.items()
         ],
     }
@@ -1692,6 +2479,9 @@ class _RecordReader:
 
 _COMPUTED_COLUMNS = ["stat_var", "recipient", "time_period", "value", "unit", "provenance"]
 
+# The columns every frame holds, beside its role columns.
+_FRAME_COLUMNS = frozenset(derive_columns(()))
+
 
 def _computed_frame_store(
     *,
@@ -1711,10 +2501,14 @@ def _computed_frame_store(
     `continuations`, over a graph that also names `graph_labels` and stamps `generation`'s
     token, on `clock`."""
     frame_ref = FrameRef(spec_id="ops_" + "a" * 32, content_version="ocv_" + "b" * 32)
+    # The stored document holds the derived column order, each column `columns` leaves out null.
+    derived = derive_columns([column for column in columns if column not in _FRAME_COLUMNS])
     doc = {
         "frame_version": "frame1",
-        "columns": columns,
-        "rows": rows,
+        "columns": list(derived),
+        "rows": [
+            [dict(zip(columns, row, strict=True)).get(column) for column in derived] for row in rows
+        ],
     }
     artifacts = _FakeArtifactStore()
     digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
@@ -1900,7 +2694,7 @@ def _quotient_of_inputs_store(
     [
         pytest.param(
             None,
-            ("Amount_Oda", "GNI", "country/ETH", "src_oecd_dac"),
+            ("Amount_Oda", "GNI", "country/ETH"),
             "Gross ODA to Ethiopia per gross national income to Ethiopia",
             id="every-ref-labelled",
         ),
@@ -2173,6 +2967,40 @@ def test_a_cached_frame_regroups_once_its_stored_continuations_arrive(
 
 
 @pytest.mark.parametrize(
+    ("raised", "failure"),
+    [
+        pytest.param(MemoryError(), FrameUnavailable, id="out-of-memory"),
+        pytest.param(TypeError("exemplar"), TypeError, id="defect"),
+    ],
+)
+def test_a_cached_frame_regroups_under_the_read_of_its_stored_cells(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception, failure: type[Exception]
+) -> None:
+    clock = _Clock()
+    store, frame_ref, _reader = _zambia_growth_store(clock=clock, continuations=None)
+    snapshots = cast("_FakeSnapshotReader", store._snapshots)
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    store.load(frame_ref=frame_ref)
+    version = snapshots.versions[key]
+    assert isinstance(version.facts, FrameLineage)
+    snapshots.versions[key] = dataclasses.replace(
+        version,
+        facts=dataclasses.replace(version.facts, continuations=[_ZAMBIA_CONTINUATION.as_entry()]),
+    )
+    clock.pass_recheck()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _raises(raised))
+
+    with pytest.raises(failure) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    (location, *_) = snapshots.locations[key]
+    if failure is FrameUnavailable:
+        assert excinfo.value.reason == "io"
+    else:
+        assert _logged_traceback_names(excinfo.value, location.artifact_digest)
+
+
+@pytest.mark.parametrize(
     ("continuations", "series_count"),
     [
         pytest.param(None, 2, id="recorded-before-continuations"),
@@ -2240,13 +3068,13 @@ def test_load_names_each_variable_of_a_join_of_two_quotients_from_the_step_that_
         "dcid:ops_per_person": "Gross ODA disbursements per population",
         "country/ETH": "Ethiopia",
     }
-    assert graph.node_arcs_many_calls[0] == ("country/ETH", "src_oecd_dac")
+    assert graph.node_arcs_many_calls[0] == ("country/ETH",)
 
 
 def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold():
     """A compare frame holds no entity column, so the label read takes the entities from the
     step's sides, and the variable reads in the order compare subtracts."""
-    rows: list[list[object]] = [["dcid:ops_difference", None, "2015", 1.0, None, "src_oecd_dac"]]
+    rows: list[list[object]] = [["dcid:ops_difference", "2015", 1.0, None, "src_oecd_dac"]]
     steps: list[dict[str, object]] = [
         _RETRIEVE_AID,
         {**_RETRIEVE_AID, "id": "s2"},
@@ -2263,6 +3091,7 @@ def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold(
     ]
     store, frame_ref, _, _ = _computed_frame_store(
         rows=rows,
+        columns=["stat_var", "time_period", "value", "unit", "provenance"],
         steps=steps,
         graph_labels={"country/GBR": "United Kingdom", "country/FRA": "France"},
     )
@@ -2284,7 +3113,7 @@ _STEPS_WITHOUT_STAT_VAR: list[dict[str, object]] = [
     [
         pytest.param(
             None,
-            ("Count_Person", "country/ETH", "src_oecd_dac", "USDollar"),
+            ("Count_Person", "country/ETH", "USDollar"),
             {
                 "dcid:Count_Person": "Total population",
                 f"dcid:{_FAMILY_ON_A_SIDE}": "Education",
@@ -2672,10 +3501,10 @@ def test_load_labels_a_family_ref_from_the_stored_definition_through_the_code_in
 
     assert resolved.labels == {f"dcid:{family_spec_id}": "Education, ODA Grants"}
     assert spec_reader.calls == [(family_spec_id,)]
-    # No graph node names a family -- `_resolve_labels` never sends the
-    # family ref itself to `node_arcs_many`, only the frame's other ref
-    # (its provenance column).
-    assert graph.node_arcs_many_calls == [("src_oecd_dac",)]
+    # No graph node names a family, so the graph reads only the frame's other ref, its
+    # provenance column, which the name read names.
+    assert graph.node_arcs_many_calls == []
+    assert [dcids for dcids, _, _ in graph.node_arc_targets_many_requests] == [("src_oecd_dac",)]
 
 
 def test_load_labels_a_family_ref_on_a_published_ops_frame():
@@ -3650,6 +4479,7 @@ def test_cache_evicts_oldest_insertion_once_over_the_byte_budget():
         artifacts=artifacts,
         graph=None,
         reference_writer=_FakeReferenceWriter(),
+        allowances=None,
         now=lambda: _NOW,
         cache_max_bytes=entry_bytes + entry_bytes // 2,
     )
@@ -3698,13 +4528,19 @@ class _FakeRecipeReader:
         self.recipes: dict[tuple[str, str], RecipeRecord] = {}
         self.reads = 0
 
-    def put(self, frame_ref: FrameRef, *, anchor: dict[str, object] | None) -> None:
+    def put(
+        self,
+        frame_ref: FrameRef,
+        *,
+        anchor: dict[str, object] | None,
+        roots: list[dict[str, object]] | None = None,
+    ) -> None:
         self.recipes[(frame_ref.spec_id, frame_ref.content_version)] = RecipeRecord(
             spec_id=frame_ref.spec_id,
             content_version=frame_ref.content_version,
             normal_form_hash="rnf_" + "1" * 32,
             replay_key="rpk_" + "2" * 32,
-            body={"schema_version": 1, "tree": {}, "roots": [], "anchor": anchor},
+            body={"schema_version": 1, "tree": {}, "roots": roots or [], "anchor": anchor},
         )
 
     def read_recipe(self, *, spec_id: str, content_version: str) -> RecipeRecord | None:
@@ -3822,14 +4658,17 @@ def test_load_reads_the_left_out_labels_again_after_a_failed_graph_read():
 
 
 @pytest.mark.parametrize(
-    ("anchor_recorded", "replay_key"),
-    [(True, "rpk_" + "2" * 32), (False, None)],
+    ("anchor_recorded", "replay_key", "rendering"),
+    [
+        (True, "rpk_" + "2" * 32, {"normal_form_hash": "rnf_" + "1" * 32}),
+        (False, None, None),
+    ],
     ids=["null-anchor", "no-recipe"],
 )
 def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reader(
-    anchor_recorded, replay_key
+    anchor_recorded, replay_key, rendering
 ):
-    """A recipe with a null anchor still names the frame's replay key."""
+    """A recipe with a null anchor still names the frame's replay key and its rendering."""
     snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
     recipes = _FakeRecipeReader()
     if anchor_recorded:
@@ -3840,7 +4679,7 @@ def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reade
     )
 
     assert store.load(frame_ref=frame_ref) == replace(
-        plain.load(frame_ref=frame_ref), replay_key=replay_key
+        plain.load(frame_ref=frame_ref), replay_key=replay_key, rendering=rendering
     )
 
 
@@ -3857,6 +4696,80 @@ def test_a_frame_cached_before_its_recipe_was_written_gains_the_anchor_without_a
 
     assert (before.anchor, after.anchor) == (None, RollingAnchor(period="2024", rule="half1"))
     assert artifacts.calls.count(("get", Tier.working, digest)) == fetches == 1
+
+
+_WDI_SOURCE = {
+    **_OECD_CITATION["sources"][0],
+    "ref": "dc/base/WorldDevelopmentIndicators",
+    "label": "World Development Indicators",
+    "url": "https://example.org/wdi",
+}
+
+
+def _derived_over_cited_roots() -> tuple[
+    _FakeSnapshotReader, _FakeArtifactStore, FrameRef, _FakeRecipeReader
+]:
+    """`_derived_over_a_root`, whose root version cites the frame's `src_oecd_dac` with its
+    licence type unset and a WDI source no row of the frame names, and a recipe reader that
+    holds no recipe yet."""
+    snapshots, artifacts, frame_ref, _, root_ref, _ = _derived_over_a_root()
+    oecd = {**_OECD_CITATION["sources"][0], "label": "Stored label", "license_type": None}
+    root = snapshots.versions[(root_ref.spec_id, root_ref.content_version)]
+    snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = replace(
+        root,
+        facts=replace(root.facts, citation={"text": "Root text.", "sources": [oecd, _WDI_SOURCE]}),
+    )
+    return snapshots, artifacts, frame_ref, _FakeRecipeReader()
+
+
+def _put_recipe_over_the_root(recipes: _FakeRecipeReader, frame_ref: FrameRef) -> None:
+    root_ref = malaria_ethiopia_frame_ref()
+    pair = {"spec_id": root_ref.spec_id, "content_version": root_ref.content_version}
+    recipes.put(frame_ref, anchor=None, roots=[{"dataset": pair, "options": {}}])
+
+
+def _cited(manifest: Mapping[str, object]) -> list[tuple[str, str, str | None]]:
+    citation = cast("Mapping[str, Any]", manifest["citation"])
+    return [
+        (source["ref"], source["label"], source["license_type"]) for source in citation["sources"]
+    ]
+
+
+def test_load_cites_a_derived_frame_with_its_recipe_roots_sources_filled_from_the_graph():
+    """The frame cites its root's two sources, as the derived manifest does, the root's WDI
+    source among them though no row names it; the stored label stands and the empty licence
+    type is filled from the graph."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    _put_recipe_over_the_root(recipes, frame_ref)
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert _cited(resolved.manifest) == [
+        ("src_oecd_dac", "Stored label", "license/cc_by_4"),
+        (_WDI_SOURCE["ref"], "World Development Indicators", "license/cc_by_4"),
+    ]
+    assert cast("Mapping[str, Any]", resolved.manifest["citation"])["text"] == "Root text."
+
+
+def test_a_derived_frame_cached_before_its_recipe_was_written_cites_its_roots_once_it_is():
+    """Before its recipe, the frame cites its provenance refs from the graph; the load that
+    first reads the recipe cites the roots' sources instead."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+    before = store.load(frame_ref=frame_ref)
+
+    _put_recipe_over_the_root(recipes, frame_ref)
+    after = store.load(frame_ref=frame_ref)
+
+    assert _cited(before.manifest) == [
+        ("src_oecd_dac", "OECD Creditor Reporting System", "license/cc_by_4")
+    ]
+    assert [ref for ref, _, _ in _cited(after.manifest)] == ["src_oecd_dac", _WDI_SOURCE["ref"]]
 
 
 def test_a_rolling_card_on_a_derived_frame_is_created_at_the_recipe_s_anchor():
@@ -3932,30 +4845,194 @@ def test_pin_promotes_working_and_writes_a_reference():
     assert key in reference_writer.records
 
 
-def test_pin_promotes_working_for_a_published_ops_frame():
-    """`write_component` (`assembler.write.write_component`) calls `pin()`
-    unconditionally on every create whose candidate resolved a frame,
-    including one resolved under a published `ops_`/`ocv_` pair. `pin()`
-    needs nothing an `ops_` pair lacks: the publish route gave it a real
-    `artifact_digest` and `tier` exactly like a definition mint's
-    `StoredArtifactLocation`, so this promotion sequence runs
-    unchanged."""
+def _derived_over_a_root() -> tuple[
+    _FakeSnapshotReader, _FakeArtifactStore, FrameRef, str, FrameRef, str
+]:
+    """A published `ops_` frame and the dataset frame its recipe's one root names, each with
+    its own working-tier artifact."""
     snapshots, artifacts, frame_ref, digest = _ops_happy_path_fixture()
+    root_ref = malaria_ethiopia_frame_ref()
+    root_digest = artifacts.seed(tier=Tier.working, data=_frame_bytes() + b"\n")
+    snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = _version(root_ref)
+    snapshots.locations[(root_ref.spec_id, root_ref.content_version)] = [
+        _location(digest=root_digest, tier=Tier.working.value)
+    ]
+    return snapshots, artifacts, frame_ref, digest, root_ref, root_digest
+
+
+def test_pin_of_a_derived_frame_pins_the_root_versions_its_recipe_names():
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _FakeRecipeReader()
+    recipes.put(
+        frame_ref,
+        anchor=None,
+        roots=[
+            {
+                "frame": {"spec_id": "spec_analysis_side", "content_version": "cv_other"},
+                "dataset": {
+                    "spec_id": root_ref.spec_id,
+                    "content_version": root_ref.content_version,
+                },
+            }
+        ],
+    )
     reference_writer = _FakeReferenceWriter()
-    store = _store(snapshots=snapshots, artifacts=artifacts, reference_writer=reference_writer)
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    assert store.pin(frame_ref=frame_ref, component_id="cmp_test") is True
+
+    assert {(Tier.pinned, digest), (Tier.pinned, root_digest)} <= set(artifacts.objects)
+    assert {
+        (key[2], key[3]) for key in reference_writer.records if key[0] == "presentation:cmp_test"
+    } == {
+        (frame_ref.spec_id, frame_ref.content_version),
+        (root_ref.spec_id, root_ref.content_version),
+    }
+
+
+def _recipe_naming(root_ref: FrameRef) -> list[dict[str, object]]:
+    return [
+        {
+            "frame": {"spec_id": "spec_analysis_side", "content_version": "cv_other"},
+            "dataset": {"spec_id": root_ref.spec_id, "content_version": root_ref.content_version},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("recipe_roots", "reason"),
+    [
+        (None, "recipe_unreadable"),
+        ([{"frame": {"spec_id": "spec_x", "content_version": "cv_x"}}], "recipe_unreadable"),
+        ([], "recipe_pending"),
+    ],
+    ids=["no-recipe-reader", "root-without-dataset", "no-recipe-yet"],
+)
+def test_pin_of_a_derived_frame_whose_roots_cannot_be_named_refuses_and_pins_nothing(
+    recipe_roots, reason
+):
+    snapshots, artifacts, frame_ref, digest, _, _ = _derived_over_a_root()
+    recipes = None
+    if recipe_roots is not None:
+        recipes = _FakeRecipeReader()
+        if recipe_roots:
+            recipes.put(frame_ref, anchor=None, roots=recipe_roots)
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+    assert excinfo.value.reason == reason
+    assert (Tier.pinned, digest) not in artifacts.objects
+    assert reference_writer.records == {}
+
+
+def test_pin_of_a_derived_frame_with_no_recipe_whose_bytes_are_pinned_still_refuses():
+    """Another pair holding the same bytes pinned them, and no reference names this pair, so
+    its recipe may still be on its way."""
+    snapshots, artifacts, frame_ref, digest, _, _ = _derived_over_a_root()
+    artifacts.seed(tier=Tier.pinned, data=artifacts.objects[(Tier.working, digest)])
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    snapshots.locations[key] = [_location(digest=digest, tier=Tier.pinned.value)]
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=_FakeRecipeReader(),
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+    assert excinfo.value.reason == "recipe_pending"
+    assert reference_writer.records == {}
+
+
+class _RecipeWrittenAfterFirstRead(_FakeRecipeReader):
+    """Answers no recipe on its first read and the stored one after, as a recipe write
+    landing between two reads would."""
+
+    def read_recipe(self, *, spec_id: str, content_version: str) -> RecipeRecord | None:
+        first = self.reads == 0
+        recipe = super().read_recipe(spec_id=spec_id, content_version=content_version)
+        return None if first else recipe
+
+
+def test_pin_of_a_referenced_derived_frame_whose_recipe_lands_meanwhile_pins_its_roots():
+    """A reference names the frame, and its recipe is written after the first read, so the
+    second read names the root."""
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _RecipeWrittenAfterFirstRead()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    reference_writer = _FakeReferenceWriter()
+    reference_writer.records[
+        (
+            "presentation:cmp_earlier",
+            digest,
+            frame_ref.spec_id,
+            frame_ref.content_version,
+            PRESENTATION_PIN_REFERENCE_KIND,
+        )
+    ] = _NOW
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
 
     store.pin(frame_ref=frame_ref, component_id="cmp_test")
 
-    assert ("copy", Tier.working, digest) in artifacts.calls
-    assert (Tier.pinned, digest) in artifacts.objects
-    key = (
-        "presentation:cmp_test",
-        digest,
-        frame_ref.spec_id,
-        frame_ref.content_version,
-        PRESENTATION_PIN_REFERENCE_KIND,
+    assert (Tier.pinned, root_digest) in artifacts.objects
+
+
+def _root_aged_out(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:
+    key = (root_ref.spec_id, root_ref.content_version)
+    snapshots.locations[key] = [
+        dataclasses.replace(location, stored_at=_NOW - timedelta(days=31))
+        for location in snapshots.locations[key]
+    ]
+
+
+def _root_revoked(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:
+    snapshots.revocations[(root_ref.spec_id, root_ref.content_version)] = Revocation(
+        reason="takedown", revoked_at=_NOW
     )
-    assert key in reference_writer.records
+
+
+@pytest.mark.parametrize("lapse", [_root_aged_out, _root_revoked], ids=["expired", "revoked"])
+def test_pin_of_a_derived_frame_pins_the_frame_when_a_root_is_no_longer_held(lapse):
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    lapse(snapshots, root_ref)
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    assert store.pin(frame_ref=frame_ref, component_id="cmp_test") is True
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert (Tier.pinned, root_digest) not in artifacts.objects
+    assert {(key[2], key[3]) for key in reference_writer.records} == {
+        (frame_ref.spec_id, frame_ref.content_version)
+    }
 
 
 def test_pin_maps_a_copy_write_failure_to_frame_unavailable_io():
@@ -4057,6 +5134,154 @@ def test_pin_maps_a_write_time_refusal_to_frame_unavailable(
 
     assert excinfo.value.reason == reason
     assert reference_writer.records == {}
+
+
+_OPEN_CALLER = Caller(kind="address", key="ip:" + "0" * 32)
+
+
+def _ledger(**limits: int) -> LiveAllowanceLedger:
+    """A ledger over a fresh store, 500 of each pin kind unless `limits` names it."""
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={
+            kind: limits.get(kind.value, 500)
+            for kind in (AllowanceKind.pin_budget, AllowanceKind.open_pin_budget, AllowanceKind.pin)
+        },
+    )
+
+
+def _units(ledger: LiveAllowanceLedger) -> dict[tuple[str, str], int]:
+    """Each `(key, kind)` the ledger holds a count for, with the count."""
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
+    return {
+        (cast(str, row["caller_key"]), cast(str, row["kind"])): cast(int, row["count"])
+        for row in rows
+    }
+
+
+def _derived_store(ledger: LiveAllowanceLedger):
+    """A store spending from `ledger` over a derived frame and its one root, both working-tier,
+    with `_derived_over_a_root`'s fixtures."""
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, recipe_reader=recipes, allowances=ledger
+    )
+    return store, snapshots, artifacts, frame_ref, digest, root_ref, root_digest
+
+
+def _set_of_units(caller: Caller | None, count: int) -> dict[tuple[str, str], int]:
+    units = {(BUDGET_KEY, AllowanceKind.pin_budget.value): count}
+    if caller is not None:
+        units[(BUDGET_KEY, AllowanceKind.open_pin_budget.value)] = count
+        units[(caller.key, AllowanceKind.pin.value)] = count
+    return units
+
+
+@pytest.mark.parametrize("caller", [_OPEN_CALLER, None], ids=["open-caller", "no-caller"])
+@pytest.mark.parametrize("reads_pinned", [True, False], ids=["reads-pinned", "races-to-a-copy"])
+def test_pin_spends_one_set_of_units_per_new_copy_and_none_for_a_frame_already_pinned(
+    caller: Caller | None, reads_pinned: bool
+):
+    """The derived frame and its root are two new copies. A second pin spends nothing, whether
+    it reads both pinned or still reads them working and finds the pinned bytes made."""
+    ledger = _ledger()
+    store, snapshots, _, frame_ref, _, root_ref, _ = _derived_store(ledger)
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=caller)
+    assert _units(ledger) == _set_of_units(caller, 2)
+    if reads_pinned:
+        for ref in (frame_ref, root_ref):
+            key = (ref.spec_id, ref.content_version)
+            snapshots.locations[key] = [
+                dataclasses.replace(location, tier=Tier.pinned.value)
+                for location in snapshots.locations[key]
+            ]
+    store.pin(frame_ref=frame_ref, component_id="cmp_b", caller=caller)
+
+    assert _units(ledger) == _set_of_units(caller, 2)
+
+
+@pytest.mark.parametrize(
+    ("limit", "refusal"),
+    [
+        ("pin", AllowanceExhausted),
+        ("open_pin_budget", OpenPinBudgetExhausted),
+        ("pin_budget", PinBudgetExhausted),
+    ],
+)
+def test_pin_refuses_at_the_root_a_spent_budget_stops_and_the_frames_copy_keeps_its_units(
+    limit: str, refusal: type[Exception]
+):
+    ledger = _ledger(**{limit: 1})
+    store, _, artifacts, frame_ref, digest, _, root_digest = _derived_store(ledger)
+
+    with pytest.raises(refusal):
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert (Tier.pinned, root_digest) not in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_keeps_the_units_of_a_copy_whose_reference_write_then_fails():
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    ledger = _ledger()
+    reference_writer = _FakeReferenceWriter(
+        revoked={(frame_ref.spec_id, frame_ref.content_version)}
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        allowances=ledger,
+    )
+
+    with pytest.raises(FrameUnavailable):
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_keeps_one_set_of_units_when_a_copy_lands_and_raises():
+    """The first attempt's bytes stand, so it keeps its units, and the retry gives its own back."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    copy = artifacts.copy
+    left = [ArtifactInventoryError(digest=digest)]
+
+    def landed_and_raised(*args, **kwargs):
+        copied = copy(*args, **kwargs)
+        if left:
+            raise left.pop()
+        return copied
+
+    artifacts.copy = landed_and_raised
+    ledger = _ledger()
+    store = _store(snapshots=snapshots, artifacts=artifacts, allowances=ledger)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+    assert excinfo.value.reason == "io"
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_gives_back_the_units_of_a_copy_whose_working_bytes_are_gone():
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    del artifacts.objects[(Tier.working, digest)]
+    ledger = _ledger()
+    store = _store(snapshots=snapshots, artifacts=artifacts, allowances=ledger)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert excinfo.value.reason == "expired"
+    assert _units(ledger) == {}
 
 
 def test_pin_refuses_a_collapsed_frame_whose_base_version_is_revoked():

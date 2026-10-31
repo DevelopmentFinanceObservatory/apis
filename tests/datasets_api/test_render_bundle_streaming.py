@@ -11,9 +11,9 @@ from datasets_api.manifest_models import CitationSource
 from datasets_api.mint_models import MintOptions
 from datasets_api.render import render_and_store
 from materialise.enrichment import EnrichmentLookup
-from materialise.reshape import Table
 
 from ._artifact_doubles import FakeArtifactStore
+from ._frame_chunks import frame_of_rows
 from ._graph_doubles import FakeMintGraphReader
 from ._render_inputs import PREPARED_AT, SITE
 
@@ -24,7 +24,7 @@ _ROWS = (
     (_STAT_VAR, "country/KEN", "2015", 1000.0, "USD"),
     (_STAT_VAR, "country/TGO", "2016", 2500.5, "USD"),
 )
-_TABLE = Table(columns=_COLUMNS, rows=_ROWS)
+_TABLE = frame_of_rows(_COLUMNS, _ROWS)
 
 
 def _mint_bundle(
@@ -49,7 +49,6 @@ def _mint_bundle(
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )
@@ -91,7 +90,6 @@ def test_bundle_zip_streamed_via_open_put_is_a_valid_archive_with_the_expected_m
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )

@@ -17,8 +17,11 @@ from dfo_spec_kit.registry import REGISTRY
 import datasets_api.app  # noqa: F401 -- imports every door module, so every refusal class loads
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
+from datasets_api.doors.analysis import RunningAnalyses, build_analysis_door
 from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES, build_definition_door
+from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
+from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.files import build_files_door
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.mint import build_mint_door
@@ -33,9 +36,10 @@ from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import classify_operation_store_exception
 from datasets_api.store_errors import classify_store_exception
 from dfo_platform.codes import bound_registry_endpoint, registered_status
-from dfo_platform.doors import DoorContribution, combine_classifiers
+from dfo_platform.doors import DoorContribution, combine_classifiers, route_keys
 from dfo_platform.problem import Refusal
 from spec_registry import IdentityQuarantined
+from tests.code_registry import problem_statuses
 
 # The registry endpoints each door's routes serve.
 _ENDPOINTS = {
@@ -44,6 +48,9 @@ _ENDPOINTS = {
     "mint": ("datasets.mint",),
     "definition": ("datasets.definition", "datasets.options", "datasets.members"),
     "refresh": ("datasets.refresh",),
+    "analysis": ("datasets.analysis",),
+    "derived": ("datasets.snapshot",),
+    "derived_files": ("datasets.files",),
     "recipe": ("datasets.recipe",),
     "snapshot": ("datasets.snapshot",),
     "versions": ("datasets.snapshot",),
@@ -52,6 +59,8 @@ _ENDPOINTS = {
     "observations": ("datasets.observations",),
     "pin": ("datasets.pin",),
     "publish": ("datasets.publish",),
+    "exports": ("datasets.exports",),
+    "export_link": ("datasets.export_link",),
 }
 
 # Refusal classes only another surface raises, as Search's subclasses of materialise refusals.
@@ -68,6 +77,9 @@ def doors() -> dict[str, DoorContribution]:
         "mint": build_mint_door(deps=cell),
         "definition": build_definition_door(deps=cell),
         "refresh": build_refresh_door(deps=cell, settings=settings),
+        "analysis": build_analysis_door(deps=cell, running=RunningAnalyses()),
+        "derived": build_derived_door(deps=cell),
+        "derived_files": build_derived_files_door(deps=cell),
         "recipe": build_recipe_door(deps=cell, settings=settings),
         "snapshot": build_snapshot_door(deps=cell),
         "versions": build_versions_door(deps=cell),
@@ -76,6 +88,8 @@ def doors() -> dict[str, DoorContribution]:
         "observations": build_observations_door(deps=cell),
         "pin": build_pin_door(deps=cell, settings=settings),
         "publish": build_publish_door(deps=cell, settings=settings),
+        "exports": build_exports_door(deps=cell, settings=settings),
+        "export_link": build_export_link_door(deps=cell),
     }
 
 
@@ -84,18 +98,6 @@ def _subclasses(cls: type) -> set[type]:
     for sub in cls.__subclasses__():
         found |= {sub, *_subclasses(sub)}
     return found
-
-
-def _statuses(code: str, endpoint: str) -> set[int]:
-    """The statuses the registry gives `code` on `endpoint`'s problem details."""
-    entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
-    return {
-        mapping.http_status
-        for mapping in (entry.mappings if entry is not None else ())
-        if mapping.endpoint == endpoint
-        and mapping.channel == "problem_details"
-        and mapping.http_status is not None
-    }
 
 
 def _inventories(doors: dict[str, DoorContribution]) -> dict[str, dict[str, tuple[type, ...]]]:
@@ -132,7 +134,7 @@ def test_every_declared_refusal_has_a_registered_status_on_each_endpoint_raising
         (cls.code, endpoint)
         for cls, endpoints in _raised(doors).items()
         for endpoint in endpoints
-        if not _statuses(cls.code, endpoint)
+        if not problem_statuses(cls.code, endpoint)
     }
     assert sorted(missing) == []
 
@@ -145,7 +147,7 @@ def test_every_declared_refusal_code_has_one_status_on_each_endpoint_declaring_i
         (cls.code, endpoint)
         for cls, endpoints in _raised(doors).items()
         for endpoint in endpoints
-        if len(_statuses(cls.code, endpoint)) > 1
+        if len(problem_statuses(cls.code, endpoint)) > 1
     }
     assert sorted(ambiguous) == []
     unresolved = []
@@ -176,13 +178,11 @@ def test_every_datasets_route_binds_the_registry_endpoint_its_door_serves(doors)
     for name, door in doors.items():
         declared = set(door.registry_endpoints.values())
         assert declared == set(_ENDPOINTS[name]), name
-        routed = {getattr(route, "path", None) for route in door.router.routes}
-        assert set(door.registry_endpoints) <= routed, name
+        assert set(door.registry_endpoints) <= route_keys(door.router), name
     assert all(
-        getattr(route, "path", None) in door.registry_endpoints
+        route_keys(door.router) == set(door.registry_endpoints)
         for name, door in doors.items()
         if name != "meta"
-        for route in door.router.routes
     )
 
 
@@ -218,7 +218,7 @@ def test_every_refusal_exemplar_goes_out_at_its_registered_status(doors):
     disagreements = {
         (code, endpoint, status)
         for code, endpoint, status in sent
-        if _statuses(code, endpoint) != {status}
+        if problem_statuses(code, endpoint) != {status}
     }
     assert sorted(disagreements) == []
 
@@ -279,6 +279,6 @@ def test_every_exemplar_a_route_raises_maps_on_its_endpoint_under_the_surface_cl
                     except LookupError:
                         unmapped.add((type(exemplar).__qualname__, endpoint))
                         continue
-                if spec is not None and _statuses(spec.code, endpoint) != {spec.status}:
+                if spec is not None and problem_statuses(spec.code, endpoint) != {spec.status}:
                     unmapped.add((type(exemplar).__qualname__, endpoint))
     assert sorted(unmapped) == []

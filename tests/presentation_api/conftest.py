@@ -18,8 +18,14 @@ from assembler.testing import (
     malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
+from datasets_api.door_executor import build_door_executor
 from dfo_platform.app import create_app
+from dfo_platform.doors import DoorContribution
 from presentation_api.app import presentation_surface
+from presentation_api.doors.components import build_components_door
+from presentation_api.doors.frames import build_frames_door
+from presentation_api.doors.shares import build_shares_door
+from presentation_api.newest_frames import NewestPending
 from tests.spec_kit_bundle import require_catalogue_dir
 
 
@@ -58,6 +64,28 @@ def release_registry(release: CatalogueRelease) -> FakeReleaseRegistry:
 
 
 @pytest.fixture
+def doors(release_registry: FakeReleaseRegistry) -> tuple[DoorContribution, ...]:
+    """The doors whose routes refuse, as `presentation_surface` builds them."""
+    reads = build_door_executor(1, "test-frames-bare", surface="presentation")
+    return (
+        build_components_door(release_registry=release_registry, bare_reads=reads),
+        build_frames_door(bare_reads=reads),
+        build_shares_door(release_registry=release_registry),
+    )
+
+
+@pytest.fixture
+def door_refusals(doors: tuple[DoorContribution, ...]) -> list[tuple[str, BaseException]]:
+    """Each refusal a door declares, with the endpoint whose routes raise it."""
+    return [
+        (endpoint, exemplar)
+        for door in doors
+        for endpoint, exemplars in door.endpoint_exemplars.items()
+        for exemplar in exemplars
+    ]
+
+
+@pytest.fixture
 def app(
     frame_store: FakeFrameStore,
     revision_store: FakeRevisionStore,
@@ -72,6 +100,52 @@ def app(
 @pytest.fixture
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client
+
+
+BARE_SPEC_ID = "spec_" + "c" * 32
+"""A dataset id a bare `frame_ref` names, which `FakeNewestSpecs` resolves by default to the
+malaria frame under its own served id."""
+
+
+class FakeNewestSpecs:
+    """`NewestFrames` resolving bare dataset ids: `answer` is the frame every id resolves to, a
+    `NewestPending`, or an exception to raise. Records every id asked about."""
+
+    def __init__(self) -> None:
+        self.answer: FrameRef | NewestPending | Exception = malaria_ethiopia_frame_ref()
+        self.asked: list[str] = []
+
+    def newest(self, frame: FrameRef, *, rendering: object) -> FrameRef:
+        raise AssertionError("no live share slot is checked here")
+
+    def newest_of_spec(self, spec_id: str) -> FrameRef | NewestPending:
+        self.asked.append(spec_id)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+@pytest.fixture
+def newest_specs() -> FakeNewestSpecs:
+    return FakeNewestSpecs()
+
+
+@pytest.fixture
+def newest_client(
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    newest_specs: FakeNewestSpecs,
+) -> Iterator[TestClient]:
+    """A client of a surface that resolves bare dataset ids through `newest_specs`."""
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        newest_frames=newest_specs,
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as test_client:
         yield test_client
 
 

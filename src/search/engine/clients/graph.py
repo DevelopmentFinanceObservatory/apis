@@ -11,7 +11,8 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import dataclasses
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import StrEnum
@@ -20,12 +21,13 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import pydantic
 
 from code_index.query import CodeIndex, IndexFamily
+from code_index.scope_conventions import BasisMeasure
 from code_index.shared import get_index, per_index
 from code_index.types import StatVarRow
-from dc_graph import Facet, FacetDefaultPolicy
+from dc_graph import ArcTarget, Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
-from search.scope.basis import sibling_measures
+from search.scope.basis import CONVENTION_DATASETS, names_a_basis, sibling_measures
 from statvar_members import FiveTuple
 
 if TYPE_CHECKING:
@@ -267,22 +269,15 @@ def with_rival_families(
                         rival=True,
                     )
                 )
-    for sibling, sources in _basis_siblings(recalled, index=index):
-        if id(sibling) in held:
-            continue
-        row = _broadest_admitted_row(sibling, catalogue=catalogue, index=index)
-        if row is not None:
-            held.add(id(sibling))
-            rivals.append(
-                DetectedSV(
-                    dcid=row.dcid,
-                    score=max(best[source.five_tuple] for source in sources),
-                    type_of="StatisticalVariable",
-                    sentence=None,
-                    rival=True,
-                    basis_of=frozenset(family_ref(source) for source in sources),
-                )
-            )
+    rivals.extend(
+        _sibling_rows(
+            _basis_siblings(recalled, index=index),
+            best,
+            held,
+            catalogue=catalogue,
+            index=index,
+        )
+    )
     if not rivals:
         return tuple(hits)
     return tuple(sorted((*hits, *rivals), key=lambda c: c.score, reverse=True))
@@ -303,16 +298,107 @@ def family_ref(family: IndexFamily) -> str:
     return family.rows[0].dcid
 
 
+def with_entry_basis_siblings(
+    hits: Sequence[DetectedSV],
+    *,
+    measure: BasisMeasure,
+    catalogue: Catalogue,
+    index: CodeIndex,
+) -> tuple[DetectedSV, ...]:
+    """`hits`, a part's recall hits, and a row of each family measuring `measure`, the basis
+    the part's stated or carried scope entry names (`scope.basis.entry_measure`), that they
+    leave out (`_basis_siblings`), in descending score. A follow-up asking for "ODA" with
+    commitments carried recalls DAC2a's receipts alone, and the CRS alone publishes
+    commitments to a recipient. A row added here is marked as recall marks a convention
+    basis (`with_rival_families`): `DetectedSV.rival`, `DetectedSV.basis_of` the families it
+    measures another basis of, and their best score. `hits` as they are when it adds none."""
+    recalled: list[IndexFamily] = []
+    best: dict[FiveTuple, float] = {}
+    held: set[int] = set()
+    for hit in hits:
+        family = index.family_by_dcid.get(hit.dcid)
+        if family is None:
+            continue
+        if id(family) not in held:
+            recalled.append(family)
+            held.add(id(family))
+        best[family.five_tuple] = max(best.get(family.five_tuple, hit.score), hit.score)
+    siblings = _basis_siblings(recalled, index=index, measure=measure)
+    rows = _sibling_rows(siblings, best, held, catalogue=catalogue, index=index)
+    if not rows:
+        return tuple(hits)
+    return tuple(sorted((*hits, *rows), key=lambda c: c.score, reverse=True))
+
+
+def _sibling_rows(
+    siblings: Sequence[tuple[IndexFamily, list[IndexFamily]]],
+    best: Mapping[FiveTuple, float],
+    held: set[int],
+    *,
+    catalogue: Catalogue,
+    index: CodeIndex,
+) -> list[DetectedSV]:
+    """A row of each of `siblings` not yet `held` (`_broadest_admitted_row`), naming the
+    recalled families it is a sibling of and taking their best score (`best`). Adds each
+    family it rows to `held`."""
+    rows: list[DetectedSV] = []
+    for sibling, sources in siblings:
+        if id(sibling) in held:
+            continue
+        row = _broadest_admitted_row(sibling, catalogue=catalogue, index=index)
+        if row is not None:
+            held.add(id(sibling))
+            rows.append(
+                DetectedSV(
+                    dcid=row.dcid,
+                    score=max(best[source.five_tuple] for source in sources),
+                    type_of="StatisticalVariable",
+                    sentence=None,
+                    rival=True,
+                    basis_of=frozenset(family_ref(source) for source in sources),
+                )
+            )
+    return rows
+
+
 def _basis_siblings(
-    recalled: Sequence[IndexFamily], *, index: CodeIndex
+    recalled: Sequence[IndexFamily], *, index: CodeIndex, measure: BasisMeasure | None = None
 ) -> list[tuple[IndexFamily, list[IndexFamily]]]:
-    """The families measuring a convention basis that `recalled`, the families among the
-    hits, leave out, each with the recalled families it is a sibling of
-    (`with_rival_families`), in recalled order and each once."""
+    """The families measuring another basis that `recalled`, the families among the hits,
+    leave out, each with the recalled families it is a sibling of, in recalled order and
+    each once (`_sibling_targets`): with no `measure`, each convention basis of a recalled
+    family's dataset (`with_rival_families`), and with one, `measure` itself
+    (`with_entry_basis_siblings`)."""
     measured = {(dataset, family.five_tuple) for family in recalled for dataset in family.datasets}
     found: dict[int, tuple[IndexFamily, list[IndexFamily]]] = {}
     for family in recalled:
-        five_tuple = family.five_tuple
+        for sibling, datasets in _sibling_targets(family, measured, measure):
+            for candidate in index.families_by_five_tuple.get(sibling, ()):
+                if not any(dataset in datasets for dataset in candidate.datasets):
+                    continue
+                sources = found.setdefault(id(candidate), (candidate, []))[1]
+                if all(source is not family for source in sources):
+                    sources.append(family)
+    return list(found.values())
+
+
+def _sibling_targets(
+    family: IndexFamily,
+    measured: AbstractSet[tuple[str, FiveTuple]],
+    measure: BasisMeasure | None,
+) -> Iterator[tuple[FiveTuple, AbstractSet[str]]]:
+    """Each five-tuple measuring another basis of `family`'s on its statistic, qualifier
+    and denominator, with the datasets a sibling family of it must be published by: those
+    of which no recalled family measures it (`measured`, by dataset and five-tuple).
+
+    With no `measure`, the convention bases of each of `family`'s datasets
+    (`scope.basis.sibling_measures`), from that dataset. With `measure`, that basis, from
+    every dataset the conventions read (`scope.basis.CONVENTION_DATASETS`), since a basis is
+    often published by another table alone: a recalled DAC1 total of commitments serves no
+    part naming a recipient, which the CRS's commitments do. A family no convention reads
+    has none, so a recalled DAC2b family keeps its own table."""
+    five_tuple = family.five_tuple
+    if measure is None:
         for dataset in family.datasets:
             for population_type, measured_property in sibling_measures(
                 five_tuple.population_type, five_tuple.measured_property, dataset
@@ -322,15 +408,20 @@ def _basis_siblings(
                     population_type=population_type,
                     measured_property=measured_property,
                 )
-                if (dataset, sibling) in measured:
-                    continue
-                for candidate in index.families_by_five_tuple.get(sibling, ()):
-                    if dataset not in candidate.datasets:
-                        continue
-                    sources = found.setdefault(id(candidate), (candidate, []))[1]
-                    if all(source is not family for source in sources):
-                        sources.append(family)
-    return list(found.values())
+                if (dataset, sibling) not in measured:
+                    yield sibling, frozenset((dataset,))
+        return
+    if CONVENTION_DATASETS.isdisjoint(family.datasets) or not names_a_basis(
+        five_tuple.population_type, five_tuple.measured_property
+    ):
+        return
+    sibling = dataclasses.replace(
+        five_tuple,
+        population_type=measure.population_type,
+        measured_property=measure.measured_property,
+    )
+    if sibling != five_tuple:
+        yield sibling, frozenset(d for d in CONVENTION_DATASETS if (d, sibling) not in measured)
 
 
 def recall_hits(
@@ -487,6 +578,19 @@ class EngineGraphClient(Protocol):
         requested property to a tuple, with ``()`` for a missing arc. Raise
         ``GraphInfraError`` on transport or HTTP failure, or when a dcid remains omitted
         after an individual retry.
+        """
+        ...
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Fetch named out-arcs for each dcid with each target's name and types
+        (``dc_graph.GraphClient.node_arc_targets_many``). Missing nodes map to ``None``.
+        Transport or HTTP failures raise ``GraphInfraError``.
         """
         ...
 

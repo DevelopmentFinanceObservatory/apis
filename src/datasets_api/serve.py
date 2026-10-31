@@ -84,12 +84,15 @@ from datasets_api.adapter import (
 )
 from datasets_api.admission import MaterialisePermits, bounded_materialise_slot
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.manifest import (
     assemble_manifest,
     collapsed_citation,
+    collapsed_head_manifest,
     coverage_facts_of,
     definition_version_record,
     healed_citation,
+    manifest_output_options,
     persisted_manifest,
     provenance_refs_of,
     reshape_warning_models,
@@ -330,7 +333,7 @@ def persisted_response(
     persisted: StoredVersion,
     locations: Sequence[StoredArtifactLocation],
     served: Manifest,
-    call_warnings: Sequence[WarningModel],
+    reshape_warnings: Sequence[WarningModel],
     now: datetime,
     enrichment_digest: str | None,
 ) -> Manifest:
@@ -346,7 +349,7 @@ def persisted_response(
     `enrichment_digest` is `with_linked_artifacts`'s.
     """
     return with_linked_artifacts(
-        persisted_manifest(stored=persisted, served=served, call_warnings=call_warnings),
+        persisted_manifest(stored=persisted, served=served, reshape_warnings=reshape_warnings),
         subject_id=subject_id,
         locations=locations,
         now=now,
@@ -511,7 +514,8 @@ class DefinitionPrewrite:
     # version is not yet on record. The write half builds every manifest from this map.
     source_citations: Mapping[str, SourceCitation]
     # `datasets_api.origin`'s `withheld_by_registry` and `un_system_unavailable` warnings for this
-    # call, found once here and joined to every manifest the write half builds.
+    # call, found once here and joined to every manifest the write half builds. Empty when the
+    # version is on record, whose stored warnings every response serves.
     origin_warnings: tuple[WarningModel, ...]
     # The provenance refs this call's rows carry (`provenance_refs_of`): a composite's own.
     provenance_refs: list[str]
@@ -569,6 +573,22 @@ class _OriginFindings:
     gaps: tuple[OriginGap, ...]
 
 
+_NO_ORIGIN_FINDINGS = _OriginFindings(warnings=(), gaps=())
+
+
+@dataclass(frozen=True)
+class _ComponentRun:
+    """What `_origin_findings` reads of one composite component's materialisation, kept until
+    the call knows whether its version is on record. The run's frame is not kept."""
+
+    identity: Mapping[str, object]
+    requests: Sequence[MaterialisationRequest]
+    probe_empty: bool
+    coverage: Coverage
+    default_scope: tuple[str, ...]
+    un_blocked: UnBlockedPlaces
+
+
 def _materialise_scoped(
     requests: Sequence[MaterialisationRequest],
     *,
@@ -624,22 +644,24 @@ def _materialise_scoped(
 
 def _origin_findings(
     requests: Sequence[MaterialisationRequest],
-    result: MaterialisationResult,
     *,
+    probe_empty: bool,
+    coverage: Coverage,
+    default_scope: Sequence[str],
     un_blocked: UnBlockedPlaces,
     graph: GraphReader,
     deadline: float | None,
 ) -> _OriginFindings:
-    """The withheld and UN-unavailable findings of `result`'s reads, made under the read
-    scope in context. An empty probe's withheld re-read was made by
-    `refuse_unserved_empty_probe`."""
+    """The withheld and UN-unavailable findings of a materialisation's reads, from its
+    `probe_empty`, `coverage` and `default_scope`, made under the read scope in context. An
+    empty probe's withheld re-read was made by `refuse_unserved_empty_probe`."""
     withheld = (
         None
-        if result.probe_empty
+        if probe_empty
         else withheld_finding(
             graph,
-            [(request, result.coverage) for request in requests],
-            default_scope=result.default_scope,
+            [(request, coverage) for request in requests],
+            default_scope=default_scope,
             deadline=deadline,
         )
     )
@@ -661,18 +683,18 @@ def _materialise_components(
     enrichment: EnrichmentLookup,
     deadline: float | None,
     coverage_index: CoverageIndex | None,
-) -> tuple[MaterialisationResult, _OriginFindings]:
-    """A composite's result: each component's requests materialised under the component
-    identity's pinned provenances (`adapter.pinned_provenance_scope`), in declaration order,
-    sharing `ceiling`, then composed into one frame
+) -> tuple[MaterialisationResult, tuple[_ComponentRun, ...]]:
+    """A composite's result and its component runs: each component's requests materialised
+    under the component identity's pinned provenances (`adapter.pinned_provenance_scope`), in
+    declaration order, sharing `ceiling`, then composed into one frame
     (`materialise.composite.compose_components`), whose rows, zero rows included, must fit
     `ceiling` (`materialise.ceiling.check_ceiling`). Each run gets the rows the runs before
     it keep: a stacked composite keeps the rows in the years every component's table covers
-    in `coverage_index` (`materialise.composite.stacked_years`), read before any run. Each
-    component's origin findings are read under its own scope. A component no request names,
-    a spliced one whose periods the window does not reach, is left out. Raises
-    `MaterialisationUsageError` without `coverage_index`, which a composite's years are read
-    from."""
+    in `coverage_index` (`materialise.composite.stacked_years`), read before any run. A run's
+    origin findings are read only for a version not on record (`_component_findings`). A
+    component no request names, a spliced one whose periods the window does not reach, is
+    left out. Raises `MaterialisationUsageError` without `coverage_index`, which a composite's
+    years are read from."""
     if coverage_index is None:
         raise MaterialisationUsageError(
             "a composite reads its components' years from the coverage snapshot"
@@ -685,8 +707,7 @@ def _materialise_components(
     }
     kept = stacked_years(covered.values()) if composite.kind == "stacked" else None
     results: list[ComponentResult] = []
-    warnings: list[WarningModel] = []
-    gaps: list[OriginGap] = []
+    runs: list[_ComponentRun] = []
     remaining = ceiling
     seconds = 0.0
     for component in components:
@@ -695,14 +716,19 @@ def _materialise_components(
             continue
         with pinned_provenance_scope(component.identity):
             result, un_blocked = materialise(part, ceiling=remaining, precomputed_probe=None)
-            findings = _origin_findings(
-                part, result, un_blocked=un_blocked, graph=graph, deadline=deadline
+        runs.append(
+            _ComponentRun(
+                identity=component.identity,
+                requests=part,
+                probe_empty=result.probe_empty,
+                coverage=result.coverage,
+                default_scope=result.default_scope,
+                un_blocked=un_blocked,
             )
+        )
         charged = result.coverage.rows if kept is None else rows_in_years(result.frame_chunks, kept)
         remaining = max(remaining - charged, 0)
         seconds += result.output_profile_seconds
-        warnings.extend(warning for warning in findings.warnings if warning not in warnings)
-        gaps.extend(findings.gaps)
         results.append(
             ComponentResult(
                 role=component.role,
@@ -721,10 +747,30 @@ def _materialise_components(
             enrichment=enrichment,
         )
     check_ceiling(composed.coverage, ceiling=ceiling)
-    return (
-        replace(composed, output_profile_seconds=seconds),
-        _OriginFindings(warnings=tuple(warnings), gaps=tuple(gaps)),
-    )
+    return replace(composed, output_profile_seconds=seconds), tuple(runs)
+
+
+def _component_findings(
+    runs: Sequence[_ComponentRun], *, graph: GraphReader, deadline: float | None
+) -> _OriginFindings:
+    """The origin findings of a composite's component runs, each read under its component
+    identity's pinned provenances, its warnings once each and its gaps in run order."""
+    warnings: list[WarningModel] = []
+    gaps: list[OriginGap] = []
+    for run in runs:
+        with pinned_provenance_scope(run.identity):
+            findings = _origin_findings(
+                run.requests,
+                probe_empty=run.probe_empty,
+                coverage=run.coverage,
+                default_scope=run.default_scope,
+                un_blocked=run.un_blocked,
+                graph=graph,
+                deadline=deadline,
+            )
+        warnings.extend(warning for warning in findings.warnings if warning not in warnings)
+        gaps.extend(findings.gaps)
+    return _OriginFindings(warnings=tuple(warnings), gaps=tuple(gaps))
 
 
 def prewrite_definition(
@@ -805,9 +851,9 @@ def prewrite_definition(
             result, un_blocked = materialise(
                 requests, ceiling=ceiling, precomputed_probe=precomputed_probe
             )
-            origin: _OriginFindings | None = None
+            runs: tuple[_ComponentRun, ...] | None = None
         else:
-            result, origin = _materialise_components(
+            result, runs = _materialise_components(
                 requests,
                 components=components,
                 ceiling=ceiling,
@@ -836,9 +882,20 @@ def prewrite_definition(
                 deadline=deadline,
                 coverage_index=coverage_index,
             )
-        if origin is None:
+        # A version on record serves the origin findings it recorded (`persisted_manifest`).
+        if persisted is not None:
+            origin = _NO_ORIGIN_FINDINGS
+        elif runs is not None:
+            origin = _component_findings(runs, graph=graph, deadline=deadline)
+        else:
             origin = _origin_findings(
-                requests, result, un_blocked=un_blocked, graph=graph, deadline=deadline
+                requests,
+                probe_empty=result.probe_empty,
+                coverage=result.coverage,
+                default_scope=result.default_scope,
+                un_blocked=un_blocked,
+                graph=graph,
+                deadline=deadline,
             )
         origin_warnings = origin.warnings
         # Every manifest built from `result` records the places those warnings name.
@@ -917,8 +974,8 @@ def serve_definition(
     (`None` for no head). The head advances only while it names the run `expected_head` names,
     and the prewrite reads the stored version only when that head names the result.
     `precomputed_probe` and `progress` are forwarded. `options` `None` records the version, its
-    canonical frame and statistics, renders nothing, and returns the prewrite manifest,
-    with no artifacts.
+    canonical frame and statistics, renders nothing, and returns the prewrite manifest with no
+    artifacts, or the stored body (`persisted_manifest`) when the version is on record.
 
     `ceiling` overrides the raw-fetch guard. `None` uses `deps.ceiling`. `coverage_stamp` adds
     manifest lineage, while `coverage_index` feeds materialisation.
@@ -1088,10 +1145,14 @@ def _write_definition_artifacts(
     before the failure propagates. A version is recorded only with its canonical frame and
     statistics. A failed canonical frame write records nothing, logs
     `CANONICAL_FRAME_STORE_FAILED_MARKER` and leaves the head where it was. `options` `None`
-    renders nothing and returns `prewrite.manifest`."""
+    renders nothing and returns `prewrite.manifest`, or the stored version's
+    (`persisted_manifest`) when it is on record before the write or the write finds it."""
     _check_work_deadline(deps, "rendering the canonical frame and the series statistics")
     stored = prewrite.stored
     result = prewrite.result
+    if options is not None:
+        # The default enrichment follows the roles of the version just built.
+        options = resolve_enrichment(options, coverage=prewrite.manifest.coverage)
     batch = InventoryBatch()
     artifact_store = deps.artifact_store.deferred(batch)
     # Copy the caller's timing and trace context before submission. Workers use separate contexts.
@@ -1161,7 +1222,7 @@ def _write_definition_artifacts(
     describers = _describers(prewrite, deps=deps, rendered=rendered)
     if rendered is None:
         with phase("record"):
-            deps.version_writer.write_version(
+            written = deps.version_writer.write_version(
                 VersionWrite(
                     record=_base_record(
                         prewrite,
@@ -1173,7 +1234,10 @@ def _write_definition_artifacts(
                 ),
                 trace_id=trace_id,
             )
-        return prewrite.manifest
+        # A version on record, known before the write or found by it, serves its stored body.
+        if written.created:
+            return prewrite.manifest
+        return persisted_manifest(stored=written.state.version, served=prewrite.manifest)
     assert options is not None
     with phase("record"):
         written = deps.version_writer.write_version(
@@ -1227,7 +1291,8 @@ class _RenderPass:
     prewrite: DefinitionPrewrite
     persisted: VersionState | None
     manifest: Manifest
-    call_warnings: tuple[WarningModel, ...]
+    # This call's reshape warnings alone: a stored version keeps the origin findings it recorded.
+    reshape_warnings: tuple[WarningModel, ...]
     # `CodeIndex.enrichment_digest`: the salt of the keys the response looks its links up under.
     enrichment_digest: str
     # Linked to the base version: the rendering, unless it belongs to a derived version.
@@ -1277,7 +1342,7 @@ class _RenderPass:
             persisted=written.state.version,
             locations=locations,
             served=self.manifest,
-            call_warnings=self.call_warnings,
+            reshape_warnings=self.reshape_warnings,
             now=now,
             enrichment_digest=self.enrichment_digest,
         )
@@ -1344,7 +1409,6 @@ def _render_pass(
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
         groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
-        groupby_row_fold_max_rows=deps.settings.groupby_row_fold_max_rows,
         code_index=deps.code_index,
         resolved_stat_var_refs=_resolved_stat_var_refs(result),
         output_profile=result.output_profile,
@@ -1362,7 +1426,8 @@ def _render_pass(
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
-    call_warnings = prewrite.origin_warnings + reshape_warning_models(reshape_warnings)
+    reshape_models = reshape_warning_models(reshape_warnings)
+    call_warnings = prewrite.origin_warnings + reshape_models
     # A derived version (a multi-contributor collapse, a party-totals cut) is a version of its
     # own. Record the base version separately so a plain GET can still resolve it. A rendering
     # of the base frame shares the base version. The head stays on the base materialisation,
@@ -1387,7 +1452,7 @@ def _render_pass(
             prewrite=prewrite,
             persisted=persisted,
             manifest=manifest,
-            call_warnings=call_warnings,
+            reshape_warnings=reshape_models,
             enrichment_digest=deps.code_index.enrichment_digest,
             links=(_artifact_record(artifact),),
             collapsed=None,
@@ -1423,35 +1488,55 @@ def _render_pass(
         artifact_store=artifact_store,
     )
     # The derived identity cites and dates as its base record does, and so does every
-    # concurrent writer of it, so its record is written with its artifacts.
-    # `collapsed_head_manifest` does the same.
-    manifest = assemble_manifest(
-        stored=stored,
-        materialisation=derived_result,
-        artifacts=[artifact, derived_statistics_artifact],
-        provenance_refs=prewrite.citation_refs,
-        source_citations=prewrite.source_citations,
-        prepared_at=render_prepared_at,
-        capability_version=deps.capability_version,
-        materialiser_build=deps.materialiser_build,
-        code_index=deps.code_index,
-        settings=deps.settings,
-        extra_warnings=call_warnings,
-        coverage_stamp=prewrite.coverage_stamp,
-        year_coverage=prewrite.year_coverage,
-    )
-    manifest = manifest.model_copy(
-        update={
-            "citation": collapsed_citation(render_citation, base=manifest)
-            if derived.summed
-            else render_citation
-        }
-    )
+    # concurrent writer of it, so its record is written with its artifacts. A base version on
+    # record gives the derived one its body, as a head hit does (`collapsed_head_manifest`),
+    # and this call only its output options and its own diagnostics.
+    if persisted is None:
+        manifest = assemble_manifest(
+            stored=stored,
+            materialisation=derived_result,
+            artifacts=[artifact, derived_statistics_artifact],
+            provenance_refs=prewrite.citation_refs,
+            source_citations=prewrite.source_citations,
+            prepared_at=render_prepared_at,
+            capability_version=deps.capability_version,
+            materialiser_build=deps.materialiser_build,
+            code_index=deps.code_index,
+            settings=deps.settings,
+            extra_warnings=call_warnings,
+            coverage_stamp=prewrite.coverage_stamp,
+            year_coverage=prewrite.year_coverage,
+        )
+        manifest = manifest.model_copy(
+            update={
+                "citation": collapsed_citation(render_citation, base=manifest)
+                if derived.summed
+                else render_citation
+            }
+        )
+    else:
+        output_options = manifest_output_options(
+            derived_result,
+            stored=stored,
+            capability_version=deps.capability_version,
+            materialiser_build=deps.materialiser_build,
+            code_index=deps.code_index,
+            settings=deps.settings,
+        )
+        manifest = collapsed_head_manifest(
+            manifest=persisted_manifest(stored=persisted.version, served=prewrite.manifest),
+            derived=derived,
+            artifact=artifact,
+            statistics_artifact=derived_statistics_artifact,
+            series_count=derived_statistics.series_count,
+            output_options=output_options,
+            extra_warnings=reshape_models,
+        )
     return _RenderPass(
         prewrite=prewrite,
         persisted=persisted,
         manifest=manifest,
-        call_warnings=call_warnings,
+        reshape_warnings=reshape_models,
         enrichment_digest=deps.code_index.enrichment_digest,
         links=(),
         collapsed=definition_version_record(

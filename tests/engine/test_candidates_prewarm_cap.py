@@ -13,6 +13,7 @@ import pytest
 from code_index.shared import get_index
 from materialise.place_scope import DefaultPresence, scope_of_places
 from search.engine.config import settings
+from search.engine.place import ConsultedPresence
 from search.engine.region.place_context import PlaceContext
 from search.engine.shape import ShapeDraft
 from tests.engine._builders import (
@@ -153,12 +154,14 @@ def test_the_prewarm_batches_shapes_by_probe_places_and_every_default_scope_toge
         ),
     ]
     graph = _EntitySpyGraph()
-    presence = DefaultPresence(
-        countries=(ken, gha, tza),
-        scopes={
-            "sv_1": scope_of_places([ken, tza], every_place=False),
-            "sv_4": scope_of_places([gha], every_place=False),
-        },
+    presence = ConsultedPresence(
+        DefaultPresence(
+            countries=(ken, gha, tza),
+            scopes={
+                "sv_1": scope_of_places([ken, tza], every_place=False),
+                "sv_4": scope_of_places([gha], every_place=False),
+            },
+        )
     )
 
     results, unsupported = materialise_alternates(
@@ -196,12 +199,14 @@ def test_the_prewarm_reads_the_pairs_the_probe_reads():
     shape = dataclasses.replace(
         _one_member_shape("sv_worldwide"), sv_arc_facts={"sv_worldwide": {}, "sv_kenya": {}}
     )
-    presence = DefaultPresence(
-        countries=(ken,),
-        scopes={
-            "sv_worldwide": scope_of_places([earth], every_place=False),
-            "sv_kenya": scope_of_places([ken], every_place=False),
-        },
+    presence = ConsultedPresence(
+        DefaultPresence(
+            countries=(ken,),
+            scopes={
+                "sv_worldwide": scope_of_places([earth], every_place=False),
+                "sv_kenya": scope_of_places([ken], every_place=False),
+            },
+        )
     )
     place = PlaceContext(
         roles=subject_place_roles(),

@@ -101,6 +101,12 @@ PLATFORM_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "The authenticated caller is not the live-refresh principal, or live refresh is "
         "not configured on this deployment.",
     ),
+    # Served by the Datasets pin door and the Presentation share routes.
+    "allowance_exhausted": (
+        "Allowance Exhausted",
+        "The caller has spent today's allowance for this kind of write; Retry-After names the "
+        "next UTC midnight, when it resets.",
+    ),
 }
 
 
@@ -242,6 +248,21 @@ def _problem_statuses(code: str) -> Mapping[str, frozenset[int]]:
             if mapping.channel == "problem_details" and mapping.http_status is not None:
                 statuses.setdefault(mapping.endpoint, set()).add(mapping.http_status)
     return {endpoint: frozenset(found) for endpoint, found in statuses.items()}
+
+
+@cache
+def endpoint_statuses(prefix: str) -> Mapping[str, Mapping[str, tuple[int, ...]]]:
+    """The statuses the code registry gives each active code's problem details, sorted, on each
+    endpoint whose name starts with `prefix`. A tuple of more than one is a code
+    `registered_status` refuses to pick for."""
+    statuses: dict[str, dict[str, tuple[int, ...]]] = {}
+    for entry in sorted(REGISTRY.entries, key=lambda entry: entry.code):
+        if entry.lifecycle != "active":
+            continue
+        for endpoint, found in _problem_statuses(entry.code).items():
+            if endpoint.startswith(prefix):
+                statuses.setdefault(endpoint, {})[entry.code] = tuple(sorted(found))
+    return {endpoint: statuses[endpoint] for endpoint in sorted(statuses)}
 
 
 def registered_status(code: str) -> int:

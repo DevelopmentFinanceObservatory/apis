@@ -47,6 +47,7 @@ from datasets_api.admission import (
     sync_estimate,
 )
 from datasets_api.current import DefinitionDeps, serve_current, trace_confirmed_at
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.definition import _resolve_spec_requests, classify_definition_exception
 from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.manifest_models import Manifest
@@ -224,6 +225,9 @@ def run_operation(
 
         manifest = _run(deps.coverage.snapshot())
         completed_subject_id = manifest.definition.spec_id
+        if options.enrichment is not None:
+            # The serve resolved the default enrichment against the version it built.
+            options = resolve_enrichment(options, coverage=manifest.coverage)
         keys = artifact_rendering_keys(
             options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
         )

@@ -22,9 +22,9 @@ from .conftest import FakeDatasetStore
 _HEADER = "x-dfo-principal"
 _SECRETS = {"publish": "publish-secret", "pin": "pin-secret", "refresh": "refresh-secret"}
 
-# Each gated route, with the grant it needs and the code its refusal carries.
+# Each gated route, with the grant it needs and the code its refusal carries. The pin route
+# admits every caller and reads the pin grant only to choose its budget (`test_pin_door`).
 _GATED_ROUTES = (
-    ("POST", "/api/datasets/spec_a/cv_a/pin", "pin", "pin_not_permitted"),
     ("POST", "/api/datasets/frames/publish", "publish", "publish_not_permitted"),
     ("PUT", "/api/datasets/frames/ops_a/ocv_a/recipe", "publish", "publish_not_permitted"),
     ("GET", "/api/datasets/frames/ops_a/ocv_a/recipe", "publish", "publish_not_permitted"),
@@ -107,14 +107,13 @@ def test_a_principal_lacking_the_grant_is_refused_before_the_body_is_read(
 def test_the_table_names_every_gated_route(app) -> None:
     """A gated door gaining a route fails here until the table lists it."""
     gated_templates = {
-        ("POST", "/api/datasets/{id}/{content_version}/pin"),
         ("POST", "/api/datasets/frames/publish"),
         ("PUT", "/api/datasets/frames/{spec_id}/{content_version}/recipe"),
         ("GET", "/api/datasets/frames/{spec_id}/{content_version}/recipe"),
         ("GET", "/api/datasets/recipes/replays/{replay_key}"),
         ("POST", "/api/datasets/frames/refresh"),
     }
-    markers = ("/pin", "/recipe", "/replays/", "/frames/publish", "/frames/refresh")
+    markers = ("/recipe", "/replays/", "/frames/publish", "/frames/refresh")
     served = {
         (method.upper(), path)
         for path, operations in app.openapi()["paths"].items()
@@ -125,7 +124,7 @@ def test_the_table_names_every_gated_route(app) -> None:
     assert len(_GATED_ROUTES) == len(gated_templates)
 
 
-@pytest.mark.parametrize("grant", list(Grant))
+@pytest.mark.parametrize("grant", [Grant.publish, Grant.refresh])
 def test_a_refused_principal_carries_no_secret_in_its_repr_or_refusal(grant: Grant) -> None:
     """A caller presenting another grant's secret leaves that secret on no repr or refusal a
     later log line could print."""

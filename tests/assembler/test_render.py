@@ -1,5 +1,5 @@
 """Checks that `render_component` draws a stored revision's intent on another frame under
-the stored revision's number, pins that frame, and leaves the revision store as it was."""
+the stored revision's number, pins nothing, and leaves the revision store as it was."""
 
 from __future__ import annotations
 
@@ -156,9 +156,7 @@ def test_render_draws_the_revision_asked_for_when_a_later_one_exists(
     assert revised.resolved_payload["provenance"]["refreshed_from"] is None
 
 
-def test_render_pins_the_target_frame_once_across_repeated_renders(
-    frame_store, revision_store, release_registry
-):
+def test_repeated_renders_pin_nothing(frame_store, revision_store, release_registry):
     _, created = _create(
         frame_store=frame_store, revision_store=revision_store, release_registry=release_registry
     )
@@ -174,7 +172,7 @@ def test_render_pins_the_target_frame_once_across_repeated_renders(
             release_registry=release_registry,
         )
 
-    assert frame_store.pins.count((_TARGET, created.component_id)) == 1
+    assert frame_store.pins == ()
 
 
 def test_a_target_frame_lacking_the_selected_series_refuses_as_a_write_does_and_pins_nothing(
@@ -325,7 +323,7 @@ def test_a_revision_minted_under_a_newer_release_refuses(frame_store, revision_s
         )
 
     assert excinfo.value.catalog_version == "2099.1.0"
-    assert frame_store.pins == ((malaria_ethiopia_frame_ref(), created.component_id),)
+    assert frame_store.pins == ()
 
 
 def test_a_note_has_no_rendering_on_a_frame(frame_store, revision_store, release_registry):

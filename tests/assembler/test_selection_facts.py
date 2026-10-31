@@ -262,7 +262,7 @@ def test_unit_maps_to_the_kit_shape(release, cell, expected):
     assert facts.series[0].unit == expected
 
 
-def test_series_follow_drawing_order(release):
+def test_series_follow_the_select_in_one_order_whatever_order_it_lists(release):
     def draw(recipients):
         return _facts(
             release=release,
@@ -282,7 +282,7 @@ def test_series_follow_drawing_order(release):
         Coordinate(column="recipient", value=f"country/{iso}") in one.coordinates
         for one, iso in zip(forward.series, ("ETH", "GHA", "KEN"), strict=True)
     ] == [True, True, True]
-    assert backward.series == list(reversed(forward.series))
+    assert backward.series == forward.series
 
 
 def test_a_source_card_draws_no_series_and_has_no_facts(release):

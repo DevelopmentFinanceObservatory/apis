@@ -34,11 +34,12 @@ from code_index.shared import get_index
 from dfo_platform.trace import reset_trace_id, set_trace_id
 from entity_resolution import Entity, Resolved
 from graph_generation import UNKNOWN_GENERATION
+from materialise import place_scope
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
-from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
@@ -98,6 +99,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
+from tests.engine._presence import raw_presence
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine._search_app import search_app
 from tests.engine._virtual_clock import VirtualRequests
@@ -1053,37 +1055,6 @@ def test_a_dataset_states_a_word_where_the_parts_party_is_of_the_kind_it_names(
     assert _dataset_stated_words(shape, get_index(), None) == _NOTHING
 
 
-@pytest.mark.parametrize(
-    ("variable", "party", "provenance", "words", "query_text"),
-    [
-        pytest.param(
-            "bilateral ODA", None, _CRS, _STATED, "not bilateral ODA to Kenya", id="stated"
-        ),
-        pytest.param(
-            "multilateral ODA",
-            "country",
-            "OECDDAC2A",
-            frozenset({"multilateral"}),
-            "not multilateral ODA to Kenya",
-            id="party",
-        ),
-    ],
-)
-def test_a_negation_the_variable_left_out_is_read_from_the_query(
-    variable, party, provenance, words, query_text
-) -> None:
-    """The extraction can leave a negation out of the variable, and the verbatim query
-    still holds it, for a word a dataset states and one that names a party alike."""
-    state = _with_multilaterals(_state_naming(variable, party))
-    shape = _flow_shape(provenance)
-    assert _dataset_stated_words(shape, get_index(), state) == words
-
-    state.query_text = query_text
-
-    assert _dataset_stated_words(shape, get_index(), state) == _NOTHING
-    assert held_party_words(state, shape) == ()
-
-
 _MULTILATERALS = "DACMultilaterals"
 _FRA = "country/FRA"
 
@@ -1279,7 +1250,6 @@ def test_a_word_names_a_party_where_every_dataset_declares_it_and_its_axis_is_un
         pytest.param("multilateral ODA", "named-provider", [], id="provider-named"),
         pytest.param("multilateral ODA", "by-donor", [], id="operation-over-the-provider"),
         pytest.param("multilateral ODA", "every-provider", [], id="provider-axis-open"),
-        pytest.param("multilateral ODA", "negated-in-the-query", [], id="negated"),
         pytest.param("ODA from multilaterals", None, [], id="another-word"),
         pytest.param("multi-bi aid", None, [], id="another-token"),
         pytest.param(
@@ -1307,8 +1277,6 @@ def test_intake_reads_the_party_of_a_word_stated_on_an_unnamed_axis(
         state.operations = (Operation(verb="rank", phrase="by donor", over="origin"),)
     elif change == "every-provider":
         state.open_axes = frozenset({"origin"})
-    elif change == "negated-in-the-query":
-        state.query_text = "not multilateral ODA to Kenya"
     elif change == "party-words-off":
         state.party_words_off = True
     state.place_sets = {}
@@ -2093,7 +2061,10 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
 
     assert asyncio.run(_phase_place_bindings(state)) is None
     assert state.default_presence is not None
-    assert {sv: frozenset(scope.places) for sv, scope in state.default_presence.scopes.items()} == {
+    assert {
+        sv: frozenset(scope.places)
+        for sv, scope in raw_presence(state.default_presence).scopes.items()
+    } == {
         _GNI_PPP: frozenset({_GHA}),
         atlas: frozenset({_NOR}),
     }
@@ -2251,6 +2222,27 @@ def test_placeless_subject_alternate_beside_a_role_bearing_election_takes_a_defa
     assert [(w.code, w.spec_id) for w in result.warnings if w.code == "role_scope_defaulted"] == [
         ("role_scope_defaulted", None)
     ]
+
+
+@pytest.mark.parametrize(
+    ("unsettled", "degraded"), [(scenarios._PPP, True), ("Count_Unread", False)], ids=str
+)
+def test_only_an_offered_alternate_s_countries_fallback_keeps_the_answer_uncached(
+    monkeypatch, search_settings, unsettled: str, degraded: bool
+) -> None:
+    read = place_scope.read_default_presence
+
+    def unsettled_read(**kwargs):
+        return dataclasses.replace(read(**kwargs), unsettled=frozenset({unsettled}))
+
+    monkeypatch.setattr(place_scope, "read_default_presence", unsettled_read)
+
+    result, _, _ = _scenario_candidates(
+        monkeypatch, "placeless-role-bearing-elected-subject-alternate", search_settings
+    )
+
+    assert result.status == "candidates", result
+    assert result.degraded is degraded
 
 
 def test_placeless_subject_alternate_reads_its_default_scope_in_bulk(
@@ -2820,6 +2812,7 @@ def test_an_unevaluated_alternate_leaves_the_elected_answer_standing_and_stated(
     assert _states_unevaluated(answer, reason)
     assert reasons[0] == {1: reason}
     assert answer.alternates_left_out
+    assert answer.degraded
     assert _untraced(_without_unevaluated(scenarios._projection(answer))) == _untraced(
         scenarios._projection(scenarios._resolve(without_alternate))
     )
@@ -2839,7 +2832,11 @@ def test_an_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
         candidate_admission,
         "_materialise_alt_shapes",
         lambda alternates, *args, presence, **kwargs: _AlternatesRead(
-            [], None, presence, tuple((alternate, reason) for alternate in alternates)
+            [],
+            None,
+            presence,
+            tuple((alternate, reason) for alternate in alternates),
+            tuple(DegradedReads() for _ in alternates),
         ),
     )
 

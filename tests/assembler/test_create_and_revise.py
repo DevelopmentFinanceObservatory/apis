@@ -10,6 +10,8 @@ import contextlib
 import copy
 import dataclasses
 import json
+from collections.abc import Mapping
+from typing import cast
 
 import jsonschema
 import pytest
@@ -31,6 +33,7 @@ from assembler.testing import (
     malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
+from dfo_platform.codes import bound_registry_endpoint
 from presentation_api.refusals import binding_invalid_spec
 
 from ._pipeline_support import _malaria_intent
@@ -290,7 +293,8 @@ def test_a_span_frame_refuses_binding_invalid_where_it_cannot_bind(
             revision_store=revision_store,
             release_registry=release_registry,
         )
-    problem = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        problem = binding_invalid_spec(excinfo.value)
     assert (problem.code, problem.pointer) == ("binding_invalid", pointer)
     assert [one.ref for one in problem.alternatives or ()] == alternatives
 
@@ -385,6 +389,45 @@ def test_a_span_refusal_names_a_bar_chart_select_that_resolves_several_series(
     assert len(component["series"]) == 2
 
 
+def test_a_select_lists_its_values_as_a_set(frame_store, revision_store, release_registry):
+    """Two cards whose select lists the same values in another order, one with a repeat,
+    store one intent and draw the same rows."""
+    frame = _span_frame_by_stat_var()
+    frame_store.put(resolved_frame=frame)
+    intent = {**_span_intent(frame, member="table", recipient=None)}
+    replies = [
+        write_component(
+            intent={**intent, "select": {"stat_var": values}},
+            component_id=None,
+            composition_id=None,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+        for values in (
+            ["dcid:GrantsA", "dcid:GrantsB"],
+            ["dcid:GrantsB", "dcid:GrantsA", "dcid:GrantsB"],
+        )
+    ]
+
+    stored = [
+        cast(
+            "Mapping[str, object]",
+            get_component(component_id=reply.component_id, revision_store=revision_store)[
+                "stored_intent"
+            ],
+        )
+        for reply in replies
+    ]
+    rows = [
+        cast("Mapping[str, object]", reply.resolved_payload["component"])["rows"]
+        for reply in replies
+    ]
+    assert stored[0] == stored[1]
+    assert stored[0]["select"] == {"stat_var": ["dcid:GrantsA", "dcid:GrantsB"]}
+    assert rows[0] == rows[1]
+
+
 def test_a_span_refusal_with_nothing_to_compare_offers_a_table_and_a_stat_card(
     frame_store, revision_store, release_registry
 ):
@@ -401,7 +444,8 @@ def test_a_span_refusal_with_nothing_to_compare_offers_a_table_and_a_stat_card(
             revision_store=revision_store,
             release_registry=release_registry,
         )
-    problem = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        problem = binding_invalid_spec(excinfo.value)
     assert [one.ref for one in problem.alternatives or ()] == ["table", "stat_card"]
 
 

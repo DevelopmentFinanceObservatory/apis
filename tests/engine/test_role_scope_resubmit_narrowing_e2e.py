@@ -24,6 +24,7 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
+    FIXTURE_PROVENANCE,
     CoverageRow,
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -33,12 +34,20 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import listing
 
 pytestmark = pytest.mark.usefixtures("request_log")
 
 _SV_DCID = "TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow"
 _KEN = "country/KEN"
 _NOR = "country/NOR"
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(
+        listing({"source/A": "A", "source/B": "B", FIXTURE_PROVENANCE: "Coverage fixture"})
+    )
 
 
 def _facet(

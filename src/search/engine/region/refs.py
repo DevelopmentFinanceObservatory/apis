@@ -1,12 +1,13 @@
 """Shared graph-ref and provenance helpers for region grounding.
 
-Provenance comes from facet `provenanceId`. Provenance refs take their label,
-source and Data Commons from the bound origin catalogue's provenance table, so
-every surface names a provenance the same way. A provenance the table does not
-list takes its graph label, read only for those misses, and carries no source
-or Data Commons. Admission drops every such provenance in production, so the
-read is empty there. Other label helpers preserve input order, omit unresolved
-refs, or raise `GroundingMiss` as specified. `confirm_dcids_present` batch-checks posted refs
+Provenance comes from facet `provenanceId`. Every provenance is named by
+`provenance_labels`, which is `materialise.provenance_doc.provenance_names`: the
+bound origin catalogue's name for a listed one, with no graph read, else its
+parent Dataset's name or its own. A listed provenance also takes its source and
+Data Commons from the catalogue, and an unlisted one carries neither. Admission
+drops every unlisted provenance in production, so the graph read is empty there.
+Other label helpers preserve input order, omit unresolved refs, or raise
+`GroundingMiss` as specified. `confirm_dcids_present` batch-checks posted refs
 and raises `invalid_role_ref` (422) for the first group with an absent or
 unlabelled value.
 """
@@ -14,22 +15,19 @@ unlabelled value.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
 
 from code_index.shared import get_index
 from dfo_platform.named import named_capped
 from dfo_platform.roles import FlowFamily
+from materialise.provenance_doc import ProvenanceNameReader, provenance_names
 from origin_catalogue import current_catalogue
-from search.engine.clients.graph import EngineGraphClient, Facet
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import EngineInputError
 from search.engine.ground import _ref_from_label
-from search.engine.retrieval.coverage import citable_source_ids
 from search.models import (
     EntityRoleKey,
     GraphRef,
-    ProvenanceRef,
 )
-from search.observations import provenance_refs, unlisted_provenances
 from search.role_kinds import RoleKindRefused, TypesRead, check_role_kinds
 
 
@@ -62,39 +60,19 @@ def _where_slot_refs(
     return refs
 
 
-def listed_provenance_labels(dcids: Sequence[str]) -> dict[str, str]:
-    """The catalogue's name for each provenance in `dcids` it lists."""
-    catalogue = current_catalogue()
-    return {
-        dcid: row.name
-        for dcid in dict.fromkeys(dcids)
-        if (row := catalogue.provenance(dcid)) is not None
-    }
-
-
-class NodeLabeller(Protocol):
-    """The one graph read `provenance_labels` makes, which `EngineGraphClient` implements."""
-
-    def node_labels_batch(self, dcids: list[str]) -> dict[str, str]: ...
-
-
-def provenance_labels(dcids: Sequence[str], graph: NodeLabeller) -> dict[str, str]:
-    """Labels for provenance `dcids`. Listed ones take the catalogue's name, and one
-    `node_labels_batch` covers the rest. An id neither labels is absent."""
-    labels = listed_provenance_labels(dcids)
-    misses = [dcid for dcid in dict.fromkeys(dcids) if dcid not in labels]
-    if misses:
-        labels.update(graph.node_labels_batch(misses))
-    return labels
-
-
-def _build_source_refs(facets: list[Facet], graph: EngineGraphClient) -> list[ProvenanceRef]:
-    """Provenance refs for the facets' citable provenance ids, in first-seen order, omitting
-    unlisted ids the graph cannot label."""
-    dcids = citable_source_ids(facets)
-    misses = unlisted_provenances(dcids)
-    labels = graph.node_labels_batch(misses) if misses else {}
-    return provenance_refs(dcids, labels)
+def provenance_labels(
+    dcids: Sequence[str], graph: ProvenanceNameReader, *, deadline: float | None
+) -> dict[str, str]:
+    """The name of each provenance of `dcids` (`materialise.provenance_doc.provenance_names`),
+    its graph read bounded by `deadline`. A failed read keeps the catalogue's names and notes
+    the lost read (`degraded_reads.note_degraded_read`), so no cache stores the answer. An id
+    nothing names is absent."""
+    names, read_ok = provenance_names(
+        graph, dcids, catalogue=current_catalogue(), deadline=deadline
+    )
+    if not read_ok:
+        note_degraded_read("provenance names")
+    return names
 
 
 def confirm_dcids_present(

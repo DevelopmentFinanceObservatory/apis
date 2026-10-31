@@ -11,6 +11,7 @@ from search.engine.assemble import build_no_data_part, part_departure_facts
 from search.engine.clients.graph import Facet
 from search.engine.departures import (
     breakdown_not_applied,
+    exclusion_not_applied,
     measure_not_applied,
     merged_entity_facts,
     price_basis_not_applied,
@@ -1217,6 +1218,12 @@ _MLS_030 = (
         ),
         # A part with no sentence keeps the qualifier.
         ([_GROSS], [], [_GROSS]),
+        # A part stating "grants" shows what the request asked to leave out.
+        (
+            [exclusion_not_applied(asked="grants")],
+            ["ODA grants to Kenya."],
+            [exclusion_not_applied(asked="grants")],
+        ),
         # weo-002, weo-045: a price basis the part's byline does not state.
         ([_CURRENT_PRICES], ["GDP."], []),
         (

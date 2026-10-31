@@ -8,9 +8,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from dataset_store.clock import Clock
+from datasets_api.allowance import AllowanceLedger, LiveAllowanceLedger, allowance_limits
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.deps import DepsCell
 from datasets_api.description_store import LiveDescriptionStore
+from datasets_api.doors.analysis import RunningAnalyses
+from datasets_api.export_store import LiveExportStore
 from datasets_api.mint_deps import MintDeps
 from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.task_client import FakeTaskClient, TaskClient
@@ -29,15 +33,26 @@ from ._version_record_store import FakeVersionRecordDatasetStore
 
 
 def offline_recipe_stores() -> dict[str, object]:
-    """Return `datasets_surface`'s `recipe_store`, `version_lister` and `description_store`
-    keywords over one empty SQLite-backed store, so the lifespan opens no pool.
+    """Return `datasets_surface`'s `recipe_store`, `export_store`, `version_lister` and
+    `description_store` keywords over one empty SQLite-backed store, so the lifespan opens no
+    pool.
     """
     store = FakeVersionRecordDatasetStore()
     return {
         "recipe_store": LiveRecipeStore(store=store),
+        "export_store": LiveExportStore(store=store),
         "version_lister": LiveVersionLister(store=store),
         "description_store": LiveDescriptionStore(store=store),
     }
+
+
+def offline_allowances(settings: DatasetsBuildSettings | None = None) -> LiveAllowanceLedger:
+    """An allowance ledger over its own empty SQLite-backed store, with `settings`' limits
+    (the environment's by default), so the lifespan opens no pool for it."""
+    resolved = settings if settings is not None else DatasetsBuildSettings.from_env()
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(), limits=allowance_limits(resolved)
+    )
 
 
 def make_app(
@@ -55,9 +70,11 @@ def make_app(
     head_writer=None,
     snapshot_reader=None,
     reference_writer=None,
+    allowances: AllowanceLedger | None = None,
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
     recipe_store=None,
+    export_store=None,
     version_lister=None,
     description_store=None,
     code_index=None,
@@ -67,6 +84,8 @@ def make_app(
     task_client: TaskClient | None = None,
     catalogue: CatalogueService | None = None,
     now: Clock | None = None,
+    deps_cell: DepsCell | None = None,
+    running_analyses: RunningAnalyses | None = None,
 ) -> FastAPI:
     """Compose an app from injected dependencies, with offline stand-ins for the rest, so its
     lifespan builds no live client and opens no pool.
@@ -76,12 +95,16 @@ def make_app(
     reads nothing until a write, and an omitted writer records what it writes into a fake
     reader. `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
-    injects both over the store its version writer shares. `description_store` defaults to one
-    over an empty SQLite-backed store. Every other omitted client is
+    injects both over the store its version writer shares. `export_store` defaults to one over
+    the recipe store's store when both default, else over an empty SQLite-backed store. `description_store` defaults to one
+    over an empty SQLite-backed store, and `allowances` to `offline_allowances` under the
+    resolved settings. Every other omitted client is
     `Unwired`. Publish verification under the null writer raises `PublishRecordMissing` (500),
     so a successful publish test injects a writer sharing the snapshot reader's store.
     The concurrency keywords replace the matching `settings` fields. `catalogue` replaces the
-    process-wide catalogue service the request scope binds.
+    process-wide catalogue service the request scope binds. `deps_cell` and `running_analyses`
+    are shared with a live share slot check (`presentation_api.newest_frames`) as `dfo_apis.app`
+    shares them.
     """
     resolved = settings if settings is not None else DatasetsBuildSettings.from_env()
     sizes = {
@@ -100,6 +123,12 @@ def make_app(
         if recipe_store is None and version_lister is None
         else {"recipe_store": recipe_store, "version_lister": version_lister}
     )
+    if export_store is not None or "export_store" not in recipe_stores:
+        recipe_stores["export_store"] = (
+            export_store
+            if export_store is not None
+            else LiveExportStore(store=FakeVersionRecordDatasetStore())
+        )
     if description_store is not None or "description_store" not in recipe_stores:
         recipe_stores["description_store"] = (
             description_store
@@ -121,6 +150,7 @@ def make_app(
         "reference_writer": (
             reference_writer if reference_writer is not None else Unwired("reference_writer")
         ),
+        "allowances": allowances if allowances is not None else offline_allowances(resolved),
         "task_client": task_client if task_client is not None else FakeTaskClient(),
         **recipe_stores,
     }
@@ -132,6 +162,8 @@ def make_app(
         ("coverage", coverage),
         ("catalogue", catalogue),
         ("now", now),
+        ("deps_cell", deps_cell),
+        ("running_analyses", running_analyses),
     )
     kwargs.update((name, value) for name, value in optional if value is not None)
     return create_app([datasets_surface(**kwargs)])

@@ -84,6 +84,7 @@ from assembler.rolling import (
     resolve_rolling,
 )
 from assembler.select import (
+    canonical_select,
     check_select_nonempty,
     check_single_arrayed_dimension,
     has_arrayed_dimension,
@@ -124,7 +125,8 @@ def _build_candidate(
     described: DescribedRevision | None = None,
 ) -> _Candidate:
     """`load_stored_frame` is set for a render of `current` on `resolved_frame`: it returns
-    the frame `current` was written on, or `None` when that frame cannot be loaded, and the
+    the frame `current` was written on, `None` for a `FrameUnavailable` whose reason is not
+    transient (`assembler.ports.TRANSIENT_FRAME_REASONS`), and raises a transient one, and the
     select binds by `StoredSelect`'s rules. `described` names the revision the candidate's
     description describes; without it the candidate carries none."""
     if is_create:
@@ -146,10 +148,13 @@ def _build_candidate(
             member=member,
         )
         merged = merge_intent(current=current.stored_intent, patch=patch)
-
     _validate_intent(
         schema=release.intent_schemas[member], intent=merged, release=release, member=member
     )
+    if "select" in merged:
+        # The stored intent and the component it draws do not depend on the order a caller
+        # listed a dimension's values in.
+        merged["select"] = canonical_select(select=cast("Mapping[str, object]", merged["select"]))
 
     if member == "note_narration":
         # The write-side grammar names only {type, text} for this member --
@@ -530,7 +535,7 @@ def _finish_candidate(
     described: DescribedRevision | None = None,
 ) -> _Candidate:
     """Mints, checks constraints, and enforces `MAX_ENVELOPE_BYTES` before returning a
-    candidate. The size check runs before a create pins its frame and repeats
+    candidate. The size check runs before the write and repeats
     if the transaction rebuilds the candidate.
 
     The component is minted from `merged_intent`. The candidate stores `stored_intent`,

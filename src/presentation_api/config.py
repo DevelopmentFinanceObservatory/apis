@@ -12,12 +12,13 @@ import os
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from datasets_api.config import DatasetsSettings
+from datasets_api.config import DatasetsSettings, FoldCeilingSettings, GroupbyFoldMaxRows
 from dfo_platform.config import env_validation_error_message
 
 __all__ = [
     "PRESENTATION_COMPONENTS_MAX_CONCURRENCY",
     "PRESENTATION_COMPONENTS_TIMEOUT_SECONDS",
+    "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY",
     "PRESENTATION_FRAMES_MAX_CONCURRENCY",
     "PRESENTATION_FRAMES_TIMEOUT_SECONDS",
     "PresentationSettings",
@@ -46,6 +47,10 @@ class _PresentationDefaults(BaseSettings):
     # Separate capacity keeps frame reads independent of component writes.
     frames_max_concurrency: int = Field(default=4, ge=1)
 
+    # A bare `spec_id` read can rebuild its dataset, so it has its own executor and pair reads
+    # keep theirs.
+    frames_bare_max_concurrency: int = Field(default=2, ge=1)
+
     frames_timeout_seconds: int = Field(default=30, ge=1)
 
 
@@ -57,6 +62,7 @@ except ValidationError as exc:
 PRESENTATION_COMPONENTS_MAX_CONCURRENCY: int = _defaults.components_max_concurrency
 PRESENTATION_COMPONENTS_TIMEOUT_SECONDS: int = _defaults.components_timeout_seconds
 PRESENTATION_FRAMES_MAX_CONCURRENCY: int = _defaults.frames_max_concurrency
+PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY: int = _defaults.frames_bare_max_concurrency
 PRESENTATION_FRAMES_TIMEOUT_SECONDS: int = _defaults.frames_timeout_seconds
 
 
@@ -69,7 +75,9 @@ class PresentationSettings(BaseModel):
     `graph_token` is the exception: it is read here, under the same
     `DATASETS_GRAPH_TOKEN` env var `datasets_api.config.DatasetsBuildSettings`
     reads, so this surface's `OriginGraphClient` construction reads it
-    from `PresentationSettings` alone. Nothing below the presentation
+    from `PresentationSettings` alone. `groupby_fold_max_rows` is the fold
+    ceiling Datasets reads (`datasets_api.config.FoldCeilingSettings`), so the
+    frame store bounds a frame1 document as Datasets does. Nothing below the presentation
     lifespan reads the environment directly.
     """
 
@@ -77,10 +85,12 @@ class PresentationSettings(BaseModel):
 
     datasets: DatasetsSettings
     graph_token: str
+    groupby_fold_max_rows: GroupbyFoldMaxRows
 
     @classmethod
     def from_env(cls) -> PresentationSettings:
         return cls(
             datasets=DatasetsSettings.from_env(),
             graph_token=os.environ.get("DATASETS_GRAPH_TOKEN", ""),
+            groupby_fold_max_rows=FoldCeilingSettings.from_env().groupby_fold_max_rows,
         )

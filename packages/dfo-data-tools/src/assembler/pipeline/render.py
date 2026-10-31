@@ -6,8 +6,8 @@ stored revision's own number. Its `provenance.inputs` names the target frame and
 `provenance.refreshed_from` names the stored revision. Its description, where the target
 frame's version holds a record, is composed for the request from today's words, and carries
 `rendering: "live"` and the target frame. The revision store is only read, so
-the stored revision and the head stay as they were. The target frame is pinned for the
-component, so it outlives the working tier.
+the stored revision and the head stay as they were. The target frame is not pinned, so a
+live render leaves it in the working tier.
 
 The stored intent is validated against this deployment's catalogue release, and the envelope
 and fact summary are minted under it, whichever release the stored revision was minted under.
@@ -42,6 +42,7 @@ from assembler.pipeline.write import (
     _utc_now,
 )
 from assembler.ports import (
+    TRANSIENT_FRAME_REASONS,
     FrameRef,
     FrameStore,
     FrameUnavailable,
@@ -115,7 +116,9 @@ def render_on_frame(
             return resolved_frame
         try:
             return frame_store.load(frame_ref=stored_ref)
-        except FrameUnavailable:
+        except FrameUnavailable as exc:
+            if exc.reason in TRANSIENT_FRAME_REASONS:
+                raise
             return None
 
     # An empty patch merges to the stored intent. `merge_intent` refuses a patch naming the
@@ -180,13 +183,12 @@ def render_component(
     whatever frame it is given, and does not compare that frame's dataset, rendering, or
     recipe with the stored frame's. The caller checks that before calling.
 
-    `frame_store.pin` records `target_frame` for the component once the reply is built, so a
-    refused or failed render pins nothing. A pin that already exists is left as it is.
+    The render pins nothing, so `target_frame` keeps the retention it has.
 
     Raises `DraftNotFound` for an unknown component, `RevisionNotFound` for a missing
     revision (`EditConflict` when the component has no head), `ComponentHoldsNoFrame` for a
     note, `ReleaseMismatch` when the revision was minted under a newer release than this
-    deployment's, and `FrameUnavailable` from the frame load or the pin. A stored intent that does not bind `target_frame` raises the
+    deployment's, and `FrameUnavailable` from the frame load. A stored intent that does not bind `target_frame` raises the
     refusal a write of that intent on that frame raises: `SchemaInvalid`, `BindingInvalid`,
     `ConstraintViolation`, or `ResourceExhausted`."""
     record = read_stored_revision(
@@ -216,5 +218,4 @@ def render_component(
         series_coordinates=rendering.series_coordinates,
         formatter_profile=rendering.release.formatter_profile,
     )
-    frame_store.pin(frame_ref=target_frame, component_id=component_id)
     return reply

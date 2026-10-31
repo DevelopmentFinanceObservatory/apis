@@ -375,6 +375,13 @@ migrate-presentation:
 dataset-store-smoke:
     uv run --env-file {{ENV_FILE}} {{SYNC_ARGS}} python -m dataset_store.smoke
 
+# Postgres 18, fake-gcs-server and dfo-apis serving Datasets and Presentation on
+# 127.0.0.1:58083, with no GCP (scripts/local-stack/README.md).
+#
+# Run the local stack: CMD is up, seed, smoke, down or status
+local-stack CMD:
+    scripts/local-stack/stack.sh {{CMD}}
+
 # ── Eval cases & evals ──────────────────────────────
 
 # Validate corpus/*.yaml and corpus/families/*.yaml, and list the cases that cannot gate

@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, NamedTuple
 from code_index import absent_readings
 from code_index.members import FamilyQuery, SourceNotInFamily, option_families
 from code_index.shared import get_index
-from materialise.place_scope import DefaultPlaceScope, DefaultPresence
+from materialise.place_scope import DefaultPlaceScope
 from search.engine.clients.materialise_bridge import _FACET_PROBE_MAX_PAIRS_PER_POST
-from search.engine.place import is_worldwide_scope
+from search.engine.place import ConsultedPresence, is_worldwide_scope
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     _bound_value_conflicts,
@@ -1013,14 +1013,14 @@ def _member_places(
     probe_entities: Sequence[str],
     *,
     own_scope_members: Sequence[str],
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
 ) -> dict[str, tuple[str, ...]]:
     """The places each of `members` is read at: each of `own_scope_members` at its own default
-    place scope (`DefaultPresence.scope`) when `presence` is given, and every other member at
+    place scope (`ConsultedPresence.consulted_scope`) when `presence` is given, and every other member at
     `probe_entities`."""
     places = dict.fromkeys(members, tuple(probe_entities))
     if presence is not None:
-        places.update((sv, presence.scope(sv).places) for sv in own_scope_members)
+        places.update((sv, presence.consulted_scope(sv).places) for sv in own_scope_members)
     return places
 
 
@@ -1457,7 +1457,7 @@ def standard_resolve(
     graph: EngineGraphClient,
     date_request: DateRequest | None = None,
     place_dcids: list[str] | None = None,
-    default_presence: DefaultPresence | None = None,
+    default_presence: ConsultedPresence | None = None,
     facet_batch: FacetBatch | None = None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates:
     """Resolve a confirmed shape against its subject entities.
@@ -1485,9 +1485,11 @@ def standard_resolve(
 
     ``default_presence`` defaults the place scope of a shape with no subject entity, in
     place of ``place_dcids``. Each member the result can name (the kept family) is read at
-    its own default scope (`DefaultPresence.scope`), which is where a datasets mint fetches
-    it, and every other member counts only toward the confirmed population, read at the
-    union of the scopes of the kept members that can answer (`DefaultPresence.facet_entities`).
+    its own default scope, which is where a datasets mint fetches it, and every other member
+    counts only toward the confirmed population, read at the union of the scopes of the kept
+    members that can answer. Each scope is read through `ConsultedPresence.consulted_scope`
+    or `consulted_union`, so a countries fallback this request alone took that shapes the
+    result keeps the answer out of the response cache.
     The result carries the union of the scopes of the StatVars it names as
     ``default_scope``, and none when no member asserts every bound property, since it then
     serves no StatVar. A presence read that lacks one of those members raises
@@ -1525,7 +1527,7 @@ def standard_resolve(
             raise AssertionError(
                 f"a default place scope was asked for beside the subject entity {place_dcid!r}"
             )
-        place_dcids = default_presence.facet_entities(answering)
+        place_dcids = list(default_presence.consulted_union(answering).places)
 
     # The places the default-scope facet reads covered, once they have been read.
     read_places: set[str] | None = None
@@ -1536,7 +1538,7 @@ def standard_resolve(
         them as empty would answer a place with no data it may hold."""
         if default_presence is None:
             return result
-        scope = default_presence.union_scope(result.sv_dcids)
+        scope = default_presence.consulted_union(result.sv_dcids)
         if read_places is not None and (unread := set(scope.places) - read_places):
             raise AssertionError(
                 f"the default scope of {result.sv_dcids!r} settles on {sorted(unread)!r}, "
@@ -1638,7 +1640,7 @@ def standard_resolve(
         tuple(dict.fromkeys(e for sv, _, _ in named_members for e in places_of[sv])),
         place_dcids=place_dcids,
         default_scope=(
-            default_presence.union_scope([sv for sv, _, _ in named_members])
+            default_presence.consulted_union([sv for sv, _, _ in named_members])
             if default_presence is not None and scope_check.active
             else None
         ),

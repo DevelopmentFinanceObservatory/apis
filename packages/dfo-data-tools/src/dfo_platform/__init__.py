@@ -22,6 +22,7 @@ from dfo_platform.problem import (
     ProblemIssue,
     ProblemSpec,
     UnregisteredCode,
+    refused,
     title_for_status,
 )
 from dfo_platform.roles import RoleAxis
@@ -61,6 +62,7 @@ __all__ = [
     "merge_catalogues",
     "new_trace_id",
     "pointer_for_error",
+    "refused",
     "reset_request_body_model",
     "reset_trace_id",
     "set_request_body_model",

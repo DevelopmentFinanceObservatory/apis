@@ -2,17 +2,19 @@
 non-outermost pivot index.
 
 The groupby collapse streams first. Pivots handle rows whose index values recur in
-non-adjacent chunks.
+non-adjacent chunks. A split render cuts the frame into one-row chunks (`_RESHAPE_CHUNK_ROWS`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 
 import pytest
+from dfo_frame_grammar import Frame
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
+from datasets_api import render as render_module
 from datasets_api.mint_models import GroupbyOptions, MintOptions, PivotOptions
 from datasets_api.render import render_and_store
 from materialise.enrichment import EnrichmentLookup
@@ -21,6 +23,7 @@ from materialise.profile import OutputProfile, compute_output_profile
 from materialise.reshape import PivotNotUniqueError, PivotOverCellCapError, Table
 
 from ._artifact_doubles import FakeArtifactStore
+from ._frame_chunks import frame_chunks_of
 from ._graph_doubles import FakeMintGraphReader
 from ._render_inputs import PREPARED_AT, SITE
 
@@ -28,8 +31,17 @@ _GRAPH = FakeMintGraphReader()
 _CONTENT_VERSION = "sha256:" + "0" * 64
 
 
+def _split(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every render after this cuts its frame into one-row chunks."""
+    monkeypatch.setattr(render_module, "_RESHAPE_CHUNK_ROWS", 1)
+
+
+def _frame(columns: Sequence[str], rows: Sequence[tuple[object, ...]]):
+    return frame_chunks_of(columns, (rows,))
+
+
 def _render(
-    chunks: Iterable[Table],
+    chunks: Callable[[], Iterator[Frame]],
     *,
     options: MintOptions,
     code_index: CodeIndex | None = None,
@@ -38,7 +50,7 @@ def _render(
 ):
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=lambda: iter(chunks),
+        frame_chunks=chunks,
         options=options,
         spec={"spec_id": "pivot-streaming-e2e"},
         provenance_refs=["p1"],
@@ -52,7 +64,6 @@ def _render(
         resolved_stat_var_refs=(),
         pivot_max_output_cells=pivot_max_output_cells,
         groupby_fold_max_rows=2_000_000,
-        groupby_row_fold_max_rows=700_000,
         output_profile=output_profile,
         prepared_at=PREPARED_AT,
         site=SITE,
@@ -70,15 +81,14 @@ _BARE_ROWS = (
 )
 
 
-def test_a_bare_pivot_matches_across_a_one_chunk_and_a_three_chunk_split():
-    one_chunk = (Table(columns=_BARE_COLUMNS, rows=_BARE_ROWS),)
-    three_chunks = tuple(Table(columns=_BARE_COLUMNS, rows=(row,)) for row in _BARE_ROWS)
+def test_a_bare_pivot_matches_across_a_one_chunk_and_a_three_chunk_split(monkeypatch):
     options = MintOptions(
         format="csv", bundle=False, pivot=PivotOptions(index="recipient", columns="time_period")
     )
 
-    one_rendered, one_bytes = _render(one_chunk, options=options)
-    three_rendered, three_bytes = _render(three_chunks, options=options)
+    one_rendered, one_bytes = _render(_frame(_BARE_COLUMNS, _BARE_ROWS), options=options)
+    _split(monkeypatch)
+    three_rendered, three_bytes = _render(_frame(_BARE_COLUMNS, _BARE_ROWS), options=options)
 
     assert one_rendered.artifact.artifact_digest == three_rendered.artifact.artifact_digest
     assert one_bytes == three_bytes
@@ -98,12 +108,12 @@ def test_a_bare_pivot_never_builds_a_concatenated_frame_chunks(monkeypatch):
         )
 
     monkeypatch.setattr(ConcatenatedFrameChunks, "from_chunks", _refuse)
-    three_chunks = tuple(Table(columns=_BARE_COLUMNS, rows=(row,)) for row in _BARE_ROWS)
+    _split(monkeypatch)
     options = MintOptions(
         format="csv", bundle=False, pivot=PivotOptions(index="recipient", columns="time_period")
     )
 
-    rendered, fetched = _render(three_chunks, options=options)
+    rendered, fetched = _render(_frame(_BARE_COLUMNS, _BARE_ROWS), options=options)
 
     assert rendered.artifact.artifact_digest.startswith("sha256:")
     assert b"country/KEN" in fetched
@@ -117,9 +127,14 @@ def _profile(rows: tuple[tuple[object, ...], ...]) -> OutputProfile:
     )
 
 
-def test_a_stored_profile_over_the_cell_cap_refuses_before_reading_the_second_chunk():
-    def chunks() -> Iterator[Table]:
-        yield Table(columns=_BARE_COLUMNS, rows=_BARE_ROWS[:1])
+def test_a_stored_profile_over_the_cell_cap_refuses_before_reading_the_second_chunk(
+    monkeypatch,
+):
+    _split(monkeypatch)
+    (first, *_rest) = _frame(_BARE_COLUMNS, _BARE_ROWS)()
+
+    def chunks() -> Iterator[Frame]:
+        yield first
         raise AssertionError("the pivot read past the first chunk")
 
     options = MintOptions(
@@ -129,7 +144,7 @@ def test_a_stored_profile_over_the_cell_cap_refuses_before_reading_the_second_ch
     # Two recipients by three output columns is six cells.
     with pytest.raises(PivotOverCellCapError) as excinfo:
         _render(
-            chunks(),
+            chunks,
             options=options,
             output_profile=_profile(_BARE_ROWS),
             pivot_max_output_cells=5,
@@ -150,7 +165,7 @@ def test_a_non_unique_bare_pivot_names_the_stored_varying_column():
 
     with pytest.raises(PivotNotUniqueError) as excinfo:
         _render(
-            (Table(columns=_BARE_COLUMNS, rows=rows),),
+            _frame(_BARE_COLUMNS, rows),
             options=options,
             output_profile=_profile(rows),
         )
@@ -264,10 +279,10 @@ _GROUPBY_ROWS = (
 _GROUPBY_RESOLVED_REFS = ("dcid:SV_A", "dcid:SV_B", "dcid:SV_C")
 
 
-def _render_groupby_pivot(chunks: tuple[Table, ...]):
+def _render_groupby_pivot(chunks: Callable[[], Iterator[Frame]]):
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
-        frame_chunks=lambda: iter(chunks),
+        frame_chunks=chunks,
         options=MintOptions(
             format="csv",
             bundle=False,
@@ -286,19 +301,16 @@ def _render_groupby_pivot(chunks: tuple[Table, ...]):
         resolved_stat_var_refs=_GROUPBY_RESOLVED_REFS,
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )
     return rendered, artifact_store.fetch(rendered.artifact.url)
 
 
-def test_a_groupby_then_pivot_matches_across_a_one_chunk_and_a_three_chunk_split():
-    one_chunk = (Table(columns=_GROUPBY_COLUMNS, rows=_GROUPBY_ROWS),)
-    three_chunks = tuple(Table(columns=_GROUPBY_COLUMNS, rows=(row,)) for row in _GROUPBY_ROWS)
-
-    one_rendered, one_bytes = _render_groupby_pivot(one_chunk)
-    three_rendered, three_bytes = _render_groupby_pivot(three_chunks)
+def test_a_groupby_then_pivot_matches_across_a_one_chunk_and_a_three_chunk_split(monkeypatch):
+    one_rendered, one_bytes = _render_groupby_pivot(_frame(_GROUPBY_COLUMNS, _GROUPBY_ROWS))
+    _split(monkeypatch)
+    three_rendered, three_bytes = _render_groupby_pivot(_frame(_GROUPBY_COLUMNS, _GROUPBY_ROWS))
 
     assert one_rendered.artifact.artifact_digest == three_rendered.artifact.artifact_digest
     assert one_bytes == three_bytes
@@ -320,17 +332,20 @@ _NON_OUTERMOST_ROWS = (
 )
 
 
-def test_a_pivot_whose_index_is_not_the_outermost_sort_column_matches_across_chunk_splits():
-    one_chunk = (Table(columns=_NON_OUTERMOST_COLUMNS, rows=_NON_OUTERMOST_ROWS),)
-    four_chunks = tuple(
-        Table(columns=_NON_OUTERMOST_COLUMNS, rows=(row,)) for row in _NON_OUTERMOST_ROWS
-    )
+def test_a_pivot_whose_index_is_not_the_outermost_sort_column_matches_across_chunk_splits(
+    monkeypatch,
+):
     options = MintOptions(
         format="csv", bundle=False, pivot=PivotOptions(index="time_period", columns="stat_var")
     )
 
-    one_rendered, one_bytes = _render(one_chunk, options=options)
-    four_rendered, four_bytes = _render(four_chunks, options=options)
+    one_rendered, one_bytes = _render(
+        _frame(_NON_OUTERMOST_COLUMNS, _NON_OUTERMOST_ROWS), options=options
+    )
+    _split(monkeypatch)
+    four_rendered, four_bytes = _render(
+        _frame(_NON_OUTERMOST_COLUMNS, _NON_OUTERMOST_ROWS), options=options
+    )
 
     assert one_rendered.artifact.artifact_digest == four_rendered.artifact.artifact_digest
     assert one_bytes == four_bytes

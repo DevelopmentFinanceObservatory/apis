@@ -8,7 +8,6 @@ to another create with its token returns the winner's reply.
 from __future__ import annotations
 
 import dataclasses
-import logging
 import secrets
 import threading
 from contextlib import contextmanager
@@ -16,7 +15,7 @@ from contextlib import contextmanager
 import pytest
 
 from assembler.errors import WriteRefused
-from assembler.pipeline import ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER, write_component
+from assembler.pipeline import write_component
 from assembler.write_token import CreateRequestInvalid, write_token_digest
 
 from ._pipeline_support import _malaria_intent
@@ -305,7 +304,7 @@ class _RivalCommitsFirstRevisionStore:
 
 
 def test_a_create_that_loses_the_race_returns_the_winners_reply(
-    frame_store, revision_store, release_registry, caplog
+    frame_store, revision_store, release_registry
 ):
     token = _client_token()
     rival_replies = []
@@ -320,18 +319,16 @@ def test_a_create_that_loses_the_race_returns_the_winners_reply(
             )
         )
 
-    with caplog.at_level(logging.ERROR, logger="assembler.pipeline.write"):
-        loser = _create(
-            frame_store=frame_store,
-            revision_store=_RivalCommitsFirstRevisionStore(inner=revision_store, rival=rival),
-            release_registry=release_registry,
-            create_write_token=token,
-        )
+    loser = _create(
+        frame_store=frame_store,
+        revision_store=_RivalCommitsFirstRevisionStore(inner=revision_store, rival=rival),
+        release_registry=release_registry,
+        create_write_token=token,
+    )
 
     [winner] = rival_replies
     assert loser == winner
     prior = revision_store.prior_create(write_token_sha256=write_token_digest(token))
     assert prior is not None
     assert prior.component_id == winner.component_id
-    # The loser pinned a frame for a component that never committed.
-    assert ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER in caplog.text
+    assert frame_store.pins == 0

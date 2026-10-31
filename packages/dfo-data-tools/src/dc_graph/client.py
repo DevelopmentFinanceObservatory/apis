@@ -39,6 +39,7 @@ from dc_graph.errors import (
     GraphCapExceededError,
     GraphDeadlineExceededError,
     GraphNotAdvancingError,
+    GraphOmittedDcidsError,
     GraphReadError,
     ReadErrorFactory,
 )
@@ -297,6 +298,18 @@ class ProvenanceRefresh:
 
 
 @dataclass(frozen=True)
+class ArcTarget:
+    """One target of a node's arc as `/v2/node` answers it: its dcid, or a literal's `value`,
+    and for a node target the `name` and `types` the answer carries beside the dcid. A target
+    with several names carries the first of them, sorted, where `display_name` takes the
+    greatest."""
+
+    value: str
+    name: str | None = None
+    types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SubjectPage:
     """One `node_subjects` page. `truncated` means `node_subjects` found a `(max_results + 1)`th
     distinct subject. Stuck cursors raise `GraphNotAdvancingError`.
@@ -472,6 +485,18 @@ class GraphClient:
             else None
         )
         self._label_counters = _CacheCounters()
+        # `node_arc_targets_many` answers, sized as the label cache, since they name nodes.
+        self._arc_targets_cache: (
+            cachetools.TLRUCache[tuple[str, str, tuple[str, ...]], dict[str, tuple[ArcTarget, ...]]]
+            | None
+        ) = (
+            cachetools.TLRUCache(
+                maxsize=label_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
+            )
+            if label_cache_size > 0
+            else None
+        )
+        self._arc_targets_counters = _CacheCounters()
         self._type_cache: cachetools.TLRUCache[tuple[str, str], str | None] | None = (
             cachetools.TLRUCache(
                 maxsize=type_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
@@ -1074,10 +1099,12 @@ class GraphClient:
             retry_data = self._post_node_arcs_batch(suspects, deadline=deadline)
             unanswered = [dcid for dcid in suspects if dcid not in retry_data]
             if unanswered:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph /v2/node omitted {unanswered!r} from both the initial batch "
-                    "and a single-dcid retry"
+                    "and a single-dcid retry",
+                    dcids=unanswered,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             read_alone = len(suspects) == 1
             for dcid in suspects:
                 arcs = (
@@ -1176,6 +1203,47 @@ class GraphClient:
             deadline=deadline,
         )
 
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
+        target's name and types need no read of their own, or `None` for a node the graph
+        answers with none of them. The reads are `node_arcs_many`'s initial chunks and pages
+        for the dcids the optional cache (sized `label_cache_size`) does not hold under the
+        generation stamp, bounded by `deadline`, with no retry of an empty answer. A node
+        answered with arcs is cached; an empty answer is not, since a batch can empty an entry
+        depending on which other dcids share it."""
+        if not dcids:
+            return {}
+        stamp = self._generation.stamp()
+        wanted = tuple(sorted(properties))
+        result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        misses: list[str] = []
+        with self._cache_lock:
+            for dcid in dict.fromkeys(dcids):
+                key = (stamp.key, dcid, wanted)
+                if self._arc_targets_cache is not None and key in self._arc_targets_cache:
+                    self._arc_targets_counters.hits += 1
+                    result[dcid] = self._arc_targets_cache[key]
+                else:
+                    self._arc_targets_counters.misses += 1
+                    misses.append(dcid)
+        if not misses:
+            return result
+        data = self._post_node_arcs_chunked(misses, properties=properties, deadline=deadline)
+        for dcid in misses:
+            arcs = (data.get(dcid) or {}).get("arcs", {})
+            targets = parse_arc_targets(arcs, properties) if arcs else None
+            result[dcid] = targets
+            if targets is not None and self._arc_targets_cache is not None:
+                with self._cache_lock:
+                    self._arc_targets_cache[(stamp.key, dcid, wanted)] = targets
+        return {dcid: result[dcid] for dcid in dict.fromkeys(dcids)}
+
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, tuple[str, ...]]:
@@ -1225,10 +1293,12 @@ class GraphClient:
             retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
             still_missing = [dcid for dcid in suspects if dcid not in retry_data]
             if still_missing:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph omitted {still_missing!r} from /v2/node data even after a "
-                    "re-request scoped to just those dcids"
+                    "re-request scoped to just those dcids",
+                    dcids=still_missing,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             still_empty: list[str] = []
             for dcid in suspects:
                 retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
@@ -1246,10 +1316,12 @@ class GraphClient:
             for dcid in to_probe:
                 probe_data = self._post_node_arcs([dcid], properties=properties, deadline=deadline)
                 if dcid not in probe_data:
-                    raise self._read_error_cls(
+                    omitted = GraphOmittedDcidsError(
                         f"graph omitted {dcid!r} from /v2/node data even after an "
-                        "individual re-request scoped to just that dcid"
+                        "individual re-request scoped to just that dcid",
+                        dcids=[dcid],
                     )
+                    raise self._read_error_cls(str(omitted)) from omitted
                 probe_arcs = (probe_data.get(dcid) or {}).get("arcs", {})
                 result[dcid] = (
                     parse_arcs(probe_arcs, properties, mark_unresolved=True) if probe_arcs else None
@@ -1316,17 +1388,23 @@ class GraphClient:
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging arcs for {list(dcids)!r} "
-                    "instead of making progress"
+                    "instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=payload["property"],
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return merged
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"reading arcs for {list(dcids)!r}"
+            f"reading arcs for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=_arc_spec(properties),
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def _acquire_node_arc_slot(self, deadline: float | None) -> None:
         """Acquire a `node_arcs_many` slot, with `deadline` and a bound request deadline
@@ -1427,17 +1505,23 @@ class GraphClient:
                         children.append(child_dcid)
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging child places for {parent!r} "
-                    f"via {child_type!r} instead of making progress"
+                    f"via {child_type!r} instead of making progress",
+                    dcid=parent,
+                    property=prop,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return children
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"paging child places for {parent!r} via {child_type!r}"
+            f"paging child places for {parent!r} via {child_type!r}",
+            dcid=parent,
+            property=prop,
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def node_subjects(
         self,
@@ -1498,10 +1582,13 @@ class GraphClient:
             if len(dcids) > max_results or token is None:
                 break
         else:
-            raise self._read_error_cls(
+            capped = GraphNotAdvancingError(
                 f"graph still reported a nextToken after {_NODE_SUBJECTS_MAX_PAGES} pages "
-                f"paging subjects for {dcid!r} via {property!r}"
+                f"paging subjects for {dcid!r} via {property!r}",
+                dcid=dcid,
+                property=property,
             )
+            raise self._read_error_cls(str(capped)) from capped
         if len(dcids) > max_results:
             return SubjectPage(dcids=tuple(dcids[:max_results]), truncated=True)
         return SubjectPage(dcids=tuple(dcids), truncated=token is not None)
@@ -1554,10 +1641,13 @@ class GraphClient:
                         break
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging subjects for {unique_dcids!r} "
-                    f"via {property!r} instead of making progress"
+                    f"via {property!r} instead of making progress",
+                    dcid=", ".join(unique_dcids),
+                    property=arc_spec,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None or len(capped) == len(unique_dcids):
                 return {
@@ -1620,10 +1710,12 @@ class GraphClient:
             retry_data = self._fetch_observation_property_chunks(absent, deadline=deadline)
             unanswered = [dcid for dcid in absent if dcid not in retry_data]
             if unanswered:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph omitted {unanswered!r} from both the initial batch and "
-                    "a single-dcid retry"
+                    "a single-dcid retry",
+                    dcids=unanswered,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             data = {**data, **retry_data}
         result: dict[str, tuple[str, ...]] = {}
         for dcid in dcids:
@@ -2114,16 +2206,22 @@ class GraphClient:
             if next_token is None:
                 return members
             if next_token in tokens_seen:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated a nextToken paging <-typeOf members for "
-                    f"{class_dcids!r} instead of making progress"
+                    f"{class_dcids!r} instead of making progress",
+                    dcid=", ".join(class_dcids),
+                    property="<-typeOf",
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             tokens_seen.add(next_token)
             token = next_token
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_ENUM_MEMBERS_TYPEOF_MAX_PAGES} pages "
-            f"reading <-typeOf members for {class_dcids!r}"
+            f"reading <-typeOf members for {class_dcids!r}",
+            dcid=", ".join(class_dcids),
+            property="<-typeOf",
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def currency_units(self, *, deadline: float | None = None) -> dict[str, str]:
         """Map currency unit dcids to ISO 4217 alpha-3 codes, from three sources in rising
@@ -2214,17 +2312,23 @@ class GraphClient:
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging {arc_spec!r} for "
-                    f"{list(dcids)!r} instead of making progress"
+                    f"{list(dcids)!r} instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=arc_spec,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return merged
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"reading {arc_spec!r} for {list(dcids)!r}"
+            f"reading {arc_spec!r} for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=arc_spec,
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def entities_with_data(
         self,
@@ -2276,6 +2380,11 @@ class GraphClient:
                 "label_hits": self._label_counters.hits,
                 "label_misses": self._label_counters.misses,
                 "label_entries": 0 if self._label_cache is None else len(self._label_cache),
+                "arc_targets_hits": self._arc_targets_counters.hits,
+                "arc_targets_misses": self._arc_targets_counters.misses,
+                "arc_targets_entries": 0
+                if self._arc_targets_cache is None
+                else len(self._arc_targets_cache),
                 "type_hits": self._type_counters.hits,
                 "type_misses": self._type_counters.misses,
                 "type_entries": 0 if self._type_cache is None else len(self._type_cache),
@@ -2305,6 +2414,8 @@ class GraphClient:
         with self._cache_lock:
             if self._label_cache is not None:
                 self._label_cache.clear()
+            if self._arc_targets_cache is not None:
+                self._arc_targets_cache.clear()
             if self._type_cache is not None:
                 self._type_cache.clear()
             if self._arcs_cache is not None:
@@ -2379,6 +2490,27 @@ def parse_arcs(
         )
         for prop in properties
     }
+
+
+def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[ArcTarget, ...]]:
+    """Each of `properties` with its distinct targets in first-occurrence order, `()` for a
+    missing property. An entry with neither `dcid` nor `value` is dropped. Entries are read
+    through `_arc_entries`."""
+    parsed: dict[str, tuple[ArcTarget, ...]] = {}
+    for prop in properties:
+        targets: dict[str, ArcTarget] = {}
+        for entry in _arc_entries(arcs, prop):
+            dcid = entry.get("dcid")
+            value = dcid or entry.get("value")
+            if value is None or value in targets:
+                continue
+            targets[value] = ArcTarget(
+                value=value,
+                name=entry.get("name") if dcid else None,
+                types=tuple(entry.get("types", ())) if dcid else (),
+            )
+        parsed[prop] = tuple(targets.values())
+    return parsed
 
 
 def display_name(names: Iterable[str], dcid: str) -> str | None:

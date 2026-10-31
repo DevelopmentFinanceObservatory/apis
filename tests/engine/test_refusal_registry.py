@@ -5,10 +5,9 @@ endpoint that maps it.
 
 from __future__ import annotations
 
-from dfo_spec_kit.registry import REGISTRY
-
 from dfo_platform.codes import bound_registry_endpoint
 from search.engine.app import search_surface
+from tests.code_registry import problem_statuses, registered_endpoints, unbound_routes
 
 # Routes that serve no registry endpoint: they refuse only with platform codes.
 _UNBOUND_PATHS = frozenset(
@@ -21,32 +20,14 @@ _UNBOUND_PATHS = frozenset(
 )
 
 
-def _statuses(code: str, endpoint: str) -> set[int]:
-    """The statuses the registry gives `code`'s problem details on `endpoint`."""
-    entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
-    return {
-        mapping.http_status
-        for mapping in (entry.mappings if entry is not None else ())
-        if mapping.channel == "problem_details"
-        and mapping.http_status is not None
-        and mapping.endpoint == endpoint
-    }
-
-
 def test_every_search_route_binds_the_registry_endpoint_it_serves():
     """The surface binds every Search endpoint the registry maps, each to a route it serves, and
     leaves only the routes in `_UNBOUND_PATHS` unbound."""
     surface = search_surface()
-    registered = {
-        mapping.endpoint
-        for entry in REGISTRY.entries
-        for mapping in entry.mappings
-        if mapping.endpoint.startswith("search.")
-    }
-    routed = {getattr(route, "path", None) for route in surface.router.routes}
+    registered = registered_endpoints("search.")
 
     assert set(surface.registry_endpoints.values()) == registered
-    assert routed - set(surface.registry_endpoints) == _UNBOUND_PATHS
+    assert {path for _, path in unbound_routes(surface)} == _UNBOUND_PATHS
 
 
 def test_every_search_exemplar_goes_out_at_its_registered_status():
@@ -64,7 +45,7 @@ def test_every_search_exemplar_goes_out_at_its_registered_status():
                 spec = surface.classify(exemplar)
             if spec is None:
                 continue
-            statuses = _statuses(spec.code, endpoint)
+            statuses = problem_statuses(spec.code, endpoint)
             if not statuses:
                 continue
             mapped = True

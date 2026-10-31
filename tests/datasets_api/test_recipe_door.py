@@ -24,6 +24,7 @@ from spec_registry import LiveSpecRegistry
 from tests.artifact_store.conftest import FakeGCSClient
 
 from ._app_factories import make_client
+from ._render_inputs import ENRICHMENT, PREPARED_AT, SITE
 from ._snapshot_doubles import FakeSpecReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
@@ -216,6 +217,9 @@ def test_publish_with_a_recipe_and_no_recipe_store_refuses_before_any_write(deps
             snapshot_reader=deps.snapshot_reader,
             version_writer=deps.version_writer,
             recipe=Recipe.model_validate(_recipe()),
+            file_enrichment=ENRICHMENT,
+            site=SITE,
+            prepared_at=PREPARED_AT,
         )
 
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None

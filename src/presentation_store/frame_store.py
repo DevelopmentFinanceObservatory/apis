@@ -1,10 +1,13 @@
 """`LiveFrameStore` resolves frames from dataset snapshots and digest-verified artifacts.
 It resolves best-effort labels for frames.
 
-A published `ops_` frame's version stores only its lineage, so `load()` adds the citation
-its `provenance` column names, read from the graph, as `manifest["citation"]`. The graph read
-covers the first 300 distinct refs in row order; later refs are cited by their ref alone. A
-dataset version's stored citation is served with its empty documentation and licence fields
+A published `ops_` frame's version stores only its lineage, so `load()` adds a citation as
+`manifest["citation"]`. A frame whose recipe names roots that cite sources is cited as the
+derived manifest cites it, its roots' citations merged (`datasets_api.derived.recipe_citation`),
+and those are filled as a dataset version's stored citation is. A frame with no recipe, or
+whose roots cite nothing, is cited with the sources its `provenance` column names, read from
+the graph. That read covers the first 300 distinct refs in row order; later refs are cited by
+their ref alone. A dataset version's stored citation is served with its empty documentation and licence fields
 filled from a live read of the sources with an empty field
 (`datasets_api.manifest.citation_healed_from`), as a Datasets bundle cites it; a stored
 citation with every field set reads nothing. A frame that holds a description record reads
@@ -59,10 +62,14 @@ is left out, and an input record holding `steps: null` is held, and either leave
 record not final, so a later load reads the inputs again. A
 failed input read raises as a failed record read does.
 
-A version's warnings carry by ref the entities and group members they count and their
-messages do not name: the bound entities and members that served nothing, and the entities a
-conversion left out (`assembler.mint.warned_refs`). These hold no row, so their refs join the
-frame's label read ahead of its own refs, and a card names them by label.
+A version's warnings carry by ref the entities, group members, series and provenances they
+count: the bound entities and members that served nothing, the entities a conversion left out,
+and the series and provenances the registry withheld. A stored warning's message may name
+none of them (`assembler.mint.warned_refs`, `assembler.mint.warned_provenance_refs`). The
+entities, members and series hold no row, so their refs join the frame's label read ahead of
+its own refs. A provenance is named as a source citation names it (`read_source_citations`):
+its catalogue row, else its parent Dataset's name, else its own. A card names them all by
+label.
 
 A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
 comes from its stored version alone: a dataset version's `trace.continuations`, or the
@@ -124,18 +131,34 @@ until the record is final. One load at a time refreshes a cached frame; a load t
 refreshing waits for that load and serves what it cached, or, once its own deadline passes,
 the words the cache holds. A load caches its result only over the entry it read, so it never
 replaces a newer entry another load cached meanwhile. `load()` re-checks revocation and working-tier servability on every
-call, cache hit or not, so a later takedown refuses the next load. `pin()` records a
-presentation reference and promotes working artifacts to pinned.
+call, cache hit or not, so a later takedown refuses the next load.
+
+`load()` states the frame's rendering as `ResolvedFrame.rendering`. A dataset frame's is read
+on every load from the version record and the files linked under it, the read the revocation
+check makes (`datasets_api.recorded_rendering.rendering_of`, as `StoredRendering.to_record`), since
+a later fetch can link a file of another rendering under the same version. A version whose
+records do not say has none. A derived frame's is its recipe's `normal_form_hash`, read with
+the recipe and cached with it, and a derived frame with no recipe yet, or of a store with no
+recipe reader, has none.
+
+`pin()` records a presentation reference and promotes working artifacts to pinned. A derived
+frame pins with the root versions its recipe names, and theirs in turn, by the rule
+`LiveFrameStore.pin` states: the frame itself must pin, and each root pins while it is held. A
+derived frame with no recipe that a reference already names pins alone, and once a recipe
+is written for it a pin names the roots again (`LiveFrameStore._recipe_roots`).
+Each new pinned copy, the frame's or a root's, is admitted by
+`datasets_api.retention_admission.copy_to_pinned` against the store's allowance ledger, and a
+copy skipped because its frame is pinned already spends nothing.
 """
 
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -143,14 +166,20 @@ from typing import Protocol, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from dfo_frame_grammar import (
+    STAT_VAR_COLUMN,
+    UNIT_COLUMN,
+)
+from dfo_frame_grammar.grammar import (
+    STAT_VAR_REF_PREFIX,
+)
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from assembler.bind import role_columns, series_label
+from assembler.errors import BindingInvalid
 from assembler.frame_view import (
     compute_structural_view,
     continuation_known,
@@ -159,13 +188,16 @@ from assembler.frame_view import (
     frame_continuation,
 )
 from assembler.limits import LABEL_MAX, joined_label
-from assembler.mint import warned_refs
+from assembler.mint import warned_provenance_refs, warned_refs
 from assembler.ports import (
+    TRANSIENT_FRAME_REASONS,
+    Continuation,
     FrameRef,
     FrameUnavailable,
     LeftOutSeries,
     ResolvedFrame,
     RollingAnchor,
+    StructuralView,
 )
 from code_index.labels import family_label
 from code_index.query import CodeIndex
@@ -177,6 +209,7 @@ from dataset_store.snapshot import (
     ArtifactReferenceWriter,
     FrameLineage,
     ManifestFacts,
+    ServableVersion,
     SnapshotNotFound,
     SnapshotReader,
     SnapshotRevoked,
@@ -184,7 +217,10 @@ from dataset_store.snapshot import (
     StoredVersion,
     read_servable_version,
 )
+from datasets_api.allowance import AllowanceExhausted, SharedAllowanceLedger
 from datasets_api.codes_snapshot import SpecNotFound
+from datasets_api.config import DEFAULT_GROUPBY_FOLD_MAX_ROWS
+from datasets_api.derived import recipe_citation
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
 from datasets_api.manifest import (
@@ -194,8 +230,16 @@ from datasets_api.manifest import (
     version_document,
 )
 from datasets_api.manifest_models import CitationModel
-from datasets_api.recipe_store import RecipeReader
-from datasets_api.render import servable_frame_location
+from datasets_api.recipe_store import RecipeReader, RecipeRecord
+from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
+from datasets_api.render import frame1_decode_max_bytes, servable_frame_location
+from datasets_api.retention_admission import (
+    CopyClaimUnsettled,
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    PinUnitHeld,
+    copy_to_pinned,
+)
 from datasets_api.subject_ids import served_subject_ids
 from dc_graph import label_or_self_name
 from description.citation import figures_processed
@@ -205,15 +249,24 @@ from description.steps import Step
 from description.steps_text import bound_entities, composed_names, step_output_names
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from description.world_bank import WORLD_BANK_NAMESPACE
+from dfo_platform.caller import Caller
+from dfo_platform.executor import submit_with_context
 from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
+    STORED_FRAME_DECODE_ERRORS,
     canonical_frame_document,
     read_canonical_frame_table,
+    read_frame1,
 )
 from materialise.graph import GraphReader, GraphReadError
-from materialise.provenance_doc import SourceCitation, read_source_citations
+from materialise.provenance_doc import (
+    SourceCitation,
+    provenance_names,
+    read_source_citations,
+    unnamed_provenances,
+)
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
@@ -263,6 +316,13 @@ a derived frame's provenance refs in row order, a root frame's stored citation s
 order. On a derived frame a ref beyond the cap is cited by its ref alone, as a ref the graph does
 not hold is. On a root frame a source beyond the cap keeps its stored fields and documents
 nothing."""
+
+_PROVENANCE_NAME_POOL = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="frame-provenance-names"
+)
+"""Threads, process-wide, that read a load's provenance names beside its label read
+(`_label_refs`). A name read still queued when the label read ends is cancelled and made on
+the load's own thread, so a busy pool delays no load beyond a serial read."""
 
 _RECHECK = datetime.timedelta(seconds=60)
 """How long a cached frame serves a description record that is not final, or words whose
@@ -362,38 +422,111 @@ def _revoked(*, spec_id: str, content_version: str, reason: str | None) -> Frame
     return FrameUnavailable(reason="revoked", detail=detail)
 
 
-def _io_failure(*, action: str, digest: str, exc: Exception) -> FrameUnavailable:
+def _io_failure(
+    *, action: str, digest: str, exc: Exception, retry_after_s: float | None = None
+) -> FrameUnavailable:
     """Build a retryable I/O refusal that carries only the exception class."""
     return FrameUnavailable(
-        reason="io", detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}"
+        reason="io",
+        detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}",
+        retry_after_s=retry_after_s,
     )
+
+
+# The errors Datasets refuses the same bytes by (`materialise.formats.STORED_FRAME_DECODE_ERRORS`).
+_MALFORMED_CONTENT = STORED_FRAME_DECODE_ERRORS
+
+# How long a client waits before it retries a frame this instance had no memory to decode.
+_DECODE_RETRY_AFTER_S = 30
+
+
+@contextmanager
+def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
+    """Refuse what the block raises while it reads the content `location` names.
+
+    The bytes are in memory and passed their digest check, so no failure to read them is a failed
+    read. Malformed content refuses `missing_rendering`, logged with the traceback: the parsers'
+    errors for bytes they cannot parse, and `FrameError` for content outside the grammar's
+    forms. Any other exception is a defect, which reaches `internal_error` with a note naming the
+    digest. `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing about the bytes,
+    so it refuses the retryable `io` and names a wait (`_DECODE_RETRY_AFTER_S`), since the next
+    try needs memory this instance may not have."""
+    try:
+        yield
+    except MemoryError as exc:
+        raise _io_failure(
+            action="decoding",
+            digest=location.artifact_digest,
+            exc=exc,
+            retry_after_s=_DECODE_RETRY_AFTER_S,
+        ) from exc
+    except _MALFORMED_CONTENT as exc:
+        logger.error(
+            "artifact_digest %r did not decode as a frame: %s: %s",
+            location.artifact_digest,
+            type(exc).__name__,
+            exc,
+            exc_info=exc,
+        )
+        raise FrameUnavailable(
+            reason="missing_rendering",
+            detail=(
+                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
+                f"{type(exc).__name__}"
+            ),
+        ) from exc
+    except (FrameUnavailable, BindingInvalid):
+        raise
+    except Exception as exc:
+        exc.add_note(f"while reading artifact_digest {location.artifact_digest!r}")
+        raise
+
+
+def _structural_view(
+    frame: Mapping[str, object],
+    *,
+    continuation: Continuation | None,
+    location: StoredArtifactLocation,
+) -> StructuralView:
+    """`compute_structural_view` of the frame `location` stores, a function of its stored cells."""
+    with _decoding(location):
+        return compute_structural_view(frame=frame, continuation=continuation)
 
 
 def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
-    """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
-    document parsed, at its byte length, or a canonical frame built into one, at
-    `_document_bytes`. A canonical frame whose Parquet footer counts more than `max_rows` rows
-    refuses `missing_rendering` before any row is decoded. Bytes that do not decode refuse
-    `io`."""
-    try:
+    """The frame1 document `data` holds and the bytes the cache counts for it, `_document_bytes`
+    of its rows and columns. Both stored forms read into a canonical frame table and build the
+    document from it through `canonical_frame_document`, so their cells are shared alike: a
+    canonical frame read as one (`_canonical_table`), bounded by `max_rows` before any row is
+    decoded, and a frame1 document through `materialise.formats.read_frame1`, the one reader
+    Datasets reads it by, which checks every cell. A frame1 document is not row-bounded: it
+    predates canonical frames, and `datasets_api.maintenance.run_backfill_frame1` gives such a
+    version a canonical frame. `_decoding` refuses what does not decode."""
+    with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            return cast("Mapping[str, object]", json.loads(data)), len(data)
-        rows = pq.read_metadata(pa.BufferReader(data)).num_rows
-        if rows > max_rows:
-            raise _over_row_bound(location, rows=rows, max_rows=max_rows)
-        doc = canonical_frame_document(read_canonical_frame_table(data))
-    except (ValueError, pa.ArrowException) as exc:
-        raise FrameUnavailable(
-            reason="io",
-            detail=(
-                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
-                f"{type(exc).__name__}"
-            ),
-        ) from None
+            table = read_frame1(data).table
+        else:
+            table = _canonical_table(data, location=location, max_rows=max_rows)
+        doc = canonical_frame_document(table)
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
+
+
+def _canonical_table(data: bytes, *, location: StoredArtifactLocation, max_rows: int) -> pa.Table:
+    """The table of the canonical frame `data` holds, refused past `max_rows` from its footer
+    before any row is decoded, then read by `read_canonical_frame_table`, the check Datasets
+    reads one by.
+
+    Raises:
+        FrameError, pa.ArrowException, OSError: As `read_canonical_frame_table`.
+        FrameUnavailable: `missing_rendering` past `max_rows`.
+    """
+    rows = pq.ParquetFile(pa.BufferReader(data)).metadata.num_rows
+    if rows > max_rows:
+        raise _over_row_bound(location, rows=rows, max_rows=max_rows)
+    return read_canonical_frame_table(data)
 
 
 def _over_row_bound(
@@ -404,6 +537,16 @@ def _over_row_bound(
         detail=(
             f"artifact_digest {location.artifact_digest!r} holds {rows} rows, over the "
             f"{max_rows} rows Presentation loads"
+        ),
+    )
+
+
+def _over_byte_bound(location: StoredArtifactLocation, *, max_bytes: int) -> FrameUnavailable:
+    return FrameUnavailable(
+        reason="missing_rendering",
+        detail=(
+            f"artifact_digest {location.artifact_digest!r} is a frame1 document of "
+            f"{location.size_bytes} bytes, over the {max_bytes} bytes Presentation decodes"
         ),
     )
 
@@ -431,17 +574,27 @@ def _document_bytes(*, rows: int, columns: int) -> int:
     return rows * (_ROW_LIST_BYTES + 8 * columns + _VALUE_CELL_BYTES)
 
 
+def _provenance_cells(
+    *, columns: Sequence[str], rows: Sequence[Sequence[object]]
+) -> frozenset[str]:
+    """The provenance dcids the `provenance` column of `rows` holds."""
+    if _PROVENANCE_COLUMN not in columns:
+        return frozenset()
+    index = columns.index(_PROVENANCE_COLUMN)
+    return frozenset(cast(str, row[index]) for row in rows if row[index] is not None)
+
+
 def _capped_refs(
     *,
     columns: Sequence[str],
     rows: Sequence[Sequence[object]],
-    leading_stat_vars: Sequence[str] = (),
+    leading_refs: Sequence[str] = (),
     worded: Sequence[str] = (),
     named: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """The refs to label in `rows`, each mapped to the bare dcid a graph read takes: stat_var,
     entity, and provenance refs up to `_LABEL_RESOLUTION_CAP`, then unit dcid refs up to
-    `_UNIT_LABEL_CAP`, each in row order. `leading_stat_vars`, then the bare dcids in `worded`,
+    `_UNIT_LABEL_CAP`, each in row order. `leading_refs`, then the bare dcids in `worded`,
     then a composed unit's StatVar sides, count under the first cap ahead of the columns' own
     refs, and a composed unit's string sides as unit refs. A ref in `named` is left out."""
     index_by_column = {column: position for position, column in enumerate(columns)}
@@ -465,7 +618,7 @@ def _capped_refs(
     # composed variable, the refs inputs' titles and steps' names word and the sides of a
     # composed unit come first, since each labels the whole card and frames hold few of them.
     # A bare dcid is its own key and strips to itself.
-    leading = [*leading_stat_vars, *worded]
+    leading = [*leading_refs, *worded]
     leading += [
         cast("Mapping[str, str]", part)["stat_var"]
         for part in unit_parts
@@ -578,6 +731,24 @@ def _joined_within_label_max(first: str, joiner: str, second: str) -> str:
     return joined_label(first, second, joiner=f" {joiner} ")
 
 
+def _dataset_rendering(
+    frame_ref: FrameRef, *, servable: ServableVersion
+) -> Mapping[str, object] | None:
+    """The rendering a dataset frame's version record and linked files say it is, or `None`
+    when they do not say (`RenderingNotRecorded`)."""
+    try:
+        rendering = rendering_of(
+            spec_id=frame_ref.spec_id,
+            version=servable.version,
+            renderings=[
+                location.rendering for location in (*servable.servable, *servable.aged_out)
+            ],
+        )
+    except RenderingNotRecorded:
+        return None
+    return rendering.to_record()
+
+
 def _left_out_label(coordinates: Mapping[str, str], *, labels: Mapping[str, str]) -> str:
     """A left-out series' label, as `assembler.bind.series_label` builds a series label.
     Coordinates that hold neither `stat_var` nor an entity role are labelled by their raw
@@ -629,7 +800,9 @@ class LiveFrameStore:
     required.
     `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
     without one. `description_reader` supplies each version's description record, and `None`
-    loads every frame without one.
+    loads every frame without one. `allowances` is the ledger each new pinned copy `pin()` makes
+    spends from. It has no default: `None` pins without spending, for an operator's import, and
+    must be passed as such.
     `code_index` and `measure_index` are fixed when given. Left out, each read takes the
     indexes the request reads (`get_index`, `get_measure_index`), which can change between
     requests. `now` supplies the clock for expiry checks and reference timestamps.
@@ -637,7 +810,11 @@ class LiveFrameStore:
     docstring describes, for a caller that sets no door deadline. `frame_max_rows` bounds the
     rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A
     larger frame refuses `missing_rendering`, before its object is fetched when the version's
-    facts record its row count.
+    facts record its row count. `fold_max_rows` is Datasets' `groupby_fold_max_rows`, which
+    bounds a frame1 document by its recorded size as a Datasets read that decodes it alone
+    bounds it (`render.frame1_decode_max_bytes`). A larger document refuses
+    `missing_rendering` before its object is fetched, so one stored document is served or
+    refused by both surfaces alike.
     """
 
     def __init__(
@@ -647,6 +824,7 @@ class LiveFrameStore:
         artifacts: ArtifactStore,
         graph: GraphReader | None,
         reference_writer: ArtifactReferenceWriter,
+        allowances: SharedAllowanceLedger | None,
         spec_reader: SpecReader | None = None,
         recipe_reader: RecipeReader | None = None,
         description_reader: DescriptionReader | None = None,
@@ -656,6 +834,7 @@ class LiveFrameStore:
         cache_max_bytes: int = _FRAME_CACHE_MAX_BYTES,
         read_budget_seconds: float = _READ_BUDGET_SECONDS,
         frame_max_rows: int = PUBLISH_MAX_ROWS,
+        fold_max_rows: int = DEFAULT_GROUPBY_FOLD_MAX_ROWS,
     ) -> None:
         self._snapshots = snapshots
         self._artifacts = artifacts
@@ -664,12 +843,14 @@ class LiveFrameStore:
         self._spec_reader = spec_reader
         self._recipe_reader = recipe_reader
         self._description_reader = description_reader
+        self._allowances = allowances
         self._given_code_index = code_index
         self._given_measure_index = measure_index
         self._now = now
         self._cache_max_bytes = cache_max_bytes
         self._read_budget_seconds = read_budget_seconds
         self._frame_max_rows = frame_max_rows
+        self._frame1_max_bytes = frame1_decode_max_bytes(fold_max_rows, folds=False)
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[str, str], _CachedFrame] = {}
         self._cache_bytes = 0
@@ -695,12 +876,45 @@ class LiveFrameStore:
         door_deadline = _door_deadline.get()
         if door_deadline is not None:
             deadline = min(deadline, door_deadline)
+        servable, canonical = self._resolve_canonical_location(frame_ref)
+        if frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
+            return self._cached_or_resolved(
+                frame_ref, stored=servable.version, canonical=canonical, deadline=deadline
+            )
+        rendering = _dataset_rendering(frame_ref, servable=servable)
+        frame = self._cached_or_resolved(
+            frame_ref,
+            stored=servable.version,
+            canonical=canonical,
+            deadline=deadline,
+            rendering=rendering,
+        )
+        # A file of another rendering linked under the version since the frame was cached. The
+        # frame loaded afresh carries `rendering`, so the usual load returns the cached frame
+        # itself and copies it only after such a link.
+        return frame if frame.rendering == rendering else replace(frame, rendering=rendering)
+
+    def _cached_or_resolved(
+        self,
+        frame_ref: FrameRef,
+        *,
+        stored: StoredVersion,
+        canonical: StoredArtifactLocation,
+        deadline: float,
+        rendering: Mapping[str, object] | None = None,
+    ) -> ResolvedFrame:
+        """The cached frame while it is fresh, else the frame `_resolve` loads or refreshes,
+        a frame loaded afresh carrying `rendering`."""
         cache_key = (frame_ref.spec_id, frame_ref.content_version)
-        stored, canonical = self._resolve_canonical_location(frame_ref)
         cached = self._cache_get(cache_key)
         if cached is None:
             return self._resolve(
-                frame_ref, stored=stored, canonical=canonical, cached=None, deadline=deadline
+                frame_ref,
+                stored=stored,
+                canonical=canonical,
+                cached=None,
+                deadline=deadline,
+                rendering=rendering,
             )
         if self._fresh(cached, now=self._now()):
             return cached.resolved
@@ -714,7 +928,12 @@ class LiveFrameStore:
             if cached is not None and self._fresh(cached, now=self._now()):
                 return cached.resolved
             return self._resolve(
-                frame_ref, stored=stored, canonical=canonical, cached=cached, deadline=deadline
+                frame_ref,
+                stored=stored,
+                canonical=canonical,
+                cached=cached,
+                deadline=deadline,
+                rendering=rendering,
             )
 
     def _fresh(self, cached: _CachedFrame, *, now: datetime.datetime) -> bool:
@@ -756,9 +975,11 @@ class LiveFrameStore:
         canonical: StoredArtifactLocation,
         cached: _CachedFrame | None,
         deadline: float,
+        rendering: Mapping[str, object] | None,
     ) -> ResolvedFrame:
         """Load the frame afresh when `cached` is `None`, or refresh what `cached` holds that is
-        due, and cache the result in place of `cached` if the cache still holds it."""
+        due, and cache the result in place of `cached` if the cache still holds it. A frame
+        loaded afresh carries `rendering`, which a derived frame's recipe replaces."""
         cache_key = (frame_ref.spec_id, frame_ref.content_version)
         now = self._now()
         document = version_document(stored)
@@ -770,9 +991,16 @@ class LiveFrameStore:
                 and recorded_rows > self._frame_max_rows
             ):
                 raise _over_row_bound(canonical, rows=recorded_rows, max_rows=self._frame_max_rows)
+            if (
+                canonical.media_type == FRAME1_MEDIA_TYPE
+                and canonical.size_bytes > self._frame1_max_bytes
+            ):
+                raise _over_byte_bound(canonical, max_bytes=self._frame1_max_bytes)
             record, inputs, description_final = self._description_records(frame_ref)
             data = self._fetch_bytes(canonical)
             doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)
+            continuation = frame_continuation(manifest=document)
+            structural_view = _structural_view(doc, continuation=continuation, location=canonical)
             graph_generation, catalogue_build = self._read_under()
             labels, descriptions, labels_resolved = self._resolve_labels(
                 doc,
@@ -780,13 +1008,13 @@ class LiveFrameStore:
                 composed=_composed(record, stored=stored),
                 inputs=inputs,
                 warned=warned_refs(manifest=document),
+                warned_provenances=warned_provenance_refs(manifest=document),
                 deadline=deadline,
             )
-            continuation = frame_continuation(manifest=document)
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
-                structural_view=compute_structural_view(frame=doc, continuation=continuation),
+                structural_view=structural_view,
                 continuation=continuation,
                 manifest=document,
                 labels=labels,
@@ -796,6 +1024,7 @@ class LiveFrameStore:
                 input_records=inputs,
                 graph_generation=graph_generation,
                 catalogue_build=catalogue_build,
+                rendering=rendering,
             )
             citation_due, citation_retry_at, anchor_final = True, None, False
             recheck_at = (
@@ -826,8 +1055,8 @@ class LiveFrameStore:
                 # fills those of a version recorded before versions stored them.
                 frame = replace(
                     frame,
-                    structural_view=compute_structural_view(
-                        frame=frame.frame, continuation=continuation
+                    structural_view=_structural_view(
+                        frame.frame, continuation=continuation, location=canonical
                     ),
                     continuation=continuation,
                 )
@@ -845,6 +1074,7 @@ class LiveFrameStore:
                     composed=_composed(record, stored=stored),
                     inputs=inputs,
                     warned=warned_refs(manifest=document),
+                    warned_provenances=warned_provenance_refs(manifest=document),
                     deadline=deadline,
                 )
                 if record_changed and not labels_resolved:
@@ -868,10 +1098,17 @@ class LiveFrameStore:
                 )
 
         if not anchor_final:
-            replay_key, anchor, anchor_final, anchor_labelled = self._recipe_facts(
+            recipe, anchor, anchor_final, anchor_labelled = self._recipe_facts(
                 frame, deadline=deadline
             )
-            frame = replace(frame, replay_key=replay_key, anchor=anchor)
+            if recipe is not None and frame.replay_key is None:
+                # A recipe written after the frame was cached names the roots it cites.
+                citation_due = True
+            frame = replace(
+                frame, replay_key=recipe.replay_key if recipe is not None else None, anchor=anchor
+            )
+            if recipe is not None:
+                frame = replace(frame, rendering={"normal_form_hash": recipe.normal_form_hash})
             labels_resolved = labels_resolved and anchor_labelled
         if citation_due:
             manifest, documents, citation_complete = self._cited_manifest(
@@ -1021,12 +1258,12 @@ class LiveFrameStore:
 
     def _recipe_facts(
         self, frame: ResolvedFrame, *, deadline: float
-    ) -> tuple[str | None, RollingAnchor | None, bool, bool]:
-        """The replay key and the rolling anchor a derived frame's recipe records, whether that
-        answer is final, and whether every label read behind it succeeded.
+    ) -> tuple[RecipeRecord | None, RollingAnchor | None, bool, bool]:
+        """A derived frame's recipe and the rolling anchor it records, whether that answer is
+        final, and whether every label read behind it succeeded.
 
         A frame that is not derived, and any frame of a store with no recipe reader, has no
-        replay key and no anchor, finally. A derived frame with no recipe has none yet, since a recipe can be
+        recipe and no anchor, finally. A derived frame with no recipe has none yet, since a recipe can be
         written after the frame is published. Each left-out series is labelled from its
         coordinates (`_left_out_label`), over the frame's labels plus one `_label_refs` read of
         the refs the frame does not label. A label the recipe states is kept."""
@@ -1040,20 +1277,20 @@ class LiveFrameStore:
             return None, None, False, True
         body = cast("Mapping[str, object] | None", recipe.body.get("anchor"))
         if body is None:
-            return recipe.replay_key, None, True, True
+            return recipe, None, True, True
 
         left_out = cast("Sequence[Mapping[str, object]]", body["left_out"])
         coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
         columns = tuple(dict.fromkeys(column for one in coordinates for column in one))
+        rows = [[one.get(column) for column in columns] for one in coordinates]
         refs = {
             ref: bare
-            for ref, bare in _capped_refs(
-                columns=columns,
-                rows=[[one.get(column) for column in columns] for one in coordinates],
-            ).items()
+            for ref, bare in _capped_refs(columns=columns, rows=rows).items()
             if ref not in frame.labels
         }
-        read, labelled = self._label_refs(refs, deadline=deadline)
+        read, labelled = self._label_refs(
+            refs, provenances=_provenance_cells(columns=columns, rows=rows), deadline=deadline
+        )
         labels = {**frame.labels, **read}
         anchor = RollingAnchor(
             period=cast(str, body["period"]),
@@ -1068,15 +1305,17 @@ class LiveFrameStore:
                 for one, series in zip(left_out, coordinates, strict=True)
             ),
         )
-        return recipe.replay_key, anchor, True, labelled
+        return recipe, anchor, True, labelled
 
     def _cited_manifest(
         self, frame: ResolvedFrame, *, stored_manifest: Mapping[str, object], deadline: float
     ) -> tuple[Mapping[str, object], dict[str, SourceDocumentFacts], bool]:
         """The manifest with its live citation, what each cited source's document says, and
         whether every citation read completed. One documented citation read
-        (`_source_citations`) serves both. A derived frame cites its provenance refs from the
-        graph. A root frame's stored citation has its empty fields filled
+        (`_source_citations`) serves both. A derived frame whose recipe roots cite sources
+        (`_roots_citation`) is cited with them, filled as a root frame's stored citation is.
+        Any other derived frame cites its provenance refs from the graph. A root frame's stored
+        citation has its empty fields filled
         (`datasets_api.manifest.citation_healed_from`) from a read of its distinct sources with
         an empty `HEALED_FIELDS` member, or of all its distinct sources when the frame holds a
         description record, whose card words what each source's document says. The read
@@ -1086,16 +1325,19 @@ class LiveFrameStore:
         nothing and is complete."""
         frame_ref = frame.frame_ref
         if frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
-            return self._derived_citation(
-                frame.frame,
-                stored_manifest=stored_manifest,
-                frame_ref=frame_ref,
-                steps=()
-                if frame.description_record is None
-                else frame.description_record.known_steps,
-                retrieved=frame.retrieved_on,
-                deadline=deadline,
-            )
+            cited = self._roots_citation(frame_ref)
+            if cited is None:
+                return self._derived_citation(
+                    frame.frame,
+                    stored_manifest=stored_manifest,
+                    frame_ref=frame_ref,
+                    steps=()
+                    if frame.description_record is None
+                    else frame.description_record.known_steps,
+                    retrieved=frame.retrieved_on,
+                    deadline=deadline,
+                )
+            stored_manifest = {**stored_manifest, "citation": cited.model_dump(mode="json")}
         if self._graph is None or "citation" not in stored_manifest:
             return stored_manifest, {}, True
         stored_citation = CitationModel.model_validate(stored_manifest["citation"])
@@ -1119,15 +1361,178 @@ class LiveFrameStore:
             stored_manifest = {**stored_manifest, "citation": citation.model_dump(mode="json")}
         return stored_manifest, _source_documents(live), _documented(live)
 
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
+    def _roots_citation(self, frame_ref: FrameRef) -> CitationModel | None:
+        """A derived frame's citation as the derived manifest gives it, its recipe roots'
+        citations merged (`datasets_api.derived.recipe_citation`), or `None` when the store
+        reads no recipes, the frame has no recipe yet, or its roots cite no source."""
+        if self._recipe_reader is None:
+            return None
+        record = self._recipe_reader.read_recipe(
+            spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
+        )
+        citation = recipe_citation(self._snapshots, record)
+        return citation if citation.sources else None
+
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
+        """Pin `frame_ref` for `component_id`, and, for a derived frame, each root version its
+        recipe names, through every derived root down to the datasets. Returns whether any
+        reference was created or reactivated.
+
+        Each frame or root not pinned yet is copied through
+        `retention_admission.copy_to_pinned`, spending the pin budget and, for an open `caller`,
+        the open callers' budget and its `pin` allowance. A spent budget or allowance refuses
+        the call at the copy it stops, and the copies made before it stand with their units.
+
+        The frame `frame_ref` names is what the card draws, so it must pin or the call refuses.
+        Its roots pin so the data it was computed from stays fetchable, and the frame is held
+        without them. The recipes are read first, so a refusal over them pins nothing. A
+        derived frame, or a derived root, whose recipe is not written yet refuses
+        `recipe_pending`, since the recipe a publish writes after its frame, or a later recipe
+        write, makes a retry pin the roots. A derived frame with no recipe that a reference
+        already names pins with no roots (`_recipe_roots`). A store with no recipe reader, and
+        a recipe root that names no dataset version, refuse `recipe_unreadable`, a server
+        fault no retry clears (`presentation_api.refusals`). Then the frame pins,
+        and a refusal there pins nothing either. Then each root pins while it is still held: a
+        root that aged out of the working tier, was revoked, or cannot be read is left unpinned
+        and logged. A root whose pin fails transiently (`TRANSIENT_FRAME_REASONS`) raises it, and
+        a retry pins what is left.
+
+        Raises:
+            FrameUnavailable: The frame cannot be pinned, its roots cannot be named, or a
+                root's pin failed transiently.
+            PinBudgetExhausted: The day's pin budget is spent.
+            OpenPinBudgetExhausted: The open callers' pin budget is spent.
+            PinUnitHeld: A claim holds the last unit of a limit.
+            CopyClaimUnsettled: The copy ran out of lease before it began.
+            AllowanceExhausted: `caller`'s `pin` allowance is spent.
+        """
+        roots = self._root_closure(frame_ref)
+        changed = self._pin_frame(frame_ref, component_id=component_id, caller=caller)
+        for root in roots:
+            try:
+                changed = self._pin_frame(root, component_id=component_id, caller=caller) or changed
+            except FrameUnavailable as exc:
+                if exc.reason in TRANSIENT_FRAME_REASONS:
+                    raise
+                logger.warning(
+                    "root %s at %s of %s at %s left unpinned for %s: %s %s",
+                    root.spec_id,
+                    root.content_version,
+                    frame_ref.spec_id,
+                    frame_ref.content_version,
+                    component_id,
+                    exc.reason,
+                    exc.detail,
+                )
+        return changed
+
+    def _root_closure(self, frame_ref: FrameRef) -> list[FrameRef]:
+        """Every root version below `frame_ref`, through the recipes of its derived roots, each
+        once, in the order they are first named. None for a dataset frame."""
+        roots: list[FrameRef] = []
+        pending, seen = [frame_ref], {frame_ref}
+        while pending:
+            for root in self._recipe_roots(pending.pop()):
+                if root not in seen:
+                    seen.add(root)
+                    roots.append(root)
+                    pending.append(root)
+        return roots
+
+    def _recipe_roots(self, frame_ref: FrameRef) -> list[FrameRef]:
+        """The root versions a derived frame's recipe names (each root's `dataset`), none for a
+        dataset frame.
+
+        A derived frame with no recipe that a reference row already names, live or removed
+        (`ArtifactReferenceWriter.holds_reference`), has none either. Every pin reads a derived
+        frame's recipe before it writes a reference, and the datasets pin door names `spec_`
+        ids alone, so only a pin made before recipes were stored references a derived frame
+        with no recipe. A share of it draws the frame's stored rows. The recipe is read again
+        after the reference is found, so a recipe written between the two reads names the
+        roots, and one written later (the recipe write route, `datasets_api.doors.recipe`)
+        makes the next pin name them.
+
+        Raises:
+            FrameUnavailable: `recipe_pending` for a derived frame with no recipe yet, and
+                `recipe_unreadable` for a store with no recipe reader or a root naming no
+                dataset version.
+        """
+        if not frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX):
+            return []
+        if self._recipe_reader is None:
+            raise FrameUnavailable(
+                reason="recipe_unreadable",
+                detail=(
+                    f"derived frame {frame_ref.spec_id!r} cannot be pinned with its roots: "
+                    "this store reads no recipes"
+                ),
+            )
+        recipe = self._recipe_reader.read_recipe(
+            spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
+        )
+        if recipe is None and self._reference_writer.holds_reference(
+            subject_id=frame_ref.spec_id, content_version=frame_ref.content_version
+        ):
+            # A recipe written after the first read names the roots after all.
+            recipe = self._recipe_reader.read_recipe(
+                spec_id=frame_ref.spec_id, content_version=frame_ref.content_version
+            )
+            if recipe is None:
+                logger.info(
+                    "derived frame %s at %s holds no recipe and a reference already names it, "
+                    "so it pins with no roots",
+                    frame_ref.spec_id,
+                    frame_ref.content_version,
+                )
+                return []
+        if recipe is None:
+            raise FrameUnavailable(
+                reason="recipe_pending",
+                detail=(
+                    f"derived frame {frame_ref.spec_id!r} at content_version "
+                    f"{frame_ref.content_version!r} holds no recipe yet, so its roots cannot be "
+                    "named; retry once its recipe is written"
+                ),
+            )
+        roots: list[FrameRef] = []
+        for root in cast("Sequence[Mapping[str, object]]", recipe.body.get("roots") or ()):
+            dataset = root.get("dataset")
+            pair = cast("Mapping[str, object]", dataset) if isinstance(dataset, Mapping) else {}
+            spec_id, content_version = pair.get("spec_id"), pair.get("content_version")
+            if not (isinstance(spec_id, str) and isinstance(content_version, str)):
+                raise FrameUnavailable(
+                    reason="recipe_unreadable",
+                    detail=(
+                        f"a root of derived frame {frame_ref.spec_id!r} at content_version "
+                        f"{frame_ref.content_version!r} names no dataset version, so its roots "
+                        "cannot be pinned with it"
+                    ),
+                )
+            roots.append(FrameRef(spec_id=spec_id, content_version=content_version))
+        return roots
+
+    def _pin_frame(self, frame_ref: FrameRef, *, component_id: str, caller: Caller | None) -> bool:
         # The read and the write-time recheck honour revocations under the same ids.
         revoked_under = self._revoked_under(frame_ref.spec_id)
         _, canonical = self._resolve_canonical_location(frame_ref, revoked_under=revoked_under)
         if canonical.tier != Tier.pinned.value:
             try:
-                self._artifacts.copy(
-                    canonical.artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+                copy_to_pinned(
+                    self._artifacts,
+                    canonical.artifact_digest,
+                    source=(canonical.bucket, canonical.object_name),
+                    allowances=self._allowances,
+                    caller=caller,
+                    clock=self._now,
                 )
+            except (
+                PinBudgetExhausted,
+                OpenPinBudgetExhausted,
+                PinUnitHeld,
+                CopyClaimUnsettled,
+                AllowanceExhausted,
+            ):
+                raise
             except ArtifactNotFoundError as exc:
                 raise FrameUnavailable(
                     reason="expired",
@@ -1137,7 +1542,7 @@ class LiveFrameStore:
                     ),
                 ) from exc
             except Exception as exc:
-                # Copy-side write or inventory failure -- see `_io_failure`.
+                # Ledger, copy-side write or inventory failure -- see `_io_failure`.
                 raise _io_failure(
                     action="pinning", digest=canonical.artifact_digest, exc=exc
                 ) from None
@@ -1212,7 +1617,7 @@ class LiveFrameStore:
 
     def _resolve_canonical_location(
         self, frame_ref: FrameRef, *, revoked_under: Sequence[str] | None = None
-    ) -> tuple[StoredVersion, StoredArtifactLocation]:
+    ) -> tuple[ServableVersion, StoredArtifactLocation]:
         """Resolve a frame ref to its stored version and servable stored frame location in one
         `read_servable_version` transaction, the check the snapshot door makes. A missing
         `spec_` row is `unknown`. A missing `ops_` row is `ops_unsupported` until published.
@@ -1276,7 +1681,7 @@ class LiveFrameStore:
                     f"content_version {frame_ref.content_version!r}"
                 ),
             )
-        return stored.version, canonical
+        return stored, canonical
 
     def _fetch_bytes(self, canonical: StoredArtifactLocation) -> bytes:
         try:
@@ -1380,11 +1785,13 @@ class LiveFrameStore:
         composed: Sequence[ComposedVariable],
         inputs: Sequence[DescriptionRecord],
         warned: Sequence[str],
+        warned_provenances: Sequence[str],
         deadline: float,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
-        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities and group
-        members its version's warnings count (`warned`, `assembler.mint.warned_refs`) under
-        their `dcid:` refs, since what served nothing or was left out has no row, and the refs
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities, group
+        members and series its version's warnings count (`warned`, `assembler.mint.warned_refs`)
+        under their `dcid:` refs, since what served nothing, was left out or was withheld has no
+        row, the provenances they count (`warned_provenances`), and the refs
         each of `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
@@ -1399,9 +1806,10 @@ class LiveFrameStore:
             )
         labels, resolved = self._resolve_ref_labels(
             doc,
-            leading_stat_vars=[*_composed_sides(composed), *warned],
+            leading_refs=[*_composed_sides(composed), *warned],
             worded=sorted(worded),
             named=frozenset(_named_refs(record, composed=composed)),
+            warned_provenances=warned_provenances,
             deadline=deadline,
         )
         labels.update(
@@ -1444,17 +1852,20 @@ class LiveFrameStore:
         self,
         doc: Mapping[str, object],
         *,
-        leading_stat_vars: Sequence[str],
+        leading_refs: Sequence[str],
         named: frozenset[str],
         worded: Sequence[str] = (),
+        warned_provenances: Sequence[str] = (),
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
-        order, then unit dcid refs, capped at 100 in row order, and say whether the graph read
-        succeeded. `leading_stat_vars`, then a composed unit's StatVar sides, count as stat_var
+        order, then unit dcid refs, capped at 100 in row order, with the `dcid:` refs of
+        `warned_provenances` past both caps, and say whether the graph read succeeded. The
+        provenance cells and `warned_provenances` are named as `_label_refs` names a
+        provenance. `leading_refs`, then a composed unit's StatVar sides, count as stat_var
         refs ahead of the columns' own refs, and a composed unit's string sides as unit refs.
         A ref in `named` is left out of the read. Each bare dcid in `worded` counts under the
-        first cap after `leading_stat_vars`. `dcid:spec_...` family refs use stored
+        first cap after `leading_refs`. `dcid:spec_...` family refs use stored
         definitions and `CodeIndex`. Other refs use one graph batch that stops at the absolute
         monotonic `deadline`. Missing readers, lookup/store failures, and over-cap refs remain
         unlabelled without failing the load. A graph failure, the deadline included, preserves
@@ -1468,11 +1879,14 @@ class LiveFrameStore:
         refs = _capped_refs(
             columns=columns,
             rows=rows,
-            leading_stat_vars=leading_stat_vars,
+            leading_refs=leading_refs,
             worded=worded,
             named=named,
         )
-        return self._label_refs(refs, deadline=deadline)
+        warned = {ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in warned_provenances}
+        refs.update(warned)
+        provenances = _provenance_cells(columns=columns, rows=rows) | set(warned.values())
+        return self._label_refs(refs, provenances=provenances, deadline=deadline)
 
     def _computed_labels(
         self,
@@ -1530,15 +1944,23 @@ class LiveFrameStore:
         )
 
     def _label_refs(
-        self, refs: Mapping[str, str], *, deadline: float
+        self, refs: Mapping[str, str], *, provenances: frozenset[str], deadline: float
     ) -> tuple[dict[str, str], bool]:
         """Label `refs`, a map from each ref to its bare dcid, and say whether every read
-        succeeded, as `_resolve_labels` describes."""
+        succeeded, as `_resolve_labels` describes. A ref whose bare dcid is in `provenances` is
+        named by `materialise.provenance_doc.provenance_names`, timed as the call's
+        `provenance_names` phase. Every other graph ref is labelled by one `node_arcs_many` of
+        `name`. When both read the graph, the name read runs beside the label read, so naming
+        a provenance the catalogue does not list adds no serial step."""
+        catalogue = current_catalogue()
         family_refs: dict[str, str] = {}
+        provenance_refs: dict[str, list[str]] = {}
         graph_bare_to_refs: dict[str, list[str]] = {}
         for ref, bare in refs.items():
             if bare.startswith(_FAMILY_REF_PREFIX):
                 family_refs[ref] = bare
+            elif bare in provenances:
+                provenance_refs.setdefault(bare, []).append(ref)
             else:
                 graph_bare_to_refs.setdefault(bare, []).append(ref)
 
@@ -1548,25 +1970,56 @@ class LiveFrameStore:
             family_labels, family_read_ok = self._resolve_family_labels(family_refs)
             labels.update(family_labels)
 
-        if not graph_bare_to_refs or self._graph is None:
+        graph = self._graph
+        if graph is None:
             return labels, family_read_ok
 
+        unlisted = unnamed_provenances(list(provenance_refs), catalogue=catalogue)
+
+        def name_provenances() -> tuple[dict[str, str], bool]:
+            with phase("provenance_names"):
+                return provenance_names(
+                    graph,
+                    list(provenance_refs),
+                    catalogue=catalogue,
+                    deadline=deadline,
+                    unlisted=unlisted,
+                )
+
+        if graph_bare_to_refs and unlisted:
+            named = submit_with_context(_PROVENANCE_NAME_POOL, name_provenances)
+            graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+            # A name read still queued behind other loads' runs here instead.
+            names, named_ok = name_provenances() if named.cancel() else named.result()
+        else:
+            graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+            names, named_ok = name_provenances() if provenance_refs else ({}, True)
+        labels.update(graph_labels)
+        labels.update((ref, name) for bare, name in names.items() for ref in provenance_refs[bare])
+        return labels, family_read_ok and read_ok and named_ok
+
+    @staticmethod
+    def _graph_labels(
+        graph: GraphReader, bare_to_refs: Mapping[str, list[str]], deadline: float
+    ) -> tuple[dict[str, str], bool]:
+        """Each ref of `bare_to_refs` labelled from one `node_arcs_many` of its bare dcid's
+        `name`, and whether the read succeeded."""
+        if not bare_to_refs:
+            return {}, True
         try:
-            arcs_by_bare = self._graph.node_arcs_many(
-                tuple(graph_bare_to_refs), properties=("name",), deadline=deadline
+            arcs_by_bare = graph.node_arcs_many(
+                list(bare_to_refs), properties=("name",), deadline=deadline
             )
         except GraphReadError:
-            return labels, False
-
+            return {}, False
+        labels: dict[str, str] = {}
         for bare, arcs in arcs_by_bare.items():
-            if arcs is None:
+            label = None if arcs is None else label_or_self_name(arcs.get("name", ()), bare)
+            if label is None or bare not in bare_to_refs:
                 continue
-            label = label_or_self_name(arcs.get("name", ()), bare)
-            if label is None:
-                continue
-            for ref in graph_bare_to_refs[bare]:
+            for ref in bare_to_refs[bare]:
                 labels[ref] = label
-        return labels, family_read_ok
+        return labels, True
 
     def _resolve_family_labels(self, family_refs: Mapping[str, str]) -> tuple[dict[str, str], bool]:
         """Label family refs with one batched definition read and `family_label`, and say

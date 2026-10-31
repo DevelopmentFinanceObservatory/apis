@@ -64,7 +64,7 @@ from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import MeasureIndex
 from dc_graph import display_name
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.refusal import TIMEOUT_DEFAULT
 from dfo_platform.state import StateNotSet, StateSlot
 from dfo_platform.static_response import gapped_public_json
@@ -817,10 +817,9 @@ def build_node_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={
-            "/api/graph/node/{dcid:dcid}": "graph.node",
-            "/api/graph/nodes": "graph.nodes",
-        },
+        registry_endpoints=path_registry_endpoints(
+            router, {"/api/graph/node/{dcid:dcid}": "graph.node", "/api/graph/nodes": "graph.nodes"}
+        ),
         classify=classify_node_exception,
         exception_types=(
             DcidTooLong,

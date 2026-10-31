@@ -87,7 +87,6 @@ from materialise.bundle_naming import (
 )
 from materialise.bundle_sources import source_provenance
 from materialise.formats import (
-    Frame1Table,
     Rendering,
     Sink,
     Table,
@@ -98,6 +97,7 @@ from materialise.formats import (
     write_parquet,
 )
 from materialise.projection import period_cell, period_grain
+from materialise.reshape import Table as ReshapeTable
 
 __all__ = [
     "ComponentExportFile",
@@ -531,7 +531,11 @@ def _export_table(
                 cast("str | None", matched[key][index[_PROVENANCE_COLUMN]]) for key in wanted
             )
         )
-    return Frame1Table(columns=tuple(out_columns), rows=tuple(out_rows)), provenance_refs, generated
+    return (
+        ReshapeTable(columns=tuple(out_columns), rows=tuple(out_rows)),
+        provenance_refs,
+        generated,
+    )
 
 
 def _free_name(base: str, *, taken: set[str]) -> str:

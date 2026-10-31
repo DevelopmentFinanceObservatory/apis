@@ -9,19 +9,24 @@ import datetime
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from types import MappingProxyType
+from typing import Literal, NamedTuple, Protocol, get_args
 
 from assembler.catalogue import CatalogueRelease
 from description.facts import DescriptionRecord
 from description.vocabulary import SourceDocumentFacts, Vocabulary
+from dfo_platform.caller import Caller
 from materialise.continued_series import ContinuedSeries
 
 __all__ = [
+    "FRAME_UNAVAILABLE_OUTCOME",
+    "TRANSIENT_FRAME_REASONS",
     "CompositionAppend",
     "CompositionMembership",
     "DimensionView",
     "DraftNotFound",
     "EditConflict",
+    "FrameOutcome",
     "FrameRef",
     "FrameStore",
     "FrameUnavailable",
@@ -151,7 +156,10 @@ class ResolvedFrame:
     nothing continues the frame's series. `descriptions` holds the graph `description` of the
     one variable the version's definition resolved to, by bare dcid, when that variable is a
     World Development Indicators variable, and defines the version's measure
-    (`description.world_bank`); it is empty otherwise.
+    (`description.world_bank`); it is empty otherwise. `rendering` is the JSON object a card
+    revision stores with the frame (`RevisionRecord.frame_rendering`), as the frame's stored
+    records say at this load. It holds a dataset frame's groupby and party-totals cut, or a
+    derived frame's recipe `normal_form_hash`, and is `None` when the records do not say.
     """
 
     frame_ref: FrameRef
@@ -169,23 +177,102 @@ class ResolvedFrame:
     input_records: Sequence[DescriptionRecord] = ()
     continuation: Continuation | None = None
     descriptions: Mapping[str, str] = field(default_factory=dict)
+    rendering: Mapping[str, object] | None = None
+
+
+# Why a frame does not load. Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed
+# on retry. `recipe_pending` (a derived frame with no recipe yet), which a recipe write clears, and
+# `recipe_unreadable` (a store with no recipe reader, or a recipe root naming no dataset version),
+# which no retry clears, refuse a pin. `io` is a failure to obtain a frame's bytes, or the memory
+# to decode them.
+FrameUnavailableReason = Literal[
+    "revoked",
+    "expired",
+    "missing_rendering",
+    "digest_mismatch",
+    "ops_unsupported",
+    "quarantined",
+    "recipe_pending",
+    "recipe_unreadable",
+    "io",
+    "busy",
+    "unknown",
+]
+
+
+class FrameOutcome(NamedTuple):
+    """What a `FrameUnavailable` reason refuses with. `retryable` is the client's bit: the same
+    request may pass once the client or the frame's owner acts. `transient` is a reader's: a
+    later read of this same frame may pass with nothing done, so a reader that falls back when a
+    frame cannot be loaded raises it instead."""
+
+    code: str
+    retryable: bool
+    transient: bool
+
+
+# The outcome of each `FrameUnavailable` reason. `expired`, `ops_unsupported` and
+# `recipe_pending` can succeed once the frame is republished or its recipe written. Revoked,
+# missing, digest mismatch, quarantined, and unknown refs are permanent. A store that fails to
+# answer (`io`), and a Datasets surface at capacity (`busy`), is `service_unavailable` and
+# transient. A recipe the store cannot read (`recipe_unreadable`) is write-once, so no retry
+# clears it.
+FRAME_UNAVAILABLE_OUTCOME: Mapping[FrameUnavailableReason, FrameOutcome] = MappingProxyType(
+    {
+        "expired": FrameOutcome("frame_unavailable", retryable=True, transient=False),
+        "revoked": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "ops_unsupported": FrameOutcome("frame_unavailable", retryable=True, transient=False),
+        "missing_rendering": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "digest_mismatch": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "quarantined": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "recipe_pending": FrameOutcome("frame_unavailable", retryable=True, transient=False),
+        "unknown": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "io": FrameOutcome("service_unavailable", retryable=True, transient=True),
+        "busy": FrameOutcome("service_unavailable", retryable=True, transient=True),
+        "recipe_unreadable": FrameOutcome("internal_error", retryable=False, transient=False),
+    }
+)
+
+# Fail at import if a reason and its outcome drift apart, or a transient reason is one the
+# client may not retry.
+if set(FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
+    raise AssertionError(
+        f"FRAME_UNAVAILABLE_OUTCOME {sorted(FRAME_UNAVAILABLE_OUTCOME)} does not match "
+        f"FrameUnavailableReason {sorted(get_args(FrameUnavailableReason))}"
+    )
+if any(
+    outcome.transient and not outcome.retryable for outcome in FRAME_UNAVAILABLE_OUTCOME.values()
+):
+    raise AssertionError("a transient FrameUnavailable reason is not retryable")
+
+# The reasons a later read of the same frame may pass (`FrameOutcome.transient`).
+TRANSIENT_FRAME_REASONS: frozenset[FrameUnavailableReason] = frozenset(
+    reason for reason, outcome in FRAME_UNAVAILABLE_OUTCOME.items() if outcome.transient
+)
 
 
 class FrameUnavailable(Exception):
-    # reason: "revoked" | "expired" | "missing_rendering" | "digest_mismatch" |
-    # "ops_unsupported" | "quarantined" | "io" | "unknown"
-    # Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed on retry.
-    def __init__(self, *, reason: str, detail: str) -> None:
+    def __init__(
+        self,
+        *,
+        reason: FrameUnavailableReason,
+        detail: str,
+        retry_after_s: float | None = None,
+    ) -> None:
         self.reason = reason
         self.detail = detail
+        self.retry_after_s = retry_after_s
         super().__init__(detail)
 
 
 class FrameStore(Protocol):
     def load(self, *, frame_ref: FrameRef) -> ResolvedFrame: ...
     # `True` means created or reactivated. `False` means already active.
-    # `None` leaves the change status unknown.
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool | None: ...
+    # `None` leaves the change status unknown. A new pinned copy spends the pin budgets, and an
+    # open `caller`'s `pin` allowance too (`datasets_api.retention_admission`).
+    def pin(
+        self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None
+    ) -> bool | None: ...
 
 
 @dataclass(frozen=True)
@@ -204,6 +291,12 @@ class RevisionRecord:
     # The instant the store recorded the revision, which never changes. `None` only on a record
     # the write path builds before the store stamps it. Every read returns it set.
     created_at: datetime.datetime | None = None
+    # The rendering of the frame `stored_intent.frame_ref` names, recorded when the revision
+    # first drew that frame (`ResolvedFrame.rendering`) and kept by every revision on the same
+    # frame, so a draw on a later frame matches the rendering the card was made from. Recorded
+    # at create; `None` for a note, a frame whose records did not say, and a revision stored
+    # before migration 0011.
+    frame_rendering: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

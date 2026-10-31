@@ -127,7 +127,8 @@ class Diagnostics(StrictModel):
         default=None,
         description=(
             "per-request LLM token counts {input_tokens, output_tokens, cached_tokens}, "
-            "plus {jev_input_tokens, jev_output_tokens} when Jev answered a call"
+            "plus {jev_input_tokens, jev_output_tokens} when Jev answered a call, and "
+            "uncounted_calls, the calls sent whose tokens no response reported"
         ),
     )
     timed_out: bool | None = Field(

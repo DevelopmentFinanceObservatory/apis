@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING
 
 from code_index.shared import get_index
@@ -26,6 +27,7 @@ from origin_catalogue.origins import UN_ID_PREFIX
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import UPSTREAM_READ_ERRORS, GraphInfraError
 from search.engine.region.codes import (
     OBSERVATIONS_BULK_FETCH_FAILED,
@@ -342,6 +344,7 @@ def _bulk_scope_series(
     observations = assemble_scope_bulk(
         reads,
         label_source=graph,
+        on_names_unread=partial(note_degraded_read, "provenance names"),
         index=get_index(),
         member_constraints=member_constraints or {},
         target_currency_ref=conversion.target_unit_ref if conversion is not None else None,

@@ -41,6 +41,7 @@ Each ULID contains a 48-bit big-endian millisecond timestamp and 80 bits of cryp
 
 - Component IDs (`mint_component_id`): `cmp_` prefix (e.g. `cmp_01ARYZ6S41YYYYYYYYYYYYYYYY`).
 - Composition IDs (`mint_composition_id`): `cps_` prefix (e.g. `cps_01ARYZ6S41ZZZZZZZZZZZZZZZZ`).
+- Share IDs (`mint_share_id`): 8 characters drawn uniformly from the case-sensitive `[A-Za-z0-9]` alphabet with `secrets.choice` (e.g. `k3Qx8vTa`), the shape of the website's `/s/<id>` links. Shares imported from the website keep their ids in the same space, and `presentation.share`'s primary key is the collision check (see Shares below).
 
 An id grants read of its draft. The 80 random bits keep ids from being guessed or enumerated. An id that names no row raises `assembler.ports.DraftNotFound`.
 
@@ -56,12 +57,16 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 
 ### Schema Tables
 
-| Table                               | Primary Key                  | Description                                                                                                                                               |
-| ----------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `presentation.composition`          | `composition_id`             | Container tracking composition identity, creation timestamp, and the nullable `write_token_sha256` digest.                                                |
-| `presentation.composition_revision` | `(composition_id, revision)` | Append-only revision log. Stores `blocks` JSONB (ordered array of `{"component_id", "revision"}`) and `actor`.                                            |
-| `presentation.component`            | `component_id`               | Component registry row. Holds optional `composition_id` foreign key assigned at creation, the nullable unique `write_token_sha256` digest, and the nullable `create_request_sha256` digest. |
-| `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, and the minting release's `formatter_profile` JSONB. |
+| Table                               | Primary Key                  | Description                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `presentation.composition`          | `composition_id`             | Container tracking composition identity, creation timestamp, and the nullable `write_token_sha256` digest.                                                                                                                                                                                                                               |
+| `presentation.composition_revision` | `(composition_id, revision)` | Append-only revision log. Stores `blocks` JSONB (ordered array of `{"component_id", "revision"}`) and `actor`.                                                                                                                                                                                                                           |
+| `presentation.component`            | `component_id`               | Component registry row. Holds optional `composition_id` foreign key assigned at creation, the nullable unique `write_token_sha256` digest, and the nullable `create_request_sha256` digest.                                                                                                                                              |
+| `presentation.share`                | `id`                         | One row per share: `kind` (`card`, `canvas`, `search`, `conversation`), `mode` (`live`, `snapshot`), `title`, the nullable `write_token_sha256` digest, `owner` (left NULL), website-owned `payload` JSONB, `created_at`, and `deleted_at` once taken down.                                                                              |
+| `presentation.share_revision`       | `(share_id, revision)`       | Append-only revision log of a share, from 1, with `created_at`.                                                                                                                                                                                                                                                                          |
+| `presentation.share_slot`           | `(share_id, revision, slot)` | Every slot of one share revision, from 1: the card revision it shows (`component_id`, `component_revision`, both NULL for an empty slot) and the frame that revision draws (`frame_spec_id`, `frame_content_version`, NULL for a card with none or an imported slot whose frame was not recorded).                                       |
+| `presentation.served_frame`         | `id`                         | A timeline of what each share slot showed: an entry each time the slot's card revision and frame (`component_id`, `component_revision`, `frame_spec_id`, `frame_content_version`) differ from its newest entry, with the nullable `rendering` JSONB and `first_served_at`. An entry for a slot a replace left empty holds all five NULL. |
+| `presentation.component_revision`   | `(component_id, revision)`   | Append-only component state. Stores `stored_intent` JSONB, `resolved_payload` JSONB, `series_coordinates` JSONB, `catalog_version`, `schema_version`, the minting release's `formatter_profile` JSONB, and the nullable `frame_rendering` JSONB of the frame the revision draws.                                                         |
 
 ### Migration Sequence
 
@@ -75,6 +80,10 @@ Database tables reside in the `presentation` schema. Migrations run through `dat
 - `0008_idempotent_create.sql`: Adds the partial unique index `component_write_token_sha256_key` on non-NULL `component.write_token_sha256` and the nullable `create_request_sha256` bytea column on `component`.
 - `0009_drop_draft_lease.sql`: Drops the `draft_lease` table and its index.
 - `0010_revision_formatter_profile.sql`: Adds the `formatter_profile` JSONB column to `component_revision`, fills it with the 2026.8.0 profile on rows stamped `2026.8.0`, and makes it NOT NULL with that profile as its default. Any row stamped with another release fails the migration.
+- `0011_revision_frame_rendering.sql`: Adds the nullable `frame_rendering` JSONB column to `component_revision`, with no backfill.
+- `0012_share.sql`: Creates the `share`, `share_revision`, `share_slot`, and `served_frame` tables.
+- `0017_served_frame_timeline.sql`: Replaces `served_frame`'s natural key with an identity `id`, lets its card and frame columns hold NULL together for an emptied slot, and indexes each slot's newest entry.
+- `0018_served_frame_share_newest.sql`: Indexes each share's `served_frame` entries newest first by `first_served_at` and `id`, the keyset the history route pages by.
 
 ### Running Migrations
 
@@ -109,13 +118,24 @@ with store.begin_write(
 
 Write operations follow a set sequence:
 
-1. `allocate_component_id()` mints component IDs before opening the transaction, allowing callers to pin frames before database writes begin.
+1. `allocate_component_id()` mints component IDs before opening the transaction, so a card's description can name its component.
 2. Lock acquisition follows a strict hierarchy: composition rows first, then component rows. When modifying an existing composition, a `SELECT ... FOR UPDATE` locks the composition row.
 3. A `composition_id` other than `"new"` that names no composition, or a revise of a component id that names no component, raises `assembler.ports.DraftNotFound`.
 4. A create whose `write_token_sha256` another component already stores raises `assembler.ports.WriteTokenInUse`, and the transaction rolls back, including any composition it minted. When the other create has inserted but not committed, Postgres holds this insert until that transaction ends: a commit raises `WriteTokenInUse` here, a rollback lets this create proceed. The store tells the two apart by the constraint name pg8000 reports with `SQLSTATE 23505`.
 5. Any other duplicate freshly generated component or composition ID (`SQLSTATE 23505`) raises `GeneratedIdCollision`. Retrying creates a new ID.
 6. Inserting into `component_revision` enforces uniqueness on `(component_id, revision)`. Duplicate key violations (`SQLSTATE 23505`) map to `assembler.ports.EditConflict`.
 7. When attaching to a composition, the store updates `blocks` for existing components or appends new entries to `presentation.composition_revision`.
+
+### Shares
+
+`LiveShareStore` (`presentation_store.shares`) implements `ShareStore` over the share tables. Each method runs in one transaction.
+
+- `create_share(kind, mode, title, write_token_sha256, cards)` inserts the share under a minted id with `INSERT ... ON CONFLICT (id) DO NOTHING RETURNING id`, minting again while the id is taken, by a share made here or one imported from the website, up to five times before `GeneratedIdCollision(subject_kind="share")`. It then writes revision 1 with slot n holding the nth `ShareCard`.
+- `replace_share(share_id, revision, cards)` locks the share row (`FOR UPDATE`), refuses a snapshot with `ShareNotReplaceable` and a share whose latest revision is not `revision` with `EditConflict`, and writes the next revision with `max(len(cards), slots of the latest revision)` slots, slot n holding the nth card and every further slot empty.
+- `delete_share(share_id)` sets `deleted_at`.
+- `read_share(share_id)` returns the `ShareRecord` at its latest revision, with its slots and stored token digest.
+
+A share id with no row, or a taken-down one, raises `ShareNotFound` from every method. `presentation_api.doors.shares` compares the presented token with `ShareRecord.write_token_sha256`. Driver failures become `PresentationStoreUnavailable`.
 
 ### Frame Store Operations
 
@@ -127,11 +147,15 @@ Write operations follow a set sequence:
 2. Retrieves raw frame bytes from `ArtifactStore`, caching results in memory up to 64 MB.
 3. Computes the `StructuralView` with `assembler.frame_view.compute_structural_view`.
 4. Resolves display labels for `stat_var`, `entity`, and `provenance` IDs through `GraphReader.node_arcs_many`, capped at 300 references per call.
+5. States the frame's rendering as `ResolvedFrame.rendering`. A dataset frame's comes from its version record and linked files on every load, and a derived frame's is its recipe `normal_form_hash`. A write stores it on the revision as `frame_rendering`.
 
 `pin(frame_ref, component_id)`:
 
 1. Promotes the canonical artifact from `working` to `pinned` tier in `ArtifactStore` when currently in the working tier.
 2. Inserts an artifact reference record (`reference_kind="presentation_draft"`, `principal="presentation:<component_id>"`) into `datasets.artifact_reference` using `ArtifactReferenceWriter`.
+3. For a derived (`ops_`) frame, pins each root version its recipe names (each root's `dataset`), and theirs in turn. A derived frame with no recipe yet refuses the retryable `recipe_pending`, since a later recipe write lets a retry pin its roots. A derived frame with no recipe that a reference row already names (`ArtifactReferenceWriter.holds_reference`) pins alone, since every pin reads a derived frame's recipe before it writes a reference and the datasets pin door names `spec_` ids alone, so such a frame was pinned before recipes were stored. A share of it draws the frame's stored rows, and a live slot cannot draw it on newer data and states `stale`. The recipe is read again once the reference is found, and a recipe written for the frame later (`PUT /api/datasets/frames/{spec_id}/{content_version}/recipe`) makes the next pin name its roots. A store with no recipe reader, or a recipe root naming no dataset version, refuses `recipe_unreadable`, which no retry clears. The recipes are read first, so either refusal pins nothing. A root that has expired or been revoked is left unpinned and logged, and does not block a share.
+
+No create, revise, or render pins. `pin_card_frames(component_id, revision, revision_store, frame_store)` pins the frame a card revision draws, and a share calls it for each card it first includes.
 
 `release_pin(frame_ref, component_id)`:
 Removes the `presentation_draft` reference via `ArtifactReferenceWriter.remove_reference`. Cleanup tasks use it after confirming that the referenced component is absent.
@@ -175,7 +199,8 @@ Store operations map driver and infrastructure exceptions into structured domain
 Exception
 ├── PresentationStoreError (Base)
 │   └── PresentationStoreConfigError      # Configuration parsing and environment errors
-├── GeneratedIdCollision                  # Retryable fresh component/composition ID collision
+├── GeneratedIdCollision                  # Retryable fresh component, composition, or share ID collision
+├── ShareNotFound                         # No share at the id, or it was taken down
 └── PresentationStoreUnavailable          # Database or connection failures during transactions
 ```
 
@@ -197,6 +222,6 @@ Domain mappings translate PostgreSQL errors into `assembler.ports` exceptions:
 
 Unit tests use domain doubles defined in `tests/presentation_store/conftest.py`:
 
-- `FakePresentationStore` and `FakeTransaction`: In-memory doubles implementing the SQL access patterns of `LivePresentationStore`.
+- `FakePresentationStore` and `FakeTransaction`: In-memory doubles implementing the SQL access patterns of `LivePresentationStore` and `LiveShareStore`.
 - `FakePresentationState`: Provides state snapshot and rollback methods to test transaction aborts and failure isolation.
 - `Clock`: `LiveFrameStore` accepts an injectable `Callable[[], datetime]` to test artifact servability deterministically.

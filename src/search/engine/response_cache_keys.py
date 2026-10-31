@@ -18,16 +18,17 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import rfc8785
-from pydantic import TypeAdapter
+from pydantic import BaseModel
 
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
-from search.engine.events import DoneEvent, Event, ResponseEvent
+from search.engine.events import DoneEvent, Event, LateDepartures, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
+    ALTERNATES_UNEVALUATED,
     AVAILABILITY_PROBE_FAILED,
     MEMBERS_ABSENT_FROM_GRAPH,
     MEMBERSHIP_UNVERIFIED,
@@ -57,14 +58,15 @@ from search.models import (
 # Warnings that mark an answer a dependency could not complete: the skills index, a UN
 # System Data Commons read that failed (`_is_unstorable_warning`), the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
-# offer reads, and the option-coverage, availability and observation reads that failed or
-# ran past the deadline. An elected member the graph read did not return
+# offer reads, the presence read of an alternate, and the option-coverage, availability and
+# observation reads that failed or ran past the deadline. An elected member the graph read did not return
 # (`members_absent_from_graph`) can be a transient drop, so that answer is not kept either.
 _UNSTORABLE_WARNING_CODES = frozenset(
     {
         "skills_index_unavailable",
         "skills_index_incomplete",
         UN_SYSTEM_UNAVAILABLE,
+        ALTERNATES_UNEVALUATED,
         MEMBERSHIP_UNVERIFIED,
         MEMBERS_ABSENT_FROM_GRAPH,
         ROLE_DECLARATION_UNVERIFIED,
@@ -79,6 +81,9 @@ _UNSTORABLE_WARNING_CODES = frozenset(
 )
 
 _INTERNAL_WHITESPACE = re.compile(r"\s+")
+
+if TYPE_CHECKING:
+    from search.engine.exclusion_read import LeftOut
 
 
 def normalise_query(query: str) -> str:
@@ -258,7 +263,6 @@ def layer2_key(
     declared_default_trigger_words: Sequence[Mapping[str, str]],
     declared_default_slots_named: Sequence[str],
     scope: dict,
-    query_text_negated_stated_words: Sequence[str] = (),
     query_text_value_source: str | None = None,
     source_codes: Sequence[str | None] = (),
     unit_texts: Sequence[str | None] = (),
@@ -269,6 +273,7 @@ def layer2_key(
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
     open_axes: Sequence[frozenset[str]] = (),
     stated_scopes: Sequence[Mapping[str, object] | None] = (),
+    exclusions: Sequence[tuple[LeftOut, tuple[int, ...]]] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -300,6 +305,11 @@ def layer2_key(
     part whose words state none, so "ODA to Kenya", "bilateral ODA to Kenya" and "net ODA
     to Kenya" key apart whatever their extractions. The key states them and
     adds nothing when no part states any.
+    `exclusions` are the stretches of the query a part judges or discloses, each with the
+    positions in `variables` of the parts it qualifies. The blanked text no longer holds
+    them, and each moves the departures of the parts it qualifies, so the key states each
+    phrase with the words it judges, the words naming what it leaves out and those parts,
+    and adds nothing when there is none.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -307,9 +317,7 @@ def layer2_key(
     reading), unsupported phrases, declared-default trigger words, the
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
-    when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one, the
-    flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
+    when one is given, the flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
     which the key states only when one does, and the warnings extraction adds to the answer
     (`extraction_warnings`): a relative date the parser could not read, quoting its wording,
     and the variable and qualifier caps, counting what the model named before them. The key
@@ -336,8 +344,16 @@ def layer2_key(
         "declared_default_trigger_words": [dict(word) for word in declared_default_trigger_words],
         "declared_default_slots_named": list(declared_default_slots_named),
     }
-    if query_text_negated_stated_words:
-        document["query_text_negated_stated_words"] = list(query_text_negated_stated_words)
+    if exclusions:
+        document["exclusions"] = [
+            {
+                "phrase": exclusion.phrase,
+                "shown": exclusion.shown,
+                "left_out": list(exclusion.things),
+                "parts": list(parts),
+            }
+            for exclusion, parts in exclusions
+        ]
     if query_text_value_source is not None:
         document["query_text_value_source"] = " ".join(query_text_value_source.split())
     if any(code is not None for code in source_codes):
@@ -501,7 +517,18 @@ def refresh_response(
     return restored.model_copy(update={"query_echo": echo, "diagnostics": diagnostics})
 
 
-_BUNDLE_ADAPTER: TypeAdapter[list[Event]] = TypeAdapter(list[Event])
+class _StoredDone(BaseModel):
+    """What a bundle keeps of its `done` event. A hit's `done` is fresh otherwise."""
+
+    warnings: list[Warning]
+    late_departures: list[LateDepartures]
+
+
+class _Bundle(BaseModel):
+    """A stored stream: its `response` event and the trailing events after it, then its `done`."""
+
+    events: list[Event]
+    done: _StoredDone
 
 
 def to_bundle(events: Sequence[Event]) -> tuple[bytes, int]:
@@ -510,24 +537,37 @@ def to_bundle(events: Sequence[Event]) -> tuple[bytes, int]:
     The bytes use the SSE surface (`serialize_sse`'s context and null rule), so a restored
     event serialises to the frame the first run sent.
     """
-    encoded = _BUNDLE_ADAPTER.dump_json(list(events), exclude_none=True, context={"surface": "sse"})
+    *streamed, done = events
+    assert isinstance(done, DoneEvent)
+    bundle = _Bundle(
+        events=streamed,
+        done=_StoredDone(warnings=done.warnings, late_departures=done.late_departures),
+    )
+    encoded = bundle.model_dump_json(exclude_none=True, context={"surface": "sse"}).encode()
     return encoded, len(encoded)
 
 
 class StoredBundle(NamedTuple):
-    """A stored bundle's `response` event, the trailing events after it, and its `done` event."""
+    """A stored bundle's `response` event, the trailing events after it, and the warnings and
+    late departures of its `done` event."""
 
     response: ResponseEvent
     trailing: list[Event]
-    done: DoneEvent
+    warnings: list[Warning]
+    late_departures: list[LateDepartures]
 
 
 def from_bundle(entry: bytes) -> StoredBundle:
     """Revalidate a stored bundle: a `response` event, the trailing events, a `done` event."""
-    events = _BUNDLE_ADAPTER.validate_json(entry)
-    response, done = events[0], events[-1]
-    assert isinstance(response, ResponseEvent) and isinstance(done, DoneEvent)
-    return StoredBundle(response=response, trailing=events[1:-1], done=done)
+    bundle = _Bundle.model_validate_json(entry)
+    response = bundle.events[0]
+    assert isinstance(response, ResponseEvent)
+    return StoredBundle(
+        response=response,
+        trailing=bundle.events[1:],
+        warnings=bundle.done.warnings,
+        late_departures=bundle.done.late_departures,
+    )
 
 
 def _is_unstorable_warning(warning: Warning, *, refused_at_build: frozenset[str]) -> bool:
@@ -625,10 +665,9 @@ def is_storable(
 def is_region_storable(region: RegionResult, *, refused_at_build: frozenset[str]) -> bool:
     """Return whether a resubmitted identity's region is complete and safe to memoise.
 
-    Reject a region that is a degraded leg (`RegionResult.leg_degraded`: it swallowed a read
-    failure, a presence read left its default scope unsettled, or it left an alternate
-    unevaluated), or that carries a warning `is_storable` rejects under `refused_at_build`."""
+    Reject a region that swallowed a read failure (`RegionResult.degraded`), or that carries
+    a warning `is_storable` rejects under `refused_at_build`."""
     return not (
-        region.leg_degraded
+        region.degraded
         or _has_unstorable_warning(region.warnings, refused_at_build=refused_at_build)
     )

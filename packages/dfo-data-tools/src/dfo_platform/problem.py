@@ -10,9 +10,9 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from dfo_platform.codes import CodeCatalogue, registered_status
 from dfo_platform.trace import get_trace_id
@@ -35,8 +35,9 @@ class Alternative(BaseModel):
 class Cause(BaseModel):
     """The `cause` extension: why a refusal fired, beneath its own top-level
     `code` -- present only on a refusal that carries one (`recipe_not_declared`,
-    `rate_coverage_gap`, `operation_failed`). On `operation_failed`, `code` is
-    the failed operation's refusal code. Mirrors `alternatives`/`truncated`'s
+    `rate_coverage_gap`, `operation_failed`, or a Presentation refusal of a frame). On
+    `operation_failed`, `code` is the failed operation's refusal code, and on a
+    frame's refusal the reason the frame does not load. Mirrors `alternatives`/`truncated`'s
     own extension style: `entities` names what the cause concerns (entity or
     `entity@year` keys), capped, with `truncated` set when the cap cut items
     short.
@@ -45,7 +46,8 @@ class Cause(BaseModel):
     code: str = Field(
         description=(
             "the cause code: a sub-cause such as nominal_undeclared, recipe_undeclared, or "
-            "rate_missing, or on operation_failed the failed operation's own refusal code"
+            "rate_missing, on operation_failed the failed operation's own refusal code, or on "
+            "a Presentation refusal of a frame the reason the frame does not load"
         )
     )
     entities: list[str] = Field(
@@ -132,7 +134,7 @@ class ProblemDetails(BaseModel):
     )
     cause: Cause | None = Field(
         default=None,
-        description="why the refusal fired, for the two codes that carry one -- omitted otherwise",
+        description="why the refusal fired, for the codes that carry one -- omitted otherwise",
     )
     constraint_id: str | None = Field(
         default=None,
@@ -218,6 +220,10 @@ class ProblemSpec(NamedTuple):
     count: int | None = None
     cap: int | None = None
     headers: Mapping[str, str] | None = None
+    # What `dfo_platform.app._log_refusal` logs for a refusal a surface's classifier or admission
+    # check returns, so both stay pure. Neither reaches the wire or `to_canonical_data`.
+    log: str | None = None
+    log_level: int = logging.ERROR
 
     def to_canonical_data(self) -> dict[str, object]:
         """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes."""
@@ -256,13 +262,60 @@ class ProblemSpec(NamedTuple):
         return _PROBLEM_SPEC_ADAPTER.validate_python(data)
 
 
-_PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(ProblemSpec)
+def _without_log_fields(data: object) -> object:
+    """`data`, refused if it names a field `to_canonical_data` does not write."""
+    if isinstance(data, Mapping) and data.keys() & {"log", "log_level"}:
+        raise ValueError("canonical problem data holds no log fields")
+    return data
+
+
+_PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(
+    Annotated[ProblemSpec, BeforeValidator(_without_log_fields)]
+)
 
 
 # The headers of a 503 that refuses a request because a pool or permit is full. A full pool
 # refuses at once, and a running read or work thread frees within a request, so a client
 # waits the shortest `Retry-After`, one second, before it retries.
 BACKPRESSURE_HEADERS: Mapping[str, str] = MappingProxyType({"Retry-After": "1"})
+
+
+def refused(
+    code: str,
+    *,
+    retryable: bool,
+    detail: str | None = None,
+    pointer: str | None = None,
+    alternatives: list[Alternative] | None = None,
+    truncated: bool = False,
+    issues: list[ProblemIssue] | None = None,
+    cause: Cause | None = None,
+    constraint_id: str | None = None,
+    headers: Mapping[str, str] | None = None,
+    log: str | None = None,
+    log_level: int = logging.ERROR,
+) -> ProblemSpec:
+    """`code`'s problem at the status the code registry gives it on the bound endpoint, so a
+    classifier cannot state one apart from the other.
+
+    Raises:
+        LookupError: The registry maps no one status for `code` there (`registered_status`).
+    """
+    return ProblemSpec(
+        status=registered_status(code),
+        code=code,
+        retryable=retryable,
+        detail=detail,
+        pointer=pointer,
+        alternatives=alternatives,
+        truncated=truncated,
+        issues=issues,
+        cause=cause,
+        constraint_id=constraint_id,
+        headers=headers,
+        log=log,
+        log_level=log_level,
+    )
 
 
 class Refusal(Exception):
@@ -408,37 +461,46 @@ class Envelope:
         Set `Cache-Control: no-store` because refusal statuses can be heuristically
         cacheable. Caller headers such as `Allow` are preserved. Any caller cache-control
         value is removed case-insensitively before setting `no-store`."""
+        return self._problem_response(
+            self.details(
+                status=status,
+                code=code,
+                detail=detail,
+                pointer=pointer,
+                alternatives=alternatives,
+                truncated=truncated,
+                issues=issues,
+                cause=cause,
+                constraint_id=constraint_id,
+                ceiling_kind=ceiling_kind,
+                count=count,
+                cap=cap,
+                retryable=retryable,
+            ),
+            headers=headers,
+        )
+
+    def _problem_response(
+        self, problem: ProblemDetails, *, headers: Mapping[str, str] | None
+    ) -> JSONResponse:
+        """`problem` as the non-2xx JSON response `response` documents."""
         from fastapi.responses import JSONResponse
 
-        problem = self.details(
-            status=status,
-            code=code,
-            detail=detail,
-            pointer=pointer,
-            alternatives=alternatives,
-            truncated=truncated,
-            issues=issues,
-            cause=cause,
-            constraint_id=constraint_id,
-            ceiling_kind=ceiling_kind,
-            count=count,
-            cap=cap,
-            retryable=retryable,
-        )
         merged_headers = {
             key: value for key, value in (headers or {}).items() if key.lower() != "cache-control"
         }
         merged_headers["Cache-Control"] = "no-store"
         return JSONResponse(
-            status_code=status,
+            status_code=problem.status,
             content=problem.to_json(),
             media_type=PROBLEM_JSON,
             headers=merged_headers,
         )
 
-    def render(self, spec: ProblemSpec) -> JSONResponse:
-        """Render a classified refusal through `.response()`."""
-        return self.response(
+    def problem(self, spec: ProblemSpec) -> ProblemDetails:
+        """The body of a classified refusal, every field of `spec`, which a JSON failure and
+        an SSE terminal error both carry."""
+        return self.details(
             status=spec.status,
             code=spec.code,
             detail=spec.detail,
@@ -452,5 +514,8 @@ class Envelope:
             count=spec.count,
             cap=spec.cap,
             retryable=spec.retryable,
-            headers=spec.headers,
         )
+
+    def render(self, spec: ProblemSpec) -> JSONResponse:
+        """Render a classified refusal as the non-2xx JSON response."""
+        return self._problem_response(self.problem(spec), headers=spec.headers)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
 from datetime import date
 from unittest.mock import patch
@@ -9,8 +10,8 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from search.engine import fanout
 from search.engine.app import DEGRADED_LEG_HEADER
-from search.engine.entry import raw_text
 from tests.engine._harness import EMPTY_SDMX, PINNED_DATE, parse_sse
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -30,14 +31,13 @@ def client() -> Iterator[TestClient]:
 
 @pytest.fixture
 def degrade(monkeypatch) -> None:
-    """Run the real raw-text pipeline after noting a degraded leg on its cache scope."""
-    real_handle = raw_text.handle
+    """Run the real raw-text pipeline with its leg reporting a swallowed read failure."""
+    real_leg = fanout.resolve_variable
 
-    def degrading_handle(*args, scope, **kwargs):
-        scope.note_health(timed_out=False, degraded_leg=True)
-        return real_handle(*args, scope=scope, **kwargs)
+    async def degraded_leg(*args, **kwargs):
+        return dataclasses.replace(await real_leg(*args, **kwargs), degraded=True)
 
-    monkeypatch.setattr(raw_text, "handle", degrading_handle)
+    monkeypatch.setattr(fanout, "resolve_variable", degraded_leg)
 
 
 def test_a_healthy_answer_carries_no_degraded_header(client):
@@ -48,8 +48,23 @@ def test_a_healthy_answer_carries_no_degraded_header(client):
 
 
 @pytest.mark.usefixtures("degrade")
-def test_a_degraded_leg_sets_the_header_and_leaves_the_body_unchanged(client):
-    response = client.post("/api/search/resolve", json=_REQUEST)
+@pytest.mark.parametrize(
+    "request_body",
+    [
+        pytest.param(_REQUEST, id="raw_text"),
+        pytest.param(
+            {
+                "input": {
+                    "kind": "parsed",
+                    "parts": [{"variable_text": "fertility rate", "entities": [{"text": "Kenya"}]}],
+                }
+            },
+            id="parsed",
+        ),
+    ],
+)
+def test_a_degraded_leg_sets_the_header_and_leaves_the_body_unchanged(client, request_body):
+    response = client.post("/api/search/resolve", json=request_body)
 
     assert response.status_code == 200
     assert response.headers[DEGRADED_LEG_HEADER] == "1"

@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import replace
+
 import pytest
 
-from datasets_api.manifest import warning_model
+from assembler.mint import warned_provenance_refs, warned_refs
+from dataset_store.snapshot import ManifestFacts, StoredVersion
+from datasets_api.manifest import (
+    stored_manifest,
+    version_document,
+    warning_model,
+)
 from datasets_api.manifest_models import WarningModel
+from datasets_api.origin import _withheld_warning
+
+from ._version_facts import facts_from_body, golden_cases
 
 
 def _summed(*, label: str | None) -> dict[str, object]:
@@ -105,6 +117,17 @@ def test_a_stored_stat_vars_summed_warning_without_a_label_omits_the_label_key()
             },
             id="deflator-omitted-entities",
         ),
+        pytest.param(
+            {
+                "code": "withheld_by_registry",
+                "severity": "warn",
+                "message": "m",
+                "unserved_entities": {"count": 1, "refs": ["dcid:country/PSE"]},
+                "withheld_members": {"count": 2, "refs": ["dcid:MemberA", "dcid:MemberB"]},
+                "withheld_provenances": {"count": 1, "refs": ["dcid:OECD_DAC2A"]},
+            },
+            id="withheld-by-registry",
+        ),
     ],
 )
 def test_a_stored_warning_with_counted_refs_reads_back_unchanged(stored):
@@ -127,3 +150,60 @@ def test_a_coverage_warning_keeps_the_members_it_names_through_the_manifest():
     dumped = warning_model(warning).model_dump(mode="json")
 
     assert dumped == warning
+
+
+_WITHHELD = {
+    "code": "withheld_by_registry",
+    "severity": "warn",
+    "message": "m",
+    "unserved_entities": {"count": 1, "refs": ["dcid:country/PSE"]},
+    "withheld_members": {"count": 2, "refs": ["dcid:MemberA", "dcid:MemberB"]},
+    "withheld_provenances": {"count": 1, "refs": ["dcid:dc/base/WHO_GHO"]},
+}
+
+
+def _stored_with(warning: Mapping[str, object]) -> StoredVersion:
+    """A golden dataset version holding only `warning`, as storage returns it."""
+    case = next(case for case in golden_cases().values() if "manifest" in case["expected"])
+    facts = facts_from_body(case["body"])
+    assert isinstance(facts, ManifestFacts)
+    return StoredVersion(
+        subject_id=case["subject_id"],
+        subject_kind="spec",
+        content_version=case["content_version"],
+        schema_version=1,
+        facts=replace(facts, warnings=[warning]),
+        base_content_version=case["base_content_version"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("warning", "refs", "provenance_refs"),
+    [
+        pytest.param(
+            _WITHHELD,
+            ["dcid:country/PSE", "dcid:MemberA", "dcid:MemberB"],
+            ["dcid:dc/base/WHO_GHO"],
+            id="withheld-fields",
+        ),
+        # A row stored before the fields existed names its places and provenances in its
+        # message alone.
+        pytest.param(
+            _withheld_warning("Count_Person", {"country/PSE": ("dc/base/WHO_GHO",)}).model_dump(
+                mode="json"
+            ),
+            [],
+            [],
+            id="stored-before-the-fields",
+        ),
+    ],
+)
+def test_a_stored_withheld_warning_reads_back_and_names_its_refs(warning, refs, provenance_refs):
+    """A stored version's warning dumps as recorded and its refs reach the frame's label read,
+    entities and series apart from provenances."""
+    stored = _stored_with(warning)
+
+    assert stored_manifest(stored).model_dump(mode="json")["warnings"] == [warning]
+    document = version_document(stored)
+    assert warned_refs(manifest=document) == refs
+    assert warned_provenance_refs(manifest=document) == provenance_refs

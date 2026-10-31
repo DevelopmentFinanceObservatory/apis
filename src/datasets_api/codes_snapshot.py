@@ -29,11 +29,6 @@ SNAPSHOT_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Artifact Not Found",
         "The named artifact_digest is not among this version's artifacts.",
     ),
-    "pin_not_permitted": (
-        "Pin Not Permitted",
-        "The authenticated caller lacks the pin permission, or programmatic pinning "
-        "is not live on this deployment.",
-    ),
 }
 
 

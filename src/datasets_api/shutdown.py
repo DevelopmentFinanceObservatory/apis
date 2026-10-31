@@ -1,7 +1,7 @@
 """Share one 5-second drain deadline across a surface's executors.
 
-The Datasets surface drains its work and read executors one after the other
-(`datasets_api.deps.open_deps`). One shared deadline caps both drains at 5
+The Datasets surface drains its analysis, work and read executors one after the
+other (`datasets_api.deps.open_deps`). One shared deadline caps the drains at 5
 seconds together. Presentation's doors use it too.
 """
 

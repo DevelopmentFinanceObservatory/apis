@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import functools
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
@@ -19,6 +20,7 @@ from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.region import RegionResult, detect_set_ref
 from search.engine.region.option_coverage import _maybe_build_facet_options
 from search.engine.region.pipeline import merged_scope_choices
+from search.engine.region.result import any_degraded
 from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.models import QueryEcho, Warning
@@ -32,7 +34,6 @@ async def _stream_combined_regions(
     extra_warnings: list[Warning],
     echo: QueryEcho | None,
     timed_out: bool,
-    degraded_leg: bool = False,
     graph: EngineGraphClient,
     start_ms: int,
     params: EntryParams,
@@ -40,10 +41,12 @@ async def _stream_combined_regions(
 ) -> AsyncGenerator[Event]:
     """Combine regions and stream trailing enrichment.
 
-    `degraded_leg` and `scope` carry cache health. `scope` records it, and the
-    `DoneEvent` carries `degraded_leg` to the buffered route's header. `is_storable`
+    `timed_out` and the regions' health (`any_degraded`) are the request's cache health.
+    `scope` records it, and the `DoneEvent` carries `degraded_leg` to the buffered route's
+    header. `is_storable`
     decides cache eligibility from this report and the response.
     """
+    degraded_leg = any_degraded(regions)
     if scope is not None:
         scope.note_health(timed_out=timed_out, degraded_leg=degraded_leg)
     regions = [dataclasses.replace(region, earliest_index=i) for i, region in enumerate(regions)]
@@ -91,16 +94,19 @@ async def _stream_combined_regions(
         warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
         incomplete: list[str] = []
-        async for event in _stream_slot_options(
-            streaming_regions,
-            deadline=params.deadline,
-            warnings_out=warnings,
-            late_departures_out=late_departures,
-            incomplete_out=incomplete,
-            response=response,
-            answered=regions,
-        ):
-            yield event
+        async with aclosing(
+            _stream_slot_options(
+                streaming_regions,
+                deadline=params.deadline,
+                warnings_out=warnings,
+                late_departures_out=late_departures,
+                incomplete_out=incomplete,
+                response=response,
+                answered=regions,
+            )
+        ) as events:
+            async for event in events:
+                yield event
         if scope is not None:
             scope.note_health(trailing_incomplete=bool(incomplete))
         yield DoneEvent(

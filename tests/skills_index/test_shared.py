@@ -480,6 +480,28 @@ def test_startup_proceeds_past_a_first_build_shortfall_and_retries(
     asyncio.run(scenario())
 
 
+def test_acquirers_share_one_first_build_wait(monkeypatch):
+    """Search and Skills acquire in turn at startup; past a slow first build, the second
+    returns at the first's deadline rather than waiting a bound of its own."""
+    bound = 0.5
+    monkeypatch.setattr(shared_module, "SKILLS_INDEX_FIRST_BUILD_WAIT_SECONDS", bound)
+    graph, unblock = _slow_first_build()
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        shared = await acquire_shared_index(graph=graph)
+        try:
+            started = loop.time()
+            second = await acquire_shared_index()
+            assert loop.time() - started < bound / 2
+            await release_shared_index(second)
+        finally:
+            unblock()
+            await release_shared_index(shared)
+
+    asyncio.run(scenario())
+
+
 def test_a_swap_rebuilds_once_under_the_new_release():
     first, second = object(), object()
 

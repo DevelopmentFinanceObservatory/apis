@@ -35,6 +35,7 @@ _WARNINGS_MAX = 50  # the envelope's `warnings` maximum
 _SOURCE_ID_RE = re.compile(r"^src_[a-z0-9_]{1,60}$")
 _UNATTRIBUTED_SOURCE_ID = "src_unattributed"
 _UNATTRIBUTED_SOURCE_NAME = "Unattributed source"
+_DERIVED_SPEC_PREFIX = "ops_"  # a derived frame's spec id, its recipe's roots cited on it
 _PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS names this axis
 # The envelope requires a non-empty `licence`. This states that the graph
 # declares no licence for the source; it names no licence of its own.
@@ -105,6 +106,11 @@ def _build_sources_for_refs(
     the ref (`_citation_sources_by_ref`). Without one, `name` falls back to
     the raw ref, `url` to `""` and `licence` to `_LICENCE_NOT_STATED`, since
     the envelope requires all three. `retrieved` is the frame's `retrieved_on`.
+    A `None` ref, a row that names no provenance, on a derived (`ops_`) frame
+    stands for every source the manifest cites, its roots' sources, and maps to
+    the first of them. On a dataset frame, or with no cited source, it is the
+    unattributed source, since a dataset row with no provenance names none of
+    its version's sources.
     `ref` is the raw ref, the provenance dcid a renderer looks the source up by. It is left
     out for the unattributed source and for a raw ref over `_REF_MAX`, since a truncated
     dcid would name another node.
@@ -114,15 +120,17 @@ def _build_sources_for_refs(
     """
     citation_by_ref = _citation_sources_by_ref(resolved_frame.manifest)
     retrieved = resolved_frame.retrieved_on.isoformat()
+    derived = resolved_frame.frame_ref.spec_id.startswith(_DERIVED_SPEC_PREFIX)
+    cited_refs: list[str | None] = [*citation_by_ref] if derived and citation_by_ref else [None]
 
     id_by_raw_ref: dict[str | None, str] = {}
     sources: list[dict[str, object]] = []
     seen_ids: set[str] = set()
-    for raw_ref in raw_refs:
+    for raw_ref in (ref for raw in raw_refs for ref in (cited_refs if raw is None else [raw])):
         source_id = (
             _derive_source_id(raw_ref=raw_ref) if raw_ref is not None else _UNATTRIBUTED_SOURCE_ID
         )
-        id_by_raw_ref[raw_ref] = source_id
+        id_by_raw_ref.setdefault(raw_ref, source_id)
         if source_id in seen_ids:
             continue
         seen_ids.add(source_id)
@@ -144,6 +152,8 @@ def _build_sources_for_refs(
                     "name": named["label"][:LABEL_MAX],
                 }
         sources.append(source)
+    if None in raw_refs:
+        id_by_raw_ref[None] = id_by_raw_ref[cited_refs[0]]
     return tuple(sources), id_by_raw_ref
 
 
@@ -185,13 +195,16 @@ class _RefField:
     """A counted field of a manifest warning: its key, the words that lead its names on a
     card, and the noun, one and many, that counts them when no name fits. A field `with_years`
     is `{count, entities}`, each entity a `{ref, years}` (`datasets_api.manifest_models.
-    CountedEntityYearsModel`); any other is `{count, refs}` (`CountedRefsModel`)."""
+    CountedEntityYearsModel`); any other is `{count, refs}` (`CountedRefsModel`). A field of
+    `provenance` refs holds provenances, which a card names as a source citation does
+    (`warned_provenance_refs`), not entities, members or series."""
 
     key: str
     lead: str
     one: str
     many: str
     with_years: bool = False
+    provenance: bool = False
 
 
 _REF_FIELDS = (
@@ -201,20 +214,34 @@ _REF_FIELDS = (
         "out_of_window_members", "No observations in the requested years", "series", "series"
     ),
     _RefField("unserved_members", "Under another source, unit or method", "series", "series"),
+    _RefField("withheld_members", "Withheld series", "series", "series"),
+    _RefField("withheld_provenances", "Withheld sources", "source", "sources", provenance=True),
     _RefField("omitted_entities", "Left out", "entity", "entities"),
     _RefField("omitted_entity_years", "Left out", "entity", "entities", with_years=True),
 )
 
 
 def warned_refs(*, manifest: Mapping[str, object]) -> list[str]:
-    """The `dcid:` refs the counted fields of `manifest`'s warnings carry, in warning and
-    field order: the entities and group members a card names by label
-    (`_translate_warnings`)."""
+    """The `dcid:` refs the counted fields of `manifest`'s warnings carry, other than
+    provenances, in warning and field order: the entities, group members and series a card
+    names by label (`_translate_warnings`)."""
+    return _warned(manifest, provenance=False)
+
+
+def warned_provenance_refs(*, manifest: Mapping[str, object]) -> list[str]:
+    """The `dcid:` refs of the provenances the counted fields of `manifest`'s warnings carry,
+    in warning and field order. A card names each by the name of its source citation, which the
+    graph's own `name` for a base provenance does not give."""
+    return _warned(manifest, provenance=True)
+
+
+def _warned(manifest: Mapping[str, object], *, provenance: bool) -> list[str]:
     warnings = cast("Sequence[Mapping[str, object]]", manifest.get("warnings") or ())
     return [
         ref
         for warning in warnings
         for field in _REF_FIELDS
+        if field.provenance is provenance
         for ref, _years in _named_items(_counted(warning, field), field)
     ]
 
@@ -242,9 +269,9 @@ def _translate_warnings(
 
     A warning's `detail` is its message, then, for each counted field it carries, the field's
     lead words and its refs' `labels`, the bare dcid where `labels` holds none, each followed
-    by its years where the field holds them (`_named_refs`). The fields share the room the message leaves within
-    `_WARNING_DETAIL_MAX` equally, and a field's unused share passes to the next. Drops
-    `severity` and raises `AssertionError` for an unmapped code."""
+    by its years where the field holds them (`_named_refs`). The fields share the room the
+    message leaves within `_WARNING_DETAIL_MAX` equally, and a field's unused share passes to
+    the next. Drops `severity` and raises `AssertionError` for an unmapped code."""
     translated: list[dict[str, object]] = []
     for warning in warnings:
         code = cast(str, warning["code"])
@@ -273,14 +300,29 @@ def _translate_warnings(
 def _named_refs(field: _RefField, names: Sequence[str], *, count: int, budget: int) -> str:
     """`" {lead}: "`, then as many whole `names` as fit within `budget` characters, with
     `" and N more"` for the `count` not named, closed by a full stop. When no name fits, the
-    count stands for them all, whatever the budget, so the field keeps its count."""
+    count stands for them all, whatever the budget, so the field keeps its count.
+
+    A `provenance` field states its `count` with the field's noun and names each distinct name
+    once in brackets, since provenances of one Dataset share its name:
+    `" Withheld sources: 8 sources (A, B and others)."`, `" Withheld sources: 8 sources."` when
+    no name fits. "and others" closes the names when a withheld ref goes unnamed: one the
+    field counts but does not carry, or one whose name the budget leaves out."""
     lead = field.lead
+    counted = f"{count} {field.one if count == 1 else field.many}"
+    if field.provenance:
+        distinct = list(dict.fromkeys(names))
+        for shown in range(len(distinct), 0, -1):
+            rest = " and others" if shown < len(distinct) or count > len(names) else ""
+            text = f" {lead}: {counted} ({', '.join(distinct[:shown])}{rest})."
+            if len(text) <= budget:
+                return text
+        return f" {lead}: {counted}."
     for shown in range(len(names), 0, -1):
         hidden = count - shown
         text = f" {lead}: {', '.join(names[:shown])}{f' and {hidden} more' if hidden > 0 else ''}."
         if len(text) <= budget:
             return text
-    return f" {lead}: {count} {field.one if count == 1 else field.many}."
+    return f" {lead}: {counted}."
 
 
 @dataclass(frozen=True)

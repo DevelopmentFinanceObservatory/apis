@@ -95,6 +95,23 @@ _DATASET_STORE = {
     "0038_version_record_frame_summed.sql": (
         "7236772faed0ec1328386a75b87a8ca85a18374b0e6affabf93d590478129664"
     ),
+    "0039_caller_allowance.sql": (
+        "f157414916f3846f52c50569bcf6b5c550bed67e123ec160b0cacc3024f0b706"
+    ),
+    "0040_caller_allowance_budgets.sql": (
+        "29c6abfdfae3f078aa2f1d1de79cd745e116aca295707629567ccfa54938bbc7"
+    ),
+    "0041_analysis_answer.sql": (
+        "f2868dc1a5d525e7d1d37415e53f339f649a9ae967e86a2ce285a94e0115df99"
+    ),
+    "0042_caller_allowance_card.sql": (
+        "7f335403d0d671153813264b2c08db2d068d4d95d238e352f0c1c0dbf58ddb06"
+    ),
+    "0043_frame_recipe_superseded.sql": (
+        "843d61b2c7134461b4846f3add608461b22e6cb7368452cbfe23b16be919d9f2"
+    ),
+    "0044_export.sql": ("9678288ce977ce82d4accb1778bf65e383faa1b72d23c1b53469fc59ee2c3e79"),
+    "0045_copy_claim.sql": ("2c490124414409610278f2d05081f768af1f78898b0b625c8f528f82fe57e736"),
 }
 
 _PRESENTATION_STORE = {
@@ -113,6 +130,28 @@ _PRESENTATION_STORE = {
     ),
     "0010_revision_formatter_profile.sql": (
         "41bac2559d6a5999ff756cf65e3e73133240fa0b463e0465f53becd445134b48"
+    ),
+    "0011_revision_frame_rendering.sql": (
+        "b21ecec09c539424a9771d592ee9cc8acec695b1eebb7616b01118b7f40325dd"
+    ),
+    "0012_share.sql": "af08f2b8183f5347fca21e7b4392adfd88161a854587c40cb7eef3fc6b134a51",
+    "0013_share_slot_check.sql": (
+        "e016def5442e46ed88a276ed0a8a21b46c8293f60add7135b8802a796735a3ac"
+    ),
+    "0014_share_slot_next_check.sql": (
+        "65eb5bf176ffeaac8e951e0f5f076cd2a169c201d25653f4ed3aa88f60fe3ac0"
+    ),
+    "0015_share_create_token.sql": (
+        "aed4d316afc7180b4b8491ec7f161a708d231805643ca1bca66d7e432a6730f3"
+    ),
+    "0016_share_slot_check_claim.sql": (
+        "1b59cb708b9acedc7ade57cebde3210accc38be5fc7adb2014512e4fbd705d8c"
+    ),
+    "0017_served_frame_timeline.sql": (
+        "2200d61d92e1b9d02a88c43c525f96c90a404caa23967b6388de2ca1c70282a1"
+    ),
+    "0018_served_frame_share_newest.sql": (
+        "58bb4fe9e55208ca901d002654c9d59dcdeafde3730d1ab57204f1cc049883fd"
     ),
 }
 

@@ -27,6 +27,12 @@ def _fresh_process_credentials(monkeypatch):
     monkeypatch.setattr(signing, "_process_credentials", signing._ProcessCredentials())
 
 
+@pytest.fixture(autouse=True)
+def _no_storage_emulator(monkeypatch):
+    """Sign as production does, even in a shell that has sourced the local stack's env."""
+    monkeypatch.delenv(signing.STORAGE_EMULATOR_ENV, raising=False)
+
+
 class _BufferedSink(io.BytesIO):
     """A plain in-memory `ArtifactSink` stand-in: `io.BytesIO` already
     satisfies `write`/`tell`/`flush`/`readable`/`writable`/`seekable`, so
@@ -425,7 +431,8 @@ class FakeGCSBucket:
     def blob(self, name: str) -> FakeGCSBlob:
         return FakeGCSBlob(self, name)
 
-    def get_blob(self, name: str) -> FakeGCSBlob | None:
+    def get_blob(self, name: str, **options: object) -> FakeGCSBlob | None:
+        self.get_blob_options = options
         return FakeGCSBlob(self, name) if name in self.objects else None
 
     def copy_blob(
@@ -434,6 +441,7 @@ class FakeGCSBucket:
         destination_bucket: FakeGCSBucket,
         new_name: str | None = None,
         if_generation_match: int | None = None,
+        **options: object,
     ) -> FakeGCSBlob:
         from google.api_core.exceptions import NotFound, PreconditionFailed
 

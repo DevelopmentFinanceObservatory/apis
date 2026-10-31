@@ -10,12 +10,17 @@ startup when live clients are built. Tests can inject fakes without constructing
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Annotated, Self
 
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
-from dfo_platform.config import PublicSiteSettings, env_validation_error_message
+from dfo_platform.config import (
+    CallerSettings,
+    PublicSiteSettings,
+    env_validation_error_message,
+)
 from materialise import DEFAULT_MEMBER_CONCURRENCY
 from origin_catalogue.graph import (
     ARCS_CACHE_SIZE,
@@ -31,13 +36,44 @@ from statvar_members import DEFAULT_SUBJECT_CEILING
 # `DATASETS_OPERATION_DEADLINE_SECONDS` where the environment sets none, derived at
 # `DatasetsBuildSettings.operation_deadline_seconds`.
 DEFAULT_OPERATION_DEADLINE_SECONDS = 36_000
+DEFAULT_MATERIALISE_WAIT_SECONDS = 30
+# `DATASETS_GROUPBY_FOLD_MAX_ROWS` where the environment sets none, which also sizes the frame1
+# document a read decodes (`render.frame1_decode_max_bytes`).
+DEFAULT_GROUPBY_FOLD_MAX_ROWS = 2_000_000
+# Frame rows a groupby that sums a frame folds as Arrow. A larger frame refuses over_ceiling
+# (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads (505 MiB over
+# spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB. A frame1 document a
+# read decodes is held to that memory too (`render.frame1_decode_max_bytes`). Declared once for
+# `FoldCeilingSettings` and Presentation's settings (`presentation_api.config`).
+GroupbyFoldMaxRows = Annotated[int, Field(default=DEFAULT_GROUPBY_FOLD_MAX_ROWS, ge=1)]
 
 
 class DatasetsConfigError(Exception):
     """Invalid `DATASETS_*` settings and door dependency-injection conflicts."""
 
 
-class DatasetsBuildSettings(BaseSettings):
+class FoldCeilingSettings(BaseSettings):
+    """The fold ceiling, read once for both surfaces: `DatasetsBuildSettings` extends it, and
+    Presentation's frame store, which reads no other Datasets setting, reads it alone
+    (`presentation_api.config.PresentationSettings`), so the two bound a frame1 document alike.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="DATASETS_")
+
+    groupby_fold_max_rows: GroupbyFoldMaxRows
+
+    @classmethod
+    def from_env(cls) -> Self:
+        """Construct settings and translate validation failures to `DatasetsConfigError`."""
+        try:
+            return cls()
+        except ValidationError as exc:
+            raise DatasetsConfigError(
+                env_validation_error_message(exc, env_prefix="DATASETS_")
+            ) from exc
+
+
+class DatasetsBuildSettings(FoldCeilingSettings):
     """Settings with a safe default, resolved once at door-build time.
     See the module docstring for the two-tier split this is one half of.
     """
@@ -77,16 +113,6 @@ class DatasetsBuildSettings(BaseSettings):
     # Pivot cell limit. Format column caps bound width only, and CSV/Parquet have no width cap.
     pivot_max_output_cells: int = Field(default=5_000_000, ge=1)
 
-    # Frame rows a groupby that sums a canonical frame folds as Arrow. A larger frame refuses
-    # over_ceiling (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads
-    # (505 MiB over spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB.
-    groupby_fold_max_rows: int = Field(default=2_000_000, ge=1)
-
-    # Frame rows a groupby that sums a frame1 document folds row by row. That fold peaks at
-    # about 2.8 KiB a group (1.39 GiB over spec_09ff's 488,979 groups), and a frame can keep one
-    # group a row, so this ceiling holds it to the Arrow fold's 2 GiB.
-    groupby_row_fold_max_rows: int = Field(default=700_000, ge=1)
-
     # Groupby folds the process runs at once. Permits times the fold's 2 GiB at its ceiling must
     # fit the service's fold memory, so the 4 GiB service takes one. A further collapse waits.
     groupby_fold_max_concurrency: int = Field(default=1, ge=1)
@@ -103,7 +129,28 @@ class DatasetsBuildSettings(BaseSettings):
     materialise_max_concurrency: int = Field(default=2, ge=1)
 
     # Slot wait limit. The semaphore uses the earlier of this limit and the request deadline (503).
-    materialise_wait_seconds: float = Field(default=30, gt=0)
+    materialise_wait_seconds: float = Field(default=DEFAULT_MATERIALISE_WAIT_SECONDS, gt=0)
+
+    # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
+    # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root
+    # frames, computes and stores under one materialise permit, so at most
+    # `materialise_max_concurrency` runs hold frames at once across every frame path.
+    analysis_max_concurrency: int = Field(default=2, ge=1)
+
+    # A run's deadline, from admission to its answer. A run past it answers timeout (504,
+    # retryable) and its thread finishes and stores its frame and answer. A retry while it runs
+    # joins it (202, `Retry-After` 5), and a retry after it ends answers the stored body.
+    analysis_timeout_seconds: float = Field(default=120, gt=0)
+
+    # The most nodes one tree holds, steps and roots, after each derived root is expanded into
+    # its stored recipe.
+    analysis_max_nodes: int = Field(default=64, ge=1)
+
+    # The most rows a tree's root frames hold together. Every verb but `join` writes no more
+    # rows than its `data` side holds, and a `join` writes at most `analysis_max_join_rows`, so
+    # the two bound every frame a run holds.
+    analysis_max_root_rows: int = Field(default=2_000_000, ge=1)
+    analysis_max_join_rows: int = Field(default=250_000, ge=1)
 
     # Subjects a described arm's member walk reads when its first reverse page truncates
     # without a confirmed root. The walk takes the whole filtered set up to this many and
@@ -130,9 +177,29 @@ class DatasetsBuildSettings(BaseSettings):
     # import carries.
     head_imported_data_max_age_seconds: int = Field(default=604_800, ge=1)
 
-    # New pinned copies allowed per trailing 24 hours, counted from `pin` references. A repin of
-    # an already pinned artifact is exempt. 0 refuses every new pinned copy.
-    pin_daily_max: int = Field(default=500, ge=0)
+    # New pinned copies the pin door and the share routes make per UTC day
+    # (`datasets_api.retention_admission`), a budget spent as an allowance is
+    # (`datasets_api.allowance`). A repin of an already pinned artifact and a serving-frame copy
+    # spend none. 0 refuses every new pinned copy.
+    pin_daily_max: int = Field(default=2_500, ge=0)
+
+    # New pinned copies callers without the pin grant may make together per UTC day, spent with
+    # `pin_daily_max` and the caller's `pin_daily_allowance` in one transaction. Their copies
+    # spend `pin_daily_max` as well, so open callers leave the pin grant's holders at least
+    # `pin_daily_max` minus this.
+    pin_open_daily_max: int = Field(default=2_000, ge=0)
+
+    # New pinned copies one caller without the pin grant may make per UTC day
+    # (`datasets_api.allowance`), through the pin door or a share's pins
+    # (`datasets_api.retention_admission`). A repin of an already pinned artifact spends none.
+    pin_daily_allowance: int = Field(default=100, ge=0)
+
+    # Shares one caller may write per UTC day (`datasets_api.allowance`).
+    share_daily_allowance: int = Field(default=10, ge=0)
+
+    # Presentation card creates and revisions one caller may write per UTC day
+    # (`datasets_api.allowance`). A caller holding the publish grant spends none.
+    card_daily_allowance: int = Field(default=500, ge=0)
 
     # Sent as `x-graph-token` to live graph/SDMX clients to bypass the graph WAF. Empty omits the
     # header.
@@ -152,6 +219,13 @@ class DatasetsBuildSettings(BaseSettings):
     # render routes. Read from `LIVE_REFRESH_PRINCIPAL`, the name the website and `ai` mount
     # the same secret under. Empty denies all. It opens no publish, recipe, or pin route.
     live_refresh_principal: str = Field(default="", validation_alias="live_refresh_principal")
+
+    # Sole principal of the Presentation share import route, the website's share migration
+    # job. Read from `PRESENTATION_SHARE_IMPORT_PRINCIPAL`. Empty denies all. It opens no other
+    # route.
+    presentation_share_import_principal: str = Field(
+        default="", validation_alias="presentation_share_import_principal"
+    )
 
     # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
     # (3). The worker marks the operation failed on its final transient attempt.
@@ -177,6 +251,10 @@ class DatasetsBuildSettings(BaseSettings):
     # `DFO_SITE_DATASET_LINKS`, which the presentation surface reads too.
     site: PublicSiteSettings = Field(default_factory=PublicSiteSettings.from_env)
 
+    # How a request's caller is named for its allowances, read from `DFO_CALLER_PRINCIPAL`,
+    # `DFO_CALLER_HMAC_KEY` and `DFO_TRUSTED_PROXY_HOPS` (`dfo_platform.config.CallerSettings`).
+    caller: CallerSettings = Field(default_factory=CallerSettings.from_env)
+
     @model_validator(mode="after")
     def _check_head_recheck_before_max_age(self) -> DatasetsBuildSettings:
         """Require the probe interval to be shorter than the maximum head age."""
@@ -186,16 +264,6 @@ class DatasetsBuildSettings(BaseSettings):
                 f"({self.head_max_age_seconds}), got {self.head_recheck_seconds}"
             )
         return self
-
-    @classmethod
-    def from_env(cls) -> DatasetsBuildSettings:
-        """Construct settings and translate validation failures to `DatasetsConfigError`."""
-        try:
-            return cls()
-        except ValidationError as exc:
-            raise DatasetsConfigError(
-                env_validation_error_message(exc, env_prefix="DATASETS_")
-            ) from exc
 
 
 class DatasetsSettings(BaseSettings):

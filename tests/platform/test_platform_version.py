@@ -33,7 +33,7 @@ from search.engine.config import settings
 def test_platform_capability_version_is_pinned():
     """Pins the token so changes to the platform wire contract require an explicit version update."""
     # The digest includes the `cause` extension and registry mappings rendered by `registry_entry_body`.
-    assert PLATFORM_CAPABILITY_VERSION == "plat_52d5e0eb386a63f8"
+    assert PLATFORM_CAPABILITY_VERSION == "plat_d248ef8611c4d7a9"
     assert PLATFORM_CAPABILITY_VERSION.startswith("plat_")
     assert settings().capability_version != PLATFORM_CAPABILITY_VERSION
 
@@ -260,9 +260,9 @@ def _isinstance_checked_types(func) -> set[type]:
     return checked
 
 
-def test_default_exception_types_matches_classify_defaults_real_source():
-    """The exception types in `classify_default` must match `_DEFAULT_EXCEPTION_TYPES`."""
-    assert _isinstance_checked_types(refusal.classify_default) == set(
+def test_default_exception_types_matches_default_problems_real_source():
+    """The exception types in `default_problem` must match `_DEFAULT_EXCEPTION_TYPES`."""
+    assert _isinstance_checked_types(refusal.default_problem) == set(
         refusal._DEFAULT_EXCEPTION_TYPES
     )
 

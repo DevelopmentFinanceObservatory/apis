@@ -441,11 +441,11 @@ class DoneEvent(BaseModel):
     elapsed_ms: int
     timed_out: bool = False
     degraded_leg: bool = Field(
-        default=False,
         exclude=True,
         description=(
-            "a leg of the answer failed and was backfilled; read in process by the buffered "
-            "route, which reports it as the X-Search-Degraded-Leg header. Never serialised"
+            "a leg of the answer stands on less than a later request may read; read in "
+            "process by the buffered route, which reports it as the X-Search-Degraded-Leg "
+            "header. Never serialised"
         ),
     )
     trace_id: str = Field(

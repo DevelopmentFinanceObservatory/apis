@@ -43,7 +43,7 @@ from search.engine.region.codes import (
     _OptionProbeResult,
 )
 from search.engine.region.facet_probe import NO_PINS, FacetPins, FacetProbe
-from search.engine.region.refs import listed_provenance_labels
+from search.engine.region.refs import provenance_labels
 from search.engine.region.un_system import un_unavailable_warning
 from search.engine.retrieval.bound_values import (
     OptionServedFact,
@@ -111,7 +111,7 @@ from search.models import (
     ValueKind,
     Warning,
 )
-from search.observations import facet_value_label, unlisted_provenances
+from search.observations import facet_value_label
 from series_coverage.coverage_types import BoundRoles, Role
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import RoleNames
@@ -1371,8 +1371,8 @@ def _facet_options(
     observation points, descending, then dcid, ascending, with the ref-less option last
     among equals. Results cap at `settings().max_options` and mark truncation.
     Omit axes without values. Cached facet reads avoid duplicate graph calls. Resolve labels
-    in one batch and use the dcid for unnamed nodes. The origin catalogue labels the
-    provenances it lists, which join no batch. Source is always `observed`.
+    in one batch and use the dcid for unnamed nodes. Provenances join no batch: each is named
+    by `refs.provenance_labels`. Source is always `observed`.
     """
     if not sv_dcids:
         return []
@@ -1401,20 +1401,15 @@ def _facet_options(
     provenance_dcids = [d for d in axis_counts["provenance"] if d is not None]
     all_dcids = list(
         dict.fromkeys(
-            [
-                *(
-                    d
-                    for axis, counts in axis_counts.items()
-                    if axis != "provenance"
-                    for d in counts
-                    if d is not None
-                ),
-                *unlisted_provenances(provenance_dcids),
-            ]
+            d
+            for axis, counts in axis_counts.items()
+            if axis != "provenance"
+            for d in counts
+            if d is not None
         )
     )
     labels = graph.node_labels_batch(all_dcids) if all_dcids else {}
-    labels.update(listed_provenance_labels(provenance_dcids))
+    labels.update(provenance_labels(provenance_dcids, graph, deadline=deadline))
 
     result: list[FacetOptions] = []
     for axis in get_args(FacetAxis):

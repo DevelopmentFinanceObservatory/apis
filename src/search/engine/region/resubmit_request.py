@@ -296,15 +296,17 @@ def _rebind_source_slot(
     slots: list[Slot],
     source_dcids: list[str],
     graph: EngineGraphClient,
+    *,
+    deadline: float | None,
 ) -> list[Slot]:
     """Apply a posted source constraint after grounding, leaving facet selection unchanged.
 
-    Empty `source_dcids` leaves the source slot unbound. Labels come from the origin
-    catalogue, else the graph, using the DCID when no name is available.
+    Empty `source_dcids` leaves the source slot unbound. Each source is named by
+    `refs.provenance_labels`, its read bounded by `deadline`, else by its DCID.
     """
     if not source_dcids:
         return slots
-    labels = provenance_labels(source_dcids, graph)
+    labels = provenance_labels(source_dcids, graph, deadline=deadline)
     values = [
         SlotValue(ref=GraphRef(ref=d, label=labels.get(d, d)), value_kind="source")
         for d in source_dcids

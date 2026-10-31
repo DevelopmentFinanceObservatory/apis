@@ -575,14 +575,14 @@ def test_per_part_timing_by_step_excludes_the_envelopes_shared_step():
 
     assert result.diagnostics.timing_ms is not None
     assert result.diagnostics.timing_ms.by_step is not None
-    assert set(result.diagnostics.timing_ms.by_step) == {"coverage", "extract"}
+    assert set(result.diagnostics.timing_ms.by_step) == {"coverage", "extract", "exclusion_read"}
     assert result.diagnostics.timing_ms.by_step["extract"] >= 0
     assert result.diagnostics.timing_ms.total >= 0
 
     for part in result.parts:
         assert part.timing_ms is not None
         assert part.timing_ms.by_step
-        assert "extract" not in part.timing_ms.by_step
+        assert not {"extract", "exclusion_read"} & set(part.timing_ms.by_step)
         assert part.timing_ms.total == sum(
             ms for step, ms in part.timing_ms.by_step.items() if step not in NESTED_SHAPE_STEPS
         )

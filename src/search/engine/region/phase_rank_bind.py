@@ -214,6 +214,7 @@ from search.models import (
     Warning,
 )
 from search.render.labels import _humanize_ref
+from search.scope.basis import entry_measure
 
 logger = logging.getLogger(__name__)
 
@@ -672,6 +673,9 @@ def _read_offer(
         state.dropped_qualifier_phrases,
         operation_phrases=[operation.phrase for operation in state.operations],
     )
+    # A stated or carried measure basis steers the collapse as its words would, so a basis
+    # family `phase_intake._with_entry_basis` brought in survives beside its source.
+    asked = entry_measure(state.scope_selection.entries_on("measure_basis"))
     collapsed = collapse_measure_families(
         ranked_shapes,
         get_index(),
@@ -682,6 +686,7 @@ def _read_offer(
             if unread_price_basis
             else _default_reading(state, role_free_matches, eligible_shapes)
         ),
+        basis=asked[1] if asked is not None else None,
     )
     offer = _Offer(
         frame=frame,
@@ -2306,10 +2311,8 @@ def _dataset_stated_words(
     The part states a word where its variable or a typed qualifier phrase holds it as a
     modifier of the measure (`place_roles.part_states`): "bilateral ODA", "net bilateral
     ODA". A word inside another ("non-bilateral"), one an occurrence negates or excludes
-    in those texts or in the verbatim query (`bind_repair.stated_words_negated`, which
-    reaches a negation the extraction left out of the variable, as "not bilateral ODA", and
-    keys the response cache), and one standing past a function word or a connective ("ODA
-    net of bilateral flows") names something else and is not stated. A part holding none
+    in those texts, and one standing past a function word or a connective ("ODA net of
+    bilateral flows") names something else and is not stated. A part holding none
     of the words the datasets declare reads no place, and so does a call with no `state`,
     as a resubmit makes.
 

@@ -15,10 +15,10 @@ from code_index.types import PartyClass
 from dfo_platform.timings import PhaseTimings, collecting
 from entity_resolution import Ambiguous, Entity, Group, Resolved
 from entity_resolution.membership import MembershipPolicy
-from origin_catalogue import note_un_unserved, recording_un_blocked_places
-from search.engine.clients.graph import DetectedSV, force_full_facets
+from origin_catalogue import current_catalogue, note_un_unserved, recording_un_blocked_places
+from search.engine.clients.graph import DetectedSV, force_full_facets, with_entry_basis_siblings
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
+from search.engine.degraded_reads import carry, note_degraded_read, recording_degraded_reads
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import EngineInfraError, RoleSignatureError
 from search.engine.interpret import Recall, recall
@@ -54,6 +54,7 @@ from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, role_names_by_axis
 from search.models import EntityRoleKey, NoDataReason, RoleAxis, elect_no_data_reason
 from search.render.no_data import UnlistedPopulation
+from search.scope.basis import entry_measure
 from search.scope.region import oecd_region_reading
 
 # Full-facet probing is capped at 6 candidates. This phase checks raw recall count before
@@ -755,9 +756,7 @@ async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
                 round((time.monotonic() - started) * 1000),
                 len(candidates),
             )
-    return UnPool(
-        shapes=shapes, missed=missed, unserved=un_blocked.snapshot(), lost=tuple(lost.reads)
-    )
+    return UnPool(shapes=shapes, missed=missed, unserved=un_blocked.snapshot(), lost=lost)
 
 
 async def un_pool_shapes(leg: UnLeg, *, bound: float | None) -> UnPool:
@@ -799,8 +798,21 @@ async def _merge_un_pool(state: ResolveState, leg: UnLeg) -> None:
         return
     state.shapes_found = [*state.shapes_found, *pool.shapes]
     note_un_unserved(pool.unserved)
-    for read in pool.lost:
-        note_degraded_read(read)
+    carry(pool.lost)
+
+
+def _with_entry_basis(state: ResolveState, hits: Sequence[DetectedSV]) -> Sequence[DetectedSV]:
+    """`hits` with the families measuring the basis the part's stated or carried
+    measure-basis entry names (`scope.basis.entry_measure`) that recall left out
+    (`clients.graph.with_entry_basis_siblings`), so the house policies can elect the basis
+    the entry asks for whatever words recalled the hits."""
+    asked = entry_measure(state.scope_selection.entries_on("measure_basis"))
+    if asked is None:
+        return hits
+    _entry, measure = asked
+    return with_entry_basis_siblings(
+        hits, measure=measure, catalogue=current_catalogue(), index=get_index()
+    )
 
 
 async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
@@ -839,7 +851,7 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
         # Our resolve's hits under their own dcids, so the confirm cap counts a superseded
         # hit as it did while its provenance was admitted; derivation reads each as its
         # successor.
-        ours = rcl.candidates if rcl.hits is None else rcl.hits
+        ours = _with_entry_basis(state, rcl.candidates if rcl.hits is None else rcl.hits)
         derive_timings = PhaseTimings()
         try:
             state.shapes_found = await _derive_pool(state, ours, timings=derive_timings)

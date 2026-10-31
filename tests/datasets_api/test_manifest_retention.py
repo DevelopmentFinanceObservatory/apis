@@ -13,6 +13,7 @@ import pytest
 from artifact_store import LiveArtifactInventory, StoredArtifact, Tier
 from dataset_store.snapshot import WORKING_TIER_RETENTION, LiveSnapshotReader, StoredVersion
 from datasets_api import manifest as manifest_module
+from datasets_api.allowance import AllowanceKind, LiveAllowanceLedger
 from datasets_api.doors.pin import pin_artifact
 from datasets_api.manifest import version_document
 from datasets_api.manifest_models import RetentionModel
@@ -23,7 +24,7 @@ from dc_sdmx import SdmxClient
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 
-from ._app_factories import make_client
+from ._app_factories import make_client, offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._frame_doubles import _BASE_URL, _body, _coverage_service, _graph, _sdmx_transport
 from ._snapshot_doubles import (
@@ -35,6 +36,7 @@ from ._snapshot_doubles import (
     _store_and_locate,
     _version,
 )
+from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 from .test_meta_doors import (
     _PARQUET_BUNDLE,
@@ -311,7 +313,14 @@ class _CopyRecordingArtifactStore(FakeArtifactStore):
         super().__init__()
         self.copied: list[str] = []
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         stored = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
         self.copied.append(digest)
         return stored
@@ -355,7 +364,7 @@ def _derived_world(
     return store, reader, base_frame, own_frame, parquet
 
 
-def _pin(store, reader, writer, digest: str, *, daily_max: int = 500) -> datetime:
+def _pin(store, reader, writer, digest: str, *, allowances=None) -> datetime:
     return pin_artifact(
         id="spec_a",
         content_version="cv2",
@@ -365,7 +374,7 @@ def _pin(store, reader, writer, digest: str, *, daily_max: int = 500) -> datetim
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=writer,
-        daily_max=daily_max,
+        allowances=allowances if allowances is not None else offline_allowances(),
         now=lambda: _NOW,
     )
 
@@ -454,19 +463,17 @@ def test_a_pin_whose_serving_frames_bytes_are_gone_pins_the_named_file_alone():
     assert after.model_dump(mode="json") == _held_wire(own_frame.stored_at)
 
 
-def test_the_frame_copy_skips_an_exhausted_budget_and_counts_toward_later_calls():
-    """The named rendering is already pinned, so this call waits on no budget, and the frame is
-    copied though the trailing count sits at the budget. The frame's copy holds a `pin`
-    reference, which is what the trailing count reads, so it counts toward later calls."""
+def test_the_frame_copy_spends_no_budget():
+    """The named rendering is already pinned, so this call spends nothing, and the frame is
+    copied though the day's budget is spent."""
     store, reader, _, own_frame, parquet = _derived_world(parquet_tier=Tier.pinned)
-    writer = FakeArtifactReferenceWriter(pinned_copies={"sha256:seed": _NOW})
-    writer.records[(_PRINCIPAL, "sha256:seed", "spec_seed", "cv1", PIN_REFERENCE_KIND)] = _NOW
-    assert writer.count_pinned_copies_since(reference_kind=PIN_REFERENCE_KIND, since=_NOW) == 1
+    spent = LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(), limits={AllowanceKind.pin_budget: 0}
+    )
 
-    _pin(store, reader, writer, parquet.artifact_digest, daily_max=1)
+    _pin(store, reader, FakeArtifactReferenceWriter(), parquet.artifact_digest, allowances=spent)
 
     assert store.copied == [own_frame.artifact_digest]
-    assert _pin_key(own_frame, "cv2") in writer.records
 
 
 def test_the_version_document_leaves_out_a_retention_its_manifest_holds(

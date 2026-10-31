@@ -57,7 +57,7 @@ posted one asking for the latest year reads the year its tables elect, as a comp
 (`scope.provider.elect_latest_window`).
 
 A part whose answer stands on less than a later request may read
-(`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
+(`RegionResult.degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
 
 Four task-creation sites register trailing handles with the request scope, whose
 `core.resolve_events` cleanup cancels and awaits unclaimed tasks on exit. Parsed
@@ -69,7 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from code_index.shared import get_index
@@ -107,7 +107,11 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
-from search.engine.region.result import with_composite_answer, with_runnable_operations
+from search.engine.region.result import (
+    any_degraded,
+    with_composite_answer,
+    with_runnable_operations,
+)
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
@@ -366,7 +370,7 @@ async def handle(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     memo: PartMemoScope | None = None,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     # Validate placeholder codes and candidate counts before creating tasks.
     # These static errors precede resolution failures and point to their entry.
     for i, entry in enumerate(inp.entries):
@@ -616,7 +620,7 @@ async def handle(
     trailing_deadline = max(
         [params.deadline, *(r.reads_deadline for r in regions if r.reads_deadline is not None)]
     )
-    degraded_leg = any(region.leg_degraded for region in regions)
+    degraded_leg = any_degraded(regions)
 
     # Candidate regions carry the posted ordering override for the combiner.
     echo = QueryEcho(
@@ -654,17 +658,20 @@ async def handle(
             yield event
         slot_options_warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
-        async for ev in _stream_slot_options(
-            [region],
-            deadline=trailing_deadline,
-            warnings_out=slot_options_warnings,
-            late_departures_out=late_departures,
-            # This door stores no response bundle, so its trailing losses need no report.
-            incomplete_out=[],
-            response=response,
-            answered=[region],
-        ):
-            yield ev
+        async with aclosing(
+            _stream_slot_options(
+                [region],
+                deadline=trailing_deadline,
+                warnings_out=slot_options_warnings,
+                late_departures_out=late_departures,
+                # This door stores no response bundle, so its trailing losses need no report.
+                incomplete_out=[],
+                response=response,
+                answered=[region],
+            )
+        ) as events:
+            async for ev in events:
+                yield ev
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=False,
@@ -684,7 +691,6 @@ async def handle(
             extra_warnings=[],
             echo=echo,
             timed_out=False,
-            degraded_leg=degraded_leg,
             graph=graph,
             start_ms=start_ms,
             params=dataclasses.replace(params, deadline=trailing_deadline),

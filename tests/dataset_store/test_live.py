@@ -23,8 +23,10 @@ from uuid import uuid4
 import pg8000.exceptions
 import pytest
 
+from artifact_store import ArtifactLocation, ArtifactNotFoundError, CopyBounds
+from artifact_store.errors import ArtifactWriteError
 from artifact_store.inventory import LiveArtifactInventory
-from artifact_store.store import Tier
+from artifact_store.store import StoredArtifact, Tier
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
@@ -34,6 +36,14 @@ from dataset_store.snapshot import (
     LiveSnapshotReader,
     SnapshotRevoked,
     VersionFactsMissing,
+)
+from datasets_api.allowance import (
+    SWEEP_INTERVAL_SECONDS,
+    AllowanceExhausted,
+    AllowanceKind,
+    ClaimState,
+    LiveAllowanceLedger,
+    Spend,
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
@@ -48,7 +58,16 @@ from datasets_api.operations import worker as worker_module
 from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.worker import OperationSuperseded, run_operation
 from datasets_api.principals import Principal
+from datasets_api.recipe_store import (
+    AnswerRecord,
+    LiveRecipeStore,
+    RecipeRecord,
+    ReplayedFrame,
+    ReplayKeyHeld,
+)
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
+from datasets_api.retention_admission import CopyClaimUnsettled, PreparingCopy
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import (
     ArtifactRecord,
@@ -57,6 +76,7 @@ from datasets_api.versions import (
     SubjectHead,
     VersionRecord,
 )
+from dfo_platform.caller import Caller
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -65,6 +85,7 @@ from spec_registry import (
     SpecRegistryStoreError,
     recompute_identity,
 )
+from tests.datasets_api._app_factories import offline_allowances
 from tests.datasets_api._legacy_conversion_trace import (
     LEGACY_CONVERSION,
     LEGACY_DEFLATED_CONVERSION,
@@ -539,7 +560,9 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
     rerender = LiveVersionRecordWriter(store=live_store, now=lambda: pinned_at + timedelta(days=2))
 
     class _RerenderDuringCopy:
-        def copy(self, digest, *, from_tier, to_tier):
+        copy_lands_within = CopyBounds().lands_within
+
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             rerender.record_artifact(
                 subject_id=subject_id,
                 content_version="cv1",
@@ -555,6 +578,14 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
                 size_bytes=7,
                 uploaded=True,
             )
+            return StoredArtifact(
+                digest=digest,
+                tier=to_tier,
+                bucket="pinned-bucket",
+                object_name=digest,
+                size_bytes=7,
+                deduplicated=False,
+            )
 
     with pytest.raises(ArtifactNotFound):
         pin_artifact(
@@ -566,7 +597,7 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
             snapshot_reader=LiveSnapshotReader(store=live_store),
             artifact_store=_RerenderDuringCopy(),
             reference_writer=LiveArtifactReferenceWriter(store=live_store),
-            daily_max=1_000_000,
+            allowances=offline_allowances(),
             now=lambda: pinned_at,
         )
 
@@ -800,6 +831,76 @@ def test_version_revocation_fk_rejects_an_unknown_version(live_store):
             "(subject_id, content_version, revoked_at) VALUES (%s, %s, now())",
             ("spec:does-not-exist", "cv1"),
         )
+
+
+def test_an_analysis_answer_is_replaced_under_its_key_and_names_a_stored_version(live_store):
+    subject_id = f"ops_{uuid4().hex}"
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record "
+            "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+            "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+            (subject_id, "spec", "ocv1", 1, {"prepared_at": "2026-01-01T00:00:00Z"}),
+        )
+    answers = LiveRecipeStore(store=live_store)
+    key = uuid4().hex
+    answers.write_answer(
+        AnswerRecord(request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 1})
+    )
+    answers.write_answer(
+        AnswerRecord(request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 2})
+    )
+
+    assert answers.read_answer(request_key=key) == AnswerRecord(
+        request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 2}
+    )
+    assert answers.read_answer(request_key=uuid4().hex) is None
+    with pytest.raises(DatasetsStoreUnavailable):
+        answers.write_answer(
+            AnswerRecord(
+                request_key=uuid4().hex,
+                spec_id="ops_does-not-exist",
+                content_version="ocv1",
+                body={},
+            )
+        )
+
+
+def test_a_superseded_recipe_gives_its_replay_key_to_another_pair(live_store):
+    """The replay index holds the key once among recipes not superseded, so a second pair
+    takes it only after the first gives it up, and the first keeps its recipe."""
+    old, new = f"ops_{uuid4().hex}", f"ops_{uuid4().hex}"
+    with live_store.transaction() as tx:
+        for subject_id in (old, new):
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+                (subject_id, "spec", "ocv1", 1, {"prepared_at": "2026-01-01T00:00:00Z"}),
+            )
+    recipes = LiveRecipeStore(store=live_store)
+    replay_key = f"rpk_{uuid4().hex}"
+
+    def record(subject_id: str) -> RecipeRecord:
+        return RecipeRecord(
+            spec_id=subject_id,
+            content_version="ocv1",
+            normal_form_hash="rnf_" + "0" * 32,
+            replay_key=replay_key,
+            body={"replay_key": replay_key},
+        )
+
+    assert recipes.write_recipe(record(old))
+    with pytest.raises(ReplayKeyHeld):
+        recipes.write_recipe(record(new))
+    recipes.supersede_replay(replay_key=replay_key, spec_id=old, content_version="ocv1")
+
+    assert recipes.write_recipe(record(new))
+    assert not recipes.write_recipe(record(old))
+    assert recipes.read_replay(replay_key=replay_key) == ReplayedFrame(
+        spec_id=new, content_version="ocv1"
+    )
+    assert recipes.read_recipe(spec_id=old, content_version="ocv1") == record(old)
 
 
 def test_subject_head_table_exists_after_migration(live_store):
@@ -1321,6 +1422,7 @@ class _HoldBeforeCommitStore:
 
     def __init__(self, inner, *, hold_when=lambda sql: sql.startswith("UPDATE")) -> None:
         self._inner = inner
+        self.bounds = inner.bounds
         self._hold_when = hold_when
         self.held = threading.Event()
         self.release = threading.Event()
@@ -2230,57 +2332,392 @@ def test_artifact_reference_upsert_repeat_pin_of_a_live_row_keeps_the_original_c
     assert row["removed_at"] is None
 
 
-def test_pinned_copy_count_counts_each_pin_door_promotion_once(live_store):
-    """The pin budget reads this count. Two `pin` references to one pinned copy add one, and so
-    does a copy whose only `pin` reference was removed, since unpinning leaves the copy stored. A
-    working copy, a pinned copy older than the window, and a frame-store pin add nothing."""
+@pytest.mark.parametrize("together", [False, True], ids=["allowance", "budget-and-allowance"])
+def test_concurrent_allowance_spends_stop_at_the_limit(live_store, together: bool):
+    """Spends racing on one caller's day pass the limit by none, under Postgres row locking. A
+    pin's budget and allowance spent together stop at the tighter limit, and a refused pin
+    spends neither."""
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    budget = Spend(f"test-budget-{uuid4().hex}", AllowanceKind.open_pin_budget)
+    ledger = LiveAllowanceLedger(
+        store=live_store, limits={AllowanceKind.pin: 3, AllowanceKind.open_pin_budget: 3}
+    )
     now = datetime.now(UTC)
-    since = now - timedelta(hours=24)
-    writer = LiveArtifactReferenceWriter(store=live_store)
+    outcomes: list[str] = []
 
-    def count() -> int:
-        return writer.count_pinned_copies_since(reference_kind=PIN_REFERENCE_KIND, since=since)
-
-    baseline = count()
-    suffix = uuid4().hex
-    seeds = {
-        "shared": ("pinned", now - timedelta(hours=1), PIN_REFERENCE_KIND),
-        "removed": ("pinned", now - timedelta(hours=1), PIN_REFERENCE_KIND),
-        "working": ("working", now, PIN_REFERENCE_KIND),
-        "old": ("pinned", now - timedelta(hours=25), PIN_REFERENCE_KIND),
-        "frame": ("pinned", now - timedelta(hours=1), "presentation_draft"),
-    }
-    subjects = (f"spec:test-live-pinned-count-{suffix}", f"col_test_live_count_{suffix}")
-    for name, (tier, stored_at, kind) in seeds.items():
-        digest = f"sha256:test-live-pinned-count-{name}-{suffix}"
-        for subject_id in subjects if name == "shared" else subjects[:1]:
-            _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
-            writer.record_reference(
-                principal="first-party",
-                artifact_digest=digest,
-                subject_id=subject_id,
-                content_version="cv1",
-                reference_kind=kind,
-                now=now,
-            )
-            if name == "removed":
-                writer.remove_reference(
-                    principal="first-party",
-                    artifact_digest=digest,
-                    subject_id=subject_id,
-                    content_version="cv1",
-                    reference_kind=kind,
-                    now=now,
+    def spend() -> None:
+        try:
+            if together:
+                ledger.begin_pin_copy(
+                    f"pin_{uuid4().hex}",
+                    [budget, Spend(caller.key, AllowanceKind.pin)],
+                    "sha256:a",
+                    clock=lambda: now,
+                    lease=timedelta(minutes=2),
                 )
+            else:
+                ledger.spend(caller, AllowanceKind.pin, now)
+            outcomes.append("spent")
+        except AllowanceExhausted:
+            outcomes.append("refused")
+
+    threads = [threading.Thread(target=spend) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert sorted(outcomes) == ["refused"] * 3 + ["spent"] * 3
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT day, count FROM datasets.caller_allowance WHERE caller_key = %s",
+            (caller.key,),
+        )
+    assert row == {"day": now.date(), "count": 3}
+    if together:
         with live_store.transaction() as tx:
-            tx.execute(
-                "INSERT INTO datasets.artifact_location "
-                "(artifact_digest, tier, bucket, object_name, stored_at) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (digest, tier, "bucket", digest, stored_at),
+            spent = tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s",
+                (budget.key,),
+            )
+        assert spent == {"count": 3}
+
+
+def test_a_card_unit_refund_takes_one_back_and_deletes_a_day_left_at_zero(live_store):
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.card: 2})
+    now = datetime.now(UTC)
+
+    def held() -> object:
+        with live_store.transaction() as tx:
+            return tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+                (caller.key, AllowanceKind.card.value),
             )
 
-    assert count() == baseline + 2
+    ledger.spend(caller, AllowanceKind.card, now)
+    ledger.spend(caller, AllowanceKind.card, now)
+    ledger.refund(caller, AllowanceKind.card, now)
+    after_one = held()
+    ledger.refund(caller, AllowanceKind.card, now)
+    ledger.refund(caller, AllowanceKind.card, now)
+
+    assert after_one == {"count": 1}
+    assert held() is None
+
+
+_CLAIMED_AT = datetime(2026, 6, 1, 12, 0, 0, 123456, tzinfo=UTC)
+_CLAIM_LEASE = _CLAIMED_AT + timedelta(minutes=2)
+_AFTER_LEASE = _CLAIM_LEASE + timedelta(seconds=1)
+
+
+def _claim_rig(live_store, *, limit: int = 2):
+    """A ledger, an export id and one unit of a caller of its own, so runs do not meet."""
+    suffix = uuid4().hex
+    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.pin: limit})
+    return ledger, f"exp_{suffix}", Spend(f"ip:{suffix}", AllowanceKind.pin)
+
+
+def _held_claim(ledger, export, spend):
+    claim = ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE)
+    return ledger.hold_claim(claim, [spend], clock=lambda: _CLAIMED_AT)
+
+
+def _unit_count(live_store, spend) -> int:
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+            (spend.key, spend.kind.value),
+        )
+    return 0 if row is None else row["count"]
+
+
+def test_an_export_claim_holds_units_and_refunds_them_once_under_real_postgres(live_store):
+    """`spends` round-trips as jsonb, and a limit reads it with `->>` in its own transaction."""
+    ledger, export, spend = _claim_rig(live_store, limit=1)
+
+    held = _held_claim(ledger, export, spend)
+
+    assert held.state == ClaimState.held
+    assert held.spends == (spend,)
+    assert ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE) is None
+    with pytest.raises(AllowanceExhausted) as refused:
+        ledger.spend(Caller(kind="address", key=spend.key), spend.kind, _CLAIMED_AT)
+    assert refused.value.held_for == 10
+    ledger.close_claim(held)
+    ledger.close_claim(held)
+    assert ledger.read_claim(export) is None
+    assert _unit_count(live_store, spend) == 0
+
+
+def test_a_sweep_behind_a_hold_changes_nothing_under_real_postgres(live_store):
+    ledger, export, spend = _claim_rig(live_store)
+    opened = ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE)
+    swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.key == export)
+
+    held = ledger.hold_claim(opened, [spend], clock=lambda: _CLAIMED_AT)
+    ledger.close_claim(swept)
+
+    assert ledger.read_claim(export) == held
+    assert _unit_count(live_store, spend) == 1
+
+
+@pytest.mark.parametrize("landed", [False, True], ids=["copy-running", "copy-landed"])
+def test_a_sweep_behind_a_copy_refunds_nothing_under_real_postgres(live_store, landed: bool):
+    """The sweep read the claim before the copy began, so its bucket read says nothing."""
+    ledger, export, spend = _claim_rig(live_store)
+    held = _held_claim(ledger, export, spend)
+    swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.key == export)
+
+    current = ledger.begin_copy(
+        held, "sha256:a", clock=lambda: _CLAIMED_AT, lease=_CLAIM_LEASE - _CLAIMED_AT
+    )
+    if landed:
+        current = ledger.settle_copy(current, landed=True, expires_at=_CLAIM_LEASE)
+    ledger.close_claim(swept)
+
+    assert ledger.read_claim(export) == current
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_sweep_refunds_a_copying_claim_once_against_a_settling_holder_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store)
+    copying = ledger.begin_copy(
+        _held_claim(ledger, export, spend),
+        "sha256:a",
+        clock=lambda: _CLAIMED_AT,
+        lease=_CLAIM_LEASE - _CLAIMED_AT,
+    )
+    swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.key == export)
+
+    ledger.settle_copy(copying, landed=False, expires_at=_CLAIM_LEASE)
+    ledger.close_claim(swept)
+    ledger.settle_copy(copying, landed=False, expires_at=_CLAIM_LEASE)
+
+    assert ledger.read_claim(export).state == ClaimState.open
+    assert _unit_count(live_store, spend) == 0
+
+
+def test_a_takeover_by_another_caller_refunds_and_fences_the_first_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store)
+    other = Spend(f"ip:{uuid4().hex}", AllowanceKind.pin)
+    first = _held_claim(ledger, export, spend)
+
+    taken = ledger.claim(export, now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=2))
+    second = ledger.hold_claim(taken, [other], clock=lambda: _AFTER_LEASE)
+
+    assert _unit_count(live_store, spend) == 0
+    assert (
+        ledger.begin_copy(
+            first, "sha256:a", clock=lambda: _CLAIMED_AT, lease=_CLAIM_LEASE - _CLAIMED_AT
+        )
+        is None
+    )
+    ledger.close_claim(first)
+    ledger.free_claim(first, _CLAIMED_AT)
+    assert ledger.read_claim(export) == second
+    assert _unit_count(live_store, other) == 1
+
+
+class _PaidBucket:
+    """A bucket whose working bytes have gone, whose pinned object `pinned` says stands or raises
+    when it is an error."""
+
+    copy_lands_within = CopyBounds().lands_within
+
+    def __init__(self, pinned: bool | Exception) -> None:
+        self._pinned = pinned
+
+    def location(self, digest, *, tier):
+        return ArtifactLocation(
+            bucket="working", object_name=digest, stored_at=_CLAIMED_AT, renewal=0
+        )
+
+    def copy(self, digest, *, from_tier, to_tier, source=None):
+        raise ArtifactNotFoundError(digest=digest, tier=from_tier)
+
+    def exists(self, digest, *, tier, read=None):
+        if isinstance(self._pinned, Exception):
+            raise self._pinned
+        return self._pinned
+
+
+def _preparing(ledger, claim, bucket) -> PreparingCopy:
+    return PreparingCopy(
+        claim,
+        allowances=ledger,
+        artifacts=bucket,
+        caller=None,
+        clock=lambda: _CLAIMED_AT,
+        lease=_CLAIM_LEASE - _CLAIMED_AT,
+    )
+
+
+def test_a_copy_after_the_row_has_gone_copies_nothing_under_real_postgres(live_store):
+    ledger, export, spend = _claim_rig(live_store)
+    held = _held_claim(ledger, export, spend)
+    ledger.close_claim(held)
+
+    class _Forbidden(_PaidBucket):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
+            raise AssertionError("a prepare that lost its claim must not copy")
+
+    preparing = _preparing(ledger, held, _Forbidden(True))
+    with pytest.raises(CopyClaimUnsettled):
+        preparing.copy("sha256:a")
+    assert _unit_count(live_store, spend) == 0
+
+
+def test_a_paid_claim_stays_paid_when_a_retry_finds_no_working_bytes_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store)
+    copying = ledger.begin_copy(
+        _held_claim(ledger, export, spend),
+        "sha256:a",
+        clock=lambda: _CLAIMED_AT,
+        lease=_CLAIM_LEASE - _CLAIMED_AT,
+    )
+    ledger.settle_copy(copying, landed=True, expires_at=_CLAIM_LEASE)
+    paid = ledger.claim(export, now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=3))
+
+    with pytest.raises(ArtifactNotFoundError):
+        _preparing(ledger, paid, _PaidBucket(True)).copy("sha256:a")
+
+    assert ledger.read_claim(export).state == ClaimState.landed
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_takeover_of_a_copy_it_cannot_judge_refuses_before_any_render_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store)
+    ledger.begin_copy(
+        _held_claim(ledger, export, spend),
+        "sha256:a",
+        clock=lambda: _CLAIMED_AT,
+        lease=_CLAIM_LEASE - _CLAIMED_AT,
+    )
+    taken = ledger.claim(export, now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=3))
+    unreadable = _PaidBucket(ArtifactWriteError(object_name="sha256:a", digest="sha256:a"))
+
+    with pytest.raises(CopyClaimUnsettled), _preparing(ledger, taken, unreadable) as preparing:
+        preparing.settle_earlier()
+
+    assert ledger.read_claim(export).state == ClaimState.copying
+    assert ledger.read_claim(export).expires_at == _CLAIMED_AT
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_freed_claim_keeps_its_units_for_the_retry_that_takes_it_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store)
+    copying = ledger.begin_copy(
+        _held_claim(ledger, export, spend),
+        "sha256:a",
+        clock=lambda: _CLAIMED_AT,
+        lease=_CLAIM_LEASE - _CLAIMED_AT,
+    )
+
+    ledger.free_claim(copying, _CLAIMED_AT)
+    taken = ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE)
+
+    assert (taken.state, taken.spends, taken.digest) == (
+        ClaimState.copying,
+        (spend,),
+        "sha256:a",
+    )
+    assert taken.generation != copying.generation
+    assert _unit_count(live_store, spend) == 1
+    ledger.settle_copy(copying, landed=False, expires_at=_CLAIM_LEASE)
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_stale_claims_unit_reads_as_held_until_the_sweep_settles_it_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store, limit=1)
+    _held_claim(ledger, export, spend)
+
+    with pytest.raises(AllowanceExhausted) as refused:
+        ledger.spend(Caller(kind="address", key=spend.key), spend.kind, _AFTER_LEASE)
+    assert refused.value.held_for == SWEEP_INTERVAL_SECONDS
+
+    swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.key == export)
+    ledger.close_claim(swept)
+    ledger.spend(Caller(kind="address", key=spend.key), spend.kind, _AFTER_LEASE)
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_stale_held_claim_reaching_its_copy_copies_nothing_under_real_postgres(live_store):
+    ledger, export, spend = _claim_rig(live_store)
+    held = _held_claim(ledger, export, spend)
+
+    began = ledger.begin_copy(
+        held, "sha256:a", clock=lambda: _AFTER_LEASE, lease=timedelta(minutes=2)
+    )
+
+    assert began is None
+    assert ledger.read_claim(export) == held
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_refund_racing_a_spend_takes_its_unit_back(live_store):
+    """A refund that reads the day's last unit while a spend holds the row uncommitted waits for
+    the spend, then takes one from the count the spend leaves."""
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    limits = {AllowanceKind.card: 5}
+    now = datetime.now(UTC)
+    LiveAllowanceLedger(store=live_store, limits=limits).spend(caller, AllowanceKind.card, now)
+    spend_pool = _pool(size=1)
+    refund_pool = _pool(size=1)
+    try:
+        holder = _HoldBeforeCommitStore(
+            LiveDatasetStore(connections=spend_pool),
+            hold_when=lambda sql: sql.startswith("INSERT INTO datasets.caller_allowance"),
+        )
+        spender = LiveAllowanceLedger(store=holder, limits=limits)
+        refunder = LiveAllowanceLedger(
+            store=LiveDatasetStore(connections=refund_pool), limits=limits
+        )
+
+        spend = _Call(lambda: spender.spend(caller, AllowanceKind.card, now))
+        assert holder.held.wait(timeout=5), "the spend never reached its commit"
+        refund = _Call(lambda: refunder.refund(caller, AllowanceKind.card, now))
+        deadline = time.monotonic() + 5
+        while not _waits_on_a_lock(live_store, table="datasets.caller_allowance"):
+            assert time.monotonic() < deadline, "the refund never waited on the spend's row"
+            time.sleep(0.02)
+        holder.release.set()
+        spend.join()
+        refund.join()
+    finally:
+        spend_pool.close_all()
+        refund_pool.close_all()
+
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+            (caller.key, AllowanceKind.card.value),
+        )
+    assert row == {"count": 1}
+
+
+def _waits_on_a_lock(store, *, table: str) -> bool:
+    """Whether another session waits on a lock in a statement naming `table`."""
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
+            "AND pid <> pg_backend_pid()",
+            (table,),
+        )
+    return row is not None and row["n"] > 0
 
 
 def test_artifact_reference_upsert_reactivates_a_soft_deleted_row(live_store):
@@ -3892,6 +4329,106 @@ def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_stor
             tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
             tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
         _delete_versions(live_store, [factless, legacy, pinned])
+
+
+def test_settle_leaves_labels_and_caller_keys_as_they_are(live_store):
+    """Only a raw secret is rewritten. An open caller's `ip:` key and a principal's label stay
+    as stored over two runs, so a caller's repeat pin still matches its own reference."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    pinned = f"spec_settle_keys_{suffix}"
+    digest = f"sha256:test-live-settle-keys-{suffix}"
+    caller_key = "ip:" + suffix
+    label = _principal_label(f"settle-keys-secret-{suffix}")
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    with live_store.transaction() as tx:
+        for principal in (caller_key, label):
+            tx.execute(
+                "INSERT INTO datasets.artifact_reference (principal, artifact_digest, "
+                "subject_id, content_version, reference_kind, created_at) "
+                "VALUES (%s, %s, %s, 'cv1', %s, now())",
+                (principal, digest, pinned, PIN_REFERENCE_KIND),
+            )
+
+    try:
+        for _ in range(2):
+            assert run_settle(store=live_store) == 0
+            with live_store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                    (pinned,),
+                )
+            assert sorted(row["principal"] for row in rows) == sorted([caller_key, label])
+    finally:
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [pinned])
+
+
+def test_settle_waits_for_a_pin_in_flight_and_folds_the_raw_row_into_it(live_store):
+    """A pin under the label of a raw row, uncommitted when settle starts, would collide with
+    settle's rewrite of that row. Settle queues behind it, then folds the raw row into the
+    pin's and counts nothing left."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    pinned = f"spec_settle_race_{suffix}"
+    digest = f"sha256:test-live-settle-race-{suffix}"
+    secret = f"settle-race-secret-{suffix}"
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    insert = (
+        "INSERT INTO datasets.artifact_reference (principal, artifact_digest, subject_id, "
+        "content_version, reference_kind, created_at) VALUES (%s, %s, %s, 'cv1', %s, now())"
+    )
+    with live_store.transaction() as tx:
+        tx.execute(insert, (secret, digest, pinned, PIN_REFERENCE_KIND))
+
+    observer_pool = _pool(size=1)
+    observer = LiveDatasetStore(connections=observer_pool)
+    settled: list[int | BaseException] = []
+
+    def _settle() -> None:
+        try:
+            settled.append(run_settle(store=live_store))
+        except BaseException as exc:  # The test reads it below.
+            settled.append(exc)
+
+    try:
+        with live_store.transaction() as pin:
+            pin.execute(insert, (_principal_label(secret), digest, pinned, PIN_REFERENCE_KIND))
+            settling = threading.Thread(target=_settle)
+            settling.start()
+            deadline = time.monotonic() + 10
+            while not _settle_is_waiting_on_a_lock(observer):
+                assert time.monotonic() < deadline, "settle never waited on the pin"
+                time.sleep(0.05)
+        settling.join(timeout=10)
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                (pinned,),
+            )
+    finally:
+        observer_pool.close_all()
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [pinned])
+
+    assert settled == [0]
+    assert [row["principal"] for row in rows] == [_principal_label(secret)]
+
+
+def _settle_is_waiting_on_a_lock(store) -> bool:
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
+            "AND pid <> pg_backend_pid()"
+        )
+    return row is not None and row["n"] > 0
 
 
 _STRIP_DOCUMENTATION_MIGRATION = "0035_strip_backfilled_documentation.sql"

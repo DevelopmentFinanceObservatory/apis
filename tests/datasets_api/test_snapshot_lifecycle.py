@@ -14,6 +14,7 @@ from datetime import timedelta
 import pytest
 
 from artifact_store import (
+    ArtifactLocation,
     ArtifactSink,
     ArtifactStore,
     LiveArtifactInventory,
@@ -261,8 +262,18 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
         return self._record(super().put(data, tier=tier))
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         return self._record(super().copy(digest, from_tier=from_tier, to_tier=to_tier))
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        return self._inventory.get_location(digest, tier=tier)
 
     def deferred(self, batch: InventoryBatch) -> ArtifactStore:
         return _DeferredRecordingView(self, batch=batch)
@@ -316,8 +327,15 @@ class _DeferredRecordingView:
             response_disposition=response_disposition,
         )
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
-        return self._store.copy(digest, from_tier=from_tier, to_tier=to_tier)
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
+        return self._store.copy(digest, from_tier=from_tier, to_tier=to_tier, source=source)
 
     def list(self, *, tier: Tier) -> frozenset[str]:
         return self._store.list(tier=tier)

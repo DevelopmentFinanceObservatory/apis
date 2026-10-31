@@ -343,7 +343,7 @@ def test_a_re_render_from_an_aged_frame_holds_one_permit_from_the_frame_read_to_
     version_store, monkeypatch: pytest.MonkeyPatch
 ):
     """With one materialise permit, the re-render of a link whose frame aged out takes it
-    once: the frame's read and renewal, the coverage snapshot, the decode and the render all
+    once: the frame's read and renewal, its decode, the coverage snapshot and the render all
     happen while it is held, and the call does not wait on itself. The clicked object's own
     renewal, which finds the object gone, takes and returns the permit before that."""
     log = _PermitLog()
@@ -394,8 +394,8 @@ def test_a_re_render_from_an_aged_frame_holds_one_permit_from_the_frame_read_to_
     assert re_render.count("acquire") == re_render.count("release") == 1
     assert [kind for kind in re_render if kind != "write"][1:-1] == [
         "frame_read",
-        "snapshot",
         "decode",
+        "snapshot",
         "render",
     ]
     # No frame bytes are read, renewed, decoded or rendered outside the permit.

@@ -342,6 +342,11 @@ class LiveGraphClient:
     def arcs_complete(self, dcid: str) -> bool:
         return self._client.arcs_complete(dcid)
 
+    def node_arc_targets_many(
+        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[dc_graph.ArcTarget, ...]] | None]:
+        return self._client.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
+
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, tuple[str, ...]]:

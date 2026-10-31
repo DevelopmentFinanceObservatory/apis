@@ -51,6 +51,47 @@ def test_label_cache_hit_under_same_token_miss_after_advance(monkeypatch) -> Non
     assert len(calls) == 2, "a token change must miss and re-fetch"
 
 
+def test_arc_targets_cache_holds_answered_nodes_under_the_token(monkeypatch) -> None:
+    """A node answered with arcs is served from the label-sized cache under the same token,
+    whatever the order of `properties`; an empty answer and a token change read again."""
+    calls: list[list[str]] = []
+
+    def fake_post(self, path, payload, *, deadline=None):
+        calls.append(sorted(payload["nodes"]))
+        return {
+            "data": {
+                d: {} if d == "dc/base/Gone" else _fake_post_name([d], label="WHO")["data"][d]
+                for d in payload["nodes"]
+            }
+        }
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    generation = FakeGeneration(token="gen-a")
+    client = GraphClient(
+        base_url="http://fake/core/api", generation=generation, label_cache_size=100
+    )
+
+    first = client.node_arc_targets_many(
+        ["dc/base/WHO_GHO", "dc/base/Gone"], properties=("name", "typeOf")
+    )
+    second = client.node_arc_targets_many(
+        ["dc/base/Gone", "dc/base/WHO_GHO"], properties=("typeOf", "name")
+    )
+
+    assert second == first
+    assert first["dc/base/Gone"] is None
+    assert calls == [["dc/base/Gone", "dc/base/WHO_GHO"], ["dc/base/Gone"]]
+    stats = client.stats()
+    assert (stats["arc_targets_hits"], stats["arc_targets_misses"]) == (1, 3)
+    assert stats["arc_targets_entries"] == 1
+
+    generation.advance("gen-b")
+    client.node_arc_targets_many(["dc/base/WHO_GHO"], properties=("name", "typeOf"))
+    assert calls[-1] == ["dc/base/WHO_GHO"]
+    client.clear()
+    assert client.stats()["arc_targets_entries"] == 0
+
+
 def test_type_cache_hit_under_same_token_miss_after_advance(monkeypatch) -> None:
     calls: list[list[str]] = []
 

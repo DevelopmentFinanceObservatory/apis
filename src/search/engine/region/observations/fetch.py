@@ -32,6 +32,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from code_index.shared import get_index
@@ -67,6 +68,7 @@ from materialise.window import latest_periods
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import UPSTREAM_READ_ERRORS, GraphInfraError
 from search.engine.region.codes import (
     OBSERVATIONS_CLIENTS_UNAVAILABLE,
@@ -1224,6 +1226,7 @@ def _assemble_pair_series(
         observations = assemble_per_series(
             {key: _series_read(read) for key, read in pair_results.items()},
             label_source=graph,
+            on_names_unread=partial(note_degraded_read, "provenance names"),
             index=get_index(),
             member_constraints=member_constraints,
             target_currency_ref=target_currency_ref,

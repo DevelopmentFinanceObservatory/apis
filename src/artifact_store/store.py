@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 from google.cloud.storage import fileio
+from google.cloud.storage.retry import DEFAULT_RETRY
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -41,8 +42,8 @@ from artifact_store.errors import (
     ArtifactNotFoundError,
     ArtifactWriteError,
 )
-from artifact_store.inventory import InventoryBatch, InventoryEntry
-from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, sign_get_url
+from artifact_store.inventory import ArtifactLocation, InventoryBatch, InventoryEntry
+from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, emulator_host, sign_get_url
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import working_tier_expired
 from dfo_platform.timings import count
@@ -140,6 +141,57 @@ class ArtifactSink(Protocol):
     def result(self) -> StoredArtifact: ...
 
 
+class ExistsRead(StrEnum):
+    """How patiently `ArtifactStore.exists` reads: `short` for a caller holding a work permit,
+    `long` for the sweep, which holds none."""
+
+    short = "short"
+    long = "long"
+
+    @property
+    def within(self) -> timedelta:
+        """The longest a read takes: retries up to its deadline, then a last attempt's
+        timeout."""
+        attempt, deadline = _EXISTS_READS[self]
+        return timedelta(seconds=deadline + attempt)
+
+
+_EXISTS_READS: Mapping[ExistsRead, tuple[float, float]] = {
+    # 5 s attempts retried within 5 s, so one 503 does not leave a copy unsettled and a bucket
+    # that is down answers in about 10 s.
+    ExistsRead.short: (5.0, 5.0),
+    # The library's own 60 s attempts, retried within 60 s, so one read, 120 s at most, fits a
+    # sweep run beside its ledger writes.
+    ExistsRead.long: (60.0, 60.0),
+}
+"""Each read's attempt timeout and retry deadline, in seconds."""
+
+
+@dataclass(frozen=True)
+class CopyBounds:
+    """`copy_blob`'s `timeout=(connect, read)` and retry deadline, in seconds. The read timeout
+    bounds each gap between bytes on the socket, not the whole request. Both tiers' buckets sit in
+    one region in the default storage class, so a copy between them rewrites metadata only and
+    answers in one short response whatever its size, `materialise.formats.PARQUET_MAX_BYTES`
+    (256 MiB) included."""
+
+    connect: float = 10.0
+    read: float = 30.0
+    retry_deadline: float = 30.0
+
+    @property
+    def lands_within(self) -> timedelta:
+        """How long `copy_blob` takes to land its object in the usual case: its retries, then a
+        last attempt whose connection and reply each come within their timeouts. A server that
+        trickles its reply can run past it, and a copy that lands later costs one free pinned
+        object for its digest. What follows the landing, a size read and the inventory write,
+        changes nothing an existence read says."""
+        return timedelta(seconds=self.retry_deadline + self.connect + self.read)
+
+
+DEFAULT_COPY_BOUNDS = CopyBounds()
+
+
 class ArtifactStore(Protocol):
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
         """Write under the location's object name, or the digest when the tier has none.
@@ -174,6 +226,14 @@ class ArtifactStore(Protocol):
         """
         ...
 
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        """The location the inventory records for `digest` at `tier`, or `None` when it records
+        none. Tier retention can delete an object while its location row persists.
+
+        Raises `ArtifactInventoryError` if the read fails.
+        """
+        ...
+
     def signed_location_url(
         self,
         digest: str,
@@ -194,8 +254,27 @@ class ArtifactStore(Protocol):
         """
         ...
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
-        """Copy to the destination bucket. An existing digest is a deduplication.
+    @property
+    def copy_lands_within(self) -> timedelta:
+        """How long `copy` takes to land its object in the usual case (`CopyBounds`)."""
+        ...
+
+    def exists(self, digest: str, *, tier: Tier, read: ExistsRead = ExistsRead.short) -> bool:
+        """Whether the tier's bucket holds the object of `digest`, whatever the inventory says,
+        read as `read` says."""
+        ...
+
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
+        """Copy to the destination bucket. An existing digest is a deduplication. `source` is
+        the bucket and object name of the source a caller holds, else the copy reads them from
+        the inventory.
 
         Raises `ArtifactNotFoundError` if the source location or its object is absent, or
         `ArtifactWriteError` for another copy failure.
@@ -537,6 +616,7 @@ class LiveArtifactStore:
         client: storage.Client | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Clock = utc_now,
+        copy_bounds: CopyBounds = DEFAULT_COPY_BOUNDS,
     ) -> None:
         missing_tiers = [tier for tier in Tier if tier not in buckets]
         if missing_tiers:
@@ -544,11 +624,16 @@ class LiveArtifactStore:
                 f"buckets is missing an entry for tier(s): "
                 f"{[tier.value for tier in missing_tiers]!r}"
             )
+        # Refuse an emulator outside the local stack at start-up, before any link goes out.
+        emulator_host()
         self._buckets = dict(buckets)
         self._inventory = inventory
         self._client = client if client is not None else storage.Client()
         self._clock = clock
         self._now = now
+        self._copy_bounds = copy_bounds
+        self._copy_retry = DEFAULT_RETRY.with_timeout(copy_bounds.retry_deadline)
+        self._copy_timeout = (copy_bounds.connect, copy_bounds.read)
         self._url_cache: dict[_UrlCacheKey, _CachedUrl] = {}
         self._url_cache_lock = threading.Lock()
         self._batch: InventoryBatch | None = None
@@ -610,6 +695,9 @@ class LiveArtifactStore:
                 digest=artifact_digest, tier=tier, computed_digest=computed_digest
             )
         return data
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        return self._inventory.get_location(digest, tier=tier)
 
     def signed_location_url(
         self,
@@ -674,17 +762,37 @@ class LiveArtifactStore:
                 digest=digest, tier=tier, stored_bucket=bucket, stored_object_name=object_name
             )
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    @property
+    def copy_lands_within(self) -> timedelta:
+        return self._copy_bounds.lands_within
+
+    def exists(self, digest: str, *, tier: Tier, read: ExistsRead = ExistsRead.short) -> bool:
+        timeout, deadline = _EXISTS_READS[read]
+        bucket = self._client.bucket(self._buckets[tier])
+        blob = bucket.get_blob(digest, timeout=timeout, retry=DEFAULT_RETRY.with_timeout(deadline))
+        return blob is not None
+
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         """Copy from the recorded source location. Record the destination after success. A
         source object the lifecycle rule deleted raises `ArtifactNotFoundError`. GCS also
         answers 404 for a missing destination bucket, so a `NotFound` raises
         `ArtifactNotFoundError` only when the source object is absent and
         `ArtifactWriteError` otherwise."""
-        location = self._inventory.get_location(digest, tier=from_tier)
-        if location is None:
-            raise ArtifactNotFoundError(digest=digest, tier=from_tier)
-        source_bucket = self._client.bucket(location.bucket)
-        source_blob = source_bucket.blob(location.object_name)
+        if source is None:
+            location = self._inventory.get_location(digest, tier=from_tier)
+            if location is None:
+                raise ArtifactNotFoundError(digest=digest, tier=from_tier)
+            source = (location.bucket, location.object_name)
+        source_bucket_name, source_object_name = source
+        source_bucket = self._client.bucket(source_bucket_name)
+        source_blob = source_bucket.blob(source_object_name)
         dest_bucket_name = self._buckets[to_tier]
         dest_bucket = self._client.bucket(dest_bucket_name)
 
@@ -694,14 +802,26 @@ class LiveArtifactStore:
         size_bytes: int | None = None
         try:
             dest_blob = source_bucket.copy_blob(
-                source_blob, dest_bucket, new_name=digest, if_generation_match=0
+                source_blob,
+                dest_bucket,
+                new_name=digest,
+                if_generation_match=0,
+                timeout=self._copy_timeout,
+                retry=self._copy_retry,
             )
             size_bytes = dest_blob.size
         except PreconditionFailed:
             deduplicated = True
         except NotFound:
             try:
-                source_missing = source_bucket.get_blob(location.object_name) is None
+                source_missing = (
+                    source_bucket.get_blob(
+                        source_object_name,
+                        timeout=self._copy_timeout,
+                        retry=self._copy_retry,
+                    )
+                    is None
+                )
             except Exception:
                 source_missing = False
             copy_failed = not source_missing
@@ -712,7 +832,9 @@ class LiveArtifactStore:
         if copy_failed:
             raise ArtifactWriteError(object_name=digest, digest=digest)
         if size_bytes is None:
-            existing = dest_bucket.get_blob(digest)
+            existing = dest_bucket.get_blob(
+                digest, timeout=self._copy_timeout, retry=self._copy_retry
+            )
             if existing is None:
                 raise ArtifactWriteError(object_name=digest, digest=digest)
             size_bytes = existing.size
