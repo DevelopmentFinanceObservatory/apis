@@ -9,23 +9,21 @@ uses platform code `unsupported_schema_version` (422) with `retryable=False`, ou
 `schema_invalid` and `frame_unavailable` vary by cause. Each response's `retryable` value is
 authoritative. `request_invalid` has a retryable headline mode but always returns false.
 
-`schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
-`resource_exhausted` return 400. `write_refused` returns 403, `edit_conflict` returns 409, and
-`not_found` returns 404. The render routes refuse a caller other than the live-refresh
-principal with `refresh_not_permitted` (403) and a target frame that may not stand in for the
-stored one with `render_target_mismatch` (409). They serve `binding_invalid` and
-`constraint_violation` at 422 and `frame_unavailable`, `release_mismatch`, and
-`resource_exhausted` at 409 (`presentation_api.doors.render`). Their caller replays a stored
-intent and cannot correct it, so there `retryable` is true only when the same request may
-succeed later: `replay_retryable` keeps an occurrence's value for a `retry_after_delay` or
-`refresh_then_retry` code and answers false for every other mode.
-Frame unavailability returns 404 or transient 503. Release mismatch and service unavailability
-return 503. Timeout returns 504, and internal errors return 500.
+Every classifier reads a refusal's status from the code registry under the endpoint the platform
+binds for the route (`dfo_platform.problem.refused`), and a door's exemplars are checked against
+the registry at startup (`dfo_platform.doors.check_endpoint_exemplars`). `schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
+`resource_exhausted` are 400 on the write routes, and `frame_unavailable` 404. The render routes
+serve `binding_invalid` and `constraint_violation` at 422 and `frame_unavailable`,
+`release_mismatch`, and `resource_exhausted` at 409. Their caller replays a stored intent and
+cannot correct it, so there `retryable` is true only when the same request may succeed later:
+`replay_retryable` keeps an occurrence's value for a `retry_after_delay` or `refresh_then_retry`
+code and answers false for every other mode. `presentation_api.refusals` names the code of each
+`FrameUnavailable` reason.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
 `correct_and_retry`, which `retryable_for` answers false. The request must change before it can
 succeed, and a client retries a retryable refusal unchanged. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
-refresh. Transient frame, release, service, and timeout failures retry after a delay. `not_found`,
+refresh. Transient release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
 `internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
 release manifest.
@@ -34,7 +32,7 @@ The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` 
 `write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
 `share_not_replaceable` and `share_id_taken` at 409 and `payload_too_large` at 413, none
 retryable. A card create or revise and a share create refuse
-the platform's `allowance_exhausted` at 429, not retryable either, with `Retry-After` naming
+the platform's `allowance_exhausted`, not retryable either, with `Retry-After` naming
 the reset (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
 none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
 serves.
@@ -83,7 +81,7 @@ PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
     "frame_unavailable": (
         "Frame Unavailable",
-        "The referenced frame cannot be loaded right now.",
+        "The referenced frame is not held in a state Presentation can load.",
     ),
     "resource_exhausted": (
         "Resource Exhausted",

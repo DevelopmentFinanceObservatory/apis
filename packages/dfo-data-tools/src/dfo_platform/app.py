@@ -45,6 +45,7 @@ from dfo_platform.codes import (
 from dfo_platform.compression import BufferedGzipMiddleware
 from dfo_platform.config import executor_max_workers as _default_executor_max_workers
 from dfo_platform.cors import PlatformCORSMiddleware
+from dfo_platform.doors import RouteKey, route_keys
 from dfo_platform.executor import SaturationTrackingExecutor, current_thread_is_owned_by
 from dfo_platform.problem import (
     PROBLEM_JSON,
@@ -100,8 +101,9 @@ class Surface:
     before `call_next`. Returning a spec as data avoids the
     `ServerErrorMiddleware` re-raise caused by exceptions in this layer.
 
-    `registry_endpoints` maps a route's path, as the router declares it, to the
-    code registry endpoint it serves, such as `datasets.mint`. Admission checks
+    `registry_endpoints` maps a route's `doors.RouteKey`, its method and its path
+    as the router declares it, to the code registry endpoint it serves, such as
+    `datasets.mint`, so two methods on one path can serve two endpoints. Admission checks
     and exception classification for a request that route matches run with that
     endpoint bound (`codes.bound_registry_endpoint`), so `registered_status`
     reads the route's own status for a code.
@@ -137,7 +139,7 @@ class Surface:
     exception_exemplars: tuple[BaseException, ...] = ()
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
-    registry_endpoints: Mapping[str, str] = field(default_factory=dict)
+    registry_endpoints: Mapping[RouteKey, str] = field(default_factory=dict)
     request_scope: Callable[[], AbstractContextManager[object]] | None = None
     public_paths: frozenset[str] = frozenset()
     description: str = ""
@@ -269,8 +271,7 @@ def _validate_surfaces(surfaces: Sequence[Surface]) -> None:
                     "another surface's handler or the platform default instead of this "
                     "surface's own."
                 )
-        route_paths = {getattr(route, "path", None) for route in surface.router.routes}
-        unrouted = sorted(set(surface.registry_endpoints) - route_paths)
+        unrouted = sorted(set(surface.registry_endpoints) - route_keys(surface.router))
         if unrouted:
             raise SurfaceConfigurationError(
                 f"surface {surface.name!r} names registry endpoints for {unrouted!r}, which "
@@ -814,8 +815,15 @@ def _registry_endpoint(surface: Surface, scope: Scope) -> str | None:
     the router would pick it, or `None` when that route names none."""
     for route in surface.router.routes:
         if isinstance(route, BaseRoute) and route.matches(scope)[0] == Match.FULL:
-            return surface.registry_endpoints.get(getattr(route, "path", ""))
+            key = (scope.get("method", ""), getattr(route, "path", ""))
+            return surface.registry_endpoints.get(key)
     return None
+
+
+def _log_refusal(surface: Surface, spec: ProblemSpec) -> None:
+    """Log the line a classifier or admission check named for this refusal, so both stay pure."""
+    if spec.log is not None:
+        logger.log(spec.log_level, "%s: %s", surface.name, spec.log)
 
 
 async def _admission_dispatch(
@@ -835,6 +843,7 @@ async def _admission_dispatch(
             with codes.bound_registry_endpoint(endpoint):
                 spec = check(request)
             if spec is not None:
+                _log_refusal(surface, spec)
                 response = _envelope_for(request, ctx).render(spec)
                 trace_id = getattr(request.state, "trace_id", None)
                 response.headers[TRACE_ID_HEADER] = (
@@ -872,6 +881,7 @@ def _classify_and_envelope(
             )
             spec = None
         if spec is not None:
+            _log_refusal(surface, spec)
             if set(type(exc).__mro__).isdisjoint(surface.exception_types):
                 logger.warning(
                     "surface %r's classify() recognized %s, which is absent "

@@ -153,7 +153,6 @@ def _render(
         resolved_stat_var_refs=_RESOLVED,
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=groupby_fold_max_rows,
-        groupby_row_fold_max_rows=700_000,
         frame_rows=frame_rows,
         deadline=deadline,
         prepared_at=PREPARED_AT,

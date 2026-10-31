@@ -8,12 +8,12 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from materialise.place_scope import DefaultPresence
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.closest_match import substituted_measure_fact
 from search.engine.extract import DateRequest
+from search.engine.place import ConsultedPresence
 from search.engine.region.codes import FAMILY_TOTAL_ABSENT, MEMBERSHIP_UNVERIFIED
 from search.engine.region.grounding import (
     EntityRoles,
@@ -64,7 +64,7 @@ def run_materialise(
     date_request: DateRequest | None,
     deadline: float | None,
     place_dcids: list[str] | None,
-    default_presence: DefaultPresence | None = None,
+    default_presence: ConsultedPresence | None = None,
     open_axes: frozenset[RoleAxis],
     coverage: CoverageSnapshot,
     facet_batch: FacetBatch | None = None,

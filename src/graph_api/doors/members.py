@@ -82,7 +82,7 @@ from code_index.shared import get_index
 from code_index.types import CodeRow
 from dc_graph import display_name
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.static_response import gapped_public_json
 from dfo_platform.wire import ResponseModel
 from entity_resolution.membership import (
@@ -739,10 +739,13 @@ def build_members_door() -> DoorContribution:
     router.add_api_route("/api/graph/roots", list_roots, methods=["GET"], response_model=Roots)
     return DoorContribution(
         router=router,
-        registry_endpoints={
-            "/api/graph/node/{dcid:dcid}/members": "graph.members",
-            "/api/graph/roots": "graph.roots",
-        },
+        registry_endpoints=path_registry_endpoints(
+            router,
+            {
+                "/api/graph/node/{dcid:dcid}/members": "graph.members",
+                "/api/graph/roots": "graph.roots",
+            },
+        ),
         classify=classify_members_exception,
         exception_types=(
             ListRequestInvalid,

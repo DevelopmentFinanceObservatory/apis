@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.state import StateSlot
 from skills_api.doors._response_cache import GenerationBodyCache
 from skills_api.routing import SKILL_ID_MAX_LENGTH
@@ -43,20 +43,19 @@ class SkillNotFound(Exception):
         super().__init__(f"skill {skill_id!r} is not published on this deployment")
 
 
-INDEX_NOT_BUILT_PROBLEM = ProblemSpec(
-    status=503,
-    code="service_unavailable",
-    detail="the skills index has not finished its first build yet; retry",
-    retryable=True,
-)
+def index_not_built_problem() -> ProblemSpec:
+    return refused(
+        "service_unavailable",
+        detail="the skills index has not finished its first build yet; retry",
+        retryable=True,
+    )
 
 
 def classify_skill_lookup_exception(exc: BaseException) -> ProblemSpec | None:
     """Maps the refusals of a door that looks up one skill by id."""
     if isinstance(exc, SkillIdTooLong):
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=(
                 f"skill_id exceeds the {SKILL_ID_MAX_LENGTH}-character ceiling "
                 f"(received {exc.length} characters)"
@@ -65,15 +64,14 @@ def classify_skill_lookup_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
         )
     if isinstance(exc, SkillNotFound):
-        return ProblemSpec(
-            status=404,
-            code="skill_not_found",
+        return refused(
+            "skill_not_found",
             detail=str(exc),
             pointer="/skill_id",
             retryable=False,
         )
     if isinstance(exc, SkillsIndexNotBuilt):
-        return INDEX_NOT_BUILT_PROBLEM
+        return index_not_built_problem()
     return None
 
 

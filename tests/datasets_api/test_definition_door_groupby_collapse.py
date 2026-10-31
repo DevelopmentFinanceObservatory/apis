@@ -13,7 +13,7 @@ from typing import cast
 
 import httpx
 import pytest
-from dfo_frame_grammar import frame_sha256
+from dfo_frame_grammar import UNIT_COLUMN, frame_sha256
 
 import datasets_api.current as current_module
 import datasets_api.render as render_module
@@ -23,6 +23,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.render import CANONICAL_FRAME_RENDERING
 from datasets_api.version_store import rendering_key
 from materialise.formats import (
+    CANONICAL_FRAME_MEDIA_TYPE,
     EXCEL_MAX_ROWS,
     FRAME1_MEDIA_TYPE,
     ExcelLimitError,
@@ -179,9 +180,9 @@ def test_head_hit_with_a_converted_base_mints_the_same_collapsed_content_version
     assert served["artifacts"][0]["bytes"] == fresh["artifacts"][0]["bytes"]
 
 
-def _collapse_client() -> tuple[
-    httpx.Client, FakeVersionRecordDatasetStore, _RenderableArtifactStore
-]:
+def _collapse_client(
+    settings: DatasetsBuildSettings | None = None,
+) -> tuple[httpx.Client, FakeVersionRecordDatasetStore, _RenderableArtifactStore]:
     version_store = FakeVersionRecordDatasetStore()
     artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
     client = _client(
@@ -192,14 +193,29 @@ def _collapse_client() -> tuple[
         artifact_store=artifact_store,
         code_index=_code_index(),
         coverage=_coverage_service(),
+        settings=settings,
     )
     return client, version_store, artifact_store
 
 
-def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone():
+def _spy_on_base_frame_hashes(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """The frames a head hit takes the base frame's hash of (`stored_frame_sha256`)."""
+    hashed: list[object] = []
+    take = current_module.stored_frame_sha256
+
+    def spy(frame, *, recorded):
+        hashed.append(frame)
+        return take(frame, recorded=recorded)
+
+    monkeypatch.setattr(current_module, "stored_frame_sha256", spy)
+    return hashed
+
+
+def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone(monkeypatch):
     """A base version that links a frame1 document and no canonical frame, as a version minted
     before canonical frames does, collapses on a head hit to the version and bytes a fresh
-    groupby mint gives."""
+    groupby mint gives. The collapse holds fewer rows than the base frame, so it cannot be the
+    base version and the base frame is never hashed."""
     spec_id, sidecar = _spec_id_and_sidecar()
     fresh_client, _, _ = _collapse_client()
     fresh = _mint(fresh_client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
@@ -208,6 +224,7 @@ def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone()
     link_frame1_only(
         version_store, artifact_store, subject_id=spec_id, content_version=base["content_version"]
     )
+    hashed = _spy_on_base_frame_hashes(monkeypatch)
 
     got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
 
@@ -216,6 +233,102 @@ def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone()
     assert served["trace"]["served_from"] == "head"
     assert served["content_version"] == fresh["content_version"] != base["content_version"]
     assert served["artifacts"][0]["artifact_digest"] == fresh["artifacts"][0]["artifact_digest"]
+    assert hashed == []
+
+
+@pytest.mark.parametrize(
+    ("query", "status", "decoded"),
+    [
+        pytest.param("bundle=false", 200, [FRAME1_MEDIA_TYPE], id="plain-csv-decodes"),
+        pytest.param(_GROUPBY_QUERY, 422, [], id="groupby-refuses"),
+    ],
+)
+def test_a_frame1_head_hit_pays_the_decode_bound_of_what_it_does(
+    monkeypatch, query, status, decoded
+):
+    """A 100 MB frame1 document, by the size its location records, is under the bound of a
+    render that decodes it alone (216,600,000 bytes at the default ceiling) and past the bound
+    of a groupby, which also folds it (83,543,959 bytes). The groupby refuses before the read."""
+    spec_id, sidecar = _spec_id_and_sidecar()
+    client, version_store, artifact_store = _collapse_client()
+    base = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    digest = link_frame1_only(
+        version_store, artifact_store, subject_id=spec_id, content_version=base["content_version"]
+    )
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (100_000_000, digest),
+        )
+        # Without the mint's csv link, the plain request renders from the document.
+        tx.execute(
+            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND media_type = %s",
+            (spec_id, "text/csv"),
+        )
+    reads = _frame_reads(monkeypatch)
+
+    got = client.get(f"/api/datasets/{spec_id}?{query}")
+
+    assert got.status_code == status, got.text
+    assert reads == decoded
+    if status == 422:
+        assert (got.json()["code"], got.json()["ceiling_kind"]) == ("over_ceiling", "bytes")
+
+
+def _frame_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The media types of the stored frames a head hit decodes."""
+    decoded: list[str] = []
+    read = current_module.read_stored_frame
+
+    def spy(data, *, media_type, digest):
+        decoded.append(media_type)
+        return read(data, media_type=media_type, digest=digest)
+
+    monkeypatch.setattr(current_module, "read_stored_frame", spy)
+    return decoded
+
+
+@pytest.mark.parametrize(
+    ("stored", "ceiling_kind", "decoded"),
+    [
+        pytest.param("canonical", "rows", [CANONICAL_FRAME_MEDIA_TYPE], id="canonical-frame"),
+        pytest.param("frame1", "bytes", [], id="frame1-document"),
+    ],
+)
+def test_a_groupby_head_hit_past_the_fold_ceiling_refuses_without_hashing_the_base_frame(
+    monkeypatch, stored, ceiling_kind, decoded
+):
+    """A canonical frame past the fold ceiling refuses on its rows once read. A frame1
+    document refuses on its recorded size before it is read or decoded, since its decode and
+    the fold of its rows would pass the memory a fold at the ceiling takes
+    (`render.frame1_decode_max_bytes`). Neither hashes the base frame, which only a collapse
+    the size of the base frame compares with."""
+    spec_id, sidecar = _spec_id_and_sidecar()
+    client, version_store, artifact_store = _collapse_client(
+        DatasetsBuildSettings(groupby_fold_max_rows=1)
+    )
+    base = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET frame_sha256 = NULL WHERE subject_id = %s",
+            (spec_id,),
+        )
+    if stored == "frame1":
+        link_frame1_only(
+            version_store,
+            artifact_store,
+            subject_id=spec_id,
+            content_version=base["content_version"],
+        )
+    hashed = _spy_on_base_frame_hashes(monkeypatch)
+    reads = _frame_reads(monkeypatch)
+
+    got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+
+    assert got.status_code == 422, got.text
+    assert (got.json()["code"], got.json()["ceiling_kind"]) == ("over_ceiling", ceiling_kind)
+    assert reads == decoded
+    assert hashed == []
 
 
 def _edit_stored_trace(
@@ -852,9 +965,10 @@ _EARLIER_GRAMMAR_TOKEN = "cv_" + "0" * 32
 @pytest.mark.parametrize(
     ("stored_frame", "frames_hashed"),
     [
-        ("frame1_document", 1),
+        ("frame1_document", 2),
+        ("frame1_without_unit", 2),
         ("canonical_frame", 2),
-        ("backfilled_frame1", 1),
+        ("backfilled_frame1", 2),
         ("recorded_frame_hash", 1),
     ],
 )
@@ -864,10 +978,10 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
     """A version minted under an earlier frame grammar holds a token the current grammar does
     not mint from its frame. A sole-contributor full collapse leaves that frame unchanged, so
     the head hit answers the base version, records no second version and links the rendering
-    under the base. The base frame's hash is the one its record holds, else the digest of
-    its frame1 document, which a version `backfill-frame1` converted links beside its canonical
-    frame, else the hash of its canonical frame, the one case that hashes a second frame
-    beside the collapse."""
+    under the base. The base frame's hash is the one its record holds, else the hash of the
+    frame its stored frame reads as, a canonical frame or a frame1 document, one written before
+    the unit column included, so every case but the first hashes a second frame beside the
+    collapse."""
     version_store = FakeVersionRecordDatasetStore()
     head_store = _FakeHeadStore()
     artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
@@ -907,7 +1021,7 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
     head_store._heads[spec_id] = replace(
         head_store._heads[spec_id], content_version=_EARLIER_GRAMMAR_TOKEN
     )
-    if stored_frame in ("frame1_document", "backfilled_frame1"):
+    if stored_frame in ("frame1_document", "frame1_without_unit", "backfilled_frame1"):
         document = io.BytesIO()
         write_frame1(
             (
@@ -919,10 +1033,18 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
             ),
             sink=document,
         )
-        frame1 = artifact_store.put(document.getvalue(), tier=Tier.working)
+        data = document.getvalue()
+        if stored_frame == "frame1_without_unit":
+            older = json.loads(data)
+            index = older["columns"].index(UNIT_COLUMN)
+            del older["columns"][index]
+            for row in older["rows"]:
+                del row[index]
+            data = json.dumps(older).encode()
+        frame1 = artifact_store.put(data, tier=Tier.working)
         frame1_rendering = {"format": "frame1"}
         with version_store.transaction() as tx:
-            if stored_frame == "frame1_document":
+            if stored_frame != "backfilled_frame1":
                 tx.execute(
                     "DELETE FROM datasets.version_artifact "
                     "WHERE subject_id = %s AND rendering_key = %s",

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from code_index.scope_conventions import REGION_READINGS
 from code_index.shared import get_index
 from entity_resolution.shared import shared_membership_policy
+from search.engine.app import DEGRADED_LEG_HEADER
 from search.engine.concurrency import create_owned_task
 from search.engine.core import resolve_events
 from search.engine.enrichment import _launch_trailing_tasks
@@ -83,12 +84,14 @@ from tests.engine._harness import (
     frozen_monotonic_clock,
     make_request,
     offline_resolve,
+    resolve_log_lines,
     walk_options,
     with_member_arcs,
 )
 from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
-from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
+from tests.fixtures import FakeGraph, FakeLLM, _load_json, fixture_provenance_names, make_resolver
+from tests.origin_catalogue.fake_catalogue import listing
 
 # Most entries here resolve several parts concurrently, so the parts' reads interleave and
 # repeat in an order that varies between runs; the distinct reads are compared.
@@ -110,6 +113,13 @@ _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
         "binding": {"kind": "unbound"},
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue, serve_catalogue) -> None:
+    catalogue = listing(fixture_provenance_names("dc/base/IndiaCensus"))
+    bind_catalogue(catalogue)
+    serve_catalogue(catalogue)
 
 
 def _client(*, materialise_graph=None) -> TestClient:
@@ -1059,20 +1069,45 @@ def test_timeout_mid_request_fails_the_whole_request_with_no_partial_parts(
         ),
     ]
     client = _client()
-    resp = client.post(
-        "/api/search/resolve",
-        json=_wire_request(entries),
-        headers={"Accept": "text/event-stream"},
-    )
+    with resolve_log_lines() as lines:
+        resp = client.post(
+            "/api/search/resolve",
+            json=_wire_request(entries),
+            headers={"Accept": "text/event-stream"},
+        )
     assert resp.status_code == 200
     frames = _parse_sse(resp.text)
     event_types = [ev for ev, _ in frames]
     assert event_types == ["error"], f"Expected only an error event, got {event_types}"
     assert frames[0][1]["detail"] == "Request timed out"
+    [logged] = lines
+    assert (logged["error_code"], logged["timed_out"]) == ("timeout", True)
     assert parsed_raises == ["dataset_resubmit: a parsed entry exceeded the pipeline deadline"], (
         "the parsed fan-out itself must be what raised"
     )
     assert cancelled == ["parsed leg"], "the still-pending sibling leg must be cancelled"
+
+
+@pytest.mark.unrecorded_requests
+def test_a_parsed_entry_whose_error_was_swallowed_marks_the_answer_degraded(monkeypatch):
+    """The placeholder reads as a real miss, so only the leg's own flag reaches the door's
+    `done` event, the buffered header and the log line."""
+
+    async def _failing_leg(*_args, **_kwargs):
+        raise ValueError("simulated leg failure")
+
+    monkeypatch.setattr("search.engine.fanout.resolve_variable", _failing_leg)
+    entry = ResubmitParsedEntry(
+        part=ParsedPart(variable_text="fertility rate", entities=[ParsedEntity(text="Kenya")])
+    )
+    with resolve_log_lines() as lines:
+        resp = _client().post("/api/search/resolve", json=_wire_request([entry]))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers[DEGRADED_LEG_HEADER] == "1"
+    [logged] = lines
+    assert logged["no_data_reasons"] == ["variable_not_resolved"]
+    assert logged["degraded_leg"] is True
 
 
 # ---------------------------------------------------------------------------

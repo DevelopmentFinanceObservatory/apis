@@ -90,7 +90,7 @@ from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
-from dfo_platform.doors import combine_classifiers, flatten
+from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
 from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, get_release_service
 from materialise.graph import GraphReader
@@ -119,6 +119,45 @@ classify_datasets_exception = combine_classifiers(
     classify_store_exception,
     classify_operation_store_exception,
 )
+
+
+def datasets_doors(
+    *,
+    deps: DepsCell,
+    settings: DatasetsBuildSettings,
+    running_analyses: RunningAnalyses | None = None,
+    pin_allowed_principals: frozenset[str] | None = None,
+    publish_allowed_principals: frozenset[str] | None = None,
+) -> tuple[DoorContribution, ...]:
+    """Every Datasets door over `deps`, in route order, as `datasets_surface` composes them.
+    The doors read the code index as they are built, so call this under a bound release."""
+    return (
+        build_meta_door(deps=deps, settings=settings),
+        build_register_door(deps=deps),
+        build_mint_door(deps=deps),
+        build_definition_door(deps=deps),
+        build_refresh_door(deps=deps, settings=settings),
+        build_analysis_door(
+            deps=deps,
+            running=running_analyses if running_analyses is not None else RunningAnalyses(),
+        ),
+        build_derived_door(deps=deps),
+        build_derived_files_door(deps=deps),
+        build_recipe_door(
+            deps=deps, settings=settings, allowed_principals=publish_allowed_principals
+        ),
+        build_versions_door(deps=deps),
+        build_snapshot_door(deps=deps),
+        build_description_door(deps=deps),
+        build_files_door(deps=deps),
+        build_observations_door(deps=deps),
+        build_pin_door(deps=deps, settings=settings, allowed_principals=pin_allowed_principals),
+        build_publish_door(
+            deps=deps, settings=settings, allowed_principals=publish_allowed_principals
+        ),
+        build_exports_door(deps=deps, settings=settings, allowed_principals=pin_allowed_principals),
+        build_export_link_door(deps=deps),
+    )
 
 
 def datasets_surface(
@@ -196,36 +235,12 @@ def datasets_surface(
     with bound_served_release(_release):
         if code_index is None:
             get_index()
-        doors = (
-            build_meta_door(deps=cell, settings=_settings),
-            build_register_door(deps=cell),
-            build_mint_door(deps=cell),
-            build_definition_door(deps=cell),
-            build_refresh_door(deps=cell, settings=_settings),
-            build_analysis_door(
-                deps=cell,
-                running=running_analyses if running_analyses is not None else RunningAnalyses(),
-            ),
-            build_derived_door(deps=cell),
-            build_derived_files_door(deps=cell),
-            build_recipe_door(
-                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-            ),
-            build_versions_door(deps=cell),
-            build_snapshot_door(deps=cell),
-            build_description_door(deps=cell),
-            build_files_door(deps=cell),
-            build_observations_door(deps=cell),
-            build_pin_door(
-                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
-            ),
-            build_publish_door(
-                deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
-            ),
-            build_exports_door(
-                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
-            ),
-            build_export_link_door(deps=cell),
+        doors = datasets_doors(
+            deps=cell,
+            settings=_settings,
+            running_analyses=running_analyses,
+            pin_allowed_principals=pin_allowed_principals,
+            publish_allowed_principals=publish_allowed_principals,
         )
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
@@ -296,7 +311,7 @@ def datasets_surface(
         lifespan=lifespan,
         middleware=tuple(check for door in doors for check in door.middleware),
         registry_endpoints={
-            path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
+            key: endpoint for door in doors for key, endpoint in door.registry_endpoints.items()
         },
         request_scope=request_scope,
     )

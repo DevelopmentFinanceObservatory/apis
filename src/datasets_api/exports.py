@@ -11,19 +11,44 @@ selector serves (`doors.files`) in the long layout with the version's default en
 (`default_enrichment`, from the roles the version holds), the columns a Spec root of
 it reads: each typed role's `_type` cells beside the layout's own `_label` and `_kind` cells.
 It is the file the version lists under that rendering, else one rendered from its stored frame.
-A derived frame's file is the one its file route renders (`derived.render_derived_file`). The file is then copied to the pinned tier through
-`retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
-pin budgets as a pin does. A file already pinned spends nothing, whichever version or export
-pinned it. An `artifact_reference` row of kind `export` (`reference_store.EXPORT_REFERENCE_KIND`)
-then keeps the copy from any deletion keyed on references, under the transactional revocation
+A derived frame's file is the one its file route renders (`doors.derived.derived_file`). Its
+render and its store run inside one materialise slot, so its bytes stay inside a slot, as a
+dataset file's do. The file is then copied to the pinned tier
+(`retention_admission.PreparingCopy`), which spends the caller's `pin` allowance and the day's
+pin budgets as a pin does. A file with a pinned copy needs no copy and spends nothing, whichever
+version or export pinned it.
+
+A prepare runs under a claim of its export id, across instances (`allowance`'s state table). A
+file its version lists names its digest, so its units are spent at its copy, and only if it has
+no pinned copy. A file that must render first, a derived frame's or a dataset file its version
+does not list, has no digest until it renders, so its units are spent onto the claim ahead of the
+render and refuse there what the copy would refuse. Every unit, the caller's and both budgets,
+takes this one path, so a spent day costs no render. A failed render, a refusal below, or a
+render that finds its bytes pinned gives the units back. The claim stays until the record is
+written, so a retry after a failure past the copy takes it over, finds the copy those units paid
+for and spends nothing more. The lease outlasts the definition deadline, so a client's timeout
+leaves the prepare running and its retry answers its record, and a render that outlives the lease
+copies nothing, since `begin_copy` refuses past it, which bounds how long a crash holds a unit. A process that dies leaves a stale claim: a claim with
+no copy begun refunds as the next prepare takes it over or the sweep finds it, and the next caller
+spends for itself. The bytes a render gives are known
+only by rendering, so a caller with no unit left and no claim refuses even when another export or
+a pin holds the same bytes.
+
+An `artifact_reference` row of kind `export`
+(`reference_store.EXPORT_REFERENCE_KIND`) then keeps the copy from any deletion keyed on references, under the transactional revocation
 recheck a pin's reference takes. The record keeps the pinned copy's location and the facts the
 prepare answered.
 
-A request whose id holds a record answers that record, rendering and spending nothing. Two
-concurrent prepares of one request compute one id, and, since every render is deterministic
-(bundle members carry fixed timestamps), one file, which the content-addressed store holds once:
-the second copy finds the pinned bytes stored and gives its units back, and the second record
-write returns the first's row.
+A request whose id holds a record answers that record, rendering and spending nothing.
+Concurrent prepares of one id share one prepare, on any instance. The first takes the claim on a
+work thread (`prepare_export`), and each other reads the claim from the door with no work
+permit, at most `materialise_wait_seconds` and refusing `ExportPrepareRunning` (code
+`service_unavailable`) after that, then answers the record as a repeat prepare does. After a
+prepare that refused or failed, a waiter takes the claim in turn and runs every guard
+itself, and a spent unit refuses each waiter at its own spend, for no render. Two prepares can run
+together only when one is past a lease and the other took the claim. Every render is deterministic (bundle
+members carry fixed timestamps), so they give one file, which the content-addressed store holds
+once, and the second record write returns the first's row.
 
 The first prepare, a repeat prepare and the export link (`sign_export`) answer a record through
 one guard (`_servable_facts`), so they cannot disagree. A version's revocation, or its base
@@ -41,7 +66,10 @@ The facts name the frame as the request did.
 Refusals:
 
 - A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows refuses `over_ceiling`
-  (`ExportOverCeiling`). Parquet has no row ceiling.
+  (`ExportOverCeiling`). Parquet has no row ceiling. A dataset version's manifest states its
+  rows, so this refuses before a unit is spent. A derived frame's row count is known once its
+  file renders, after the units, and no derived frame reaches the ceiling, since the analysis
+  runner and the publish door store at most the same `PUBLISH_MAX_ROWS` rows.
 - A derived frame whose sources cannot all be named, because it has no stored recipe, its
   recipe has no roots or a root cannot be cited, refuses `provenance_unavailable`.
 - A render linked incomplete (`render.incomplete_rendering`) refuses retryable
@@ -61,16 +89,18 @@ import io
 import json
 import math
 import zipfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, cast
 
 import openpyxl
 import pyarrow.parquet as pq
 import rfc8785
 from pydantic import BaseModel, ConfigDict, Field
 
-from artifact_store import ArtifactNotFoundError, Tier
+from artifact_store import ArtifactNotFoundError, StoredArtifact, Tier
 from dataset_store.snapshot import ServableVersion, SnapshotRevoked, read_servable_version
 from datasets_api.admission import bounded_materialise_slot
 from datasets_api.allowance import AllowanceExhausted
@@ -88,7 +118,7 @@ from datasets_api.codes_snapshot import ArtifactExpired, SpecNotFound
 from datasets_api.current import DefinitionDeps
 from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.deps import Deps
-from datasets_api.derived import full_recipe_citation, stored_recipe_roots
+from datasets_api.derived import DerivedFile, full_recipe_citation, stored_recipe_roots
 from datasets_api.doors.derived import derived_file
 from datasets_api.doors.files import (
     artifact_file_name,
@@ -107,9 +137,11 @@ from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import EXPORT_REFERENCE_KIND
 from datasets_api.render import is_incomplete_rendering
 from datasets_api.retention_admission import (
+    PREPARE_LEASE_MARGIN,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
-    copy_to_pinned,
+    PinUnitHeld,
+    PreparingCopy,
 )
 from datasets_api.subject_ids import served_subject_ids
 from datasets_api.timings import phase
@@ -124,6 +156,8 @@ EXPORT_MAX_ROWS = PUBLISH_MAX_ROWS
 
 EXPORT_LINK_PREFIX = "/api/datasets/exports"
 """The path of the export link route, which the site's proxy serves on its own origin."""
+
+_SPENT_REFUSALS = (AllowanceExhausted, PinBudgetExhausted, OpenPinBudgetExhausted, PinUnitHeld)
 
 _LICENCE_RESTRICTIONS = Path(__file__).with_name("licence_restrictions.json")
 
@@ -268,19 +302,32 @@ def _licences(citation: CitationModel) -> list[ExportLicence]:
 
 def file_shape(data: bytes, *, format: ExportFormat, bundle: bool) -> tuple[int, int]:
     """The rows, header excluded, and columns of the data table of the file `data`: a bundle's
-    first data resource, and an xlsx workbook's `data` sheet."""
-    if bundle:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            package = json.loads(archive.read("datapackage.json"))
-            data = archive.read(package["resources"][0]["path"])
+    first data resource, and an xlsx workbook's `data` sheet. A CSV is read as a stream, so the
+    count holds neither a decoded copy of it nor an unzipped copy of a bundle's member. A bundle's
+    Parquet or xlsx member is unzipped whole, since a member re-inflates from its start on each
+    backward seek and their readers seek."""
+    if not bundle:
+        return _table_shape(io.BytesIO(data), format=format)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        package = json.loads(archive.read("datapackage.json"))
+        path = package["resources"][0]["path"]
+        if format != "csv":
+            return _table_shape(io.BytesIO(archive.read(path)), format=format)
+        with archive.open(path) as member:
+            return _table_shape(member, format=format)
+
+
+def _table_shape(table: IO[bytes], *, format: ExportFormat) -> tuple[int, int]:
+    """`file_shape` of the data table read from the seekable stream `table`."""
     if format == "parquet":
-        metadata = pq.read_metadata(io.BytesIO(data))
+        metadata = pq.read_metadata(table)
         return metadata.num_rows, metadata.num_columns
     if format == "csv":
-        reader = csv.reader(io.StringIO(data.decode("utf-8"), newline=""))
-        header = next(reader)
-        return sum(1 for _ in reader), len(header)
-    workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True)
+        with io.TextIOWrapper(table, encoding="utf-8", newline="") as text:
+            reader = csv.reader(text)
+            header = next(reader)
+            return sum(1 for _ in reader), len(header)
+    workbook = openpyxl.load_workbook(table, read_only=True)
     try:
         # `materialise.formats.write_excel` writes each sheet's dimension, so the sheet's size
         # is read from it in place of scanning every row.
@@ -302,24 +349,25 @@ def _pinned_location(digest: str, *, current: Deps) -> tuple[str, str] | None:
 
 
 def _copied_to_pinned(
-    digest: str, *, frame: ExportFrame, caller: Caller | None, current: Deps
+    digest: str,
+    *,
+    source: tuple[str, str],
+    frame: ExportFrame,
+    copy: PreparingCopy,
+    current: Deps,
 ) -> tuple[str, str]:
-    """Copy `digest` to the pinned tier (`copy_to_pinned`) and return the copy's bucket and
-    object name. Working bytes gone before the copy refuse `ArtifactExpired`. A spent unit
-    refuses only while no pinned copy exists, since a concurrent prepare may have spent the last
-    one on these bytes."""
+    """Copy `digest` from its working copy at `source`, a bucket and object name, to the pinned
+    tier on `copy`'s units and return the copy's bucket and object name. Working bytes gone
+    before the copy refuse `ArtifactExpired`. A spent unit
+    refuses only while no pinned copy exists, since a concurrent pin of these bytes may have
+    spent the last one."""
     try:
+        copy.hold()
         with phase("copy"):
-            copied = copy_to_pinned(
-                current.artifact_store,
-                digest,
-                allowances=current.allowances,
-                caller=caller,
-                now=current.now(),
-            )
+            copied = copy.copy(digest, source=source)
     except ArtifactNotFoundError as exc:
         raise ArtifactExpired(id=frame.spec_id, content_version=frame.content_version) from exc
-    except (AllowanceExhausted, PinBudgetExhausted, OpenPinBudgetExhausted):
+    except _SPENT_REFUSALS:
         pinned = _pinned_location(digest, current=current)
         if pinned is None:
             raise
@@ -337,11 +385,11 @@ def _pinned_copy(
     subject_id: str,
     subject_ids: tuple[str, ...],
     export: str,
-    caller: Caller | None,
+    copy: PreparingCopy,
     current: Deps,
 ) -> tuple[str, str]:
-    """The bucket and object name of the pinned copy of `digest`, stored at `tier`, copying it
-    from the working tier unless a pinned copy exists (`_copied_to_pinned`), and record the
+    """The bucket and object name of the pinned copy of `digest`, stored at `tier` in `bucket`
+    under `object_name`, copying it from there unless a pinned copy exists (`_copied_to_pinned`), and record the
     export's reference to it under the version `subject_id` records, unless a revocation under
     it or `subject_ids` refuses."""
     pinned = (
@@ -349,7 +397,9 @@ def _pinned_copy(
     )
     already_pinned = pinned is not None
     if pinned is None:
-        pinned = _copied_to_pinned(digest, frame=frame, caller=caller, current=current)
+        pinned = _copied_to_pinned(
+            digest, source=(bucket, object_name), frame=frame, copy=copy, current=current
+        )
     record_pin_reference(
         current.reference_writer,
         principal=f"export:{export}",
@@ -378,7 +428,8 @@ def _stored_file_shape(
     digest: str, *, request: ExportRequest, current: Deps, deps: DefinitionDeps
 ) -> tuple[int, int]:
     """`file_shape` of the pinned file `digest`, whose bytes stay inside one materialise
-    slot."""
+    slot. Only the file states its table's shape, and the artifact store reads a whole object,
+    so the whole file is read."""
     with bounded_materialise_slot(
         current.materialise_semaphore,
         wait_seconds=current.settings.materialise_wait_seconds,
@@ -391,14 +442,14 @@ def _stored_file_shape(
         )
 
 
+type _Prepare = Callable[..., ExportRecord]
+"""The prepare of a file a request's checks passed, taking the `copy` of its claim."""
+
+
 def _prepare_dataset(
-    request: ExportRequest,
-    *,
-    export: str,
-    caller: Caller | None,
-    current: Deps,
-    deps: DefinitionDeps,
-) -> ExportRecord:
+    request: ExportRequest, *, export: str, current: Deps, deps: DefinitionDeps
+) -> _Prepare:
+    """Read and check the version `request` names, and return the prepare of its file."""
     frame = request.frame
     stored, subject_ids = read_version(
         id=frame.spec_id, content_version=frame.content_version, deps=deps
@@ -409,11 +460,39 @@ def _prepare_dataset(
     check_licences(licence.source for licence in licences)
     _check_rows(request, cast(int, facts.coverage["rows"]))
 
+    return functools.partial(
+        _dataset_record,
+        request,
+        stored=stored,
+        subject_ids=subject_ids,
+        coverage=facts.coverage,
+        citation=citation.text,
+        licences=licences,
+        export=export,
+        current=current,
+        deps=deps,
+    )
+
+
+def _dataset_record(
+    request: ExportRequest,
+    *,
+    stored: ServableVersion,
+    subject_ids: tuple[str, ...],
+    coverage: Mapping[str, Any],
+    citation: str,
+    licences: list[ExportLicence],
+    export: str,
+    copy: PreparingCopy,
+    current: Deps,
+    deps: DefinitionDeps,
+) -> ExportRecord:
+    frame = request.frame
     # The file holds the enrichment a client's frame of the version holds: the columns a Spec
     # root reads it with, added to the long layout's own.
     requested = resolve_enrichment(
         MintOptions(format=request.format, bundle=request.bundle, enrichment="default"),
-        coverage=CoverageModel.model_validate(facts.coverage),
+        coverage=CoverageModel.model_validate(coverage),
     )
     location = listed_file_location(
         stored,
@@ -423,6 +502,7 @@ def _prepare_dataset(
         deps=deps,
     )
     if location is None:
+        copy.hold()
         stored, location = render_file_location(
             stored, id=frame.spec_id, subject_ids=subject_ids, requested=requested, deps=deps
         )
@@ -437,7 +517,7 @@ def _prepare_dataset(
         subject_id=stored.version.subject_id,
         subject_ids=subject_ids,
         export=export,
-        caller=caller,
+        copy=copy,
         current=current,
     )
     rows, columns = _stored_file_shape(
@@ -455,14 +535,46 @@ def _prepare_dataset(
         size_bytes=location.size_bytes,
         rows=rows,
         columns=columns,
-        citation=citation.text,
+        citation=citation,
         licences=licences,
     )
 
 
+@dataclass(frozen=True, kw_only=True)
+class _StoredDerivedFile:
+    """A derived frame's file in the working tier, with the facts its render gave."""
+
+    stored: StoredArtifact
+    file_name: str
+    media_type: str
+    rows: int
+    columns: int
+
+
+def _stored_derived_file(
+    rendered: DerivedFile, *, request: ExportRequest, current: Deps
+) -> _StoredDerivedFile:
+    """Store the derived frame's file `rendered` in the working tier.
+
+    Raises:
+        ExportOverCeiling: The file holds more rows than a CSV or xlsx export may.
+    """
+    _check_rows(request, rendered.rows)
+    with phase("store"):
+        stored = current.artifact_store.put(rendered.data, tier=Tier.working)
+    return _StoredDerivedFile(
+        stored=stored,
+        file_name=rendered.file_name,
+        media_type=rendered.media_type,
+        rows=rendered.rows,
+        columns=rendered.columns,
+    )
+
+
 def _prepare_derived(
-    request: ExportRequest, *, export: str, caller: Caller | None, current: Deps
-) -> ExportRecord:
+    request: ExportRequest, *, export: str, current: Deps, deps: DefinitionDeps
+) -> _Prepare:
+    """Read and check the derived frame `request` names, and return the prepare of its file."""
     frame = request.frame
     read_servable_version(
         current.snapshot_reader,
@@ -479,17 +591,38 @@ def _prepare_derived(
     _check_roots(recipe, frame=frame, current=current)
     licences = _licences(citation)
     check_licences(licence.source for licence in licences)
+    return functools.partial(
+        _derived_record,
+        request,
+        citation=citation,
+        licences=licences,
+        export=export,
+        current=current,
+        deps=deps,
+    )
 
-    rendered = derived_file(
+
+def _derived_record(
+    request: ExportRequest,
+    *,
+    citation: CitationModel,
+    licences: list[ExportLicence],
+    export: str,
+    copy: PreparingCopy,
+    current: Deps,
+    deps: DefinitionDeps,
+) -> ExportRecord:
+    frame = request.frame
+    copy.hold()
+    file = derived_file(
         id=frame.spec_id,
         content_version=frame.content_version,
         options=MintOptions(format=request.format, bundle=request.bundle),
         current=current,
+        deadline=cast(float, deps.deadline),
+        then=functools.partial(_stored_derived_file, request=request, current=current),
     )
-    rows, columns = file_shape(rendered.data, format=request.format, bundle=request.bundle)
-    _check_rows(request, rows)
-    with phase("store"):
-        stored = current.artifact_store.put(rendered.data, tier=Tier.working)
+    stored = file.stored
     bucket, object_name = _pinned_copy(
         digest=stored.digest,
         tier=stored.tier,
@@ -499,7 +632,7 @@ def _prepare_derived(
         subject_id=frame.spec_id,
         subject_ids=(frame.spec_id,),
         export=export,
-        caller=caller,
+        copy=copy,
         current=current,
     )
     return _record(
@@ -509,11 +642,11 @@ def _prepare_derived(
         digest=stored.digest,
         bucket=bucket,
         object_name=object_name,
-        file_name=rendered.file_name,
-        media_type=rendered.media_type,
+        file_name=file.file_name,
+        media_type=file.media_type,
         size_bytes=stored.size_bytes,
-        rows=rows,
-        columns=columns,
+        rows=file.rows,
+        columns=file.columns,
         citation=citation.text,
         licences=licences,
     )
@@ -760,12 +893,21 @@ def recorded_export(*, request: ExportRequest, current: Deps) -> Mapping[str, An
 
 
 def prepare_export(
-    *, request: ExportRequest, caller: Caller | None, current: Deps, deps: DefinitionDeps
-) -> Mapping[str, Any]:
-    """Prepare the file `request` names, pin it, record it, and return its facts. See the
-    module docstring. `caller` names an open caller, whose `pin` allowance a new pinned copy
-    spends, and `None` a caller holding the pin grant. `deps` is the request's retrieval view of
-    `current`, under its deadline.
+    *,
+    request: ExportRequest,
+    caller: Caller | None,
+    waited: bool = False,
+    current: Deps,
+    deps: DefinitionDeps,
+) -> Mapping[str, Any] | None:
+    """Prepare the file `request` names, pin it, record it, and return its facts, or answer the
+    record a concurrent prepare left. Return `None`, at once, while another prepare holds the
+    request's claim, so this work thread is free while the door waits for it. See the module docstring. `caller` names an open caller, whose
+    `pin` allowance a new pinned copy spends, and `None` a caller holding the pin grant. `deps`
+    is the request's retrieval view of `current`, under its deadline. A call that `waited` on
+    another prepare reads the claim first and returns `None` while a live one stands, before any
+    check, so a prepare that refused wakes no waiter's checks. A first call checks the request
+    before it writes a claim, so an invalid request writes none.
 
     Raises:
         SpecNotFound, IdentityQuarantined, SnapshotNotFound, SnapshotRevoked, ArtifactExpired:
@@ -776,15 +918,39 @@ def prepare_export(
         ExportOverCeiling: A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows.
         PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: The copy's units are
             spent.
+        PinUnitHeld: A pin claim holds the last unit.
+        CopyClaimUnsettled: This prepare lost its claim, or an earlier copy cannot be settled.
+        MintBackpressure: No materialise permit came free.
     """
     export = export_id(request)
-    if request.frame.spec_id.startswith("ops_"):
-        record = _prepare_derived(request, export=export, caller=caller, current=current)
-    else:
-        record = _prepare_dataset(request, export=export, caller=caller, current=current, deps=deps)
-    with phase("record"):
-        stored = current.export_store.write_export(record)
-    return _servable_facts(stored, current=current)
+    if waited:
+        running = current.allowances.read_claim(export)
+        if running is not None and running.expires_at > current.now():
+            return None
+    check = _prepare_derived if request.frame.spec_id.startswith("ops_") else _prepare_dataset
+    prepare = check(request, export=export, current=current, deps=deps)
+    now = current.now()
+    lease = timedelta(seconds=deps.settings.definition_timeout_seconds) + PREPARE_LEASE_MARGIN
+    claim = current.allowances.claim(export, now=now, expires_at=now + lease)
+    if claim is None:
+        return None
+    with PreparingCopy(
+        claim,
+        allowances=current.allowances,
+        artifacts=current.artifact_store,
+        caller=caller,
+        clock=current.now,
+        lease=lease,
+    ) as copy:
+        copy.settle_earlier()
+        # A prepare can end between the door's read and this claim, so the claim reads again.
+        recorded = recorded_export(request=request, current=current)
+        if recorded is not None:
+            return recorded
+        record = prepare(copy=copy)
+        with phase("record"):
+            stored = current.export_store.write_export(record)
+        return _servable_facts(stored, current=current)
 
 
 def sign_export(*, export_id: str, current: Deps) -> str:

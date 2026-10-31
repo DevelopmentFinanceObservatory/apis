@@ -1,5 +1,6 @@
 """Compares streamed and whole-table groupby results, including collapses that cross
-chunk boundaries.
+chunk boundaries. A streamed collapse reads the frame slices `_reslice_chunks` cuts, and the
+whole-table path the same frame's rows as one table.
 
 `resolved_stat_var_refs` includes each fixture StatVar, including members absent from a
 chunk.
@@ -8,6 +9,7 @@ chunk.
 from __future__ import annotations
 
 import pytest
+from dfo_frame_grammar import Frame
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
@@ -16,10 +18,9 @@ from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import _RenderReads, _reshape
 from materialise import reshape
 from materialise.enrichment import EnrichmentLookup
-from materialise.frame_build import build_frame
-from materialise.groupby_columnar import rows_table
 from materialise.reshape import RollupNotSummableError, Table
 
+from ._frame_chunks import frame_of_rows
 from ._graph_doubles import FakeMintGraphReader
 
 _STAMP = IndexStamp(
@@ -129,19 +130,28 @@ def _enrichment() -> EnrichmentLookup:
     return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
 
 
-def _chunked(bounds: list[int]) -> list[Table]:
-    return [
-        Table(columns=_TABLE_COLUMNS, rows=_ROWS[bounds[i] : bounds[i + 1]])
-        for i in range(len(bounds) - 1)
-    ]
+def _frame(rows: tuple[tuple[object, ...], ...] = _ROWS) -> Frame:
+    return frame_of_rows(_TABLE_COLUMNS, rows)
 
 
-def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_result():
+def _whole(frame: Frame) -> Table:
+    """`frame`'s rows as one tuple table."""
+    return Table(columns=frame.columns, rows=frame.rows)
+
+
+def _slices(monkeypatch: pytest.MonkeyPatch, frame: Frame, *, rows: int) -> list[Table]:
+    """`frame` cut into slices of `rows` rows, as a streamed render cuts it."""
+    monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", rows)
+    return list(render._reslice_chunks([frame]))
+
+
+def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_result(monkeypatch):
     # SV_A (chunk 1) and SV_B (chunk 2) share `crsPurpose`, so collapsing
     # `crsTypeOfFinance`+`stat_var` must merge their rows (10 + 5 = 15)
-    # even though the fold only ever sees one chunk at a time.
+    # across the chunk boundary.
     options = MintOptions(groupby=GroupbyOptions(by=["crsPurpose"], op="sum"))
-    whole_table = Table(columns=_TABLE_COLUMNS, rows=_ROWS)
+    whole_table = _whole(_frame())
+    chunks = _slices(monkeypatch, _frame(), rows=1)
 
     whole = _reshape(
         whole_table,
@@ -155,7 +165,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
         pivot_max_output_cells=5_000_000,
     )
     streamed = _reshape(
-        _chunked([0, 1, 2, 3])[0],
+        chunks[0],
         options=options,
         entity_columns=_ENTITY_COLUMNS,
         reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
@@ -163,7 +173,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
         subject_id="family-spec",
-        frame_chunks=iter(_chunked([0, 1, 2, 3])),
+        frame_chunks=iter(chunks),
         pivot_max_output_cells=5_000_000,
     )
 
@@ -177,12 +187,13 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
     assert by_purpose == {"Basic health care": 15.0, "Malaria control": 7.0}
 
 
-def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way():
+def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way(monkeypatch):
     # Naming no CRS axis at all is a full collapse: every declared-summable
     # axis this frame decoded joins `stat_var`'s own collapse, restoring
     # one family dcid across all three (streamed) contributors.
     options = MintOptions(groupby=GroupbyOptions(by=["financingProvider"], op="sum"))
-    whole_table = Table(columns=_TABLE_COLUMNS, rows=_ROWS)
+    whole_table = _whole(_frame())
+    chunks = _slices(monkeypatch, _frame(), rows=2)
 
     whole = _reshape(
         whole_table,
@@ -196,7 +207,7 @@ def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way():
         pivot_max_output_cells=5_000_000,
     )
     streamed = _reshape(
-        _chunked([0, 2, 3])[0],
+        chunks[0],
         options=options,
         entity_columns=_ENTITY_COLUMNS,
         reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
@@ -204,7 +215,7 @@ def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way():
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
         subject_id="family-spec",
-        frame_chunks=iter(_chunked([0, 2, 3])),
+        frame_chunks=iter(chunks),
         pivot_max_output_cells=5_000_000,
     )
 
@@ -218,7 +229,9 @@ def test_a_full_collapse_across_chunks_restores_the_family_dcid_the_same_way():
     assert sum(row[value_pos] for row in streamed.table.rows) == 22.0
 
 
-def test_distinct_measures_sharing_every_decoded_axis_value_still_refuse_when_streamed():
+def test_distinct_measures_sharing_every_decoded_axis_value_still_refuse_when_streamed(
+    monkeypatch,
+):
     # The stat_var_ambiguous refusal (`refuse_stat_var_collision`) is
     # deferred to run after axis-0's fold on the streaming path (see
     # `_reshape`'s own docstring) -- this proves it still fires, from the
@@ -256,12 +269,11 @@ def test_distinct_measures_sharing_every_decoded_axis_value_still_refuse_when_st
             ),
         ),
     )
-    columns = _TABLE_COLUMNS
     rows = (
         ("dcid:SV_gross", "country/USA", "country/KEN", "2022", 10.0, "USD", "p1"),
         ("dcid:SV_net", "country/USA", "country/KEN", "2022", 4.0, "USD", "p1"),
     )
-    chunks = [Table(columns=columns, rows=(rows[0],)), Table(columns=columns, rows=(rows[1],))]
+    chunks = _slices(monkeypatch, _frame(rows), rows=1)
     options = MintOptions(groupby=GroupbyOptions(by=["crsPurpose"], op="sum"))
 
     with pytest.raises(RollupNotSummableError) as exc_info:
@@ -280,45 +292,43 @@ def test_distinct_measures_sharing_every_decoded_axis_value_still_refuse_when_st
     assert exc_info.value.precondition == "stat_var_ambiguous"
 
 
-def test_a_collapse_over_frame_slices_folds_as_arrow_and_matches_the_row_fold(monkeypatch):
+def test_a_collapse_over_frame_slices_folds_as_arrow_and_matches_the_whole_table_result(
+    monkeypatch,
+):
     """Frame chunks collapse without a row read as Python. No slice builds its rows, the row
-    fold runs on none, and the result is the one the row fold gives the same rows."""
-    frame = build_frame(
-        role_keys=_ENTITY_COLUMNS,
-        rows=[
-            dict(zip(_TABLE_COLUMNS, (*row[:5], "unit/USD", row[6]), strict=True)) for row in _ROWS
-        ],
-    )
+    fold runs on none, and the result is the one the whole-table path gives the same rows."""
+    frame = _frame()
     options = MintOptions(groupby=GroupbyOptions(by=["crsPurpose"], op="sum"))
+    reshaped = {
+        "options": options,
+        "entity_columns": _ENTITY_COLUMNS,
+        "code_index": _INDEX,
+        "resolved_stat_var_refs": _RESOLVED_STAT_VAR_REFS,
+        "provenance_refs": ("p1",),
+        "subject_id": "family-spec",
+        "pivot_max_output_cells": 5_000_000,
+    }
+    whole = _reshape(
+        _whole(frame),
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+        **reshaped,
+    )
 
-    def streamed(chunks: list[Table]) -> object:
-        return _reshape(
-            chunks[0],
-            options=options,
-            entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
-            code_index=_INDEX,
-            resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
-            provenance_refs=("p1",),
-            subject_id="family-spec",
-            frame_chunks=iter(chunks),
-            pivot_max_output_cells=5_000_000,
-        )
-
-    row_tables = [rows_table(frame.table.slice(start, 1)) for start in range(frame.table.num_rows)]
-    by_rows = streamed(row_tables)
-
-    monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", 2)
-    slices = list(render._reslice_chunks([frame]))
+    slices = _slices(monkeypatch, frame, rows=2)
     assert [type(chunk) for chunk in slices] == [render._FrameSlice, render._FrameSlice]
     folded: list[tuple] = []
     monkeypatch.setattr(
         reshape._GroupbySumFold, "process_row", lambda _self, row: folded.append(row)
     )
-    by_arrow = streamed(slices)
+    by_arrow = _reshape(
+        slices[0],
+        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+        frame_chunks=iter(slices),
+        **reshaped,
+    )
 
     assert all("rows" not in vars(chunk) for chunk in slices[1:])
     assert folded == []
-    assert by_arrow.table == by_rows.table
-    assert by_arrow.warnings == by_rows.warnings
-    assert by_arrow.collapse == by_rows.collapse
+    assert by_arrow.table == whole.table
+    assert by_arrow.warnings == whole.warnings
+    assert by_arrow.collapse == whole.collapse

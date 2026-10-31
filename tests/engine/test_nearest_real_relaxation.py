@@ -10,11 +10,14 @@ import functools
 
 import pytest
 
+from materialise import place_scope
 from materialise.graph import GraphReadError, SubjectPage
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence, scope_of_places
 from search.engine.bind import SlotBindingDraft
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
+from search.engine.place import ConsultedPresence
 from search.engine.region import grounding as grounding_module
 from search.engine.region.codes import ENTITY_LABEL_UNRESOLVED, OPTION_COVERAGE_PROBE_FAILED
 from search.engine.region.grounding import _suggest_nearest_real
@@ -1023,11 +1026,15 @@ def test_each_relaxation_answers_with_the_family_its_own_walk_settles(monkeypatc
     assert walk_starts[0] == walk_starts[1]
 
 
-def _known_presence(countries: tuple[str, ...], held: dict[str, frozenset[str]]) -> DefaultPresence:
+def _known_presence(
+    countries: tuple[str, ...], held: dict[str, frozenset[str]]
+) -> ConsultedPresence:
     """A presence whose StatVars each hold their `held` places as their every-place scope."""
-    return DefaultPresence(
-        countries=countries,
-        scopes={sv: scope_of_places(places, every_place=True) for sv, places in held.items()},
+    return ConsultedPresence(
+        DefaultPresence(
+            countries=countries,
+            scopes={sv: scope_of_places(places, every_place=True) for sv, places in held.items()},
+        )
     )
 
 
@@ -1064,7 +1071,20 @@ class _PresenceLogGraph(FakeGraph):
         return super().child_places_batch(parent_dcids, child_type, deadline=deadline)
 
 
-def test_a_placeless_relaxation_reads_the_presence_of_the_members_its_walk_adds():
+def _unsettling(monkeypatch, stat_var: str) -> None:
+    """Make every default-scope read leave `stat_var` a countries fallback."""
+    read = place_scope.read_default_presence
+
+    def unsettled_read(**kwargs):
+        return dataclasses.replace(read(**kwargs), unsettled=frozenset({stat_var}))
+
+    monkeypatch.setattr(place_scope, "read_default_presence", unsettled_read)
+
+
+@pytest.mark.parametrize("unsettled", [False, True], ids=["settled", "countries-fallback"])
+def test_a_placeless_relaxation_reads_the_presence_of_the_members_its_walk_adds(
+    monkeypatch, unsettled: bool
+):
     """No place is named, and the request's presence read covered the answer's one walked
     member. Each relaxed query's walk adds a member with data, so one presence read tops up
     the request's presence with those members' availability, and each relaxation is
@@ -1081,31 +1101,35 @@ def test_a_placeless_relaxation_reads_the_presence_of_the_members_its_walk_adds(
         nodes=nodes, obs=obs, detect={}, resolve={}, children={"Earth": {"Country": [_RECIPIENT]}}
     )
     presence = _known_presence((_RECIPIENT,), {_SV_BOTH: frozenset()})
-    scope = presence.union_scope([_SV_BOTH])
+    scope = presence.consulted_union([_SV_BOTH])
+    if unsettled:
+        _unsettling(monkeypatch, _SV_RELAX_A)
 
-    suggestions, _warnings, reads, _presence = _suggest_nearest_real(
-        graph=graph,
-        sdmx=FakeSdmxClient(
-            observations={}, availability={}, scope_availability=graph.scope_availability
-        ),
-        shape_draft=_walked_shape(),
-        bindings=_BINDINGS,
-        place=PlaceContext(
-            roles=subject_place_roles(),
-            probe_dcids=scope.places,
-            mode=_mode(scope),
-            scope_warning=None,
-        ),
-        presence=presence,
-        date_request=None,
-        coverage=empty_coverage_snapshot(),
-        role_class_walks=RoleClassWalks(_walk_graph()),
-    )
+    with recording_degraded_reads() as lost:
+        suggestions, _warnings, reads, _presence = _suggest_nearest_real(
+            graph=graph,
+            sdmx=FakeSdmxClient(
+                observations={}, availability={}, scope_availability=graph.scope_availability
+            ),
+            shape_draft=_walked_shape(),
+            bindings=_BINDINGS,
+            place=PlaceContext(
+                roles=subject_place_roles(),
+                probe_dcids=scope.places,
+                mode=_mode(scope),
+                scope_warning=None,
+            ),
+            presence=presence,
+            date_request=None,
+            coverage=empty_coverage_snapshot(),
+            role_class_walks=RoleClassWalks(_walk_graph()),
+        )
 
     assert sorted(sv.ref.ref for s in suggestions for sv in s.resolved.members) == [
         _SV_RELAX_A,
         _SV_RELAX_B,
     ]
+    assert lost.degraded is unsettled
     assert graph.availability_reads == [_SV_RELAX_A, _SV_RELAX_B]
     assert (graph.presence_reads, graph.listings) == ([], 0)
     assert {read.place.probe_dcids for read in reads.values()} == {(_RECIPIENT,)}
@@ -1234,7 +1258,7 @@ def test_a_place_less_suggestion_reads_its_own_members_default_scope():
     )
     # The answer's bindings hold both values no member holds together, so it serves no
     # member and its own scope is empty.
-    scope = presence.union_scope([])
+    scope = presence.consulted_union([])
 
     def suggest(place: PlaceContext, presence: DefaultPresence | None):
         return _suggest_nearest_real(
@@ -1285,7 +1309,7 @@ def test_the_relaxed_queries_read_no_scope_their_requests_presence_holds():
     presence = _known_presence(
         (a_land, b_land), {_SV_RELAX_A: frozenset({a_land}), _SV_RELAX_B: frozenset({b_land})}
     )
-    scope = presence.union_scope([])
+    scope = presence.consulted_union([])
 
     suggestions, _warnings, reads, _presence = _suggest_nearest_real(
         graph=graph,
@@ -1350,7 +1374,7 @@ def test_a_failed_presence_read_for_the_members_a_walk_adds_gives_no_suggestion(
         children={"Earth": {"Country": [_RECIPIENT]}},
     )
     presence = _known_presence((_RECIPIENT,), {_SV_BOTH: frozenset()})
-    scope = presence.union_scope([_SV_BOTH])
+    scope = presence.consulted_union([_SV_BOTH])
 
     suggestions, warnings, reads, _presence = _suggest_nearest_real(
         graph=graph,

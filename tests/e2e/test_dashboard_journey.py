@@ -447,8 +447,15 @@ def test_a_derived_frame_with_no_recipe_is_shared_alone_once_a_reference_names_i
     refused = [journey.share(component_id), journey.import_share("Lgcy0001", component_id)]
 
     assert [
-        (resp.status_code, resp.json()["code"], resp.json()["retryable"]) for resp in refused
-    ] == [(503, "service_unavailable", True)] * 2
+        (
+            resp.status_code,
+            resp.json()["code"],
+            resp.json()["retryable"],
+            resp.json()["cause"]["code"],
+            "retry-after" in resp.headers,
+        )
+        for resp in refused
+    ] == [(404, "frame_unavailable", True, "recipe_pending", False)] * 2
     assert journey.pinned() == set()
 
     with journey.composed.version_store.transaction() as tx:

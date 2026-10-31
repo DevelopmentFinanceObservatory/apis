@@ -5,15 +5,13 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import ExitStack
+from collections.abc import Callable, Mapping, Sequence
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import origin_catalogue.service as catalogue_service_module
 from code_index.shared import get_index
 from dfo_platform.app import create_app
 from entity_resolution import EntityResolver
@@ -24,8 +22,6 @@ from graph_api.reader import NodeArcsByDcid
 from materialise.facet_profile import ProfileGraphReader
 from materialise.graph import SubjectPage
 from materialise.place_scope import AvailabilityReader
-from origin_catalogue import Catalogue
-from tests.origin_catalogue.fake_catalogue import fake_catalogue_service
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -36,22 +32,6 @@ def _register_dfo_graph_pack(_shared_resolvekit_pack: SharedResolver) -> SharedR
     acquiring the process-wide resolver again.
     """
     return _shared_resolvekit_pack
-
-
-@pytest.fixture
-def serve_catalogue() -> Iterator[Callable[[Catalogue], None]]:
-    """Return a function that makes the process-wide catalogue service serve a catalogue, so a
-    surface built afterwards binds it on every request."""
-    with ExitStack() as stack:
-
-        def install(catalogue: Catalogue) -> None:
-            stack.enter_context(
-                catalogue_service_module._singleton.poisoned_for_test(
-                    fake_catalogue_service(catalogue)
-                )
-            )
-
-        yield install
 
 
 @pytest.fixture(scope="session")

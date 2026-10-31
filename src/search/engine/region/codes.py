@@ -73,7 +73,7 @@ DEGENERATE_BINDING_DETECTED = "degenerate_binding_detected"
 ENTITY_LABEL_UNRESOLVED = "entity_label_unresolved"
 # Place-as-constraint is disabled by SEARCH_SEAM_DEFAULT. Entities remain subjects.
 SEAM_OFF_INFO_CODE = "place_constraint_seam_off"
-# A standard query without a place used the default scope (place.DefaultPresence.scope).
+# A standard query without a place used the default scope (`place.ConsultedPresence.consulted_union`).
 # This warning appears on definite, candidates, and no-data responses using that scope.
 PLACE_SCOPE_DEFAULTED = "place_scope_defaulted"
 # Extraction found a ranking or selection qualifier the v1 identity cannot

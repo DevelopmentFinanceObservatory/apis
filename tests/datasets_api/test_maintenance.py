@@ -8,24 +8,37 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
-from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
+from artifact_store import ExistsRead, LiveArtifactInventory, LiveArtifactStore, Tier
+from artifact_store.errors import ArtifactWriteError
 from dataset_store.migrate import MIGRATIONS_DIR
 from dataset_store.snapshot import WORKING_TIER_RETENTION, FrameLineage, LiveSnapshotReader
 from datasets_api import maintenance
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceKind,
+    ClaimState,
+    CopyClaim,
+    LiveAllowanceLedger,
+    Spend,
+)
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.reconciliation import sweep_tier
-from datasets_api.render import CANONICAL_FRAME_RENDERING
+from datasets_api.render import CANONICAL_FRAME_RENDERING, render_and_store_canonical_frame
+from datasets_api.retention_admission import sweep_budget, sweep_copy_claims
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from materialise.formats import (
     CANONICAL_FRAME_MEDIA_TYPE,
     FRAME1_MEDIA_TYPE,
     read_canonical_frame,
+    read_frame1,
     write_frame1,
 )
 from materialise.frame_build import build_frame
@@ -89,6 +102,178 @@ def test_the_daily_run_logs_counts_and_capped_sorted_names_for_each_tier(capsys)
     assert lines["pinned"]["missing_objects_sample"] == first_names
     assert lines["pinned"]["unreferenced_pinned_digests_sample"] == first_names
     assert "orphaned_objects_sample" not in lines["pinned"]
+
+
+def _claims() -> LiveAllowanceLedger:
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={AllowanceKind.pin_budget: 5},
+    )
+
+
+_SPENT_AT = datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+
+def _held(ledger: LiveAllowanceLedger, export: str = "exp_a") -> CopyClaim:
+    claim = ledger.claim(export, now=_SPENT_AT, expires_at=_SPENT_AT + timedelta(minutes=2))
+    return ledger.hold_claim(
+        claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], clock=lambda: _SPENT_AT
+    )
+
+
+def _units(ledger: LiveAllowanceLedger) -> dict[str, int]:
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT kind, count FROM datasets.caller_allowance")
+    return {row["kind"]: row["count"] for row in rows}
+
+
+@pytest.mark.parametrize(
+    ("digest", "pinned", "later", "units", "left"),
+    [
+        pytest.param(None, False, False, {}, False, id="died-mid-render"),
+        pytest.param("sha256:a", False, False, {}, False, id="copy-never-landed"),
+        pytest.param("sha256:a", True, False, {"pin_budget": 1}, True, id="copy-stands-same-day"),
+        pytest.param("sha256:a", True, True, {"pin_budget": 1}, False, id="copy-stands-day-passed"),
+    ],
+)
+def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
+    digest: str | None, pinned: bool, later: bool, units: dict[str, int], left: bool, capsys
+):
+    """A second run changes nothing, and a standing copy is read from the bucket, since its
+    inventory row can be what failed."""
+    now = _SPENT_AT + timedelta(days=1 if later else 0, minutes=5)
+    ledger = _claims()
+    artifact_store = FakeArtifactStore()
+    held = _held(ledger)
+    if digest is not None:
+        ledger.begin_copy(held, digest, clock=lambda: _SPENT_AT, lease=timedelta(0))
+    if pinned:
+        artifact_store._objects[(digest, Tier.pinned.value)] = b"bytes"
+
+    for _ in range(3):
+        maintenance.run_copy_claim_sweep(
+            store=ledger._store, artifact_store=artifact_store, now=lambda: now
+        )
+
+    assert _units(ledger) == units
+    assert (ledger.read_claim("exp_a") is not None) is left
+
+
+class _BrokenFor(FakeArtifactStore):
+    """A bucket whose read of one digest fails."""
+
+    def exists(self, digest: str, *, tier: Tier, read: object = None) -> bool:
+        if digest == "sha256:broken":
+            raise ArtifactWriteError(object_name=digest, digest=digest)
+        return super().exists(digest, tier=tier)
+
+
+def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(capsys):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    ledger.begin_copy(
+        _held(ledger, "exp_a"), "sha256:broken", clock=lambda: _SPENT_AT, lease=timedelta(0)
+    )
+    _held(ledger, "exp_b")
+
+    failed = maintenance.run_copy_claim_sweep(
+        store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
+    )
+
+    assert failed == 1
+    assert ledger.read_claim("exp_a").state == ClaimState.copying
+    assert ledger.read_claim("exp_b") is None
+    assert _units(ledger) == {"pin_budget": 1}
+    line = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (line["settled_claims"], line["failed_claims"], line["deferred_claims"]) == (1, 1, 0)
+
+
+def test_the_sweep_starts_no_claim_whose_read_could_outrun_its_budget():
+    """One run ends before the next starts, whatever the bucket does: a `copying` claim
+    starts only with room left for the whole long read."""
+    ledger = _claims()
+    _held(ledger, "exp_a")
+    ledger.begin_copy(
+        _held(ledger, "exp_b"), "sha256:a", clock=lambda: _SPENT_AT, lease=timedelta(0)
+    )
+    room = (sweep_budget(ledger.bounds) - ExistsRead.long.within).total_seconds()
+    elapsed = iter([0.0, 0.0, room + 1])
+
+    swept = sweep_copy_claims(
+        allowances=ledger,
+        artifacts=FakeArtifactStore(),
+        now=_SPENT_AT + timedelta(minutes=5),
+        monotonic=lambda: next(elapsed),
+    )
+
+    assert swept == (1, 0, 1)
+    assert ledger.read_claim("exp_a") is None
+    assert ledger.read_claim("exp_b").state == ClaimState.copying
+
+
+def test_the_sweep_reserves_a_ledger_write_before_starting_any_claim():
+    ledger = _claims()
+    _held(ledger, "exp_a")
+    elapsed = iter([0.0, sweep_budget(ledger.bounds).total_seconds() + 1])
+
+    swept = sweep_copy_claims(
+        allowances=ledger,
+        artifacts=FakeArtifactStore(),
+        now=_SPENT_AT + timedelta(minutes=5),
+        monotonic=lambda: next(elapsed),
+    )
+
+    assert swept == (0, 0, 1)
+    assert _units(ledger) == {"pin_budget": 1}
+
+
+def test_the_sweep_counts_only_the_claims_it_moved(capsys):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    copying = ledger.begin_copy(
+        _held(ledger), "sha256:a", clock=lambda: _SPENT_AT, lease=timedelta(0)
+    )
+    ledger.settle_copy(copying, landed=True, expires_at=_SPENT_AT)
+
+    maintenance.run_copy_claim_sweep(
+        store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
+    )
+
+    line = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (line["settled_claims"], line["failed_claims"]) == (0, 0)
+
+
+@pytest.mark.parametrize("error", [None, RuntimeError("the ledger is down")], ids=["one", "all"])
+def test_the_daily_sweep_writes_its_report_whatever_the_claims_did(error, capsys, monkeypatch):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    ledger.begin_copy(_held(ledger), "sha256:broken", clock=lambda: _SPENT_AT, lease=timedelta(0))
+    if error is not None:
+
+        def down(**_: object) -> int:
+            raise error
+
+        monkeypatch.setattr(maintenance, "run_copy_claim_sweep", down)
+
+    failed = maintenance.run_sweep(
+        store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
+    )
+
+    assert failed == 1
+    events = [json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()]
+    assert events.count("datasets_reconciliation_sweep") == 2
+
+
+def test_the_sweep_leaves_a_claim_with_a_running_lease():
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    ledger = _claims()
+    ledger.claim("exp_a", now=now, expires_at=now + timedelta(minutes=2))
+
+    maintenance.run_copy_claim_sweep(
+        store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
+    )
+
+    assert ledger.read_claim("exp_a") is not None
 
 
 def test_a_missing_or_unknown_task_is_refused():
@@ -359,11 +544,20 @@ class _Sink:
 
 
 def _record_frame1_version(
-    store, artifact_store, *, content_version: str, value: float, pinned: bool
+    store,
+    artifact_store,
+    *,
+    content_version: str,
+    value: float,
+    pinned: bool,
+    data: bytes | None = None,
 ):
-    sink = _Sink()
-    write_frame1((_frame(value),), sink=sink)
-    stored = artifact_store.put(sink.data, tier=Tier.working)
+    """A version of `spec_backfill` holding the frame1 document of `_frame(value)`, or `data`."""
+    if data is None:
+        sink = _Sink()
+        write_frame1((_frame(value),), sink=sink)
+        data = sink.data
+    stored = artifact_store.put(data, tier=Tier.working)
     if pinned:
         artifact_store.copy(stored.digest, from_tier=Tier.working, to_tier=Tier.pinned)
     LiveVersionRecordWriter(store=store).record_version(
@@ -498,14 +692,16 @@ def test_backfill_gives_each_canonical_frame_the_references_of_the_frame1_it_rep
         store.close()
 
 
-def _unrebuildable(data: bytes, *, digest: str):
-    raise ValueError(f"the frame rebuilt from {digest} writes another frame1 digest")
+def _rendering_another_frame(**kwargs: object):
+    """`render_and_store_canonical_frame` storing another frame than the one it is given."""
+    return render_and_store_canonical_frame(**{**kwargs, "frame_chunks": (_frame(9.0),)})
 
 
 @pytest.mark.usefixtures("job_env")
 def test_backfill_exits_non_zero_when_a_version_cannot_be_converted(monkeypatch, capsys):
-    """A pinned frame1 whose bytes no longer rebuild to its digest stays unconverted, and the
-    execution fails, so nothing gated on the backfill reads it as complete."""
+    """A pinned frame1 whose canonical frame does not read back as its frame stays
+    unconverted, and the execution fails, so nothing gated on the backfill reads it as
+    complete."""
     store = FakeVersionRecordDatasetStore()
     artifact_store = LiveArtifactStore(
         buckets={Tier.working: "working-bucket", Tier.pinned: "pinned-bucket"},
@@ -525,12 +721,130 @@ def test_backfill_exits_non_zero_when_a_version_cannot_be_converted(monkeypatch,
         _record_frame1_version(
             store, artifact_store, content_version="cv_broken", value=2.0, pinned=True
         )
-        monkeypatch.setattr(maintenance, "_frame_of_frame1", _unrebuildable)
+        monkeypatch.setattr(
+            maintenance, "render_and_store_canonical_frame", _rendering_another_frame
+        )
         assert maintenance.main(["backfill-frame1"]) == 1
     finally:
         store.close()
 
     assert _backfill_counts(capsys) == [(1, 0), (0, 1)]
+
+
+def test_backfill_counts_an_unreadable_frame1_as_failed_and_converts_the_rest(capsys):
+    store = FakeVersionRecordDatasetStore()
+    try:
+        artifact_store = LiveArtifactStore(
+            buckets={Tier.working: "working-bucket", Tier.pinned: "pinned-bucket"},
+            inventory=LiveArtifactInventory(store=store),
+            client=FakeGCSClient(),
+        )
+        unreadable = json.loads(_frame1_bytes(_frame(2.0)))
+        unreadable["rows"][0][unreadable["columns"].index("value")] = "abc"
+        for content_version, data in (
+            ("cv_a", None),
+            ("cv_b", json.dumps(unreadable).encode()),
+            ("cv_c", None),
+        ):
+            _record_frame1_version(
+                store,
+                artifact_store,
+                content_version=content_version,
+                value=1.0,
+                pinned=True,
+                data=data,
+            )
+
+        failed = maintenance.run_backfill_frame1(store=store, artifact_store=artifact_store)
+
+        reader = LiveSnapshotReader(store=store)
+        converted = [
+            content_version
+            for content_version in ("cv_a", "cv_b", "cv_c")
+            if any(
+                location.rendering == CANONICAL_FRAME_RENDERING
+                for location in reader.read_artifact_locations("spec_backfill", content_version)
+            )
+        ]
+    finally:
+        store.close()
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert failed == 1
+    assert converted == ["cv_a", "cv_c"]
+    assert [
+        line["content_version"]
+        for line in lines
+        if line["event"] == "datasets_frame1_backfill_failed"
+    ] == ["cv_b"]
+
+
+def _frame1_bytes(frame) -> bytes:
+    sink = _Sink()
+    write_frame1((frame,), sink=sink)
+    return sink.data
+
+
+def _without(column: str) -> Callable[[dict[str, Any]], None]:
+    def drop(document: dict[str, Any]) -> None:
+        index = document["columns"].index(column)
+        del document["columns"][index]
+        for row in document["rows"]:
+            del row[index]
+
+    return drop
+
+
+def _first_unit_recipe(document: dict[str, Any]) -> None:
+    index = document["columns"].index("unit")
+    document["rows"][0][index] = {**document["rows"][0][index], "recipe": "r1"}
+
+
+@pytest.mark.parametrize(
+    "older",
+    [
+        pytest.param(_without("unit"), id="no-unit"),
+        pytest.param(_without("measurementMethod"), id="no-measurement-method"),
+        pytest.param(_without("status"), id="no-status"),
+        pytest.param(_first_unit_recipe, id="a-unit-recipe"),
+    ],
+)
+def test_backfill_converts_a_frame1_whose_own_frame1_differs(older, capsys):
+    """A frame1 document written before a column it may lack, or holding a unit recipe, reads
+    as a frame whose own frame1 differs from it, and converts to the canonical frame of that
+    frame, in that frame's `unit` layout."""
+    document = json.loads(_frame1_bytes(_frame(1.0)))
+    older(document)
+    data = json.dumps(document).encode()
+    store = FakeVersionRecordDatasetStore()
+    try:
+        artifact_store = LiveArtifactStore(
+            buckets={Tier.working: "working-bucket", Tier.pinned: "pinned-bucket"},
+            inventory=LiveArtifactInventory(store=store),
+            client=FakeGCSClient(),
+        )
+        _record_frame1_version(
+            store, artifact_store, content_version="cv_older", value=1.0, pinned=True, data=data
+        )
+
+        failed = maintenance.run_backfill_frame1(store=store, artifact_store=artifact_store)
+
+        (frame,) = {
+            location.artifact_digest
+            for location in LiveSnapshotReader(store=store).read_artifact_locations(
+                "spec_backfill", "cv_older"
+            )
+            if location.rendering == CANONICAL_FRAME_RENDERING
+        }
+        converted = read_canonical_frame(
+            artifact_store.get(artifact_digest=frame, tier=Tier.pinned)
+        )
+    finally:
+        store.close()
+
+    assert failed == 0
+    assert converted == read_frame1(data)
+    assert _backfill_counts(capsys) == [(1, 0)]
 
 
 def test_a_share_taken_down_twice_is_logged_once_taken_down_and_once_not_found(capsys):

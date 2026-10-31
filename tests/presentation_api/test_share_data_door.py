@@ -10,6 +10,7 @@ import io
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import openpyxl
 import pyarrow.parquet as pq
@@ -18,7 +19,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import presentation_api.retention as presentation_retention
-from assembler.errors import FrameUnavailable
+from assembler.errors import FrameUnavailable, ReleaseMismatch
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
@@ -32,8 +33,8 @@ from dfo_platform.app import create_app
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
-from presentation_api.newest_frames import NewestPending
-from presentation_store import LiveShareStore
+from presentation_api.newest_frames import NewestNotReady, NewestPending
+from presentation_store import LiveShareStore, PresentationStoreUnavailable
 from tests.presentation_api.test_shares_door import _Allowances
 from tests.presentation_store.conftest import FakePresentationStore
 
@@ -99,12 +100,30 @@ class _Clock:
         return self.at
 
 
+class _RefusingFrameStore(FakeFrameStore):
+    """Raises `refusals[frame_ref]` for a frame it holds there, `_UNREADABLE` a frame that cannot
+    be loaded."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.loads: list[FrameRef] = []
+        self.refusals: dict[FrameRef, Exception] = {
+            _UNREADABLE: FrameUnavailable(reason="missing_rendering", detail="exemplar")
+        }
+
+    def load(self, *, frame_ref: FrameRef) -> ResolvedFrame:
+        self.loads.append(frame_ref)
+        if frame_ref in self.refusals:
+            raise self.refusals[frame_ref]
+        return super().load(frame_ref=frame_ref)
+
+
 class _Door:
     def __init__(
         self,
         client: TestClient,
         *,
-        frame_store: FakeFrameStore,
+        frame_store: _RefusingFrameStore,
         newest: _Newest,
         presentation: FakePresentationStore,
     ):
@@ -175,7 +194,7 @@ def cors_door(release_registry: FakeReleaseRegistry) -> Iterator[_Door]:
 def _serve_door(
     release_registry: FakeReleaseRegistry, *, cors_origins: tuple[str, ...]
 ) -> Iterator[_Door]:
-    frame_store = FakeFrameStore()
+    frame_store = _RefusingFrameStore()
     frame_store.put(resolved_frame=_frame(_STORED))
     frame_store.put(resolved_frame=_frame(_MOVED, moved_by=_MOVED_BY))
     newest = _Newest()
@@ -548,6 +567,103 @@ def test_a_live_slot_whose_card_cannot_draw_the_newer_frame_serves_its_own_as_st
     assert door.newest.asked == [_STORED]
 
 
+@pytest.mark.parametrize(
+    ("raised", "wait_s"),
+    [
+        pytest.param(
+            FrameUnavailable(reason="io", detail="exemplar", retry_after_s=7.0), 7, id="io"
+        ),
+        pytest.param(FrameUnavailable(reason="busy", detail="exemplar"), 30, id="busy"),
+        pytest.param(PresentationStoreUnavailable("exemplar"), 30, id="store-unavailable"),
+        pytest.param(
+            ReleaseMismatch(catalog_version="2020.1.0", detail="exemplar"),
+            30,
+            id="release-mismatch",
+        ),
+        pytest.param(
+            NewestNotReady("exemplar", retry_after_s=1), 30, id="retry-after-under-the-floor"
+        ),
+        pytest.param(NewestNotReady("exemplar", retry_after_s=120), 120, id="retry-after"),
+        pytest.param(FrameUnavailable(reason="expired", detail="exemplar"), None, id="expired"),
+        pytest.param(
+            PresentationStoreUnavailable("exemplar", sqlstate="42601"),
+            None,
+            id="store-permanent",
+        ),
+    ],
+)
+def test_a_live_slot_serves_its_own_frame_until_a_transient_failure_s_wait_ends(
+    door: _Door, monkeypatch: pytest.MonkeyPatch, raised: Exception, wait_s: int | None
+):
+    """A transient failure stores the slot `stale` on the card's own frame until its wait, and
+    the reads inside it do not draw the failing frame. A permanent one stores it until the next
+    check, past both reads here. Every read records the frame it served."""
+    served: list[FrameRef] = []
+    record_served = LiveShareStore.record_served
+
+    def counting(self: LiveShareStore, **kwargs: Any) -> object:
+        served.append(kwargs["frame"])
+        return record_served(self, **kwargs)
+
+    monkeypatch.setattr(LiveShareStore, "record_served", counting)
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = _MOVED
+    door.frame_store.refusals[_MOVED] = raised
+    served.clear()
+
+    first = door.data(share["id"])
+    door.later(seconds=(wait_s or 60) - 1)
+    inside = door.data(share["id"])
+    moved_loads = door.frame_store.loads.count(_MOVED)
+    del door.frame_store.refusals[_MOVED]
+    door.later(seconds=2)
+    after = door.data(share["id"])
+
+    stale = ("stale", _STORED.content_version, "live")
+    assert _stated(first) == _stated(inside) == stale
+    assert moved_loads == 1
+    if wait_s is None:
+        assert _stated(after) == stale
+        assert door.newest.asked == [_STORED]
+        assert served == [_STORED] * 3
+    else:
+        assert _stated(after) == ("current", _MOVED.content_version, "live")
+        assert door.newest.asked == [_STORED] * 2
+        assert served == [_STORED, _STORED, _MOVED]
+
+
+@pytest.mark.parametrize("last_drawable", [True, False])
+def test_a_transient_failure_keeps_a_live_slot_on_its_last_good_frame(
+    door: _Door, last_drawable: bool
+):
+    """A slot current on a newer frame serves that frame `stale` through a transient failure of
+    a newer one still, and keeps it through the pending check that follows. When that frame
+    cannot be drawn either, the slot serves the card's own frame in its place."""
+    newer = FrameRef(spec_id=_STORED.spec_id, content_version="cv_" + "c" * 32)
+    door.frame_store.refusals[newer] = FrameUnavailable(
+        reason="io", detail="exemplar", retry_after_s=7.0
+    )
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = _MOVED
+    first = door.data(share["id"])
+    door.later(minutes=16)
+    door.newest.answer = newer
+    if not last_drawable:
+        door.frame_store.refusals[_MOVED] = FrameUnavailable(reason="expired", detail="exemplar")
+    failed = door.data(share["id"])
+    door.later(seconds=6)
+    inside = door.data(share["id"])
+    door.later(seconds=2)
+    door.newest.answer = NewestPending(retry_after_s=30)
+    pending = door.data(share["id"])
+
+    held = _MOVED if last_drawable else _STORED
+    assert _stated(first) == ("current", _MOVED.content_version, "live")
+    assert _stated(failed) == _stated(inside) == ("stale", held.content_version, "live")
+    assert _stated(pending) == ("pending", held.content_version, "live")
+    assert door.frame_store.loads.count(newer) == 1
+
+
 def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(
     release_registry: FakeReleaseRegistry,
 ):
@@ -609,10 +725,17 @@ def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: 
 @pytest.mark.parametrize(
     ("reason", "status", "code", "retryable"),
     [
-        ("io", 503, "service_unavailable", True),
+        ("expired", 404, "frame_unavailable", True),
         ("revoked", 404, "frame_unavailable", False),
+        ("ops_unsupported", 404, "frame_unavailable", True),
+        ("missing_rendering", 404, "frame_unavailable", False),
+        ("digest_mismatch", 404, "frame_unavailable", False),
+        ("quarantined", 404, "frame_unavailable", False),
+        ("recipe_pending", 404, "frame_unavailable", True),
+        ("unknown", 404, "frame_unavailable", False),
+        ("io", 503, "service_unavailable", True),
+        ("recipe_unreadable", 500, "internal_error", False),
     ],
-    ids=["read-failed", "frame-gone"],
 )
 def test_a_slot_whose_frame_does_not_load_answers_by_cause(
     door: _Door,
@@ -632,6 +755,7 @@ def test_a_slot_whose_frame_does_not_load_answers_by_cause(
 
     body = resp.json()
     assert (resp.status_code, body["code"], body["retryable"]) == (status, code, retryable)
+    assert body["cause"]["code"] == reason
 
 
 def test_an_emptied_slot_and_a_notes_slot_answer_not_found(door: _Door):

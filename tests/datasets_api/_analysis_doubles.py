@@ -154,6 +154,10 @@ class FakeRootSource:
             rows=frame.num_rows if self.recorded_rows else None,
         )
 
+    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+        """`root` as it is. The frames are held in memory."""
+        return root
+
     def read(self, root: ResolvedRoot) -> Frame:
         self.reads += 1
         return self.frames[(root.dataset.spec_id, root.dataset.content_version)]

@@ -3,15 +3,25 @@
 `datasets-maintenance <task>` runs one task and exits non-zero when it fails. Each task is a
 subcommand registered in `main`.
 
-`sweep` runs daily from Cloud Scheduler. It sweeps both artifact tiers with the read-only
-`reconciliation.sweep` at the current time and writes one structured
+`sweep` runs daily from Cloud Scheduler. It settles pin claims past their lease as
+`sweep-export-claims` does, then sweeps both artifact tiers with the read-only
+`reconciliation.sweep` at the current time, whatever the claims did, and writes one structured
 `datasets_reconciliation_sweep` line per tier with its orphaned, missing, expired working and
 unreferenced counts. Missing objects count only rows that should have bytes, so a working row
 past `WORKING_TIER_RETENTION` counts as expired. For each non-empty orphaned, missing or
 unreferenced leg the line also carries the sorted object names, digests for the unreferenced
-leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. It repairs nothing. It reads
-`DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime database
-settings `dataset_store.provider.shared_pool` reads.
+leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. The report repairs nothing. It
+reads `DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime
+database settings `dataset_store.provider.shared_pool` reads.
+
+`sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each claim an
+export or a pin left past its lease by itself (`retention_admission.sweep_copy_claims`), `held`
+ones before `copying` ones, so a claim that fails leaves the rest settled. It starts no claim
+whose worst case, a bucket read included, would run past `retention_admission.sweep_budget`, so
+one run ends before the next. It writes one `datasets_copy_claims_swept` line with the settled,
+failed and deferred counts, and exits non-zero when any failed or were deferred, so a backlog
+alerts. Every settlement names the claim's generation, so a second run changes nothing. A refund
+lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or
@@ -22,8 +32,9 @@ reads the runtime database settings and `DATASETS_OPERATION_DEADLINE_SECONDS`, w
 the API's own.
 
 `backfill-frame1` runs once per environment. For every version linking a pinned frame1 document
-and no pinned canonical frame, it reads the document, rebuilds its frame, checks the frame's
-frame1 digest equals the document's, stores the canonical frame, copies it to the pinned tier
+and no pinned canonical frame, it reads the document's frame (`store_errors.read_stored_frame`),
+stores it as the canonical frame, checks the stored frame reads back as the same frame, copies
+it to the pinned tier
 and, in one transaction, links it under `render.CANONICAL_FRAME_RENDERING` and copies every
 `artifact_reference` row the frame1 held under the version to it, so the sweep counts the
 canonical frame referenced exactly as the frame1 was. A second run finds nothing to convert. It
@@ -214,6 +225,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from datasets_api.allowance import LiveAllowanceLedger
 from datasets_api.analysis import FrameUnavailable
 from datasets_api.config import (
     DEFAULT_OPERATION_DEADLINE_SECONDS,
@@ -255,8 +267,13 @@ from datasets_api.render import (
     render_and_store_canonical_frame,
     stored_frame_location,
 )
+from datasets_api.retention_admission import sweep_copy_claims
 from datasets_api.serve import refs_from_resolved_stat_vars
-from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.store_errors import (
+    DatasetsStoreUnavailable,
+    StoredFrameUnreadable,
+    read_stored_frame,
+)
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from datasets_api.warning_backfill import (
@@ -277,11 +294,7 @@ from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
-    read_canonical_frame,
-    read_frame1_table,
-    write_frame1,
 )
-from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from materialise.reshape import RollupNotSummableError
 from materialise.statistics import (
     SERIES_STATISTICS_SCHEMA,
@@ -310,9 +323,35 @@ SWEEP_NAMES_PER_LEG = 20
 """The most object names, or digests, a sweep line carries for one leg."""
 
 
-def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> None:
-    """Sweep both tiers and emit one line per tier with each leg's count and, for each
-    non-empty leg, its first `SWEEP_NAMES_PER_LEG` names in sorted order."""
+def run_copy_claim_sweep(
+    *, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now
+) -> int:
+    """Settle the pin claims past their lease (`retention_admission.sweep_copy_claims`), emit
+    the counts and return how many failed or were left for the next run, so a backlog fails the
+    task."""
+    settled, failed, deferred = sweep_copy_claims(
+        allowances=LiveAllowanceLedger(store=store, limits={}),
+        artifacts=artifact_store,
+        now=now(),
+    )
+    emit(
+        "datasets_copy_claims_swept",
+        settled_claims=settled,
+        failed_claims=failed,
+        deferred_claims=deferred,
+    )
+    return failed + deferred
+
+
+def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> int:
+    """Settle expired pin claims, then sweep both tiers whatever that did, emit one line per
+    tier with each leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG`
+    names in sorted order, and return how many claims failed or were left."""
+    try:
+        failed = run_copy_claim_sweep(store=store, artifact_store=artifact_store, now=now)
+    except Exception as exc:
+        emit("datasets_maintenance_failed", severity="ERROR", task="sweep", error=str(exc))
+        failed = 1
     for report in sweep(store=store, artifact_store=artifact_store, now=now()):
         legs = {
             "orphaned_objects": report.orphaned_objects,
@@ -330,10 +369,15 @@ def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock 
                 if names
             },
         )
+    return failed
 
 
 def _sweep() -> int:
     return _run_over_artifacts("sweep", run_sweep)
+
+
+def _sweep_copy_claims() -> int:
+    return _run_over_artifacts("sweep-export-claims", run_copy_claim_sweep)
 
 
 def _run_over_artifacts(task: str, run: Callable[..., int | None]) -> int:
@@ -491,13 +535,6 @@ def _settle() -> int:
     return 1 if unsettled else 0
 
 
-class _DiscardSink:
-    """A writer sink that keeps no bytes, for a digest alone."""
-
-    def write(self, data: bytes, /) -> int:
-        return len(data)
-
-
 def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
     """`(subject_id, content_version, frame1 digest)` of every version linking a pinned frame1
     document and no pinned canonical frame."""
@@ -524,41 +561,49 @@ def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
     ]
 
 
-def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
-    """The frame a frame1 document holds, rebuilt through the grammar. Raises `ValueError` when
-    the rebuilt frame's frame1 digest differs from `digest`, so a conversion never changes
-    content."""
-    table = read_frame1_table(data)
-    frame = build_frame(
-        role_keys=frame_entity_columns(table.columns),
-        rows=[
-            {
-                column: unit_cell_for_rebuild(cell)
-                for column, cell in zip(table.columns, row, strict=True)
-                if column != "status"
-            }
-            for row in table.rows
-        ],
+def _stored_canonical_frame(
+    frame: Frame, *, subject_id: str, content_version: str, artifact_store: ArtifactStore
+) -> ArtifactRecord:
+    """Store `frame`, read from a frame1 document, as the version's canonical frame, and check
+    that the stored frame reads back as `frame`, so a conversion never changes content. The
+    frame is compared, not the document's digest: a document that predates a column the frame
+    holds has another digest than the frame's own frame1 bytes.
+
+    Raises:
+        ValueError: The stored canonical frame reads back as another frame.
+    """
+    record = render_and_store_canonical_frame(
+        frame_chunks=(frame,),
+        subject_id=subject_id,
+        content_version=content_version,
+        artifact_store=artifact_store,
     )
-    rebuilt = write_frame1((frame,), sink=_DiscardSink()).digest
-    if rebuilt != digest:
-        raise ValueError(f"the frame rebuilt from {digest} writes frame1 digest {rebuilt}")
-    return frame
+    stored = read_stored_frame(
+        artifact_store.get(artifact_digest=record.artifact_digest, tier=Tier.working),
+        media_type=record.media_type,
+        digest=record.artifact_digest,
+    )
+    if stored != frame:
+        raise ValueError(f"canonical frame {record.artifact_digest} reads back as another frame")
+    return record
 
 
 def run_backfill_frame1(*, store: DatasetStore, artifact_store: ArtifactStore) -> int:
     """Link a pinned canonical frame, holding the frame1's references, under every version
     holding only a pinned frame1 document, emit the counts, and return the number of versions
-    it could not convert."""
+    it could not convert. A version that fails, its document unreadable included, emits
+    `datasets_frame1_backfill_failed` naming it, and the run goes on to the next."""
     writer = LiveVersionRecordWriter(store=store)
     converted = failed = 0
     for subject_id, content_version, digest in _pinned_frame1_versions(store):
         try:
-            frame = _frame_of_frame1(
-                artifact_store.get(artifact_digest=digest, tier=Tier.pinned), digest=digest
+            frame = read_stored_frame(
+                artifact_store.get(artifact_digest=digest, tier=Tier.pinned),
+                media_type=FRAME1_MEDIA_TYPE,
+                digest=digest,
             )
-            record = render_and_store_canonical_frame(
-                frame_chunks=(frame,),
+            record = _stored_canonical_frame(
+                frame,
                 subject_id=subject_id,
                 content_version=content_version,
                 artifact_store=artifact_store,
@@ -574,7 +619,12 @@ def run_backfill_frame1(*, store: DatasetStore, artifact_store: ArtifactStore) -
                 ),
                 replaces=digest,
             )
-        except (ArtifactStoreError, DatasetsStoreUnavailable, ValueError) as exc:
+        except (
+            ArtifactStoreError,
+            DatasetsStoreUnavailable,
+            StoredFrameUnreadable,
+            ValueError,
+        ) as exc:
             failed += 1
             emit(
                 "datasets_frame1_backfill_failed",
@@ -758,9 +808,7 @@ def _stored_frame(
     data = _held_bytes(artifact_store, location)
     if location is None or data is None:
         return None
-    if location.media_type == FRAME1_MEDIA_TYPE:
-        return _frame_of_frame1(data, digest=location.artifact_digest)
-    return read_canonical_frame(data)
+    return read_stored_frame(data, media_type=location.media_type, digest=location.artifact_digest)
 
 
 def run_backfill_continuations(*, store: DatasetStore, deadline: datetime, now: Clock) -> None:
@@ -1549,6 +1597,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks.add_parser(
         "sweep", help="report orphaned and missing artifact objects per tier"
     ).set_defaults(run=_sweep)
+    tasks.add_parser(
+        "sweep-export-claims",
+        help="settle the pin claims of exports and pins past their lease, refunding where no copy stands",
+    ).set_defaults(run=_sweep_copy_claims)
     tasks.add_parser(
         "age-operations",
         help="fail abandoned operations and delete done and failed ones past their retention",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import Never
 
 import pytest
@@ -19,9 +20,11 @@ from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionSto
 from assembler.ports import FrameRef, FrameUnavailable
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
 from dataset_store.snapshot import SnapshotRevoked
+from datasets_api.allowance import AllowanceExhausted
 from datasets_api.doors.definition import SpecNotFound
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import RefreshRebuildFailed
+from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from materialise.reshape import ColumnUnknownError
@@ -125,15 +128,15 @@ def test_an_unknown_dimension_is_binding_invalid(client: TestClient, frame_ref: 
     assert resp.json()["code"] == "binding_invalid"
 
 
-def test_an_unregistered_frame_is_frame_unavailable(client: TestClient):
-    # The fake maps an unregistered frame to retryable 503 `io`.
+def test_a_frame_store_that_fails_to_answer_is_service_unavailable(client: TestClient):
+    # The fake refuses an unregistered frame with reason `io`.
     resp = client.get(
         "/api/presentation/frames/spec_00000000000000000000000000000000/"
         "cv_00000000000000000000000000000000",
     )
     assert resp.status_code == 503
     body = resp.json()
-    assert body["code"] == "frame_unavailable"
+    assert body["code"] == "service_unavailable"
     assert body["retryable"] is True
 
 
@@ -484,50 +487,112 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
 
 
 @pytest.mark.parametrize(
-    ("answer", "status", "retryable", "cause"),
+    ("answer", "status", "code", "retryable", "cause", "retry_after"),
     [
-        pytest.param(NewestPending(retry_after_s=2.0), 503, True, "io", id="building"),
-        pytest.param(SpecNotFound(id=BARE_SPEC_ID), 404, False, "unknown", id="not-registered"),
-        pytest.param(MintBackpressure(), 503, True, "io", id="mint-backpressure"),
+        pytest.param(
+            NewestPending(retry_after_s=1.5),
+            503,
+            "service_unavailable",
+            True,
+            None,
+            True,
+            id="building",
+        ),
+        pytest.param(
+            SpecNotFound(id=BARE_SPEC_ID),
+            404,
+            "frame_unavailable",
+            False,
+            "unknown",
+            False,
+            id="not-registered",
+        ),
+        pytest.param(
+            MintBackpressure(),
+            503,
+            "service_unavailable",
+            True,
+            "busy",
+            True,
+            id="mint-backpressure",
+        ),
+        pytest.param(
+            OperationBacklogFull(in_flight=1, limit=1),
+            503,
+            "service_unavailable",
+            True,
+            "busy",
+            True,
+            id="operation-backlog-full",
+        ),
+        pytest.param(
+            AllowanceExhausted(kind="card", limit=1, now=datetime.now(UTC)),
+            404,
+            "frame_unavailable",
+            False,
+            "unknown",
+            False,
+            id="a-wait-on-no-retry",
+        ),
+        pytest.param(
+            DatasetsStoreUnavailable("exemplar"),
+            503,
+            "service_unavailable",
+            True,
+            "io",
+            False,
+            id="store-outage",
+        ),
         pytest.param(
             IdentityQuarantined(subject_id=BARE_SPEC_ID, id_kind="spec"),
             404,
+            "frame_unavailable",
             False,
             "quarantined",
+            False,
             id="quarantined",
         ),
         pytest.param(
             SnapshotRevoked(id=BARE_SPEC_ID, content_version="cv", reason=None),
             404,
+            "frame_unavailable",
             False,
             "revoked",
+            False,
             id="revoked",
         ),
         pytest.param(
             ColumnUnknownError("no such column", column="x"),
             404,
+            "frame_unavailable",
             False,
             "unknown",
+            False,
             id="code-analysis-does-not-map",
         ),
     ],
 )
-def test_a_bare_spec_id_that_cannot_be_served_is_frame_unavailable(
+def test_a_bare_spec_id_that_cannot_be_served_answers_by_cause(
     newest_client: TestClient,
     newest_specs: FakeNewestSpecs,
     answer: object,
     status: int,
+    code: str,
     retryable: bool,
-    cause: str,
+    cause: str | None,
+    retry_after: bool,
 ):
     newest_specs.answer = answer  # ty: ignore[invalid-assignment]
 
     resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
 
     assert resp.status_code == status, resp.text
-    assert resp.json()["code"] == "frame_unavailable"
-    assert resp.json()["retryable"] is retryable
-    assert resp.json()["cause"]["code"] == cause
+    body = resp.json()
+    assert (body["code"], body["retryable"]) == (code, retryable)
+    assert (body.get("cause") or {}).get("code") == cause
+    assert ("retry-after" in resp.headers) is retry_after
+    if retry_after:
+        assert int(resp.headers["retry-after"]) >= 1
 
 
 def test_bare_reads_at_their_limit_refuse_and_leave_pair_reads_their_permits(

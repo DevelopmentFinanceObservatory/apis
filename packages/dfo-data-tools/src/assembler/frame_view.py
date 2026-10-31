@@ -127,7 +127,13 @@ def compute_structural_view(
     `frame_continuation`, and a dimension is `plural` when those series hold more than one
     of its values. A continued series holds the method of the rows it continues, so its
     continuing method neither counts a series nor makes the method axis plural, though the
-    method stays listed as a value a select may bind."""
+    method stays listed as a value a select may bind.
+
+    Raises:
+        FrameError: A `time_period` cell `parse_time_period` cannot read. The other cells are
+            trusted as the grammar's writer wrote them.
+        BindingInvalid: The frame's units do not read apart, or its periods bind no one grain.
+    """
     columns = tuple(cast("Sequence[str]", frame["columns"]))
     rows = tuple(cast("Sequence[Sequence[object]]", frame["rows"]))
     index_by_column = {column: position for position, column in enumerate(columns)}

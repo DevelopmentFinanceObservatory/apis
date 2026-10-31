@@ -34,6 +34,7 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
 
+from dataset_store.bounds import CONNECT_TIMEOUT_SECONDS
 from dataset_store.connection import default_is_broken
 from dataset_store.dbapi import DBAPIConnection
 from dataset_store.errors import PoolTimeoutError
@@ -44,7 +45,8 @@ class ConnectionPool:
     """Connect lazily, with at most `size` idle or borrowed connections.
 
     `is_broken` decides whether an exception discards a borrowed connection.
-    It defaults to `connection.default_is_broken`.
+    It defaults to `connection.default_is_broken`. `connect_timeout` is the bound `connect`
+    dials and reads under (`ConnectionSettings.connect_timeout`).
     """
 
     def __init__(
@@ -55,10 +57,12 @@ class ConnectionPool:
         is_broken: Callable[[BaseException], bool] = default_is_broken,
         max_idle_seconds: float = 300.0,
         validate_after_idle_seconds: float = 60.0,
+        connect_timeout: float = CONNECT_TIMEOUT_SECONDS,
     ) -> None:
         if size < 1:
             raise ValueError(f"size must be >= 1; got {size!r}")
         self._connect = connect
+        self.connect_timeout = connect_timeout
         self._is_broken = is_broken
         self._size = size
         self._max_idle_seconds = max_idle_seconds

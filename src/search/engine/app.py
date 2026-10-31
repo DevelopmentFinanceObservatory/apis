@@ -24,11 +24,20 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import logging
+import sys
 import time
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
-from typing import Annotated, TypedDict
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
+from contextlib import (
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+    aclosing,
+    asynccontextmanager,
+    contextmanager,
+)
+from typing import Annotated, NamedTuple, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -44,11 +53,11 @@ from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
+from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.named import cut
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from dfo_platform.trace import get_trace_id
-from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
 from entity_resolution import (
     Admission,
     EntityResolver,
@@ -87,7 +96,13 @@ from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.clients.sdmx_cache import CachingSdmxClient
 from search.engine.codes import CODE_CATALOG, SEARCH_CODE_CATALOGUE
 from search.engine.config import SEARCH_UNIMPLEMENTED_DOORS, settings
-from search.engine.core import ResolveHealth, request_budget, resolve_async, resolve_events
+from search.engine.core import (
+    ResolveRecord,
+    request_budget,
+    resolve_async,
+    resolve_events,
+    resolve_line,
+)
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.deps import (
@@ -99,11 +114,12 @@ from search.engine.deps import (
 )
 from search.engine.envelope import make_diagnostics, now_ms
 from search.engine.errors import (
-    RATE_TABLE_REFUSALS,
     EngineInfraError,
     EngineInputError,
     GraphInfraError,
     LLMInfraError,
+    classify_refusal,
+    served_problem,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
 from search.engine.extraction_store import build_extraction_store
@@ -140,7 +156,9 @@ logger = logging.getLogger(__name__)
 # The SSE path uses this envelope for the same catalogue and capability version as JSON.
 _ENVELOPE = Envelope(catalogue=CODE_CATALOG, capability_version=settings().capability_version)
 
-# Set to "1" on a buffered resolve whose answer backfilled a failed leg.
+# Set to "1" on a buffered resolve whose answer stands on less than a later request may read
+# (`DoneEvent.degraded_leg`): a lost read, an unsettled scope, an unevaluated alternate, a
+# swallowed leg error, or the reads an abandoned reading carried.
 DEGRADED_LEG_HEADER = "X-Search-Degraded-Leg"
 
 # Static fallback used when refusal classification or envelope rendering fails.
@@ -174,159 +192,151 @@ def _accepts_sse(request: Request) -> bool:
 
 
 def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
-    """Return a Search `ProblemSpec` or defer to platform classification. JSON and SSE use
-    this function. Platform classification handles routing 404/405 errors.
+    """Return a Search `ProblemSpec`, logged, or defer to platform classification. JSON and SSE
+    use this function. Platform classification handles routing 404/405 errors.
     """
-    if isinstance(exc, EngineInputError):
-        # Code-less routing failures keep generic code and detail to prevent ID probing.
-        code = exc.code if exc.code is not None else "request_invalid"
-        detail = None if exc.code is None else str(exc)
-        return ProblemSpec(
-            status=exc.status,
-            code=code,
-            detail=detail,
-            pointer=exc.pointer,
-            alternatives=exc.alternatives,
-            cause=exc.cause,
-            retryable=False,
+    classified = classify_refusal(exc)
+    if classified is None:
+        return None
+    if classified.log_line:
+        logger.log(
+            classified.log_level,
+            classified.log_line,
+            exc_info=exc if classified.log_traceback else None,
         )
-    if isinstance(exc, RATE_TABLE_REFUSALS):
-        # The materialise library refuses an inadmissible rate table with 501
-        # `capability_unavailable` and a table version that moved mid-load with 503, retryable.
-        logger.warning("Rate table refusal %s: %s", exc.code, exc.detail)
-        return ProblemSpec(
-            status=exc.status, code=exc.code, detail=exc.detail, retryable=exc.retryable
-        )
-    if isinstance(exc, EngineInfraError):
-        logger.error("Engine infrastructure error: %s", exc, exc_info=exc)
-        # Upstream 4xx responses (e.g. graph returned 404) map to 502 Bad Gateway
-        # so callers can distinguish client-side upstream errors from transient failures.
-        upstream_status = getattr(exc, "upstream_status", None)
-        if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
-            return ProblemSpec(status=502, code="upstream_error", retryable=True)
-        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
-    if isinstance(exc, RequestValidationError):
-        # The platform maps body errors to 400 and schema-version errors to 422. Search adds
-        # a field-specific refinement below.
-        problem = validation_problem(exc)
-        errors = exc.errors()
-        # Unsupported identity versions and recognised future facet axes also map to 422.
-        # Match the nested field path or Pydantic error type. A top-level schema-version error
-        # already maps to 422 in the platform.
-        if problem.code == "request_invalid":
-            version_error = next(
-                (
-                    e
-                    for e in errors
-                    if error_field_loc(e)[-1:] == ["identity_version"]
-                    or e.get("type") == "facet_axis_higher_schema_version"
-                ),
-                None,
-            )
-            if version_error is not None:
-                problem = problem._replace(
-                    code="unsupported_schema_version",
-                    status=422,
-                    pointer=pointer_for_error(exc, version_error),
-                    detail=None,
-                )
-        return problem
-    if isinstance(exc, asyncio.TimeoutError):
-        logger.error("Request hit its hard deadline")
-        return ProblemSpec(status=504, code="timeout", retryable=True)
-    return None
+    return classified.problem
 
 
-# Module-level sentinels for the SSE merge queue.
-_HEARTBEAT = object()  # 10s tick, serialized as `: ping\n\n`
-_SENTINEL = object()
+def _logged_classification(exc: BaseException) -> ProblemSpec:
+    """`exc`'s refusal, logged as on the JSON route, so an unhandled error's traceback appears
+    once."""
+    return classify_search_exception(exc) or refusal.classify_default(exc)
+
+
+def _catch_all_problem() -> dict[str, object]:
+    """The catch-all problem body, from constants, with no catalogue lookup to fail."""
+    return {
+        "type": f"/codes/{refusal.UNHANDLED_DEFAULT.code}",
+        "title": _FALLBACK_ERROR_TITLE,
+        "status": refusal.UNHANDLED_DEFAULT.status,
+        "detail": _FALLBACK_ERROR_DETAIL,
+        "code": refusal.UNHANDLED_DEFAULT.code,
+        "trace_id": get_trace_id(),
+        "capability_version": _ENVELOPE.capability_version,
+        "retryable": refusal.UNHANDLED_DEFAULT.retryable,
+    }
+
+
+def _error_event(
+    exc: BaseException, *, classify: Callable[[BaseException], ProblemSpec]
+) -> ErrorEvent:
+    """The problem the route serves for `exc`, on either transport, and the only reading of
+    it: the envelope validates its code against the registry, and a code it refuses or a
+    classification that fails serves the catch-all, as the platform's exception handler does.
+    The event carries only the client detail."""
+    try:
+        return ErrorEvent(**_ENVELOPE.problem(classify(exc)).model_dump())
+    except Exception as classify_exc:
+        logger.error(
+            "classifying %s for its problem body failed: %s",
+            type(exc).__name__,
+            classify_exc,
+            exc_info=classify_exc,
+        )
+        return ErrorEvent.model_validate(_catch_all_problem())
+
+
+def _served_code(exc: BaseException) -> str:
+    """The code the route serves for `exc`. The platform's handler logs the failure itself."""
+    return _error_event(exc, classify=served_problem).code
+
+
+class _Frame(NamedTuple):
+    """One frame of the SSE merge queue, and whether it ends the stream."""
+
+    text: str
+    last: bool = False
+
+
+_PING = _Frame(": ping\n\n")
 
 
 async def _event_source(
-    stream: AsyncIterator[Event], *, hard_deadline: float
+    stream: AsyncGenerator[Event],
+    *,
+    hard_deadline: float,
+    record: ResolveRecord,
+    line: AbstractContextManager[None],
 ) -> AsyncIterator[str]:
-    """Merge events with 10-second heartbeat comments. Stop at the terminal event and cancel
+    """Merge events with 10-second heartbeat comments. Stop at the terminal frame and cancel
     both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
 
     `hard_deadline`, an absolute `time.monotonic()` value, caps the stream. The producer
     cancels the pipeline then and ends the stream with the 504 `timeout` error event. It also
     bounds every read the pipeline makes (`request_deadline`). The cap wraps the producer's
     loop, so it never fires inside a `yield` the consumer resumes.
+
+    The producer serialises each event, so a frame that cannot serialise fails as the pipeline
+    does, and queues exactly one last frame unless the consumer cancelled it. `done` is that
+    frame, else the error event, else, when the pipeline ended with neither or the error
+    event cannot serialise, the catch-all built from constants. It stops the heartbeat when it
+    ends, since no later ping would be sent.
+
+    `line` writes the request's `resolve` log line (`resolve_line`). It wraps the consumer,
+    which resumes only once the server took its frame, so `record.delivered` is set when the
+    last frame has left. A terminal error is `record.error_code`.
     """
-    queue: asyncio.Queue[object] = asyncio.Queue()
+    queue: asyncio.Queue[_Frame] = asyncio.Queue()
 
     async def produce() -> None:
+        last_queued = False
         try:
             with request_deadline(hard_deadline):
-                async with asyncio.timeout(hard_deadline - time.monotonic()):
+                async with asyncio.timeout(hard_deadline - time.monotonic()), aclosing(stream):
                     async for ev in stream:
-                        await queue.put(ev)
+                        is_done = isinstance(ev, DoneEvent)
+                        queue.put_nowait(_Frame(serialize_sse(ev), last=is_done))
+                        last_queued = last_queued or is_done
         except Exception as exc:
-            # This is the sole conversion of a pipeline failure into a terminal ErrorEvent.
-            # Classification logs the failure as it does on the JSON route, so an unhandled
-            # error's traceback appears once. The event carries only the client detail.
-            try:
-                spec = classify_search_exception(exc) or refusal.classify_default(exc)
-                # The envelope validates codes against the same registry as JSON responses.
-                details = _ENVELOPE.details(
-                    status=spec.status,
-                    code=spec.code,
-                    detail=spec.detail,
-                    pointer=spec.pointer,
-                    alternatives=spec.alternatives,
-                    truncated=spec.truncated,
-                    issues=spec.issues,
-                    retryable=spec.retryable,
-                )
-                error_event = ErrorEvent(**details.model_dump())
-            except Exception as classify_exc:
-                # Keep the stream terminal when classification fails. Constants provide the
-                # fallback without another catalogue lookup.
-                logger.error(
-                    "classifying %s for the SSE terminal error event failed: %s",
-                    type(exc).__name__,
-                    classify_exc,
-                    exc_info=classify_exc,
-                )
-                error_event = ErrorEvent(
-                    type=f"/codes/{refusal.UNHANDLED_DEFAULT.code}",
-                    title=_FALLBACK_ERROR_TITLE,
-                    status=refusal.UNHANDLED_DEFAULT.status,
-                    detail=_FALLBACK_ERROR_DETAIL,
-                    code=refusal.UNHANDLED_DEFAULT.code,
-                    trace_id=get_trace_id(),
-                    capability_version=settings().capability_version,
-                    retryable=refusal.UNHANDLED_DEFAULT.retryable,
-                )
-            await queue.put(error_event)
+            # This is the sole conversion of a pipeline failure into a terminal ErrorEvent. A
+            # failure after `done` is logged and sends nothing: the stream has ended.
+            error_event = _error_event(exc, classify=_logged_classification)
+            if not last_queued:
+                record.error_code = error_event.code
+                queue.put_nowait(_Frame(serialize_sse(error_event), last=True))
+                last_queued = True
         finally:
-            await queue.put(_SENTINEL)
+            hb_task.cancel()
+            if not last_queued and not prod_task.cancelling():
+                logger.error(
+                    "the SSE stream ended with no terminal event", exc_info=sys.exception()
+                )
+                problem = _catch_all_problem()
+                record.error_code = refusal.UNHANDLED_DEFAULT.code
+                frame = f"event: error\ndata: {json.dumps({**problem, 'kind': 'error'})}\n\n"
+                queue.put_nowait(_Frame(frame, last=True))
 
     async def heartbeat() -> None:
         while True:
             await asyncio.sleep(10)
-            await queue.put(_HEARTBEAT)
+            queue.put_nowait(_PING)
 
     prod_task = asyncio.create_task(produce())
     hb_task = asyncio.create_task(heartbeat())
-    try:
-        while True:
-            item = await queue.get()
-            if item is _SENTINEL:
-                return
-            if item is _HEARTBEAT:
-                yield ": ping\n\n"
-                continue
-            # ty cannot narrow `object` through the sentinel identity checks.
-            yield serialize_sse(item)  # ty: ignore[invalid-argument-type]
-            if isinstance(item, (DoneEvent, ErrorEvent)):
-                return  # exactly one terminal event
-    finally:
-        # Cancel and await both helpers so neither outlives the response. Producer cancellation
-        # unwinds the pipeline's in-flight variable fan-out.
-        for t in (prod_task, hb_task):
-            t.cancel()
-        await asyncio.gather(prod_task, hb_task, return_exceptions=True)
+    with line:
+        try:
+            while True:
+                frame = await queue.get()
+                yield frame.text
+                if frame.last:
+                    record.delivered = True
+                    return
+        finally:
+            # Cancel and await both helpers so neither outlives the response. Producer
+            # cancellation unwinds the pipeline's in-flight variable fan-out.
+            for t in (prod_task, hb_task):
+                t.cancel()
+            await asyncio.gather(prod_task, hb_task, return_exceptions=True)
 
 
 def _schema_payload_response_schema() -> dict:
@@ -413,7 +423,6 @@ class _PipelineDeps(TypedDict):
     response_cache: ResponseCache | None
     part_memo: PartMemo | None
     generation: GenerationProvider
-    caller: str | None
 
 
 async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
@@ -456,18 +465,25 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "response_cache": deps.response_cache,
         "part_memo": deps.part_memo,
         "generation": deps.generation,
-        "caller": request.headers.get("user-agent"),
     }
 
     # The soft deadline and the hard cap share this start.
     budget = request_budget(kind=body.input.kind)
+    record = ResolveRecord()
+    caller = request.headers.get("user-agent")
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
     if _accepts_sse(request):
         return StreamingResponse(
             _event_source(
-                resolve_events(body, stream_slot_options=True, budget=budget, **pipeline_deps),
+                resolve_events(
+                    body, stream_slot_options=True, budget=budget, record=record, **pipeline_deps
+                ),
                 hard_deadline=budget.hard,
+                record=record,
+                line=resolve_line(
+                    body, record, caller=caller, transport="sse", served_code=_served_code
+                ),
             ),
             media_type="text/event-stream",
             headers={
@@ -481,15 +497,18 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
 
     # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
     # later, ends a request whose unfinished work does not unwind in time.
-    health = ResolveHealth()
-    with request_deadline(budget.hard):
-        result: ResolveResponse = await asyncio.wait_for(
-            resolve_async(body, health=health, budget=budget, **pipeline_deps),
-            timeout=budget.hard - time.monotonic(),
-        )
-    # The degraded-leg flag rides in a header so the body contract stays unchanged.
-    headers = {DEGRADED_LEG_HEADER: "1"} if health.degraded_leg else None
-    return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
+    with (
+        resolve_line(body, record, caller=caller, transport="buffered", served_code=_served_code),
+        request_deadline(budget.hard),
+    ):
+        async with asyncio.timeout(budget.hard - time.monotonic()):
+            result: ResolveResponse = await resolve_async(
+                body, budget=budget, record=record, **pipeline_deps
+            )
+        # The degraded-leg flag rides in a header so the body contract stays unchanged.
+        degraded = record.done is not None and record.done.degraded_leg
+        headers = {DEGRADED_LEG_HEADER: "1"} if degraded else None
+        return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
 async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
@@ -1248,10 +1267,10 @@ def search_surface(
             UpstreamVersionChangedError("exemplar rate table changed version during its load"),
         ),
         lifespan=lifespan,
-        registry_endpoints={
-            "/api/search/resolve": "search.resolve",
-            "/api/search/options": "search.options",
-        },
+        registry_endpoints=path_registry_endpoints(
+            router,
+            {"/api/search/resolve": "search.resolve", "/api/search/options": "search.options"},
+        ),
         request_scope=lambda: _request_scope(catalogue, release, conversions, variable_breadth),
     )
 

@@ -66,6 +66,7 @@ import httpx
 
 from dc_graph import (
     UNRESOLVED_NODE,
+    ArcTarget,
     CapErrorFactory,
     Facet,
     FacetDefaultPolicy,
@@ -567,6 +568,20 @@ class OriginGraphClient:
             ),
             disabled=lambda: None,
             tables=lambda catalogue, dcid: _table_arc_values(catalogue, dcid, properties),
+        )
+
+    def node_arc_targets_many(
+        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each backend's `node_arc_targets_many` of its dcids. The catalogue's tables carry no
+        target names, so every dcid is read live."""
+        return self._route_many(
+            current_catalogue(),
+            dcids,
+            lambda backend, part: backend.node_arc_targets_many(
+                part, properties=properties, deadline=deadline
+            ),
+            disabled=lambda: None,
         )
 
     def arcs_complete(self, dcid: str) -> bool:

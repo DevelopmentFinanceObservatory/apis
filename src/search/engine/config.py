@@ -154,6 +154,9 @@ class SearchSettings(BaseSettings):
     # TypeSafe API key. Reads unprefixed TYPESAFE_API_KEY, the SDK's own variable.
     jev_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="TYPESAFE_API_KEY")
 
+    # Keys the `query_hmac` of the `resolve` log line. Empty leaves that field null.
+    query_hmac_key: SecretStr = SecretStr("")
+
     # Seconds one Jev call may take in all, from the wait for a concurrency slot through
     # its retry and every chunk of a split request. Jev per part ran p50 281 ms and p95
     # 622 ms, and chunked requests p95 about 1.1 s.

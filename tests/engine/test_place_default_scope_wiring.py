@@ -132,7 +132,9 @@ def test_search_sdmx_reads_our_variables_availability():
     presence = _read(_Graph(nodes=[_AFRICA, _KEN]), sdmx, [_SV])
 
     assert sdmx.reads == [(_SV,)]
-    assert presence.scope(_SV) == DefaultPlaceScope(places=(_AFRICA, _KEN), every_place=True)
+    assert presence.consulted_scope(_SV) == DefaultPlaceScope(
+        places=(_AFRICA, _KEN), every_place=True
+    )
 
 
 def test_the_graph_client_reads_a_un_variables_availability():
@@ -141,7 +143,7 @@ def test_the_graph_client_reads_a_un_variables_availability():
     presence = _read(_Graph(nodes=[_KEN], un=un), sdmx, [_UN_SV])
 
     assert (sdmx.reads, un.reads) == ([], [(_UN_SV,)])
-    assert presence.scope(_UN_SV).places == (_KEN,)
+    assert presence.consulted_scope(_UN_SV).places == (_KEN,)
 
 
 _READ_FAILURES = pytest.mark.parametrize(

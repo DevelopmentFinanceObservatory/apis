@@ -166,6 +166,10 @@ class FixtureRootSource:
             source=held["file"],
         )
 
+    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+        """`root` as it is. A case file names its frame as it resolves."""
+        return root
+
     def read(self, root: ResolvedRoot) -> Frame:
         assert isinstance(root.source, str)
         return read_canonical_frame((self.case / root.source).read_bytes())

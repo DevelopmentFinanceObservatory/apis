@@ -13,6 +13,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 
+from dataset_store import DEFAULT_TRANSACTION_BOUNDS
 from datasets_api.version_store import _ROLE_COLUMNS_SQL
 from datasets_api.versions import MaterialisationRecord, Trigger
 
@@ -128,6 +129,15 @@ CREATE TABLE datasets.export (
     body TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE datasets.copy_claim (
+    claim_key TEXT PRIMARY KEY,
+    generation TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
+    expires_at TEXT NOT NULL,
+    spends TEXT NOT NULL DEFAULT '{}',
+    spent_at TEXT,
+    artifact_digest TEXT
+);
 CREATE TABLE datasets.description_record (
     subject_id TEXT NOT NULL,
     content_version TEXT NOT NULL,
@@ -218,10 +228,13 @@ _JSON_COLUMNS = frozenset(
         "request_identity",
         "options",
         "refusal",
+        "spends",
     }
 )
 _TIMESTAMP_COLUMNS = frozenset(
     {
+        "expires_at",
+        "spent_at",
         "recorded_at",
         "created_at",
         "revoked_at",
@@ -278,6 +291,8 @@ class _VersionRecordFakeTransaction:
 
 class FakeVersionRecordDatasetStore:
     """Share one SQLite connection across transactions so committed writes remain visible."""
+
+    bounds = DEFAULT_TRANSACTION_BOUNDS
 
     def __init__(self) -> None:
         # The mint worker uses this connection from a different thread.
