@@ -437,7 +437,7 @@ def test_a_hashless_pair_whose_only_frame_copy_does_not_decode_refuses_unreadabl
 ) -> None:
     """With no copy that reads, the pair has no frame to name it by: the copy that did not
     decode refuses, and through the door answers `internal_error`, the answer of every stored
-    frame that does not decode. It does not fall to another identity."""
+    frame that does not decode."""
     _record_stored_pair(
         deps,
         data=b"not a parquet file",
