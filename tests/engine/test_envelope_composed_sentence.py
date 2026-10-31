@@ -240,7 +240,7 @@ _ETHIOPIA_REQUEST = {
 _ETHIOPIA_RENDERED_SENTENCE = (
     "Answered 1 of 2 parts. "
     "Ethiopia's total population, 1960 to 2024. World Development Indicators. "
-    "Birth rate has 2 readings. Ethiopia's crude birth rate per capita. 1960 to 2023. "
+    "Birth rate has 2 readings. Ethiopia's crude birth rate per 1,000 people. 1960 to 2023. "
     "Ethiopia's female fertility rate. World Development Indicators \u00b7 1960 to 2023."
 )
 

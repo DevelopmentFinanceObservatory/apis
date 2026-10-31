@@ -10,6 +10,7 @@ from search.engine.role_text import (
     breakdown_axis,
     contradicts,
     debt_axes,
+    debtor_possessive,
     every_member_axis,
     every_member_breakdown,
     every_member_breakdown_axis,
@@ -558,6 +559,109 @@ class TestDebtAxes:
             measures=["external debt"],
             places=_places("Kenya", "Ghana"),
             directed={},
+        )
+        assert axes == {}
+
+
+# One place a possessive names over its own debt.
+_ONE_POSSESSIVE_OVER_ITS_DEBT = [
+    ("Which countries does Kenya's gross debt service go to, total", "gross debt service"),
+    ("Kenya's debt by creditor", "debt"),
+    ("Kenya\u2019s debt by creditor", "debt"),
+    ("Kenya's external debt", "external debt"),
+    ("Kenya's external debt by debtor type", "external debt"),
+]
+
+
+class TestDebtorPossessive:
+    """One place a possessive names over its own debt is the debtor."""
+
+    @pytest.mark.parametrize(("query", "measure"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    @pytest.mark.parametrize("guessed", ["origin", "destination"])
+    def test_one_directed_possessive_over_its_own_debt_is_the_debtor(
+        self, query: str, measure: str, guessed: RoleAxis
+    ) -> None:
+        """One place the extraction directed is read by its possessive alone, whichever
+        axis the extraction guessed."""
+        axes = debtor_possessive(
+            query,
+            measures=[measure],
+            places=_places("Kenya"),
+            directed={"Kenya": guessed},
+            phrases=(),
+        )
+        assert axes == {"Kenya": "destination"}
+
+    @pytest.mark.parametrize(("query", "measure"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    def test_one_undirected_possessive_sets_no_axis(self, query: str, measure: str) -> None:
+        """One place the extraction left undirected keeps no axis, so a subject-only series
+        drops no direction for it."""
+        assert (
+            debtor_possessive(
+                query, measures=[measure], places=_places("Kenya"), directed={}, phrases=()
+            )
+            == {}
+        )
+
+    @pytest.mark.parametrize(
+        ("query", "measures", "place"),
+        [
+            # A debt measured against a quantity, or a creditor cue.
+            ("Kenya's debt to GDP ratio", ["debt to GDP ratio"], "Kenya"),
+            ("debt owed to China", ["debt"], "China"),
+            # No possessive over the place.
+            ("external debt of Kenya", ["external debt"], "Kenya"),
+            # A possessive claim on another party's debt.
+            ("Kenya's share of external debt", ["external debt"], "Kenya"),
+            # A creditor's claim on the debt.
+            ("China's debt claims", ["debt claims"], "China"),
+            ("China's debt exposure", ["debt exposure"], "China"),
+            ("China's debt exposure", ["debt"], "China"),
+            ("China's debt holdings", ["debt holdings"], "China"),
+            ("China's debt portfolio", ["debt portfolio"], "China"),
+            # A possessive over no debt, or a second measure.
+            ("China's lending to Africa", ["lending"], "China"),
+            ("Germany's aid", ["aid"], "Germany"),
+            ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
+            ("China's debt by debtor country", ["debt"], "China"),
+            ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
+            ("China's debt for each debtor country", ["debt"], "China"),
+            ("China's debt service from each debtor", ["debt service"], "China"),
+            # The query's own breakdown ends where a window or a second breakdown begins.
+            ("China's debt by borrower in 2020", ["debt"], "China"),
+            ("China's debt by debtor country in 2020", ["debt"], "China"),
+            ("China's debt by debtor country and year", ["debt"], "China"),
+            ("China's debt by recipient since 2010", ["debt"], "China"),
+            ("China's debt by debtor country over time", ["debt"], "China"),
+            ("China's debt for each debtor country in Africa", ["debt"], "China"),
+        ],
+    )
+    def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:
+        axes = debtor_possessive(
+            query, measures=measures, places=_places(place), directed={place: "origin"}, phrases=()
+        )
+        assert axes == {}
+
+    def test_an_extracted_breakdown_phrase_opens_the_debtors(self) -> None:
+        """A breakdown no opener starts ("every borrower") opens the debtors through the
+        extraction's own phrase."""
+        query = "China's debt, every borrower"
+        places, directed = _places("China"), {"China": "origin"}
+        read = [
+            debtor_possessive(
+                query, measures=["debt"], places=places, directed=directed, phrases=phrases
+            )
+            for phrases in ((), ["every borrower"])
+        ]
+        assert read == [{"China": "destination"}, {}]
+
+    def test_two_places_are_debt_axes_alone(self) -> None:
+        axes = debtor_possessive(
+            "Kenya's debt to China",
+            measures=["debt"],
+            places=_places("Kenya", "China"),
+            directed={"Kenya": "origin", "China": "destination"},
+            phrases=(),
         )
         assert axes == {}
 

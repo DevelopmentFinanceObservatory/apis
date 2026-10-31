@@ -26,7 +26,8 @@ from itertools import chain, groupby
 from threading import Lock
 from typing import TYPE_CHECKING, Literal, Protocol, final
 
-from dc_graph import CURRENCY_UNIT_OF_MEASURE_ISO_CODES
+from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
+
 from dc_graph import earliest_date as _earliest
 from dc_graph import latest_date as _latest
 from dc_sdmx import ContainedIn, EntityFilter
@@ -113,35 +114,40 @@ _MAX_ALTERNATIVES_PER_ISSUE = 10
 # 40 members at a full scope fit and a group past the cap refuses.
 _MAX_COLLECTION_PROBE_PAIRS = 200_000
 
-# `CurrencyUnit` refs use `Currency<ISO>`. A unit request resolves to such a ref or to a
-# `CURRENCY_UNIT_OF_MEASURE_ISO_CODES` key, else raises `NonCurrencyUnitError`.
-_CURRENCY_REF_PREFIX = "Currency"
 
-
-def native_currency_iso(ref: str | None) -> str | None:
-    """Return the ISO 4217 code a native facet unit is denominated in, or None.
-
-    `Currency<ISO>` refs carry the code in the dcid. The base Data Commons currencies typed
-    `CurrencyUnitOfMeasure` (`USDollar` and three others) carry it in
-    `CURRENCY_UNIT_OF_MEASURE_ISO_CODES`. Any other ref is not a currency.
-    """
+def unit_currency_code(ref: str | None) -> str | None:
+    """The ISO 4217 code of a unit the unit registry reads as money
+    (`dfo_spec_kit.units.parse_unit`: `CurrencyKES`, `USDollar`, a bare `INR`, `SDG_CU_USD`,
+    `ChainedUSDollarBaseYr2017`), at any prices, or None for any other unit."""
     if ref is None:
         return None
-    if ref in CURRENCY_UNIT_OF_MEASURE_ISO_CODES:
-        return CURRENCY_UNIT_OF_MEASURE_ISO_CODES[ref]
-    if ref.startswith(_CURRENCY_REF_PREFIX):
-        return ref.removeprefix(_CURRENCY_REF_PREFIX)
+    value = parse_unit(ref)
+    return value.currency if isinstance(value, Money | UnpricedMoney) else None
+
+
+def nominal_currency(ref: str | None) -> str | None:
+    """The ISO 4217 code a native unit holds nominal amounts in, the currency a conversion
+    starts from: a unit the registry reads as money at current or unstated prices
+    (`CurrencyKES`, `USDollar`, a bare `INR`, `SDG_CU_USD`). A unit in constant prices
+    (`undata/UNIT_MEASURE-CR_USD_K`, `ChainedUSDollarBaseYr2017`) holds none, and nor does any
+    other unit, so a unit request over it raises `NonCurrencyUnitError`."""
+    if ref is None:
+        return None
+    value = parse_unit(ref)
+    if isinstance(value, UnpricedMoney) or (isinstance(value, Money) and value.prices == "current"):
+        return value.currency
     return None
 
 
 def currency_native_matches(candidates: Sequence[Facet], axis: str, currency: str) -> list[Facet]:
     """Candidates whose unit is denominated in `currency`: the `Currency<T>` ones when any
-    exist, else those in a `CURRENCY_UNIT_OF_MEASURE_ISO_CODES` unit for `currency`."""
-    exact_ref = f"{_CURRENCY_REF_PREFIX}{currency}"
+    exist, else those whose unit the registry reads as nominal money in it
+    (`nominal_currency`)."""
+    exact_ref = f"Currency{currency}"
     exact = [c for c in candidates if facet_axis_value(c, axis) == exact_ref]
     if exact:
         return exact
-    return [c for c in candidates if native_currency_iso(facet_axis_value(c, axis)) == currency]
+    return [c for c in candidates if nominal_currency(facet_axis_value(c, axis)) == currency]
 
 
 @dataclass(frozen=True)
@@ -2487,7 +2493,7 @@ def _select_unit_request(
 
     A current-price ISO request prefers a candidate denominated in that currency. Otherwise
     the declared or ranked default applies. The result must be a currency ref
-    (`native_currency_iso`). Missing or other refs raise `NonCurrencyUnitError`
+    (`nominal_currency`). Missing or other refs raise `NonCurrencyUnitError`
     (`code="facet_binding_unsupported"`).
     `member_conversion.decide_member_conversion` verifies that the ref's `Currency<ISO>`
     node is a live `CurrencyUnit`.
@@ -2649,9 +2655,9 @@ def _select_unit_request_default(
 
 
 def _require_currency_native_unit(ref: str | None) -> None:
-    """Raises `NonCurrencyUnitError` for a ref `native_currency_iso` does not map to a currency.
+    """Raises `NonCurrencyUnitError` for a ref `nominal_currency` does not map to a currency.
     Live `CurrencyUnit` validation happens downstream without another graph read here."""
-    if native_currency_iso(ref) is not None:
+    if nominal_currency(ref) is not None:
         return
     raise NonCurrencyUnitError(
         f"unit request resolved to native unit {ref!r}, which is not a currency",

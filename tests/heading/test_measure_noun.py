@@ -69,6 +69,20 @@ _GDP_BASIS = {
             ),
             id="gdp-growth",
         ),
+        pytest.param(
+            ("EconomicUnit", "primaryIncome", "measuredValue"),
+            {"fixedCapitalConsumptionBasis": "GrossOfFixedCapitalConsumption"},
+            MeasureNoun(
+                noun="gross national income",
+                axes=(
+                    "populationType",
+                    "measuredProperty",
+                    "statType",
+                    "fixedCapitalConsumptionBasis",
+                ),
+            ),
+            id="weo-gni",
+        ),
     ],
 )
 def test_measure_noun_for_gallery_measures(

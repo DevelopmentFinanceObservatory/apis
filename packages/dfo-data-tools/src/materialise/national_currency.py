@@ -18,8 +18,8 @@ from materialise.facets import (
     NationalCurrency,
     PlaceAdmission,
     currency_native_matches,
-    native_currency_iso,
     subject_probe,
+    unit_currency_code,
 )
 from materialise.graph import Facet, SubjectPage
 
@@ -100,7 +100,7 @@ def read_national_currency_codes(
     )
     named: dict[str, set[str]] = {}
     for unit in units:
-        code = native_currency_iso(unit)
+        code = unit_currency_code(unit)
         if code is None:
             continue
         for place in (arcs.get(unit) or {}).get(_NATIONAL_CURRENCY_OF, ()):

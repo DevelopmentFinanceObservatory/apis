@@ -21,7 +21,9 @@ _CHAINED = classify_unit(unit="ChainedUSDollarBaseYr2017", denominator=None, cur
     [
         pytest.param(None, _USD, "Nominal", PriceBasis("current", None), id="nominal-shape"),
         pytest.param(None, _USD, "RealValue", PriceBasis("constant", None), id="real-shape"),
-        pytest.param(None, _CHAINED, None, PriceBasis("constant", 2017), id="chained-unit"),
+        pytest.param(
+            None, _CHAINED, None, PriceBasis("constant", 2017, chained=True), id="chained-unit"
+        ),
         pytest.param(
             PriceBasis("constant", 2022),
             _USD,

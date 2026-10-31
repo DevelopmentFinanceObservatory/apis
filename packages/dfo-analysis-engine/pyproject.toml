@@ -20,8 +20,8 @@ dependencies = [
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant these two revs must satisfy: every spec-kit source in the
 # workspace moves together as one rev.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2dd2400a36d592bd3ca814aa2eff30bd016433e3", subdirectory = "python/spec-kit" }
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "2dd2400a36d592bd3ca814aa2eff30bd016433e3", subdirectory = "python/frame-grammar" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "a71572926324861ec8666a3f08d54478227e817b", subdirectory = "python/spec-kit" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "a71572926324861ec8666a3f08d54478227e817b", subdirectory = "python/frame-grammar" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

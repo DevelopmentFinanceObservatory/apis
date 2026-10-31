@@ -129,6 +129,7 @@ from datasets_api.manifest_models import (
     CitationModel,
     CitationSource,
     Manifest,
+    PartyTotalsLeftOutModel,
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
@@ -336,7 +337,7 @@ class DerivedVersion:
     frame_sha256: str
     content_version: str
     summed: bool
-    party_totals_left_out: tuple[dict[str, object], ...]
+    party_totals_left_out: tuple[PartyTotalsLeftOutModel, ...]
 
 
 class FrameMode(StrEnum):

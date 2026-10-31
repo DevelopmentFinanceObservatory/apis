@@ -271,7 +271,7 @@ def _resolve_group_axis_selections(
 
     A unit request first seeks a native-currency selection in the bound-narrowed
     pool, then uses the ordinary policy and ranking rules. The result must be a
-    currency ref (`native_currency_iso`) or `NonCurrencyUnitError` is raised.
+    currency ref (`nominal_currency`) or `NonCurrencyUnitError` is raised.
     """
     shared_candidates, precedence = ranked_pool.pool, ranked_pool.precedence
     top = ranked_pool.ranked[0]

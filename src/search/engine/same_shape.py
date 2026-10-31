@@ -453,7 +453,8 @@ def _merge_resolved_facets(
 
     Other axes retain one reference only when every member reports the same
     scalar selection. Missing values, differing refs, or any ``per_series``
-    selection produce a merged ``per_series`` facet.
+    selection produce a merged ``per_series`` facet, which on the unit axis lists every
+    member's units in group order.
     """
     from search.models import ResolvedFacet
 
@@ -490,7 +491,12 @@ def _merge_resolved_facets(
                 account=shared.account,
             )
         else:
-            result[axis] = ResolvedFacet(basis=basis, selection="per_series")
+            refs = (ref for f in present for ref in ([f.ref] if f.ref else f.refs or ()))
+            result[axis] = ResolvedFacet(
+                basis=basis,
+                selection="per_series",
+                refs=list(dict.fromkeys(refs)) if axis == "unit" else None,
+            )
     return result
 
 

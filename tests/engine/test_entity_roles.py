@@ -12,12 +12,19 @@ from search.engine.entry.parsed import (
     _role_query_for_part,
     interpret_parts,
 )
-from search.engine.entry.raw_text import _entity_roles
-from search.engine.extract import ExtractedEntity, _validate_role_spans
+from search.engine.entry.raw_text import _prepare_extraction
+from search.engine.extract import (
+    ExtractedEntity,
+    ExtractedOperation,
+    Extraction,
+    ExtractionResult,
+    _validate_role_spans,
+    extract,
+)
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole, contradicts
-from search.models import ParsedEntity, ParsedPart, RoleAxis
+from search.models import Operation, ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
@@ -29,7 +36,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_role_bearing_pipeline_e2e import _SV_DCID, _declaring_arcs
-from tests.fixtures import FakeGraph, make_resolver
+from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _CREDITOR_DEBTOR_ROLE_NAMES = RoleNames(donor="creditor", recipient="debtor")
 
@@ -44,6 +51,16 @@ def _extracted(text: str, flow_role: RoleAxis, span: str | None = None) -> Extra
     return ExtractedEntity(text=text, span=span, flow_role=flow_role, role_span=cue)
 
 
+def _prepared_roles(
+    entities: list[ExtractedEntity], *, query: str, measures: list[str]
+) -> dict[str, list[DoorRole]]:
+    """The raw-text door's roles for scripted `entities`, read as `_prepare_extraction`
+    reads an extraction of `measures`."""
+    extraction = Extraction(kind="resolution", variables=measures, entities=entities)
+    result = ExtractionResult(extraction=extraction, qualifiers={})
+    return _prepare_extraction(extraction, result, query=query).entity_roles
+
+
 def _occurrences(roles: dict[str, list[DoorRole]]) -> dict[str, list[tuple[RoleAxis, str]]]:
     """Each name's occurrences as ``(axis, span)``; `stated` has its own tests."""
     return {name: [(role.axis, role.span) for role in rs] for name, rs in roles.items()}
@@ -51,7 +68,7 @@ def _occurrences(roles: dict[str, list[DoorRole]]) -> dict[str, list[tuple[RoleA
 
 class TestRawTextDoorCarriesEveryOccurrence:
     def test_one_name_on_both_axes_carries_both_in_mention_order(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "origin", span="from Kenya"),
                 _extracted("Kenya", "destination", span="to Kenya"),
@@ -132,7 +149,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
             for text, axis, cue in entities
         ]
         assert _validate_role_spans(query, extracted, ["aid"]) == extracted
-        roles = _entity_roles(extracted, query=query, measures=["aid"])
+        roles = _prepared_roles(extracted, query=query, measures=["aid"])
         assert {name: [role.stated for role in rs] for name, rs in roles.items()} == {
             name: [value] for name, value in stated.items()
         }
@@ -142,13 +159,13 @@ class TestRawTextDoorCarriesEveryOccurrence:
         entity = ExtractedEntity(
             text="France", span="French", flow_role="origin", role_span="French"
         )
-        roles = _entity_roles([entity], query="French aid to Senegal", measures=["aid"])
+        roles = _prepared_roles([entity], query="French aid to Senegal", measures=["aid"])
         assert [role.stated for role in roles["France"]] == [False]
 
     def test_a_debt_axis_is_stated_by_construction(self):
         """The possessive debtor in "Kenya's debt to China" takes its axis from the debt
         wording, so it is stated although its cue is a possessive."""
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s"),
                 ExtractedEntity(
@@ -162,6 +179,16 @@ class TestRawTextDoorCarriesEveryOccurrence:
             "Kenya": [DoorRole(axis="destination", span="Kenya", stated=True)],
             "China": [DoorRole(axis="origin", span="China", stated=True)],
         }
+
+    def test_a_lone_debt_possessive_sets_the_debtor_and_states_no_direction(self):
+        """The possessive debtor in "Kenya's debt service" reads its axis off the measure,
+        so the axis changes and the direction stays unstated."""
+        roles = _prepared_roles(
+            [ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
+            query="Which countries does Kenya's debt service go to",
+            measures=["debt service"],
+        )
+        assert roles == {"Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]}
 
     @pytest.mark.parametrize(
         ("query", "measure", "entities", "expected"),
@@ -214,13 +241,13 @@ class TestRawTextDoorCarriesEveryOccurrence:
         ]
         validated = _validate_role_spans(query, extracted, [measure])
         assert {e.flow_role for e in validated} == {"unspecified"}
-        roles = _entity_roles(validated, query=query, measures=[measure])
+        roles = _prepared_roles(validated, query=query, measures=[measure])
         assert roles == {
             name: [DoorRole(axis=axis, span=name, stated=True)] for name, axis in expected.items()
         }
 
     def test_an_exact_repeat_collapses_to_one_occurrence(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "destination", span="to Kenya"),
                 _extracted("Kenya", "destination", span="to Kenya"),
@@ -231,7 +258,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
         assert _occurrences(roles) == {"Kenya": [("destination", "to Kenya")]}
 
     def test_an_unspecified_occurrence_is_skipped(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "unspecified"),
                 _extracted("Kenya", "origin", span="from Kenya"),
@@ -242,7 +269,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
         assert _occurrences(roles) == {"Kenya": [("origin", "from Kenya")]}
 
     def test_a_name_unspecified_in_every_occurrence_carries_no_entry(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "unspecified"),
                 _extracted("Kenya", "unspecified"),
@@ -258,7 +285,7 @@ def _debt_roles(
     query: str, extracted: list[tuple[str, str | None, str]], measures: list[str]
 ) -> dict[str, list[RoleAxis]]:
     """The raw-text door's axes by name for ``(text, span, extracted axis)`` places."""
-    roles = _entity_roles(
+    roles = _prepared_roles(
         [ExtractedEntity(text=text, span=span, flow_role=axis) for text, span, axis in extracted],
         query=query,
         measures=measures,
@@ -279,6 +306,97 @@ _AXIS_COMBINATIONS = [
 def _extracted_axes(kenya: str, china: str) -> dict[str, list[str]]:
     return {
         name: [axis] for name, axis in (("Kenya", kenya), ("China", china)) if axis != "unspecified"
+    }
+
+
+def test_a_debtor_possessive_moves_the_ranked_end_with_the_place():
+    """The recorded extraction of "Which countries does Kenya's debt service go to" puts
+    Kenya on origin and ranks over destination. Kenya's possessive makes it the debtor, so
+    the two ends swap as one: Kenya on destination, and the rank over origin, its
+    creditors."""
+    query = "Which countries does Kenya's debt service go to"
+    result, _usage = asyncio.run(extract(query, llm=FakeLLM()))
+
+    prep = _prepare_extraction(result.extraction, result, query=query)
+
+    assert prep.entity_roles == {
+        "Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]
+    }
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["origin"]
+
+
+def test_a_place_whose_cue_states_its_direction_keeps_its_end():
+    """In "largest aid from France received by Kenya" extracted with both places on origin,
+    the receipt wording moves Kenya alone: France's own "from" states its end, so neither
+    France nor the rank's axis swaps."""
+    query = "largest aid from France received by Kenya"
+    extraction = Extraction(
+        kind="resolution",
+        variables=["aid"],
+        entities=[
+            ExtractedEntity(text="France", span="France", flow_role="origin", role_span="from"),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin"),
+        ],
+        operations=[
+            ExtractedOperation(verb="rank", variable=0, phrase="largest", over="destination")
+        ],
+    )
+    result = ExtractionResult(
+        extraction=extraction,
+        qualifiers={},
+        operations={"aid": (Operation(verb="rank", phrase="largest", over="destination"),)},
+    )
+
+    prep = _prepare_extraction(extraction, result, query=query)
+
+    assert _occurrences(prep.entity_roles) == {
+        "France": [("origin", "France")],
+        "Kenya": [("destination", "Kenya")],
+    }
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
+
+
+@pytest.mark.parametrize(
+    ("query", "france_cue", "kenya_cue"),
+    [
+        ("How much aid that France funds did Kenya receive", "funds", "receive"),
+        ("ODA funded by France and received by Kenya", "funded by", "received by"),
+    ],
+)
+def test_a_verb_cue_keeps_its_place_on_its_end(query, france_cue, kenya_cue):
+    """France's own verb cue states its end, so the receipt wording moves Kenya alone,
+    whatever words the cue takes."""
+    roles = _prepared_roles(
+        [
+            ExtractedEntity(text="France", span="France", flow_role="origin", role_span=france_cue),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span=kenya_cue),
+        ],
+        query=query,
+        measures=["aid"],
+    )
+    assert {name: [role.axis for role in rs] for name, rs in roles.items()} == {
+        "France": ["origin"],
+        "Kenya": ["destination"],
+    }
+
+
+def test_a_cue_against_its_extracted_end_lets_the_whole_parse_swap():
+    """ "How much ODA did Kenya receive from France" extracted backwards puts France's
+    "from" on destination. The cue contradicts that end, so it protects nothing: the
+    receipt wording moves Kenya, and France swaps with it."""
+    roles = _prepared_roles(
+        [
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="receive"),
+            ExtractedEntity(
+                text="France", span="France", flow_role="destination", role_span="from"
+            ),
+        ],
+        query="How much ODA did Kenya receive from France",
+        measures=["official development assistance"],
+    )
+    assert _occurrences(roles) == {
+        "Kenya": [("destination", "Kenya")],
+        "France": [("origin", "France")],
     }
 
 
@@ -472,12 +590,44 @@ class TestRawTextDoorReadsDebtWording:
                 ["GDP", "debt"],
                 {},
             ),
-            # One place is no two-party relation.
+            # One place the extraction left undirected, one whose debt is measured against
+            # a quantity, one with a possessive claim on a debt, or a creditor's claim
+            # words.
+            (
+                "Kenya's external debt",
+                [("Kenya", "Kenya", "unspecified")],
+                ["external debt"],
+                {},
+            ),
             (
                 "Kenya's debt to GDP ratio",
                 [("Kenya", "Kenya", "origin")],
                 ["debt"],
                 {"Kenya": ["origin"]},
+            ),
+            (
+                "Kenya's share of external debt",
+                [("Kenya", "Kenya", "origin")],
+                ["external debt"],
+                {"Kenya": ["origin"]},
+            ),
+            (
+                "China's debt exposure",
+                [("China", "China", "origin")],
+                ["debt exposure"],
+                {"China": ["origin"]},
+            ),
+            (
+                "China's debt exposure",
+                [("China", "China", "origin")],
+                ["debt"],
+                {"China": ["origin"]},
+            ),
+            (
+                "China's debt claims",
+                [("China", "China", "origin")],
+                ["debt claims"],
+                {"China": ["origin"]},
             ),
             # No debt measure.
             ("refugees owing to Syria", [("Syria", "Syria", "unspecified")], ["refugees"], {}),
@@ -628,7 +778,7 @@ def _run_self_flow_occurrences(
         resolve={"Kenya": _KEN},
         obs={},
     )
-    door_roles = _entity_roles(
+    door_roles = _prepared_roles(
         [
             _extracted("Kenya", "origin", span="from Kenya"),
             _extracted("Kenya", "destination", span="to Kenya"),
@@ -683,7 +833,7 @@ def test_debt_wording_binds_the_creditor_as_origin_and_the_debtor_as_destination
     monkeypatch, query: str
 ):
     """A by-creditor series answers with China on origin, though the extraction reversed them."""
-    door_roles = _entity_roles(
+    door_roles = _prepared_roles(
         [
             ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s"),
             ExtractedEntity(text="China", span="China", flow_role="destination", role_span="to"),
@@ -777,6 +927,6 @@ def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monke
         ["loans"],
     )
     assert [entity.flow_role for entity in extracted] == ["unspecified", "destination"]
-    door_roles = _entity_roles(extracted, query=query, measures=["loans"])
+    door_roles = _prepared_roles(extracted, query=query, measures=["loans"])
 
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)

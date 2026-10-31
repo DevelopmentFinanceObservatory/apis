@@ -40,7 +40,7 @@ from dc_sdmx import SdmxClient
 from dfo_platform.executor import submit_with_context
 from materialise.convert import converted_facets, deflator_key
 from materialise.errors import UpstreamResponseError
-from materialise.facets import native_currency_iso
+from materialise.facets import unit_currency_code
 from materialise.graph import GraphReader
 from materialise.national_currency import read_national_currencies
 from materialise.rate_tables import (
@@ -311,7 +311,7 @@ def _recipe_tables(
     converted = converted_facets(recipe.forecast_policy)
     rate_years: dict[str, set[int]] = {}
     for (entity, year), (_, facet) in exchange_rates.lookup.items():
-        code = native_currency_iso(entity)
+        code = unit_currency_code(entity)
         if code in ISO_4217_CODES and facet in converted:
             rate_years.setdefault(code, set()).add(year)
     deflator_years: dict[str, set[int]] = {}

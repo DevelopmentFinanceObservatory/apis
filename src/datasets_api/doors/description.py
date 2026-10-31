@@ -92,13 +92,12 @@ from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
 from dfo_platform.static_response import dynamic_public_json
 from materialise import EnrichmentLookup
-from materialise.facets import native_currency_iso
+from materialise.facets import unit_currency_code
 from materialise.graph import GraphReader
 from materialise.provenance_doc import read_source_citations
 from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
 from spec_registry import IdentityQuarantined
-from unit_words.currency_codes import ISO_4217_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +335,7 @@ def _currency_units(record: DescriptionRecord) -> dict[str, str]:
         ref = unit.ref
         if ref is MISSING:
             continue
-        iso = native_currency_iso(ref) or (ref if ref in ISO_4217_CODES else None)
+        iso = unit_currency_code(ref)
         if iso is not None:
             units[ref] = iso
     return units
