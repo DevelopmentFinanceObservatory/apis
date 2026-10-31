@@ -980,6 +980,14 @@ def match_qualifiers(
     return _read(query, _lexicon(index, measure_index), None).matches
 
 
+def read_qualifiers(
+    query: str, index: CodeIndex, measure_index: MeasureIndex | None = None
+) -> tuple[tuple[QualifierMatch, ...], tuple[QualifierTie, ...]]:
+    """`match_qualifiers` and `match_qualifier_ties` of `query`, from one scan."""
+    reading = _read(query, _lexicon(index, measure_index), None)
+    return reading.matches, reading.ties
+
+
 # The words a phrase may carry beyond its code tokens and the words of the
 # code systems those tokens resolved under: "and" and "or" join two codes in
 # one phrase, and "code" is the bare filler the marker rule above already
@@ -1053,22 +1061,29 @@ def is_coded_only_phrase(
 # (DAC)". Code labels come without it (`CodeRow.label`).
 _PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
-# Each index's party lookup, by index object id. A weakref finalizer removes the entry
-# before Python can reuse the id.
-_party_lookup_cache: dict[int, TokenLookup[str]] = {}
+# Each index's party lookup and the longest party label in tokens, by index object id. A
+# weakref finalizer removes the entry before Python can reuse the id.
+_party_lookup_cache: dict[int, tuple[TokenLookup[str], int]] = {}
 
 
-def _party_lookup(index: CodeIndex) -> TokenLookup[str]:
+def _party_lookup(index: CodeIndex) -> tuple[TokenLookup[str], int]:
     """Every party of `index` with a label, found by its label less a trailing
-    parenthetical. Built once per index."""
+    parenthetical, and the most tokens other than separators such a label holds. Built once per index."""
     key = id(index)
     cached = _party_lookup_cache.get(key)
     if cached is not None:
         return cached
-    cached = TokenLookup(
+    labels = [
         (_PARENTHETICAL_SUFFIX_RE.sub("", party.label), party.dcid)
         for party in index.parties.values()
         if party.label
+    ]
+    cached = (
+        TokenLookup(labels),
+        max(
+            (sum(token.kind != "sep" for token in tokenize(label)) for label, _ in labels),
+            default=0,
+        ),
     )
     _party_lookup_cache[key] = cached
     weakref.finalize(index, _party_lookup_cache.pop, key, None)
@@ -1081,18 +1096,19 @@ def label_runs(
     """The character ranges of `query` a code or measure row names, as the scan in every
     system claims them (`_recognise_raw`), and those a run of its words names a party of
     `index` (`_party_lookup`): "official development assistance excluding debt relief" (DAC2a
-    aid type 250) and "non-DAC countries" are each one run."""
+    aid type 250) and "non-DAC countries" are each one run. A party run is no longer than
+    the longest party label."""
     runs = [
         (span.start, span.end)
         for span in _recognise_raw(query, _lexicon(index, measure_index), None)
     ]
-    parties = _party_lookup(index)
+    parties, longest = _party_lookup(index)
     tokens = tokenize(query)
     words = [position for position, token in enumerate(tokens) if token.kind == "word"]
     runs.extend(
         (tokens[start].start, tokens[stop].end)
         for first, start in enumerate(words)
-        for stop in words[first:]
+        for stop in words[first : first + longest]
         if parties.get(tokens[start : stop + 1])
     )
     return tuple(runs)

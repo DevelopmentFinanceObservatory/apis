@@ -126,27 +126,35 @@ class Judgement:
 
     def met_exclusions(self) -> frozenset[str]:
         """The phrases the request asked to leave out that every answer leaves out, as the
-        request wrote them. An answer leaves a phrase out when it leaves out every run of
-        its words that names codes (`CodeRule.excluded`): it meets the run's rule on some
-        property and leaves none unmet. A run every property of which the answer's shape
-        lacks is not left out. Empty when no answer was judged."""
+        request wrote them. An answer leaves a phrase out when it binds the value binding
+        repair bound for it (`state.named_exclusion_requirement`), or when it leaves out
+        every run of its words that names codes (`excluded_run`): it meets the run's rule on
+        every property the run names. A property the answer's shape lacks is summed over, so
+        a run naming one is not left out, and neither is a run of two systems the answer
+        meets on one. Empty when no answer was judged."""
         runs: dict[str, dict[str, list[int]]] = {}
+        named: dict[str, list[int]] = {}
         for j, requirement in enumerate(self.requirements):
-            rule = requirement.rule
-            if isinstance(rule, CodeRule) and rule.excluded is not None:
-                runs.setdefault(requirement.term.text, {}).setdefault(rule.excluded, []).append(j)
+            if requirement.origin != "exclusion":
+                continue
+            phrase = requirement.term.text
+            if (run := excluded_run(requirement.rule)) is None:
+                named.setdefault(phrase, []).append(j)
+            else:
+                runs.setdefault(phrase, {}).setdefault(run, []).append(j)
 
-        def leaves_out(outcomes: tuple[Outcome, ...], held: list[int]) -> bool:
-            judged = {outcomes[j] for j in held}
-            return "met" in judged and "unmet" not in judged
+        def leaves_out(outcomes: tuple[Outcome, ...], phrase: str) -> bool:
+            if (bound := named.get(phrase)) and all(outcomes[j] == "met" for j in bound):
+                return True
+            by_run = runs.get(phrase, {})
+            return bool(by_run) and all(
+                all(outcomes[j] == "met" for j in held) for held in by_run.values()
+            )
 
         return frozenset(
             phrase
-            for phrase, by_run in runs.items()
-            if self.outcomes
-            and all(
-                leaves_out(outcomes, held) for outcomes in self.outcomes for held in by_run.values()
-            )
+            for phrase in runs.keys() | named.keys()
+            if self.outcomes and all(leaves_out(outcomes, phrase) for outcomes in self.outcomes)
         )
 
     def departures(self) -> tuple[Departed, ...]:
@@ -250,11 +258,19 @@ def _disclosing(
     )
 
 
+def excluded_run(rule: RequirementRule) -> str | None:
+    """The run of the request's words naming codes it asked to leave out that `rule` judges
+    (`CodeRule.excluded`, a `MeasureRule`'s on its code), `None` for any other rule."""
+    if isinstance(rule, MeasureRule):
+        return rule.code.excluded
+    return rule.excluded if isinstance(rule, CodeRule) else None
+
+
 def rule_departs_only(rule: RequirementRule) -> bool:
     """Whether a requirement of `rule` is something the request asked to leave out
-    (`CodeRule.excluded`). An answer that leaves it unmet still answers, so no trace term
-    and no refusal names it."""
-    return isinstance(rule, CodeRule) and rule.excluded is not None
+    (`excluded_run`). An answer that leaves it unmet still answers, so no trace term and no
+    refusal names it."""
+    return excluded_run(rule) is not None
 
 
 def _met_only_by_an_answer(rule: RequirementRule) -> bool:
@@ -298,7 +314,8 @@ def judge(
     (`CodeRule`), and an answer that leaves it unmet names no term for it
     (`rule_departs_only`). A `MeasureRule` is met when the answer's
     shape or a value its bindings bind carries the measure value (`answer_reads_measure`),
-    else judged as its `CodeRule`. A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
+    else judged as its `CodeRule`; an `excluded` one is met when the answer does not carry it
+    and is not served under a unit request whose price basis reads as it. A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
     also met by an answer served under a unit request whose price basis reads as one of its
     codes (`_serves_price_basis`). A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
@@ -353,10 +370,13 @@ def judge(
                 )
                 answer.append("met" if met_by_unit else _code_outcome(rule, held, bound))
             elif isinstance(rule, MeasureRule):
-                met = answer_reads_measure(shape, rule.match, bindings) or (
+                reads = answer_reads_measure(shape, rule.match, bindings) or (
                     prices is not None and _serves_price_basis(rule.code, prices)
                 )
-                answer.append("met" if met else _code_outcome(rule.code, held, bound))
+                if rule.code.excluded is not None:
+                    answer.append("unmet" if reads else "met")
+                else:
+                    answer.append("met" if reads else _code_outcome(rule.code, held, bound))
             elif isinstance(rule, ValueRule) and requirement.origin == "set_value":
                 # A value of a drafted set: met when the answer applies it or leaves the
                 # whole set unmet, which the refusal names; else disclosed, never refused.

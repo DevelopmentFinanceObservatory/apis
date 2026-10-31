@@ -11,12 +11,16 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import search.engine.clients.llm as llm_module
+from entity_resolution import Admission, EntityResolver
 from search.engine.bind import SlotBindingDraft
-from search.engine.clients.llm import LLM
+from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.llm import LLM, SupportsLLM
+from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.entry import raw_text
 from search.engine.errors import LLMInfraError
 from search.engine.exclusion_read import (
@@ -24,6 +28,7 @@ from search.engine.exclusion_read import (
     Exclusion,
     ExclusionRead,
     LeftOut,
+    QueryReading,
     admit_exclusions,
 )
 from search.engine.extract import ExtractedEntity, Extraction
@@ -32,9 +37,11 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_election
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.requirements import judge
-from search.engine.region.state import exclusion_requirements
+from search.engine.region.state import ResolveState, exclusion_requirements
 from search.engine.shape import ShapeDraft, shape_draft_from
+from search.engine.stated_scope import intake_key_document, part_scope_intakes
 from tests.engine._binders import elected_reply
+from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
@@ -112,16 +119,66 @@ def test_an_admitted_stretch_leaves_no_word_of_itself_in_the_text(query, phrase)
             "not including multilateral",
             id="the-provider-scope",
         ),
-        pytest.param("ODA to Kenya minus aid", "excluding aid", id="not-the-query-words"),
-        pytest.param("casino aid to Kenya", "no aid", id="inside-a-word"),
+        pytest.param(
+            "bilateral ODA to Kenya, not including multilateral",
+            "not including multilateral",
+            id="the-provider-scope-after-bilateral",
+        ),
+        pytest.param(
+            "ODA to Kenya not including multilateral flows",
+            "not including multilateral flows",
+            id="the-provider-scope-and-its-noun",
+        ),
         pytest.param("not net", "not net", id="the-whole-query"),
         pytest.param("ODA to Kenya", "", id="empty"),
     ],
 )
 def test_a_stretch_failing_admission_leaves_the_query_byte_identical(query, phrase):
     """A query whose read admits nothing sends extraction the bytes it sends today."""
-    assert admit_exclusions(query, _read(phrase, left_out=("aid",))).text == query
-    assert admit_exclusions(query, _read(phrase, left_out=("aid",))).left_out == ()
+    assert admit_exclusions(query, _read(phrase, left_out=("aid",))) == QueryReading(text=query)
+
+
+@pytest.mark.parametrize(
+    ("query", "phrase"),
+    [
+        pytest.param("ODA to Kenya minus aid", "excluding aid", id="not-the-query-words"),
+        pytest.param("casino aid to Kenya", "no aid", id="inside-a-word"),
+    ],
+)
+def test_a_stretch_the_query_does_not_write_is_disclosed_unblanked(query, phrase):
+    """Layer 1 keys on the query, so an answer to it never drops a stretch the read found:
+    one it cannot place stays in the text and is disclosed."""
+    reading = admit_exclusions(query, _read(phrase, left_out=("aid",)))
+
+    assert reading == QueryReading(text=query, left_out=(LeftOut(phrase, ("aid",), None),))
+
+
+@pytest.mark.parametrize(
+    ("query", "phrase", "left_out", "text", "stretch"),
+    [
+        pytest.param(
+            "ODA to Kenya not including multilateral or humanitarian aid",
+            "not including multilateral or humanitarian aid",
+            ("multilateral", "humanitarian aid"),
+            "ODA to Kenya not including multilateral ;",
+            LeftOut("humanitarian aid", ("humanitarian", "aid"), 40),
+            id="a-list",
+        ),
+    ],
+)
+def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
+    query, phrase, left_out, text, stretch
+):
+    """The scope phrase stays for its reader, so the part still reads the bilateral provider
+    scope, and the next item of the stretch's list is what it leaves out."""
+    reading = admit_exclusions(query, _read(phrase, left_out=left_out))
+
+    assert (reading.text, reading.left_out) == (text, (stretch,))
+    ((before,), (after,)) = (
+        part_scope_intakes(message=text, part_texts=[text]) for text in (query, reading.text)
+    )
+    assert intake_key_document(after) == intake_key_document(before)
+    assert "provider:bilateral" in str(intake_key_document(after))
 
 
 def test_an_empty_read_keeps_a_query_outside_nfc_byte_identical():
@@ -129,10 +186,13 @@ def test_an_empty_read_keeps_a_query_outside_nfc_byte_identical():
     assert admit_exclusions(query, ExclusionRead(exclusions=[])).text == query
 
 
-def test_a_stretch_is_found_in_nfc_and_every_occurrence_blanks():
-    query = unicodedata.normalize("NFD", "AOD sin ayuda à Kenia, sin ayuda en 2022")
+def test_a_stretch_is_found_as_layer_1_keys_the_query_and_blanked_in_its_own_bytes():
+    """NFKC and collapsed whitespace find the stretch; the text keeps the query's own
+    characters around each blank."""
+    query = unicodedata.normalize("NFD", "AOD sin  ayuda à Kenia,\u00a0sin ayuda en 2022")
     reading = admit_exclusions(query, _read("sin ayuda"))
-    assert reading.text == unicodedata.normalize("NFC", "AOD ; à Kenia, ; en 2022")
+    assert reading.text == unicodedata.normalize("NFD", "AOD ; à Kenia,\u00a0; en 2022")
+    assert [reading.text[stretch.at] for stretch in reading.left_out if stretch.at] == [";"]
 
 
 def test_a_stretch_read_twice_keeps_everything_it_leaves_out():
@@ -204,19 +264,34 @@ _HIT_QUERY = "ODA to Kenya excluding grants in 2022"
 _BLANKED = "ODA to Kenya ; in 2022"
 
 
-def test_a_hit_cancels_the_speculative_parse_and_parses_the_blanked_text():
+def test_a_hit_parses_the_blanked_text_and_cancels_a_speculative_parse_still_running():
     door = _Door(read=_read("excluding grants"), hold=_HIT_QUERY)
 
     read = _door_read(_HIT_QUERY, door)
 
-    assert door.calls[-2:] == [("cancelled", _HIT_QUERY), ("Extraction", _BLANKED)]
+    assert door.calls[-2:] == [("Extraction", _BLANKED), ("cancelled", _HIT_QUERY)]
     assert read.reading.text == _BLANKED
+    assert read.extract_result.extraction.variables == ["ODA"]
     assert set(read.timing) == {"extract", "exclusion_read"}
-
-
-def test_a_hit_spends_the_usage_of_the_read_and_the_parse_that_counts():
-    read = _door_read(_HIT_QUERY, _Door(read=_read("excluding grants"), hold=_HIT_QUERY))
+    # The cancelled parse sent no response, so only the read and the parse that counts spend.
     assert read.usage == {"input_tokens": 12, "output_tokens": 3, "cached_tokens": 0}
+
+
+def test_a_hit_counts_the_tokens_of_a_speculative_parse_that_finished():
+    """The discarded parse cost what it cost: its usage reaches `diagnostics.llm_usage`."""
+    read = _door_read(_HIT_QUERY, _Door(read=_read("excluding grants")))
+
+    assert read.reading.text == _BLANKED
+    assert read.usage == {"input_tokens": 19, "output_tokens": 5, "cached_tokens": 0}
+
+
+def test_a_read_kept_unblanked_keeps_the_speculative_parse():
+    door = _Door(read=_read("excluding loans"))
+
+    read = _door_read(_HIT_QUERY, door)
+
+    assert sorted(door.calls) == [("ExclusionRead", _HIT_QUERY), ("Extraction", _HIT_QUERY)]
+    assert read.reading.left_out == (LeftOut("excluding loans", ("loans",), None),)
 
 
 def test_a_miss_keeps_the_speculative_parse_and_starts_no_second_one():
@@ -434,22 +509,31 @@ def test_an_answer_with_a_stretch_left_out_equals_the_query_without_it_and_says_
     assert "without it" not in answered.rendered_sentence
 
 
-def test_a_stretch_binding_repair_bound_counts_as_met(monkeypatch):
+@pytest.mark.parametrize(
+    ("value", "met"),
+    [
+        pytest.param("CRSTypeOfFinance110", True, id="the-answer-binds-it"),
+        pytest.param("CRSTypeOfFinance421", False, id="the-answer-binds-another"),
+    ],
+)
+def test_a_stretch_binding_repair_bound_is_met_by_an_answer_binding_it(monkeypatch, value, met):
     """The route "without IMF credit" takes: repair of the elected shape's bindings reads the
-    part's stretches, and one it binds raises no warning and no departure on the answer."""
+    part's stretches, and the value it bound is judged on the served answer, which leaves the
+    stretch out only when it still binds that value."""
     seen = []
 
     def bind_it(bindings, shape, *, exclusions, pinned_properties):
         seen.extend(stretch.phrase for stretch in exclusions)
-        return list(bindings), frozenset({_STRETCH})
+        return list(bindings), ((_STRETCH, "crsTypeOfFinance", value),)
 
     monkeypatch.setattr(phase_election, "apply_named_exclusions", bind_it)
 
     answered = _resolve(f"{_E2E_QUERY} to Kenya {_STRETCH}", _ScriptedLLM(_read(_STRETCH)))
 
     assert seen == [_STRETCH]
-    assert QUERY_QUALIFIER_DROPPED not in [w.code for w in answered.diagnostics.warnings]
-    assert "measure_not_applied" not in [d.code for d in answered.parts[0].departures]
+    warned = QUERY_QUALIFIER_DROPPED in [w.code for w in answered.diagnostics.warnings]
+    departed = "measure_not_applied" in [d.code for d in answered.parts[0].departures]
+    assert (warned, departed) == (not met, not met)
 
 
 def test_the_read_has_its_own_step_on_the_envelope_and_on_no_part():
@@ -460,27 +544,25 @@ def test_the_read_has_its_own_step_on_the_envelope_and_on_no_part():
 
 
 @pytest.mark.parametrize(
-    ("kind", "variables"),
+    ("kind", "answer"),
     [
-        pytest.param("catalogue", (), id="a-catalogue-question"),
-        pytest.param("resolution", (), id="no-variable"),
+        pytest.param("catalogue", "catalogue", id="catalogue"),
+        pytest.param("out_of_scope", "declined", id="out-of-scope"),
+        pytest.param("requires_analysis", "declined", id="requires-analysis"),
     ],
 )
-def test_a_blanked_text_left_with_no_measure_refuses_and_carries_the_warning(kind, variables):
-    """ "everything but humanitarian aid to Kenya" leaves "; to Kenya", which reads as a
-    catalogue question: the question asked for a measure, so it refuses and says which words
-    went unapplied."""
-    query = "everything but humanitarian aid to Kenya"
-    phrase = "but humanitarian aid"
+def test_a_disposition_keeps_its_answer_and_discloses_the_stretch(kind, answer):
+    """A question the blanked text reads as a catalogue, out-of-scope or requires-analysis
+    one answers so, and says which words it did not apply."""
+    query = "which datasets cover aid to Kenya, excluding the humanitarian ones"
+    phrase = "excluding the humanitarian ones"
 
-    response = _resolve(query, _ScriptedLLM(_read(phrase), kind=kind, variables=variables))
+    response = _resolve(query, _ScriptedLLM(_read(phrase), kind=kind, variables=()))
 
-    (part,) = response.parts
-    assert part.status == "no_data"
-    assert part.no_data.reason == "variable_not_resolved"
-    assert [w.message for w in part.warnings if w.code == QUERY_QUALIFIER_DROPPED] == [
-        f'The requested qualifier "{phrase}" was not applied.'
-    ]
+    assert response.kind == answer
+    assert [
+        w.message for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED
+    ] == [f'The requested qualifier "{phrase}" was not applied.']
 
 
 def test_a_query_with_nothing_left_out_sends_extraction_its_own_bytes():
@@ -540,7 +622,7 @@ def test_a_measure_axis_exclusion_is_met_only_by_an_answer_that_leaves_it_out(sh
     """ "gross ODA, not net" answers gross and says nothing more. An answer that leaves "net"
     unmet still answers: it names no trace term and no refusal, and the door discloses it."""
     exclusion = LeftOut(phrase="not net", things=("net",), at=0)
-    requirements = exclusion_requirements([exclusion], variable="ODA")
+    (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
 
     judgement = judge(requirements, [(shape, bindings)])
 
@@ -569,4 +651,195 @@ def test_an_exclusion_an_answer_cannot_be_shown_to_meet_gives_no_requirement(
     """Binding one DAC2a aid type says nothing of another it counts, so the phrase stays
     disclosed whatever the answer binds."""
     exclusion = LeftOut(phrase=phrase, things=things, at=0)
-    assert exclusion_requirements([exclusion], variable=variable) == ()
+    assert exclusion_requirements([[exclusion]], variables=[variable]) == [()]
+
+
+def _named_state(shape: ShapeDraft) -> ResolveState:
+    state = ResolveState(
+        variable="external debt",
+        entities=[],
+        date_request=None,
+        detect_query="external debt",
+        role_query="external debt",
+        pac=True,
+        graph=cast(EngineGraphClient, None),
+        resolver=cast(EntityResolver, None),
+        admission=cast(Admission, None),
+        llm=cast(SupportsLLM, None),
+        sdmx=cast(EngineSdmxClient, None),
+        deadline=None,
+        pre_resolved=None,
+        variable_index=0,
+        emit=None,
+        include_option_coverage=False,
+        stream_slot_options=False,
+        include_observations=False,
+        stream_observations=False,
+        unit_text=None,
+        materialise_graph=None,
+        materialise_sdmx=None,
+        timing={},
+        warnings=[],
+        coverage=empty_coverage_snapshot(),
+    )
+    state.shape_draft = shape
+    state.require_named_exclusion("without IMF credit", property_dcid=_NETTING, value="Gross")
+    return state
+
+
+@pytest.mark.parametrize(
+    ("bindings", "met"),
+    [
+        pytest.param(_bound("Gross"), True, id="binds-the-repaired-value"),
+        pytest.param(_bound("Net"), False, id="binds-another"),
+        pytest.param(_bound(), False, id="never-bound-it"),
+    ],
+)
+def test_a_value_repair_bound_is_judged_on_each_served_answer(bindings, met):
+    """Only an answer that still binds the value binding repair bound leaves its stretch out.
+    The requirement departs and refuses nothing."""
+    state = _named_state(_shape(_NETTING))
+
+    judgement = judge(state.requirements, [(_shape(_NETTING), bindings)])
+
+    assert judgement.met_exclusions() == ({"without IMF credit"} if met else frozenset())
+    assert (judgement.terms(0), judgement.departures()) == ((), ())
+
+
+def test_unbinding_a_repaired_value_drops_what_it_left_out():
+    state = _named_state(_shape(_NETTING))
+
+    state.forget_bound({_NETTING})
+
+    assert state.requirements == ()
+
+
+def _gdp_shape(qualifier: str) -> ShapeDraft:
+    return shape_draft_from(
+        shape_id=f"gdp_{qualifier}",
+        label="GDP",
+        pop_type_dcid="EconomicActivity",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=qualifier,
+        meas_denom_dcid=None,
+        constraint_props=[],
+        prop_labels={},
+        prop_observed_values={},
+        sv_arc_facts={},
+        slot_taxonomy={},
+        place_available=True,
+        value_labels=None,
+        recalled=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("qualifier", "met"),
+    [
+        pytest.param("Nominal", True, id="current-prices"),
+        pytest.param("RealValue", False, id="constant-prices"),
+    ],
+)
+def test_a_shape_axis_exclusion_is_met_by_an_answer_that_does_not_read_it(qualifier, met):
+    """ "GDP of Kenya not in constant prices" answered in current prices leaves the phrase out:
+    the shape carries the measure value, as a positive measure term reads it."""
+    exclusion = LeftOut(phrase="not in constant prices", things=("constant", "prices"), at=0)
+    (requirements,) = exclusion_requirements([[exclusion]], variables=["GDP"])
+
+    judgement = judge(requirements, [(_gdp_shape(qualifier), [])])
+
+    assert judgement.met_exclusions() == ({"not in constant prices"} if met else frozenset())
+    assert (judgement.terms(0), judgement.departures()) == ((), ())
+
+
+_MODALITY, _PURPOSE = "crsCooperationModality", "crsPurpose"
+
+
+def _crs_shape(*properties: str) -> ShapeDraft:
+    return shape_draft_from(
+        shape_id="crs",
+        label="CRS",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        constraint_props=list(properties),
+        prop_labels=dict.fromkeys(properties, "slot"),
+        prop_observed_values={},
+        sv_arc_facts={},
+        slot_taxonomy={},
+        place_available=True,
+        value_labels=None,
+        recalled=False,
+    )
+
+
+def _crs_bound(**values: str) -> list[SlotBindingDraft]:
+    return [
+        SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[value])
+        for prop, value in values.items()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("shape", "bindings", "met"),
+    [
+        pytest.param(
+            _crs_shape(_MODALITY, _PURPOSE),
+            _crs_bound(
+                crsCooperationModality="CRSCooperationModalityB01", crsPurpose="CRSPurposeCode110"
+            ),
+            True,
+            id="leaves-out-both-systems",
+        ),
+        pytest.param(
+            _crs_shape(_PURPOSE),
+            _crs_bound(crsPurpose="CRSPurposeCode110"),
+            False,
+            id="sums-over-the-absent-system",
+        ),
+        pytest.param(
+            _crs_shape(_MODALITY, _PURPOSE),
+            _crs_bound(crsPurpose="CRSPurposeCode110"),
+            False,
+            id="leaves-one-system-open",
+        ),
+    ],
+)
+def test_a_run_naming_two_systems_is_left_out_only_on_every_property(shape, bindings, met):
+    """ "budget support" is a modality and a purpose. An answer summing over the modality
+    counts budget support there, so only one leaving it out on both leaves the phrase out."""
+    exclusion = LeftOut(phrase="excluding budget support", things=("budget support",), at=0)
+    (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
+
+    judgement = judge(requirements, [(shape, bindings)])
+
+    assert judgement.met_exclusions() == ({"excluding budget support"} if met else frozenset())
+
+
+@pytest.mark.parametrize(
+    ("met", "part", "envelope"),
+    [
+        pytest.param((False, False), [[], ["w"]], ["w"], id="only-the-part-it-qualifies"),
+        pytest.param((False, True), [[], []], [], id="that-part-leaves-it-out"),
+    ],
+)
+def test_a_stretch_warns_only_on_the_parts_it_qualifies(met, part, envelope):
+    """ "ODA to Kenya and GDP of Kenya excluding humanitarian aid" qualifies GDP: the ODA part
+    states nothing of it, and the GDP part warns unless its answer leaves it out."""
+    stretch = LeftOut("excluding humanitarian aid", ("humanitarian aid",), 30)
+    prep = SimpleNamespace(
+        exclusion_warnings=("w",), exclusions=(stretch,), exclusion_targets=((1,),)
+    )
+    regions = [
+        SimpleNamespace(
+            specs=("spec",), met_exclusions={stretch.phrase} if left_out else frozenset()
+        )
+        for left_out in met
+    ]
+    unmet = raw_text._ExtractionPrep._unmet_exclusion_warnings
+
+    assert [unmet(prep, [region], parts=[i]) for i, region in enumerate(regions)] == part
+    assert unmet(prep, regions, parts=range(2)) == envelope

@@ -22259,5 +22259,329 @@
         "rating": 1.0
       }
     ]
+  },
+  "ExclusionRead@3c024839b279:0932cff292cb8ea8838902faf010fc9a933ccf71": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral flows",
+        "left_out": [
+          "multilateral",
+          "flows"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:4355f99fe884aaa02746ed13423eb39eb9aeb605": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral aid",
+        "left_out": [
+          "multilateral",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:2c0aa2406287b51b5821465747afedeed866f8e3": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral",
+        "left_out": [
+          "multilateral"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:65539e1165cb7646d7512483cb0858ed21290830": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bb0da75419bc0fe19e2b8e5769abf30b024d4ed9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f214e6cf4f899cf885fe856c4cc5f178364cc2a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0f3574ff18be933f8a535ea0af8b8ac6067277c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a9123f5491c71102e1f3409a2ef42cb9e8fb98b5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ad82882701dfec9f4eceaf0819049513f91d9c77": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:bf75a7eb6ec5480838dbc4971a272fb58ed06c4d": {
+    "exclusions": [
+      {
+        "phrase": "excluding CRS",
+        "left_out": [
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:3ffe4b9cebe7ad3e0f0978413dfd13a9bec1e88b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:03f538ba37a7563e2bf10125905159851e6c8ca0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:665d6aabd0eae48e0cc817f10e30caeaa4710cf7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:96903232960d9f2a96d04f505056ea8df6682292": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0b504cd7568a7d7067cd63a43af310d7c8604c2d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:345da8c53859386bdffaffd9409960ee77763325": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:53890418cb62fdd99ae3d7b60b48d4abb89d4456": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f30e4f0b49425e7b050725e61b64a1ff922d6ad0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4b6dbfffc619c8ecab2db0ba03143004b01db6b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3c6f0cdb21dfa34e27eaa7a3f8139810c1cbd0f7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:746b90f48864954926914af13db2ba263d724059": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dfaac654d9d6c6a8d284317c4e113f65c390a96e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f10f075de86f958bb5ca2b42b573d650f030285": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c326c7e3fbb4e1074f9d54e3785fa9137d8f8608": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ef9fd7cd79343a1550c1d1ac55b893ceeb556969": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f84f093371aed858b8ce5a46059d176465012b04": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84ff8b546febdd3f8804ab9c14b8e5d67db89893": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2516af34cdc9da698a3fdb3fa4b28cbe94da3922": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:c330d3d0eb9aa24724c13d18de60ca799150a3be": {
+    "exclusions": [
+      {
+        "phrase": "excluding health",
+        "left_out": [
+          "health"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:fe74eb5b61cd8276c7f1b727c952688364b6e944": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4081f91328890dd678aa8753bd9efd6adcda056c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a7bf2ee328486d63591eee649e6bc83cfe8323ef": {
+    "exclusions": [
+      {
+        "phrase": "excluding CRS",
+        "left_out": [
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:4ba92493e8bc7a17594c6df796c223fd6110c90b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3f90e00fc7a19db0fee2dff7d9a90cec723a4f0d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:92b29e39919ff6cac4240f8e3b7da610a10780be": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7c72d5ca5e85cb03239f1a6e92f9855df8b79c1f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:61bb677a4db22c359e50e9d001bda1dd4269c366": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8277da4252b9b96b4800a7a1ac668280924139a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d6688689017bbd98016ecb719196d0dfa309b3c2": {
+    "exclusions": []
+  },
+  "Extraction@501cb31acc6e:bfd011590ece39706842a8b8bcdb30df3b64aca1": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not including multilateral flows"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:ea1d520c0f1f42fdaa77a64f591d7a25d343e040": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not including multilateral aid"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:d9d43b77cce67856d4af47fbb9f6f586f04797a1": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not including multilateral"
+    ],
+    "dates": []
+  },
+  "ExclusionRead@3c024839b279:dbfeb603e07e7090fa854e94cc26db88e5be1151": {
+    "exclusions": [
+      {
+        "phrase": "not from the OECD",
+        "left_out": [
+          "from",
+          "the",
+          "OECD"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:04eda0dffae57d13e87e79d09c44286c6f1d3ad9": {
+    "exclusions": [
+      {
+        "phrase": "not from the OECD",
+        "left_out": [
+          "from the OECD"
+        ]
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:b987feb0adb6931fe647196938a6f71fb09b81e9": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:695fe58fdefa27d47f79b1fa1bdd9c64d966cdaf": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
   }
 }

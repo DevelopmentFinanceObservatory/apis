@@ -257,13 +257,13 @@ _WITHOUT_IMF = LeftOut(phrase="without IMF credit", things=("IMF credit",), at=0
 
 
 class TestApplyNamedExclusions:
-    def test_a_stretch_that_is_a_values_own_label_binds_it_and_counts_as_met(self):
-        repaired, met = apply_named_exclusions(
+    def test_a_stretch_that_is_a_values_own_label_binds_it(self):
+        repaired, bound = apply_named_exclusions(
             [_imf_slot()], _imf_shape(), exclusions=[_WITHOUT_IMF]
         )
 
         assert [(b.kind, b.value_dcids) for b in repaired] == [("value", ["WithoutIMFCredit"])]
-        assert met == {"without IMF credit"}
+        assert bound == (("without IMF credit", "includesIMFCredit", "WithoutIMFCredit"),)
 
     @pytest.mark.parametrize(
         ("binding", "shape", "exclusion", "pinned"),
@@ -291,12 +291,12 @@ class TestApplyNamedExclusions:
     def test_anything_but_an_open_slot_and_an_exact_label_binds_nothing(
         self, binding, shape, exclusion, pinned
     ):
-        repaired, met = apply_named_exclusions(
+        repaired, bound = apply_named_exclusions(
             [binding], shape, exclusions=[exclusion], pinned_properties=frozenset(pinned)
         )
 
         assert repaired == [binding]
-        assert met == frozenset()
+        assert bound == ()
 
 
 class TestApplyDeclaredDefaultsFires:

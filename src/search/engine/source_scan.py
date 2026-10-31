@@ -28,7 +28,7 @@ stand elsewhere as a party stays ("World Bank data on aid from the World Bank").
 
 The scan reads the text with each stretch that asks to leave something out blanked
 (`exclusion_read.admit_exclusions`), so every source it finds there is asked for. A stretch
-is read on its own for the sources it leaves out (`_left_out_sources`): each item of its list
+is read on its own for the sources it leaves out (`left_out_sources`): each item of its list
 whose left-out words a source covers, so "excluding the CRS, Norway and DAC2a" leaves out the
 CRS and DAC2a, and "without IMF credit", whose "credit" no source covers, leaves out no IMF.
 
@@ -317,25 +317,33 @@ class SourceScan:
     (`source_entities`, a subset of the spans passed in), which are no entity, and the
     stretches that leave out sources and nothing else (`source_stretches`), which their
     mentions apply. A span is taken when it occurs in the query and a source covers every
-    occurrence of it that lies inside no longer entity span's."""
+    occurrence of it that lies inside no longer entity span's. `stretch_targets` runs
+    parallel to the stretches: the positions of the measures each qualifies, read from its
+    blank as a source's are (`_attach`), every measure for a stretch with no blank."""
 
     per_measure: list[tuple[SourceMention, ...]]
     source_entities: frozenset[str]
     source_stretches: frozenset[str] = frozenset()
+    stretch_targets: tuple[tuple[int, ...], ...] = ()
 
 
-def _left_out_sources(
+def left_out_sources(
     stretch: LeftOut, *, dictionary: SourceDictionary, index: CodeIndex
 ) -> tuple[list[SourceHit], bool]:
     """The sources `stretch` leaves out, and whether it leaves out nothing else.
 
     The stretch's words split into the items of its list, at commas and at "and", "or" and
     "nor". An item leaves out a source when each of its left-out words (`LeftOut.things`),
-    less articles and "from", lies in a source the item names."""
+    less the words a phrase may carry beside a source's own (`_SOURCE_PHRASE_WORDS`: articles,
+    "from", data words such as "data", "figures" and "database"), lies in a source the item
+    names: "excluding the CRS database" leaves out the CRS. A stretch the query does not
+    write (`LeftOut.at` `None`) leaves out none."""
+    if stretch.at is None:
+        return [], False
     named = find_source_hits(
         stretch.phrase, dictionary=dictionary, entity_spans=(), measures=(), index=index
     )
-    asked = {word for thing in stretch.things for word in _folded(thing)} - _FILLER_BEFORE_SOURCE
+    asked = {word for thing in stretch.things for word in _folded(thing)} - _SOURCE_PHRASE_WORDS
     if not asked:
         return [], False
     items: list[list[_Word]] = [[]]
@@ -374,9 +382,9 @@ def scan_sources(
     left_out: Sequence[LeftOut] = (),
 ) -> SourceScan:
     """The sources `find_source_hits` finds in `query`, the text with each of the `left_out`
-    stretches blanked, and those each stretch leaves out (`_left_out_sources`), attached to the
-    measures they qualify, and the entity spans they cover. A stretch's sources attach from
-    its blank. A measure keeps one mention per wording and polarity, at most
+    stretches blanked, and those each stretch leaves out (`left_out_sources`), attached to the
+    measures they qualify, and the entity spans they cover. A stretch and its sources attach
+    from its blank. A measure keeps one mention per wording and polarity, at most
     `_PARSED_MAX_PART_SOURCES`, and an entity span leaves the entities only when every
     occurrence of it that lies inside no longer entity span's lies under a source."""
     hits = find_source_hits(
@@ -386,17 +394,22 @@ def scan_sources(
     measure_words = [_folded(measure) for measure in measures]
     measure_spans = [next(iter(_occurrences(measure, words)), None) for measure in measures]
     source_stretches: set[str] = set()
+    stretch_targets: list[tuple[int, ...]] = []
     for stretch in left_out:
-        found, whole = _left_out_sources(stretch, dictionary=dictionary, index=index)
+        if (at := stretch.at) is None:
+            stretch_targets.append(tuple(range(len(measures))))
+            continue
+        stretch_targets.append(
+            _attach(_folded(stretch.phrase), at, at + 1, measure_words, measure_spans)
+        )
+        found, whole = left_out_sources(stretch, dictionary=dictionary, index=index)
         hits += [
             replace(
                 hit,
-                start=stretch.at,
-                end=stretch.at + 1,
+                start=at,
+                end=at + 1,
                 polarity="exclude",
-                targets=_attach(
-                    _folded(hit.text), stretch.at, stretch.at + 1, measure_words, measure_spans
-                ),
+                targets=_attach(_folded(hit.text), at, at + 1, measure_words, measure_spans),
             )
             for hit in found
         ]
@@ -424,6 +437,7 @@ def scan_sources(
         per_measure=[tuple(bucket.values()) for bucket in attached],
         source_entities=source_entities,
         source_stretches=frozenset(source_stretches),
+        stretch_targets=tuple(stretch_targets),
     )
 
 

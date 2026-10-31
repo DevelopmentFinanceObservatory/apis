@@ -77,10 +77,10 @@
 
 - id: exclusion-everything-but-humanitarian
   query: "everything but humanitarian aid to Kenya"
-  why: 'With the stretch blanked no measure is left, so the query refuses and the warning carries the phrase.'
+  why: 'With the stretch blanked no measure is left: "everything ; to Kenya" reads as a catalogue question, which keeps its answer and carries the warning.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
   expect:
-    no_data: {reason: variable_not_resolved}
+    kind: catalogue
 
 - id: exclusion-debt-without-imf-credit
   query: "long-term external debt of Kenya without IMF credit in 2020"
@@ -179,3 +179,30 @@
     definite:
       measure: {shape: {population_type: FinancialFlow, measured_property: amount, stat_type: measuredValue}, bound: {dac2aAidType: DAC2aAidType201, financialFlowType: Disbursement, nettingBasis: Gross}}
       entities: [{dcid: country/FRA, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-not-including-multilateral-flows
+  query: "ODA to Kenya not including multilateral flows"
+  why: '"not including multilateral flows" states the bilateral provider scope and leaves out nothing else, so nothing is blanked and nothing is disclosed.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-not-including-multilateral-aid
+  query: "ODA to Kenya not including multilateral aid"
+  why: 'The provider scope with its noun "aid" leaves out nothing else, so the answer is the one the scope phrase alone gets.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-control-bilateral-not-including-multilateral
+  query: "bilateral ODA to Kenya, not including multilateral"
+  why: 'The stretch is the bilateral provider scope alone, which the part reads, so nothing is blanked.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]

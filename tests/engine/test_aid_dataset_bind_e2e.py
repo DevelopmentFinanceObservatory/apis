@@ -18,7 +18,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -38,6 +37,7 @@ from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
+from search.engine import exclusion_read
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.entry import raw_text
@@ -46,7 +46,7 @@ from search.engine.errors import (
     DefaultScopeIndexSourcedError,
     GraphInfraError,
 )
-from search.engine.exclusion_read import Exclusion, ExclusionRead
+from search.engine.exclusion_read import ExclusionRead
 from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind as rank_bind_module
@@ -232,17 +232,14 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _read_each_excluded_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Read each "excluding <source>" and "not from <source>" stretch of a question as the
-    model reads it, since the doubles of this module script no read."""
+def _read_recorded_exclusions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read what each question leaves out from the recorded reads, through this module's
+    doubles; any other double reads nothing left out."""
 
-    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
-        found = re.finditer(
-            r"(?:excluding|not from) (?:the )?(.+?)(?= excluding | from | but |$)", query
-        )
-        return ExclusionRead(
-            exclusions=[Exclusion(phrase=m.group(0), left_out=[m.group(1)]) for m in found]
-        ), None
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None]:
+        if isinstance(llm, _RecordedLLM | _ScriptedLLM):
+            return await exclusion_read.read_exclusions(query, llm=llm)
+        return ExclusionRead(exclusions=[]), None
 
     monkeypatch.setattr(raw_text, "read_exclusions", read)
 
@@ -386,7 +383,12 @@ def test_a_question_naming_no_dataset_answers_the_crs(
     response, llm = _resolve(query, variable)
 
     (spec,) = _specs(response)
-    assert llm.calls == {"Extraction": 1, "_UniversalBindOutput": 1, "QuantityOutput": 1}
+    assert llm.calls == {
+        "ExclusionRead": 1,
+        "Extraction": 1,
+        "_UniversalBindOutput": 1,
+        "QuantityOutput": 1,
+    }
     assert spec.resolved.shape.member_count == member_count
     assert AID_TYPE not in _bound(spec)
     assert "source" not in _bound(spec)
@@ -1182,8 +1184,8 @@ _TO_KENYA = ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination",
 class _ScriptedLLM:
     """Extract the given variables to Kenya, or among `entities`, and elect the first
     shape with every slot open but those `drafted` binds, nominating the shapes
-    `also_plausible` indexes beside it, or ask `ask` and elect none. Each bind prompt is
-    kept in call order."""
+    `also_plausible` indexes beside it, or ask `ask` and elect none. What the question leaves
+    out is read from the recorded reads. Each bind prompt is kept in call order."""
 
     def __init__(
         self,
@@ -1207,6 +1209,8 @@ class _ScriptedLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         self.calls[schema.__name__] += 1
+        if schema is ExclusionRead:
+            return await FakeLLM().generate_structured(prompt=prompt, system=system, schema=schema)
         if schema is Extraction:
             return Extraction(
                 kind="resolution",
@@ -1909,14 +1913,14 @@ def test_raw_text_source_words_qualify_only_the_variable_they_attach_to(
 def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alone(
     source_catalogue: None,
 ):
-    """The query asks for aid from the OECD and for a second variable from the CRS but not
+    """The query asks for aid from the OECD and for a second variable from the CRS and not
     from the OECD, whose tables hold the CRS. The second part's words leave it nothing to
     answer from, so it answers `qualifier_not_bound` naming the CRS, which it named, and
     runs no bind, while the first part answers from the OECD's tables."""
     llm = _ScriptedLLM("aid", _E)
 
     response = _resolve_scripted(
-        f"aid to Kenya from the OECD and {_E} to Kenya, not from the OECD but from the CRS",
+        f"aid to Kenya from the OECD and {_E} to Kenya from the CRS, not from the OECD",
         llm,
         graph=_graph("aid", _E),
     )
@@ -1936,7 +1940,7 @@ def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alon
 def test_a_raw_text_part_its_source_words_leave_no_source_calls_no_resolver(
     monkeypatch: pytest.MonkeyPatch, source_catalogue: None, resolver_down: bool
 ):
-    """The query asks for aid from the CRS but not from the OECD, whose tables hold the CRS.
+    """The query asks for aid from the CRS and not from the OECD, whose tables hold the CRS.
     The part's words leave it nothing to answer from, so it answers `qualifier_not_bound`
     naming the CRS and runs no step, which leaves its answer standing when the entity
     resolver fails."""
@@ -1949,7 +1953,7 @@ def test_a_raw_text_part_its_source_words_leave_no_source_calls_no_resolver(
     llm = _ScriptedLLM("aid")
 
     response = _resolve_scripted(
-        "aid to Kenya, not from the OECD but from the CRS", llm, graph=_graph("aid")
+        "aid to Kenya from the CRS, not from the OECD", llm, graph=_graph("aid")
     )
 
     (part,) = response.parts

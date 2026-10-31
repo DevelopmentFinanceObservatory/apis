@@ -90,7 +90,7 @@ from search.engine.region.source_choice import (
     idle_inclusion_warnings,
     with_idle_inclusions,
 )
-from search.engine.region.state import EngineOptions, ResolveState, exclusion_requirements
+from search.engine.region.state import EngineOptions, PartExclusions, ResolveState
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
 from search.engine.region.whole_totals import whole_total_unpublished_facts
@@ -114,7 +114,7 @@ from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
-    from search.engine.exclusion_read import LeftOut
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ async def resolve_variable(
     entity_roles: dict[str, list[DoorRole]] | None = None,
     member_entities: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: list[str] | None = None,
-    exclusions: Sequence[LeftOut] = (),
+    exclusions: PartExclusions | None = None,
     operations: Sequence[Operation] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
@@ -208,9 +208,9 @@ async def resolve_variable(
     admitted operations; one over `category` opens the slots its phrase names on the
     elected shape whether or not bind claims them. `open_axes` are the flow axes the leg
     asks every member of (`ResolveState.open_axes`). `exclusions` are the stretches of the
-    request that leave something out, each judged on the part's answers
-    (`state.exclusion_requirements`); the result names those every answer meets
-    (`RegionResult.met_exclusions`). `query_text` adds the query, each such stretch blanked,
+    request that leave something out and qualify this part, with the requirements judging
+    its answers on them (`state.exclusion_requirements`); the result names those every
+    answer meets (`RegionResult.met_exclusions`). `query_text` adds the query, each such stretch blanked,
     as a match source for a single-variable request. `qualifiers` adds a typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
     supplies both qualifier inputs.
 
@@ -287,7 +287,7 @@ async def resolve_variable(
         else None
     )
 
-    left_out = exclusion_requirements(exclusions, variable=variable)
+    exclusions = exclusions or PartExclusions()
 
     def new_state(
         *,
@@ -307,8 +307,8 @@ async def resolve_variable(
             entity_roles=entity_roles or {},
             member_entities=member_entities,
             dropped_qualifier_phrases=dropped_qualifier_phrases or [],
-            requirements=left_out,
-            exclusions=tuple(exclusions),
+            requirements=exclusions.requirements,
+            exclusions=exclusions.stretches,
             operations=tuple(operations),
             open_axes=open_axes,
             query_text=query_text,
@@ -1048,8 +1048,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                                 result, state.requirements, state.judgement
                             ),
                             admitted_qualifier_phrases=admitted,
-                            met_exclusions=state.named_exclusions
-                            | (
+                            met_exclusions=(
                                 state.judgement.met_exclusions()
                                 if state.judgement is not None
                                 else frozenset()

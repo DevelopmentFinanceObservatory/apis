@@ -72,7 +72,7 @@ from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
-    from search.engine.exclusion_read import LeftOut
+    from search.engine.region.state import PartExclusions
 
 
 logger = logging.getLogger(__name__)
@@ -454,7 +454,7 @@ async def _stream_one_variable(
     source_scope: SourceScope | SourceRefusal | None = None,
     source_code: PartCode | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
-    exclusions: Sequence[LeftOut] = (),
+    exclusions: PartExclusions | None = None,
     operations: tuple[Operation, ...] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     separate: bool = False,
@@ -699,7 +699,7 @@ class _LegOverrides:
     per_variable_open_axes: list[frozenset[RoleAxis]] | None
     per_variable_separate: list[bool] | None
     per_variable_dropped_qualifier_phrases: list[list[str]] | None
-    exclusions: Sequence[LeftOut]
+    per_variable_exclusions: list[PartExclusions] | None
     per_variable_scope_intakes: list[ScopeIntake] | None
     door: EntryPath
 
@@ -948,7 +948,11 @@ def _launch_variable_tasks(
                 dropped_qualifier_phrases=_leg_dropped_qualifier_phrases(
                     overrides, i, dropped_qualifier_phrases
                 ),
-                exclusions=overrides.exclusions,
+                exclusions=(
+                    overrides.per_variable_exclusions[i]
+                    if overrides.per_variable_exclusions is not None
+                    else None
+                ),
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
@@ -1049,7 +1053,7 @@ async def _run_variables_streaming(
     per_variable_separate: list[bool] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     per_variable_dropped_qualifier_phrases: list[list[str]] | None = None,
-    exclusions: Sequence[LeftOut] = (),
+    per_variable_exclusions: list[PartExclusions] | None = None,
     per_variable_scope_intakes: list[ScopeIntake] | None = None,
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
@@ -1084,8 +1088,10 @@ async def _run_variables_streaming(
     roles, and `None` gives every leg none. `per_variable_separate` marks each leg compared
     with the others (`RegionResult.separate`), and `None` marks none.
     `per_variable_dropped_qualifier_phrases` gives each leg its own dropped phrases in place
-    of the broadcast `dropped_qualifier_phrases`; `None` broadcasts them. `exclusions` are the
-    stretches of the request that leave something out, which every leg judges. `member_entities`
+    of the broadcast `dropped_qualifier_phrases`; `None` broadcasts them.
+    `per_variable_exclusions` gives each leg the stretches of the request that leave something
+    out and qualify its measure, with the requirements it judges them on; `None` gives every
+    leg none. `member_entities`
     are the entities every leg is asked the members of, and `per_variable_member_entities`
     gives each leg its own. `per_variable_entity_surfaces` and `per_variable_entity_words`
     give each leg its own `entity_surfaces` and `entity_words`.
@@ -1122,7 +1128,7 @@ async def _run_variables_streaming(
         per_variable_open_axes=per_variable_open_axes,
         per_variable_separate=per_variable_separate,
         per_variable_dropped_qualifier_phrases=per_variable_dropped_qualifier_phrases,
-        exclusions=exclusions,
+        per_variable_exclusions=per_variable_exclusions,
         per_variable_scope_intakes=per_variable_scope_intakes,
         door=door,
     )

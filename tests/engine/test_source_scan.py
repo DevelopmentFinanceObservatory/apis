@@ -13,7 +13,13 @@ from origin_catalogue import CatalogueSnapshot, bound_catalogue
 from origin_catalogue.artifact import load_catalogue
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.entry import raw_text
-from search.engine.exclusion_read import Exclusion, ExclusionRead, QueryReading, admit_exclusions
+from search.engine.exclusion_read import (
+    Exclusion,
+    ExclusionRead,
+    LeftOut,
+    QueryReading,
+    admit_exclusions,
+)
 from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
 from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scan import scan_sources, source_phrases
@@ -280,6 +286,31 @@ _STRETCHES = [
         True,
     ),
     ("AOD a Kenia sin el CRS", "sin el CRS", ["AOD"], ["Kenia"], [[_out("CRS")]], True),
+    # A data word beside a source names nothing else.
+    (
+        "ODA to Kenya excluding CRS data",
+        "excluding CRS data",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("CRS")]],
+        True,
+    ),
+    (
+        "GDP of Kenya excluding IMF figures",
+        "excluding IMF figures",
+        ["GDP"],
+        ["Kenya"],
+        [[_out("IMF")]],
+        True,
+    ),
+    (
+        "ODA to Kenya excluding the CRS database",
+        "excluding the CRS database",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("CRS")]],
+        True,
+    ),
     # Every source of a list goes, and a source outside the stretch stays asked for.
     (
         "ODA to Kenya excluding CRS and DAC2a",
@@ -446,3 +477,53 @@ def test_the_raw_text_door_reads_a_series_code_the_query_writes(
         code.reason if isinstance(code, SourceCodeRefusal) else code and code.code
         for code in prep.per_variable_compiled_codes
     ] == compiled
+
+
+@pytest.mark.parametrize(
+    ("query", "stretch", "measures", "targets"),
+    [
+        (
+            "ODA to Kenya and GDP of Kenya excluding humanitarian aid",
+            "excluding humanitarian aid",
+            ["ODA", "GDP"],
+            (1,),
+        ),
+        (
+            "ODA excluding humanitarian aid to Kenya and GDP of Kenya",
+            "excluding humanitarian aid",
+            ["ODA", "GDP"],
+            (0,),
+        ),
+    ],
+)
+def test_a_stretch_qualifies_the_measure_it_attaches_to(
+    dictionary: SourceDictionary, query, stretch, measures, targets
+):
+    """A stretch qualifies a measure as a source does, from its blank, so only that part
+    discloses it."""
+    reading = _left_out(query, stretch)
+    scan = scan_sources(
+        reading.text,
+        dictionary=dictionary,
+        measures=measures,
+        entity_spans=["Kenya"],
+        index=get_index(),
+        left_out=reading.left_out,
+    )
+    assert scan.stretch_targets == (targets,)
+
+
+def test_a_stretch_the_query_does_not_write_qualifies_every_measure(dictionary: SourceDictionary):
+    scan = scan_sources(
+        "ODA to Kenya and GDP of Kenya",
+        dictionary=dictionary,
+        measures=["ODA", "GDP"],
+        entity_spans=["Kenya"],
+        index=get_index(),
+        left_out=[LeftOut("excluding the CRS", ("CRS",), None)],
+    )
+    assert (scan.stretch_targets, scan.per_measure, scan.source_stretches) == (
+        ((0, 1),),
+        [(), ()],
+        frozenset(),
+    )

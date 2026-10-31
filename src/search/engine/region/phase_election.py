@@ -1089,9 +1089,11 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
 
     # A stretch that leaves something out can be a value's own label ("without IMF credit").
     # It binds before the defaults, which would otherwise take the slot.
-    bindings, state.named_exclusions = apply_named_exclusions(
+    bindings, named = apply_named_exclusions(
         bindings, state.shape_draft, exclusions=state.exclusions, pinned_properties=pinned
     )
+    for phrase, prop, value in named:
+        state.require_named_exclusion(phrase, property_dcid=prop, value=value)
     state.bindings = with_sampled_claims(bindings, claims)
 
     # Apply a declared default when the variable, raw query, or bindings trigger it. Raw

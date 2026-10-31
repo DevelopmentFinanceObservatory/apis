@@ -290,23 +290,24 @@ def apply_named_exclusions(
     *,
     exclusions: Sequence[LeftOut],
     pinned_properties: frozenset[str] = frozenset(),
-) -> tuple[list[SlotBindingDraft], frozenset[str]]:
+) -> tuple[list[SlotBindingDraft], tuple[tuple[str, str, str], ...]]:
     """Bind each open slot of `shape_draft` holding a value whose graph label is, word for word,
     one of the `exclusions`: "without IMF credit" binds `WithoutIMFCredit` on
     `includesIMFCredit`. An open slot is as `_slot_open_to_default` reads it, and no pin of the
     elected dataset (`pinned_properties`) holds it. The label is the value's own, so the
     answer leaves the phrase out by construction.
 
-    Returns the listified bindings, repaired, and the phrases they now bind.
+    Returns the listified bindings, repaired, and each phrase they now bind with the property
+    and value it binds.
     """
     result = list(bindings)
     if not exclusions:
-        return result, frozenset()
+        return result, ()
     labels = shape_draft.value_labels or {}
     phrases = {
         tuple(_folded_tokens(exclusion.phrase)): exclusion.phrase for exclusion in exclusions
     }
-    bound: set[str] = set()
+    bound: list[tuple[str, str, str]] = []
     for i, binding in enumerate(result):
         prop = binding.property_dcid
         if prop is None or prop in pinned_properties:
@@ -315,9 +316,9 @@ def apply_named_exclusions(
             phrase = phrases.get(tuple(_folded_tokens(labels.get(value, ""))))
             if phrase is not None and _slot_open_to_default(binding, shape_draft, prop, value):
                 result[i] = binding.model_copy(update={"kind": "value", "value_dcids": [value]})
-                bound.add(phrase)
+                bound.append((phrase, prop, value))
                 break
-    return result, frozenset(bound)
+    return result, tuple(bound)
 
 
 def _folded_tokens(text: str) -> list[str]:

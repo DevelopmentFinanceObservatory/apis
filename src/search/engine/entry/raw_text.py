@@ -38,7 +38,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
-from search.engine.deadline import _await_bounded, _cancel_and_await
+from search.engine.deadline import _await_bounded
 from search.engine.departures import (
     WarningKey,
     exclusion_not_applied,
@@ -103,7 +103,11 @@ from search.engine.region.phase_rank_bind import holds_words, names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.region.sentence_events import answer_events
-from search.engine.region.state import qualifier_dropped_warning
+from search.engine.region.state import (
+    PartExclusions,
+    exclusion_requirements,
+    qualifier_dropped_warning,
+)
 from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import (
     DoorRole,
@@ -113,7 +117,7 @@ from search.engine.role_text import (
     receipt_axes,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
-from search.engine.source_scan import scan_sources, source_phrases
+from search.engine.source_scan import left_out_sources, scan_sources, source_phrases
 from search.engine.source_scope import (
     SourceRefusal,
     SourceScope,
@@ -599,6 +603,13 @@ class _DoorRead:
     timing: dict[str, int]
 
 
+def _finished_usage(task: asyncio.Task[tuple[ExtractionResult, dict | None, int]]) -> dict | None:
+    """The token usage of a parse `task` that has finished with its answer, else `None`."""
+    if not task.done() or task.cancelled() or task.exception() is not None:
+        return None
+    return task.result()[1]
+
+
 async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) -> _DoorRead:
     """Read what `query` asks to leave out and extract the query without it.
 
@@ -606,6 +617,12 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     call. Otherwise the read and a speculative extraction of `query` start together and the
     read is awaited first: with nothing admitted the parse stands, and an admitted stretch
     cancels it and extraction takes the blanked text, so a hit costs the read plus one parse.
+
+    The speculative parse a hit discards runs on beside the parse of the blanked text, and
+    its tokens count in the usage when it has finished by the time that parse ends. One still
+    running then is cancelled, and no tokens reach the usage for it, since no response
+    arrives. A read whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the
+    text as it was, so the speculative parse stands.
 
     A failed read raises as a failed extraction does and fails the query, and the speculative
     parse goes with it: a query the read could not check for what it leaves out gets no
@@ -625,13 +642,13 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         read, read_usage = await _await_bounded(read_exclusions(query, llm=llm), deadline=deadline)
         timing_read = now_ms() - t0
         reading = admit_exclusions(query, read)
-        if not reading.left_out:
+        if reading.text == query:
             result, usage, timing_extract = await speculative
         else:
-            await _cancel_and_await(speculative)
             result, usage, timing_extract = await _run_extract_phase(
                 reading.text, llm=llm, deadline=deadline
             )
+            usage = _sum_usage(usage, _finished_usage(speculative))
     finally:
         speculative.cancel()
         await asyncio.gather(speculative, return_exceptions=True)
@@ -726,9 +743,10 @@ async def _disposition_response(
     extract_usage: dict | None,
     timing: dict[str, int],
     scope: CacheScope | None,
+    warnings: Sequence[Warning] = (),
 ) -> AsyncGenerator[Event]:
     """Answer a catalogue, out-of-scope or requires-analysis question straight
-    after extract, with no recall, bind or second cache lookup.
+    after extract, with no recall, bind or second cache lookup, carrying `warnings`.
 
     `scope.place` is best effort: a resolver failure or timeout leaves it unset,
     still answers, and keeps the answer out of the response cache.
@@ -753,7 +771,7 @@ async def _disposition_response(
     echo = make_query_echo(query, extract_skipped=False)
     diag = make_diagnostics(
         build_commit(),
-        [],
+        list(warnings),
         {**timing, "entity_check": timing_entity_check},
         now_ms() - start_ms,
         llm_usage=extract_usage,
@@ -797,9 +815,13 @@ class _ExtractionPrep:
     (`_split_unit_phrases`); they stay out of `dropped_qualifier_phrases`.
     `text` is the query with each stretch it asks to leave out blanked, which every reader of
     its words takes. `exclusions` are those stretches, less each that leaves out sources alone,
-    which its mentions apply (`SourceScan.source_stretches`), and `exclusion_warnings` one
-    `query_qualifier_dropped` warning for each, parallel to it. Each leg judges its answers
-    on them, and a warning stands unless the answers leave the phrase out (`surviving`).
+    which its mentions apply (`SourceScan.source_stretches`), `exclusion_warnings` one
+    `query_qualifier_dropped` warning for each and `exclusion_targets` the positions in
+    `unique` of the measures each qualifies (`SourceScan.stretch_targets`), both parallel to
+    it. `per_variable_exclusions` runs parallel to `unique`: the stretches qualifying each
+    part and the requirements judging its answers on them (`state.exclusion_requirements`),
+    read once for the request. A warning stands on a part whose answer does not leave its
+    phrase out, and on the envelope while one such part stands (`surviving`).
     `per_variable_unit_texts` runs parallel to `unique`: each part's unit request, as the
     parsed door's `ParsedPart.unit_text` is (`_part_unit_text`).
     `per_variable_measure_qualifiers` runs parallel to `unique` too: the words that narrow
@@ -860,29 +882,36 @@ class _ExtractionPrep:
     text: str
     exclusions: tuple[LeftOut, ...] = ()
     exclusion_warnings: tuple[Warning, ...] = ()
+    exclusion_targets: tuple[tuple[int, ...], ...] = ()
+    per_variable_exclusions: list[PartExclusions] | None = None
     name_corrections: tuple[NameCorrection, ...] = ()
 
-    def _unmet_exclusion_warnings(self, regions: Sequence[RegionResult]) -> list[Warning]:
-        """The `exclusion_warnings` whose phrase some of `regions` does not leave out: one
-        that refuses shows nothing that leaves it out, whatever it judged before refusing."""
+    def _unmet_exclusion_warnings(
+        self, regions: Sequence[RegionResult], *, parts: Sequence[int]
+    ) -> list[Warning]:
+        """The `exclusion_warnings` whose phrase qualifies one of `parts`, the positions in
+        `unique` of `regions`, whose region does not leave it out. One that refuses shows
+        nothing that leaves it out, whatever it judged before refusing."""
         return [
             warning
-            for warning, exclusion in zip(self.exclusion_warnings, self.exclusions, strict=True)
-            if not (
-                regions
-                and all(
-                    region.specs and exclusion.phrase in region.met_exclusions for region in regions
-                )
+            for warning, exclusion, targets in zip(
+                self.exclusion_warnings, self.exclusions, self.exclusion_targets, strict=True
+            )
+            if any(
+                not (region.specs and exclusion.phrase in region.met_exclusions)
+                for i, region in zip(parts, regions, strict=True)
+                if i in targets
             )
         ]
 
     def surviving(self, regions: Sequence[RegionResult]) -> list[Warning]:
-        """The request-wide warnings that stay true across `regions`: a dropped phrase no
-        region admitted (`_surviving_qualifier_warnings`), and a phrase the query asked to
-        leave out that some region's answers do not leave out."""
+        """The request-wide warnings that stay true across `regions`, one per part of
+        `unique` in order: a dropped phrase no region admitted
+        (`_surviving_qualifier_warnings`), and a phrase the query asked to leave out that the
+        region of some part it qualifies does not leave out."""
         return _surviving_qualifier_warnings(
             self.qualifier_warnings, self.dropped_qualifier_phrases, regions
-        ) + self._unmet_exclusion_warnings(regions)
+        ) + self._unmet_exclusion_warnings(regions, parts=range(len(regions)))
 
     def dropped_phrases_of(self, i: int) -> list[str]:
         """The dropped phrases the part of `unique[i]` reads: the request's, then its own."""
@@ -934,7 +963,7 @@ class _ExtractionPrep:
                 with_departure_facts(region, facts),
                 unapplied_qualifier_warnings=(
                     *request_unapplied,
-                    *self._unmet_exclusion_warnings([region]),
+                    *self._unmet_exclusion_warnings([region], parts=[i]),
                 ),
                 name_corrections=self.name_corrections,
                 members_in_words=True,
@@ -1069,10 +1098,26 @@ def _prepare_extraction(
         left_out=left_out,
     )
     per_variable_sources = scan.per_measure
-    exclusions = tuple(
-        stretch for stretch in left_out if stretch.phrase not in scan.source_stretches
-    )
+    # Each stretch qualifies the measures it attaches to from its blank, as a source does.
+    disclosed = [
+        (stretch, targets)
+        for stretch, targets in zip(left_out, scan.stretch_targets, strict=True)
+        if stretch.phrase not in scan.source_stretches
+    ]
+    exclusions = tuple(stretch for stretch, _ in disclosed)
+    exclusion_targets = tuple(targets for _, targets in disclosed)
     exclusion_warnings = tuple(_exclusion_warning(stretch.phrase) for stretch in exclusions)
+    per_part_stretches = [
+        tuple(stretch for stretch, targets in disclosed if i in targets) for i in range(len(unique))
+    ]
+    per_variable_exclusions = [
+        PartExclusions(stretches=stretches, requirements=requirements)
+        for stretches, requirements in zip(
+            per_part_stretches,
+            exclusion_requirements(per_part_stretches, variables=unique),
+            strict=True,
+        )
+    ]
     # The extraction names no series code. A token of the query that writes a held one does.
     per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
     # An entity that only asks for one value per member of a flow role ("every donor",
@@ -1278,22 +1323,22 @@ def _prepare_extraction(
         text=query,
         exclusions=exclusions,
         exclusion_warnings=exclusion_warnings,
+        exclusion_targets=exclusion_targets,
+        per_variable_exclusions=per_variable_exclusions,
         name_corrections=name_corrections,
     )
 
 
-def _disclosed_exclusions(text: str, left_out: Sequence[LeftOut]) -> tuple[LeftOut, ...]:
-    """The `left_out` stretches a refusal reports: each but those that leave out sources alone
-    (`SourceScan.source_stretches`), which refuse nothing a warning should name."""
-    scan = scan_sources(
-        text,
-        dictionary=source_dictionary(current_catalogue()),
-        measures=[],
-        entity_spans=[],
-        index=get_index(),
-        left_out=left_out,
+def _disclosed_exclusions(left_out: Sequence[LeftOut]) -> tuple[LeftOut, ...]:
+    """The `left_out` stretches an answer with no part reports: each but those that leave out
+    sources alone (`source_scan.left_out_sources`), which leave nothing a warning should
+    name."""
+    dictionary, index = source_dictionary(current_catalogue()), get_index()
+    return tuple(
+        stretch
+        for stretch in left_out
+        if not left_out_sources(stretch, dictionary=dictionary, index=index)[1]
     )
-    return tuple(stretch for stretch in left_out if stretch.phrase not in scan.source_stretches)
 
 
 def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query: str) -> None:
@@ -1375,7 +1420,7 @@ async def _handle_single_variable(
         per_variable_dropped_qualifier_phrases=[
             prep.dropped_phrases_of(i) for i in range(len(prep.unique))
         ],
-        exclusions=prep.exclusions,
+        per_variable_exclusions=prep.per_variable_exclusions,
         query_text=prep.text,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
@@ -1512,7 +1557,7 @@ async def _handle_multi_variable(
         per_variable_dropped_qualifier_phrases=[
             prep.dropped_phrases_of(i) for i in range(len(prep.unique))
         ],
-        exclusions=prep.exclusions,
+        per_variable_exclusions=prep.per_variable_exclusions,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_open_axes=prep.per_variable_open_axes,
@@ -1590,23 +1635,14 @@ async def handle(
     yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing["extract"])
     extraction = extract_result.extraction
 
-    # Text left without a measure once a stretch is blanked names nothing to answer, so it
-    # refuses and says what went unapplied, whatever else the rest reads as.
-    if left_out and (extraction.kind != "resolution" or not extraction.variables):
-        unread = _disclosed_exclusions(text, left_out)
-        async with aclosing(
-            _no_variables_response(
-                query,
-                start_ms=start_ms,
-                params=params,
-                extract_usage=extract_usage,
-                timing=timing,
-                warnings=[_exclusion_warning(stretch.phrase) for stretch in unread],
-            )
-        ) as events:
-            async for ev in events:
-                yield ev
-        return
+    # An answer with no part says what the query asked to leave out and it did not apply,
+    # beside the disposition the rest of the query reads as: text left without a measure once
+    # a stretch is blanked refuses as any query naming none does.
+    unapplied = (
+        [_exclusion_warning(stretch.phrase) for stretch in _disclosed_exclusions(left_out)]
+        if left_out and (extraction.kind != "resolution" or not extraction.variables)
+        else []
+    )
 
     # `extract` turns a catalogue or requires-analysis question that names a
     # measure into a resolution.
@@ -1621,6 +1657,7 @@ async def handle(
                 extract_usage=extract_usage,
                 timing=timing,
                 scope=scope,
+                warnings=unapplied,
             )
         ) as events:
             async for ev in events:
@@ -1635,6 +1672,7 @@ async def handle(
                 params=params,
                 extract_usage=extract_usage,
                 timing=timing,
+                warnings=unapplied,
             )
         ) as events:
             async for ev in events:
