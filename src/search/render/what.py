@@ -328,7 +328,17 @@ _RATIO_WORDS = frozenset(
     {"%", "percent", "percentage", "prevalence", "share of", "proportion of", "fraction of"}
 )
 _PER_WORDS = frozenset(
-    {"per capita", "per person", "per 100", "per 1,000", "per 1000", "per inhabitant"}
+    {
+        "per capita",
+        "per person",
+        "per 100",
+        "per 1,000",
+        "per 1000",
+        "per 10,000",
+        "per million",
+        "per 5 million",
+        "per inhabitant",
+    }
 )
 
 
@@ -392,25 +402,26 @@ def _unit_heading_phrase(
 ) -> UnitPhrase:
     """Return the unit phrase a heading states, empty when the unit leaves it alone.
 
-    A unit stays in the heading when it changes the magnitude and is no currency: "per
-    capita" for a per-head denominator (`is_per_head_denominator`, `Count_Person` or
-    `PerCapita`), "as a share of exports of goods, services and primary income", "in PPP
-    international dollars", or "in percent". A currency, whatever its code, is the
+    A unit stays in the heading when it changes the magnitude and is no currency: the base
+    of a rate ("per 1,000 people", `UnitClass.rate_phrase`), "per capita" for a per-head
+    denominator (`UnitClass.per_head`), "as a share of exports of goods, services and
+    primary income", "in PPP international dollars", or "in percent". A currency, whatever its code, is the
     byline's (`heading._byline_unit`), so a per-capita amount in euros reads "per capita"
     here and "current euros" there. Units outside these classes return empty.
     ``graph_heading_text`` is the heading so far when a graph name states the measure,
     and None when an authored noun or measure label does. A part a graph name already
     states ("CO2 emissions per capita") is left out, so no unit reads twice. An authored
     noun never names a unit, so it is not inspected. Before facets resolve (``facets``
-    None) only the per-head reading applies, since the shape alone fixes it. A unit whose
-    series disagree (``per_series``) has no class, though its denominator still reads.
+    None) only a `PerCapita` denominator reads, since it alone fixes the scale. A unit whose
+    series disagree (``per_series``) has no class, though a `PerCapita` or ratio denominator
+    still reads.
     A ratio whose dataset declares whose total it divides by (`_ratio_base_owner`) names
     that party in ``wording``'s noun: DAC2a's "as a share of the recipient's GNI", DAC1's
     "as a share of the provider's GNI".
 
     The phrase names the unit (`UnitPhrase.names_unit`) when it states a percent ("in
-    percent", "as a share of ...") or a purchasing-power unit. "per capita" and "relative
-    to ..." name only the denominator.
+    percent", "as a share of ..."), a rate's base, or a purchasing-power unit. "per capita"
+    and "relative to ..." name only the denominator.
     """
     unit = (facets or {}).get("unit")
     denominator = shape.measurement_denominator
@@ -419,12 +430,16 @@ def _unit_heading_phrase(
         denominator=denominator.ref if denominator is not None else None,
         currency_units=facet_currency_units(unit),
     )
+    names_per = _graph_text_names_any(graph_heading_text, _PER_WORDS)
     phrases: list[str] = []
-    if unit_class.per_head and not _graph_text_names_any(graph_heading_text, _PER_WORDS):
+    if unit_class.per_head and not names_per:
         phrases.append("per capita")
     if facets is None or not unit_class.changes_magnitude:
         return UnitPhrase(" ".join(phrases), names_unit=False)
     names_unit = False
+    if unit_class.rate_phrase is not None and not names_per:
+        phrases.append(unit_class.rate_phrase)
+        names_unit = True
     names_ratio = _graph_text_names_any(graph_heading_text, _RATIO_WORDS)
     if denominator is not None and unit_class.ratio_denominator is not None and not names_ratio:
         base = denominator_noun(denominator.ref) or _recase_words(

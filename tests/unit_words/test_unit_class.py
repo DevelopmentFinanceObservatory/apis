@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from dfo_spec_kit.units import Rate
 
 from unit_words.unit_class import UnitClass, classify_unit
 
@@ -116,6 +117,61 @@ _EXPORTS = "Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nomin
             UnitClass("other", "Year", None, per_head=False, ratio_denominator=None),
             False,
             id="unclassified-unit",
+        ),
+        pytest.param(
+            "Per1000Persons",
+            "Count_Person",
+            UnitClass(
+                "other",
+                "Per1000Persons",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                rate=Rate(1000, "people"),
+            ),
+            True,
+            id="crude-birth-rate-count-base-over-count-person",
+        ),
+        pytest.param(
+            "Per1000Persons",
+            "PerCapita",
+            UnitClass(
+                "other",
+                "Per1000Persons",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                rate=Rate(1000, "people"),
+            ),
+            True,
+            id="count-base-clears-a-per-capita-denominator",
+        ),
+        pytest.param(
+            "Per1000LiveBirths",
+            "Count_BirthEvent_LiveBirth",
+            UnitClass(
+                "other",
+                "Per1000LiveBirths",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                rate=Rate(1000, "live births"),
+            ),
+            True,
+            id="count-base-takes-the-place-of-a-ratio-denominator",
+        ),
+        pytest.param(
+            "PersonPerSquareKilometer",
+            "Count_Person",
+            UnitClass(
+                "other",
+                "PersonPerSquareKilometer",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+            ),
+            False,
+            id="count-person-under-an-unknown-unit-reads-nothing",
         ),
         pytest.param(
             None,
