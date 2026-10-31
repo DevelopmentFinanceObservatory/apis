@@ -58,6 +58,7 @@ from datasets_api.analysis import (
 )
 from datasets_api.analysis_roots import LiveRootSource, newest_spec_version
 from datasets_api.app import classify_datasets_exception
+from datasets_api.backpressure import Backpressure
 from datasets_api.current import DefinitionDeps
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.analysis import (
@@ -66,14 +67,10 @@ from datasets_api.doors.analysis import (
     analysis_permit,
     analysis_stores,
 )
-from datasets_api.doors.definition import (
-    DefinitionBackpressure,
-    definition_deps,
-    inline_definition_deps,
-)
-from datasets_api.doors.mint_errors import MintBackpressure
+from datasets_api.doors.definition import definition_deps, inline_definition_deps
 from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
 from datasets_api.exports import resolve_endpoint
+from datasets_api.operation_store import OperationBacklogFull
 from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.trace import get_trace_id
@@ -229,7 +226,7 @@ def newest_not_ready_spec(exc: NewestNotReady) -> ProblemSpec:
 
 
 # The Datasets refusals that say the surface is at capacity, which no stored state explains.
-_CAPACITY_REFUSALS = (MintBackpressure, DefinitionBackpressure)
+_CAPACITY_REFUSALS = (Backpressure, OperationBacklogFull)
 
 
 def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:

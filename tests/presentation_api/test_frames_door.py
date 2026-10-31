@@ -21,9 +21,10 @@ from assembler.ports import FrameRef, FrameUnavailable
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
 from dataset_store.snapshot import SnapshotRevoked
 from datasets_api.allowance import AllowanceExhausted
-from datasets_api.doors.definition import DefinitionBackpressure, SpecNotFound
+from datasets_api.doors.definition import SpecNotFound
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import RefreshRebuildFailed
+from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from materialise.reshape import ColumnUnknownError
@@ -516,13 +517,13 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             id="mint-backpressure",
         ),
         pytest.param(
-            DefinitionBackpressure(),
+            OperationBacklogFull(in_flight=1, limit=1),
             503,
             "service_unavailable",
             True,
             "busy",
             True,
-            id="definition-backpressure",
+            id="operation-backlog-full",
         ),
         pytest.param(
             AllowanceExhausted(kind="card", limit=1, now=datetime.now(UTC)),

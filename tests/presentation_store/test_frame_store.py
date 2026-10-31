@@ -22,7 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
-from dfo_frame_grammar.grammar import FrameError
+from dfo_frame_grammar.grammar import FrameError, derive_columns
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -476,6 +476,13 @@ class _LegacyReferenceWriter:
 
 
 # -- Fixtures -----------------------------------------------------------
+
+
+def _frame1_with(**members: object) -> bytes:
+    """The malaria frame1 document with `members` replaced; a `None` member is left out."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    doc.update(members)
+    return json.dumps({key: value for key, value in doc.items() if value is not None}).encode()
 
 
 def _frame_bytes() -> bytes:
@@ -938,6 +945,16 @@ def _stored_cell(data: bytes, name: str, cell: object) -> bytes:
         ),
         pytest.param("unit", {"composed": "not json"}, id="composed-not-json"),
         pytest.param("unit", {"composed": "[" * 100_000}, id="composed-past-the-parser"),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":' + "9" * 5000 + ',"denominator":"USD"}'},
+            id="composed-past-the-digit-limit",
+        ),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":"a","numerator":"b","denominator":"USD"}'},
+            id="composed-repeats-a-member",
+        ),
         pytest.param("unit", {"composed": '"USD"'}, id="composed-a-ref"),
         pytest.param("unit", {"composed": "null"}, id="composed-null"),
         pytest.param("unit", {"composed": '{"numerator":"USD"}'}, id="composed-one-side"),
@@ -974,8 +991,6 @@ def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(
         pytest.param("unit", ["USD"], id="unit-a-list"),
         pytest.param("unit", {"currency": "USD"}, id="unit-no-prices"),
         pytest.param("unit", {"numerator": "USD"}, id="unit-one-side"),
-        pytest.param("recipient", 3, id="dimension-a-number"),
-        pytest.param("recipient", ["country/ETH"], id="dimension-a-list"),
         pytest.param("time_period", None, id="period-null"),
         pytest.param("time_period", 2020, id="period-a-number"),
         pytest.param("time_period", ["2020"], id="period-a-list"),
@@ -1022,6 +1037,13 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
         pytest.param(b"{}", id="no-columns"),
         pytest.param(b'{"columns": 3, "rows": []}', id="columns-not-a-list"),
         pytest.param(b'{"columns": ["a", "b"], "rows": [[1]]}', id="short-row"),
+        pytest.param(b"[" + b"9" * 5000 + b"]", id="integer-past-the-digit-limit"),
+        pytest.param(_frame1_with(frame_version="frame2"), id="another-version"),
+        pytest.param(_frame1_with(frame_version=None), id="no-version"),
+        pytest.param(
+            _frame1_with(columns=["recipient", "stat_var"], rows=[]), id="columns-not-derived"
+        ),
+        pytest.param(_frame1_with(rows=[["dcid:X"]]), id="a-short-row"),
     ],
 )
 def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: bytes):
@@ -1800,9 +1822,18 @@ def test_load_labels_unit_refs_under_their_own_cap_after_the_dimension_refs(monk
     }
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "columns": list(derive_columns(["recipient"])),
         "rows": [
-            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            [
+                "dcid:MalariaGrantDisbursements",
+                "country/ETH",
+                period,
+                1.0,
+                unit,
+                None,
+                "src_oecd_dac",
+                None,
+            ]
             for period, unit in units.items()
         ],
     }
@@ -1894,9 +1925,18 @@ def test_load_labels_each_side_of_a_composed_unit(monkeypatch, caps, graph_refs,
     }
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "columns": list(derive_columns(["recipient"])),
         "rows": [
-            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            [
+                "dcid:MalariaGrantDisbursements",
+                "country/ETH",
+                period,
+                1.0,
+                unit,
+                None,
+                "src_oecd_dac",
+                None,
+            ]
             for period, unit in units.items()
         ],
     }
@@ -2026,6 +2066,9 @@ class _RecordReader:
 
 _COMPUTED_COLUMNS = ["stat_var", "recipient", "time_period", "value", "unit", "provenance"]
 
+# The columns every frame holds, beside its role columns.
+_FRAME_COLUMNS = frozenset(derive_columns(()))
+
 
 def _computed_frame_store(
     *,
@@ -2045,10 +2088,14 @@ def _computed_frame_store(
     `continuations`, over a graph that also names `graph_labels` and stamps `generation`'s
     token, on `clock`."""
     frame_ref = FrameRef(spec_id="ops_" + "a" * 32, content_version="ocv_" + "b" * 32)
+    # The stored document holds the derived column order, each column `columns` leaves out null.
+    derived = derive_columns([column for column in columns if column not in _FRAME_COLUMNS])
     doc = {
         "frame_version": "frame1",
-        "columns": columns,
-        "rows": rows,
+        "columns": list(derived),
+        "rows": [
+            [dict(zip(columns, row, strict=True)).get(column) for column in derived] for row in rows
+        ],
     }
     artifacts = _FakeArtifactStore()
     digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))

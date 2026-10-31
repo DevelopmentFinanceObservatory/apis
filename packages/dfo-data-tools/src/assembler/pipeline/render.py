@@ -42,6 +42,7 @@ from assembler.pipeline.write import (
     _utc_now,
 )
 from assembler.ports import (
+    TRANSIENT_FRAME_REASONS,
     FrameRef,
     FrameStore,
     FrameUnavailable,
@@ -115,7 +116,9 @@ def render_on_frame(
             return resolved_frame
         try:
             return frame_store.load(frame_ref=stored_ref)
-        except FrameUnavailable:
+        except FrameUnavailable as exc:
+            if exc.reason in TRANSIENT_FRAME_REASONS:
+                raise
             return None
 
     # An empty patch merges to the stored intent. `merge_intent` refuses a patch naming the

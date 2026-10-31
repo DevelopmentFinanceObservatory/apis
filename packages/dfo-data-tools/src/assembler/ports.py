@@ -18,6 +18,7 @@ from dfo_platform.caller import Caller
 from materialise.continued_series import ContinuedSeries
 
 __all__ = [
+    "TRANSIENT_FRAME_REASONS",
     "CompositionAppend",
     "CompositionMembership",
     "DimensionView",
@@ -194,6 +195,10 @@ FrameUnavailableReason = Literal[
     "busy",
     "unknown",
 ]
+
+# The reasons a later read of the same frame may pass: the store failed to answer, or the
+# Datasets surface was at capacity. Every other reason says the frame cannot be loaded.
+TRANSIENT_FRAME_REASONS: frozenset[FrameUnavailableReason] = frozenset({"io", "busy"})
 
 
 class FrameUnavailable(Exception):

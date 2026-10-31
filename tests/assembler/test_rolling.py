@@ -743,7 +743,7 @@ def _left_out(*recipients: str) -> tuple[LeftOutSeries, ...]:
             (*_FOUR[:2], "country/MLI"), None, ["Ethiopia", "Ghana", "Mali"], id="one-joins"
         ),
         pytest.param(
-            (*_FOUR[:2], "country/MLI"), "io", ["Ethiopia", "Ghana"], id="stored-frame-gone"
+            (*_FOUR[:2], "country/MLI"), "expired", ["Ethiopia", "Ghana"], id="stored-frame-gone"
         ),
         pytest.param(
             (*_FOUR[:2], "country/MLI"),
@@ -790,6 +790,34 @@ def test_a_select_of_every_value_follows_the_target_and_names_the_left_out_serie
             {**stored_intent, "frame_ref": _intent(target, member="", recipients=[])["frame_ref"]},
         )
     assert excinfo.value.pointer == "/select/recipient"
+
+
+@pytest.mark.parametrize("reason", ["io", "busy"])
+def test_a_stored_frame_a_retry_may_load_refuses_the_render(
+    monkeypatch, write, render, frame_store, reason
+):
+    """Only a frame that cannot be loaded leaves the select to the target; a read a retry may
+    pass refuses with its own reason and wait."""
+    stored = _frame(dict.fromkeys(_FOUR, ("2019/2024",)))
+    created = write(stored, _intent(stored, member="bar_chart", recipients=list(_FOUR)))
+    target = _frame(
+        dict.fromkeys(_FOUR[:2], ("2020/2025",)),
+        version="2",
+        anchor=RollingAnchor(period="2025", rule="half1", left_out=_left_out(*_FOUR[2:])),
+    )
+    load = frame_store.load
+
+    def refuse_stored(*, frame_ref: FrameRef) -> ResolvedFrame:
+        if frame_ref == stored.frame_ref:
+            raise FrameUnavailable(reason=reason, detail="exemplar", retry_after_s=1.0)
+        return load(frame_ref=frame_ref)
+
+    monkeypatch.setattr(frame_store, "load", refuse_stored)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        render(created, target)
+
+    assert (excinfo.value.reason, excinfo.value.retry_after_s) == (reason, 1.0)
 
 
 def test_a_select_of_some_values_drops_the_value_the_target_lacks_and_names_it(write, render):

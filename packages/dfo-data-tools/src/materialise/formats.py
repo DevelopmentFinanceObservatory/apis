@@ -42,6 +42,7 @@ from dfo_frame_grammar import (
     canonical_frame_schema,
     stream_canonical_frame_bytes,
     unit_cell_to_json,
+    unit_cells,
     unit_codes,
 )
 from dfo_frame_grammar.grammar import (
@@ -52,8 +53,6 @@ from dfo_frame_grammar.grammar import (
     UNIT_COLUMN,
     VALUE_COLUMN,
     ComposedUnit,
-    FrameError,
-    UnitCell,
     UnitRequest,
     unit_cell_from_json,
 )
@@ -953,7 +952,7 @@ def _column_cells(table: pa.Table, name: str, *, json_form: bool) -> list[object
     column = table.column(name)
     if name == UNIT_COLUMN:
         codes = unit_codes(column)
-        cells = [_stored_unit_cell(value) for value in column.take(codes.first_rows).to_pylist()]
+        cells = unit_cells(column, codes)
         distinct: list[object] = (
             [_parsed_jcs(unit_cell_to_json(cell)) for cell in cells] if json_form else list(cells)
         )
@@ -964,44 +963,6 @@ def _column_cells(table: pa.Table, name: str, *, json_form: bool) -> list[object
     if pa.types.is_dictionary(column.type) or pa.types.is_string(column.type):
         return _string_cells(column)
     return column.to_pylist()
-
-
-def _stored_unit_cell(value: object) -> UnitCell | None:
-    """The cell a canonical `unit` struct value stores, read through `unit_cell_from_json`, since
-    an artifact's bytes can hold any cell its schema admits.
-
-    Raises:
-        FrameError: `invalid_unit` for a struct with no member or more than one, or a `composed`
-            member that is not a composed unit's JSON text; what `unit_cell_from_json` raises
-            for any other member outside its form.
-    """
-    if value is None:
-        return None
-    members = {
-        name: member
-        for name, member in cast("Mapping[str, object]", value).items()
-        if member is not None
-    }
-    if len(members) != 1:
-        raise FrameError("invalid_unit", f"unit struct holds members {sorted(members)!r}")
-    if "composed" in members:
-        return _stored_composed_unit(cast(str, members["composed"]))
-    if "request" in members:
-        request = cast("Mapping[str, object]", members["request"])
-        return unit_cell_from_json(
-            {name: part for name, part in request.items() if part is not None}
-        )
-    return unit_cell_from_json(members["ref"])
-
-
-def _stored_composed_unit(text: str) -> ComposedUnit:
-    try:
-        cell = unit_cell_from_json(json.loads(text))
-    except (json.JSONDecodeError, RecursionError) as exc:
-        raise FrameError("invalid_unit", "composed unit is not JSON text") from exc
-    if not isinstance(cell, ComposedUnit):
-        raise FrameError("invalid_unit", f"composed member holds {type(cell).__name__}")
-    return cell
 
 
 def _string_cells(column: pa.ChunkedArray) -> list[object]:

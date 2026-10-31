@@ -158,12 +158,23 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Protocol, TypeGuard, cast
+from typing import Protocol, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN, Frame
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX, FrameError
+from dfo_frame_grammar import (
+    STAT_VAR_COLUMN,
+    TIME_PERIOD_COLUMN,
+    UNIT_COLUMN,
+    Frame,
+    canonical_frame_schema,
+)
+from dfo_frame_grammar.grammar import (
+    FRAME_VERSION,
+    STAT_VAR_REF_PREFIX,
+    FrameError,
+    unit_cell_from_json,
+)
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -405,33 +416,52 @@ def _io_failure(
     )
 
 
-# What the parsers raise for bytes they cannot parse, and `FrameError` for a cell that fails its
-# stored shape. `RecursionError` is `json.loads` on nesting past the parser.
-_MALFORMED_CONTENT = (
-    FrameError,
-    pa.ArrowException,
-    OSError,
-    json.JSONDecodeError,
-    UnicodeDecodeError,
-    RecursionError,
-)
+# What the Parquet and Arrow readers raise for bytes they cannot read, a string's bytes that are
+# not UTF-8, and `FrameError` for content outside the grammar's forms.
+_MALFORMED_CONTENT = (FrameError, pa.ArrowException, OSError, UnicodeDecodeError)
 
 # How long a client waits before it retries a frame this instance had no memory to decode.
 _DECODE_RETRY_AFTER_S = 30
 
 
-def _is_frame_document(doc: object) -> TypeGuard[Mapping[str, object]]:
-    """Whether `doc`, parsed from a frame1 document, has the shape every reader of a frame
-    takes: named columns, and rows of one cell per column."""
-    if not isinstance(doc, dict):
-        return False
+def _frame1_document(data: bytes) -> Mapping[str, object]:
+    """The frame1 document `data` holds, as `read_frame1_table` reads one: a JSON object at
+    `FRAME_VERSION` whose columns pass the canonical frame's column rule (`_check_columns`) and
+    whose rows hold one cell per column. Its `time_period` cells are strings and its `unit` cells
+    pass `unit_cell_from_json`, the two the structural view reads past what a canonical frame's
+    schema fixes.
+
+    Raises:
+        FrameError: For any other document. `ValueError` from the parse, which covers
+            `JSONDecodeError` and an integer past Python's digit limit, and `RecursionError`
+            for nesting past the parser, are raised as `schema_violation`.
+    """
+    try:
+        doc = json.loads(data)
+    except (ValueError, RecursionError) as exc:
+        raise FrameError("schema_violation", f"not JSON: {type(exc).__name__}") from exc
+    if not isinstance(doc, dict) or doc.get("frame_version") != FRAME_VERSION:
+        raise FrameError("schema_violation", f"not a {FRAME_VERSION} document")
     columns, rows = doc.get("columns"), doc.get("rows")
-    return (
-        isinstance(columns, list)
-        and all(isinstance(column, str) for column in columns)
-        and isinstance(rows, list)
-        and all(isinstance(row, list) and len(row) == len(columns) for row in rows)
-    )
+    if not (isinstance(columns, list) and all(isinstance(column, str) for column in columns)):
+        raise FrameError("schema_violation", "frame1 columns are not a list of names")
+    _check_columns(tuple(columns))
+    if not (isinstance(rows, list) and all(isinstance(row, list) for row in rows)):
+        raise FrameError("schema_violation", "frame1 rows are not a list of lists")
+    period, unit = columns.index(TIME_PERIOD_COLUMN), columns.index(UNIT_COLUMN)
+    for row in rows:
+        if len(row) != len(columns):
+            raise FrameError("schema_violation", f"a row holds {len(row)} of {len(columns)} cells")
+        if not isinstance(row[period], str):
+            raise FrameError("invalid_time_period", f"time_period cell holds {row[period]!r}")
+        unit_cell_from_json(row[unit])
+    return doc
+
+
+def _check_columns(columns: tuple[str, ...]) -> None:
+    """Refuse `columns` unless they are what `grammar.derive_columns` gives for their own role
+    columns, the rule `Frame.from_table` applies to a canonical frame."""
+    Frame.from_table(columns=columns, table=canonical_frame_schema(columns).empty_table())
 
 
 @contextmanager
@@ -440,8 +470,8 @@ def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
 
     The bytes are in memory and passed their digest check, so no failure to read them is a failed
     read. Malformed content refuses `missing_rendering`, logged with the traceback: the parsers'
-    errors for bytes they cannot parse, and `FrameError` from the sites that check each stored
-    cell. Any other exception is a defect, which reaches `internal_error` with a note naming the
+    errors for bytes they cannot parse, and `FrameError` for content outside the grammar's
+    forms. Any other exception is a defect, which reaches `internal_error` with a note naming the
     digest. `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing about the bytes,
     so it refuses the retryable `io` and names a wait (`_DECODE_RETRY_AFTER_S`), since the next
     try needs memory this instance may not have."""
@@ -493,19 +523,21 @@ def _decode_frame(
     """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
     document parsed, at its byte length, or a canonical frame built into one, at
     `_document_bytes`. The grammar checks a canonical frame's schema, and `max_rows` its footer's
-    row count, before any row is decoded. `_decoding` refuses what does not decode."""
+    row count, before any row is decoded. A null `time_period` refuses here, and an unparseable
+    one in the structural view; the other cells are trusted as the grammar's writer wrote them.
+    `_decoding` refuses what does not decode."""
     with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            parsed = json.loads(data)
-            if not _is_frame_document(parsed):
-                raise FrameError("schema_violation", "not a frame1 document")
-            return parsed, len(data)
+            return _frame1_document(data), len(data)
         rows = pq.read_metadata(pa.BufferReader(data)).num_rows
         if rows > max_rows:
             raise _over_row_bound(location, rows=rows, max_rows=max_rows)
         schema = pq.read_schema(pa.BufferReader(data))
         Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
-        doc = canonical_frame_document(read_canonical_frame_table(data))
+        table = read_canonical_frame_table(data)
+        if table.column(TIME_PERIOD_COLUMN).null_count:
+            raise FrameError("invalid_time_period", "a time_period cell is null")
+        doc = canonical_frame_document(table)
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
 

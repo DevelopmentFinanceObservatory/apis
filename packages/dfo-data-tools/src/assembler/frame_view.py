@@ -17,7 +17,6 @@ from dfo_frame_grammar import (
     VALUE_COLUMN,
     parse_time_period,
 )
-from dfo_frame_grammar.grammar import FrameError, unit_cell_from_json
 
 from assembler.errors import BindingInvalid
 from assembler.limits import LABEL_MAX, PER_DIMENSION_LISTING_CAP
@@ -131,16 +130,13 @@ def compute_structural_view(
     method stays listed as a value a select may bind.
 
     Raises:
-        FrameError: A stored cell this view reads is malformed (`_check_cell`).
+        FrameError: A `time_period` cell `parse_time_period` cannot read. The other cells are
+            trusted as the grammar's writer wrote them.
         BindingInvalid: The frame's units do not read apart, or its periods bind no one grain.
     """
     columns = tuple(cast("Sequence[str]", frame["columns"]))
     rows = tuple(cast("Sequence[Sequence[object]]", frame["rows"]))
     index_by_column = {column: position for position, column in enumerate(columns)}
-    for index, column in enumerate(columns):
-        if column == TIME_PERIOD_COLUMN or column not in _NON_DIMENSION_COLUMNS:
-            for cell in {id(row[index]): row[index] for row in rows}.values():
-                _check_cell(column, cell)
     if UNIT_COLUMN in index_by_column:
         unit_index = index_by_column[UNIT_COLUMN]
         shared = shared_unit_key(cells=tuple(row[unit_index] for row in rows))
@@ -183,23 +179,6 @@ def compute_structural_view(
         span=span,
         series_count=series_count,
     )
-
-
-def _check_cell(column: str, cell: object) -> None:
-    """Refuse a stored cell this view cannot read. A `time_period` cell is a string, which
-    `parse_time_period` reads, a `unit` cell the JSON form `unit_cell_from_json` reads, and any
-    other dimension's cell a string or null.
-
-    Raises:
-        FrameError: For any other cell.
-    """
-    if column == UNIT_COLUMN:
-        unit_cell_from_json(cell)
-    elif column == TIME_PERIOD_COLUMN:
-        if not isinstance(cell, str):
-            raise FrameError("invalid_time_period", f"time_period cell holds {cell!r}")
-    elif cell is not None and not isinstance(cell, str):
-        raise FrameError("schema_violation", f"{column} cell holds {type(cell).__name__}")
 
 
 def _dimension_view(

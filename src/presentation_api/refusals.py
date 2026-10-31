@@ -11,7 +11,7 @@ from typing import get_args
 from fastapi.exceptions import RequestValidationError
 
 from assembler.errors import BindingInvalid, FrameUnavailable
-from assembler.ports import FrameUnavailableReason
+from assembler.ports import TRANSIENT_FRAME_REASONS, FrameUnavailableReason
 from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec, refused
 from dfo_platform.codes import registered_status
 from dfo_platform.validation import validation_problem
@@ -79,6 +79,12 @@ _FRAME_UNAVAILABLE_OUTCOME: dict[FrameUnavailableReason, tuple[str, bool]] = {
     "recipe_unreadable": ("internal_error", False),
 }
 
+if {
+    reason
+    for reason, (code, _) in _FRAME_UNAVAILABLE_OUTCOME.items()
+    if code == "service_unavailable"
+} != TRANSIENT_FRAME_REASONS:
+    raise AssertionError("the service_unavailable reasons are not TRANSIENT_FRAME_REASONS")
 if set(_FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
     # Fail at import if a reason and its outcome drift apart.
     raise AssertionError(
