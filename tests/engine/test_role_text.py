@@ -609,24 +609,40 @@ class TestDebtorPossessive:
     @pytest.mark.parametrize(
         ("query", "measures", "place"),
         [
-            # A debt measured against a quantity, or a creditor cue.
-            ("Kenya's debt to GDP ratio", ["debt to GDP ratio"], "Kenya"),
-            ("debt owed to China", ["debt"], "China"),
-            # No possessive over the place.
-            ("external debt of Kenya", ["external debt"], "Kenya"),
-            # A possessive claim on another party's debt.
-            ("Kenya's share of external debt", ["external debt"], "Kenya"),
-            # A creditor's claim on the debt.
+            # `_owns_debt`: a possessed phrase that names no debt, or a claim or action word after
+            # the debt noun; or a second measure.
             ("China's debt claims", ["debt claims"], "China"),
             ("China's debt exposure", ["debt exposure"], "China"),
-            ("China's debt exposure", ["debt"], "China"),
             ("China's debt holdings", ["debt holdings"], "China"),
             ("China's debt portfolio", ["debt portfolio"], "China"),
-            # A possessive over no debt, or a second measure.
             ("China's lending to Africa", ["lending"], "China"),
             ("Germany's aid", ["aid"], "Germany"),
             ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
-            # A creditor or lender word, in any sense: the extraction's axis stands.
+            ("China's debt receivables", ["debt receivables"], "China"),
+            ("China's debt lending", ["debt lending"], "China"),
+            ("China's debt assets", ["debt assets"], "China"),
+            ("China's debt claim", ["debt claim"], "China"),
+            ("China's debt credits", ["debt credits"], "China"),
+            # `_bare_possessive`: words before the possessive, or no possessive over the place.
+            ("debt owed to China", ["debt"], "China"),
+            ("external debt of Kenya", ["external debt"], "Kenya"),
+            ("How China's debt by debtor has changed since 2010", ["debt"], "China"),
+            ("Which countries owe the most of China's debt", ["debt"], "China"),
+            (
+                "Which African countries owe the most of China's outstanding debt",
+                ["outstanding debt"],
+                "China",
+            ),
+            ("rank countries by how much of China's debt they owe", ["debt"], "China"),
+            ("Which countries owe China's debt by creditor", ["debt"], "China"),
+            (
+                "Which countries does Kenya's gross debt service go to, total",
+                ["gross debt service"],
+                "Kenya",
+            ),
+            # `_bare_possessive`: words after the possessive beyond the measure's own. Each row is a
+            # probed query that once moved its possessor.
+            ("China's debt exposure", ["debt"], "China"),
             ("Kenya's debt by creditor", ["debt"], "Kenya"),
             ("Kenya's debt by year and creditor", ["debt"], "Kenya"),
             ("Kenya's debt by lenders", ["debt"], "Kenya"),
@@ -668,7 +684,6 @@ class TestDebtorPossessive:
             ("Paris Club creditors' debt", ["debt"], "Paris Club creditors"),
             ("Kenya's debt in USD", ["debt"], "Kenya"),
             ("Kenya's debt by creditor and Japan", ["debt"], "Kenya"),
-            # A role noun of the debtor's end: the extraction's axis stands.
             ("China's debt by debtor country", ["debt"], "China"),
             ("China's debt for each debtor country", ["debt"], "China"),
             ("China's debt, every borrower", ["debt"], "China"),
@@ -690,7 +705,6 @@ class TestDebtorPossessive:
             ("China's debt by debtor country last decade", ["debt"], "China"),
             ("China's debt by debtor, 2020", ["debt"], "China"),
             ("China's debt by debtor governments in 2020", ["debt"], "China"),
-            ("How China's debt by debtor has changed since 2010", ["debt"], "China"),
             ("China's debt by debtor is largest in Angola", ["debt"], "China"),
             ("China's debt by debtor when it peaked", ["debt"], "China"),
             ("China's debt by debtor then sector", ["debt"], "China"),
@@ -720,19 +734,9 @@ class TestDebtorPossessive:
             ("Kenya's external debt by debtor country type", ["external debt"], "Kenya"),
             ("World Bank's debt to recipients", ["debt"], "World Bank"),
             ("Kenya's debt beneficiary", ["debt"], "Kenya"),
-            # A debtor named by an owe or a debtor verb and by.
-            ("Which countries owe the most of China's debt", ["debt"], "China"),
-            (
-                "Which African countries owe the most of China's outstanding debt",
-                ["outstanding debt"],
-                "China",
-            ),
-            ("rank countries by how much of China's debt they owe", ["debt"], "China"),
             ("China's debt owed by African countries", ["debt"], "China"),
             ("China's debt owed by low-income countries", ["debt"], "China"),
-            ("Which countries owe China's debt by creditor", ["debt"], "China"),
             ("China's debt by creditor owed by Africa", ["debt"], "China"),
-            # Any other words beside the possessive debt phrase.
             ("China's debt extended to each country", ["debt"], "China"),
             ("China's debt extended to every country", ["debt"], "China"),
             ("China's debt disbursed to each country", ["debt"], "China"),
@@ -763,11 +767,6 @@ class TestDebtorPossessive:
             ("China's debt service paid by Zambia", ["debt service"], "China"),
             ("China's debt service payments from Africa", ["debt service"], "China"),
             ("China's debt service by country", ["debt service"], "China"),
-            (
-                "Which countries does Kenya's gross debt service go to, total",
-                ["gross debt service"],
-                "Kenya",
-            ),
             ("Kenya's debt in 2020", ["debt"], "Kenya"),
             ("Kenya's debt reduction target", ["debt"], "Kenya"),
             ("Kenya's debt by destination of funds", ["debt"], "Kenya"),
@@ -777,13 +776,17 @@ class TestDebtorPossessive:
             ("IMF's debt portfolio in Africa", ["debt"], "IMF"),
             ("The IMF's outstanding debt from Africa", ["debt"], "IMF"),
             ("World Bank's debt outstanding from borrowing countries", ["debt"], "World Bank"),
-            # A creditor's claim on the debt.
-            ("China's debt receivables", ["debt receivables"], "China"),
-            ("China's debt lending", ["debt lending"], "China"),
-            ("China's debt assets", ["debt assets"], "China"),
-            ("China's debt claim", ["debt claim"], "China"),
-            ("China's debt credits", ["debt credits"], "China"),
             ("China's debt claims on Africa", ["debt"], "China"),
+            # `_bare_possessive`: a measure word that names a party of the debt.
+            ("China's official creditor debt", ["official creditor debt"], "China"),
+            ("Kenya's debt by creditor", ["debt by creditor"], "Kenya"),
+            ("China's debtor debt", ["debtor debt"], "China"),
+            ("China's lender debt stock", ["lender debt stock"], "China"),
+            ("Kenya's debt by creditor-country", ["debt by creditor-country"], "Kenya"),
+            # `_owns_debt`: a possessive claim on another party's debt.
+            ("Kenya's share of external debt", ["share of external debt"], "Kenya"),
+            # `_follows_creditor_cue`: a creditor cue whose object is no place.
+            ("Kenya's debt to GDP ratio", ["debt to GDP ratio"], "Kenya"),
         ],
     )
     def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:

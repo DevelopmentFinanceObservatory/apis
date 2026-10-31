@@ -308,133 +308,83 @@ def _extracted_axes(kenya: str, china: str) -> dict[str, list[str]]:
     }
 
 
+def _place(name: str, axis: str, span: str | None = None, cue: str | None = None):
+    return ExtractedEntity(text=name, span=span or name, flow_role=axis, role_span=cue)
+
+
 @pytest.mark.parametrize(
-    ("query", "kenya"),
+    ("query", "measure", "entities", "over", "expected"),
     [
-        # The query is the possessive and its measure alone, so Kenya is the debtor.
-        ("Kenya's debt service", "destination"),
-        # Any other words leave the extraction's reading standing.
-        ("Which creditors does Kenya's debt service go to", "origin"),
-        ("Which countries does Kenya's debt service go to", "origin"),
+        # A bare debt possessive sets its place's role and nothing else.
+        (
+            "Kenya's debt service",
+            "debt service",
+            [_place("Kenya", "origin", cue="'s")],
+            "destination",
+            {"Kenya": "destination"},
+        ),
+        # Any other words leave the possessor where the extraction put it.
+        (
+            "Which countries does Kenya's debt service go to",
+            "debt service",
+            [_place("Kenya", "origin", cue="'s")],
+            "destination",
+            {"Kenya": "origin"},
+        ),
+        # Receipt wording sets the recipient's role alone: the other places and the rank keep
+        # the extraction's ends.
+        (
+            "French ODA received by Kenya",
+            "ODA",
+            [_place("France", "origin", span="French"), _place("Kenya", "origin")],
+            "destination",
+            {"France": "origin", "Kenya": "destination"},
+        ),
+        (
+            "Top donors of ODA received by Kenya",
+            "ODA",
+            [_place("Kenya", "origin")],
+            "origin",
+            {"Kenya": "destination"},
+        ),
+        (
+            "Kenya's ODA vs ODA received by Uganda",
+            "ODA",
+            [_place("Kenya", "destination", cue="'s"), _place("Uganda", "origin")],
+            "destination",
+            {"Kenya": "destination", "Uganda": "destination"},
+        ),
+        (
+            "Ethiopian ODA vs ODA received by Kenya",
+            "ODA",
+            [_place("Ethiopia", "destination", span="Ethiopian"), _place("Kenya", "origin")],
+            "destination",
+            {"Ethiopia": "destination", "Kenya": "destination"},
+        ),
     ],
 )
-def test_a_debtor_possessive_sets_its_role_and_swaps_no_end(query, kenya):
-    """An extraction that puts Kenya on origin and ranks over destination keeps the rank's
-    axis: a possessive debtor (`role_text.debtor_possessive`) sets Kenya's role alone."""
+def test_query_wording_sets_only_its_own_places_role(query, measure, entities, over, expected):
+    """The query's wording sets the roles of the places it names (`role_text.receipt_axes`,
+    `role_text.debtor_possessive`). Every other place and every operation's axis keep the
+    extraction's reading."""
     extraction = Extraction(
         kind="resolution",
-        variables=["debt service"],
-        entities=[ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
-        operations=[
-            ExtractedOperation(verb="rank", variable=0, phrase="Which", over="destination")
-        ],
+        variables=[measure],
+        entities=entities,
+        operations=[ExtractedOperation(verb="rank", variable=0, phrase="top", over=over)],
     )
     result = ExtractionResult(
         extraction=extraction,
         qualifiers={},
-        operations={"debt service": (Operation(verb="rank", phrase="Which", over="destination"),)},
+        operations={measure: (Operation(verb="rank", phrase="top", over=over),)},
     )
 
     prep = _prepare_extraction(extraction, result, query=query)
 
-    assert _occurrences(prep.entity_roles) == {"Kenya": [(kenya, "Kenya")]}
-    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
-
-
-@pytest.mark.parametrize(
-    ("query", "france_span"),
-    [("French ODA received by Kenya", "French"), ("ODA received by Kenya, France", "France")],
-)
-def test_a_place_left_on_a_moved_places_axis_blocks_the_swap(query, france_span):
-    """Extracted with France and Kenya both on origin, the receipt wording moves Kenya alone.
-    France shares Kenya's extracted axis, so no end swaps and France keeps origin."""
-    roles = _prepared_roles(
-        [
-            ExtractedEntity(text="France", span=france_span, flow_role="origin"),
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin"),
-        ],
-        query=query,
-        measures=["ODA"],
-    )
-    assert _occurrences(roles) == {
-        "France": [("origin", france_span)],
-        "Kenya": [("destination", "Kenya")],
+    assert {name: [r.axis for r in rs] for name, rs in prep.entity_roles.items()} == {
+        name: [axis] for name, axis in expected.items()
     }
-
-
-def test_a_place_whose_cue_states_its_direction_keeps_its_end():
-    """In "largest aid from France received by Kenya" extracted with both places on origin,
-    the receipt wording moves Kenya alone: France's own "from" states its end, so neither
-    France nor the rank's axis swaps."""
-    query = "largest aid from France received by Kenya"
-    extraction = Extraction(
-        kind="resolution",
-        variables=["aid"],
-        entities=[
-            ExtractedEntity(text="France", span="France", flow_role="origin", role_span="from"),
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin"),
-        ],
-        operations=[
-            ExtractedOperation(verb="rank", variable=0, phrase="largest", over="destination")
-        ],
-    )
-    result = ExtractionResult(
-        extraction=extraction,
-        qualifiers={},
-        operations={"aid": (Operation(verb="rank", phrase="largest", over="destination"),)},
-    )
-
-    prep = _prepare_extraction(extraction, result, query=query)
-
-    assert _occurrences(prep.entity_roles) == {
-        "France": [("origin", "France")],
-        "Kenya": [("destination", "Kenya")],
-    }
-    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
-
-
-@pytest.mark.parametrize(
-    ("query", "france_cue", "kenya_cue"),
-    [
-        ("How much aid that France funds did Kenya receive", "funds", "receive"),
-        ("ODA funded by France and received by Kenya", "funded by", "received by"),
-    ],
-)
-def test_a_verb_cue_keeps_its_place_on_its_end(query, france_cue, kenya_cue):
-    """France's own verb cue states its end, so the receipt wording moves Kenya alone,
-    whatever words the cue takes."""
-    roles = _prepared_roles(
-        [
-            ExtractedEntity(text="France", span="France", flow_role="origin", role_span=france_cue),
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span=kenya_cue),
-        ],
-        query=query,
-        measures=["aid"],
-    )
-    assert {name: [role.axis for role in rs] for name, rs in roles.items()} == {
-        "France": ["origin"],
-        "Kenya": ["destination"],
-    }
-
-
-def test_a_cue_against_its_extracted_end_lets_the_whole_parse_swap():
-    """ "How much ODA did Kenya receive from France" extracted backwards puts France's
-    "from" on destination. The cue contradicts that end, so it protects nothing: the
-    receipt wording moves Kenya, and France swaps with it."""
-    roles = _prepared_roles(
-        [
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="receive"),
-            ExtractedEntity(
-                text="France", span="France", flow_role="destination", role_span="from"
-            ),
-        ],
-        query="How much ODA did Kenya receive from France",
-        measures=["official development assistance"],
-    )
-    assert _occurrences(roles) == {
-        "Kenya": [("destination", "Kenya")],
-        "France": [("origin", "France")],
-    }
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == [over]
 
 
 class TestRawTextDoorReadsDebtWording:

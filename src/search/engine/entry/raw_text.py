@@ -76,7 +76,6 @@ from search.engine.fanout import (
     _run_variables_streaming,
     leg_runs,
 )
-from search.engine.flow_ends import Ends, end_permutation, permute_ends
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import (
@@ -101,7 +100,6 @@ from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import (
     DoorRole,
     breakdown_axis,
-    contradicts,
     debt_axes,
     debtor_possessive,
     every_member_breakdown_axis,
@@ -495,116 +493,46 @@ def _cue_states_direction(
     return pairing.cue_first or cue.split()[-1] not in _PREPOSITIONS
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _Wording:
-    """What the query's own words say about each place's end, by stripped entity name.
-
-    `stated` holds the axes its debt and receipt wording state (`role_text.debt_axes`,
-    `role_text.receipt_axes`), and `read` those a lone debt possessive reads off the
-    measure (`role_text.debtor_possessive`), which state no direction of their own. A
-    stated axis moves the extraction's ends (`_wording_ends`); a read axis sets its place's
-    role alone, since a bare possessive carries no other end to move.
-    `extracted` holds the one axis the extraction gave each name; a name on both axes has
-    none.
-    """
-
-    stated: dict[str, RoleAxis]
-    read: dict[str, RoleAxis]
-    extracted: dict[str, RoleAxis]
-
-    def axis(self, name: str) -> RoleAxis | None:
-        return self.stated.get(name) or self.read.get(name)
-
-
-def _read_wording(
-    entities: Sequence[ExtractedEntity],
-    *,
-    query: str,
-    measures: Sequence[str],
-) -> _Wording:
-    """The query's wording about the ends of `entities` (`_Wording`), read once."""
-    places: dict[str, list[str]] = {}
-    axes_by_place: dict[str, set[RoleAxis]] = {}
-    for entity in entities:
-        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
-        if entity.flow_role != "unspecified":
-            axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
-    extracted = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
-    debt = debt_axes(query, measures=measures, places=places, directed=extracted)
-    stated = receipt_axes(query, places=places) | debt
-    read = debtor_possessive(query, measures=measures, places=places, directed=extracted)
-    return _Wording(
-        stated=stated,
-        read={name: axis for name, axis in read.items() if name not in stated},
-        extracted=extracted,
-    )
-
-
-def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: str) -> Ends:
-    """The permutation of ends the query's wording makes of the extraction's reading
-    (`flow_ends.end_permutation`), from each place whose stated axis (`_Wording.stated`)
-    moves it off its extracted one.
-
-    No end moves when a directed place the wording leaves alone shares a moved place's
-    extracted axis: "French ODA received by Kenya" extracted with both on origin moves
-    Kenya alone, and France keeps origin. Nor when such a place's validated cue states
-    its direction (`_cue_states_direction`: "from France", "funded by France", "France
-    funds"), so the wording then moves only the places it names. A cue whose preposition
-    names the other end ("from France" on destination, `role_text.contradicts`) shows the
-    extraction read the flow backwards, so it protects nothing. A verb cue names no end
-    the code can check, so a place the extraction set against its own verb cue ("funded
-    by France" on destination) still protects, and the wording then moves no place."""
-    moves = {
-        name: (extracted, axis)
-        for name, extracted in wording.extracted.items()
-        if (axis := wording.stated.get(name)) is not None
-    }
-    moved_from = {extracted for extracted, axis in moves.values() if axis != extracted}
-    left = [
-        entity
-        for entity in entities
-        if (name := _entity_key(entity)) in wording.extracted and name not in moves
-    ]
-    if any(wording.extracted[_entity_key(entity)] in moved_from for entity in left) or any(
-        not contradicts(
-            query, span=entity.span or entity.text, axis=wording.extracted[_entity_key(entity)]
-        )
-        and _cue_states_direction(entity, entities=entities, query=query)
-        for entity in left
-    ):
-        return {}
-    return end_permutation(moves)
-
-
-def _door_roles(
-    entities: list[ExtractedEntity], wording: _Wording, *, query: str
+def _entity_roles(
+    entities: list[ExtractedEntity], *, query: str, measures: Sequence[str]
 ) -> dict[str, list[DoorRole]]:
     """Map stripped entity names to their flow axes and spans.
 
     The query's debt wording sets the axes of a two-party debt relation
     (`role_text.debt_axes`), and its receipt wording sets each recipient's
-    (`role_text.receipt_axes`). A lone possessive over its own debt makes its place the
-    debtor (`role_text.debtor_possessive`), and every other place keeps its extracted axis.
-    Preserve distinct mentions in order, including self-flows on opposite axes. Collapse
-    duplicate mentions with the same axis and span. Store directional roles only, each
-    recording whether the query's words give its direction. A two-party debt or receipt axis
-    does by construction, and any other axis does when its cue does
+    (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
+    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
+    its extracted axis. Preserve distinct mentions in order, including self-flows on
+    opposite axes. Collapse duplicate mentions with the same axis and span. Store
+    directional roles only, each recording whether the query's words give its direction. A
+    debt or receipt axis does by construction, a possessive debtor does not, since it
+    reads the measure, and an extracted axis does when its cue does
     (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
     translation leaves no span.
     """
+    places: dict[str, list[str]] = {}
+    for entity in entities:
+        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
+    # A place extraction put on both axes has no single extracted axis.
+    axes_by_place: dict[str, set[RoleAxis]] = {}
+    for entity in entities:
+        if entity.flow_role != "unspecified":
+            axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
+    directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
+    debt = debt_axes(query, measures=measures, places=places, directed=directed)
+    worded = receipt_axes(query, places=places) | debt
+    read = debtor_possessive(query, measures=measures, places=places, directed=directed)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = wording.axis(name)
+        axis = worded.get(name) or read.get(name)
         if axis is None:
             if entity.flow_role == "unspecified":
                 continue
             axis = entity.flow_role
         occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
-        stated = name in wording.stated or _cue_states_direction(
-            entity, entities=entities, query=query
-        )
+        stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
         role = DoorRole(axis=axis, span=span, stated=stated)
         if role not in occurrences:
             occurrences.append(role)
@@ -1065,15 +993,8 @@ def _prepare_extraction(
             extracted_entities.append(entity)
         else:
             entity_breakdowns.append(words)
-    # Where the query's wording shows the extraction read the flow backwards, every end the
-    # parse names swaps with it: places, and the axes operations run over.
-    wording = _read_wording(extracted_entities, query=query, measures=unique)
-    ends = _wording_ends(extracted_entities, wording, query=query)
-    extraction, extract_result, extracted_entities = permute_ends(
-        (extraction, extract_result, extracted_entities), ends
-    )
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
-    entity_roles = _door_roles(extracted_entities, wording, query=query)
+    entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.
     clamp_warnings: list[Warning] = list(extract_result.warnings)
