@@ -1,10 +1,10 @@
 """Count the stored warnings that name refs in their message, by old format.
 
-Migration `0039_warning_counted_refs.sql` rewrites these warnings of
+Migration `0045_warning_counted_refs.sql` rewrites these warnings of
 `datasets.version_record.warnings` into counted messages with structured fields. This command
 counts each old format it rewrites, and checks the `member_count` a group's
 `coverage_below_scope` already stores against the length of its trace's
-`resolved_stat_vars`, the count 0039 gives the warnings it rewrites. It reads in a READ ONLY
+`resolved_stat_vars`, the count 0045 gives the warnings it rewrites. It reads in a READ ONLY
 transaction, refuses to read when the session is not read-only, and rolls back.
 
 It connects with the migration job's settings (`dataset_store.migrate`), so it runs as an
@@ -24,7 +24,7 @@ from dataset_store.errors import DatasetStoreConfigError, DatasetStoreError
 # Each format and the SQL condition on one stored warning that selects it. A warning reads as
 # `code`, `message`, `body` (the whole warning) and `trace_members`, the length of its row's
 # `trace.resolved_stat_vars`, NULL when the trace holds no such list. The patterns are the
-# sentences 0039 parses.
+# sentences 0045 parses.
 _MEMBERS = "which hold none at the observation period the other members serve"
 _UNSERVED = r" No observations were served for [^ ,]+(, [^ ,]+)*( and [0-9]+ more)?\."
 _FALLBACK = "No place was named, so the answer covers the countries with data"
@@ -88,18 +88,18 @@ FORMATS: tuple[tuple[str, str], ...] = (
     ),
 )
 
-# The formats 0039 rewrites, whose rows it updates.
+# The formats 0045 rewrites, whose rows it updates.
 _REWRITTEN = (
     f"code = 'coverage_below_scope' AND (message ~ '{_UNSERVED}' OR message ~ '{_MEMBERS}') "
     f"OR code IN ('currency_unmapped_omitted', 'deflator_missing_omitted') "
     f"AND message ~ '{_NAMED}'"
 )
-REWRITTEN_ROWS = "version rows 0039 rewrites"
+REWRITTEN_ROWS = "version rows 0045 rewrites"
 
 
 def _query() -> str:
     """One row: for each of `FORMATS`, its warnings and the version rows holding them, then
-    the version rows holding any warning 0039 rewrites."""
+    the version rows holding any warning 0045 rewrites."""
     counts = ",\n".join(
         f"count(*) FILTER (WHERE {condition}), "
         f"count(DISTINCT (subject_id, content_version)) FILTER (WHERE {condition})"

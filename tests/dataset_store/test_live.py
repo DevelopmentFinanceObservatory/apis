@@ -25,7 +25,7 @@ import pytest
 
 from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import StoredArtifact, Tier
-from dataset_store import ConnectionPool, LiveDatasetStore, connect
+from dataset_store import ConnectionPool, LiveDatasetStore, connect, warning_formats
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
     VERSION_FACT_COLUMNS,
@@ -39,6 +39,7 @@ from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowa
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.doors.pin import pin_artifact
+from datasets_api.manifest import warning_model
 from datasets_api.operation_store import (
     _LIVE,
     _UNTRACKED_LEASE,
@@ -67,6 +68,7 @@ from datasets_api.versions import (
     VersionRecord,
 )
 from dfo_platform.caller import Caller
+from materialise.codes import MATERIALISE_CODE_CATALOGUE
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -74,6 +76,14 @@ from spec_registry import (
     LiveSpecRegistry,
     SpecRegistryStoreError,
     recompute_identity,
+)
+from tests.dataset_store._warning_refs import (
+    RANGE_MEMBERS_SENTENCE,
+    counts_since,
+    format_count_bodies,
+    format_counts,
+    warning_refs_body,
+    warning_refs_cases,
 )
 from tests.datasets_api._app_factories import offline_allowances
 from tests.datasets_api._legacy_conversion_trace import (
@@ -4342,3 +4352,103 @@ def test_a_kind_enrichment_inserted_after_0033_is_stored_as_party_kind(live_stor
         }
     finally:
         _delete_versions(live_store, [body_only, with_facts])
+
+
+_WARNING_REFS_MIGRATION = "0045_warning_counted_refs.sql"
+
+
+def test_0045_rewrites_stored_warnings_that_name_refs_into_counted_fields(live_store):
+    """Each old `coverage_below_scope`, `currency_unmapped_omitted` and
+    `deflator_missing_omitted` message becomes the counted message and field the writer
+    produces for the same refs, with a group's `member_count` read from the trace and the
+    countries-fallback sentence kept. Members a range window left out become one counted
+    sentence with no field. A member sentence on a trace holding no members counts the
+    members alone. Warnings already in the new shape, and the stored body, stay as stored,
+    and a rerun changes nothing."""
+    suffix = uuid4().hex
+    _title, detail = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"]
+    old_range = (
+        f"{detail} No observations were served for dcid:YouthRate, dcid:AdultRate, which hold "
+        "none at the observation period the other members serve in the requested years."
+    )
+    cases = {
+        **warning_refs_cases(),
+        "range_members_without_trace_count": (
+            warning_refs_body(
+                [{"code": "coverage_below_scope", "severity": "warn", "message": old_range}],
+                members=None,
+            ),
+            [
+                {
+                    "code": "coverage_below_scope",
+                    "severity": "warn",
+                    "message": detail + RANGE_MEMBERS_SENTENCE.format(counted="2"),
+                }
+            ],
+        ),
+    }
+    subjects = {name: f"spec_0045_{name}_{suffix}" for name in cases}
+
+    def _stored() -> dict[str, tuple[list, dict]]:
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT subject_id, warnings, immutable_body FROM datasets.version_record "
+                "WHERE subject_id = ANY(%s)",
+                (list(subjects.values()),),
+            )
+        by_subject = {cast(str, row["subject_id"]): row for row in rows}
+        return {
+            name: (
+                cast(list, by_subject[subject]["warnings"]),
+                cast(dict, by_subject[subject]["immutable_body"]),
+            )
+            for name, subject in subjects.items()
+        }
+
+    for name, (body, _expected) in cases.items():
+        _insert_as_the_previous_image(
+            live_store, subject_id=subjects[name], content_version="cv1", body=body
+        )
+    try:
+        assert _rerun_migration(live_store, _WARNING_REFS_MIGRATION) == [_WARNING_REFS_MIGRATION]
+        stored = _stored()
+        assert {name: warnings for name, (warnings, _body) in stored.items()} == {
+            name: expected for name, (_body, expected) in cases.items()
+        }
+        assert {name: body for name, (_warnings, body) in stored.items()} == {
+            name: body for name, (body, _expected) in cases.items()
+        }
+        for warnings, _body in stored.values():
+            for warning in warnings:
+                assert warning_model(warning).model_dump() == warning
+
+        assert _rerun_migration(live_store, _WARNING_REFS_MIGRATION) == [_WARNING_REFS_MIGRATION]
+        assert _stored() == stored
+    finally:
+        _delete_versions(live_store, list(subjects.values()))
+
+
+def test_0045_leaves_no_stored_warning_in_an_old_format(live_store, monkeypatch, capsys):
+    """Once 0045 has run over a row of every old format, `dataset_store.warning_formats` counts
+    none of them and no row left to rewrite. A group's `member_count` now matches its trace
+    on the rows 0045 gave one, and the rows it does not read stay counted as stored."""
+    suffix = uuid4().hex
+    bodies = format_count_bodies()
+    subjects = [f"spec_0045_formats_{name}_{suffix}" for name in bodies]
+    before = format_counts(cast(str, _DSN), monkeypatch, capsys)
+    for subject_id, body in zip(subjects, bodies.values(), strict=True):
+        _insert_as_the_previous_image(
+            live_store, subject_id=subject_id, content_version="cv1", body=body
+        )
+    try:
+        assert _rerun_migration(live_store, _WARNING_REFS_MIGRATION) == [_WARNING_REFS_MIGRATION]
+        assert counts_since(before, format_counts(cast(str, _DSN), monkeypatch, capsys)) == {
+            **{name: (0, 0) for name, _condition in warning_formats.FORMATS},
+            "currency or deflator, neither named nor counted": (1, 1),
+            "member_count equals the trace's resolved_stat_vars": (3, 3),
+            "member_count differs from the trace's resolved_stat_vars": (1, 1),
+            "member_count beside a trace holding no resolved_stat_vars": (1, 1),
+            warning_formats.REWRITTEN_ROWS: (None, 0),
+        }
+    finally:
+        _delete_versions(live_store, subjects)

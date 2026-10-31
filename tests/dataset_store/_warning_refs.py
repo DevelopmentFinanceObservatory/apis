@@ -1,4 +1,4 @@
-"""Stored warnings in every format migration 0039 reads, for the live tests of 0039 and of
+"""Stored warnings in every format migration 0045 reads, for the live tests of 0045 and of
 `dataset_store.warning_formats`.
 
 Each old format is the message a writer stored before warnings counted their refs. The new
@@ -25,6 +25,13 @@ FALLBACK = (
 )
 ENTITIES = ["country/BDI", "country/KEN", "country/RWA", "country/SSD"]
 UNSERVED = [*ENTITIES, "country/TZA", "country/UGA", "country/ZMB"]
+# The sentence 0045 writes for members a range window left out, which the row cannot split into
+# off-cadence and out-of-window members; `counted` is `N of M`, or `N` when the trace holds no
+# members.
+RANGE_MEMBERS_SENTENCE = (
+    " {counted} series hold no observations at the group's observation period in the "
+    "requested years and are left out of the figures."
+)
 MEMBERS = ["dcid:YouthRate", "dcid:AdultRate", "dcid:ElderRate"]
 MANY_MEMBERS = [f"dcid:Member{index}" for index in range(6)]
 OMITTED = [f"country/C{index:02}" for index in range(12)]
@@ -103,8 +110,8 @@ def warning_refs_body(warnings: list[dict[str, object]], *, members: int | None)
 
 
 def warning_refs_cases() -> dict[str, tuple[dict, list[dict[str, object]]]]:
-    """Version bodies holding every stored warning format 0039 reads, by case, each with the
-    warnings 0039 leaves in its row."""
+    """Version bodies holding every stored warning format 0045 reads, by case, each with the
+    warnings 0045 leaves in its row."""
     empty = {"code": "empty_result", "severity": "warn", "message": "No rows."}
     deflator_detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"][1]
     cases: dict[str, tuple[dict, list[dict[str, object]]]] = {
@@ -154,7 +161,15 @@ def warning_refs_cases() -> dict[str, tuple[dict, list[dict[str, object]]]]:
                 ],
                 members=9,
             ),
-            [new_coverage(members=MANY_MEMBERS, member_count=9, countries_fallback=True)],
+            [
+                {
+                    "code": "coverage_below_scope",
+                    "severity": "warn",
+                    "message": MATERIALISE_CODE_CATALOGUE["coverage_below_scope"][1]
+                    + RANGE_MEMBERS_SENTENCE.format(counted="6 of 9")
+                    + FALLBACK,
+                }
+            ],
         ),
         "members_without_trace_count": (
             warning_refs_body(
