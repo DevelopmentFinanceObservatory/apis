@@ -15,6 +15,8 @@ from artifact_store import (
     ArtifactNotFoundError,
     ArtifactSink,
     ArtifactStore,
+    CopyBounds,
+    ExistsRead,
     StoredArtifact,
     Tier,
 )
@@ -52,6 +54,7 @@ class FakeArtifactStore:
         self.signed_headers: dict[tuple[Tier, str], tuple[str, str]] = {}
         self.signings: list[tuple[str, Tier, str, timedelta]] = []
         self.gets: list[tuple[str, Tier]] = []
+        self.locations: list[tuple[str, Tier]] = []
 
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
@@ -81,6 +84,8 @@ class FakeArtifactStore:
             raise ArtifactNotFoundError(digest=artifact_digest, tier=tier)
         return self._objects[key]
 
+    copy_lands_within = CopyBounds().lands_within
+
     def signed_location_url(
         self,
         digest: str,
@@ -99,10 +104,12 @@ class FakeArtifactStore:
         self.signings.append((digest, tier, object_name, ttl))
         return f"fake://artifact/{tier.value}/{object_name}"
 
-    def exists(self, digest: str, *, tier: Tier, retry: object = None) -> bool:
+    def exists(self, digest: str, *, tier: Tier, read: ExistsRead = ExistsRead.short) -> bool:
         return (digest, tier.value) in self._objects
 
     def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        """The fake location; each read is recorded in `locations`."""
+        self.locations.append((digest, tier))
         if (digest, tier.value) not in self._objects:
             return None
         return ArtifactLocation(
@@ -115,7 +122,7 @@ class FakeArtifactStore:
         *,
         from_tier: Tier,
         to_tier: Tier,
-        source: ArtifactLocation | None = None,
+        source: tuple[str, str] | None = None,
     ) -> StoredArtifact:
         source_key = (digest, from_tier.value)
         if source_key not in self._objects:

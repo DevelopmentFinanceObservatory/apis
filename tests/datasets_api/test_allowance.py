@@ -17,12 +17,12 @@ from datasets_api.allowance import (
     AllowanceExhausted,
     AllowanceKind,
     ClaimState,
-    ExportClaim,
+    CopyClaim,
     LiveAllowanceLedger,
     Spend,
     spending,
 )
-from datasets_api.retention_admission import ExportClaimUnsettled, PreparingCopy
+from datasets_api.retention_admission import CopyClaimUnsettled, PreparingCopy
 from dfo_platform.caller import Caller
 
 from ._artifact_doubles import FakeArtifactStore
@@ -109,11 +109,12 @@ def _counts(ledger: LiveAllowanceLedger) -> dict[tuple[str, str], int]:
     return {(row["caller_key"], row["kind"]): row["count"] for row in rows}
 
 
-def _held(ledger: LiveAllowanceLedger) -> ExportClaim:
+def _held(ledger: LiveAllowanceLedger) -> CopyClaim:
     return ledger.hold_claim(ledger.claim(_EXPORT, now=_NOON, expires_at=_LEASE), _UNITS, _NOON)
 
 
 _LATER = _LEASE + timedelta(minutes=2)
+_LEASE_SPAN = _LEASE - _NOON
 
 
 def test_a_claim_with_no_copy_begun_refunds_as_it_is_taken_over(claims):
@@ -131,7 +132,7 @@ def test_a_claim_with_no_copy_begun_refunds_as_it_is_taken_over(claims):
     ("landed", "state"), [(None, ClaimState.copying), (True, ClaimState.landed)]
 )
 def test_a_claim_a_copy_began_on_keeps_its_units_through_a_takeover(claims, landed, state):
-    copying = claims.begin_copy(_held(claims), "sha256:a", expires_at=_LEASE)
+    copying = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE)
     if landed:
         claims.settle_copy(copying, landed=True, expires_at=_LEASE)
 
@@ -144,13 +145,13 @@ def test_a_claim_a_copy_began_on_keeps_its_units_through_a_takeover(claims, land
 
 def test_every_write_on_an_old_read_changes_nothing(claims):
     held = _held(claims)
-    current = claims.begin_copy(held, "sha256:a", expires_at=_LEASE)
+    current = claims.begin_copy(held, "sha256:a", now=_NOON, expires_at=_LEASE)
     spent = _counts(claims)
 
     claims.close_claim(held)
     claims.free_claim(held, _NOON)
 
-    assert claims.begin_copy(held, "sha256:b", expires_at=_LEASE) is None
+    assert claims.begin_copy(held, "sha256:b", now=_NOON, expires_at=_LEASE) is None
     assert claims.hold_claim(held, _UNITS[:1], _NOON) is None
     assert claims.settle_copy(held, landed=False, expires_at=_LEASE) is None
     assert _counts(claims) == spent
@@ -166,20 +167,22 @@ def test_a_read_of_a_deleted_claim_stays_fenced_from_the_next_claim_of_its_expor
     assert claims.read_claim(_EXPORT) == second
 
 
-def test_a_render_past_its_lease_begins_its_copy_when_nothing_took_the_claim(claims):
-    """The fence stops a taken claim, and the copy's own lease keeps the sweep off it."""
+@pytest.mark.parametrize("now", [_LEASE, _LATER], ids=["at-the-lease", "past-it"])
+def test_a_render_past_its_lease_copies_nothing_though_nothing_took_the_claim(claims, now):
+    """A crash then holds a unit for no longer than the claim's lease, the copy lease and the
+    sweep interval, counted from the spend: the claim stays `held` for the sweep to refund."""
     held = _held(claims)
-    began = claims.begin_copy(held, "sha256:a", expires_at=_LATER)
 
-    assert began.state == ClaimState.copying
-    assert claims.expired_claims(_LEASE) == []
+    assert claims.begin_copy(held, "sha256:a", now=now, expires_at=now + _LEASE_SPAN) is None
+    assert claims.read_claim(_EXPORT) == held
+    assert claims.expired_claims(now) == [held]
 
 
 def test_a_paid_claim_begins_a_copy_of_its_own_digest_only(claims):
-    copying = claims.begin_copy(_held(claims), "sha256:a", expires_at=_LEASE)
+    copying = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE)
     landed = claims.settle_copy(copying, landed=True, expires_at=_LEASE)
 
-    assert claims.begin_copy(landed, "sha256:b", expires_at=_LEASE) is None
+    assert claims.begin_copy(landed, "sha256:b", now=_NOON, expires_at=_LEASE) is None
     assert claims.read_claim(_EXPORT) == landed
 
 
@@ -187,7 +190,7 @@ def test_a_retry_that_renders_another_digest_spends_for_itself(claims):
     """The first object stays paid for, and the second holds units of its own."""
     bucket = _Bucket()
     bucket._objects[("sha256:b", Tier.working.value)] = b"bytes"
-    copying = claims.begin_copy(_held(claims), _DIGEST, expires_at=_LEASE)
+    copying = claims.begin_copy(_held(claims), _DIGEST, now=_NOON, expires_at=_LEASE)
     claims.settle_copy(copying, landed=True, expires_at=_LEASE)
     budget = Spend(BUDGET_KEY, AllowanceKind.pin_budget)
     limit_free = LiveAllowanceLedger(store=claims._store, limits={AllowanceKind.pin_budget: 5})
@@ -201,7 +204,7 @@ def test_a_retry_that_renders_another_digest_spends_for_itself(claims):
 
 
 def test_reopening_a_paid_claim_leaves_its_units_spent(claims):
-    copying = claims.begin_copy(_held(claims), _DIGEST, expires_at=_LEASE)
+    copying = claims.begin_copy(_held(claims), _DIGEST, now=_NOON, expires_at=_LEASE)
     landed = claims.settle_copy(copying, landed=True, expires_at=_LEASE)
 
     opened = claims.reopen_claim(landed)
@@ -214,7 +217,7 @@ def test_reopening_a_paid_claim_leaves_its_units_spent(claims):
 @pytest.mark.parametrize("landed", [True, False])
 def test_settling_a_copy_ends_its_lease_on_the_prepares_own(claims, landed: bool):
     """A crash after the copy then blocks the export for no more than the prepare's lease."""
-    copying = claims.begin_copy(_held(claims), _DIGEST, expires_at=_LATER)
+    copying = claims.begin_copy(_held(claims), _DIGEST, now=_NOON, expires_at=_LATER)
 
     settled = claims.settle_copy(copying, landed=landed, expires_at=_LEASE)
 
@@ -222,13 +225,13 @@ def test_settling_a_copy_ends_its_lease_on_the_prepares_own(claims, landed: bool
 
 
 def test_beginning_a_copy_gives_it_its_own_lease(claims):
-    began = claims.begin_copy(_held(claims), "sha256:a", expires_at=_LATER)
+    began = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LATER)
 
     assert claims.read_claim(_EXPORT).expires_at == began.expires_at == _LATER
 
 
 def test_settling_a_copy_that_did_not_land_refunds_and_reopens_the_claim(claims):
-    copying = claims.begin_copy(_held(claims), "sha256:a", expires_at=_LEASE)
+    copying = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE)
 
     opened = claims.settle_copy(copying, landed=False, expires_at=_LEASE)
 
@@ -250,7 +253,7 @@ def test_closing_a_claim_refunds_once_whoever_else_closes_it(claims):
 
 def test_closing_a_landed_claim_keeps_the_units_that_paid_for_it(claims):
     landed = claims.settle_copy(
-        claims.begin_copy(_held(claims), "sha256:a", expires_at=_LEASE),
+        claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE),
         landed=True,
         expires_at=_LEASE,
     )
@@ -272,13 +275,15 @@ def _exhausted(ledger: LiveAllowanceLedger, *, now: datetime = _NOON) -> Allowan
     [
         pytest.param(lambda ledger, claim: claim, RUNNING_CLAIM_RETRY_SECONDS, id="held"),
         pytest.param(
-            lambda ledger, claim: ledger.begin_copy(claim, "d", expires_at=_LEASE),
+            lambda ledger, claim: ledger.begin_copy(claim, "d", now=_NOON, expires_at=_LEASE),
             RUNNING_CLAIM_RETRY_SECONDS,
             id="copying",
         ),
         pytest.param(
             lambda ledger, claim: ledger.settle_copy(
-                ledger.begin_copy(claim, "d", expires_at=_LEASE), landed=True, expires_at=_LEASE
+                ledger.begin_copy(claim, "d", now=_NOON, expires_at=_LEASE),
+                landed=True,
+                expires_at=_LEASE,
             ),
             None,
             id="landed",
@@ -356,7 +361,7 @@ def test_spends_and_refunds_lock_rows_in_one_order_whatever_order_they_are_named
 
 
 def _preparing(
-    ledger: LiveAllowanceLedger, claim: ExportClaim, artifacts: FakeArtifactStore
+    ledger: LiveAllowanceLedger, claim: CopyClaim, artifacts: FakeArtifactStore
 ) -> PreparingCopy:
     return PreparingCopy(
         claim,
@@ -385,7 +390,7 @@ class _Bucket(FakeArtifactStore):
             raise self.copy_raises
         return copied
 
-    def exists(self, digest, *, tier, retry=None):
+    def exists(self, digest, *, tier, read=None):
         if self.read_fails:
             raise ArtifactWriteError(object_name=digest, digest=digest)
         return super().exists(digest, tier=tier)
@@ -404,7 +409,7 @@ _WRITE_FAILED = ArtifactWriteError(object_name=_DIGEST, digest=_DIGEST)
     ],
 )
 def test_a_copy_an_earlier_attempt_began_settles_by_the_pinned_object(claims, bucket, state, units):
-    copying = claims.begin_copy(_held(claims), _DIGEST, expires_at=_LEASE)
+    copying = claims.begin_copy(_held(claims), _DIGEST, now=_NOON, expires_at=_LEASE)
     if bucket.lands:
         bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
 
@@ -449,7 +454,9 @@ def test_a_deduplicated_copy_refunds_but_a_paid_retrys_keeps_its_units(claims):
     bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
     held = _held(claims)
     landed = claims.settle_copy(
-        claims.begin_copy(held, _DIGEST, expires_at=_LEASE), landed=True, expires_at=_LEASE
+        claims.begin_copy(held, _DIGEST, now=_NOON, expires_at=_LEASE),
+        landed=True,
+        expires_at=_LEASE,
     )
     paid = claims.claim(_EXPORT, now=_LEASE, expires_at=_LATER)
     assert paid.generation != landed.generation
@@ -469,7 +476,9 @@ def test_a_paid_claim_whose_working_bytes_have_gone_stays_paid(claims):
     bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
     held = _held(claims)
     claims.settle_copy(
-        claims.begin_copy(held, _DIGEST, expires_at=_LEASE), landed=True, expires_at=_LEASE
+        claims.begin_copy(held, _DIGEST, now=_NOON, expires_at=_LEASE),
+        landed=True,
+        expires_at=_LEASE,
     )
     paid = claims.claim(_EXPORT, now=_LEASE, expires_at=_LATER)
 
@@ -482,9 +491,9 @@ def test_a_paid_claim_whose_working_bytes_have_gone_stays_paid(claims):
 
 def test_a_copy_nobody_can_judge_refuses_before_the_render(claims):
     held = _held(claims)
-    copying = claims.begin_copy(held, _DIGEST, expires_at=_LEASE)
+    copying = claims.begin_copy(held, _DIGEST, now=_NOON, expires_at=_LEASE)
 
-    with pytest.raises(ExportClaimUnsettled) as refused:
+    with pytest.raises(CopyClaimUnsettled) as refused:
         _preparing(claims, copying, _Bucket(read_fails=True)).settle_earlier()
 
     assert refused.value.headers == {"Retry-After": "30"}
@@ -493,15 +502,22 @@ def test_a_copy_nobody_can_judge_refuses_before_the_render(claims):
 
 def test_a_copy_settling_past_the_first_prepare_lease_leaves_a_live_claim(claims):
     """The owner keeps the claim through the writes that follow its copy."""
-    bucket = _Bucket()
-    bucket._objects[(_DIGEST, Tier.working.value)] = b"bytes"
     late = _LATER + timedelta(minutes=5)
+    now = [_NOON]
+
+    class _Slow(_Bucket):
+        def copy(self, digest, **tiers):
+            now[0] = late
+            return super().copy(digest, **tiers)
+
+    bucket = _Slow()
+    bucket._objects[(_DIGEST, Tier.working.value)] = b"bytes"
     preparing = PreparingCopy(
         _held(claims),
         allowances=claims,
         artifacts=bucket,
         caller=None,
-        clock=lambda: late,
+        clock=lambda: now[0],
         lease=_LEASE - _NOON,
     )
 
@@ -511,6 +527,55 @@ def test_a_copy_settling_past_the_first_prepare_lease_leaves_a_live_claim(claims
     assert settled.state == ClaimState.landed
     assert settled.expires_at == late + (_LEASE - _NOON)
     assert claims.expired_claims(late) == []
+
+
+@pytest.mark.parametrize(
+    ("begin_takes", "copies"),
+    [(timedelta(0), True), (timedelta(seconds=31), False)],
+    ids=["quick-begin", "slow-begin"],
+)
+def test_a_copy_begins_only_with_its_whole_landing_time_left_on_its_lease(
+    claims, monkeypatch: pytest.MonkeyPatch, begin_takes: timedelta, copies: bool
+):
+    """The `begin_copy` transaction's own time sits outside the copy's budget, so a slow one
+    refunds and copies nothing."""
+    now = [_NOON]
+    begin_copy = claims.begin_copy
+
+    def slow_begin(*args, **kwargs):
+        began = begin_copy(*args, **kwargs)
+        now[0] += begin_takes
+        return began
+
+    monkeypatch.setattr(claims, "begin_copy", slow_begin)
+    bucket = _Bucket()
+    bucket._objects[(_DIGEST, Tier.working.value)] = b"bytes"
+    preparing = PreparingCopy(
+        _held(claims),
+        allowances=claims,
+        artifacts=bucket,
+        caller=None,
+        clock=lambda: now[0],
+        lease=_LEASE - _NOON,
+    )
+
+    if copies:
+        preparing.copy(_DIGEST)
+    else:
+        with pytest.raises(CopyClaimUnsettled):
+            preparing.copy(_DIGEST)
+
+    assert bucket.exists(_DIGEST, tier=Tier.pinned) is copies
+    assert claims.read_claim(_EXPORT).state == (ClaimState.landed if copies else ClaimState.open)
+    assert _counts(claims) == (_ALL_UNITS if copies else {})
+
+
+def test_the_expired_claims_list_every_held_claim_before_any_copying_one(claims):
+    """A sweep that runs out of time leaves a slow bucket read, never a refund that needs none."""
+    copying = claims.begin_copy(_held(claims), _DIGEST, now=_NOON, expires_at=_NOON)
+    first = claims.claim("exp_b", now=_NOON, expires_at=_LEASE)
+
+    assert claims.expired_claims(_LATER) == [first, copying]
 
 
 def test_a_copy_reads_its_source_before_it_begins(claims):

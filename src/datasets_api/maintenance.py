@@ -3,7 +3,7 @@
 `datasets-maintenance <task>` runs one task and exits non-zero when it fails. Each task is a
 subcommand registered in `main`.
 
-`sweep` runs daily from Cloud Scheduler. It settles export claims past their lease as
+`sweep` runs daily from Cloud Scheduler. It settles pin claims past their lease as
 `sweep-export-claims` does, then sweeps both artifact tiers with the read-only
 `reconciliation.sweep` at the current time, whatever the claims did, and writes one structured
 `datasets_reconciliation_sweep` line per tier with its orphaned, missing, expired working and
@@ -14,11 +14,13 @@ leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. The report rep
 reads `DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime
 database settings `dataset_store.provider.shared_pool` reads.
 
-`sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each export claim
-past its lease by itself (`retention_admission.sweep_export_claims`), so a claim that fails
-leaves the rest settled, and writes one `datasets_export_claims_swept` line with the settled and
-failed counts. It exits non-zero when any failed. Every settlement names the claim's generation,
-so a second run changes nothing. A refund lands on the UTC day that spent the unit.
+`sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each claim an
+export or a pin left past its lease by itself (`retention_admission.sweep_copy_claims`), `held`
+ones before `copying` ones, so a claim that fails leaves the rest settled, and starts none after
+`retention_admission.SWEEP_BUDGET`, so one run ends before the next. It writes one
+`datasets_copy_claims_swept` line with the settled, failed and deferred counts, and exits
+non-zero when any failed. Every settlement names the claim's generation, so a second run changes
+nothing. A refund lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or
@@ -243,7 +245,7 @@ from datasets_api.render import (
     render_and_store_canonical_frame,
     stored_frame_location,
 )
-from datasets_api.retention_admission import sweep_export_claims
+from datasets_api.retention_admission import sweep_copy_claims
 from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
@@ -288,26 +290,31 @@ SWEEP_NAMES_PER_LEG = 20
 """The most object names, or digests, a sweep line carries for one leg."""
 
 
-def run_export_claim_sweep(
+def run_copy_claim_sweep(
     *, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now
 ) -> int:
-    """Settle the export claims past their lease (`retention_admission.sweep_export_claims`),
-    emit the counts and return how many failed."""
-    settled, failed = sweep_export_claims(
+    """Settle the pin claims past their lease (`retention_admission.sweep_copy_claims`), emit
+    the counts and return how many failed."""
+    settled, failed, deferred = sweep_copy_claims(
         allowances=LiveAllowanceLedger(store=store, limits={}),
         artifacts=artifact_store,
         now=now(),
     )
-    emit("datasets_export_claims_swept", settled_claims=settled, failed_claims=failed)
+    emit(
+        "datasets_copy_claims_swept",
+        settled_claims=settled,
+        failed_claims=failed,
+        deferred_claims=deferred,
+    )
     return failed
 
 
 def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> int:
-    """Settle expired export claims, then sweep both tiers whatever that did, emit one line per
+    """Settle expired pin claims, then sweep both tiers whatever that did, emit one line per
     tier with each leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG`
     names in sorted order, and return how many claims failed."""
     try:
-        failed = run_export_claim_sweep(store=store, artifact_store=artifact_store, now=now)
+        failed = run_copy_claim_sweep(store=store, artifact_store=artifact_store, now=now)
     except Exception as exc:
         emit("datasets_maintenance_failed", severity="ERROR", task="sweep", error=str(exc))
         failed = 1
@@ -335,8 +342,8 @@ def _sweep() -> int:
     return _run_over_artifacts("sweep", run_sweep)
 
 
-def _sweep_export_claims() -> int:
-    return _run_over_artifacts("sweep-export-claims", run_export_claim_sweep)
+def _sweep_copy_claims() -> int:
+    return _run_over_artifacts("sweep-export-claims", run_copy_claim_sweep)
 
 
 def _run_over_artifacts(task: str, run: Callable[..., int | None]) -> int:
@@ -1465,7 +1472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ).set_defaults(run=_sweep)
     tasks.add_parser(
         "sweep-export-claims", help="give back the units of export prepares that left no copy"
-    ).set_defaults(run=_sweep_export_claims)
+    ).set_defaults(run=_sweep_copy_claims)
     tasks.add_parser(
         "age-operations",
         help="fail abandoned operations and delete done and failed ones past their retention",

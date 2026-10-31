@@ -220,6 +220,7 @@ from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
 from datasets_api.render import servable_frame_location
 from datasets_api.retention_admission import (
+    CopyClaimUnsettled,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
     PinUnitHeld,
@@ -1264,7 +1265,8 @@ class LiveFrameStore:
                 root's pin failed on I/O.
             PinBudgetExhausted: The day's pin budget is spent.
             OpenPinBudgetExhausted: The open callers' pin budget is spent.
-            PinUnitHeld: An export claim holds the last unit of a limit.
+            PinUnitHeld: A claim holds the last unit of a limit.
+            CopyClaimUnsettled: The copy ran out of lease before it began.
             AllowanceExhausted: `caller`'s `pin` allowance is spent.
         """
         roots = self._root_closure(frame_ref)
@@ -1383,9 +1385,15 @@ class LiveFrameStore:
                     canonical.artifact_digest,
                     allowances=self._allowances,
                     caller=caller,
-                    now=self._now(),
+                    clock=self._now,
                 )
-            except (PinBudgetExhausted, OpenPinBudgetExhausted, PinUnitHeld, AllowanceExhausted):
+            except (
+                PinBudgetExhausted,
+                OpenPinBudgetExhausted,
+                PinUnitHeld,
+                CopyClaimUnsettled,
+                AllowanceExhausted,
+            ):
                 raise
             except ArtifactNotFoundError as exc:
                 raise FrameUnavailable(

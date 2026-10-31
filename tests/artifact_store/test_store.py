@@ -7,7 +7,6 @@ from datetime import timedelta
 
 import pytest
 from google.api_core.exceptions import ServiceUnavailable
-from google.cloud.storage.retry import DEFAULT_RETRY
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -18,10 +17,8 @@ from artifact_store.errors import (
 )
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
 from artifact_store.store import (
-    COPY_CONNECT_TIMEOUT_SECONDS,
-    COPY_READ_TIMEOUT_SECONDS,
-    COPY_RETRY_DEADLINE_SECONDS,
-    EXISTS_RETRY,
+    CopyBounds,
+    ExistsRead,
     LiveArtifactStore,
     Tier,
 )
@@ -628,6 +625,24 @@ def test_copy_raises_artifact_not_found_when_the_source_tier_has_no_such_digest(
     assert not [c for c in inventory.calls if c["tier"] == Tier.pinned]
 
 
+def test_a_copy_given_its_source_reads_no_location():
+    """A caller that holds the working copy's bucket and object name copies from there, so a
+    digest the inventory has no row for still copies."""
+    client = FakeGCSClient()
+    store = _store(client, RecordingArtifactInventory())
+    client.bucket(_BUCKETS[Tier.working]).objects["held-name"] = b"held"
+
+    copied = store.copy(
+        "sha256:held",
+        from_tier=Tier.working,
+        to_tier=Tier.pinned,
+        source=(_BUCKETS[Tier.working], "held-name"),
+    )
+
+    assert client.bucket(_BUCKETS[Tier.pinned]).objects["sha256:held"] == b"held"
+    assert copied.deduplicated is False
+
+
 def test_copy_is_idempotent_when_the_destination_already_has_the_object():
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
@@ -761,26 +776,37 @@ def test_a_pinned_dedupe_without_a_location_row_reads_no_object_metadata():
 
 
 @pytest.mark.parametrize("stored", [True, False], ids=["present", "absent"])
-def test_an_existence_read_is_short_unless_its_caller_names_a_longer_retry(stored: bool):
-    """A settle holds a work permit through this read, so by default it retries within 5 s."""
+@pytest.mark.parametrize(
+    ("read", "attempt", "deadline"),
+    [({}, 5, 5), ({"read": ExistsRead.long}, 60, 120)],
+    ids=["short-by-default", "long"],
+)
+def test_an_existence_read_bounds_its_attempts_and_retries_as_its_read_says(
+    stored: bool, read: dict[str, ExistsRead], attempt: int, deadline: int
+):
+    """A settle holds a work permit through the short read, and the sweep, holding none, takes
+    the library's own 60 s attempts within 120 s."""
     client = FakeGCSClient()
     store = _store(client, RecordingArtifactInventory())
     bucket = client.bucket(_BUCKETS[Tier.pinned])
     if stored:
         bucket.objects["sha256:a"] = b"bytes"
 
-    assert store.exists("sha256:a", tier=Tier.pinned) is stored
-    assert bucket.get_blob_options["retry"] is EXISTS_RETRY
-    assert EXISTS_RETRY._timeout == bucket.get_blob_options["timeout"] == 5
-
-    assert store.exists("sha256:a", tier=Tier.pinned, retry=DEFAULT_RETRY) is stored
-    assert bucket.get_blob_options["retry"] is DEFAULT_RETRY
+    assert store.exists("sha256:a", tier=Tier.pinned, **read) is stored
+    assert bucket.get_blob_options["timeout"] == attempt
+    assert bucket.get_blob_options["retry"]._timeout == deadline
 
 
 def test_a_copy_names_the_bounds_its_lease_counts_on():
-    """Library defaults cannot move `COPY_LANDS_WITHIN`, since the copy names every bound."""
+    """Library defaults cannot move `copy_lands_within`, since the copy names every bound the
+    store is configured with."""
     client = FakeGCSClient()
-    store = _store(client, RecordingArtifactInventory())
+    store = LiveArtifactStore(
+        buckets=_BUCKETS,
+        inventory=RecordingArtifactInventory(),
+        client=client,
+        copy_bounds=CopyBounds(connect=1.0, read=2.0, retry_deadline=4.0),
+    )
     digest = store.put(b"bounded", tier=Tier.working).digest
     seen: dict[str, object] = {}
     working = client.bucket(_BUCKETS[Tier.working])
@@ -794,5 +820,6 @@ def test_a_copy_names_the_bounds_its_lease_counts_on():
 
     store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
 
-    assert seen["timeout"] == (COPY_CONNECT_TIMEOUT_SECONDS, COPY_READ_TIMEOUT_SECONDS)
-    assert seen["retry"]._timeout == COPY_RETRY_DEADLINE_SECONDS
+    assert seen["timeout"] == (1.0, 2.0)
+    assert seen["retry"]._timeout == 4.0
+    assert store.copy_lands_within == timedelta(seconds=7)

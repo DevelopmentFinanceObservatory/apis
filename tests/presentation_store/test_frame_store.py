@@ -20,6 +20,7 @@ from typing import Any, cast
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
 
+from artifact_store import ArtifactLocation, CopyBounds
 from artifact_store.errors import (
     ArtifactIntegrityError,
     ArtifactInventoryError,
@@ -250,10 +251,26 @@ class _FakeArtifactStore:
     ) -> str:
         raise NotImplementedError("not exercised by LiveFrameStore")
 
-    def exists(self, digest: str, *, tier: Tier, retry: object = None) -> bool:
+    copy_lands_within = CopyBounds().lands_within
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        if (tier, digest) not in self.objects:
+            return None
+        return ArtifactLocation(
+            bucket="fake-bucket", object_name=digest, stored_at=datetime.min, renewal=0
+        )
+
+    def exists(self, digest: str, *, tier: Tier, read: object = None) -> bool:
         return (tier, digest) in self.objects
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         self.calls.append(("copy", from_tier, digest))
         if self.copy_raises is not None:
             raise self.copy_raises

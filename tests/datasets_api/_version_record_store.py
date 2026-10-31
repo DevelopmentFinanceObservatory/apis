@@ -128,8 +128,8 @@ CREATE TABLE datasets.export (
     body TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
-CREATE TABLE datasets.export_prepare_claim (
-    export_id TEXT PRIMARY KEY,
+CREATE TABLE datasets.copy_claim (
+    claim_key TEXT PRIMARY KEY,
     generation TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'open',
     expires_at TEXT NOT NULL,

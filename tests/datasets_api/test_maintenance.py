@@ -22,13 +22,14 @@ from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceKind,
     ClaimState,
-    ExportClaim,
+    CopyClaim,
     LiveAllowanceLedger,
     Spend,
 )
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.render import CANONICAL_FRAME_RENDERING
+from datasets_api.retention_admission import SWEEP_BUDGET, sweep_copy_claims
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from materialise.formats import (
@@ -110,7 +111,7 @@ def _claims() -> LiveAllowanceLedger:
 _SPENT_AT = datetime(2026, 6, 1, 12, tzinfo=UTC)
 
 
-def _held(ledger: LiveAllowanceLedger, export: str = "exp_a") -> ExportClaim:
+def _held(ledger: LiveAllowanceLedger, export: str = "exp_a") -> CopyClaim:
     claim = ledger.claim(export, now=_SPENT_AT, expires_at=_SPENT_AT + timedelta(minutes=2))
     return ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], _SPENT_AT)
 
@@ -140,12 +141,12 @@ def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
     artifact_store = FakeArtifactStore()
     held = _held(ledger)
     if digest is not None:
-        ledger.begin_copy(held, digest, expires_at=_SPENT_AT)
+        ledger.begin_copy(held, digest, now=_SPENT_AT, expires_at=_SPENT_AT)
     if pinned:
         artifact_store._objects[(digest, Tier.pinned.value)] = b"bytes"
 
     for _ in range(3):
-        maintenance.run_export_claim_sweep(
+        maintenance.run_copy_claim_sweep(
             store=ledger._store, artifact_store=artifact_store, now=lambda: now
         )
 
@@ -156,7 +157,7 @@ def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
 class _BrokenFor(FakeArtifactStore):
     """A bucket whose read of one digest fails."""
 
-    def exists(self, digest: str, *, tier: Tier, retry: object = None) -> bool:
+    def exists(self, digest: str, *, tier: Tier, read: object = None) -> bool:
         if digest == "sha256:broken":
             raise ArtifactWriteError(object_name=digest, digest=digest)
         return super().exists(digest, tier=tier)
@@ -165,10 +166,10 @@ class _BrokenFor(FakeArtifactStore):
 def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(capsys):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()
-    ledger.begin_copy(_held(ledger, "exp_a"), "sha256:broken", expires_at=_SPENT_AT)
+    ledger.begin_copy(_held(ledger, "exp_a"), "sha256:broken", now=_SPENT_AT, expires_at=_SPENT_AT)
     _held(ledger, "exp_b")
 
-    failed = maintenance.run_export_claim_sweep(
+    failed = maintenance.run_copy_claim_sweep(
         store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
     )
 
@@ -177,16 +178,34 @@ def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(caps
     assert ledger.read_claim("exp_b") is None
     assert _units(ledger) == {"pin_budget": 1}
     line = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert (line["settled_claims"], line["failed_claims"]) == (1, 1)
+    assert (line["settled_claims"], line["failed_claims"], line["deferred_claims"]) == (1, 1, 0)
+
+
+def test_the_sweep_starts_no_claim_past_its_budget_and_counts_those_it_left():
+    """One run ends before the next starts, whatever the bucket does."""
+    ledger = _claims()
+    _held(ledger, "exp_a")
+    _held(ledger, "exp_b")
+    elapsed = iter([0.0, 0.0, SWEEP_BUDGET.total_seconds()])
+
+    swept = sweep_copy_claims(
+        allowances=ledger,
+        artifacts=FakeArtifactStore(),
+        now=_SPENT_AT + timedelta(minutes=5),
+        monotonic=lambda: next(elapsed),
+    )
+
+    assert swept == (1, 0, 1)
+    assert _units(ledger) == {"pin_budget": 1}
 
 
 def test_the_sweep_counts_only_the_claims_it_moved(capsys):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()
-    copying = ledger.begin_copy(_held(ledger), "sha256:a", expires_at=_SPENT_AT)
+    copying = ledger.begin_copy(_held(ledger), "sha256:a", now=_SPENT_AT, expires_at=_SPENT_AT)
     ledger.settle_copy(copying, landed=True, expires_at=_SPENT_AT)
 
-    maintenance.run_export_claim_sweep(
+    maintenance.run_copy_claim_sweep(
         store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
     )
 
@@ -198,13 +217,13 @@ def test_the_sweep_counts_only_the_claims_it_moved(capsys):
 def test_the_daily_sweep_writes_its_report_whatever_the_claims_did(error, capsys, monkeypatch):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()
-    ledger.begin_copy(_held(ledger), "sha256:broken", expires_at=_SPENT_AT)
+    ledger.begin_copy(_held(ledger), "sha256:broken", now=_SPENT_AT, expires_at=_SPENT_AT)
     if error is not None:
 
         def down(**_: object) -> int:
             raise error
 
-        monkeypatch.setattr(maintenance, "run_export_claim_sweep", down)
+        monkeypatch.setattr(maintenance, "run_copy_claim_sweep", down)
 
     failed = maintenance.run_sweep(
         store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
@@ -220,7 +239,7 @@ def test_the_sweep_leaves_a_claim_with_a_running_lease():
     ledger = _claims()
     ledger.claim("exp_a", now=now, expires_at=now + timedelta(minutes=2))
 
-    maintenance.run_export_claim_sweep(
+    maintenance.run_copy_claim_sweep(
         store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
     )
 

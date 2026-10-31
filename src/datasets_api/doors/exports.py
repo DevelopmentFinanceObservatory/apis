@@ -75,7 +75,7 @@ from datasets_api.exports import (
 from datasets_api.headers import no_store_headers
 from datasets_api.principals import Grant, Principal, Principals, granted_route_class
 from datasets_api.retention_admission import (
-    ExportClaimUnsettled,
+    CopyClaimUnsettled,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
     PinUnitHeld,
@@ -148,7 +148,7 @@ async def _prepared(
         started = time.perf_counter()
         waited = False
         while True:
-            claim = await read(current.allowances.read_claim, export_id=export)
+            claim = await read(current.allowances.read_claim, key=export)
             if claim is None or claim.expires_at <= current.now():
                 if waited:
                     timings.record("rebuild_wait", (time.perf_counter() - started) * 1000)
@@ -255,7 +255,7 @@ def build_exports_door(
             OpenPinBudgetExhausted,
             AllowanceExhausted,
             ExportPrepareRunning,
-            ExportClaimUnsettled,
+            CopyClaimUnsettled,
             PinUnitHeld,
             ExportBackpressure,
             # A derived file's slot and a render from the stored frame each raise this at the
@@ -283,7 +283,7 @@ def build_exports_door(
             OpenPinBudgetExhausted(limit=0, now=exemplar_day),
             AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
             ExportPrepareRunning(wait_seconds=30),
-            ExportClaimUnsettled(),
+            CopyClaimUnsettled(),
             PinUnitHeld(retry_after=1),
             ExportBackpressure(),
             DatasetsStoreUnavailable("exemplar"),

@@ -349,16 +349,22 @@ def _pinned_location(digest: str, *, current: Deps) -> tuple[str, str] | None:
 
 
 def _copied_to_pinned(
-    digest: str, *, frame: ExportFrame, copy: PreparingCopy, current: Deps
+    digest: str,
+    *,
+    source: tuple[str, str],
+    frame: ExportFrame,
+    copy: PreparingCopy,
+    current: Deps,
 ) -> tuple[str, str]:
-    """Copy `digest` to the pinned tier on `copy`'s units and return the copy's bucket and
-    object name. Working bytes gone before the copy refuse `ArtifactExpired`. A spent unit
+    """Copy `digest` from its working copy at `source`, a bucket and object name, to the pinned
+    tier on `copy`'s units and return the copy's bucket and object name. Working bytes gone
+    before the copy refuse `ArtifactExpired`. A spent unit
     refuses only while no pinned copy exists, since a concurrent pin of these bytes may have
     spent the last one."""
     try:
         copy.hold()
         with phase("copy"):
-            copied = copy.copy(digest)
+            copied = copy.copy(digest, source=source)
     except ArtifactNotFoundError as exc:
         raise ArtifactExpired(id=frame.spec_id, content_version=frame.content_version) from exc
     except _SPENT_REFUSALS:
@@ -382,8 +388,8 @@ def _pinned_copy(
     copy: PreparingCopy,
     current: Deps,
 ) -> tuple[str, str]:
-    """The bucket and object name of the pinned copy of `digest`, stored at `tier`, copying it
-    from the working tier unless a pinned copy exists (`_copied_to_pinned`), and record the
+    """The bucket and object name of the pinned copy of `digest`, stored at `tier` in `bucket`
+    under `object_name`, copying it from there unless a pinned copy exists (`_copied_to_pinned`), and record the
     export's reference to it under the version `subject_id` records, unless a revocation under
     it or `subject_ids` refuses."""
     pinned = (
@@ -391,7 +397,9 @@ def _pinned_copy(
     )
     already_pinned = pinned is not None
     if pinned is None:
-        pinned = _copied_to_pinned(digest, frame=frame, copy=copy, current=current)
+        pinned = _copied_to_pinned(
+            digest, source=(bucket, object_name), frame=frame, copy=copy, current=current
+        )
     record_pin_reference(
         current.reference_writer,
         principal=f"export:{export}",
@@ -910,8 +918,8 @@ def prepare_export(
         ExportOverCeiling: A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows.
         PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: The copy's units are
             spent.
-        PinUnitHeld: An export claim holds the last unit.
-        ExportClaimUnsettled: This prepare lost its claim, or an earlier copy cannot be settled.
+        PinUnitHeld: A pin claim holds the last unit.
+        CopyClaimUnsettled: This prepare lost its claim, or an earlier copy cannot be settled.
         MintBackpressure: No materialise permit came free.
     """
     export = export_id(request)

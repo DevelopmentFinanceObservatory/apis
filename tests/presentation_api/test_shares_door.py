@@ -541,7 +541,11 @@ class _CopyingFrameStore(FakeFrameStore):
         digest = self.artifacts.put(component_id.encode(), tier=Tier.working).digest
         if digest not in self.artifacts.list(tier=Tier.pinned):
             copy_to_pinned(
-                self.artifacts, digest, allowances=self.ledger, caller=caller, now=datetime.now(UTC)
+                self.artifacts,
+                digest,
+                allowances=self.ledger,
+                caller=caller,
+                clock=lambda: datetime.now(UTC),
             )
         return super().pin(frame_ref=frame_ref, component_id=component_id)
 

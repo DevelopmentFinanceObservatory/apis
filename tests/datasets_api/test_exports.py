@@ -43,7 +43,7 @@ from datasets_api.allowance import (
     SWEEP_INTERVAL_SECONDS,
     AllowanceExhausted,
     AllowanceKind,
-    ExportClaim,
+    CopyClaim,
     LiveAllowanceLedger,
     Spend,
 )
@@ -511,6 +511,22 @@ def test_a_prepare_pins_the_file_and_answers_facts_that_match_its_bytes(
     # Only the link signs a URL, so the prepare answer carries none.
     assert "fake://" not in resp.text and "pinned-bucket" not in resp.text
     assert "no-store" in resp.headers["cache-control"]
+
+
+def test_a_prepare_copies_from_the_location_it_holds_without_reading_it_again(
+    rig: _Rig, monkeypatch: pytest.MonkeyPatch
+):
+    location = rig.artifact_store.location
+    read: list[Tier] = []
+
+    def recorded(digest: str, *, tier: Tier) -> Any:
+        read.append(tier)
+        return location(digest, tier=tier)
+
+    monkeypatch.setattr(rig.artifact_store, "location", recorded)
+
+    assert rig.prepare("csv").status_code == 200
+    assert Tier.working not in read
 
 
 def test_every_format_of_one_frame_states_the_same_rows_and_columns(rig: _Rig):
@@ -1030,8 +1046,8 @@ class _HeldRender:
         monkeypatch.setattr(*_RENDERS[kind], self)
         read_claim = LiveAllowanceLedger.read_claim
 
-        def parked_read(ledger: LiveAllowanceLedger, export_id: str) -> Any:
-            claim = read_claim(ledger, export_id)
+        def parked_read(ledger: LiveAllowanceLedger, key: str) -> Any:
+            claim = read_claim(ledger, key)
             if claim is not None:
                 self.parked.set()
             return claim
@@ -1202,7 +1218,7 @@ def test_a_prepare_another_instance_holds_is_waited_for_and_answers_its_record(
     assert "rebuild_wait" in answered.headers["server-timing"]
 
 
-def _dead_prepare(rig: _Rig, spends: list[Spend]) -> ExportClaim:
+def _dead_prepare(rig: _Rig, spends: list[Spend]) -> CopyClaim:
     """A held claim of the rig's csv export, whose lease has passed."""
     export = _export_id(rig.frame, "csv", bundle=False)
     past = datetime(2020, 1, 1, tzinfo=UTC)
@@ -1223,7 +1239,7 @@ def test_a_prepare_that_died_before_a_copy_refunds_as_its_retry_takes_over(
     retry = rig.prepare("csv")
 
     assert retry.status_code == 200, retry.text
-    assert rig.ledger.read_claim(held.export_id) is None
+    assert rig.ledger.read_claim(held.key) is None
     assert _spent(rig.ledger) == {
         (BUDGET_KEY, "pin_budget"): 1,
         (BUDGET_KEY, "open_pin_budget"): 1,
@@ -1255,9 +1271,9 @@ def test_waiters_past_the_read_pool_all_answer_the_record(monkeypatch: pytest.Mo
     render = _HeldRender("derived", monkeypatch, results=[None])
     read_claim = LiveAllowanceLedger.read_claim
 
-    def slow(ledger: LiveAllowanceLedger, export_id: str) -> Any:
+    def slow(ledger: LiveAllowanceLedger, key: str) -> Any:
         time.sleep(0.02)
-        return read_claim(ledger, export_id)
+        return read_claim(ledger, key)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         leader = pool.submit(rig.prepare, "csv")

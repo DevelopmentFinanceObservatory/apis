@@ -268,7 +268,7 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
         *,
         from_tier: Tier,
         to_tier: Tier,
-        source: ArtifactLocation | None = None,
+        source: tuple[str, str] | None = None,
     ) -> StoredArtifact:
         return self._record(super().copy(digest, from_tier=from_tier, to_tier=to_tier))
 
@@ -333,7 +333,7 @@ class _DeferredRecordingView:
         *,
         from_tier: Tier,
         to_tier: Tier,
-        source: ArtifactLocation | None = None,
+        source: tuple[str, str] | None = None,
     ) -> StoredArtifact:
         return self._store.copy(digest, from_tier=from_tier, to_tier=to_tier, source=source)
 

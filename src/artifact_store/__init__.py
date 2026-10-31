@@ -19,11 +19,11 @@ from artifact_store.errors import (
 from artifact_store.inventory import ArtifactInventory, ArtifactLocation, LiveArtifactInventory
 from artifact_store.signing import SIGNED_URL_TTL_CEILING, SIGNED_URL_TTL_FLOOR, V4_MAX_TTL
 from artifact_store.store import (
-    COPY_LANDS_WITHIN,
-    EXISTS_RETRY,
     SPILL_THRESHOLD_BYTES,
     ArtifactSink,
     ArtifactStore,
+    CopyBounds,
+    ExistsRead,
     LiveArtifactStore,
     StoredArtifact,
     Tier,
@@ -31,8 +31,6 @@ from artifact_store.store import (
 
 __all__ = [
     "ARTIFACT_INVENTORY_WRITE_FAILED_MARKER",
-    "COPY_LANDS_WITHIN",
-    "EXISTS_RETRY",
     "SIGNED_URL_TTL_CEILING",
     "SIGNED_URL_TTL_FLOOR",
     "SPILL_THRESHOLD_BYTES",
@@ -48,6 +46,8 @@ __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
     "ArtifactWriteError",
+    "CopyBounds",
+    "ExistsRead",
     "LiveArtifactInventory",
     "LiveArtifactStore",
     "StorageEmulatorRefused",

@@ -39,7 +39,7 @@ from datasets_api.reference_store import (
     PIN_REFERENCE_KIND,
 )
 from datasets_api.render import servable_frame_location
-from datasets_api.retention_admission import PinUnitHeld
+from datasets_api.retention_admission import PinUnitHeld, sweep_copy_claims
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.caller import Caller, address_key
 from materialise.formats import FRAME1_MEDIA_TYPE
@@ -308,7 +308,7 @@ def test_a_revocation_landing_during_the_copy_window_is_caught_at_reference_writ
     reference_writer = FakeArtifactReferenceWriter()
 
     class _RevokingDuringCopyArtifactStore(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             reference_writer.revoked[("spec_a", "cv1")] = "revoked mid-copy"
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -374,7 +374,7 @@ def test_pinning_an_already_pinned_artifact_does_not_re_copy():
             super().__init__()
             self.copy_calls = 0
 
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             self.copy_calls += 1
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -555,7 +555,7 @@ def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired_and_spends_no
 
 
 class _CopyForbiddenArtifactStore(FakeArtifactStore):
-    def copy(self, digest, *, from_tier, to_tier):
+    def copy(self, digest, *, from_tier, to_tier, source=None):
         raise AssertionError("the budget refusal must come before any copy")
 
 
@@ -588,7 +588,7 @@ def test_a_copy_that_landed_and_raised_ends_with_one_set_of_units():
     class _LandedThenRaised(FakeArtifactStore):
         failed = False
 
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             copied = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
             if not self.failed:
                 self.failed = True
@@ -607,28 +607,35 @@ def test_a_copy_that_landed_and_raised_ends_with_one_set_of_units():
 
 
 @pytest.mark.parametrize(
-    ("landed", "bucket_read", "units"),
+    ("landed", "bucket_read", "units", "swept"),
     [
-        pytest.param(False, None, {}, id="absent-refunds"),
-        pytest.param(True, None, {(BUDGET_KEY, "pin_budget"): 1}, id="present-keeps"),
+        pytest.param(False, None, {}, {}, id="absent-refunds"),
+        pytest.param(
+            True,
+            None,
+            {(BUDGET_KEY, "pin_budget"): 1},
+            {(BUDGET_KEY, "pin_budget"): 1},
+            id="present-keeps",
+        ),
         pytest.param(
             False,
             ArtifactWriteError(object_name="d", digest="d"),
             {(BUDGET_KEY, "pin_budget"): 1},
-            id="failed-read-keeps",
+            {},
+            id="failed-read-held-for-the-sweep",
         ),
     ],
 )
 def test_a_copy_that_raises_is_judged_by_the_pinned_object(
-    landed: bool, bucket_read: Exception | None, units: dict
+    landed: bool, bucket_read: Exception | None, units: dict, swept: dict
 ):
     class _Raises(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             if landed:
                 super().copy(digest, from_tier=from_tier, to_tier=to_tier)
             raise ArtifactWriteError(object_name=digest, digest=digest)
 
-        def exists(self, digest, *, tier, retry=None):
+        def exists(self, digest, *, tier, read=None):
             if bucket_read is not None:
                 raise bucket_read
             return super().exists(digest, tier=tier)
@@ -641,6 +648,9 @@ def test_a_copy_that_raises_is_judged_by_the_pinned_object(
         _pin_named(store, location, ledger)
 
     assert _spent(ledger) == units
+    bucket_read = None  # The sweep reads a bucket that answers.
+    sweep_copy_claims(allowances=ledger, artifacts=store, now=_NOW)
+    assert _spent(ledger) == swept
 
 
 def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
@@ -755,7 +765,7 @@ def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_
     writer = FakeArtifactReferenceWriter()
 
     class _RelinkingDuringCopyArtifactStore(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             writer.unlinked.add(("spec_a", "cv1", digest))
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
