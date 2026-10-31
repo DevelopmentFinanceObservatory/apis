@@ -1,162 +1,294 @@
-"""Count the stored warnings that name refs in their message, by old format.
+"""The stored warning formats that name refs in their message, and a dry run of their rewrite.
 
-Migration `0039_warning_counted_refs.sql` rewrites these warnings of
-`datasets.version_record.warnings` into counted messages with structured fields. This command
-counts each old format it rewrites, and checks the `member_count` a group's
-`coverage_below_scope` already stores against the length of its trace's
-`resolved_stat_vars`, the count 0039 gives the warnings it rewrites. It reads in a READ ONLY
-transaction, refuses to read when the session is not read-only, and rolls back.
+`OLD_FORMATS` holds the only definition of each format: one detection pattern per warning
+code, valid in both Python `re` and Postgres ARE. Detection is loose: it asks whether a
+message names something, so a message the rewrite cannot parse still counts. The rewrite
+parses exactly. `warning_rewrite.sql` rewrites the unserved-entity, currency and deflator
+lists; the backfill task rewrites the old member sentence (`MEMBER_SENTENCE`) and the codes in
+`TASK_CODES`.
+
+`python -m dataset_store.warning_formats --dry-run` opens a transaction, executes
+`warning_rewrite.sql`, which creates temporary functions only, sets the transaction READ ONLY,
+refuses unless the session reports it read-only, reads `datasets.version_record.warnings`
+and rolls back. It prints the version rows the SQL rewrite changes, the rows left for the
+task, and the residual rows, each by format; then up to `SAMPLES_PER_FORMAT` messages of each
+format before and after the SQL rewrite; then a census by code of the rows whose message holds
+a `dcid:` or slash-shaped ref, which finds codes no format lists. A residual row holds a
+warning that, after the SQL rewrite and with its member sentences removed, still matches a
+format the task does not rewrite. Any residual row exits 1.
 
 It connects with the migration job's settings (`dataset_store.migrate`), so it runs as an
 execution of that job with its args overridden. The deployed image omits `scripts/`, so this
-command lives in the package. Run it with `python -m dataset_store.warning_formats`.
+command lives in the package.
 """
 
 from __future__ import annotations
 
+import argparse
+import re
 import sys
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from dataset_store import connection
-from dataset_store.dbapi import DBAPIConnection
+from dataset_store.dbapi import DBAPIConnection, DBAPICursor
 from dataset_store.errors import DatasetStoreConfigError, DatasetStoreError
 
-# Each format and the SQL condition on one stored warning that selects it. A warning reads as
-# `code`, `message`, `body` (the whole warning) and `trace_members`, the length of its row's
-# `trace.resolved_stat_vars`, NULL when the trace holds no such list. The patterns are the
-# sentences 0039 parses.
-_MEMBERS = "which hold none at the observation period the other members serve"
-_UNSERVED = r" No observations were served for [^ ,]+(, [^ ,]+)*( and [0-9]+ more)?\."
-_FALLBACK = "No place was named, so the answer covers the countries with data"
-_NAMED = " [0-9]+ entities: "
-_TRUNCATED = r" [0-9]+ entities: .* \(truncated\)$"
-FORMATS: tuple[tuple[str, str], ...] = (
+# (name, code, detection pattern). Each code has one format.
+OLD_FORMATS: tuple[tuple[str, str, str], ...] = (
     (
-        "coverage_below_scope, unserved entities named",
-        f"code = 'coverage_below_scope' AND message ~ '{_UNSERVED}'",
-    ),
-    (
-        "coverage_below_scope, members named, window not a range",
-        rf"code = 'coverage_below_scope' AND message ~ '{_MEMBERS}\.'",
-    ),
-    (
-        "coverage_below_scope, members named, range window",
-        rf"code = 'coverage_below_scope' AND message ~ '{_MEMBERS} in the requested years\.'",
-    ),
-    (
-        "coverage_below_scope, members named, trace holds no resolved_stat_vars",
-        f"code = 'coverage_below_scope' AND message ~ '{_MEMBERS}' AND trace_members IS NULL",
-    ),
-    (
-        "coverage_below_scope, named refs beside the countries fallback",
-        f"code = 'coverage_below_scope' AND (message ~ '{_UNSERVED}' OR message ~ '{_MEMBERS}') "
-        f"AND strpos(message, '{_FALLBACK}') > 0",
+        "coverage_below_scope, entities or members named",
+        "coverage_below_scope",
+        r"No observations were served for (?![0-9]+ requested entit)",
     ),
     (
         "currency_unmapped_omitted, entities named",
-        f"code = 'currency_unmapped_omitted' AND message ~ '{_NAMED}'",
-    ),
-    (
-        "currency_unmapped_omitted, entities named, truncated",
-        f"code = 'currency_unmapped_omitted' AND message ~ '{_TRUNCATED}'",
+        "currency_unmapped_omitted",
+        r" entit(?:y|ies): ",
     ),
     (
         "deflator_missing_omitted, entities named",
-        f"code = 'deflator_missing_omitted' AND message ~ '{_NAMED}'",
+        "deflator_missing_omitted",
+        r" entit(?:y|ies): ",
     ),
     (
-        "deflator_missing_omitted, entities named, truncated",
-        f"code = 'deflator_missing_omitted' AND message ~ '{_TRUNCATED}'",
+        "withheld_by_registry, entities and provenances named",
+        "withheld_by_registry",
+        r" served no observations for ",
     ),
     (
-        "currency or deflator, neither named nor counted",
-        "code IN ('currency_unmapped_omitted', 'deflator_missing_omitted') "
-        f"AND message !~ '{_NAMED}' "
-        "AND NOT (body ? 'omitted_entities' OR body ? 'omitted_entity_years')",
+        "un_system_unavailable, places named",
+        "un_system_unavailable",
+        r"No UN data was read for (?![0-9]+ entit)",
     ),
     (
-        "member_count equals the trace's resolved_stat_vars",
-        "body ? 'member_count' AND (body ->> 'member_count')::integer = trace_members",
-    ),
-    (
-        "member_count differs from the trace's resolved_stat_vars",
-        "body ? 'member_count' AND (body ->> 'member_count')::integer <> trace_members",
-    ),
-    (
-        "member_count beside a trace holding no resolved_stat_vars",
-        "body ? 'member_count' AND trace_members IS NULL",
+        "deflator_projected, examples named",
+        "deflator_projected",
+        r", for example: ",
     ),
 )
 
-# The formats 0039 rewrites, whose rows it updates.
-_REWRITTEN = (
-    f"code = 'coverage_below_scope' AND (message ~ '{_UNSERVED}' OR message ~ '{_MEMBERS}') "
-    f"OR code IN ('currency_unmapped_omitted', 'deflator_missing_omitted') "
-    f"AND message ~ '{_NAMED}'"
+# The old sentence naming the members of a group that served nothing, which the backfill task
+# rewrites: the first five `dcid:` refs, a count of the rest, and the range-window clause.
+MEMBER_SENTENCE_CODE = "coverage_below_scope"
+MEMBER_SENTENCE = (
+    r" No observations were served for (dcid:[^ ,]+(?:, dcid:[^ ,]+)*)(?: and ([0-9]+) more)?, "
+    r"which hold none at the observation period the other members serve"
+    r"( in the requested years)?\."
 )
-REWRITTEN_ROWS = "version rows 0039 rewrites"
+
+# The codes whose every detected warning the backfill task rewrites.
+TASK_CODES = frozenset({"withheld_by_registry", "un_system_unavailable", "deflator_projected"})
+
+REWRITE_SQL = Path(__file__).with_name("warning_rewrite.sql")
+SAMPLES_PER_FORMAT = 20
+VERSION_TABLE = "datasets.version_record"
+
+_REF = r"dcid:|[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_]"
+_TABLE = re.compile(r"[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*")
+_ROW = "(subject_id, content_version)"
 
 
-def _query() -> str:
-    """One row: for each of `FORMATS`, its warnings and the version rows holding them, then
-    the version rows holding any warning 0039 rewrites."""
-    counts = ",\n".join(
-        f"count(*) FILTER (WHERE {condition}), "
-        f"count(DISTINCT (subject_id, content_version)) FILTER (WHERE {condition})"
-        for _name, condition in FORMATS
+@dataclass(frozen=True)
+class DryRun:
+    """What the rewrite would change. Counts are version rows, by format name."""
+
+    read_only: str
+    rewritten_rows: int
+    rewritten: dict[str, int]
+    task_rows: int
+    task: dict[str, int]
+    residual_rows: int
+    residual: dict[str, int]
+    samples: dict[str, list[tuple[str, str]]]
+    census: list[tuple[str | None, int, int]]
+
+
+def _literal(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _matches(message: str, formats: Sequence[tuple[str, str, str]]) -> str:
+    """A CASE on `code`, true when `message` matches the pattern of its code's format."""
+    branches = " ".join(
+        f"WHEN {_literal(code)} THEN {message} ~ {_literal(pattern)}"
+        for _name, code, pattern in formats
+    )
+    return f"CASE code {branches} ELSE false END"
+
+
+def _classified(table: str) -> str:
+    """`classified`: each stored warning of `table` with its message before and after the SQL
+    rewrite, whether that rewrite changes it, whether the task rewrites it next, and whether it
+    is residual."""
+    task = _matches("after", [f for f in OLD_FORMATS if f[1] in TASK_CODES])
+    residual = _matches(
+        f"regexp_replace(after, {_literal(MEMBER_SENTENCE)}, '', 'g')",
+        [f for f in OLD_FORMATS if f[1] not in TASK_CODES],
     )
     return f"""
         WITH warning AS (
             SELECT
                 r.subject_id,
                 r.content_version,
+                w.position,
                 w.value ->> 'code' AS code,
-                w.value ->> 'message' AS message,
-                w.value AS body,
-                CASE
-                    WHEN jsonb_typeof(r.trace -> 'resolved_stat_vars') = 'array'
-                        THEN jsonb_array_length(r.trace -> 'resolved_stat_vars')
-                END AS trace_members
-            FROM datasets.version_record AS r
-            CROSS JOIN LATERAL jsonb_array_elements(r.warnings) AS w (value)
+                w.value ->> 'message' AS before,
+                rewritten.value ->> 'message' AS after,
+                rewritten.value IS DISTINCT FROM w.value AS rewritten
+            FROM {table} AS r
+            CROSS JOIN LATERAL jsonb_array_elements(r.warnings)
+                WITH ORDINALITY AS w (value, position)
+            CROSS JOIN LATERAL (SELECT pg_temp.warning_counted_refs_0046(w.value) AS value)
+                AS rewritten
             WHERE jsonb_typeof(r.warnings) = 'array'
+        ),
+        classified AS (
+            SELECT
+                *,
+                {task} OR code = {_literal(MEMBER_SENTENCE_CODE)}
+                    AND after ~ {_literal(MEMBER_SENTENCE)} AS by_task,
+                {residual} AS residual
+            FROM warning
         )
-        SELECT
-            {counts},
-            count(DISTINCT (subject_id, content_version)) FILTER (WHERE {_REWRITTEN})
-        FROM warning
     """
 
 
-def count_formats(conn: DBAPIConnection) -> list[tuple[str, int | None, int]]:
-    """Each of `FORMATS` with its warnings and the version rows holding them, then
-    `REWRITTEN_ROWS` with its version rows alone. Reads in a READ ONLY transaction and rolls
+def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
+    """Read what `warning_rewrite.sql` and the task would change in `table`'s `warnings`.
+
+    Creates the rewrite's temporary functions, sets the transaction READ ONLY, reads, and rolls
     back. Raises `DatasetStoreError` when the session does not report the transaction
     read-only."""
+    if _TABLE.fullmatch(table) is None:
+        raise ValueError(f"not a schema-qualified table name: {table!r}")
+    classified = _classified(table)
     cursor = conn.cursor()
     try:
+        cursor.execute(REWRITE_SQL.read_text())
         cursor.execute("SET TRANSACTION READ ONLY")
         cursor.execute("SHOW transaction_read_only")
         read_only = cursor.fetchone()
         if read_only is None or read_only[0] != "on":
             raise DatasetStoreError(f"transaction_read_only is {read_only!r}, not 'on'")
-        cursor.execute(_query())
-        row = cursor.fetchone()
+        counts = _fetch_all(
+            cursor,
+            f"""{classified}
+            SELECT
+                GROUPING(code) = 1,
+                code,
+                count(DISTINCT {_ROW}) FILTER (WHERE rewritten),
+                count(DISTINCT {_ROW}) FILTER (WHERE by_task),
+                count(DISTINCT {_ROW}) FILTER (WHERE residual)
+            FROM classified
+            GROUP BY GROUPING SETS ((code), ())
+            """,
+        )
+        samples = _fetch_all(
+            cursor,
+            f"""{classified}
+            SELECT code, before, after
+            FROM (
+                SELECT
+                    code,
+                    before,
+                    after,
+                    row_number() OVER (
+                        PARTITION BY code ORDER BY subject_id, content_version, position
+                    ) AS n
+                FROM classified
+                WHERE {_matches("before", OLD_FORMATS)}
+            ) AS sampled
+            WHERE n <= {SAMPLES_PER_FORMAT}
+            ORDER BY code, n
+            """,
+        )
+        census = _fetch_all(
+            cursor,
+            f"""{classified}
+            SELECT
+                code,
+                count(DISTINCT {_ROW}),
+                count(DISTINCT {_ROW}) FILTER (WHERE before ~ {_literal(_REF)})
+            FROM classified
+            GROUP BY code
+            ORDER BY code NULLS LAST
+            """,
+        )
     finally:
         cursor.close()
         conn.rollback()
-    assert row is not None
-    values = cast("tuple[int, ...]", row)
-    counts: list[tuple[str, int | None, int]] = [
-        (name, values[2 * index], values[2 * index + 1])
-        for index, (name, _condition) in enumerate(FORMATS)
-    ]
-    return [*counts, (REWRITTEN_ROWS, None, values[-1])]
+
+    names = {code: name for name, code, _pattern in OLD_FORMATS}
+    totals = (0, 0, 0)
+    by_code: dict[str, tuple[int, int, int]] = {}
+    for total, code, *row in counts:
+        if total:
+            totals = cast("tuple[int, int, int]", tuple(row))
+        elif code in names:
+            by_code[cast(str, code)] = cast("tuple[int, int, int]", tuple(row))
+
+    def _by_format(index: int) -> dict[str, int]:
+        return {name: by_code.get(code, (0, 0, 0))[index] for code, name in names.items()}
+
+    sampled: dict[str, list[tuple[str, str]]] = {name: [] for name in names.values()}
+    for code, before, after in samples:
+        sampled[names[cast(str, code)]].append((cast(str, before), cast(str, after)))
+    return DryRun(
+        read_only=cast(str, read_only[0]),
+        rewritten_rows=totals[0],
+        rewritten=_by_format(0),
+        task_rows=totals[1],
+        task=_by_format(1),
+        residual_rows=totals[2],
+        residual=_by_format(2),
+        samples=sampled,
+        census=[
+            (cast("str | None", code), cast(int, rows), cast(int, refs))
+            for code, rows, refs in census
+        ],
+    )
 
 
-def main() -> int:
-    """Run `python -m dataset_store.warning_formats`. Prints one line per format; a
-    configuration or store error exits 1."""
+def _fetch_all(cursor: DBAPICursor, sql: str) -> list[tuple[object, ...]]:
+    cursor.execute(sql)
+    return cursor.fetchall()
+
+
+def _print(report: DryRun) -> None:
+    print(f"transaction read only: {report.read_only}")
+    for title, rows, by_format in (
+        ("rows the SQL rewrite changes", report.rewritten_rows, report.rewritten),
+        ("rows the task will change", report.task_rows, report.task),
+        ("residual rows", report.residual_rows, report.residual),
+    ):
+        print(f"{title}: {rows}")
+        for name, count in by_format.items():
+            print(f"  {name}: {count}")
+    for name, samples in report.samples.items():
+        print(f"samples, {name}: {len(samples)}")
+        for before, after in samples:
+            print(f"  before: {before}")
+            if after != before:
+                print(f"  after:  {after}")
+    print("rows by code, then rows whose message holds a dcid: or slash-shaped ref:")
+    for code, rows, refs in report.census:
+        print(f"  {code}: {rows}, {refs}")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run `python -m dataset_store.warning_formats --dry-run`. A configuration or store error,
+    or a residual row, exits 1."""
+    parser = argparse.ArgumentParser(prog="python -m dataset_store.warning_formats")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        required=True,
+        help="report what the rewrite would change, then roll back",
+    )
+    parser.parse_args(argv)
     try:
         settings = connection.ConnectionSettings.from_env(
             user_var="DATASET_STORE_MIGRATOR_DB_USER",
@@ -170,18 +302,14 @@ def main() -> int:
     connector = connection.build_connector() if settings.instance_connection_name else None
     conn = settings.connect_callable(connector=connector)()
     try:
-        counts = count_formats(conn)
+        report = dry_run(conn)
     except DatasetStoreError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     finally:
         conn.close()
-    for name, warnings, rows in counts:
-        if warnings is None:
-            print(f"{name}: {rows}")
-        else:
-            print(f"{name}: {warnings} warnings in {rows} version rows")
-    return 0
+    _print(report)
+    return 1 if report.residual_rows else 0
 
 
 if __name__ == "__main__":
