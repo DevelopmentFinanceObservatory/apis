@@ -8,7 +8,9 @@ from typing import cast
 
 import pytest
 
-from dataset_store.warning_formats import MEMBER_SENTENCE, OLD_FORMATS
+from dataset_store import DatasetStoreError, warning_formats
+from dataset_store.migrate import MIGRATIONS_DIR
+from dataset_store.warning_formats import MEMBER_SENTENCE, OLD_FORMATS, REWRITE_SQL, definitions
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from materialise.finish import _coverage_below_scope_warning
 from tests.dataset_store._warning_refs import (
@@ -22,7 +24,7 @@ from tests.dataset_store._warning_refs import (
     rewrite_cases,
 )
 
-_CURRENT_CASES = {"current", "unlisted"}
+_CURRENT_CASES = {"current", "unlisted", "revision_unavailable"}
 
 
 def _formats(code: str, message: str) -> list[str]:
@@ -126,3 +128,50 @@ def test_the_member_sentence_reads_the_named_members_and_the_rest(
     assert match[1].split(", ") == named
     assert match[2] == more
     assert (match[3] is not None) == range_window
+
+
+def test_the_rewrite_file_defines_only_temporary_functions():
+    """Each statement is read whole, a semicolon inside a function body included."""
+    assert [statement.split("(")[0] for statement in definitions(REWRITE_SQL.read_text())] == [
+        "CREATE OR REPLACE FUNCTION pg_temp.warning_refs",
+        "CREATE OR REPLACE FUNCTION pg_temp.warning_entities",
+        "CREATE OR REPLACE FUNCTION pg_temp.warning_counted_refs",
+        "CREATE OR REPLACE FUNCTION pg_temp.warnings_counted_refs",
+    ]
+
+
+@pytest.mark.parametrize(
+    "appended",
+    [
+        "UPDATE datasets.version_record SET warnings = '[]';",
+        "CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$;",
+        "CREATE OR REPLACE FUNCTION datasets.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$;",
+        "-- a comment\nDROP TABLE datasets.version_record",
+    ],
+)
+def test_the_dry_run_refuses_a_file_that_does_more_than_define_temporary_functions(appended):
+    with pytest.raises(DatasetStoreError):
+        definitions(REWRITE_SQL.read_text() + "\n" + appended)
+
+
+def test_a_migration_applying_the_rewrite_starts_with_the_validated_bytes():
+    """A migration named for the rewrite starts with `warning_rewrite.sql`'s exact bytes, so
+    the text the dry run validated is the text it applies. No such migration exists yet, so
+    this passes with nothing to check until one does."""
+    prefix = REWRITE_SQL.read_bytes()
+    for path in sorted(MIGRATIONS_DIR.glob("*warning_counted_refs*")):
+        assert path.read_bytes().startswith(prefix), path.name
+
+
+def test_a_run_that_cannot_connect_exits_2(monkeypatch, capsys):
+    for name, value in {
+        "DATASET_STORE_HOST": "127.0.0.1",
+        "DATASET_STORE_PORT": "1",
+        "DATASET_STORE_DATABASE": "datasets",
+        "DATASET_STORE_MIGRATOR_DB_USER": "migrator",
+        "DATASET_STORE_MIGRATOR_DB_PASSWORD": "unused",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("DATASET_STORE_INSTANCE_CONNECTION_NAME", raising=False)
+    assert warning_formats.main() == 2
+    assert capsys.readouterr().err.startswith("ERROR: ")

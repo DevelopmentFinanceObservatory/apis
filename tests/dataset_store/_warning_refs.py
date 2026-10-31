@@ -110,6 +110,25 @@ def current_warnings() -> list[StoredWarning]:
     ]
 
 
+# Cases whose row's trace holds no `resolved_stat_vars`, so a member sentence in it has no
+# member count to state.
+WITHOUT_RESOLVED_STAT_VARS = frozenset({"members_without_trace_count"})
+
+
+def trace_for(case: str) -> dict[str, object]:
+    """The trace of `case`'s row, resolving seven members unless the case is in
+    `WITHOUT_RESOLVED_STAT_VARS`."""
+    if case in WITHOUT_RESOLVED_STAT_VARS:
+        return {"graph_revision": "rev"}
+    return {
+        "graph_revision": "rev",
+        "resolved_stat_vars": [
+            {"ref": f"dcid:Member{index}", "roles": ["recipient"], "observation_count": 0}
+            for index in range(7)
+        ],
+    }
+
+
 def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]]:
     """Stored warning arrays by case, each with the array `warning_rewrite.sql` leaves."""
     deflator_detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"][1]
@@ -122,6 +141,7 @@ def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]
                 COVERAGE_DETAIL + old_member_sentence(MANY_MEMBERS, range_window=True) + FALLBACK
             )
         ],
+        "members_without_trace_count": [_coverage(COVERAGE_DETAIL + old_member_sentence(MEMBERS))],
         "name_with_comma": [
             _coverage(COVERAGE_DETAIL + old_unserved_sentence(["country/KEN", "country/A,B"]))
         ],
@@ -149,6 +169,13 @@ def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]
                 "severity": "info",
                 "message": "3 StatVars were summed into dcid:Family.",
             },
+        ],
+        "revision_unavailable": [
+            {
+                "code": "revision_unavailable",
+                "severity": "warn",
+                "message": "The revision of dcid:Foo could not be read.",
+            }
         ],
         "current": current_warnings(),
     }
