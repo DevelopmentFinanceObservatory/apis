@@ -33,7 +33,7 @@ from dfo_platform.app import create_app
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
-from presentation_api.newest_frames import NewestPending
+from presentation_api.newest_frames import NewestNotReady, NewestPending
 from presentation_store import LiveShareStore, PresentationStoreUnavailable
 from tests.presentation_api.test_shares_door import _Allowances
 from tests.presentation_store.conftest import FakePresentationStore
@@ -575,11 +575,20 @@ def test_a_live_slot_whose_card_cannot_draw_the_newer_frame_serves_its_own_as_st
         ),
         pytest.param(FrameUnavailable(reason="busy", detail="exemplar"), 30, id="busy"),
         pytest.param(PresentationStoreUnavailable("exemplar"), 30, id="store-unavailable"),
-        pytest.param(FrameUnavailable(reason="expired", detail="exemplar"), None, id="expired"),
         pytest.param(
             ReleaseMismatch(catalog_version="2020.1.0", detail="exemplar"),
-            None,
+            30,
             id="release-mismatch",
+        ),
+        pytest.param(
+            NewestNotReady("exemplar", retry_after_s=1), 30, id="retry-after-under-the-floor"
+        ),
+        pytest.param(NewestNotReady("exemplar", retry_after_s=120), 120, id="retry-after"),
+        pytest.param(FrameUnavailable(reason="expired", detail="exemplar"), None, id="expired"),
+        pytest.param(
+            PresentationStoreUnavailable("exemplar", sqlstate="42601"),
+            None,
+            id="store-permanent",
         ),
     ],
 )
@@ -587,8 +596,8 @@ def test_a_live_slot_serves_its_own_frame_until_a_transient_failure_s_wait_ends(
     door: _Door, monkeypatch: pytest.MonkeyPatch, raised: Exception, wait_s: int | None
 ):
     """A transient failure stores the slot `stale` on the card's own frame until its wait, and
-    the reads inside it neither draw the failing frame nor record a frame served. A permanent
-    one stores it until the next check, past both reads here."""
+    the reads inside it do not draw the failing frame. A permanent one stores it until the next
+    check, past both reads here. Every read records the frame it served."""
     served: list[FrameRef] = []
     record_served = LiveShareStore.record_served
 
@@ -620,9 +629,32 @@ def test_a_live_slot_serves_its_own_frame_until_a_transient_failure_s_wait_ends(
     else:
         assert _stated(after) == ("current", _MOVED.content_version, "live")
         assert door.newest.asked == [_STORED] * 2
-        # The first read's fallback records no frame served; the read inside the wait serves the
-        # check it stored.
-        assert served == [_STORED, _MOVED]
+        assert served == [_STORED, _STORED, _MOVED]
+
+
+def test_a_transient_failure_keeps_a_live_slot_on_its_last_good_frame(door: _Door):
+    """A slot current on a newer frame serves that frame `stale` through a transient failure of
+    a newer one still, and keeps it through the pending check that follows."""
+    newer = FrameRef(spec_id=_STORED.spec_id, content_version="cv_" + "c" * 32)
+    door.frame_store.refusals[newer] = FrameUnavailable(
+        reason="io", detail="exemplar", retry_after_s=7.0
+    )
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = _MOVED
+    first = door.data(share["id"])
+    door.later(minutes=16)
+    door.newest.answer = newer
+    failed = door.data(share["id"])
+    door.later(seconds=6)
+    inside = door.data(share["id"])
+    door.later(seconds=2)
+    door.newest.answer = NewestPending(retry_after_s=30)
+    pending = door.data(share["id"])
+
+    assert _stated(first) == ("current", _MOVED.content_version, "live")
+    assert _stated(failed) == _stated(inside) == ("stale", _MOVED.content_version, "live")
+    assert _stated(pending) == ("pending", _MOVED.content_version, "live")
+    assert door.frame_store.loads.count(newer) == 1
 
 
 def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(

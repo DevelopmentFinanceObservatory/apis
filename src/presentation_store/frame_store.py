@@ -479,30 +479,31 @@ def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
     """The frame1 document `data` holds and the bytes the cache counts for it, `_document_bytes`
-    of its rows and columns. Both stored forms build the document from a canonical frame table
-    through `canonical_frame_document`, so their cells are shared alike: a canonical frame read
-    as one (`_canonical_document`), bounded by `max_rows` before any row is decoded, and a
-    frame1 document rebuilt as the grammar's `Frame` (`materialise.formats.frame_of_frame1`),
-    which validates every cell. A frame1 document is not row-bounded: it predates canonical
-    frames, and `datasets_api.maintenance.run_backfill_frame1` gives such a version a canonical
-    frame. `_decoding` refuses what does not decode."""
+    of its rows and columns. Both stored forms read into a canonical frame table, refused for a
+    null `time_period`, and build the document from it through `canonical_frame_document`, so
+    their cells are shared alike: a canonical frame read as one (`_canonical_table`), bounded by
+    `max_rows` before any row is decoded, and a frame1 document under the rule Datasets reads
+    frame1 by (`materialise.formats.frame_of_frame1`). A frame1 document is not row-bounded: it
+    predates canonical frames, and `datasets_api.maintenance.run_backfill_frame1` gives such a
+    version a canonical frame. `_decoding` refuses what does not decode."""
     with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            doc = canonical_frame_document(frame_of_frame1(data).table)
+            table = frame_of_frame1(data).table
         else:
-            doc = _canonical_document(data, location=location, max_rows=max_rows)
+            table = _canonical_table(data, location=location, max_rows=max_rows)
+        if table.column(TIME_PERIOD_COLUMN).null_count:
+            raise FrameError("invalid_time_period", "a time_period cell is null")
+        doc = canonical_frame_document(table)
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
 
 
-def _canonical_document(
-    data: bytes, *, location: StoredArtifactLocation, max_rows: int
-) -> Mapping[str, object]:
-    """The frame1 document of the canonical frame `data` holds, refused past `max_rows` from its
-    footer before any row is decoded, and for a null `time_period`.
+def _canonical_table(data: bytes, *, location: StoredArtifactLocation, max_rows: int) -> pa.Table:
+    """The table of the canonical frame `data` holds, refused past `max_rows` from its footer
+    before any row is decoded.
 
     Raises:
-        FrameError: The schema is not a canonical frame's, or a `time_period` cell is null.
+        FrameError: The schema is not a canonical frame's.
         FrameUnavailable: `missing_rendering` past `max_rows`.
     """
     footer = pq.ParquetFile(pa.BufferReader(data))
@@ -511,10 +512,7 @@ def _canonical_document(
         raise _over_row_bound(location, rows=rows, max_rows=max_rows)
     schema = footer.schema_arrow
     Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
-    table = read_canonical_frame_table(data, columns=schema.names)
-    if table.column(TIME_PERIOD_COLUMN).null_count:
-        raise FrameError("invalid_time_period", "a time_period cell is null")
-    return canonical_frame_document(table)
+    return read_canonical_frame_table(data, columns=schema.names)
 
 
 def _over_row_bound(

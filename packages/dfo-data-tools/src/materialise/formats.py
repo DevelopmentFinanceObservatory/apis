@@ -41,6 +41,7 @@ from dfo_frame_grammar import (
     Frame,
     canonical_frame_schema,
     stream_canonical_frame_bytes,
+    unit_cell_array,
     unit_column_cells,
 )
 from dfo_frame_grammar.grammar import (
@@ -65,7 +66,6 @@ from openpyxl.utils import get_column_letter
 from materialise.cell_safety import spreadsheet_safe
 from materialise.codes import CodeCatalogue
 from materialise.errors import MaterialisationError, MaterialisationUsageError
-from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from materialise.unit_cells import unit_cell_text
 
 if TYPE_CHECKING:
@@ -827,25 +827,62 @@ def read_frame1_table(data: bytes) -> Table:
 
 
 def frame_of_frame1(data: bytes) -> Frame:
-    """The frame the frame1 document `data` holds, rebuilt through the grammar
-    (`read_frame1_table`, then `build_frame`), so a frame1 document and a canonical frame of the
-    same rows decode to one `Frame`.
+    """The canonical frame of the frame1 document `data`, read under the rule Datasets reads
+    frame1 by (`read_frame1_document`, then `frame1_unit_cells`, as `read_frame1_table` reads
+    it). Its cells become the canonical frame's Arrow columns, each distinct `unit` cell
+    converted once, and `Frame.from_table` wraps them unchecked, since `write_frame1` wrote the
+    rows from a `Frame` in its row order. A column the document predates, `measurementMethod`
+    or `status`, is null.
 
     Raises:
-        FrameError: The document or a cell is outside the grammar's forms.
+        FrameError: What `read_frame1_document` and `frame1_unit_cells` raise, and
+            `schema_violation` for a cell its column's Arrow type cannot hold.
     """
-    table = read_frame1_table(data)
-    return build_frame(
-        role_keys=frame_entity_columns(table.columns),
-        rows=[
-            {
-                column: unit_cell_for_rebuild(cell)
-                for column, cell in zip(table.columns, row, strict=True)
-                if column != STATUS_COLUMN
-            }
-            for row in table.rows
-        ],
+    document = read_frame1_document(data)
+    stored = cast("list[str]", document["columns"])
+    rows = cast("list[list[object]]", document["rows"])
+    columns = derive_columns(frame_entity_columns(stored))
+    present = {column: index for index, column in enumerate(stored)}
+    unit = present[UNIT_COLUMN]
+    units = _frame1_unit_array(frame1_unit_cells([row[unit] for row in rows]), columns)
+    schema = canonical_frame_schema(columns, recipe=units.type != _unit_type(columns))
+    arrays: list[pa.Array] = []
+    for field in schema:
+        if field.name == UNIT_COLUMN:
+            arrays.append(units)
+        elif field.name in present and field.name != STATUS_COLUMN:
+            index = present[field.name]
+            try:
+                arrays.append(pa.array([row[index] for row in rows], type=field.type))
+            except (pa.ArrowInvalid, pa.ArrowTypeError) as exc:
+                raise FrameError(
+                    "schema_violation", f"a {field.name} cell is not a {field.type}"
+                ) from exc
+        else:
+            arrays.append(pa.nulls(len(rows), type=field.type))
+    return Frame.from_table(columns=columns, table=pa.Table.from_arrays(arrays, schema=schema))
+
+
+def _unit_type(columns: tuple[str, ...], *, recipe: bool = False) -> pa.DataType:
+    return canonical_frame_schema(columns, recipe=recipe).field(UNIT_COLUMN).type
+
+
+def _frame1_unit_array(cells: Sequence[object], columns: tuple[str, ...]) -> pa.Array:
+    """The `unit` column of `cells`, `frame1_unit_cells`' output, which shares one object per
+    distinct cell: each distinct cell converts once (`unit_cell_array`), in the recipe layout
+    when any of them needs it."""
+    codes: list[int] = []
+    distinct: dict[int, tuple[int, pa.Array]] = {}
+    for cell in cells:
+        if id(cell) not in distinct:
+            distinct[id(cell)] = (len(distinct), unit_cell_array(cast("UnitCell | None", cell), 1))
+        codes.append(distinct[id(cell)][0])
+    arrays = [array for _, array in distinct.values()]
+    recipe = any(array.type != _unit_type(columns) for array in arrays)
+    mapped = pa.array(
+        [array.to_pylist()[0] for array in arrays], type=_unit_type(columns, recipe=recipe)
     )
+    return mapped.take(pa.array(codes, type=pa.int32()))
 
 
 def read_frame1_document(data: bytes) -> dict[str, object]:
