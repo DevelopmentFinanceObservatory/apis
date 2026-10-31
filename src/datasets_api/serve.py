@@ -331,7 +331,7 @@ def persisted_response(
     persisted: StoredVersion,
     locations: Sequence[StoredArtifactLocation],
     served: Manifest,
-    call_warnings: Sequence[WarningModel],
+    reshape_warnings: Sequence[WarningModel],
     now: datetime,
     enrichment_digest: str | None,
 ) -> Manifest:
@@ -347,7 +347,7 @@ def persisted_response(
     `enrichment_digest` is `with_linked_artifacts`'s.
     """
     return with_linked_artifacts(
-        persisted_manifest(stored=persisted, served=served, call_warnings=call_warnings),
+        persisted_manifest(stored=persisted, served=served, reshape_warnings=reshape_warnings),
         subject_id=subject_id,
         locations=locations,
         now=now,
@@ -1231,7 +1231,8 @@ class _RenderPass:
     prewrite: DefinitionPrewrite
     persisted: VersionState | None
     manifest: Manifest
-    call_warnings: tuple[WarningModel, ...]
+    # This call's reshape warnings alone: a stored version keeps the origin findings it recorded.
+    reshape_warnings: tuple[WarningModel, ...]
     # `CodeIndex.enrichment_digest`: the salt of the keys the response looks its links up under.
     enrichment_digest: str
     # Linked to the base version: the rendering, unless it belongs to a derived version.
@@ -1281,7 +1282,7 @@ class _RenderPass:
             persisted=written.state.version,
             locations=locations,
             served=self.manifest,
-            call_warnings=self.call_warnings,
+            reshape_warnings=self.reshape_warnings,
             now=now,
             enrichment_digest=self.enrichment_digest,
         )
@@ -1366,7 +1367,8 @@ def _render_pass(
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
-    call_warnings = prewrite.origin_warnings + reshape_warning_models(reshape_warnings)
+    reshape_models = reshape_warning_models(reshape_warnings)
+    call_warnings = prewrite.origin_warnings + reshape_models
     # A derived version (a multi-contributor collapse, a party-totals cut) is a version of its
     # own. Record the base version separately so a plain GET can still resolve it. A rendering
     # of the base frame shares the base version. The head stays on the base materialisation,
@@ -1391,7 +1393,7 @@ def _render_pass(
             prewrite=prewrite,
             persisted=persisted,
             manifest=manifest,
-            call_warnings=call_warnings,
+            reshape_warnings=reshape_models,
             enrichment_digest=deps.code_index.enrichment_digest,
             links=(_artifact_record(artifact),),
             collapsed=None,
@@ -1455,7 +1457,7 @@ def _render_pass(
         prewrite=prewrite,
         persisted=persisted,
         manifest=manifest,
-        call_warnings=call_warnings,
+        reshape_warnings=reshape_models,
         enrichment_digest=deps.code_index.enrichment_digest,
         links=(),
         collapsed=definition_version_record(

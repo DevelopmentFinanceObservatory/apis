@@ -250,7 +250,7 @@ def test_a_definition_remint_after_a_rename_returns_the_stored_citation(version_
     [["dcid:RemintOriginDefinition"]],
     ids=["definition"],
 )
-def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
+def test_a_remint_of_a_stored_version_keeps_the_warnings_on_record(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
 ):
     client, _artifact_store = _client(
@@ -270,8 +270,9 @@ def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
 
     assert second.status_code == 200, second.text
     assert second.json()["content_version"] == first.json()["content_version"]
+    # A version's facts are fixed at its mint, so a re-mint serves the warnings on record.
     assert "un_system_unavailable" not in [w["code"] for w in first.json()["warnings"]]
-    assert unavailable.model_dump(mode="json") in second.json()["warnings"]
+    assert second.json()["warnings"] == first.json()["warnings"]
 
 
 @pytest.mark.parametrize(

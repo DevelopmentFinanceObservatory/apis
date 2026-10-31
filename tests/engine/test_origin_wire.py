@@ -15,12 +15,14 @@ from typing import get_args
 import httpx
 import pytest
 
+from materialise.provenance_doc import read_source_citations
 from origin_catalogue import (
     BASE,
     UN_SYSTEM,
     OriginId,
     UnBlockedPlaces,
     UnReadFailure,
+    current_catalogue,
     note_un_blocked_places,
     recording_un_blocked_places,
 )
@@ -263,12 +265,15 @@ class _WithheldGraph:
         if self._on_stall is not None:
             self._on_stall()
 
-    def node_labels_batch(self, dcids):
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
         if self._label_stall is not None:
             self._announce_stall()
             self._label_stall.wait(5)
             self.finished.set()
-        return {dcid: self._labels[dcid] for dcid in dcids if dcid in self._labels}
+        return {
+            dcid: {"name": (self._labels[dcid],)} if dcid in self._labels else None
+            for dcid in dcids
+        }
 
 
 class _CutWhenStalled:
@@ -359,6 +364,26 @@ def test_a_withheld_source_no_label_names_is_left_out_of_the_departure():
 
     (fact,) = first.departure_facts.values()
     assert fact.sources == ("Excluded Survey",)
+
+
+def test_an_unlisted_withheld_source_is_named_as_its_citation_names_it():
+    """A base provenance node is named for its import, so the departure names it by its parent
+    Dataset, the name its citation carries."""
+    who = "dc/base/WHO_GHO"
+    graph = _WithheldGraph(withheld=(who,), labels={})
+    arcs = {
+        who: {"typeOf": ("Provenance",), "name": ("WHO_GHO",), "isPartOf": ("dc/d/WHO_GHO",)},
+        "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("WHO Global Health Observatory",)},
+    }
+    graph.node_arcs_many = lambda dcids, *, properties, deadline=None: {
+        dcid: arcs.get(dcid) for dcid in dcids
+    }
+
+    first, _ = asyncio.run(_with_warning_twice(*[_no_data([_subject("country/KEN")])] * 2, graph))
+
+    (fact,) = first.departure_facts.values()
+    cited = read_source_citations(graph, [who], catalogue=current_catalogue())[who]
+    assert fact.sources == (cited.name,) == ("WHO Global Health Observatory",)
 
 
 def test_withheld_warning_skips_role_bearing_answers_and_definite_parts():

@@ -10,12 +10,12 @@ import pytest
 from assembler.mint import warned_provenance_refs, warned_refs
 from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.manifest import (
-    persisted_manifest,
     stored_manifest,
     version_document,
     warning_model,
 )
 from datasets_api.manifest_models import WarningModel
+from datasets_api.origin import _withheld_warning
 
 from ._version_facts import facts_from_body, golden_cases
 
@@ -186,9 +186,12 @@ def _stored_with(warning: Mapping[str, object]) -> StoredVersion:
             ["dcid:dc/base/WHO_GHO"],
             id="withheld-fields",
         ),
-        # A warning stored before the fields existed withholds without naming anything.
+        # A row stored before the fields existed names its places and provenances in its
+        # message alone.
         pytest.param(
-            {"code": "withheld_by_registry", "severity": "warn", "message": "m"},
+            _withheld_warning("Count_Person", {"country/PSE": ("dc/base/WHO_GHO",)}).model_dump(
+                mode="json"
+            ),
             [],
             [],
             id="stored-before-the-fields",
@@ -204,42 +207,3 @@ def test_a_stored_withheld_warning_reads_back_and_names_its_refs(warning, refs, 
     document = version_document(stored)
     assert warned_refs(manifest=document) == refs
     assert warned_provenance_refs(manifest=document) == provenance_refs
-
-
-@pytest.mark.parametrize(
-    ("call", "appended"),
-    [
-        pytest.param(_WITHHELD, False, id="same-fields"),
-        pytest.param(
-            {
-                **_WITHHELD,
-                "withheld_members": {"count": 2, "refs": ["dcid:MemberC", "dcid:MemberD"]},
-            },
-            True,
-            id="same-count-other-refs",
-        ),
-        pytest.param({**_WITHHELD, "message": "n"}, True, id="other-message"),
-    ],
-)
-def test_a_re_minted_version_appends_a_call_warning_that_names_other_refs(call, appended):
-    stored = _stored_with(_WITHHELD)
-    served = stored_manifest(stored)
-
-    persisted = persisted_manifest(
-        stored=stored, served=served, call_warnings=[WarningModel.model_validate(call)]
-    )
-
-    assert [w.model_dump(mode="json") for w in persisted.warnings] == (
-        [_WITHHELD, call] if appended else [_WITHHELD]
-    )
-
-
-def test_a_re_minted_summed_warning_keeps_its_stored_label():
-    stored = _stored_with(_summed(label="Education, ODA Grants"))
-    call = WarningModel.model_validate(_summed(label="Education"))
-
-    persisted = persisted_manifest(
-        stored=stored, served=stored_manifest(stored), call_warnings=[call]
-    )
-
-    assert [w.stat_var_label for w in persisted.warnings] == ["Education, ODA Grants"]

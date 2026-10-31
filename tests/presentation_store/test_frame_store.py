@@ -94,6 +94,7 @@ from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
+from origin_catalogue import BASE
 from presentation_store import frame_store
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
@@ -116,7 +117,7 @@ from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
     stored_canonical_frame_959f8bc,
 )
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -864,33 +865,13 @@ def test_load_names_the_provenances_a_registry_withheld_as_a_citation_names_them
     """A base provenance node is named for its import, so a withheld provenance takes the name
     of its parent Dataset, as a source citation does, under its `dcid:` ref."""
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
-    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
-    warning = {
-        "code": "withheld_by_registry",
-        "severity": "warn",
-        "message": "Withheld.",
-        "withheld_members": {"count": 1, "refs": ["dcid:YouthRate"]},
-        "withheld_provenances": {"count": 1, "refs": ["dcid:dc/base/WHO_GHO"]},
-    }
-    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
-        version, facts=replace(version.facts, warnings=[warning])
-    )
+    _with_withheld_provenance(snapshots, frame_ref)
     graph = _FakeGraphReader(
         labels={
             "MalariaGrantDisbursements": "Malaria Grant Disbursements",
             "YouthRate": "Youth rate",
         },
-        arcs={
-            "dc/base/WHO_GHO": {
-                "typeOf": ("Provenance",),
-                "name": ("WHO_GHO",),
-                "isPartOf": ("dc/d/WHO_GHO",),
-            },
-            "dc/d/WHO_GHO": {
-                "typeOf": ("Dataset",),
-                "name": ("WHO Global Health Observatory",),
-            },
-        },
+        arcs=_WHO_PROVENANCE_ARCS,
     )
     store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
 
@@ -898,6 +879,67 @@ def test_load_names_the_provenances_a_registry_withheld_as_a_citation_names_them
 
     assert resolved.labels["dcid:dc/base/WHO_GHO"] == "WHO Global Health Observatory"
     assert resolved.labels["dcid:YouthRate"] == "Youth rate"
+
+
+def test_load_names_a_listed_row_provenance_from_the_catalogue_and_leaves_the_graph_read(
+    bind_catalogue,
+):
+    """The catalogue names a provenance it lists, so the row's provenance ref takes that name
+    and is left out of the graph batch, whose `name` for it is the import's."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    row = provenance_row("src_oecd_dac", BASE)
+    bind_catalogue(
+        FakeCatalogue(build_id="build-1", provenances={row.id: replace(row, name="OECD DAC")})
+    )
+    graph = _FakeGraphReader(
+        labels={
+            "MalariaGrantDisbursements": "Malaria Grant Disbursements",
+            "src_oecd_dac": "OECD_DAC",
+        }
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert "src_oecd_dac" not in graph.node_arcs_many_calls[0]
+
+
+def test_load_keeps_the_catalogue_name_of_a_withheld_provenance_when_the_graph_read_fails(
+    bind_catalogue,
+):
+    """The catalogue names a provenance it lists with no graph read, so a failed read of the
+    unlisted ones leaves that name, and the load is not cached as resolved."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    warning = {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": "Withheld.",
+        "withheld_provenances": {
+            "count": 2,
+            "refs": ["dcid:dc/base/WorldDevelopmentIndicators", "dcid:dc/base/WHO_GHO"],
+        },
+    }
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, warnings=[warning])
+    )
+    row = provenance_row("dc/base/WorldDevelopmentIndicators", BASE)
+    bind_catalogue(
+        FakeCatalogue(
+            build_id="build-1",
+            provenances={row.id: replace(row, name="World Development Indicators")},
+        )
+    )
+    graph = _FakeGraphReader(arcs=_WHO_PROVENANCE_ARCS, raise_for=frozenset({"dc/base/WHO_GHO"}))
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["dcid:dc/base/WorldDevelopmentIndicators"] == (
+        "World Development Indicators"
+    )
+    assert "dcid:dc/base/WHO_GHO" not in resolved.labels
 
 
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
@@ -1460,6 +1502,44 @@ def _graph_label_failure() -> _LabelFailure:
     return store, frame_ref, recover, {"country/ETH": "Ethiopia"}
 
 
+_WHO_PROVENANCE_ARCS = {
+    "dc/base/WHO_GHO": {
+        "typeOf": ("Provenance",),
+        "name": ("WHO_GHO",),
+        "isPartOf": ("dc/d/WHO_GHO",),
+    },
+    "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("WHO Global Health Observatory",)},
+}
+
+
+def _with_withheld_provenance(snapshots: _FakeSnapshotReader, frame_ref: FrameRef) -> None:
+    """Give the fixture version a `withheld_by_registry` warning over `dc/base/WHO_GHO`."""
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    warning = {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": "Withheld.",
+        "withheld_members": {"count": 1, "refs": ["dcid:YouthRate"]},
+        "withheld_provenances": {"count": 1, "refs": ["dcid:dc/base/WHO_GHO"]},
+    }
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, warnings=[warning])
+    )
+
+
+def _provenance_name_failure() -> _LabelFailure:
+    """A store whose read of a withheld provenance's citation fails until `recover` runs."""
+    snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
+    _with_withheld_provenance(snapshots, frame_ref)
+    graph = _FakeGraphReader(arcs=_WHO_PROVENANCE_ARCS, raise_for=frozenset({"dc/base/WHO_GHO"}))
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    def recover() -> None:
+        graph.raise_for = frozenset()
+
+    return store, frame_ref, recover, {"dcid:dc/base/WHO_GHO": "WHO Global Health Observatory"}
+
+
 def _family_label_failure() -> _LabelFailure:
     """A store whose spec registry is unavailable until `recover` runs."""
     family_spec_id = "spec_" + "c" * 32
@@ -1508,6 +1588,7 @@ def _family_label_failure() -> _LabelFailure:
     "failure",
     [
         pytest.param(_graph_label_failure, id="graph-label-batch"),
+        pytest.param(_provenance_name_failure, id="withheld-provenance-citation"),
         pytest.param(_family_label_failure, id="spec-registry-unavailable"),
     ],
 )

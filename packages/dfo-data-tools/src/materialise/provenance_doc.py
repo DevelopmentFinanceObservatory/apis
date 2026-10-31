@@ -220,10 +220,9 @@ _MAX_DATASET_CHILDREN = 256
 CONFLICTING_VALUES: Literal["conflicting_values"] = "conflicting_values"
 
 
-class ProvenanceGraphReader(Protocol):
-    """Narrow interface for the two graph reads this module uses.
-    Graph clients and test doubles satisfy it structurally.
-    """
+class NodeArcsReader(Protocol):
+    """The one graph read a provenance's name needs (`read_source_names`). Graph clients and
+    test doubles satisfy it structurally."""
 
     def node_arcs_many(
         self,
@@ -234,6 +233,12 @@ class ProvenanceGraphReader(Protocol):
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         """Read the requested arcs by dcid; missing nodes map to `None`."""
         ...
+
+
+class ProvenanceGraphReader(NodeArcsReader, Protocol):
+    """Narrow interface for the two graph reads this module uses.
+    Graph clients and test doubles satisfy it structurally.
+    """
 
     def node_subjects(
         self,
@@ -848,6 +853,27 @@ class SourceCitation:
     documentation_read_failed: bool = False
 
 
+def read_source_names(
+    graph: NodeArcsReader,
+    dcids: Sequence[str],
+    *,
+    catalogue: Catalogue,
+    deadline: float | None = None,
+) -> dict[str, str]:
+    """The name `read_source_citations` gives each distinct dcid of `dcids` it cites, by dcid:
+    the catalogue row's for a listed provenance, with no graph read, else the graph's
+    (`_read_unlisted_citations`), the parent Dataset's name before the node's own. A dcid
+    neither the catalogue lists nor the graph holds is absent, and one whose citation has no
+    name."""
+    unique = list(dict.fromkeys(dcids))
+    names = {dcid: row.name for dcid in unique if (row := catalogue.provenance(dcid)) is not None}
+    read = _read_unlisted_citations(
+        graph, [dcid for dcid in unique if dcid not in names], deadline=deadline
+    )
+    names.update((dcid, name) for dcid, citation in read.items() if (name := citation.name))
+    return names
+
+
 def read_source_citations(
     graph: ProvenanceGraphReader,
     dcids: Sequence[str],
@@ -970,7 +996,7 @@ def _catalogued_documentation(
 
 
 def _read_unlisted_citations(
-    graph: ProvenanceGraphReader, dcids: Sequence[str], *, deadline: float | None
+    graph: NodeArcsReader, dcids: Sequence[str], *, deadline: float | None
 ) -> dict[str, SourceCitation]:
     """The graph's citation of each of `dcids` it holds, from at most two batched reads.
     An empty `dcids` reads nothing."""

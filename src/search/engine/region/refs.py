@@ -14,11 +14,11 @@ unlabelled value.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol
 
 from code_index.shared import get_index
 from dfo_platform.named import named_capped
 from dfo_platform.roles import FlowFamily
+from materialise.provenance_doc import NodeArcsReader, read_source_names
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.errors import EngineInputError
@@ -62,30 +62,12 @@ def _where_slot_refs(
     return refs
 
 
-def listed_provenance_labels(dcids: Sequence[str]) -> dict[str, str]:
-    """The catalogue's name for each provenance in `dcids` it lists."""
-    catalogue = current_catalogue()
-    return {
-        dcid: row.name
-        for dcid in dict.fromkeys(dcids)
-        if (row := catalogue.provenance(dcid)) is not None
-    }
-
-
-class NodeLabeller(Protocol):
-    """The one graph read `provenance_labels` makes, which `EngineGraphClient` implements."""
-
-    def node_labels_batch(self, dcids: list[str]) -> dict[str, str]: ...
-
-
-def provenance_labels(dcids: Sequence[str], graph: NodeLabeller) -> dict[str, str]:
-    """Labels for provenance `dcids`. Listed ones take the catalogue's name, and one
-    `node_labels_batch` covers the rest. An id neither labels is absent."""
-    labels = listed_provenance_labels(dcids)
-    misses = [dcid for dcid in dict.fromkeys(dcids) if dcid not in labels]
-    if misses:
-        labels.update(graph.node_labels_batch(misses))
-    return labels
+def provenance_labels(dcids: Sequence[str], graph: NodeArcsReader) -> dict[str, str]:
+    """The name a source citation gives each provenance of `dcids`
+    (`materialise.provenance_doc.read_source_names`): the catalogue's for a listed one, else
+    the parent Dataset's or the node's own, from one `node_arcs_many` read. An id neither
+    names is absent."""
+    return read_source_names(graph, dcids, catalogue=current_catalogue())
 
 
 def _build_source_refs(facets: list[Facet], graph: EngineGraphClient) -> list[ProvenanceRef]:

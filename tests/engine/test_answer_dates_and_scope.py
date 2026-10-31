@@ -215,11 +215,13 @@ _DISCOVERED_RESUBMIT = [
     "node_types_batch",
     "node_labels_batch",
 ]
-# A resubmit pinning a source also reads that source's label.
+# A resubmit pinning a source also reads that source's name, as a source citation names it.
 _DISCOVERED_PINNED_RESUBMIT = [
     "node_arcs_batch",
     *["default_facet_policy"] * 3,
-    *["node_labels_batch"] * 3,
+    "node_labels_batch",
+    "node_arcs_many",
+    "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
 ]

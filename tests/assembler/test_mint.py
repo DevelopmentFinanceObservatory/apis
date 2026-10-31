@@ -2036,6 +2036,20 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
             ["dcid:Water", "dcid:XYZ"],
             id="withheld-members",
         ),
+        # Provenances of one Dataset share its name, which a card gives once.
+        pytest.param(
+            "withheld_by_registry",
+            {
+                "withheld_provenances": {
+                    "count": 3,
+                    "refs": ["dcid:dc/base/WHO_GHO", "dcid:dc/base/WHO_GHO_Archive"],
+                }
+            },
+            "Withheld sources",
+            "WHO Global Health Observatory",
+            [],
+            id="withheld-provenances",
+        ),
     ],
 )
 def test_a_counted_field_warning_names_what_it_counts_by_label(
@@ -2046,6 +2060,8 @@ def test_a_counted_field_warning_names_what_it_counts_by_label(
         labels={
             "dcid:country/KEN": "Kenya",
             "dcid:Water": "Water",
+            "dcid:dc/base/WHO_GHO": "WHO Global Health Observatory",
+            "dcid:dc/base/WHO_GHO_Archive": "WHO Global Health Observatory",
         },
     )
 

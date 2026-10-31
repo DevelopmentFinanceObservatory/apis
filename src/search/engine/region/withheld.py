@@ -26,13 +26,14 @@ from typing import Final, Protocol, runtime_checkable
 
 import dc_graph
 from dfo_platform.named import named_capped
+from materialise.provenance_doc import NodeArcsReader
 from search.engine.concurrency import current_scope
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import unavailable_entity_facts, warning_key
 from search.engine.errors import GraphInfraError
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE, WITHHELD_BY_REGISTRY
-from search.engine.region.refs import NodeLabeller, provenance_labels
+from search.engine.region.refs import provenance_labels
 from search.engine.region.result import RegionResult, with_departure_facts
 from search.models import Warning
 
@@ -47,7 +48,7 @@ _HANDOFF_RESERVE_S: Final = 0.25
 
 
 @runtime_checkable
-class WithheldReader(NodeLabeller, Protocol):
+class WithheldReader(NodeArcsReader, Protocol):
     """The re-read behind `withheld_by_registry` and the labels of what it finds, which
     `LiveGraphClient` implements."""
 

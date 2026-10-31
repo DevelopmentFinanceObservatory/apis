@@ -27,7 +27,7 @@ from code_index.shared import get_index
 from materialise import GraphReader, facet_axis_value
 from materialise.enrichment import read_party_kinds
 from materialise.facets import role_bearing_facet_candidates_of
-from origin_catalogue import recording_un_blocked_places
+from origin_catalogue import listed_provenance_labels, recording_un_blocked_places
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -43,7 +43,6 @@ from search.engine.region.codes import (
     _OptionProbeResult,
 )
 from search.engine.region.facet_probe import NO_PINS, FacetPins, FacetProbe
-from search.engine.region.refs import listed_provenance_labels
 from search.engine.region.un_system import un_unavailable_warning
 from search.engine.retrieval.bound_values import (
     OptionServedFact,
