@@ -587,8 +587,9 @@ def publish_built_frame(
     ceiling, the shared unit key, the recipe store, then the store, record and verify steps.
 
     Raises:
-        StoredFrameUnreadable: The pair records no frame hash and its stored frame, read to
-            take one (`_recorded_frame_matches`), does not decode.
+        StoredFrameUnreadable: The pair records no frame hash, and a copy of its stored frame,
+            read to take one (`_recorded_frame_matches`), does not decode and no other copy
+            reads (`render.linked_stored_frame`).
     """
     if recipe is not None and recipe_store is None:
         raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)

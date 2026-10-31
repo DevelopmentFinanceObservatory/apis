@@ -153,6 +153,7 @@ from datasets_api.versions import (
 )
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
@@ -3499,7 +3500,8 @@ def linked_stored_frame(
     outlive it; within each, its canonical frame comes before its frame1 document
     (`stored_frame_location`). An object that does not hash to its digest is passed over as a
     missing one is, as the stored-frame reads in `current` do, and so is one that does not
-    decode. It applies no decode bound, so a caller reads only a frame its writer bounded.
+    decode; each such copy logs a WARNING (`STORED_FRAME_COPY_PASSED_OVER`). It applies no
+    decode bound, so a caller reads only a frame its writer bounded.
 
     Raises:
         StoredFrameUnreadable: A copy does not decode as a stored frame and no later copy reads.
@@ -3522,17 +3524,49 @@ def linked_stored_frame(
                 data = artifact_store.get(
                     artifact_digest=link.artifact_digest, tier=Tier(link.tier)
                 )
-            except (ArtifactNotFoundError, ArtifactIntegrityError):
+            except ArtifactNotFoundError:
+                continue
+            except ArtifactIntegrityError as exc:
+                _log_passed_over(link, reason="integrity", computed_digest=exc.computed_digest)
                 continue
             try:
                 return read_stored_frame(
                     data, media_type=link.media_type, digest=link.artifact_digest
                 )
             except StoredFrameUnreadable as exc:
+                _log_passed_over(link, reason="undecodable", computed_digest=None)
                 unreadable = exc
     if unreadable is not None:
         raise unreadable
     return None
+
+
+STORED_FRAME_COPY_PASSED_OVER = "datasets_stored_frame_copy_passed_over"
+"""The event of the WARNING `linked_stored_frame` logs for each stored frame copy it passes over,
+so storage corruption a later copy hides still shows."""
+
+
+def _log_passed_over(
+    link: StoredArtifactLocation, *, reason: str, computed_digest: str | None
+) -> None:
+    """Log `link` as a stored frame copy `linked_stored_frame` passed over: `reason` is
+    `integrity` for an object that does not hash to its digest, with the digest it hashes to,
+    or `undecodable` for one that does not decode as a frame."""
+    logger.warning(
+        "stored frame copy passed over artifact_digest=%s tier=%s reason=%s",
+        link.artifact_digest,
+        link.tier,
+        reason,
+        extra={
+            JSON_FIELDS_ATTR: {
+                "event": STORED_FRAME_COPY_PASSED_OVER,
+                "artifact_digest": link.artifact_digest,
+                "tier": link.tier,
+                "reason": reason,
+                "computed_digest": computed_digest,
+            }
+        },
+    )
 
 
 STATISTICS_MEDIA_TYPE = "application/vnd.apache.parquet"
