@@ -13,7 +13,7 @@ from typing import cast
 
 import httpx
 import pytest
-from dfo_frame_grammar import frame_sha256
+from dfo_frame_grammar import UNIT_COLUMN, frame_sha256
 
 import datasets_api.current as current_module
 import datasets_api.render as render_module
@@ -852,9 +852,10 @@ _EARLIER_GRAMMAR_TOKEN = "cv_" + "0" * 32
 @pytest.mark.parametrize(
     ("stored_frame", "frames_hashed"),
     [
-        ("frame1_document", 1),
+        ("frame1_document", 2),
+        ("frame1_without_unit", 2),
         ("canonical_frame", 2),
-        ("backfilled_frame1", 1),
+        ("backfilled_frame1", 2),
         ("recorded_frame_hash", 1),
     ],
 )
@@ -864,10 +865,10 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
     """A version minted under an earlier frame grammar holds a token the current grammar does
     not mint from its frame. A sole-contributor full collapse leaves that frame unchanged, so
     the head hit answers the base version, records no second version and links the rendering
-    under the base. The base frame's hash is the one its record holds, else the digest of
-    its frame1 document, which a version `backfill-frame1` converted links beside its canonical
-    frame, else the hash of its canonical frame, the one case that hashes a second frame
-    beside the collapse."""
+    under the base. The base frame's hash is the one its record holds, else the hash of the
+    frame its stored frame reads as, a canonical frame or a frame1 document, one written before
+    the unit column included, so every case but the first hashes a second frame beside the
+    collapse."""
     version_store = FakeVersionRecordDatasetStore()
     head_store = _FakeHeadStore()
     artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
@@ -907,7 +908,7 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
     head_store._heads[spec_id] = replace(
         head_store._heads[spec_id], content_version=_EARLIER_GRAMMAR_TOKEN
     )
-    if stored_frame in ("frame1_document", "backfilled_frame1"):
+    if stored_frame in ("frame1_document", "frame1_without_unit", "backfilled_frame1"):
         document = io.BytesIO()
         write_frame1(
             (
@@ -919,10 +920,18 @@ def test_a_groupby_that_leaves_an_earlier_grammar_versions_frame_unchanged_is_th
             ),
             sink=document,
         )
-        frame1 = artifact_store.put(document.getvalue(), tier=Tier.working)
+        data = document.getvalue()
+        if stored_frame == "frame1_without_unit":
+            older = json.loads(data)
+            index = older["columns"].index(UNIT_COLUMN)
+            del older["columns"][index]
+            for row in older["rows"]:
+                del row[index]
+            data = json.dumps(older).encode()
+        frame1 = artifact_store.put(data, tier=Tier.working)
         frame1_rendering = {"format": "frame1"}
         with version_store.transaction() as tx:
-            if stored_frame == "frame1_document":
+            if stored_frame != "backfilled_frame1":
                 tx.execute(
                     "DELETE FROM datasets.version_artifact "
                     "WHERE subject_id = %s AND rendering_key = %s",

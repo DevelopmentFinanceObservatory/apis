@@ -639,11 +639,9 @@ def _render_frame(
     coverage_index: CoverageIndex,
     frame: StoredFrame,
     plan: StoredRenderPlan,
-    locations: Sequence[StoredArtifactLocation] = (),
 ) -> Manifest | None:
     """Render a missing request format from the stored frame `frame` on a head hit. The caller
     holds a materialise permit from before it read `frame` to after this returns.
-    `locations` is the version's links when the caller read them to find `frame`.
 
     Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
     fresh rendering. The full population keeps `groupby` completeness checks consistent,
@@ -723,7 +721,6 @@ def _render_frame(
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
         groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
-        groupby_row_fold_max_rows=deps.settings.groupby_row_fold_max_rows,
         code_index=deps.code_index,
         resolved_stat_var_refs=resolved_stat_var_refs,
         # A pivot reads the stored pivot facts. They check its caps before the scan and let a
@@ -733,12 +730,7 @@ def _render_frame(
         # Only a groupby of a frame it has not collapsed yields a collapse frame to compare
         # with the stored one.
         base_frame_sha256=(
-            stored_frame_sha256(
-                frame.location,
-                table,
-                recorded=plan.frame_sha256,
-                locations=locations,
-            )
+            stored_frame_sha256(table, recorded=plan.frame_sha256)
             if options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
             else None
         ),
@@ -822,12 +814,11 @@ def _render_located_frame(
     trace_id: str | None,
     coverage_index: CoverageIndex,
     plan: StoredRenderPlan,
-    locations: Sequence[StoredArtifactLocation],
 ) -> Manifest | None:
-    """Read the stored frame at `location`, one of the version's links `locations`, and
-    render it (`_render_frame`), or return `None` for missing or corrupt frame bytes. The
-    caller holds a materialise permit and binds no frame itself, so the bytes are freed when
-    this returns, before the permit is released."""
+    """Read the stored frame at `location`, one of the version's links, and render it
+    (`_render_frame`), or return `None` for missing or corrupt frame bytes. The caller holds a
+    materialise permit and binds no frame itself, so the bytes are freed when this returns,
+    before the permit is released."""
     try:
         stored_frame = StoredFrame(
             location=location,
@@ -847,7 +838,6 @@ def _render_located_frame(
         coverage_index=coverage_index,
         frame=stored_frame,
         plan=plan,
-        locations=locations,
     )
 
 
@@ -945,7 +935,6 @@ def _render_stored_rendering(
             trace_id=trace_id,
             coverage_index=coverage_snapshot.index,
             plan=decided,
-            locations=locations,
         )
 
 

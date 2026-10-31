@@ -8,13 +8,20 @@ non-retryable 500 responses. Other failures map to retryable 503 responses.
 
 A spec registry read or write that fails in its store raises
 `SpecRegistryStoreError`, which maps to a retryable 503 response on every door.
+
+A Datasets reader takes a version's stored frame through `read_stored_frame`, or its rows
+through `stored_frame_rows`, and both refuse a stored frame that does not read as one with
+`StoredFrameUnreadable`.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 
-from dfo_frame_grammar import FrameError
+import pyarrow as pa
+import pyarrow.parquet as pq
+from dfo_frame_grammar import STATUS_COLUMN, FrameError
 
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
@@ -64,6 +71,40 @@ def read_stored_frame(data: bytes, *, media_type: str, digest: str) -> Frame:
     """
     try:
         return formats.read_stored_frame(data, media_type=media_type)
+    except FrameError as exc:
+        raise StoredFrameUnreadable(digest=digest) from exc
+
+
+def stored_frame_rows(
+    data: bytes, *, media_type: str, digest: str
+) -> tuple[tuple[str, ...], Iterator[tuple[object, ...]]]:
+    """The columns and rows of a version's stored frame `data`, at `digest`, without its
+    `status` column: its frame1 document read by `read_frame1`, or its canonical frame, whose
+    schema `Frame.from_table` checks before its columns are read. The rows are built a slice at
+    a time (`canonical_frame_rows`).
+
+    Raises:
+        StoredFrameUnreadable: The bytes do not read as a stored frame, when they are read or
+            while the rows are built.
+    """
+    try:
+        if media_type == formats.FRAME1_MEDIA_TYPE:
+            table = formats.read_frame1(data).table.drop_columns(STATUS_COLUMN)
+        else:
+            schema = pq.read_schema(pa.BufferReader(data))
+            Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
+            table = formats.read_canonical_frame_table(
+                data, columns=[name for name in schema.names if name != STATUS_COLUMN]
+            )
+    except (FrameError, pa.ArrowInvalid) as exc:
+        raise StoredFrameUnreadable(digest=digest) from exc
+    return tuple(table.column_names), _readable_rows(formats.canonical_frame_rows(table), digest)
+
+
+def _readable_rows(rows: Iterator[tuple[object, ...]], digest: str) -> Iterator[tuple[object, ...]]:
+    """`rows`, with a cell that does not read raising `StoredFrameUnreadable` at `digest`."""
+    try:
+        yield from rows
     except FrameError as exc:
         raise StoredFrameUnreadable(digest=digest) from exc
 

@@ -139,7 +139,6 @@ from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import (
     current_rendering_keys,
     enriched_rendering_key,
-    recorded_frame_sha256,
     rendering_key,
 )
 from datasets_api.versions import (
@@ -596,45 +595,31 @@ def _fold_permit(deadline: float | None) -> Iterator[None]:
         permits.release()
 
 
-@dataclass(frozen=True)
-class FoldCeilings:
-    """The frame rows a groupby that sums a frame may fold: `arrow_rows` when every slice of
-    the frame is Arrow (`_FrameSlice`), which `_stream_first_axis_collapse` folds as Arrow, and
-    `row_rows` otherwise, when it folds row by row at a larger cost a row."""
-
-    arrow_rows: int
-    row_rows: int
-
-    def refuse_over(self, rows: int, *, arrow: bool) -> None:
-        """Raises `OverCeilingError` (`rows`) when a frame of `rows` rows is past its ceiling."""
-        cap = self.arrow_rows if arrow else self.row_rows
-        if rows > cap:
-            raise OverCeilingError(
-                f"the frame holds more than {cap} rows, past the ceiling of a groupby "
-                "that sums it. Narrow the identity (another slot binding, a shorter window) "
-                "to bring the frame under the ceiling.",
-                ceiling_kind="rows",
-                count=rows,
-                cap=cap,
-            )
+def _refuse_past_fold_ceiling(rows: int, *, cap: int) -> None:
+    """Raises `OverCeilingError` (`rows`) when a frame of `rows` rows is past `cap`, the frame
+    rows a groupby that sums a frame may fold."""
+    if rows > cap:
+        raise OverCeilingError(
+            f"the frame holds more than {cap} rows, past the ceiling of a groupby "
+            "that sums it. Narrow the identity (another slot binding, a shorter window) "
+            "to bring the frame under the ceiling.",
+            ceiling_kind="rows",
+            count=rows,
+            cap=cap,
+        )
 
 
-def _within_fold_ceiling(chunks: Iterable[Table], *, ceilings: FoldCeilings) -> Iterator[Table]:
+def _within_fold_ceiling(chunks: Iterable[Table], *, cap: int) -> Iterator[Table]:
     """`chunks` in order, raising `OverCeilingError` (`rows`) at the chunk that carries the
-    frame past its ceiling, the row fold's once any chunk is not an Arrow slice. A frame whose
-    row count is known refuses before the fold waits for a permit (`_reshape_stream`), so this
-    check stands behind it for a frame read with no count. The `stat_var` collapse reads every
-    Arrow slice of a frame before it decodes or folds one (`_stream_first_axis_collapse`), so
-    on such a frame the refusal comes before any fold allocation."""
+    frame past `cap`. A frame whose row count is known refuses before the fold waits for a
+    permit (`_reshape_stream`), so this check stands behind it for a frame read with no count.
+    The `stat_var` collapse reads every Arrow slice of a frame before it decodes or folds one
+    (`_stream_first_axis_collapse`), so on such a frame the refusal comes before any fold
+    allocation."""
     rows = 0
-    arrow = True
     for chunk in chunks:
-        if isinstance(chunk, _FrameSlice):
-            rows += chunk.table.num_rows
-        else:
-            arrow = False
-            rows += len(chunk.rows)
-        ceilings.refuse_over(rows, arrow=arrow)
+        rows += chunk.table.num_rows if isinstance(chunk, _FrameSlice) else len(chunk.rows)
+        _refuse_past_fold_ceiling(rows, cap=cap)
         yield chunk
 
 
@@ -2665,7 +2650,7 @@ def _reshape_stream(
     options: MintOptions,
     entity_columns: Sequence[str],
     pivot_max_output_cells: int,
-    fold_ceilings: FoldCeilings,
+    fold_max_rows: int,
     frame_rows: int | None,
     deadline: float | None,
     code_index: CodeIndex | None,
@@ -2688,7 +2673,7 @@ def _reshape_stream(
 
     Groupby and pivot folds bound output size. Other paths retain chunk-sized row data. A frame
     a collapse already decoded (`decoded`, with no `groupby`) takes the plain or the bare pivot
-    path with no decode. A collapsing groupby refuses a frame past `fold_ceilings`: before it
+    path with no decode. A collapsing groupby refuses a frame past `fold_max_rows`: before it
     waits for a fold permit when `frame_rows`, the frame's row count, is given, and otherwise
     as it reads the frame (`_within_fold_ceiling`).
     Its wait for the permit ends at `deadline` (`_fold_permit`).
@@ -2730,7 +2715,7 @@ def _reshape_stream(
 
     if will_stream_groupby_collapse and first_chunk is not None:
         if frame_rows is not None:
-            fold_ceilings.refuse_over(frame_rows, arrow=isinstance(first_chunk, _FrameSlice))
+            _refuse_past_fold_ceiling(frame_rows, cap=fold_max_rows)
         # `_reshape` recomputes this decision from the same inputs. A chained pivot runs on the
         # reduced output groups.
         result = _reshape(
@@ -2743,7 +2728,7 @@ def _reshape_stream(
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
             subject_id=subject_id,
-            frame_chunks=_within_fold_ceiling(rest_of_frame_chunks, ceilings=fold_ceilings),
+            frame_chunks=_within_fold_ceiling(rest_of_frame_chunks, cap=fold_max_rows),
             deadline=deadline,
         )
         if options.pivot is not None:
@@ -2912,7 +2897,6 @@ def render_and_store(
     enrichment: EnrichmentLookup,
     pivot_max_output_cells: int,
     groupby_fold_max_rows: int,
-    groupby_row_fold_max_rows: int,
     code_index: CodeIndex | None = None,
     resolved_stat_var_refs: Sequence[str],
     output_profile: OutputProfile | None = None,
@@ -2941,8 +2925,7 @@ def render_and_store(
     one count per column. Groupby folds across chunks. Pivot folds to bounded output. No-op groupby
     also streams, so wide results can exceed 1,000,000 rows. The raw-fetch guard allows 1.5 times
     the coverage estimate. A groupby that sums the frame refuses `over_ceiling` (`rows`) when the
-    frame holds more than `groupby_fold_max_rows` rows, or `groupby_row_fold_max_rows` when its
-    chunks are row tuples and it folds row by row, since its fold holds the whole frame. The
+    frame holds more than `groupby_fold_max_rows` rows, since its fold holds the whole frame. The
     refusal comes before the render waits for a fold permit whenever the frame's rows are known
     first (`_known_frame_rows`): a cut's count, a Parquet frame's footer, or `frame_rows`, the
     caller's count of the frame `frame_chunks` holds. The wait ends at `deadline` and then
@@ -3042,9 +3025,7 @@ def render_and_store(
             ),
             entity_columns=entity_columns,
             pivot_max_output_cells=pivot_max_output_cells,
-            fold_ceilings=FoldCeilings(
-                arrow_rows=groupby_fold_max_rows, row_rows=groupby_row_fold_max_rows
-            ),
+            fold_max_rows=groupby_fold_max_rows,
             frame_rows=_known_frame_rows(frame_chunks, stated=frame_rows, cut=cut),
             deadline=deadline,
             code_index=code_index,
@@ -3496,21 +3477,13 @@ def stored_frame_location(
     )
 
 
-def stored_frame_sha256(
-    location: StoredArtifactLocation,
-    table: Table,
-    *,
-    recorded: str | None,
-    locations: Sequence[StoredArtifactLocation] = (),
-) -> str:
-    """The frame hash (`dfo_frame_grammar.frame_sha256`) of the stored frame at `location`,
-    which `table` holds as `datasets_api.store_errors.read_stored_frame` read it: `recorded`, the
-    hash on the version's record (`StoredVersion.frame_sha256`), when the record holds one.
-    Otherwise a frame1 document is the frame's canonical bytes, so the digest of one at
-    `location` or among `locations`, the version's links the caller holds, is that hash.
-    A canonical frame with neither is hashed."""
-    held = recorded_frame_sha256(recorded, (location, *locations))
-    return held if held is not None else frame_sha256(cast(Frame, table))
+def stored_frame_sha256(frame: Frame, *, recorded: str | None) -> str:
+    """The frame hash (`dfo_frame_grammar.frame_sha256`) of a stored frame, `frame` as
+    `datasets_api.store_errors.read_stored_frame` read it: `recorded`, the hash on the
+    version's record (`StoredVersion.frame_sha256`), when the record holds one, else the hash
+    of `frame` itself. A frame1 document's digest is not its frame's hash when the document
+    predates a column the frame holds, so the frame read is hashed."""
+    return recorded if recorded is not None else frame_sha256(frame)
 
 
 def servable_frame_location(
@@ -3645,7 +3618,6 @@ def render_and_store_frame_file(
         # no fold ceiling is read.
         pivot_max_output_cells=0,
         groupby_fold_max_rows=0,
-        groupby_row_fold_max_rows=0,
         resolved_stat_var_refs=(),
     )
     artifact = rendered.artifact

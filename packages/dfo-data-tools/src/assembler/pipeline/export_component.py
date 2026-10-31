@@ -97,6 +97,7 @@ from materialise.formats import (
     write_parquet,
 )
 from materialise.projection import period_cell, period_grain
+from materialise.reshape import Table as ReshapeTable
 
 __all__ = [
     "ComponentExportFile",
@@ -149,15 +150,6 @@ class ComponentExportMismatch(Exception):
         self.revision = revision
         self.detail = detail
         super().__init__(f"{component_id} revision {revision}: {detail}")
-
-
-@dataclass(frozen=True)
-class _ExportTable:
-    """The rows a component export writes, under `columns`, satisfying the `Table` protocol the
-    tabular writers read."""
-
-    columns: tuple[str, ...]
-    rows: tuple[tuple[object, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -540,7 +532,7 @@ def _export_table(
             )
         )
     return (
-        _ExportTable(columns=tuple(out_columns), rows=tuple(out_rows)),
+        ReshapeTable(columns=tuple(out_columns), rows=tuple(out_rows)),
         provenance_refs,
         generated,
     )

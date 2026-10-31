@@ -126,7 +126,6 @@ def _render(
     chunks: tuple[Table, ...] | ParquetFrameChunks,
     *,
     groupby_fold_max_rows: int = 2_000_000,
-    groupby_row_fold_max_rows: int = 700_000,
     frame_rows: int | None = None,
     deadline: float | None = None,
 ):
@@ -148,7 +147,6 @@ def _render(
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=groupby_fold_max_rows,
-        groupby_row_fold_max_rows=groupby_row_fold_max_rows,
         frame_rows=frame_rows,
         deadline=deadline,
         prepared_at=PREPARED_AT,
@@ -202,41 +200,34 @@ def _parquet_frame() -> ParquetFrameChunks:
 
 
 def _row_tables() -> tuple[Table, ...]:
-    """`_ROWS` as three one-row tuple tables, as a frame1 document reads."""
+    """`_ROWS` as three one-row tuple tables."""
     return tuple(Table(columns=_TABLE_COLUMNS, rows=(row,)) for row in _ROWS)
 
 
 @pytest.mark.parametrize(
-    ("chunks", "arrow", "frame_rows", "fold_functions"),
+    ("chunks", "frame_rows", "fold_functions"),
     [
         pytest.param(
             _frames,
-            True,
             None,
             ("widen_frame_table", "decode_table", "fold_groupby_sum_table"),
             id="arrow-slices-read",
         ),
-        pytest.param(
-            _row_tables, False, len(_ROWS), ("fold_groupby_sum_chunks",), id="row-tuples-stated"
-        ),
+        pytest.param(_row_tables, len(_ROWS), ("fold_groupby_sum_chunks",), id="row-tuples-stated"),
     ],
 )
 def test_a_frame_past_the_fold_ceiling_refuses_before_any_fold(
-    monkeypatch, chunks, arrow, frame_rows, fold_functions
+    monkeypatch, chunks, frame_rows, fold_functions
 ):
-    """A collapse of a frame of more rows than its fold's ceiling, the Arrow fold's for Arrow
-    slices and the row fold's for row tuples, refuses `over_ceiling` (`rows`) before any fold
-    runs. A frame at its own ceiling renders as an uncapped render does, whatever the other
-    fold's ceiling."""
+    """A collapse of a frame of more rows than the fold ceiling, over Arrow slices or row
+    tuples, refuses `over_ceiling` (`rows`) before any fold runs. A frame at the ceiling renders
+    as an uncapped render does."""
     monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", 1)
 
-    def ceilings(own: int) -> dict[str, int]:
-        other = len(_ROWS) - 1 if own == len(_ROWS) else len(_ROWS)
-        arrow_rows, row_rows = (own, other) if arrow else (other, own)
-        return {"groupby_fold_max_rows": arrow_rows, "groupby_row_fold_max_rows": row_rows}
-
     uncapped, uncapped_bytes = _render(chunks())
-    at_ceiling, at_ceiling_bytes = _render(chunks(), frame_rows=frame_rows, **ceilings(len(_ROWS)))
+    at_ceiling, at_ceiling_bytes = _render(
+        chunks(), frame_rows=frame_rows, groupby_fold_max_rows=len(_ROWS)
+    )
 
     def unreached(*_args, **_kwargs):
         raise AssertionError("the fold ran")
@@ -244,7 +235,7 @@ def test_a_frame_past_the_fold_ceiling_refuses_before_any_fold(
     for name in fold_functions:
         monkeypatch.setattr(render, name, unreached)
     with pytest.raises(OverCeilingError) as refused:
-        _render(chunks(), frame_rows=frame_rows, **ceilings(len(_ROWS) - 1))
+        _render(chunks(), frame_rows=frame_rows, groupby_fold_max_rows=len(_ROWS) - 1)
 
     assert at_ceiling.artifact.artifact_digest == uncapped.artifact.artifact_digest
     assert at_ceiling_bytes == uncapped_bytes

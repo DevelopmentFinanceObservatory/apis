@@ -303,7 +303,7 @@ class _StoredFrame:
     """The derived version's stored frame, when its bytes were first stored, and the version's
     servable locations."""
 
-    table: Table
+    table: Frame
     stored_on: datetime
     servable: Sequence[StoredArtifactLocation]
 
@@ -314,6 +314,7 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     Raises:
         SnapshotNotFound, SnapshotRevoked: The version has no record, or is taken down.
         ArtifactExpired: No servable stored frame is left, or its bytes are gone.
+        StoredFrameUnreadable: The stored frame's bytes do not read as a frame.
     """
     stored = read_servable_version(
         reads.snapshot_reader, subject_id=spec_id, content_version=content_version, now=reads.now()
@@ -399,13 +400,13 @@ def render_derived_file(
     docstring.
 
     Raises:
-        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `_read_stored_frame`.
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired, StoredFrameUnreadable: As
+            `_read_stored_frame`.
         ExcelLimitError, ExcelIllegalCharacterError, ParquetSizeBoundError: The writer's.
     """
     frame = _read_stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
     table, prepared_at = frame.table, frame.stored_on
-    rows = table.num_rows if isinstance(table, Frame) else len(table.rows)
-    columns = len(table.columns)
+    rows, columns = table.num_rows, len(table.columns)
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
     sources = tuple(

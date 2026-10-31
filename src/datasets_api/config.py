@@ -87,11 +87,6 @@ class DatasetsBuildSettings(BaseSettings):
     # (505 MiB over spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB.
     groupby_fold_max_rows: int = Field(default=2_000_000, ge=1)
 
-    # Frame rows a groupby that sums a frame1 document folds row by row. That fold peaks at
-    # about 2.8 KiB a group (1.39 GiB over spec_09ff's 488,979 groups), and a frame can keep one
-    # group a row, so this ceiling holds it to the Arrow fold's 2 GiB.
-    groupby_row_fold_max_rows: int = Field(default=700_000, ge=1)
-
     # Groupby folds the process runs at once. Permits times the fold's 2 GiB at its ceiling must
     # fit the service's fold memory, so the 4 GiB service takes one. A further collapse waits.
     groupby_fold_max_concurrency: int = Field(default=1, ge=1)

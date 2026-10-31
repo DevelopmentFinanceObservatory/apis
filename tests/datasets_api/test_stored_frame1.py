@@ -14,8 +14,11 @@ from dfo_frame_grammar import Frame, canonical_frame_bytes
 
 from assembler.testing import build_frame_doc, malaria_ethiopia_rows
 from datasets_api.app import classify_datasets_exception
-from datasets_api.doors import observations
-from datasets_api.store_errors import StoredFrameUnreadable, read_stored_frame
+from datasets_api.store_errors import (
+    StoredFrameUnreadable,
+    read_stored_frame,
+    stored_frame_rows,
+)
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, FRAME1_MEDIA_TYPE
 from tests.materialise._canonical_frame import canonical_frame_parquet
 
@@ -93,19 +96,50 @@ def test_a_stored_frame1s_rows_read_in_grammar_order():
     assert reversed_frame == read_stored_frame1(data, digest="d")
 
 
-def test_a_stored_canonical_frame_outside_the_canonical_schema_refuses_unreadable():
-    table = pa.table({"stat_var": ["dcid:X"], "value": [1.0]})
-    sink = pa.BufferOutputStream()
-    pq.write_table(table, sink)
+def _read_rows(data: bytes, *, media_type: str, digest: str) -> object:
+    columns, rows = stored_frame_rows(data, media_type=media_type, digest=digest)
+    return columns, list(rows)
 
-    with pytest.raises(StoredFrameUnreadable):
-        read_stored_frame(
-            sink.getvalue().to_pybytes(), media_type=CANONICAL_FRAME_MEDIA_TYPE, digest="d"
-        )
+
+_CANONICAL_CELLS: dict[str, pa.Array] = {
+    "stat_var": pa.array(["dcid:X"]),
+    "recipient": pa.array(["country/ETH"]),
+    "time_period": pa.array(["2020"]),
+    "value": pa.array([1.0]),
+    "unit": pa.array([None], pa.string()),
+    "measurementMethod": pa.array([None], pa.string()),
+    "provenance": pa.array(["p"]),
+}
+
+
+@pytest.mark.parametrize("read", [read_stored_frame, _read_rows])
+@pytest.mark.parametrize(
+    "cells",
+    [
+        pytest.param({"stat_var": ["dcid:X"], "value": [1.0]}, id="two-columns"),
+        pytest.param(
+            {k: v for k, v in _CANONICAL_CELLS.items() if k != "time_period"}, id="no-time-period"
+        ),
+        pytest.param({**_CANONICAL_CELLS, "unit": pa.array([5])}, id="an-integer-unit"),
+        pytest.param({**_CANONICAL_CELLS, "value": pa.array(["country/ETH"])}, id="a-string-value"),
+    ],
+)
+def test_a_stored_canonical_frame_outside_the_canonical_schema_refuses_unreadable(
+    read: Callable[..., object], cells: dict[str, object]
+):
+    """Each reader of stored bytes refuses naming only the digest, so no cell reaches a
+    client."""
+    sink = pa.BufferOutputStream()
+    pq.write_table(pa.table(cells), sink)
+
+    with pytest.raises(StoredFrameUnreadable) as excinfo:
+        read(sink.getvalue().to_pybytes(), media_type=CANONICAL_FRAME_MEDIA_TYPE, digest="d")
+
+    assert "country/ETH" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize("media_type", [FRAME1_MEDIA_TYPE, CANONICAL_FRAME_MEDIA_TYPE])
-def test_the_observations_door_streams_a_stored_frames_rows(media_type: str):
+def test_a_stored_frames_rows_stream(media_type: str):
     """Either stored form's rows are built a slice at a time, never all up front."""
     frame = Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows())
     data = (
@@ -114,7 +148,7 @@ def test_the_observations_door_streams_a_stored_frames_rows(media_type: str):
         else canonical_frame_parquet((frame,))
     )
 
-    columns, rows = observations._stored_frame_rows(data, media_type=media_type, digest="d")
+    columns, rows = stored_frame_rows(data, media_type=media_type, digest="d")
 
     assert inspect.isgenerator(rows)
     assert [dict(zip(columns, row, strict=True))["value"] for row in rows] == [
