@@ -504,7 +504,20 @@ _EVERY_WORDS: frozenset[str] = frozenset({"all", "every", "each"})
 _BREAKDOWN_WORDS: frozenset[str] = frozenset({"every", "each"})
 # Nouns that name the places on either side of a flow without naming the side: "all
 # countries". The preposition that governs them names it.
-_PLACE_NOUNS: frozenset[str] = frozenset({"country", "countries"})
+_PLACE_NOUNS: frozenset[str] = frozenset(
+    {
+        "country",
+        "countries",
+        "nation",
+        "nations",
+        "economy",
+        "economies",
+        "state",
+        "states",
+        "government",
+        "governments",
+    }
+)
 # The axis each role preposition names.
 _ROLE_PREP_AXES: dict[str, RoleAxis] = {
     prep: _ROLE_TEXT_TO_AXIS[prep] for prep in _DONOR_PREPS | _RECIPIENT_PREPS
@@ -591,29 +604,62 @@ _BREAKDOWN_CONNECTIVES: frozenset[str] = frozenset({"by", "across"})
 # The words that open a phrase `breakdown_axis` reads: "by donor", "across recipients", "for
 # each donor", "from every provider", "to each recipient".
 _SEGMENT_OPENERS: frozenset[str] = _BREAKDOWN_CONNECTIVES | {"for", *_ROLE_PREP_AXES}
-# The words that end one: a preposition that opens the next phrase, or a word that adds a
-# window or another breakdown ("by debtor country in 2020", "since 2010", "over time", "and
-# year").
-_SEGMENT_ENDS: frozenset[str] = (
-    _SEGMENT_OPENERS | _PHRASE_END_PREPS | {"in", "since", "over", "and"}
-)
+
+
+# English's closed word classes: the prepositions, conjunctions and determiners, with the
+# words that open a window ("last decade", "past five years"). After a breakdown's role
+# nouns, one of these, a numeral, punctuation or the end of the query closes the phrase.
+# Any other word is a content word that modifies the nouns ("by debtor type").
+_FUNCTION_WORDS: frozenset[str] = frozenset(
+    {
+        # Prepositions.
+        "about", "above", "across", "after", "against", "along", "amid", "among", "around",
+        "as", "at", "before", "behind", "below", "beneath", "beside", "besides", "between",
+        "beyond", "by", "despite", "down", "during", "except", "excluding", "for", "from",
+        "in", "including", "inside", "into", "like", "near", "of", "off", "on", "onto",
+        "out", "outside", "over", "per", "since", "than", "through", "throughout", "till",
+        "to", "toward", "towards", "under", "until", "up", "upon", "versus", "via", "vs",
+        "with", "within", "without",
+        # Conjunctions.
+        "although", "and", "because", "but", "if", "nor", "or", "so", "though", "unless",
+        "whereas", "whether", "while", "yet",
+        # Determiners.
+        "a", "all", "an", "any", "both", "each", "either", "every", "her", "his", "its",
+        "my", "neither", "no", "our", "some", "that", "the", "their", "these", "this",
+        "those", "what", "which", "whose", "your",
+        # Window determiners.
+        "last", "next", "past", "previous", "recent",
+    }
+)  # fmt: skip
+# The query's words, numerals and punctuation marks, each its own token.
+_SEGMENT_TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]|\d+|[^\w\s]")
 
 
 def breakdown_segments(query: str) -> list[str]:
-    """The query's phrases that can ask for a breakdown, each read whole by `breakdown_axis`:
-    the words from each opener (``by``, ``across``, ``for``, ``from``, ``to``) up to the next
-    word in `_SEGMENT_ENDS` or the end. ``China's debt by debtor country in 2020`` gives ``by
-    debtor country``, and ``Kenya's external debt by debtor type`` gives ``by debtor type``,
-    which opens no side, so no shorter span reads as ``by debtor``."""
-    tokens = _tokenize(query.replace("\u2019", "'"))
+    """The query's phrases that ask for a breakdown, each read whole by `breakdown_axis`.
+
+    After each opener (``by``, ``across``, ``for``, ``from``, ``to``), the longest run of
+    words that names an axis opens it when the query ends there or the next token is a
+    numeral, punctuation or a function word (`_FUNCTION_WORDS`). ``China's debt by debtor
+    country between 2010 and 2020`` gives ``by debtor country``. A content word after the
+    nouns modifies them, so ``Kenya's external debt by debtor type`` gives none.
+    """
+    tokens = _SEGMENT_TOKEN_RE.findall(query.lower().replace("\u2019", "'"))
     segments: list[str] = []
     for start, token in enumerate(tokens):
         if token not in _SEGMENT_OPENERS:
             continue
-        end = next(
-            (i for i in range(start + 1, len(tokens)) if tokens[i] in _SEGMENT_ENDS), len(tokens)
+        words_end = next(
+            (i for i in range(start + 1, len(tokens)) if not tokens[i][0].isalpha()),
+            len(tokens),
         )
-        segments.append(" ".join(tokens[start:end]))
+        for end in range(words_end, start + 1, -1):
+            phrase = " ".join(tokens[start:end])
+            if breakdown_axis(phrase, query=query) is None:
+                continue
+            if end == len(tokens) or not tokens[end][0].isalpha() or tokens[end] in _FUNCTION_WORDS:
+                segments.append(phrase)
+            break
     return segments
 
 

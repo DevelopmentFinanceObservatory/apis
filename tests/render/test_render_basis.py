@@ -425,17 +425,29 @@ def _shape(denominator) -> Shape:
     )
 
 
-def test_a_pre_materialise_plan_states_only_the_per_head_unit():
-    """Before facets resolve (`facets=None`, the bind-time sentence event) the shape
-    alone fixes a per-head rate, so "per capita" reads, as the final sentence of a WEO or
-    IDS per-capita series does; a ratio waits for the unit, which decides "as a share of"
-    against "relative to". An empty mapping is a resolved answer and states the ratio."""
+def test_a_pre_materialise_plan_states_no_denominator():
+    """Before facets resolve (`facets=None`, the bind-time sentence event) the unit is
+    unknown, and it decides whether a per-head denominator reads "per capita" (no percent
+    or rate) and whether a ratio reads "as a share of" or "relative to". So the streamed
+    heading states neither, and the final heading adds to it. An empty mapping is a
+    resolved answer with no unit, and states both."""
     per_head = plan_tokens(
         heading_from_parts(
             [], [], _shape(_ref("Count_Person", "")), window=None, pinned_properties=frozenset()
         )
     )
-    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
+    assert sentence_from_plan(per_head) == "Adolescent birth rate."
+    per_head_resolved = plan_tokens(
+        heading_from_parts(
+            [],
+            [],
+            _shape(_ref("Count_Person", "")),
+            window=None,
+            facets={},
+            pinned_properties=frozenset(),
+        )
+    )
+    assert sentence_from_plan(per_head_resolved) == "Adolescent birth rate per capita."
     pre = plan_tokens(
         heading_from_parts([], [], _shape(_LIVE_BIRTHS), window=None, pinned_properties=frozenset())
     )

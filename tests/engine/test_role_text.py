@@ -569,7 +569,11 @@ _ONE_POSSESSIVE_OVER_ITS_DEBT = [
     ("Kenya's debt by creditor", "debt"),
     ("Kenya\u2019s debt by creditor", "debt"),
     ("Kenya's external debt", "external debt"),
+    # A content word after "by debtor" modifies it, so it opens no debtors.
     ("Kenya's external debt by debtor type", "external debt"),
+    ("Kenya's external debt by debtor group", "external debt"),
+    ("Kenya's external debt by debtor classification", "external debt"),
+    ("Kenya's external debt by debtor country type", "external debt"),
 ]
 
 
@@ -627,13 +631,26 @@ class TestDebtorPossessive:
             ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
             ("China's debt for each debtor country", ["debt"], "China"),
             ("China's debt service from each debtor", ["debt service"], "China"),
-            # The query's own breakdown ends where a window or a second breakdown begins.
+            # The query's own breakdown names an axis and ends at a function word, a
+            # numeral, punctuation or the end of the query.
             ("China's debt by borrower in 2020", ["debt"], "China"),
             ("China's debt by debtor country in 2020", ["debt"], "China"),
             ("China's debt by debtor country and year", ["debt"], "China"),
             ("China's debt by recipient since 2010", ["debt"], "China"),
             ("China's debt by debtor country over time", ["debt"], "China"),
             ("China's debt for each debtor country in Africa", ["debt"], "China"),
+            ("China's debt by debtor country between 2010 and 2020", ["debt"], "China"),
+            ("China's debt by debtor country during 2015", ["debt"], "China"),
+            ("China's debt by debtor country until 2020", ["debt"], "China"),
+            ("China's debt by debtor country through 2020", ["debt"], "China"),
+            ("China's debt by debtor country after 2015", ["debt"], "China"),
+            ("China's debt by debtor country as of 2020", ["debt"], "China"),
+            ("China's debt by debtor country per year", ["debt"], "China"),
+            ("China's debt by debtor country or region", ["debt"], "China"),
+            ("China's debt by debtor country at current prices", ["debt"], "China"),
+            ("China's debt by debtor country last decade", ["debt"], "China"),
+            ("China's debt by debtor, 2020", ["debt"], "China"),
+            ("China's debt by debtor governments in 2020", ["debt"], "China"),
         ],
     )
     def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:

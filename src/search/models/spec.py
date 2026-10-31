@@ -38,11 +38,11 @@ class ResolvedFacet(StrictModel):
 
     basis is always present. ref/label are present when one distinct value
     served every carried series; selection carries "per_series" in their
-    place when the carried series select different values on this axis --
-    never alongside ref/label -- and on the unit axis refs lists those units. request_basis joins either shape, present
-    only on the unit axis, only when unit was bound through the request form
-    (currency/prices/base_year), one basis value per member the request
-    named.
+    place when the carried series select different values on this axis, and
+    the two never appear together. On the unit axis, refs lists those units.
+    request_basis joins either shape, present only on the unit axis, only
+    when unit was bound through the request form (currency/prices/base_year),
+    one basis value per member the request named.
 
     Fields are flat and optional, validated by a model validator, rather
     than a discriminated ref/selection union. basis and request_basis are

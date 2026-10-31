@@ -47,6 +47,8 @@ from materialise.facet_profile import FacetProfile
 from materialise.facets import unit_currency_code
 from origin_catalogue import Catalogue
 from unit_words.currency_nouns import currency_noun
+from unit_words.price_basis import price_basis, price_basis_phrase
+from unit_words.unit_class import classify_unit
 
 if TYPE_CHECKING:
     # Keep coverage annotation-only. Importing its modules adds NumPy to the graph install.
@@ -378,7 +380,8 @@ def build_availability(
     (`read_national_currencies`; an empty map folds nothing), `place_kind` a place's wire kind,
     `None` while the kinds are unread, which leaves `summary.places` and each
     `sources[].places` null, and `labels` the graph names of units and methods. A currency unit
-    reads as its noun (`unit_words.currency_noun`)."""
+    reads as its noun with the price basis its unit states (`unit_words.price_basis_phrase`):
+    "US dollars", "current US dollars", "chained 2017 US dollars"."""
     profile = held.profile
     fold = _counted(held, parties=parties, place_kind=place_kind)
     names = _Names(catalogue=catalogue, labels=labels)
@@ -552,10 +555,12 @@ class _Names:
     def unit_label(self, unit: str | None) -> str | None:
         if unit is None:
             return None
-        iso = unit_currency_code(unit)
-        if iso is not None:
-            return currency_noun(iso, label=self.labels.get(unit))
-        return self.labels.get(unit)
+        unit_class = classify_unit(unit=unit, denominator=None, currency_units={})
+        if unit_class.currency is None:
+            return self.labels.get(unit)
+        noun = currency_noun(unit_class.currency, label=self.labels.get(unit))
+        basis = price_basis(requested=None, unit_class=unit_class, measurement_qualifier=None)
+        return price_basis_phrase(basis, currency_noun=noun)
 
     def unit(self, unit: str | None) -> NodeRef | None:
         return NodeRef(ref=unit, label=self.unit_label(unit)) if unit is not None else None

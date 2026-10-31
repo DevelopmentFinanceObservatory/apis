@@ -571,7 +571,6 @@ def _words_labelling(labels: dict[str, str]) -> Vocabulary:
         measure_index=_MEASURES,
         labels={**words.labels, **labels},
         sources=words.sources,
-        currency_units=words.currency_units,
         graph_generation="gen-1",
         catalogue_build="ocb_20260927",
     )

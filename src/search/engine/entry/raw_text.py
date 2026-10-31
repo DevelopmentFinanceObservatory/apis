@@ -549,7 +549,9 @@ def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: 
     "from France", "funded by France", "France funds") keeps its end, so the wording then
     moves only the places it names. A cue whose preposition names the other end ("from
     France" on destination, `role_text.contradicts`) shows the extraction read the flow
-    backwards, so it protects nothing."""
+    backwards, so it protects nothing. A verb cue names no end the code can check, so a
+    place the extraction set against its own verb cue ("funded by France" on destination)
+    still protects, and the wording then moves no place."""
     moves = {
         name: (wording.extracted[name], axis)
         for name in wording.extracted

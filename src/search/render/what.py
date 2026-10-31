@@ -436,10 +436,11 @@ def _unit_heading_phrase(
     emissions per capita" adds no "per capita", and a rate whose base the name states adds
     nothing, while a murder rate named "per capita" and served per 100,000 people adds
     "per 100,000 people". An authored noun never names a unit, so it is not inspected.
-    Before facets resolve (``facets`` None) only the per-head reading applies, as it would
-    under an unknown unit, so the streamed and final sentences agree for a WEO or IDS
-    per-capita series. Series that select several units (``per_series``) read per head when
-    every unit does (`_per_head`), and their unit has no other class.
+    Before facets resolve (``facets`` None) the unit is unknown, so the phrase is empty:
+    "per capita" waits for a unit that is no percent or rate, and the final sentence adds
+    to the streamed one without contradicting it. Series that select several units
+    (``per_series``) read per head when every unit does (`_per_head`), and their unit has no
+    other class.
     A ratio whose dataset declares whose total it divides by (`_ratio_base_owner`) names
     that party in ``wording``'s noun: DAC2a's "as a share of the recipient's GNI", DAC1's
     "as a share of the provider's GNI".
@@ -448,7 +449,9 @@ def _unit_heading_phrase(
     percent", "as a share of ..."), a rate's base, or a purchasing-power unit. "per capita"
     and "relative to ..." name only the denominator.
     """
-    unit = (facets or {}).get("unit")
+    if facets is None:
+        return UnitPhrase("", names_unit=False)
+    unit = facets.get("unit")
     denominator = shape.measurement_denominator
     unit_class = classify_unit(
         unit=unit.ref if unit is not None else None,
@@ -462,7 +465,7 @@ def _unit_heading_phrase(
     phrases: list[str] = []
     if per_head and not stated_bases:
         phrases.append("per capita")
-    if facets is None or not unit_class.changes_magnitude:
+    if not unit_class.changes_magnitude:
         return UnitPhrase(" ".join(phrases), names_unit=False)
     names_unit = False
     rate = unit_class.rate
@@ -495,16 +498,15 @@ def _per_head(
     """Whether the heading reads "per capita", over the units the answer's series hold.
 
     Series that select different units (``per_series``) read per head only when every unit
-    they select does (`ResolvedFacet.refs`), each classified as the single-unit path
-    classifies its unit; a series with no unit qualifies, so it adds no ref, and a facet
-    listing no refs reads as an unknown unit does. Any other answer, and a heading before
-    facets resolve, reads its one unit's class, ``unit_class``.
+    they select does (`ResolvedFacet.refs`). A series with no unit qualifies, so it adds no
+    ref, and a facet listing no refs reads as an unknown unit does. Any other answer reads
+    its one unit's class, ``unit_class``. Whether a unit reads per head turns only on its
+    rate and percent classes, so no currency read applies.
     """
     if unit is None or unit.selection != "per_series" or unit.refs is None:
         return unit_class.per_head
-    currency_units = facet_currency_units(unit)
     return all(
-        classify_unit(unit=ref, denominator=denominator, currency_units=currency_units).per_head
+        classify_unit(unit=ref, denominator=denominator, currency_units={}).per_head
         for ref in unit.refs
     )
 

@@ -18,7 +18,7 @@ The class comes from graph types:
   is the unit's own: the World Development Indicators crude birth rate divides by
   `Count_Person` and is served in `Per1000Persons`, so it is a rate per 1,000 people.
 - Per head is a `measurementDenominator` of `PerCapita` (base Data Commons) or
-  `Count_Person` (WEO, IDS) unless the unit is a percent or a registry rate: tonnes and kWh
+  `Count_Person` (WEO, IDS) unless the unit is a percent or a registry rate. Tonnes and kWh
   per person are per head, and so is a series whose unit is not yet known. A share of the
   population is no per-person quantity, and a rate states its own base.
 """
