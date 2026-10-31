@@ -272,7 +272,8 @@ def compose_observations(
     the mint composes its frame (`materialise.composite`).
 
     `reads` holds each component's preview in `served`'s order, None for a component with
-    no read (no definite answer, a failed resolve, or one past the deadline). Each component
+    no read (one serving no year, no definite answer, a failed resolve, or one past the
+    deadline). Each component
     keeps the points of its series dated in a year it serves (`ServedComponent.served`) and
     its recipe's periods hold, so a spliced component read for `latest` keeps only its own
     periods, and a series left with no point is dropped. A kept series keeps its own StatVar
@@ -289,9 +290,10 @@ def compose_observations(
     `order` is the kept previews' when they agree, else None.
 
     With no series left, the preview is omitted: `observations_no_points` when every
-    component read and found no point in the years it serves; else the first omission
-    (in component order) of another reason a component's preview carries; else, when a
-    component has no read, `observations_probe_failed`."""
+    component serving a year read and found no point in the years it serves; else the
+    first omission (in component order) of another reason a component's preview carries;
+    else, when a component serving a year has no read, `observations_probe_failed`. A
+    component serving no year is not read, so it bears on none of these."""
     series: list[ObservationSeries] = []
     total = 0
     truncated = False
@@ -319,7 +321,9 @@ def compose_observations(
     if series:
         order = next(iter(orders)) if len(orders) == 1 else None
         return SpecObservations(series=series, total_obs=total, truncated=truncated, order=order)
-    return _composite_omission(reads)
+    return _composite_omission(
+        [read for item, read in zip(served, reads, strict=True) if item.served]
+    )
 
 
 def _serves(item: ServedComponent, date: str) -> bool:
@@ -340,8 +344,8 @@ def _serves_year(item: ServedComponent, year: int) -> bool:
 
 
 def _composite_omission(reads: Sequence[SpecObservations | None]) -> SpecObservations:
-    """Why a composite whose components' `reads` kept no series shows none
-    (`compose_observations`)."""
+    """Why a composite whose components serving a year, read as `reads`, kept no series
+    shows none (`compose_observations`)."""
     if all(
         read is not None and (read.omitted is None or read.omitted.reason == _NO_POINTS)
         for read in reads
@@ -381,14 +385,21 @@ def _dispatched(read: SpecObservations) -> int:
 
 
 def assemble_composite(
-    spec: Spec, identity: BaseIdentity, spec_id: str, *, facts: ScopeFacts
+    spec: Spec,
+    identity: BaseIdentity,
+    spec_id: str,
+    *,
+    served: Sequence[ServedComponent],
+    facts: ScopeFacts,
 ) -> tuple[Spec, list[Component]]:
     """`spec`, the answer resolved for composite `identity`'s table identity
     (`code_index.composites.table_identity`), restated as the composite under `spec_id`, and
     the composite's components (`CompiledScope.components`).
 
-    The restated answer's definition is `identity`; its coverage counts every component's
-    series in the years each serves (`served_components`), over the window those years span; its
+    `served` holds `identity`'s components with the years each serves (`served_components`),
+    which the composite's preview filters by too. The restated answer's definition is
+    `identity`; its coverage counts every component's series in the years each serves, over
+    the window those years span; its
     headline counts the latest of those years over every component serving it
     (`_headline`); its StatVar counts are the components' summed (`_stat_vars`); its
     provenance facet names the composite, with the composite's label and the account its
@@ -404,7 +415,6 @@ def assemble_composite(
     `code_index.composites.CompositeNotServable` as `component_identities` does."""
     document = identity.model_dump(mode="json", exclude_none=True)
     index = facts.index
-    served = served_components(document, facts=facts)
     declaration = _declaration(index, document)
     years = sorted({year for item in served for year in item.served})
     observations = sum(item.years.counts.get(year, 0) for item in served for year in item.served)

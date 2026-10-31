@@ -53,6 +53,7 @@ from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAIL
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
+    composite_served,
     with_composite_observations,
 )
 from search.engine.region.decisions import PartyReadingWithdrawn
@@ -662,18 +663,24 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
         return dataclasses.replace(result, scope_choices=built)
     reads = _component_reads(state)
     # The composite follows its mint, which reads each component under its own pin alone, so
-    # its years, coverage, headline and download read the catalogue its preview reads.
+    # its years, coverage, headline, download and compiled components read the catalogue its
+    # preview reads, and its served years are the ones its preview filters by. `facts`
+    # remembers the years its components hold under the part's source scope, so they are
+    # read afresh.
+    served = composite_served(built.compiled.identity, reads=reads)
     with bound_catalogue(reads.catalogue):
-        composite, _ = assemble_composite(
+        composite, components = assemble_composite(
             spec,
             built.compiled.identity,
             built.compiled.spec_id,
+            served=served,
             facts=facts,
         )
-    relaunch = CompositeRelaunch(spec=composite, reads=reads)
+    compiled = built.compiled.model_copy(update={"components": components})
+    relaunch = CompositeRelaunch(spec=composite, reads=reads, served=served)
     return dataclasses.replace(
         with_composite_answer(result, composite, observations_relaunch=relaunch),
-        scope_choices=built,
+        scope_choices=built.model_copy(update={"compiled": compiled}),
     )
 
 
@@ -707,9 +714,7 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
     if state.stream_observations:
         return dataclasses.replace(result, observations_task=relaunch(result.spec.spec_id))
     if state.include_observations:
-        return await with_composite_observations(
-            result, reads=_component_reads(state), semaphore=None
-        )
+        return await with_composite_observations(result, semaphore=None)
     return dataclasses.replace(result, observations_relaunch=None)
 
 

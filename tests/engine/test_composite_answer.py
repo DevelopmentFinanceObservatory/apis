@@ -16,13 +16,19 @@ from origin_catalogue import current_catalogue, scoped_reads
 from search.engine import response_cache_flow, same_shape
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import dataset_resubmit
-from search.engine.errors import EngineInputError, GraphDeadlineFailure, GraphInfraError
+from search.engine.errors import (
+    EngineInfraError,
+    EngineInputError,
+    GraphDeadlineFailure,
+    GraphInfraError,
+)
 from search.engine.events import DoneEvent, Event, ObservationsEvent, ResponseEvent
 from search.engine.region import composite_answer, pipeline
 from search.engine.region.codes import _ObsProbeResult
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
+    composite_served,
     read_composite_preview,
 )
 from search.engine.region.result import RegionResult
@@ -48,8 +54,10 @@ from search.models import (
     Spec,
     SpecObservations,
     Warning,
+    omitted_observations,
 )
-from search.scope.composite import ServedComponent
+from search.scope import composite
+from search.scope.composite import ServedComponent, compose_observations
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -77,14 +85,16 @@ def _provenance(identity: BaseIdentity) -> str | None:
 class _Components:
     """`resolve_spec_resubmit` for the inclusive composite's components: each answers
     `template` with one series named for its table, holding a point in each year of `_WINDOW`
-    and estimates where `estimated`, or raises its entry of `failures`. The bilateral
-    component warns once under a preview code and once under another. Each call records the
-    source scope of the catalogue it reads through."""
+    and estimates where `estimated`, or raises its entry of `failures`, and answers degraded
+    where named in `degraded`. The bilateral component warns once under a preview code and
+    once under another. Each call records the source scope of the catalogue it reads
+    through."""
 
     def __init__(self, template: Spec, *, estimated: bool) -> None:
         self.template = template
         self.estimated = estimated
         self.failures: dict[str, Exception] = {}
+        self.degraded: set[str] = set()
         self.calls: list[tuple[ResubmitIdentityPayload, EngineOptions]] = []
         self.scopes: list[frozenset[str] | None] = []
 
@@ -126,6 +136,7 @@ class _Components:
             no_data_reason=None,
             warnings=tuple(w.model_copy(update={"spec_id": spec.spec_id}) for w in warned),
             timing_by_step={},
+            degraded=name in self.degraded,
         )
 
 
@@ -367,14 +378,26 @@ def _reads(coverage: Any = None) -> ComponentReads:
         pytest.param(
             "buffered-resubmit", TimeoutError(), "observations_timed_out", id="resubmit-timeout"
         ),
+        pytest.param(
+            "buffered-fresh",
+            dc_graph.GraphCapExceededError("cap", cap_kind="bytes", cap=1, observed=2),
+            "observations_probe_failed",
+            id="fresh-cap-exceeded",
+        ),
+        pytest.param(
+            "buffered-resubmit",
+            EngineInfraError("down"),
+            "observations_probe_failed",
+            id="resubmit-engine-infra",
+        ),
     ],
 )
 def test_a_component_with_no_read_leaves_its_years_out_and_names_its_role(
     monkeypatch, mode, failure, code
 ):
     """A component read that fails, crosses the deadline or is refused leaves the answer
-    definite, and its preview the other component's series, with a warning keyed to the
-    composite that names the missing component."""
+    definite, and its preview the other component's series, with one warning keyed to the
+    composite."""
     first, components = _components(monkeypatch)
     components.failures["imputed"] = failure
 
@@ -393,9 +416,32 @@ def test_a_component_with_no_read_leaves_its_years_out_and_names_its_role(
 
     assert spec.spec_id == first.spec_id
     assert _dates(observations) == {"bilateral": _BOTH["bilateral"]}
-    (missing,) = [w for w in warnings if w.code == code]
-    assert missing.spec_id == spec.spec_id
-    assert "imputed" in missing.message
+    assert [w.spec_id for w in warnings if w.code == code] == [spec.spec_id]
+
+
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
+def test_a_component_read_failing_on_a_code_fault_fails_the_request(monkeypatch, door):
+    first, components = _components(monkeypatch)
+    components.failures["imputed"] = ValueError("a fault")
+
+    with pytest.raises(ValueError, match="a fault"):
+        offline_resolve(_request(door, first), **_clients())
+
+
+@pytest.mark.parametrize("door", ["fresh", "resubmit"])
+@pytest.mark.parametrize("degraded", [set(), {"imputed"}])
+def test_a_degraded_component_marks_the_buffered_composite_answer_degraded(
+    monkeypatch, door, degraded
+):
+    """A component answer standing on a read its resolve swallowed marks the composite's
+    leg degraded, so no cache stores it; with no such component the leg is whole."""
+    first, components = _components(monkeypatch)
+    components.degraded.update(degraded)
+
+    events = offline_events(_request(door, first), **_clients())
+
+    assert _dates(_answered(events).resolved.observations) == _BOTH
+    assert _done(events).degraded_leg is bool(degraded)
 
 
 def test_a_composite_whose_every_component_read_fails_streams_its_omission(monkeypatch):
@@ -408,9 +454,8 @@ def test_a_composite_whose_every_component_read_fails_streams_its_omission(monke
     assert observations.series == []
     assert observations.omitted is not None
     assert observations.omitted.reason == "observations_probe_failed"
-    missing = [w.message for w in _done(events).warnings if w.code == "observations_probe_failed"]
-    assert len(missing) == 2
-    assert all(any(role in message for message in missing) for role in ("bilateral", "imputed"))
+    missing = [w.spec_id for w in _done(events).warnings if w.code == "observations_probe_failed"]
+    assert missing == [_answered(events).spec_id] * 2
 
 
 def test_a_component_reads_under_its_own_pin_whatever_scope_the_part_read_under(monkeypatch):
@@ -433,9 +478,10 @@ def test_a_component_reads_under_its_own_pin_whatever_scope_the_part_read_under(
 
 
 def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monkeypatch):
-    """The part's source scope narrows the catalogue its binders read, and the composite
-    they settle is restated under the request's catalogue, as its preview reads: the
-    component years the answer states are the years the preview filters by."""
+    """The part's source scope narrows the catalogue its binders read, here to a catalogue
+    in which the bilateral table holds no 2020 series, and the composite they settle is
+    restated under the request's catalogue, as its preview reads: the component years the
+    answer states are the years the preview filters by."""
     first, _ = _components(monkeypatch)
     kept: list[tuple[RegionResult, ResolveState]] = []
     real = pipeline._with_scope_choices
@@ -455,12 +501,25 @@ def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monke
         return assemble(*args, **kwargs)
 
     monkeypatch.setattr(pipeline, "assemble_composite", record)
+    held = composite._component_years
+
+    def narrowed(identity: Any, *, facts: Any) -> composite.YearCounts:
+        years = held(identity, facts=facts)
+        if (
+            current_catalogue().scope is None
+            or _provenance(BaseIdentity.model_validate(identity)) is not None
+        ):
+            return years
+        return composite.YearCounts(counts={**years.counts, 2020: 0}, latest=years.latest)
+
+    monkeypatch.setattr(composite, "_component_years", narrowed)
 
     with scoped_reads(frozenset({provider._CRS, provider._IMPUTED})):
         restated = real(result, state)
 
     assert restated.scope_choices is not None
     assert restated.scope_choices.compiled.spec_id == first.spec_id
+    assert state.request_catalogue is not None
     assert scopes == [state.request_catalogue.scope]
     stated = {
         _STAT_VARS[_provenance(component.identity)]: sorted(
@@ -469,13 +528,65 @@ def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monke
         for component in restated.scope_choices.compiled.components or ()
     }
     assert stated == previewed
+    relaunch = restated.observations_relaunch
+    assert isinstance(relaunch, CompositeRelaunch)
+    assert relaunch.served is not None
+    assert {
+        _STAT_VARS[_provenance(BaseIdentity.model_validate(item.component.identity))]: sorted(
+            str(year) for year in item.served
+        )
+        for item in relaunch.served
+    } == stated
+
+
+def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):
+    """The imputed component serves no year here, and its read would fail: it is not read,
+    so the preview holds the bilateral series and the bilateral component's warning alone."""
+    spec, components = _components(monkeypatch)
+    components.failures["imputed"] = GraphInfraError("down")
+    reads = _reads(_coverage(monkeypatch))
+    served = [
+        item
+        if _provenance(BaseIdentity.model_validate(item.component.identity)) != provider._IMPUTED
+        else dataclasses.replace(item, served=frozenset())
+        for item in composite_served(spec.definition.identity, reads=reads)
+    ]
+
+    observations, warnings = asyncio.run(
+        read_composite_preview(served=served, entity_groups=None, reads=reads, semaphore=None)
+    )
+
+    assert [_STAT_VARS[_provenance(inp.identity)] for inp, _ in components.calls] == ["bilateral"]
+    assert _dates(observations) == {"bilateral": _BOTH["bilateral"]}
+    assert [w.code for w in warnings] == [_PARTIAL.code]
+
+
+def test_a_component_serving_no_year_leaves_the_omission_to_those_that_serve_one():
+    """One component serves 2020 and found no point in it; the other serves no year and has
+    no read. The composite omits its preview for want of points."""
+    serving, idle = (
+        ServedComponent(
+            component=cast(Any, None), years=cast(Any, None), served=years, members=None
+        )
+        for years in (frozenset({2020}), frozenset[int]())
+    )
+    empty = omitted_observations("observations_no_points", "none", dispatched=1, empty=1)
+
+    composed = compose_observations([serving, idle], [empty, None])
+
+    assert composed.omitted is not None
+    assert composed.omitted.reason == "observations_no_points"
+    assert composed.omitted.dispatched == 1
 
 
 def test_cancelling_the_composite_task_cancels_every_component_read(monkeypatch):
     spec, _ = _components(monkeypatch)
     served = [
         ServedComponent(
-            component=cast(Any, index), years=cast(Any, None), served=frozenset(), members=None
+            component=cast(Any, index),
+            years=cast(Any, None),
+            served=frozenset({2020}),
+            members=None,
         )
         for index in range(3)
     ]
@@ -542,9 +653,13 @@ def test_the_spliced_headline_under_latest_serves_each_component_in_its_own_peri
 
     monkeypatch.setattr(composite_answer, "_read_component", read)
 
+    reads = _reads(facts.coverage)
     observations, _ = asyncio.run(
         read_composite_preview(
-            identity, entity_groups=None, reads=_reads(facts.coverage), semaphore=None
+            served=composite_served(identity, reads=reads),
+            entity_groups=None,
+            reads=reads,
+            semaphore=None,
         )
     )
 

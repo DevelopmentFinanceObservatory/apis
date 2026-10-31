@@ -111,6 +111,7 @@ from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
+    composite_served,
     with_composite_observations,
 )
 from search.engine.region.place_options import PlaceOptionsPool
@@ -229,23 +230,23 @@ def _as_composite(
     scope: PartScope | None,
     facts: ScopeFacts,
     reads: ComponentReads,
-    stream_observations: bool,
 ) -> RegionResult:
     """`region`, resolved for composite `identity`'s table identity, answering the composite
     (`scope.composite.assemble_composite`) under its own spec_id, which is the compiled
-    scope's when `scope` compiled it. Where the request streams observations it carries the
-    closure that reads the composite's preview per component over `reads`
-    (`composite_answer.CompositeRelaunch`), which `_launch_trailing_tasks`
-    launches once every promote has returned. The closure reads the composite's identity
-    alone, so a table identity the part memo held answers with one too."""
+    scope's when `scope` compiled it. It carries the closure that reads the composite's
+    preview per component over `reads` (`composite_answer.CompositeRelaunch`), over the
+    components it was restated over (`composite_served`), which `_launch_trailing_tasks`
+    launches once every promote has returned, or `with_composite_observations` reads inline.
+    The closure reads the composite's identity alone, so a table identity the part memo held
+    answers with one too."""
     spec_id = scope.compiled.spec_id if scope is not None else identity_spec_id(identity)
-    spec, _ = assemble_composite(region.spec, identity, spec_id, facts=facts)
-    composite = with_composite_answer(
-        region, spec, observations_relaunch=CompositeRelaunch(spec=spec, reads=reads)
+    served = composite_served(identity, reads=reads)
+    spec, _ = assemble_composite(region.spec, identity, spec_id, served=served, facts=facts)
+    return with_composite_answer(
+        region,
+        spec,
+        observations_relaunch=CompositeRelaunch(spec=spec, reads=reads, served=served),
     )
-    if stream_observations:
-        return composite
-    return dataclasses.replace(composite, observations_relaunch=None)
 
 
 def _served_scope(scope: PartScope | None, region: RegionResult) -> PartScope | None:
@@ -519,13 +520,12 @@ async def handle(
                 scope=scope,
                 facts=promoted.facts,
                 reads=component_reads,
-                stream_observations=params.stream_observations,
             )
             steps["as_composite"] = now_ms() - started
             if params.include_observations and not params.stream_observations:
-                region = await with_composite_observations(
-                    region, reads=component_reads, semaphore=sem
-                )
+                region = await with_composite_observations(region, semaphore=sem)
+            elif not params.stream_observations:
+                region = dataclasses.replace(region, observations_relaunch=None)
         return dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},
