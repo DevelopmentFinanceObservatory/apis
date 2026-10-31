@@ -23,6 +23,7 @@ from materialise.place_scope import (
 from search.engine.bind import SlotBindingDraft
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.extract import DateRequest
+from search.engine.place import ConsultedPresence
 from search.engine.retrieval import standard
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import facets_at_own_places, standard_resolve
@@ -142,7 +143,7 @@ def _resolve(
         entities={},
         graph=graph,
         date_request=date_request,
-        default_presence=presence,
+        default_presence=ConsultedPresence(presence),
     )
     assert isinstance(result, Materialised), result
     return result
@@ -381,7 +382,7 @@ def test_a_presence_read_beside_a_subject_entity_raises() -> None:
             bindings=[],
             entities={"observationAbout": [_KEN]},
             graph=_BatchRecordingGraph({}),
-            default_presence=presence,
+            default_presence=ConsultedPresence(presence),
         )
 
 
@@ -546,7 +547,7 @@ def test_an_answer_naming_one_member_reads_the_family_only_until_its_election_se
         bindings=[],
         entities={},
         graph=graph,
-        default_presence=_presence(dict.fromkeys(members, _THREE)),
+        default_presence=ConsultedPresence(_presence(dict.fromkeys(members, _THREE))),
     )
 
     assert [stat_vars for stat_vars, _places in graph.batches] == reads

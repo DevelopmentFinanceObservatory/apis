@@ -115,7 +115,7 @@ from search.models import (
 from search.observations import provenance_refs, unlisted_provenances
 
 if TYPE_CHECKING:
-    from materialise.place_scope import DefaultPresence
+    from search.engine.place import ConsultedPresence
     from search.engine.region.place_context import PlaceContext, UnsettledPlace
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
@@ -1007,7 +1007,7 @@ class _RelaxationProbeContext:
     # The original answer's places before its place sets settled. A relaxation settles
     # them on its own read. `None` when the answer's context is all there is to read in.
     unsettled: UnsettledPlace | None
-    presence: DefaultPresence | None
+    presence: ConsultedPresence | None
     date_request: DateRequest | None
     deadline: float | None
     coverage: CoverageSnapshot
@@ -1127,7 +1127,7 @@ def _walked_relaxations(
 def _relaxations_presence(
     ctx: _RelaxationProbeContext,
     relaxations: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft]] | None],
-) -> DefaultPresence | None:
+) -> ConsultedPresence | None:
     """The presence the relaxations of a default-scoped answer are probed over: `ctx.presence`
     topped up, in one presence read (`place.read_default_presence`), with what each
     relaxation's resolve, its shape under its relaxed bindings, reads at its own scope and
@@ -1136,7 +1136,7 @@ def _relaxations_presence(
     served members. Off a default scope, or with every member covered, `ctx.presence`
     itself. A read that fails leaves `ctx.presence`, and a relaxation whose members it
     lacks yields no suggestion."""
-    from search.engine.place import covers_stat_var, read_default_presence
+    from search.engine.place import read_default_presence
     from search.engine.region.state import presence_stat_vars
 
     presence = ctx.presence
@@ -1151,7 +1151,7 @@ def _relaxations_presence(
             for relaxation in relaxations
             if relaxation is not None
             for sv in presence_stat_vars(relaxation[0], relaxation[1], role_keys)
-            if not covers_stat_var(presence, sv)
+            if not presence.covers(sv)
         )
     )
     if not missing:
@@ -1436,7 +1436,7 @@ def _suggest_nearest_real(
     shape_draft: ShapeDraft,
     bindings: list[SlotBindingDraft],
     place: PlaceContext,
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
     date_request: DateRequest | None,
     deadline: float | None = None,
     include_option_coverage: bool = False,
@@ -1453,11 +1453,14 @@ def _suggest_nearest_real(
     unsettled: UnsettledPlace | None = None,
     pin_served_provenance: bool = False,
     level: tuple[ShapeDraft, Relaxation] | None = None,
-) -> tuple[list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], DefaultPresence | None]:
+) -> tuple[
+    list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], ConsultedPresence | None
+]:
     """Relax one value/set binding at a time and return up to `n_max` confirmed suggestions,
     the warnings, what each suggestion is read over by spec id, and the presence the
-    relaxations were probed over (`_relaxations_presence`), whose `unsettled` StatVars keep
-    the answer out of the response cache.
+    relaxations were probed over (`_relaxations_presence`). Each probe reads its scopes
+    through that `ConsultedPresence`, so a countries fallback this request alone took that
+    shapes a suggestion keeps the answer out of the response cache.
 
     Runs synchronously on the no-observations path. Every relaxation first walks its own
     members with `role_class_walks`, all in one round, as the relaxed query's first answer

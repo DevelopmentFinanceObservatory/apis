@@ -235,7 +235,7 @@ async def build_place_options_events(
                     deadline=deadline,
                     join_inflight=False,
                 )
-            target_lost.reads.extend(lost.reads)
+            lost.merge_into(target_lost)
             return resolved
         except PopulationInFlight:
             logger.info("place_options: prefetch dropped, population key already in flight")

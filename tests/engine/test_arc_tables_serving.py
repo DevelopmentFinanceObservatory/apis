@@ -42,6 +42,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import FamilyNotResolvableError, GraphReadFailure
+from search.engine.place import ConsultedPresence
 from search.engine.quantity import QuantityRequirement
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
@@ -970,13 +971,18 @@ def test_a_narrowed_siblings_presence_read_covers_the_family_its_resolve_elects(
     assert list(prewarmed) == expected
 
 
-def _presence_of(stat_vars: Iterable[str]) -> DefaultPresence:
-    """A presence read covering `stat_vars`, each scoped to Kenya."""
-    return DefaultPresence(
-        countries=("country/KEN",),
-        scopes={
-            sv: DefaultPlaceScope(places=("country/KEN",), every_place=False) for sv in stat_vars
-        },
+def _presence_of(stat_vars: Iterable[str], *, unsettled: Iterable[str] = ()) -> ConsultedPresence:
+    """A presence read covering `stat_vars`, each scoped to Kenya, `unsettled` of them by a
+    countries fallback this request alone took."""
+    return ConsultedPresence(
+        DefaultPresence(
+            countries=("country/KEN",),
+            scopes={
+                sv: DefaultPlaceScope(places=("country/KEN",), every_place=False)
+                for sv in stat_vars
+            },
+            unsettled=frozenset(unsettled),
+        )
     )
 
 
@@ -1041,9 +1047,9 @@ def test_unbinding_reads_the_presence_the_relaxed_resolve_needs(
     )
     asked: list[list[str]] = []
 
-    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> DefaultPresence:
+    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> ConsultedPresence:
         asked.append(list(stat_vars))
-        return _presence_of([*known.scopes, *stat_vars])
+        return _presence_of([*known._presence.scopes, *stat_vars])
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
     state = SimpleNamespace(
@@ -1063,7 +1069,9 @@ def test_unbinding_reads_the_presence_the_relaxed_resolve_needs(
 
     assert read == [_BONDS]
     assert asked == [[_IMF_GG]]
-    assert set(default_scope_members(shape, [debtor], ())) <= set(state.default_presence.scopes)
+    assert set(default_scope_members(shape, [debtor], ())) <= set(
+        state.default_presence._presence.scopes
+    )
 
 
 _UN_SERIES = "undata/wb/SERIES-DEBT"
@@ -1490,7 +1498,7 @@ def test_an_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
     shape = alternate.shape
     known = _presence_of([_BONDS])
 
-    def read_default_presence(**_kwargs: object) -> DefaultPresence:
+    def read_default_presence(**_kwargs: object) -> ConsultedPresence:
         assert failure is not None, "no presence read is tried after the pass's failed"
         raise failure
 
@@ -1548,7 +1556,7 @@ def test_after_one_alternate_s_top_up_fails_no_other_is_tried(
     known = _presence_of([_BONDS])
     reads: list[object] = []
 
-    def read_default_presence(**_kwargs: object) -> DefaultPresence:
+    def read_default_presence(**_kwargs: object) -> ConsultedPresence:
         reads.append(_kwargs["stat_vars"])
         raise TimeoutError("deadline")
 
@@ -1583,10 +1591,8 @@ def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
     shape = alternate.shape
     known = _presence_of([_BONDS])
 
-    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> DefaultPresence:
-        return dataclasses.replace(
-            _presence_of([*known.scopes, *stat_vars]), unsettled=frozenset(stat_vars)
-        )
+    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> ConsultedPresence:
+        return _presence_of([*known._presence.scopes, *stat_vars], unsettled=stat_vars)
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
     place = place_context(shape, subject_place_roles(), stat_vars=[_BONDS], presence=known)
@@ -1603,8 +1609,9 @@ def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
             coverage=empty_coverage_snapshot(),
         )
 
-    assert lost.unsettled
-    assert read.presence is not None and _BONDS not in read.presence.unsettled
+    assert lost.unsettled == set()
+    assert [record.unsettled for _, record in read.consulted] == [{_IMF_GG}]
+    assert read.presence is not None and _BONDS not in read.presence._presence.unsettled
 
 
 def test_each_default_scope_taker_is_elected_once_off_the_event_loop(

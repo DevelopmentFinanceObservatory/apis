@@ -26,6 +26,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
+    carry,
     note_degraded_read,
     recording_degraded_reads,
 )
@@ -788,8 +789,7 @@ async def _fill_gap(
     # our pass's menu already held them.
     if merged is None:
         note_un_unserved(pool.unserved)
-        for read in pool.lost:
-            note_degraded_read(read)
+        carry(pool.lost)
     state = un_state(bound)
     state.rcl = first.rcl
     state.shapes_found = shapes

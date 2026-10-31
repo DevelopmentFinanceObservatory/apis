@@ -3,7 +3,7 @@
 A read that fails, runs past its deadline, or could not start inside a resolution often leaves
 the answer standing on less than it would have read, with no warning to say so. So does a
 decision that consulted a StatVar's default scope when that scope was a countries fallback
-this request alone took (`note_unsettled_scope`, called by `place.consulted_scope`). Two
+this request alone took (`note_unsettled_scope`, called by `place.ConsultedPresence`). Two
 examples of a lost read are the dated
 read the unit gate checks a sparse series with and the re-read that names the provenances a
 no-data answer is withheld under. `recording_degraded_reads` binds a record for one region's
@@ -48,24 +48,31 @@ class DegradedReads:
     def degraded(self) -> bool:
         return bool(self.reads or self.unsettled)
 
+    def merge_into(self, other: DegradedReads) -> None:
+        """Add what this record holds to `other`."""
+        other.reads.extend(self.reads)
+        other.unsettled.update(self.unsettled)
+
 
 _RECORD: ContextVar[DegradedReads | None] = ContextVar("search_degraded_reads", default=None)
 
 
 @contextmanager
-def recording_degraded_reads(*, detached: bool = False) -> Iterator[DegradedReads]:
-    """Collect, for the body of the `with` block, the reads it swallows. A `detached` record
-    keeps them from the outer record when it closes."""
+def recording_degraded_reads(
+    *, detached: bool = False, into: DegradedReads | None = None
+) -> Iterator[DegradedReads]:
+    """Collect, for the body of the `with` block, the reads it swallows, in `into` when given,
+    so one reading recorded in several blocks keeps one record. A `detached` record keeps
+    them from the outer record when it closes."""
     outer = _RECORD.get()
-    record = DegradedReads()
+    record = DegradedReads() if into is None else into
     token = _RECORD.set(record)
     try:
         yield record
     finally:
         _RECORD.reset(token)
         if outer is not None and not detached:
-            outer.reads.extend(record.reads)
-            outer.unsettled.update(record.unsettled)
+            record.merge_into(outer)
 
 
 def note_degraded_read(read: str) -> None:
@@ -83,3 +90,16 @@ def note_unsettled_scope(stat_var: str) -> None:
     record = _RECORD.get()
     if record is not None:
         record.unsettled.add(stat_var)
+
+
+def carry(record: DegradedReads, *, consulted: bool = True) -> None:
+    """Note in the bound record what a detached `record` held: its lost reads, and the scopes
+    it consulted when `consulted`, as a reading the answer stands on does. A reading the
+    answer passed over hands on its lost reads alone. Outside a record it notes nothing."""
+    outer = _RECORD.get()
+    if outer is None:
+        return
+    if consulted:
+        record.merge_into(outer)
+    else:
+        outer.reads.extend(record.reads)

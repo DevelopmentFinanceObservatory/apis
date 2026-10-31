@@ -18,17 +18,17 @@ from typing import Final, Literal, cast
 import dc_graph
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
-from materialise.place_scope import DefaultPresence
 from materialise.roles import RoleAxis, axis_for_role
 from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import SEARCH_MAX_UNIT_ALTERNATIVES, settings
+from search.engine.degraded_reads import DegradedReads, carry, recording_degraded_reads
 from search.engine.departures import direction_inferred
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.interpret import PinnedResolved, Recall
-from search.engine.place import covers_stat_var, earth_countries, read_default_presence
+from search.engine.place import ConsultedPresence, earth_countries, read_default_presence
 from search.engine.quantity import (
     NamedDenominator,
     check_denominator,
@@ -878,14 +878,14 @@ def _lacks_presence(
     `takers` or the capped shapes at `group`'s indices (`_group_stat_vars`)."""
     known = state.default_presence
     return known is None or any(
-        not covers_stat_var(known, sv) for sv in _group_stat_vars(state, group, takers)
+        not known.covers(sv) for sv in _group_stat_vars(state, group, takers)
     )
 
 
 async def _unsettled_places(
     state: ResolveState,
     shapes: Sequence[tuple[ShapeDraft, list[SlotBindingDraft], PlaceAssignment]],
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
 ) -> list[UnsettledPlace]:
     """The places of each of `shapes` before its place sets settle, each with its bindings
     and its assignment, in order, over `presence`. A shape that takes a default scope takes
@@ -1320,7 +1320,7 @@ async def _walked_alternates(
 
 def _start_alternates_presence_read(
     state: ResolveState, plan: _AdmissionPlan
-) -> Future[DefaultPresence] | None:
+) -> Future[ConsultedPresence] | None:
     """Start the presence read a role-bearing elected shape's alternates need, to run beside
     the elected shape's materialisation, and return it; `None` when none is needed or none
     was started.
@@ -1359,13 +1359,13 @@ def _submit_alternates_read[T](read: Callable[..., T], /, **kwargs: object) -> F
 
 def _presence_after_listing(
     *,
-    listing: Future[DefaultPresence] | None,
+    listing: Future[ConsultedPresence] | None,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
     stat_vars: list[str],
-    known: DefaultPresence | None,
+    known: ConsultedPresence | None,
     deadline: float | None,
-) -> DefaultPresence:
+) -> ConsultedPresence:
     """`read_default_presence`, taking Earth's countries from `listing` when the read knows
     no presence yet. The listing runs on another worker of the alternates' pool, so waiting
     for it holds no worker it needs, and its failure is the read's."""
@@ -1378,7 +1378,7 @@ def _presence_after_listing(
 
 def _submit_alternates_presence_read(
     state: ResolveState, stat_vars: list[str]
-) -> Future[DefaultPresence] | None:
+) -> Future[ConsultedPresence] | None:
     """Submit the presence read of `stat_vars` (`_presence_after_listing`) on
     `_ALTERNATES_POOL` (`_submit_alternates_read`), or return `None` when none is free. The
     listing of Earth's countries started on that pool beside the elected shape's walk
@@ -1394,7 +1394,7 @@ def _submit_alternates_presence_read(
     )
 
 
-def merge_presence(state: ResolveState, presence: DefaultPresence | None) -> None:
+def merge_presence(state: ResolveState, presence: ConsultedPresence | None) -> None:
     """Merge `presence`, a read made over the request's presence when it started, into
     `state.default_presence`, so a read made since keeps what it added."""
     if presence is None:
@@ -1424,7 +1424,7 @@ def record_unevaluated(
 
 
 async def _await_alternates_presence(
-    state: ResolveState, read: Future[DefaultPresence]
+    state: ResolveState, read: Future[ConsultedPresence]
 ) -> AlternateUnevaluatedReason | None:
     """Await `read` and merge its presence into the request's, or return why it did not
     complete. The read was made over the presence known when it was submitted, so a read
@@ -1911,13 +1911,19 @@ async def _reelect_zero_observation_sibling(
     )
     # Siblings sharing probe places share one materialise call, so its facet prewarm covers
     # them in one read, and the calls of separate probe places run side by side.
+    # What each stand-in's own reading consulted and lost, by menu index. Only the readings the
+    # part goes on to stand on carry what they consulted (`_carry_stand_ins`).
+    stand_ins: dict[int, list[DegradedReads]] = {i: [] for i in _walked}
     by_scope: dict[tuple[str, ...] | None, list[tuple[_Alternate, UnsettledPlace]]] = {}
-    for walked, place in zip(_walked.values(), places, strict=True):
+    for (i, walked), place in zip(_walked.items(), places, strict=True):
         try:
-            scope = place.unread().probe_dcids
+            with recording_degraded_reads(detached=True) as grouping:
+                scope = place.unread().probe_dcids
         except PlaceSetRefusedError:
             # A sibling that cannot bind its places is not probed or offered.
             continue
+        finally:
+            stand_ins[i].append(grouping)
         by_scope.setdefault(scope, []).append((walked.alternate, place))
     _scope_results: list[_AlternatesRead] = await asyncio.gather(
         *[
@@ -1938,6 +1944,12 @@ async def _reelect_zero_observation_sibling(
     )
     for _scope_read in _scope_results:
         merge_presence(state, _scope_read.presence)
+        stand_ins.update(
+            (i, [*stand_ins[i], record])
+            for i in _walked
+            for alternate, record in _scope_read.consulted
+            if _walked[i].alternate is alternate
+        )
         record_unevaluated(
             state,
             {
@@ -1957,11 +1969,15 @@ async def _reelect_zero_observation_sibling(
         _scope_read.blocking is not None or _scope_read.unevaluated
         for _scope_read in _scope_results
     ):
+        # The elected result stands whatever the stand-ins read.
+        _carry_stand_ins(stand_ins, standing=())
         return mat_result
     _sibling_candidates = [
         cand for _scope_read in _scope_results for cand in _scope_read.candidates
     ]
     if not _sibling_candidates:
+        # Every stand-in showed no data, so each one's scope shaped the elected answer.
+        _carry_stand_ins(stand_ins, standing=_walked)
         return mat_result
     # ``state.reelection_siblings`` ascend, so this restores menu order across scope groups.
     _sibling_candidates.sort(key=lambda cand: _index_by_group[_shape_group_key(cand.shape)])
@@ -1975,6 +1991,16 @@ async def _reelect_zero_observation_sibling(
         _answering = _sibling_candidates
     if _answering:
         _winner = _answering[0]
+        _winner_index = _index_by_group[_shape_group_key(_winner.shape)]
+        # The first equivalent with data answers, so the equivalents ahead of it, which
+        # showed none, shaped the choice too. A lone qualifier sibling answers because no
+        # other stand-in showed data.
+        _carry_stand_ins(
+            stand_ins,
+            standing=[i for i in _walked if i in equivalents and i <= _winner_index]
+            if _winner_index in equivalents
+            else _walked,
+        )
         _no_data_label = state.shape_draft.label
         _install_shape(
             state,
@@ -1994,7 +2020,21 @@ async def _reelect_zero_observation_sibling(
         state.sibling_candidates = {
             _index_by_group[_shape_group_key(cand.shape)]: cand for cand in _sibling_candidates
         }
+        _carry_stand_ins(stand_ins, standing=_walked)
     return mat_result
+
+
+def _carry_stand_ins(
+    stand_ins: Mapping[int, list[DegradedReads]], *, standing: Iterable[int]
+) -> None:
+    """Carry each stand-in's records into the part's (`degraded_reads.carry`): every lost
+    read, and the scopes consulted only by the stand-ins at `standing`, those whose reads
+    decided what the part answers or offers. A stand-in the choice never reached shaped no
+    answer the reply holds."""
+    standing = frozenset(standing)
+    for i, records in stand_ins.items():
+        for record in records:
+            carry(record, consulted=i in standing)
 
 
 async def _phase_materialise(state: ResolveState) -> RegionResult | None:

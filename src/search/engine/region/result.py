@@ -407,7 +407,7 @@ class RegionResult:
     # less than it would have read (`degraded_reads`): a member walk that settled nothing, a
     # named group dropped, the dates the unit gate could not read, the withheld-registry
     # re-read, a decision that consulted an unsettled default scope
-    # (`place.consulted_scope`), or an alternate's presence read. Also set on the `no_data` placeholder of a leg whose own error the
+    # (`place.ConsultedPresence`), or an alternate's presence read. Also set on the `no_data` placeholder of a leg whose own error the
     # fan-out swallowed, which reads as a real miss. Every door reports such a leg as degraded
     # (`DoneEvent.degraded_leg`), so neither cache layer stores the response, and the part
     # memo stores no such region.

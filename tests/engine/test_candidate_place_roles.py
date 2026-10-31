@@ -2094,7 +2094,9 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
 
     assert asyncio.run(_phase_place_bindings(state)) is None
     assert state.default_presence is not None
-    assert {sv: frozenset(scope.places) for sv, scope in state.default_presence.scopes.items()} == {
+    assert {
+        sv: frozenset(scope.places) for sv, scope in state.default_presence._presence.scopes.items()
+    } == {
         _GNI_PPP: frozenset({_GHA}),
         atlas: frozenset({_NOR}),
     }

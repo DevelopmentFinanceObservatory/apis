@@ -691,7 +691,6 @@ async def handle(
             extra_warnings=[],
             echo=echo,
             timed_out=False,
-            degraded_leg=degraded_leg,
             graph=graph,
             start_ms=start_ms,
             params=dataclasses.replace(params, deadline=trailing_deadline),

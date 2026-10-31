@@ -807,7 +807,6 @@ async def handle(
             extra_warnings=[],
             echo=echo,
             timed_out=out.timed_out,
-            degraded_leg=any_degraded(out.regions),
             graph=graph,
             start_ms=start_ms,
             params=params,

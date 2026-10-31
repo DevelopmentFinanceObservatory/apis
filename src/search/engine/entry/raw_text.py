@@ -1433,7 +1433,6 @@ async def _handle_multi_variable(
             ),
             echo=None,
             timed_out=out.timed_out,
-            degraded_leg=any_degraded(out.regions),
             graph=graph,
             start_ms=start_ms,
             params=params,

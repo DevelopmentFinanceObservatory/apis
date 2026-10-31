@@ -20,10 +20,11 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN_NODE = {"country/KEN": {"label": "Kenya", "type": "Country"}}
@@ -94,6 +95,8 @@ class _CandidateBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(
             self._chosen_shape_index, bindings=[], also_plausible=self._also_plausible
@@ -160,29 +163,30 @@ def _warning_codes(result) -> set[str]:
     return {w.code for w in result.warnings}
 
 
-@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
-def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
-    monkeypatch: pytest.MonkeyPatch, unsettled: bool
-) -> None:
-    """With no place named, the twin diverted into `equivalent_readings` is read over its
-    own default scope. A countries fallback there holds for this request only."""
+def _placeless(
+    monkeypatch: pytest.MonkeyPatch, svs: list[str], obs: dict, *, unsettled: frozenset[str]
+):
+    """`svs` resolved with no place named, the first elected and the rest nominated, each
+    over its own default scope, `unsettled` of them by a countries fallback this request
+    alone took."""
     read = place_scope.read_default_presence
 
     def reading(**kwargs):
-        presence = read(**kwargs)
-        return dataclasses.replace(presence, unsettled=frozenset({_ELEC_SDG} if unsettled else ()))
+        return dataclasses.replace(read(**kwargs), unsettled=unsettled)
 
     monkeypatch.setattr(place_scope, "read_default_presence", reading)
     graph = FakeGraph(
         nodes=_NODES,
-        detect={"electricity access": {"svs": [_ELEC_WB, _ELEC_SDG], "cosine_scores": [0.9, 0.85]}},
-        obs={
-            f"{_ELEC_WB}|country/KEN": [_facet(provenance_id="source/WorldBank")],
-            f"{_ELEC_SDG}|country/KEN": [_facet(provenance_id="source/SDG")],
+        detect={
+            "electricity access": {
+                "svs": svs,
+                "cosine_scores": [0.9 - 0.05 * i for i in range(len(svs))],
+            }
         },
+        obs=obs,
         children={"Earth": {"Country": ["country/KEN"]}},
     )
-    result = asyncio.run(
+    return asyncio.run(
         resolve_variable(
             "electricity access",
             entities=[],
@@ -192,7 +196,7 @@ def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
-            llm=_CandidateBindLLM(chosen_shape_index=0, also_plausible=[1]),
+            llm=_CandidateBindLLM(chosen_shape_index=0, also_plausible=list(range(1, len(svs)))),
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -200,6 +204,23 @@ def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
             coverage=empty_coverage_snapshot(),
             options=EngineOptions(),
         )
+    )
+
+
+@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
+def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
+    monkeypatch: pytest.MonkeyPatch, unsettled: bool
+) -> None:
+    """With no place named, the twin diverted into `equivalent_readings` is read over its
+    own default scope. A countries fallback there holds for this request only."""
+    result = _placeless(
+        monkeypatch,
+        [_ELEC_WB, _ELEC_SDG],
+        {
+            f"{_ELEC_WB}|country/KEN": [_facet(provenance_id="source/WorldBank")],
+            f"{_ELEC_SDG}|country/KEN": [_facet(provenance_id="source/SDG")],
+        },
+        unsettled=frozenset({_ELEC_SDG} if unsettled else ()),
     )
 
     assert result.status == "definite", result

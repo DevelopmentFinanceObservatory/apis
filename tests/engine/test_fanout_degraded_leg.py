@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import re
 import time
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -15,13 +13,13 @@ import pytest
 
 from entity_resolution import Admission
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
-from search.engine import place as place_module
 from search.engine.binders import GeminiBinder
-from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
-from search.engine.place import consulted_scope, consulted_union, read_default_presence
+from search.engine.place import ConsultedPresence, read_default_presence
 from search.engine.region import RegionResult
+from search.engine.region.phase_place_materialise import _carry_stand_ins
 from search.engine.region.result import any_degraded
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -185,7 +183,7 @@ def test_a_decision_consulting_an_unsettled_scope_is_a_lost_read(
     )
 
     with recording_degraded_reads() as lost:
-        consulted_union(presence, [_SERVED])
+        ConsultedPresence(presence).consulted_union([_SERVED])
 
     assert lost.degraded is degraded
 
@@ -198,25 +196,62 @@ def test_a_later_read_that_settled_a_stat_var_leaves_the_answer_cacheable() -> N
     )
 
     with recording_degraded_reads() as lost:
-        consulted_scope(settled.merged(later), _SERVED)
+        ConsultedPresence(settled).merged(ConsultedPresence(later)).consulted_scope(_SERVED)
 
     assert lost.degraded is False
 
 
-def test_search_reads_a_presence_s_scopes_only_through_the_consulting_door() -> None:
-    """A scope read outside `place.consulted_scope` would shape an answer on a countries
-    fallback without keeping it out of the cache."""
-    door = Path(place_module.__file__)
-    direct = re.compile(r"\.scopes\b|\.scope\(|\bfacet_entities\(|\bunion_scope\(")
-    found = [
-        f"{path}:{number}"
-        for path in sorted(door.parents[1].rglob("*.py"))
-        if path != door
-        for number, line in enumerate(path.read_text().splitlines(), start=1)
-        if direct.search(line)
-    ]
+@pytest.mark.parametrize("order", [_BOTH, _BOTH[::-1]], ids=["served-first", "read-only-first"])
+@pytest.mark.parametrize(
+    ("served_places", "has_places", "degraded"),
+    [
+        pytest.param(("country/KEN",), True, False, id="a-settled-scope-answers"),
+        pytest.param((), True, True, id="the-unsettled-scope-answers"),
+    ],
+)
+def test_whether_any_scope_holds_a_place_reads_settled_scopes_first(
+    order: tuple[str, str], served_places: tuple[str, ...], has_places: bool, degraded: bool
+) -> None:
+    """`_SERVED` is settled, `_READ_ONLY` an unsettled countries fallback holding Kenya."""
+    kenya = DefaultPlaceScope(places=("country/KEN",), every_place=False)
+    presence = DefaultPresence(
+        countries=("country/KEN",),
+        scopes={
+            _SERVED: DefaultPlaceScope(places=served_places, every_place=False),
+            _READ_ONLY: kenya,
+        },
+        unsettled=frozenset({_READ_ONLY}),
+    )
 
-    assert found == []
+    with recording_degraded_reads() as lost:
+        answer = ConsultedPresence(presence).consulted_any_places(order)
+
+    assert (answer, lost.degraded) == (has_places, degraded)
+
+
+def test_a_cache_warm_over_an_unsettled_scope_notes_nothing() -> None:
+    scope = DefaultPlaceScope(places=("country/KEN",), every_place=False)
+    presence = DefaultPresence(
+        countries=("country/KEN",), scopes={_SERVED: scope}, unsettled=frozenset({_SERVED})
+    )
+
+    with recording_degraded_reads() as lost:
+        places = ConsultedPresence(presence).warming_places(_BOTH, own={_SERVED})
+
+    assert places == {_SERVED: ("country/KEN",)}
+    assert lost.degraded is False
+
+
+def test_a_stand_in_s_scopes_count_only_where_it_decided_the_answer() -> None:
+    standing, passed_over = (
+        DegradedReads(reads=["walk"], unsettled={_SERVED}),
+        DegradedReads(reads=["dates"], unsettled={_READ_ONLY}),
+    )
+
+    with recording_degraded_reads() as lost:
+        _carry_stand_ins({0: [standing], 1: [passed_over]}, standing=[0])
+
+    assert (lost.reads, lost.unsettled) == (["walk", "dates"], {_SERVED})
 
 
 def test_infra_error_fails_the_request_and_never_sets_degraded_leg():
