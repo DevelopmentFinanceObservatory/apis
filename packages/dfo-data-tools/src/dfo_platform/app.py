@@ -874,6 +874,8 @@ def _classify_and_envelope(
             )
             spec = None
         if spec is not None:
+            if spec.log is not None:
+                logger.log(spec.log_level, "%s: %s", surface.name, spec.log)
             if set(type(exc).__mro__).isdisjoint(surface.exception_types):
                 logger.warning(
                     "surface %r's classify() recognized %s, which is absent "

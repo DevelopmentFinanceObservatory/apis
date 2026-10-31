@@ -30,7 +30,7 @@ served definition's newest version in the root's default rendering, rebuilt when
 A rebuild too large for the call's budget (`doors.definition.inline_definition_deps`) goes to an
 operation, so a retry finds it, and the call answers `NewestPending`.
 `resolve_bare_spec` turns its refusals into the `FrameUnavailable` the presentation doors refuse,
-or `NewestNotReady` for a version a retry may find ready.
+and `NewestPending` into `NewestNotReady`.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
 that mounts that surface (`dfo_apis.app` passes the cell and the `RunningAnalyses` to both).
@@ -72,6 +72,7 @@ from datasets_api.exports import resolve_endpoint
 from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.trace import get_trace_id
+from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME, retry_after_headers
 
 __all__ = [
     "FRESHNESS_WINDOW",
@@ -213,11 +214,12 @@ class NewestNotReady(Exception):
 
 
 def newest_not_ready_spec(exc: NewestNotReady) -> ProblemSpec:
+    code, retryable = NEWEST_NOT_READY_OUTCOME
     return refused(
-        "service_unavailable",
+        code,
         detail=str(exc),
-        retryable=True,
-        headers={"Retry-After": str(math.ceil(exc.retry_after_s))},
+        retryable=retryable,
+        headers=retry_after_headers(exc.retry_after_s),
     )
 
 
@@ -225,9 +227,9 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
     """The frame a bare `spec_id` names (`NewestFrames.newest_of_spec`).
 
     Raises:
-        NewestNotReady: While the version builds, or for a retryable Datasets refusal that
-            names when to retry.
-        FrameUnavailable: `io` for any other retryable Datasets refusal; `quarantined` for a quarantined identity; `revoked` for a revoked
+        NewestNotReady: While the version builds.
+        FrameUnavailable: `io` for a retryable Datasets refusal, keeping its `Retry-After`;
+            `quarantined` for a quarantined identity; `revoked` for a revoked
             version; `unknown` (404) for any other refusal below status 500, the Datasets code
             and detail in its detail; and
             `unknown` when no Datasets surface is mounted beside this one, so no bare id
@@ -251,11 +253,6 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         if problem is None:
             raise
         retry_after = (problem.headers or {}).get("Retry-After")
-        if problem.retryable and retry_after is not None:
-            raise NewestNotReady(
-                f"the newest version of {spec_id} is not ready: {problem.detail}",
-                retry_after_s=float(retry_after),
-            ) from exc
         if problem.retryable:
             reason = "io"
         elif problem.code == "identity_quarantined":
@@ -271,6 +268,7 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             reason=reason,
             detail=f"the newest version of {spec_id} cannot be served: {problem.code}: "
             f"{problem.detail}",
+            retry_after_s=None if retry_after is None else float(retry_after),
         ) from exc
     if isinstance(resolved, NewestPending):
         raise NewestNotReady(

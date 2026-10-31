@@ -18,7 +18,6 @@ pair reads keep their permits.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -70,8 +69,6 @@ from presentation_api.routes import (
 from presentation_store import frame_reads_bounded_by
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
-logger = logging.getLogger(__name__)
-
 
 class FramesBackpressure(Exception):
     """Raised when the frames semaphore is full."""
@@ -98,26 +95,23 @@ def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, (SpecRegistryUnavailable, SpecRegistryStoreError)):
         # A frame load reads the registry to scope its revocation check, and fails closed.
-        logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
         return refused(
             "service_unavailable",
+            log=f"Spec registry read scoping a frame load's revocation check failed: {exc}",
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error(
-                "Datasets store call underlying a frame load failed with a permanent cause: %s",
-                exc,
-            )
             return refused(
                 "internal_error",
+                log=f"Datasets store call underlying a frame load failed with a permanent cause: {exc}",
                 detail="a frame store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
-        logger.error("Datasets store call underlying a frame load failed: %s", exc)
         return refused(
             "service_unavailable",
+            log=f"Datasets store call underlying a frame load failed: {exc}",
             detail="a frame store call failed; retry",
             retryable=retryable_for("service_unavailable"),
         )

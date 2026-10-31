@@ -170,7 +170,6 @@ from pydantic.experimental.missing_sentinel import MISSING
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from assembler.bind import role_columns, series_label
-from assembler.errors import BindingInvalid
 from assembler.frame_view import (
     compute_structural_view,
     continuation_known,
@@ -392,11 +391,19 @@ def _revoked(*, spec_id: str, content_version: str, reason: str | None) -> Frame
     return FrameUnavailable(reason="revoked", detail=detail)
 
 
-def _io_failure(*, action: str, digest: str, exc: Exception) -> FrameUnavailable:
+def _io_failure(
+    *, action: str, digest: str, exc: Exception, retry_after_s: float | None = None
+) -> FrameUnavailable:
     """Build a retryable I/O refusal that carries only the exception class."""
     return FrameUnavailable(
-        reason="io", detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}"
+        reason="io",
+        detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}",
+        retry_after_s=retry_after_s,
     )
+
+
+# How long a client waits before it retries a frame this instance had no memory to decode.
+_DECODE_RETRY_AFTER_S = 30
 
 
 def _is_frame_document(doc: object) -> TypeGuard[Mapping[str, object]]:
@@ -415,25 +422,30 @@ def _is_frame_document(doc: object) -> TypeGuard[Mapping[str, object]]:
 
 @contextmanager
 def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
-    """Refuse what the block raises while it builds a frame from the bytes `location` names.
+    """Refuse what the block raises while it decodes the bytes `location` names.
 
     The bytes are in memory and passed their digest check, so no failure to decode them is a
-    failed read. Bytes that do not validate and build as a frame refuse `missing_rendering`
-    whatever raised, and the refusal is logged, since a stored artifact that cannot decode is a
-    server fault. Only `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing about
-    the bytes, so it refuses the retryable `io`."""
+    failed read. The decoders' errors for malformed input refuse `missing_rendering`, logged with
+    the traceback, since a stored artifact that cannot decode is a server fault. Any other
+    exception is a defect, and reaches `internal_error`. `MemoryError`, which `pa.ArrowMemoryError`
+    subclasses, says nothing about the bytes, so it refuses the retryable `io` and names a wait
+    (`_DECODE_RETRY_AFTER_S`), since the next try needs memory this instance may not have."""
     try:
         yield
-    except (FrameUnavailable, BindingInvalid):
-        raise
     except MemoryError as exc:
-        raise _io_failure(action="decoding", digest=location.artifact_digest, exc=exc) from None
-    except Exception as exc:
+        raise _io_failure(
+            action="decoding",
+            digest=location.artifact_digest,
+            exc=exc,
+            retry_after_s=_DECODE_RETRY_AFTER_S,
+        ) from exc
+    except (ValueError, OSError, LookupError, RecursionError, pa.ArrowException) as exc:
         logger.error(
             "artifact_digest %r did not decode as a frame: %s: %s",
             location.artifact_digest,
             type(exc).__name__,
             exc,
+            exc_info=exc,
         )
         raise FrameUnavailable(
             reason="missing_rendering",
@@ -441,7 +453,7 @@ def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
                 f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
                 f"{type(exc).__name__}"
             ),
-        ) from None
+        ) from exc
 
 
 def _decode_frame(
@@ -916,12 +928,10 @@ class LiveFrameStore:
                 deadline=deadline,
             )
             continuation = frame_continuation(manifest=document)
-            with _decoding(canonical):
-                view = compute_structural_view(frame=doc, continuation=continuation)
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
-                structural_view=view,
+                structural_view=compute_structural_view(frame=doc, continuation=continuation),
                 continuation=continuation,
                 manifest=document,
                 labels=labels,
@@ -960,11 +970,11 @@ class LiveFrameStore:
                 # The late steps of a version published without them replace its stored
                 # continuations, in the write that fills its record's steps, and the backfill
                 # fills those of a version recorded before versions stored them.
-                with _decoding(canonical):
-                    view = compute_structural_view(frame=frame.frame, continuation=continuation)
                 frame = replace(
                     frame,
-                    structural_view=view,
+                    structural_view=compute_structural_view(
+                        frame=frame.frame, continuation=continuation
+                    ),
                     continuation=continuation,
                 )
             refreshing = not record_changed and self._words_stale(cached, now=now)

@@ -131,7 +131,6 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import logging
 import math
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -298,8 +297,6 @@ __all__ = [
     "build_shares_door",
     "classify_shares_exception",
 ]
-
-logger = logging.getLogger(__name__)
 
 MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
@@ -1178,13 +1175,6 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, ShareNotFound | ShareSlotEmpty):
         return refused("not_found", detail=str(exc), retryable=False)
-    if isinstance(exc, AllowanceExhausted):
-        return refused(
-            "allowance_exhausted",
-            detail=str(exc),
-            retryable=exc.retryable,
-            headers=exc.headers,
-        )
     if isinstance(exc, PinBudgetExhausted | OpenPinBudgetExhausted):
         return refused(
             "service_unavailable",
@@ -1192,18 +1182,12 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=True,
             headers=exc.headers,
         )
-    if isinstance(exc, CallerHeaderInvalid):
-        return refused(
-            "request_invalid",
-            detail=str(exc),
-            retryable=False,
-        )
     if isinstance(exc, CallerUnresolved):
         # A deployment fault a retry does not clear. This surface's `service_unavailable` is
         # retryable, so it answers `internal_error`.
-        logger.error("Shares door cannot name a caller: %s", exc)
         return refused(
             "internal_error",
+            log=f"Shares door cannot name a caller: {exc}",
             detail=str(exc),
             retryable=False,
         )

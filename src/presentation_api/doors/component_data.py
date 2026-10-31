@@ -13,7 +13,6 @@ under the public site origin, `DFO_PUBLIC_SITE_URL`, which the door reads in its
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
@@ -35,8 +34,6 @@ from presentation_api.routes import COMPONENT_DATA_PATH
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
 
-logger = logging.getLogger(__name__)
-
 COMPONENT_DATA_MEDIA_TYPES = (
     "application/zip",
     "text/csv",
@@ -54,9 +51,9 @@ def classify_component_data_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=retryable_for("not_found"),
         )
     if isinstance(exc, ComponentExportMismatch):
-        logger.error("Component data export refused: %s", exc)
         return refused(
             "internal_error",
+            log=f"Component data export refused: {exc}",
             detail="the frame rows behind this revision do not match the values it shows",
             retryable=retryable_for("internal_error"),
         )

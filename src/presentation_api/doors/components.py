@@ -154,9 +154,6 @@ from presentation_store import close_shared_pool as close_presentation_pool
 from presentation_store import shared_pool as presentation_shared_pool
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
-logger = logging.getLogger(__name__)
-
-
 # Carries the write token a create returned; a revise, or a create into an existing
 # composition, sends it back.
 WRITE_TOKEN_HEADER = "x-dfo-write-token"
@@ -314,31 +311,32 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, GeneratedIdCollision):
-        logger.warning("Fresh presentation %s ID collision. Retry safely", exc.subject_kind)
         return refused(
             "service_unavailable",
+            log=f"Fresh presentation {exc.subject_kind} ID collision. Retry safely",
+            log_level=logging.WARNING,
             detail=f"A generated presentation {exc.subject_kind} ID collided. Retry the request.",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, PresentationStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error("Presentation store call failed with a permanent cause: %s", exc)
             return refused(
                 "internal_error",
+                log=f"Presentation store call failed with a permanent cause: {exc}",
                 detail="a presentation store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
-        logger.error("Presentation store call failed: %s", exc)
         return refused(
             "service_unavailable",
+            log=f"Presentation store call failed: {exc}",
             detail="a presentation store call failed; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, (SpecRegistryUnavailable, SpecRegistryStoreError)):
         # A frame load reads the registry to scope its revocation check, and fails closed.
-        logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
         return refused(
             "service_unavailable",
+            log=f"Spec registry read scoping a frame load's revocation check failed: {exc}",
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
@@ -357,26 +355,23 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, CallerUnresolved):
         # A deployment fault a retry does not clear, so not the retryable service_unavailable.
-        logger.error("Components door cannot name a caller: %s", exc)
         return refused(
             "internal_error",
+            log=f"Components door cannot name a caller: {exc}",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error(
-                "Datasets store call underlying a frame load failed with a permanent cause: %s",
-                exc,
-            )
             return refused(
                 "internal_error",
+                log=f"Datasets store call underlying a frame load failed with a permanent cause: {exc}",
                 detail="a frame store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
-        logger.error("Datasets store call underlying a frame load failed: %s", exc)
         return refused(
             "service_unavailable",
+            log=f"Datasets store call underlying a frame load failed: {exc}",
             detail="a frame store call failed; retry",
             retryable=retryable_for("service_unavailable"),
         )

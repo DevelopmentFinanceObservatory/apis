@@ -22,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
+from dfo_frame_grammar.grammar import FrameError
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -809,8 +810,9 @@ def test_load_refuses_a_frame_of_another_schema():
 
 
 def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering():
-    """A stored frame's bytes can break anywhere, and whatever the decoders then raise is a
-    permanent refusal."""
+    """A stored frame's bytes can break anywhere. Bytes that do not decode are a permanent
+    refusal. Bytes that decode to a frame with an unreadable cell fail in
+    `compute_structural_view`, a defect that reaches `internal_error`."""
     data = canonical_frame_parquet(
         (Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows()),)
     )
@@ -824,6 +826,8 @@ def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering(
             store.load(frame_ref=frame_ref)
         except FrameUnavailable as refused:
             assert refused.reason == "missing_rendering"
+        except (FrameError, TypeError):
+            pass
 
 
 @pytest.mark.parametrize(
@@ -846,6 +850,32 @@ def test_load_refuses_io_when_decoding_runs_out_of_memory(
         _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
 
     assert excinfo.value.reason == "io"
+    assert excinfo.value.retry_after_s == frame_store._DECODE_RETRY_AFTER_S
+
+
+def test_a_decode_defect_is_no_frame_refusal(monkeypatch: pytest.MonkeyPatch):
+    def fail(_data: bytes) -> Never:
+        raise TypeError("exemplar")
+
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", fail)
+
+    with pytest.raises(TypeError):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+
+def test_a_structural_view_failure_is_no_frame_refusal(monkeypatch: pytest.MonkeyPatch):
+    """Only the decoders' failures name the bytes: a view that breaks on a decoded frame is a
+    defect."""
+
+    def fail(*, frame: object, continuation: object) -> Never:
+        raise ValueError("exemplar")
+
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "compute_structural_view", fail)
+
+    with pytest.raises(ValueError, match="exemplar"):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
 
 
 def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
@@ -853,11 +883,15 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
 ):
     snapshots, artifacts, frame_ref = _canonical_frame_version(b"not a parquet file")
 
-    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable) as excinfo:
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable):
         _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
 
-    assert "ArrowInvalid" in caplog.text
-    assert excinfo.value.detail.split("'")[1] in caplog.text
+    (record,) = caplog.records
+    (digest, cause, _) = record.args
+    ((location,),) = snapshots.locations.values()
+    assert digest == location.artifact_digest
+    assert cause == "ArrowInvalid"
+    assert record.exc_info[0] is pa.ArrowInvalid
 
 
 @pytest.mark.parametrize(

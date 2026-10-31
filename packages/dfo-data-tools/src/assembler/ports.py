@@ -196,9 +196,16 @@ FrameUnavailableReason = Literal[
 
 
 class FrameUnavailable(Exception):
-    def __init__(self, *, reason: FrameUnavailableReason, detail: str) -> None:
+    def __init__(
+        self,
+        *,
+        reason: FrameUnavailableReason,
+        detail: str,
+        retry_after_s: float | None = None,
+    ) -> None:
         self.reason = reason
         self.detail = detail
+        self.retry_after_s = retry_after_s
         super().__init__(detail)
 
 

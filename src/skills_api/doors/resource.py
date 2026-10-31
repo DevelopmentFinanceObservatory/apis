@@ -135,11 +135,13 @@ def build_resource_door() -> DoorContribution:
             SkillResourceNotFound,
             SkillsIndexNotBuilt,
         ),
-        exception_exemplars=(
-            SkillIdTooLong(SKILL_ID_MAX_LENGTH + 1),
-            ResourcePathTooLong(RESOURCE_PATH_MAX_LENGTH + 1),
-            SkillNotFound("exemplar-skill"),
-            SkillResourceNotFound("exemplar-skill", "references/exemplar.md"),
-            SkillsIndexNotBuilt(),
-        ),
+        endpoint_exemplars={
+            "skills.resource": (
+                SkillIdTooLong(SKILL_ID_MAX_LENGTH + 1),
+                ResourcePathTooLong(RESOURCE_PATH_MAX_LENGTH + 1),
+                SkillNotFound("exemplar-skill"),
+                SkillResourceNotFound("exemplar-skill", "references/exemplar.md"),
+                SkillsIndexNotBuilt(),
+            )
+        },
     )

@@ -46,6 +46,7 @@ from dfo_platform.doors import (
     check_endpoint_exemplars,
     classify_by_door,
     combine_classifiers,
+    endpoint_exemplars,
     flatten,
 )
 from graph_release.context import bound_served_release
@@ -197,14 +198,7 @@ def presentation_surface(
         codes=merge_catalogues(PRESENTATION_CODE_CATALOGUE, SHARE_CODE_CATALOGUE),
         classify=classify,
         exception_types=tuple(exc_type for door in doors for exc_type in door.exception_types),
-        exception_exemplars=tuple(
-            dict.fromkeys(
-                exemplar
-                for door in doors
-                for exemplars in door.endpoint_exemplars.values()
-                for exemplar in exemplars
-            )
-        ),
+        exception_exemplars=endpoint_exemplars(doors),
         lifespan=lifespan,
         registry_endpoints={
             key: endpoint for door in doors for key, endpoint in door.registry_endpoints.items()

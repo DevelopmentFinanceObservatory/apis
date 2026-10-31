@@ -351,13 +351,15 @@ def test_from_canonical_data_inverts_to_canonical_data_through_json(spec: Proble
 
 
 def test_every_problem_spec_field_survives_the_round_trip():
-    # A field added to `ProblemSpec` and left out of `to_canonical_data` fails here.
+    # A field added to `ProblemSpec` and left out of `to_canonical_data` fails here. The log line
+    # is the one exception: it stays out of the wire body and the canonical form.
     data = _EVERY_FIELD_SPEC.to_canonical_data()
 
-    assert set(data) == set(ProblemSpec._fields)
+    wire_fields = set(ProblemSpec._fields) - {"log", "log_level"}
+    assert set(data) == wire_fields
     assert all(
         getattr(_EVERY_FIELD_SPEC, field) != ProblemSpec._field_defaults[field]
-        for field in ProblemSpec._field_defaults
+        for field in wire_fields & set(ProblemSpec._field_defaults)
     )
 
 

@@ -64,9 +64,11 @@ def build_fetch_door() -> DoorContribution:
         registry_endpoints=route_registry_endpoints(router, "skills.fetch"),
         classify=classify_skill_lookup_exception,
         exception_types=(SkillIdTooLong, SkillNotFound, SkillsIndexNotBuilt),
-        exception_exemplars=(
-            SkillIdTooLong(SKILL_ID_MAX_LENGTH + 1),
-            SkillNotFound("exemplar-skill"),
-            SkillsIndexNotBuilt(),
-        ),
+        endpoint_exemplars={
+            "skills.fetch": (
+                SkillIdTooLong(SKILL_ID_MAX_LENGTH + 1),
+                SkillNotFound("exemplar-skill"),
+                SkillsIndexNotBuilt(),
+            )
+        },
     )

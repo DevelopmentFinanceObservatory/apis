@@ -5,7 +5,7 @@ any individual door.
 
 from __future__ import annotations
 
-import logging
+import math
 from typing import get_args
 
 from fastapi.exceptions import RequestValidationError
@@ -20,12 +20,12 @@ from presentation_api.codes import retryable_for
 __all__ = [
     "EXPIRED_FRAME_FIX",
     "FRAME_UNAVAILABLE_EXEMPLARS",
+    "NEWEST_NOT_READY_OUTCOME",
     "binding_invalid_spec",
     "frame_unavailable_spec",
     "request_validation_spec",
+    "retry_after_headers",
 ]
-
-logger = logging.getLogger(__name__)
 
 
 def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
@@ -84,8 +84,16 @@ if set(_FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
         f"FrameUnavailableReason {sorted(get_args(FrameUnavailableReason))}"
     )
 
-# The reasons that name a server fault.
-_LOGGED_REASONS: frozenset[str] = frozenset({"io", "recipe_unreadable"})
+# The reasons that name a fault to look into: every one that is no frame state, and a stored
+# artifact failing its digest. The frame store logs `missing_rendering` where bytes do not decode.
+_LOGGED_REASONS: frozenset[str] = frozenset(
+    reason
+    for reason, (code, _) in _FRAME_UNAVAILABLE_OUTCOME.items()
+    if code != "frame_unavailable"
+) | {"digest_mismatch"}
+
+# The code and retryability of a bare `spec_id` whose newest version is not ready.
+NEWEST_NOT_READY_OUTCOME: tuple[str, bool] = ("service_unavailable", True)
 
 # One exemplar of every reason, for each door whose routes load or pin a frame.
 FRAME_UNAVAILABLE_EXEMPLARS: tuple[FrameUnavailable, ...] = tuple(
@@ -106,10 +114,23 @@ def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
     with the reason as `cause.code`, so a client tells a frame it can rebuild from one taken
     down. An expired frame's detail ends with `EXPIRED_FRAME_FIX`."""
     code, retryable = _FRAME_UNAVAILABLE_OUTCOME[exc.reason]
-    if exc.reason in _LOGGED_REASONS:
-        logger.error("Frame refused for reason %s: %s", exc.reason, exc.detail)
     detail = f"{exc.detail}; {EXPIRED_FRAME_FIX}" if exc.reason == "expired" else exc.detail
-    return refused(code, detail=detail, retryable=retryable, cause=Cause(code=exc.reason))
+    return refused(
+        code,
+        detail=detail,
+        retryable=retryable,
+        cause=Cause(code=exc.reason),
+        headers=None if exc.retry_after_s is None else retry_after_headers(exc.retry_after_s),
+        log=(
+            f"Frame refused for reason {exc.reason}: {exc.detail}"
+            if exc.reason in _LOGGED_REASONS
+            else None
+        ),
+    )
+
+
+def retry_after_headers(seconds: float) -> dict[str, str]:
+    return {"Retry-After": str(math.ceil(seconds))}
 
 
 def request_validation_spec(exc: BaseException) -> ProblemSpec | None:

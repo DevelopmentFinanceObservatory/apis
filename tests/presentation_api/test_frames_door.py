@@ -484,7 +484,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
 
 
 @pytest.mark.parametrize(
-    ("answer", "status", "code", "retryable", "cause"),
+    ("answer", "status", "code", "retryable", "cause", "retry_after"),
     [
         pytest.param(
             NewestPending(retry_after_s=1.5),
@@ -492,6 +492,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             "service_unavailable",
             True,
             None,
+            True,
             id="building",
         ),
         pytest.param(
@@ -500,10 +501,17 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             "frame_unavailable",
             False,
             "unknown",
+            False,
             id="not-registered",
         ),
         pytest.param(
-            MintBackpressure(), 503, "service_unavailable", True, None, id="mint-backpressure"
+            MintBackpressure(),
+            503,
+            "service_unavailable",
+            True,
+            "io",
+            True,
+            id="mint-backpressure",
         ),
         pytest.param(
             DatasetsStoreUnavailable("exemplar"),
@@ -511,6 +519,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             "service_unavailable",
             True,
             "io",
+            False,
             id="store-outage",
         ),
         pytest.param(
@@ -519,6 +528,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             "frame_unavailable",
             False,
             "quarantined",
+            False,
             id="quarantined",
         ),
         pytest.param(
@@ -527,6 +537,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             "frame_unavailable",
             False,
             "revoked",
+            False,
             id="revoked",
         ),
         pytest.param(
@@ -535,6 +546,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             "frame_unavailable",
             False,
             "unknown",
+            False,
             id="code-analysis-does-not-map",
         ),
     ],
@@ -547,6 +559,7 @@ def test_a_bare_spec_id_that_cannot_be_served_answers_by_cause(
     code: str,
     retryable: bool,
     cause: str | None,
+    retry_after: bool,
 ):
     newest_specs.answer = answer  # ty: ignore[invalid-assignment]
 
@@ -556,7 +569,8 @@ def test_a_bare_spec_id_that_cannot_be_served_answers_by_cause(
     body = resp.json()
     assert (body["code"], body["retryable"]) == (code, retryable)
     assert (body.get("cause") or {}).get("code") == cause
-    if cause is None:
+    assert ("retry-after" in resp.headers) is retry_after
+    if retry_after:
         assert int(resp.headers["retry-after"]) >= 1
 
 

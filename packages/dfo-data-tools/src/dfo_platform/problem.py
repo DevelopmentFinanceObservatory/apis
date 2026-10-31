@@ -10,7 +10,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel, Field, TypeAdapter
 
@@ -220,6 +220,10 @@ class ProblemSpec(NamedTuple):
     count: int | None = None
     cap: int | None = None
     headers: Mapping[str, str] | None = None
+    # What the platform logs when it renders this refusal for a request, so a classifier stays
+    # pure. Neither reaches the wire or `to_canonical_data`.
+    log: str | None = None
+    log_level: int = logging.ERROR
 
     def to_canonical_data(self) -> dict[str, object]:
         """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes."""
@@ -267,15 +271,42 @@ _PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(ProblemSpec)
 BACKPRESSURE_HEADERS: Mapping[str, str] = MappingProxyType({"Retry-After": "1"})
 
 
-def refused(code: str, *, retryable: bool, **fields: Any) -> ProblemSpec:
+def refused(
+    code: str,
+    *,
+    retryable: bool,
+    detail: str | None = None,
+    pointer: str | None = None,
+    alternatives: list[Alternative] | None = None,
+    truncated: bool = False,
+    issues: list[ProblemIssue] | None = None,
+    cause: Cause | None = None,
+    constraint_id: str | None = None,
+    headers: Mapping[str, str] | None = None,
+    log: str | None = None,
+    log_level: int = logging.ERROR,
+) -> ProblemSpec:
     """`code`'s problem at the status the code registry gives it on the bound endpoint, so a
-    classifier cannot state one apart from the other. `fields` are the other `ProblemSpec`
-    members.
+    classifier cannot state one apart from the other.
 
     Raises:
         LookupError: The registry maps no one status for `code` there (`registered_status`).
     """
-    return ProblemSpec(registered_status(code), code, retryable, **fields)
+    return ProblemSpec(
+        status=registered_status(code),
+        code=code,
+        retryable=retryable,
+        detail=detail,
+        pointer=pointer,
+        alternatives=alternatives,
+        truncated=truncated,
+        issues=issues,
+        cause=cause,
+        constraint_id=constraint_id,
+        headers=headers,
+        log=log,
+        log_level=log_level,
+    )
 
 
 class Refusal(Exception):

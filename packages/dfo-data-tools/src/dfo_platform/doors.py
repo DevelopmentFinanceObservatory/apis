@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -122,27 +121,46 @@ def path_registry_endpoints(router: APIRouter, endpoints: Mapping[str, str]) -> 
     return keys
 
 
+def endpoint_exemplars(doors: Iterable[DoorContribution]) -> tuple[BaseException, ...]:
+    """Every exemplar `doors` declare by endpoint, each once."""
+    return tuple(
+        dict.fromkeys(
+            exemplar
+            for door in doors
+            for exemplars in door.endpoint_exemplars.values()
+            for exemplar in exemplars
+        )
+    )
+
+
 def check_endpoint_exemplars(
     doors: Iterable[DoorContribution],
     classify: Callable[[BaseException], ProblemSpec | None],
 ) -> None:
-    """Classify each door's `endpoint_exemplars` with their endpoint bound, as a request is, so
-    a refusal with no one registered status there fails at startup. Classifiers log what they
-    recognise, and an exemplar is no fault, so logging is off for the sweep.
+    """Refuse a surface whose doors do not prove their statuses: each door declares exemplars for
+    exactly the endpoints it binds, covers every exception type it declares, and keeps no
+    `exception_exemplars` beside them, and `classify` gives every exemplar a status with its
+    endpoint bound, as a request is. Classifiers are pure, so this logs nothing.
 
     Raises:
-        LookupError: The code registry maps no one status for a code on the endpoint whose
-            routes raise it, or `classify` does not recognise an exemplar.
+        LookupError: A door breaks one of those rules, or the code registry maps no one status
+            for a code on the endpoint whose routes raise it.
     """
-    previous = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
-    try:
-        for door in doors:
-            for endpoint, exemplars in door.endpoint_exemplars.items():
-                for exemplar in exemplars:
-                    with bound_registry_endpoint(endpoint):
-                        spec = classify(exemplar)
-                    if spec is None:
-                        raise LookupError(f"nothing classifies {exemplar!r} on {endpoint}")
-    finally:
-        logging.disable(previous)
+    for door in doors:
+        name = sorted(door.registry_endpoints.values()) or door.router.routes
+        if door.exception_exemplars:
+            raise LookupError(f"door {name} keeps exception_exemplars; use endpoint_exemplars")
+        if set(door.endpoint_exemplars) != set(door.registry_endpoints.values()):
+            raise LookupError(
+                f"door {name} declares exemplars for {sorted(door.endpoint_exemplars)}"
+            )
+        exemplars = endpoint_exemplars((door,))
+        for declared in door.exception_types:
+            if not any(isinstance(exemplar, declared) for exemplar in exemplars):
+                raise LookupError(f"door {name} has no exemplar of {declared.__qualname__}")
+        for endpoint, declared_exemplars in door.endpoint_exemplars.items():
+            for exemplar in declared_exemplars:
+                with bound_registry_endpoint(endpoint):
+                    spec = classify(exemplar)
+                if spec is None:
+                    raise LookupError(f"nothing classifies {exemplar!r} on {endpoint}")

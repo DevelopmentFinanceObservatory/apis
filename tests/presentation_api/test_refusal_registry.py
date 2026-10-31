@@ -16,13 +16,16 @@ from assembler.fakes import FakeReleaseRegistry
 from assembler.ports import FrameUnavailableReason
 from dfo_platform import codes
 from dfo_platform.codes import bound_registry_endpoint
-from dfo_platform.doors import DoorContribution, check_endpoint_exemplars
+from dfo_platform.doors import DoorContribution, check_endpoint_exemplars, combine_classifiers
 from presentation_api.app import presentation_surface
 from presentation_api.codes import _UNCHANGED_RETRY_MODES, CODE_RETRY_MODE
 from presentation_api.doors.components import classify_components_exception
 from presentation_api.refusals import frame_unavailable_spec
 from presentation_api.routes import RENDER_ENDPOINT, ROUTE_ENDPOINTS
 from tests.code_registry import problem_statuses, registered_endpoints, unbound_routes
+
+# The route of a real registry endpoint the exemplar contract tests bind or leave unbound.
+_ROUTE = next(iter(ROUTE_ENDPOINTS))
 
 # Routes that serve no registry endpoint: they refuse only with platform codes.
 _UNBOUND_PATHS = frozenset(
@@ -53,22 +56,6 @@ def test_each_presentation_endpoint_belongs_to_one_door(doors: tuple[DoorContrib
         endpoint for door in doors for endpoint in set(door.registry_endpoints.values())
     )
     assert [endpoint for endpoint, count in owners.items() if count > 1] == []
-
-
-def test_a_door_declares_exemplars_for_each_endpoint_and_every_type_it_raises(
-    doors: tuple[DoorContribution, ...],
-):
-    for door in doors:
-        assert set(door.endpoint_exemplars) == set(door.registry_endpoints.values())
-        exemplars = tuple(
-            exemplar for declared in door.endpoint_exemplars.values() for exemplar in declared
-        )
-        uncovered = [
-            declared.__qualname__
-            for declared in door.exception_types
-            if not any(isinstance(exemplar, declared) for exemplar in exemplars)
-        ]
-        assert uncovered == []
 
 
 def test_every_presentation_refusal_goes_out_at_its_registered_status(
@@ -103,42 +90,111 @@ def test_a_registry_that_drops_a_raised_code_fails_the_surface_build(
         presentation_surface(release_registry=release_registry)
 
 
+def _write_refused() -> WriteRefused:
+    return WriteRefused(subject_kind="component", subject_id="c", detail="d", fix="f")
+
+
 def test_a_refusal_its_endpoint_leaves_unmapped_fails_at_startup():
     door = DoorContribution(
         router=APIRouter(),
         classify=lambda _exc: None,
-        endpoint_exemplars={
-            RENDER_ENDPOINT: (
-                WriteRefused(subject_kind="component", subject_id="c", detail="d", fix="f"),
-            )
-        },
+        registry_endpoints={("GET", "/exemplar"): RENDER_ENDPOINT},
+        endpoint_exemplars={RENDER_ENDPOINT: (_write_refused(),)},
     )
 
-    with pytest.raises(LookupError):
+    with pytest.raises(LookupError, match=RENDER_ENDPOINT):
         check_endpoint_exemplars((door,), classify_components_exception)
 
-    assert logging.root.manager.disable == logging.NOTSET
 
-
-def test_an_exemplar_nothing_classifies_fails_at_startup():
-    door = DoorContribution(
-        router=APIRouter(),
-        classify=lambda _exc: None,
-        endpoint_exemplars={RENDER_ENDPOINT: (ValueError("exemplar"),)},
-    )
-
-    with pytest.raises(LookupError):
+@pytest.mark.parametrize(
+    ("door", "rule"),
+    [
+        pytest.param(
+            DoorContribution(
+                router=APIRouter(),
+                classify=classify_components_exception,
+                registry_endpoints={("GET", "/exemplar"): RENDER_ENDPOINT},
+                endpoint_exemplars={RENDER_ENDPOINT: (ValueError("exemplar"),)},
+            ),
+            "nothing classifies",
+            id="an-exemplar-nothing-classifies",
+        ),
+        pytest.param(
+            DoorContribution(
+                router=APIRouter(),
+                classify=classify_components_exception,
+                exception_exemplars=(_write_refused(),),
+            ),
+            "keeps exception_exemplars",
+            id="exemplars-tied-to-no-endpoint",
+        ),
+        pytest.param(
+            DoorContribution(
+                router=APIRouter(),
+                classify=classify_components_exception,
+                registry_endpoints={("GET", "/exemplar"): ROUTE_ENDPOINTS[_ROUTE]},
+            ),
+            "declares exemplars",
+            id="an-endpoint-without-exemplars",
+        ),
+        pytest.param(
+            DoorContribution(
+                router=APIRouter(),
+                classify=classify_components_exception,
+                endpoint_exemplars={ROUTE_ENDPOINTS[_ROUTE]: (_write_refused(),)},
+            ),
+            "declares exemplars",
+            id="exemplars-for-an-unbound-endpoint",
+        ),
+        pytest.param(
+            DoorContribution(
+                router=APIRouter(),
+                classify=classify_components_exception,
+                exception_types=(WriteRefused, ValueError),
+                registry_endpoints={("GET", "/exemplar"): ROUTE_ENDPOINTS[_ROUTE]},
+                endpoint_exemplars={ROUTE_ENDPOINTS[_ROUTE]: (_write_refused(),)},
+            ),
+            "has no exemplar",
+            id="a-declared-type-without-an-exemplar",
+        ),
+    ],
+)
+def test_a_door_that_breaks_the_exemplar_contract_fails_at_startup(
+    door: DoorContribution, rule: str
+):
+    with pytest.raises(LookupError, match=rule):
         check_endpoint_exemplars((door,), door.classify)
+
+
+def test_door_classifiers_leave_logging_to_the_platform(
+    door_refusals: list[tuple[str, BaseException]],
+    doors: tuple[DoorContribution, ...],
+    caplog: pytest.LogCaptureFixture,
+):
+    """The startup sweep runs every classifier, so one that logs would log at every boot."""
+    classify = combine_classifiers(*(door.classify for door in doors))
+    with caplog.at_level(logging.DEBUG):
+        for endpoint, exemplar in door_refusals:
+            with bound_registry_endpoint(endpoint):
+                classify(exemplar)
+
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize(
     ("reason", "logged"),
-    [("io", True), ("recipe_unreadable", True), ("recipe_pending", False), ("expired", False)],
+    [
+        ("io", True),
+        ("recipe_unreadable", True),
+        ("digest_mismatch", True),
+        ("recipe_pending", False),
+        ("expired", False),
+    ],
 )
-def test_a_frame_refusal_that_names_a_server_fault_logs_an_error(
-    caplog: pytest.LogCaptureFixture, reason: FrameUnavailableReason, logged: bool
+def test_a_frame_refusal_that_names_a_server_fault_carries_a_log_line(
+    reason: FrameUnavailableReason, logged: bool
 ):
-    with bound_registry_endpoint("presentation.shares"), caplog.at_level(logging.ERROR):
-        frame_unavailable_spec(FrameUnavailable(reason=reason, detail="exemplar"))
+    with bound_registry_endpoint("presentation.shares"):
+        spec = frame_unavailable_spec(FrameUnavailable(reason=reason, detail="exemplar"))
 
-    assert bool(caplog.records) is logged
+    assert (spec.log is not None) is logged

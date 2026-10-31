@@ -63,5 +63,5 @@ def build_list_door() -> DoorContribution:
         registry_endpoints=route_registry_endpoints(router, "skills.list"),
         classify=classify_list_exception,
         exception_types=(SkillsIndexNotBuilt,),
-        exception_exemplars=(SkillsIndexNotBuilt(),),
+        endpoint_exemplars={"skills.list": (SkillsIndexNotBuilt(),)},
     )

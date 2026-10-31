@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import APIRouter, Request
 from fastapi.testclient import TestClient
 
-from dfo_platform import ProblemSpec, codes
+from dfo_platform import ProblemSpec, codes, refused
 from dfo_platform.app import Surface, SurfaceConfigurationError, create_app
 from dfo_platform.codes import bound_registry_endpoint, registered_status
 from dfo_platform.doors import path_registry_endpoints
@@ -64,7 +66,7 @@ def _client(**overrides: object) -> TestClient:
         router=router,
         capability_version="v-t",
         codes={},
-        classify=classify_refusal,
+        classify=overrides.get("classify", classify_refusal),
         exception_types=(_Unsupported,),
         middleware=(_admit,),
         registry_endpoints=overrides.get(
@@ -94,6 +96,19 @@ def test_a_refusal_renders_at_the_status_of_its_routes_endpoint(path: str, statu
     response = _client().get(path)
 
     assert response.status_code == status, response.text
+
+
+def test_a_refused_log_line_is_logged_on_the_request_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def classify(exc: BaseException) -> ProblemSpec | None:
+        return refused(_CODE, retryable=False, log="exemplar", log_level=logging.WARNING)
+
+    with caplog.at_level(logging.WARNING):
+        _client(classify=classify).get("/api/t/a")
+
+    (record,) = [record for record in caplog.records if record.name == "dfo_platform.app"]
+    assert (record.levelno, record.args) == (logging.WARNING, ("t", "exemplar"))
 
 
 def test_a_path_binding_covers_every_method_and_refuses_an_unrouted_path() -> None:

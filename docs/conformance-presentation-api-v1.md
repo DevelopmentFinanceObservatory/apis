@@ -110,7 +110,7 @@ alone.
 
 ### FrameUnavailable outcome by reason
 
-`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) names the code and retryability of each reason in `assembler.ports.FrameUnavailableReason`, and importing the module fails if the two differ, and a bare `spec_id` whose newest version is not ready refuses `service_unavailable` with `Retry-After` and no `cause`. HTTP is the status the code registry gives the code on the bound endpoint: this table shows the write, read and share routes, and on a render route `frame_unavailable` answers 409. `cause.code` carries the reason on every code. `io` is a failure to obtain a frame's bytes or the memory to decode them. Stored bytes that pass their digest and do not validate and build as a frame refuse `missing_rendering`, and the store logs an error naming the digest and the cause. `recipe_pending` and `recipe_unreadable` refuse a pin, so only the share routes raise them.
+`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) names the code and retryability of each reason in `assembler.ports.FrameUnavailableReason`, and importing the module fails if the two differ, and a bare `spec_id` whose newest version is still building refuses `service_unavailable` with `Retry-After` and no `cause`. HTTP is the status the code registry gives the code on the bound endpoint: this table shows the write, read and share routes, and on a render route `frame_unavailable` answers 409. `cause.code` carries the reason on every code. `io` is a failure to obtain a frame's bytes or the memory to decode them, and it carries `Retry-After` when the memory ran out or the Datasets refusal behind it named a wait. Stored bytes that pass their digest and do not validate and build as a frame refuse `missing_rendering`, and the store logs an error naming the digest and the cause. Any other failure while decoding, and any failure computing a decoded frame's structural view, reaches `internal_error`. The platform logs each frame refusal whose code is not `frame_unavailable`, and `digest_mismatch`, as an error. `recipe_pending` and `recipe_unreadable` refuse a pin, so only the share routes raise them.
 
 | Reason            | Code                | HTTP | retryable |
 | ----------------- | ------------------- | ---- | --------- |
@@ -151,13 +151,18 @@ restates `validation_problem`'s, and `classify_live_refresh_exception` calls `re
 The platform's own defaults (`dfo_platform.refusal`), such as `timeout` and an unclassified
 `internal_error`, keep their statuses. Each door declares `endpoint_exemplars`, an exemplar of
 every refusal each endpoint's routes raise, and `presentation_surface` classifies them with the
-endpoint bound (`dfo_platform.doors.check_endpoint_exemplars`), so a pair the registry leaves
-unmapped fails startup. `compute_presentation_capability_version` hashes the status of each code
-on each `presentation.*` endpoint, `ROUTE_ENDPOINTS`, and the render routes' replay rule.
+endpoint bound (`dfo_platform.doors.check_endpoint_exemplars`), so startup fails on a pair the
+registry leaves unmapped, a door whose exemplars do not name exactly the endpoints it binds, and
+a declared exception type with no exemplar. Classifiers are pure: a refusal that wants a log line
+names it (`ProblemSpec.log`), and the platform logs it on the request path, so the startup sweep
+logs nothing. `compute_presentation_capability_version` hashes the status of each code on each
+`presentation.*` endpoint, `ROUTE_ENDPOINTS`, the render routes' replay rule, and the outcomes of
+frame refusals and of a bare `spec_id` still building.
 `tests/presentation_api/test_refusal_registry.py` asserts that every route but the release and
-meta routes is bound, that one door owns each endpoint, that every declared exception type has an
-exemplar, and that each goes out at the one status the registry gives its code there.
+meta routes is bound, that one door owns each endpoint, and that each exemplar goes out at the
+one status the registry gives its code there.
 
-The Skills surface reads its classifiers' statuses the same way. The Search and Graph surfaces bind
+The Skills surface reads its classifiers' statuses the same way and runs the same startup check.
+The Search and Graph surfaces bind
 their routes (`Surface.registry_endpoints`) and still state literal statuses in their classifiers,
 which their refusal sweeps check against the registry.

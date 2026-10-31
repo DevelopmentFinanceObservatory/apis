@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from contextvars import copy_context
 
 from assembler.catalogue import CatalogueRelease
 from presentation_api import version
@@ -125,6 +126,27 @@ def test_frame_unavailable_outcome_change_moves_the_token(release: CatalogueRele
 
     perturbed = version.compute_presentation_capability_version(
         release=release, frame_unavailable_outcome=mutated_outcome
+    )
+
+    assert perturbed != baseline
+
+
+def test_the_hashed_refusal_exemplar_renders_a_cause():
+    exemplars = copy_context().run(
+        version._render_refusal_exemplars,
+        version.PRESENTATION_CODE_CATALOGUE,
+        version.CODE_RETRY_MODE,
+    )
+
+    assert "cause" in next(iter(exemplars.values()))
+
+
+def test_bare_spec_outcome_change_moves_the_token(release: CatalogueRelease):
+    baseline = version.compute_presentation_capability_version(release=release)
+    code, retryable = version.NEWEST_NOT_READY_OUTCOME
+
+    perturbed = version.compute_presentation_capability_version(
+        release=release, newest_not_ready_outcome=(code, not retryable)
     )
 
     assert perturbed != baseline
