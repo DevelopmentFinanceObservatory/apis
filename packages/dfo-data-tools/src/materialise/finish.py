@@ -474,14 +474,14 @@ def _build_warnings(
         out_of_window = () if absent_reads_zero else outcome.out_of_window_members
         unserved_members = outcome.unserved_members
         member_count = len(outcome.member_observation_counts)
-    if (
-        countries_fallback
-        or off_cadence
-        or out_of_window
-        or unserved_members
-        or coverage_below_scope(
+    if writes_coverage_below_scope(
+        below_scope=coverage_below_scope(
             outcome.coverage, applied_window=outcome.applied_window, unserved=unserved
-        )
+        ),
+        countries_fallback=countries_fallback,
+        off_cadence=off_cadence,
+        out_of_window=out_of_window,
+        unserved_members=unserved_members,
     ):
         warnings.append(
             _coverage_below_scope_warning(
@@ -510,6 +510,23 @@ def _build_warnings(
     return tuple(warnings)
 
 
+def writes_coverage_below_scope(
+    *,
+    below_scope: bool,
+    countries_fallback: bool,
+    off_cadence: Sequence[str],
+    out_of_window: Sequence[str],
+    unserved_members: Sequence[str],
+) -> bool:
+    """Whether a mint writes `coverage_below_scope`: the window was clamped or a bound entity
+    went unserved (`below_scope`, `window.coverage_below_scope`), a request binding no place
+    was served the countries with data, or a group left members out. `_build_warnings` and
+    the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
+    return (
+        below_scope or countries_fallback or bool(off_cadence or out_of_window or unserved_members)
+    )
+
+
 # Warnings use a local `TypedDict` because no shared warning model exists.
 # Refusal issues use the shared pydantic model.
 def _warning(code: str) -> MaterialisationWarning:
@@ -535,11 +552,19 @@ def _empty_result_warning(
 
 # Maximum refs a warning's counted field carries. A conversion's left-out entities keep the
 # ten the warnings named in their message, `_MAX_TRACE_EXAMPLES`.
-_MAX_COUNTED_REFS = 5
+MAX_COUNTED_REFS = 5
 
 # Entities are bare dcids; a warning's counted field carries them as `dcid:` refs, as it
 # carries a group's members.
 _DCID_REF_PREFIX = "dcid:"
+
+
+# The sentence of `coverage_below_scope` saying a request binding no place was served the
+# countries with data.
+COUNTRIES_FALLBACK_SENTENCE = (
+    "No place was named, so the answer covers the countries with data, because the full list "
+    "of places with data was too large or unavailable."
+)
 
 
 def _clamped_years(
@@ -620,10 +645,7 @@ def _coverage_below_scope_warning(
     ):
         message = f"{message} {sentence}"
     if countries_fallback:
-        message = (
-            f"{message} No place was named, so the answer covers the countries with data, "
-            "because the full list of places with data was too large or unavailable."
-        )
+        message = f"{message} {COUNTRIES_FALLBACK_SENTENCE}"
     warning: MaterialisationWarning = {
         "code": "coverage_below_scope",
         "severity": "warn",
@@ -695,11 +717,11 @@ def member_fields(
     return fields
 
 
-def _counted(refs: Sequence[str], *, limit: int = _MAX_COUNTED_REFS) -> CountedRefs:
+def _counted(refs: Sequence[str], *, limit: int = MAX_COUNTED_REFS) -> CountedRefs:
     return {"count": len(refs), "refs": list(refs[:limit])}
 
 
-def _counted_entities(entities: Iterable[str], *, limit: int = _MAX_COUNTED_REFS) -> CountedRefs:
+def _counted_entities(entities: Iterable[str], *, limit: int = MAX_COUNTED_REFS) -> CountedRefs:
     """The distinct bare `entities`, sorted, as `dcid:` refs, the first `limit` of them
     carried (`_counted`)."""
     return _counted(

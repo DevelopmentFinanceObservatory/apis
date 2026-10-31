@@ -86,7 +86,7 @@ def _run(live_store: LiveDatasetStore, rows) -> int:
 
 
 def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(live_store):
-    """The selection's pattern finds the old sentence in Postgres and the control clause the
+    """The selection's pattern finds the old sentence in Postgres and the new-format clause the
     split rows. The update rewrites a row as read, leaves a row changed after the read, and a
     second selection finds only the row it left."""
     suffix = uuid4().hex
@@ -106,13 +106,13 @@ def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(
         _insert(live_store, _row(split_warning, zero=[_OUT], subject_id=split))
         ours = {rewritten, changed, split}
 
-        assert {row.subject_id for row in select_rows(live_store, control=False)} & ours == {
+        assert {row.subject_id for row in select_rows(live_store, new_format=False)} & ours == {
             rewritten,
             changed,
         }
-        assert {row.subject_id for row in select_rows(live_store, control=True)} & ours == ours
+        assert {row.subject_id for row in select_rows(live_store, new_format=True)} & ours == ours
 
-        rows = [row for row in select_rows(live_store, control=False) if row.subject_id in ours]
+        rows = [row for row in select_rows(live_store, new_format=False) if row.subject_id in ours]
         concurrent = [{**_warning([_IN]), "message": f"{_warning([_IN])['message']} Again."}]
         with live_store.transaction() as tx:
             tx.execute(
@@ -128,7 +128,7 @@ def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(
         assert written["off_cadence_members"] == {"count": 1, "refs": ["dcid:Var_In"]}
         assert written["out_of_window_members"] == {"count": 1, "refs": ["dcid:Var_Out"]}
         assert _warnings(live_store, changed) == concurrent
-        assert {row.subject_id for row in select_rows(live_store, control=False)} & ours == {
+        assert {row.subject_id for row in select_rows(live_store, new_format=False)} & ours == {
             changed
         }
     finally:

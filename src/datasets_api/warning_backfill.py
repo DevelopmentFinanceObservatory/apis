@@ -20,41 +20,51 @@ trace records with an `observation_count` of 0. The task probes those members' f
 mint did (`facets.probe_collection_candidates`, under the definition's read scope), each
 request carrying the dataset the trace's provenance selection elected when the code index
 resolves the definition (`facets.dataset_candidates`), and rebuilds the mint's selections
-from `trace.facets` and `trace.continuations` (`FacetSelection.of_trace_entry`) and its
-window, an open end closed at the year the row was recorded. The K members left out are the
-named ones and, for the rest, the zero-count members after the last named one in dcid order.
-Each is classified as the mint classifies it: off cadence, out of the window, or, when it
-holds no facet of the elected dataset at all, out of the window, which a member the graph no
-longer holds is (`gone`). Every zero-count member the classifier calls unserved is named
-under `unserved_members`, as a mint names each, whether or not it is one of the K. The
-out-of-window members are dropped when the group reads an absent member as zero
-(`generation.reads_absent_as_zero`), as a mint drops them. A warning whose member sentences
-all drop keeps its other sentences (`emptied`); one left with the catalogue detail alone,
-whose trace records no window clamp, is dropped (`dropped`), since a mint would not write it.
+from `trace.facets` and `trace.continuations` as every trace reader reads them
+(`continued_series.continued_series_of_trace`) and its window, an open end closed at the year
+the row was recorded. Each zero-count member is classified as the mint classifies it
+(`group_facets.classify_uncounted`). The K members left out are the named ones and, for the
+rest, the zero-count members after the last named one in dcid order, those with a jointly
+matching facet first, since the old sentence named only such members. Each of the K is off
+cadence, out of the window, or, when it holds no facet of the elected dataset at all, out of
+the window, which a member the graph no longer holds is (`gone`). Every zero-count member the
+classifier calls unserved is named under `unserved_members`, as a mint names each, whether or
+not it is one of the K. The out-of-window members are dropped when the group reads an absent
+member as zero (`generation.reads_absent_as_zero`), as a mint drops them. A warning whose
+member sentences all drop keeps its other sentences (`emptied`), and is dropped when a mint
+would not write it (`finish.writes_coverage_below_scope`, `dropped`).
 
 A row is refused for good (`permanent`) when it cannot be rewritten from what it stores: no
 definition or trace, a named member the trace says served observations, fewer zero-count
 members after the last named one than K counts, a body and column holding different warnings
 (`mismatched`), a composite, an identity the adapter refuses, a probe over its pair ceiling
-or refusing its requests, a dataset the code index disagrees with, or a continuation the
-trace cannot state. The last is a range window whose trace names no continuation on the
-`measurementMethod` axis while a zero-count member holds a facet that only a continuing
-method could admit: the trace leaves out a method that served no row, so the selection
-cannot be rebuilt. A permanent refusal follows from the stored row and this image alone, so
-every run refuses it again; it is reported on every run and sets no exit code. A graph or
-SDMX read that fails, a UN read recorded as failed beside ours
+or refusing its requests, a graph or SDMX read answering 4xx or refusing its query, a dataset
+the code index disagrees with, any failure the probe does not document, or a continuation the
+trace cannot state. The last is a range window with an end year whose trace names no
+continuation of a selected method that is not estimated, while a zero-count member holds an
+estimated facet matching every other selection (`facets.continuation`): the trace leaves out
+a continuing method that served no row, so the selection cannot be rebuilt. A permanent
+refusal follows from the stored row, the graph's answer and this image, so every run refuses
+it again; it is reported on every run and sets no exit code. A graph or SDMX read failing in
+transport, timing out or answering 5xx, a UN read recorded as failed beside ours
 (`origin_catalogue.UnBlockedPlaces.failures`), or a member whose default place scope is not
 settled leaves the row for the next run (`transient`). The places the UN front door refuses do
-not: it refused them at the mint too. A store outage (`clears_on_retry`) stops the run, and
-the rows not yet tried count as `remaining`. A probe, or its failure, is kept for the run,
-keyed by the subject and its zero-count members, so the versions of one definition share it.
-Each row is written in a transaction of its own, and the update holds the row to the warnings
-it read in both the column and the body, so a row changed meanwhile is left (`conflicts`).
+not: it refused them at the mint too. An update the store fails as an outage does
+(`clears_on_retry`) stops the run, and the rows not yet tried count as `remaining`.
+
+Rows come by subject, and a probe, or its failure, is kept until the subject changes, keyed
+by its zero-count members, the mint's window and the provenance the selections dispatch, so
+the versions of one definition probe once. Each row is written in a transaction of its own,
+and the update holds the row to the warnings it read in both the column and the body, so a
+row changed meanwhile is left (`conflicts`).
 
 With `dry_run` it does all but the update, writes one `datasets_warning_backfill_row` line per
-row with K and its split, and classifies the rows a mint already split the same way, comparing
-its split with the stored one (`control`). That measures how far the graph has moved since
-those mints. A control row sets no exit code.
+row with K and its split, and classifies the rows already in the new format, with member
+fields and no old sentence, the same way, comparing its split with the stored one
+(`new_format`). That measures how far the graph has moved since those rows were written. A
+row in the new format sets no exit code. A row this task rewrote is in the new format, so a
+dry run after a real one counts it under `new_format_rows`; the real run's `rewritten` counts
+the rows it rewrote.
 """
 
 from __future__ import annotations
@@ -86,8 +96,9 @@ from datasets_api.codes_materialise import CompositeUnservable, CurrencyRoleUnde
 from datasets_api.manifest import warning_model
 from datasets_api.operation_store import Clock
 from datasets_api.shape import StatVarShape
-from dc_sdmx import SdmxClientError
+from dc_sdmx import SdmxCapExceededError, SdmxClientError, SdmxHttpError, SdmxQueryError
 from materialise.codes import MATERIALISE_CODE_CATALOGUE, MemberFields
+from materialise.continued_series import continued_series_of_trace
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
     DatasetDisagreementError,
@@ -100,10 +111,17 @@ from materialise.facets import (
     facet_axis_value,
     probe_collection_candidates,
 )
-from materialise.finish import member_fields, member_sentences
+from materialise.finish import (
+    COUNTRIES_FALLBACK_SENTENCE,
+    MAX_COUNTED_REFS,
+    member_fields,
+    member_sentences,
+    writes_coverage_below_scope,
+)
 from materialise.generation import dispatched_provenances, reads_absent_as_zero
 from materialise.graph import Facet, GraphReader, GraphReadError
 from materialise.group_facets import UncountedKind, classify_uncounted
+from materialise.method_status import status_of
 from materialise.pipeline import MaterialisationRequest
 from materialise.place_scope import AvailabilityReader
 from materialise.window import RequestedWindow
@@ -122,8 +140,8 @@ _DETAIL = MATERIALISE_CODE_CATALOGUE[MEMBER_SENTENCE_CODE][1]
 
 @dataclass(frozen=True)
 class WarningRow:
-    """One version row holding a warning to rewrite or, for the control, one a mint split, as
-    stored: its `definition` and `trace` are read when the row is handled."""
+    """One version row holding a warning to rewrite or, for a dry run, one in the new format,
+    as stored: its `definition` and `trace` are read when the row is handled."""
 
     subject_id: str
     content_version: str
@@ -135,9 +153,10 @@ class WarningRow:
     body_warnings: object
 
 
-def select_rows(store: DatasetStore, *, control: bool) -> list[WarningRow]:
+def select_rows(store: DatasetStore, *, new_format: bool) -> list[WarningRow]:
     """The version rows holding a `coverage_below_scope` warning with the old member sentence,
-    oldest first, and with `control` those holding one a mint split into member fields."""
+    and with `new_format` those holding one in the new format, with member fields, by subject
+    and then oldest first, so a run keeps the probes of one subject at a time (`Readers.probes`)."""
     with store.transaction() as tx:
         rows = tx.fetch_all(
             "SELECT subject_id, content_version, recorded_at, definition, trace, warnings, "
@@ -148,8 +167,8 @@ def select_rows(store: DatasetStore, *, control: bool) -> list[WarningRow]:
             "WHERE w ->> 'code' = %s AND (w ->> 'message' ~ %s OR (%s AND ("
             "w -> 'off_cadence_members' IS NOT NULL "
             "OR w -> 'out_of_window_members' IS NOT NULL)))) "
-            "ORDER BY recorded_at, subject_id, content_version",
-            (MEMBER_SENTENCE_CODE, MEMBER_SENTENCE, control),
+            "ORDER BY subject_id, recorded_at, content_version",
+            (MEMBER_SENTENCE_CODE, MEMBER_SENTENCE, new_format),
         )
     return [
         WarningRow(
@@ -175,6 +194,10 @@ class _Mismatched(_Refused):
 
 class _Unread(Exception):
     """The graph read the rewrite needs did not complete. A later run can get past it."""
+
+
+class _Outage(Exception):
+    """The store failed an update in a way a later run can get past. The run stops."""
 
 
 @dataclass(frozen=True)
@@ -226,7 +249,8 @@ class Readers:
     availability: AvailabilityReader
     code_index: CodeIndex
     coverage: CoverageIndex | None
-    probes: dict[tuple[str, tuple[str, ...]], Mapping[str, _Member] | Exception] = field(
+    # The current subject's probes, by `_members`'s key.
+    probes: dict[tuple[object, ...], Mapping[str, _Member] | Exception] = field(
         default_factory=dict
     )
     probe_calls: int = 0
@@ -243,9 +267,9 @@ class _Counts:
     gone: int = 0
     emptied: int = 0
     dropped: int = 0
-    control_rows: int = 0
-    control_agreed: int = 0
-    control_failed: int = 0
+    new_format_rows: int = 0
+    new_format_agreed: int = 0
+    new_format_failed: int = 0
 
 
 def run_backfill_warnings(
@@ -263,30 +287,42 @@ def run_backfill_warnings(
     later run can still rewrite: those that failed transiently, lost the compare or were left.
 
     Each row that fails gets one `datasets_warning_backfill_failed` line, at `ERROR` saying
-    whether it was `transient`, and a control row's at `WARNING`. A failure `clears_on_retry`
-    calls a store outage stops the run."""
+    whether it was `transient`, and a new-format row's at `WARNING`. An update the store fails
+    and `clears_on_retry` calls an outage stops the run; any other failure is the row's own."""
     counts = _Counts()
+    subject = None
     for position, row in enumerate(rows):
         if now() >= deadline:
             counts.remaining = len(rows) - position
             break
+        if row.subject_id != subject:
+            # Rows come by subject, so no later row reads an earlier subject's probes.
+            readers.probes.clear()
+            subject = row.subject_id
         task = any(_member_sentence(warning) for warning in row.warnings)
         outage = False
         try:
             if task:
-                _backfill_row(row, store=store, readers=readers, dry_run=dry_run, counts=counts)
+                _backfill_row(
+                    row,
+                    store=store,
+                    readers=readers,
+                    dry_run=dry_run,
+                    counts=counts,
+                    clears_on_retry=clears_on_retry,
+                )
             else:
-                counts.control_rows += 1
-                counts.control_agreed += _control_row(row, readers=readers)
+                counts.new_format_rows += 1
+                counts.new_format_agreed += _new_format_row(row, readers=readers)
         except Exception as exc:
             # One row that fails is left as it is; the run carries on with the others unless
             # the store is out.
-            outage = not isinstance(exc, _Refused | _Unread) and clears_on_retry(exc)
+            outage = isinstance(exc, _Outage)
             transient = outage or isinstance(exc, _Unread)
             if outage:
                 counts.remaining = len(rows) - position
             elif not task:
-                counts.control_failed += 1
+                counts.new_format_failed += 1
             elif transient:
                 counts.transient += 1
             else:
@@ -294,11 +330,11 @@ def run_backfill_warnings(
                 counts.mismatched += isinstance(exc, _Mismatched)
             emit(
                 "datasets_warning_backfill_failed",
-                # A control row measures the graph and leaves the exit code alone.
+                # A new-format row measures the graph and leaves the exit code alone.
                 severity="ERROR" if task or outage else "WARNING",
                 subject_id=row.subject_id,
                 content_version=row.content_version,
-                control=not task,
+                new_format=not task,
                 transient=transient,
                 error=f"{type(exc).__name__}: {exc}",
                 traceback=traceback.format_exc(),
@@ -334,7 +370,13 @@ def _member_sentence(warning: Mapping[str, object]) -> re.Match[str] | None:
 
 
 def _backfill_row(
-    row: WarningRow, *, store: DatasetStore, readers: Readers, dry_run: bool, counts: _Counts
+    row: WarningRow,
+    *,
+    store: DatasetStore,
+    readers: Readers,
+    dry_run: bool,
+    counts: _Counts,
+    clears_on_retry: Callable[[BaseException], bool],
 ) -> None:
     """Rewrite each of `row`'s warnings holding the old member sentence, and update the row
     unless `dry_run` or the stored warnings changed since they were read. Raises
@@ -355,7 +397,7 @@ def _backfill_row(
         split = _split(row, named=named, count=count, readers=readers)
         splits.append((count, split))
         rewritten = _rewritten(warning, match, split, member_count=_member_count(trace))
-        if _unwritten(rewritten, trace):
+        if _unwritten(warning, match, split, trace):
             dropped += 1
         else:
             warnings.append(rewritten)
@@ -365,7 +407,7 @@ def _backfill_row(
                 "datasets_warning_backfill_row",
                 subject_id=row.subject_id,
                 content_version=row.content_version,
-                control=False,
+                new_format=False,
                 left_out=count,
                 off_cadence=len(split.off_cadence),
                 out_of_window=len(split.out_of_window),
@@ -375,8 +417,29 @@ def _backfill_row(
                 dropped=bool(dropped),
             )
     else:
+        updated = _update(store, row, warnings, clears_on_retry=clears_on_retry)
+        if updated is None:
+            counts.conflicts += 1
+            return
+    counts.rewritten += 1
+    counts.gone += sum(split.gone for _count, split in splits)
+    counts.emptied += sum(split.empty for _count, split in splits)
+    counts.dropped += dropped
+
+
+def _update(
+    store: DatasetStore,
+    row: WarningRow,
+    warnings: list[dict[str, object]],
+    *,
+    clears_on_retry: Callable[[BaseException], bool],
+) -> Mapping[str, object] | None:
+    """Write `warnings` to `row`'s column and body while both still hold what was read, and
+    return the row's key, or `None` when either changed. Raises `_Outage` when the store fails
+    as `clears_on_retry` says an outage does."""
+    try:
         with store.transaction() as tx:
-            updated = tx.fetch_one(
+            return tx.fetch_one(
                 "UPDATE datasets.version_record SET warnings = %s::jsonb, "
                 "immutable_body = jsonb_set(immutable_body, '{warnings}', %s::jsonb) "
                 "WHERE subject_id = %s AND content_version = %s AND warnings = %s::jsonb "
@@ -391,13 +454,10 @@ def _backfill_row(
                     json.dumps(row.body_warnings),
                 ),
             )
-        if updated is None:
-            counts.conflicts += 1
-            return
-    counts.rewritten += 1
-    counts.gone += sum(split.gone for _count, split in splits)
-    counts.emptied += sum(split.empty for _count, split in splits)
-    counts.dropped += dropped
+    except Exception as exc:
+        if clears_on_retry(exc):
+            raise _Outage(f"the store failed: {type(exc).__name__}: {exc}") from exc
+        raise
 
 
 def _rewritten(
@@ -417,21 +477,36 @@ def _rewritten(
     return rewritten
 
 
-def _unwritten(warning: Mapping[str, object], trace: Mapping[str, object]) -> bool:
-    """Whether a mint would write no `coverage_below_scope` like `warning`: it states the
-    catalogue detail alone and names nothing, and the trace records no window clamp
-    (`window.coverage_below_scope`)."""
+def _unwritten(
+    warning: Mapping[str, object],
+    match: re.Match[str],
+    split: Split,
+    trace: Mapping[str, object],
+) -> bool:
+    """Whether a mint would write no `coverage_below_scope` for the stored `warning` once
+    `split` replaces its old sentence `match` (`finish.writes_coverage_below_scope`). Its
+    window was clamped when the trace says so, and an entity went unserved when the warning
+    names one in its fields or its message states anything past the catalogue detail and the
+    old sentence but the countries-fallback sentence, which says the request was served the
+    countries with data."""
     applied = trace.get("applied_window")
     clamped = isinstance(applied, Mapping) and applied.get("origin") == "coverage_clamp"
-    return not clamped and dict(warning) == {
-        "code": MEMBER_SENTENCE_CODE,
-        "severity": warning.get("severity"),
-        "message": _DETAIL,
-    }
+    message = cast(str, warning["message"])
+    rest = f"{message[: match.start()]}{message[match.end() :]}"
+    stated = rest.removeprefix(_DETAIL) if rest.startswith(_DETAIL) else rest
+    countries_fallback = f" {COUNTRIES_FALLBACK_SENTENCE}" in stated
+    stated = stated.replace(f" {COUNTRIES_FALLBACK_SENTENCE}", "")
+    return not writes_coverage_below_scope(
+        below_scope=clamped or "unserved_entities" in warning or bool(stated.strip()),
+        countries_fallback=countries_fallback,
+        off_cadence=split.off_cadence,
+        out_of_window=split.out_of_window,
+        unserved_members=split.unserved_members,
+    )
 
 
-def _control_row(row: WarningRow, *, readers: Readers) -> bool:
-    """Whether the split of each of `row`'s warnings a mint split equals the stored one, as
+def _new_format_row(row: WarningRow, *, readers: Readers) -> bool:
+    """Whether the split of each of `row`'s warnings in the new format equals the stored one, as
     one `datasets_warning_backfill_row` line per warning states."""
     trace = _trace(row)
     agreed = True
@@ -443,8 +518,14 @@ def _control_row(row: WarningRow, *, readers: Readers) -> bool:
         stored = [
             cast("Mapping[str, object]", warning[key]) for key in _SPLIT_KEYS if key in warning
         ]
-        named = [
+        refs = [
             cast(str, ref) for counted in stored for ref in cast("list[object]", counted["refs"])
+        ]
+        # Each field names its first five in the mint's order; the sentence named the first
+        # five in the trace's dcid order across both kinds, which those fields hold.
+        order = [cast(str, entry["ref"]) for entry in _resolved(trace)]
+        named = sorted(refs, key=lambda ref: order.index(ref) if ref in order else len(order))[
+            :MAX_COUNTED_REFS
         ]
         count = sum(cast(int, counted["count"]) for counted in stored)
         split = _split(row, named=named, count=count, readers=readers)
@@ -456,7 +537,7 @@ def _control_row(row: WarningRow, *, readers: Readers) -> bool:
             "datasets_warning_backfill_row",
             subject_id=row.subject_id,
             content_version=row.content_version,
-            control=True,
+            new_format=True,
             agrees=agrees,
             stored=held,
             found=found,
@@ -502,17 +583,21 @@ def _split(row: WarningRow, *, named: Sequence[str], count: int, readers: Reader
             f"{count - len(named)} more members left out, {len(after_named)} zero-count members "
             "follow the last named one"
         )
-    left_out = [*named, *after_named[: count - len(named)]]
     window = identity_requested_window(identity, clock_year=row.recorded_at.year)
     selections = _selections(trace)
     members = _members(row, identity, zero, window=window, selections=selections, readers=readers)
-    _continuation_stated(selections, trace, members.values(), window=window)
+    _continuation_stated(selections, members.values(), window=window)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
             member.candidates, electable=member.electable, selections=selections, window=window
         )
         for ref, member in members.items()
     }
+    # The old sentence named members with a jointly matching facet, so those fill the count
+    # first, each part in dcid order.
+    matched = [ref for ref in after_named if kinds[ref] in ("off_cadence", "out_of_window")]
+    rest = [ref for ref in after_named if ref not in matched]
+    left_out = [*named, *[*matched, *rest][: count - len(named)]]
     absent_reads_zero = reads_absent_as_zero(
         selections, partial(absent_member_reads_zero, readers.code_index)
     )
@@ -529,22 +614,22 @@ def _split(row: WarningRow, *, named: Sequence[str], count: int, readers: Reader
 
 
 def _selections(trace: Mapping[str, object]) -> dict[str, FacetSelection]:
-    """The mint's selections, from `trace.facets` with the methods `trace.continuations`
-    names on their axes."""
-    continued_by = {
-        cast(str, entry["axis"]): cast(str, entry["method"])
-        for entry in cast("list[Mapping[str, object]]", trace.get("continuations") or [])
-    }
+    """The mint's selections, from the first `trace.facets` entry on each axis, with the
+    `measurementMethod` selection continued by the method `trace.continuations` names, read as
+    every reader of a trace reads them (`continued_series.continued_series_of_trace`)."""
+    continued = continued_series_of_trace(trace)
     selections: dict[str, FacetSelection] = {}
     for entry in cast("list[Mapping[str, object]]", trace.get("facets") or []):
         axis = cast(str, entry["axis"])
-        selections[axis] = FacetSelection.of_trace_entry(entry, continued_by=continued_by.get(axis))
+        if axis in selections:
+            continue
+        continued_by = continued[0].method if axis == _METHOD_AXIS and continued else None
+        selections[axis] = FacetSelection.of_trace_entry(entry, continued_by=continued_by)
     return selections
 
 
 def _continuation_stated(
     selections: Mapping[str, FacetSelection],
-    trace: Mapping[str, object],
     members: Iterable[_Member],
     *,
     window: RequestedWindow,
@@ -552,12 +637,22 @@ def _continuation_stated(
     """Raise `_Refused` when the selection on `measurementMethod` may have been continued by a
     method the trace does not name and a member holds a facet only that method could admit.
 
-    Only a range window continues a series, and `trace.continuations` names a continuing
-    method only when it served a row, so a range window whose trace names none leaves the
-    continuation unknown. It changes nothing unless a member holds a facet matching every
-    other selection under another method."""
+    A series continues only under a range window with an end year, with an estimated method
+    (`method_status.status_of`) of its source and unit, and only when it is not estimated
+    itself (`facets.continuation`). `trace.continuations` names a continuing method only when
+    it served a row, so such a window whose trace names none leaves the continuation unknown.
+    It changes nothing unless a member holds an estimated facet matching every other
+    selection."""
     method = selections.get(_METHOD_AXIS)
-    if window.kind != "range" or method is None or method.continued_by is not None:
+    provenance = selections.get("provenance")
+    source = provenance.ref if provenance is not None else None
+    if (
+        window.kind != "range"
+        or window.end_year is None
+        or method is None
+        or method.continued_by is not None
+        or status_of(method.ref, source) == "estimated"
+    ):
         return
     others = {axis: selection for axis, selection in selections.items() if axis != _METHOD_AXIS}
     for member in members:
@@ -565,6 +660,7 @@ def _continuation_stated(
             if (
                 facet.facet_id is not None
                 and not method.admits(facet_axis_value(facet, _METHOD_AXIS))
+                and status_of(facet.measurement_method, facet.provenance_id) == "estimated"
                 and all(
                     selection.admits(facet_axis_value(facet, axis))
                     for axis, selection in others.items()
@@ -586,16 +682,23 @@ def _members(
     readers: Readers,
 ) -> Mapping[str, _Member]:
     """Each of the `zero` members' candidates, probed as the mint probed them, or as a probe,
-    or its failure, earlier in the run of the same subject and members left them."""
-    key = (row.subject_id, tuple(cast(str, entry["ref"]) for entry in zero))
+    or its failure, earlier in the run left them for the same requests: the subject, its
+    zero-count members, the mint's window and the provenance its selections dispatch, which
+    elects each member's dataset (`_request`)."""
+    key = (
+        row.subject_id,
+        tuple(cast(str, entry["ref"]) for entry in zero),
+        (window.kind, window.start_year, window.end_year),
+        tuple(dispatched_provenances(selections)),
+    )
     held = readers.probes.get(key)
     if isinstance(held, Exception):
-        raise type(held)(*held.args)
+        raise held
     if held is not None:
         return held
     try:
         found = _probe(identity, zero, window=window, selections=selections, readers=readers)
-    except (_Refused, _Unread) as exc:
+    except Exception as exc:
         readers.probes[key] = exc
         raise
     readers.probes[key] = found
@@ -635,10 +738,21 @@ def _probe(
                 coverage=readers.coverage,
                 deadline=time.monotonic() + PROBE_DEADLINE_SECONDS,
             )
-    except (GraphReadError, SdmxClientError) as exc:
-        raise _Unread(f"the probe failed: {type(exc).__name__}: {exc}") from exc
-    except (CollectionProbeCeilingExceededError, MaterialisationUsageError) as exc:
+    except (
+        CollectionProbeCeilingExceededError,
+        MaterialisationUsageError,
+        SdmxQueryError,
+        SdmxCapExceededError,
+    ) as exc:
         raise _Refused(f"the probe refused: {type(exc).__name__}: {exc}") from exc
+    except (GraphReadError, SdmxClientError) as exc:
+        status = exc.upstream_status if isinstance(exc, GraphReadError | SdmxHttpError) else None
+        if status is not None and 400 <= status < 500:
+            raise _Refused(f"the probe was refused: {type(exc).__name__}: {exc}") from exc
+        raise _Unread(f"the probe failed: {type(exc).__name__}: {exc}") from exc
+    except TimeoutError as exc:
+        # `place_scope.PlaceScopeDeadlineError` among them: the read ran past its deadline.
+        raise _Unread(f"the probe timed out: {exc}") from exc
     if failures := un_record.failures():
         raise _Unread(f"a UN read failed beside ours: {failures[0].detail}")
     if unsettled := [r.stat_var for r, p in zip(requests, probes, strict=True) if not p.settled]:

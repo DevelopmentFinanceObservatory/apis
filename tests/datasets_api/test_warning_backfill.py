@@ -24,6 +24,8 @@ from datasets_api.warning_backfill import (
 )
 from dc_sdmx import SdmxHttpError
 from materialise import facets as facets_module
+from materialise.codes import MATERIALISE_CODE_CATALOGUE
+from materialise.finish import COUNTRIES_FALLBACK_SENTENCE, member_sentences
 from materialise.graph import Facet, GraphReadError
 from origin_catalogue import record_un_read_failure
 from tests.materialise._scope_availability import ScopeAvailability
@@ -31,7 +33,7 @@ from tests.materialise.conftest import FakeGraphReader
 
 _KEN = "country/KEN"
 _PROVENANCE = "PROV1"
-_DETAIL = "The data covers less than the definition asked for."
+_DETAIL = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"][1]
 _SERVED, _IN, _OUT, _GONE, _MOVED, _UN = (
     "Var_Served",
     "Var_In",
@@ -181,7 +183,7 @@ class _Store:
         yield self
 
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
-        code, pattern, control = params
+        code, pattern, new_format = params
         assert "jsonb_array_elements(warnings)" in sql, sql
 
         def matches(warning: Mapping[str, Any]) -> bool:
@@ -189,17 +191,21 @@ class _Store:
                 return False
             if re.search(str(pattern), warning["message"]):
                 return True
-            return bool(control) and (
+            return bool(new_format) and (
                 "off_cadence_members" in warning or "out_of_window_members" in warning
             )
 
+        assert "ORDER BY subject_id, recorded_at, content_version" in sql, sql
         return [
             {
                 **row,
                 "warnings": json.loads(json.dumps(row["warnings"])),
                 "body_warnings": json.loads(json.dumps(row["immutable_body"].get("warnings"))),
             }
-            for row in self.rows.values()
+            for row in sorted(
+                self.rows.values(),
+                key=lambda row: (row["subject_id"], row["recorded_at"], row["content_version"]),
+            )
             if any(matches(warning) for warning in row["warnings"])
         ]
 
@@ -254,11 +260,13 @@ def _run(
     indexed: bool = False,
     dry_run: bool = False,
     rows: Sequence[WarningRow] | None = None,
+    readers: Readers | None = None,
 ) -> int:
     return run_backfill_warnings(
-        select_rows(store, control=dry_run) if rows is None else rows,
+        select_rows(store, new_format=dry_run) if rows is None else rows,
         store=store,
-        readers=Readers(
+        readers=readers
+        or Readers(
             graph=graph or FakeGraphReader(facets=_FACETS),
             availability=availability or ScopeAvailability(data=()),
             code_index=_code_index(absent_reads_zero=absent_reads_zero, indexed=indexed),
@@ -288,45 +296,30 @@ def _stored(store: _Store) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    ("member", "field", "sentence"),
+    ("member", "kind"),
     [
-        pytest.param(
-            _IN,
-            "off_cadence_members",
-            "1 of 4 series report at a different frequency and are left out of the figures.",
-            id="in-the-window",
-        ),
-        pytest.param(
-            _OUT,
-            "out_of_window_members",
-            "1 of 4 series hold no observations in the requested years.",
-            id="out-of-the-window",
-        ),
-        pytest.param(
-            _GONE,
-            "out_of_window_members",
-            "1 of 4 series hold no observations in the requested years.",
-            id="gone",
-        ),
-        pytest.param(
-            _MOVED,
-            "unserved_members",
-            "1 of 5 series hold no observations under the source, unit and method the figures "
-            "use and are left out.",
-            id="moved",
-        ),
+        pytest.param(_IN, "off_cadence", id="in-the-window"),
+        pytest.param(_OUT, "out_of_window", id="out-of-the-window"),
+        pytest.param(_GONE, "out_of_window", id="gone"),
+        pytest.param(_MOVED, "unserved_members", id="moved"),
     ],
 )
-def test_a_named_member_is_split_as_a_mint_splits_it(member, field, sentence, capsys):
+def test_a_named_member_is_split_as_a_mint_splits_it(member, kind, capsys):
     store = _Store([_row(_warning([member]), zero=sorted({member, _IN, _OUT, _GONE}))])
+    member_count = 5 if member == _MOVED else 4
+    kinds = {"off_cadence": (), "out_of_window": (), "unserved_members": ()}
+    (sentence,) = member_sentences(
+        **{**kinds, kind: (f"dcid:{member}",)}, member_count=member_count
+    )
 
     assert _run(store) == 0
 
+    field = kind if kind == "unserved_members" else f"{kind}_members"
     assert _stored(store) == {
         "code": "coverage_below_scope",
         "severity": "warn",
         "message": f"{_DETAIL} {sentence} No place was named.",
-        "member_count": 5 if member == _MOVED else 4,
+        "member_count": member_count,
         field: {"count": 1, "refs": [f"dcid:{member}"]},
     }
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
@@ -401,36 +394,48 @@ _METHOD_SELECTION = {
 }
 
 
-@pytest.mark.parametrize("stated", [True, False])
-def test_a_continuation_the_trace_cannot_state_is_refused(stated, capsys):
-    # Var_Est holds the selected source only under an estimated method, which a continuation
-    # of the selected method admits.
-    estimated = "Var_Est"
-    facets = {**_FACETS, (estimated, _KEN): [_facet("f-est", "2015", method="M_EST")]}
-    row = _row(_warning([estimated]), zero=[estimated])
+@pytest.mark.parametrize(
+    ("method", "stated", "field"),
+    [
+        pytest.param("Estimated", True, "off_cadence_members", id="stated"),
+        pytest.param("Estimated", False, None, id="unstated"),
+        # A method that is not estimated never continues a series, so the trace states all.
+        pytest.param("M2", False, "unserved_members", id="not-estimated"),
+    ],
+)
+def test_a_continuation_the_trace_cannot_state_is_refused(method, stated, field, capsys):
+    # Var_Other holds the selected source only under `method`, which a continuation of the
+    # selected method admits when `method` is estimated.
+    other = "Var_Other"
+    facets = {**_FACETS, (other, _KEN): [_facet("f-other", "2015", method=method)]}
+    row = _row(_warning([other]), zero=[other])
     row["trace"]["facets"].append(_METHOD_SELECTION)
     if stated:
         row["trace"]["continuations"] = [
-            {"axis": "measurementMethod", "method": "M_EST", "periods": ["2016", "2020"]}
+            {"axis": "measurementMethod", "method": method, "periods": ["2016", "2020"]}
         ]
     store = _Store([row])
 
     assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
 
-    if stated:
-        assert _stored(store)["off_cadence_members"] == {"count": 1, "refs": ["dcid:Var_Est"]}
+    if field is not None:
+        assert _stored(store)[field] == {"count": 1, "refs": ["dcid:Var_Other"]}
     else:
-        assert _stored(store) == _warning([estimated])
+        assert _stored(store) == _warning([other])
         (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
         assert failed["transient"] is False
 
 
-@pytest.mark.parametrize("clamped", [False, True])
-def test_a_warning_left_with_the_catalogue_detail_alone_is_dropped(clamped, capsys):
-    from materialise.codes import MATERIALISE_CODE_CATALOGUE
-
-    detail = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"][1]
-    warning = {**_warning([_OUT]), "message": f"{detail}{_old_sentence([_OUT])}"}
+@pytest.mark.parametrize(
+    ("clamped", "suffix"),
+    [
+        pytest.param(False, "", id="detail-alone"),
+        pytest.param(True, "", id="clamped"),
+        pytest.param(False, f" {COUNTRIES_FALLBACK_SENTENCE}", id="countries-fallback"),
+    ],
+)
+def test_a_warning_left_with_the_catalogue_detail_alone_is_dropped(clamped, suffix, capsys):
+    warning = {**_warning([_OUT]), "message": f"{_DETAIL}{_old_sentence([_OUT])}{suffix}"}
     row = _row(warning, zero=[_OUT])
     if clamped:
         row["trace"]["applied_window"] = {
@@ -444,10 +449,11 @@ def test_a_warning_left_with_the_catalogue_detail_alone_is_dropped(clamped, caps
     assert _run(store, absent_reads_zero=True) == 0
 
     (stored,) = store.rows.values()
-    kept = [{**warning, "message": detail}] if clamped else []
+    written = clamped or bool(suffix)
+    kept = [{**warning, "message": f"{_DETAIL}{suffix}"}] if written else []
     assert stored["warnings"] == stored["immutable_body"]["warnings"] == kept
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
-    assert summary["dropped"] == int(not clamped)
+    assert summary["dropped"] == int(not written)
 
 
 def test_a_provenance_reading_absence_as_zero_drops_the_out_of_window_members(capsys):
@@ -543,7 +549,7 @@ def test_a_second_run_finds_no_row():
     assert _run(store) == 0
     rewritten = _stored(store)
 
-    assert select_rows(store, control=False) == []
+    assert select_rows(store, new_format=False) == []
     assert _run(store) == 0
     assert (_stored(store), store.updates) == (rewritten, 1)
 
@@ -551,7 +557,7 @@ def test_a_second_run_finds_no_row():
 @pytest.mark.parametrize("where", ["warnings", "immutable_body"])
 def test_a_row_changed_after_it_was_read_keeps_the_change(where, capsys):
     store = _Store([_row(_warning([_IN]), zero=[_IN])])
-    rows = select_rows(store, control=False)
+    rows = select_rows(store, new_format=False)
     changed = {**_warning([_IN]), "message": "changed meanwhile"}
     row = store.rows[("spec_a", "cv_a")]
     before = json.loads(json.dumps(row, default=str))
@@ -584,7 +590,7 @@ def test_a_row_whose_body_and_column_disagree_is_refused_for_good(capsys):
     assert (summary["permanent"], summary["mismatched"]) == (1, 1)
 
 
-def test_a_control_row_that_fails_warns_and_leaves_the_exit_code(capsys):
+def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
     # The stored split names a member the trace says served observations.
     split = {
         "code": "coverage_below_scope",
@@ -630,6 +636,27 @@ def test_a_dry_run_writes_nothing_and_compares_a_mint_split(capsys):
     assert rows["spec_b"]["agrees"] is True
 
 
+def test_a_dry_run_after_a_real_one_counts_the_rewritten_rows_in_the_new_format(capsys):
+    store = _Store(
+        [
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_a"),
+            _row(_warning([_OUT]), zero=[_OUT], subject_id="spec_b"),
+        ]
+    )
+
+    assert _run(store) == 0
+    assert _run(store, dry_run=True) == _run(store, dry_run=True) == 0
+
+    real, *dry = _lines(capsys, "datasets_warnings_backfilled")
+    assert real["rewritten"] == 2
+    assert dry[0] == dry[1]
+    assert (dry[0]["rewritten"], dry[0]["new_format_rows"], dry[0]["new_format_agreed"]) == (
+        0,
+        2,
+        2,
+    )
+
+
 def test_the_versions_of_one_subject_share_one_probe(capsys):
     store = _Store(
         [
@@ -649,7 +676,7 @@ def test_the_versions_of_one_subject_share_one_probe(capsys):
 def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
     monkeypatch.setattr(maintenance, "shared_pool", lambda: None)
     monkeypatch.setattr(maintenance, "close_shared_pool", lambda: None)
-    monkeypatch.setattr(maintenance, "select_rows", lambda store, *, control: [])
+    monkeypatch.setattr(maintenance, "select_rows", lambda store, *, new_format: [])
 
     def no_release():
         raise AssertionError("the release was opened")
@@ -686,6 +713,7 @@ def test_a_store_outage_stops_the_run(capsys):
 
 class _BrokenGraph(FakeGraphReader):
     def observation_facets_batch_many(self, **kwargs):
+        self._count("observation_facets_batch_many")
         raise ValueError("a defect, not a failed read")
 
 
@@ -733,3 +761,188 @@ def test_a_row_without_a_definition_is_refused_and_the_run_goes_on(capsys):
     assert store.rows[("spec_b", "cv_a")]["warnings"][0]["off_cadence_members"]
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
     assert (failed["subject_id"], failed["transient"]) == ("spec_bare", False)
+
+
+class _StatusGraph(FakeGraphReader):
+    def __init__(self, *, status: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._status = status
+
+    def observation_facets_batch_many(self, **kwargs):
+        self._count("observation_facets_batch_many")
+        raise GraphReadError("graph read failed", upstream_status=self._status)
+
+
+class _StatusAvailability(ScopeAvailability):
+    def __init__(self, *, status: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._status = status
+
+    def availability_values(self, **kwargs):
+        raise SdmxHttpError("refused", upstream_status=self._status)
+
+
+_SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country"): [_KEN]})
+
+
+@pytest.mark.parametrize(
+    ("graph", "availability", "transient"),
+    [
+        pytest.param(_StatusGraph(status=404, facets=_FACETS), None, False, id="graph-404"),
+        pytest.param(_StatusGraph(status=503, facets=_FACETS), None, True, id="graph-503"),
+        pytest.param(
+            _SCOPED_GRAPH,
+            _StatusAvailability(status=404, data=[(_IN, _KEN)]),
+            False,
+            id="availability-404",
+        ),
+    ],
+)
+def test_a_client_status_is_refused_for_good_and_a_server_status_is_retried(
+    graph, availability, transient, capsys
+):
+    places = () if availability is not None else (_KEN,)
+    store = _Store([_row(_warning([_IN]), zero=[_IN], places=places)])
+
+    assert _run(store, graph=graph, availability=availability) == int(transient)
+
+    (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
+    assert failed["transient"] is transient
+
+
+def test_a_probe_timeout_is_retried_and_the_run_goes_on(monkeypatch, capsys):
+    from datasets_api import warning_backfill
+
+    monkeypatch.setattr(warning_backfill, "PROBE_DEADLINE_SECONDS", -1.0)
+    store = _Store(
+        [
+            _row(_warning([_IN]), zero=[_IN], places=(), subject_id="spec_a"),
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_b"),
+        ]
+    )
+
+    assert _run(store, graph=_SCOPED_GRAPH, availability=ScopeAvailability(data=[(_IN, _KEN)])) == 1
+
+    assert store.rows[("spec_b", "cv_a")]["warnings"][0]["off_cadence_members"]
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
+    assert (failed["subject_id"], failed["transient"]) == ("spec_a", True)
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
+    assert (summary["transient"], summary["rewritten"]) == (1, 1)
+
+
+def test_a_probe_raising_a_defect_is_kept_for_the_run(capsys):
+    store = _Store(
+        [
+            _row(_warning([_IN]), zero=[_IN], content_version="cv_a"),
+            _row(_warning([_IN]), zero=[_IN], content_version="cv_b"),
+        ]
+    )
+    graph = _BrokenGraph(facets=_FACETS)
+
+    assert _run(store, graph=graph) == 0
+
+    assert graph.calls["observation_facets_batch_many"] == 1
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert (summary["permanent"], summary["probes"]) == (2, 1)
+
+
+def test_versions_dispatching_different_sources_probe_apart():
+    # cv_a selected PROV2, which holds Var_Moved; cv_b selected PROV1, which does not.
+    a = _row(_warning([_MOVED]), zero=[_MOVED], content_version="cv_a")
+    a["trace"]["facets"][0]["ref"] = "PROV2"
+    b = _row(_warning([_MOVED]), zero=[_MOVED], content_version="cv_b")
+    together = _Store([a, b])
+    alone = _Store([_row(_warning([_MOVED]), zero=[_MOVED], content_version="cv_b")])
+
+    assert _run(together, indexed=True) == _run(alone, indexed=True) == 0
+
+    assert (
+        together.rows[("spec_a", "cv_b")]["warnings"] == alone.rows[("spec_a", "cv_b")]["warnings"]
+    )
+    assert (
+        together.rows[("spec_a", "cv_a")]["warnings"] != alone.rows[("spec_a", "cv_b")]["warnings"]
+    )
+
+
+def test_a_run_holds_the_probes_of_one_subject_only():
+    store = _Store(
+        [
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_b"),
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_a", content_version="cv_b"),
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_a"),
+        ]
+    )
+    readers = Readers(
+        graph=FakeGraphReader(facets=_FACETS),
+        availability=ScopeAvailability(data=()),
+        code_index=_code_index(),
+        coverage=None,
+    )
+
+    assert _run(store, readers=readers) == 0
+
+    assert {key[0] for key in readers.probes} == {"spec_b"}
+    assert all(row["warnings"][0]["off_cadence_members"] for row in store.rows.values())
+
+
+def test_the_filler_prefers_members_a_mint_counted():
+    # After the last named member, Var_Z0 holds no observation at all and Var_Z1 holds the
+    # selected source in the requested years, as the member the old mint counted did.
+    named = [f"Var_A{index}" for index in range(5)]
+    facets = {
+        **_FACETS,
+        **{(member, _KEN): [_facet(f"f-{member}", "2015")] for member in named},
+        ("Var_Z1", _KEN): [_facet("f-z1", "2015")],
+    }
+    store = _Store([_row(_warning(named, more=1), zero=[*named, "Var_Z0", "Var_Z1"])])
+
+    assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
+
+    stored = _stored(store)
+    assert stored["off_cadence_members"]["count"] == 6
+    assert "unserved_members" not in stored and "out_of_window_members" not in stored
+
+
+def test_a_new_format_row_names_its_members_in_dcid_order_across_kinds(capsys):
+    # Six off-cadence members, five referenced, and one out of the window that sorts after
+    # the sixth: the old sentence named the first five in dcid order across both kinds.
+    off = [f"Var_B{index}" for index in range(6)]
+    facets = {
+        **_FACETS,
+        **{(member, _KEN): [_facet(f"f-{member}", "2015")] for member in off},
+        ("Var_C0", _KEN): [_facet("f-c0", "1990")],
+    }
+    split = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": f"{_DETAIL} "
+        + " ".join(
+            member_sentences(
+                off_cadence=tuple(f"dcid:{member}" for member in off),
+                out_of_window=("dcid:Var_C0",),
+                unserved_members=(),
+                member_count=8,
+            )
+        ),
+        "member_count": 8,
+        "off_cadence_members": {"count": 6, "refs": [f"dcid:{member}" for member in off[:5]]},
+        "out_of_window_members": {"count": 1, "refs": ["dcid:Var_C0"]},
+    }
+    store = _Store([_row(split, zero=[*off, "Var_C0"])])
+
+    assert _run(store, graph=FakeGraphReader(facets=facets), dry_run=True) == 0
+
+    (row,) = _lines(capsys, "datasets_warning_backfill_row")
+    assert row["agrees"] is True
+
+
+def test_a_repeated_axis_in_the_trace_reads_its_first_entry():
+    row = _row(_warning([_MOVED]), zero=[_MOVED])
+    row["trace"]["facets"].append({**row["trace"]["facets"][0], "ref": "PROV2"})
+    store = _Store([row])
+    first = _Store([_row(_warning([_MOVED]), zero=[_MOVED])])
+
+    assert _run(store, indexed=True) == _run(first, indexed=True) == 0
+
+    assert _stored(store) == _stored(first)

@@ -95,7 +95,6 @@ from materialise.frame_build import (
 from materialise.graph import Facet, GraphReader, GraphReadError
 from materialise.group_facets import (
     _as_issue,
-    classify_uncounted,
     group_breadth,
     group_variable_breadth,
     select_group_facets,
@@ -2465,19 +2464,9 @@ def _plan_group_members(
         )
         for index in range(len(requests))
     ]
-    # Each uncounted member's dcid and how it is left out.
+    # Each member's dcid and how it is left out, `None` when it is counted or unpopulated.
     uncounted = [
-        (
-            request.stat_var,
-            classify_uncounted(
-                probe.candidates,
-                electable=dataset_candidates(request, probe.candidates),
-                selections=selections,
-                window=requests[0].window,
-            ),
-        )
-        for index, (request, probe) in enumerate(zip(requests, probes, strict=True))
-        if index not in election.members
+        (request.stat_var, kind) for request, kind in zip(requests, group.uncounted, strict=True)
     ]
     return _GroupPlan(
         selections=selections,

@@ -989,11 +989,11 @@ class WarningBackfillSettings(BaseSettings):
 
 def _backfill_warnings(dry_run: bool) -> int:
     """Run `warning_backfill.run_backfill_warnings` over the rows it rewrites, and with
-    `dry_run` its control rows. With none it opens no release and builds no client."""
+    `dry_run` the rows in the new format. With none it opens no release and builds no client."""
     deadline = utc_now() + BACKFILL_DESCRIPTIONS_BUDGET
     store = LiveDatasetStore(connections=shared_pool())
     try:
-        rows = select_rows(store, control=dry_run)
+        rows = select_rows(store, new_format=dry_run)
         if not rows:
             emit_nothing_backfilled(dry_run=dry_run)
             return 0

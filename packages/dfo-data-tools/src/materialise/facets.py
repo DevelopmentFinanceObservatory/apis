@@ -2748,9 +2748,9 @@ def facets_in_window(
     window: RequestedWindow | None,
 ) -> bool | None:
     """Whether a candidate jointly matching `selections` (`joint_matches`) holds a point in
-    `window` (`overlaps_window`), `None` when none jointly matches. A group member the
-    election did not count is off cadence when this is true and out of the window when it is
-    false (`generation._plan_group_members`)."""
+    `window` (`overlaps_window`), `None` when none jointly matches. Its one caller,
+    `group_facets.classify_uncounted`, calls a member the election did not count off cadence
+    when this is true and out of the window when it is false."""
     matches = joint_matches(candidates, selections)
     if not matches:
         return None
