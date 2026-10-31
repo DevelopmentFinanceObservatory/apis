@@ -926,14 +926,14 @@ def _render_stored_rendering(
     Once a servable frame location exists, and before the permit and the frame read,
     `plan_stored_render` makes every refusal the stored version decides, and
     `refuse_located_frame_past_decode_bound` refuses a frame1 document past the decode bound on
-    its recorded size. A version with no
-    servable frame returns `None` before any plan, so its caller rebuilds as it would without
-    the stored record's refusals. Whether a servable location's bytes are still in the store
-    is known only by fetching them, so a refusal the plan makes also answers a version whose
-    location row is servable and whose object is gone, which `datasets-maintenance sweep`
-    reports as a missing object. A `plan` argument is the one the caller made from this
-    version before it read `frame`. A plan whose version's own frame does not serve it
-    (`StoredRenderPlan.frame_mode` `None`) returns `None` before the permit and the frame read.
+    its recorded size. A version with no servable frame returns `None` before any plan, so its
+    caller rebuilds as it would without the stored record's refusals. Whether a servable
+    location's bytes are still in the store is known only by fetching them, so a refusal the
+    plan makes also answers a version whose location row is servable and whose object is gone,
+    which `datasets-maintenance sweep` reports as a missing object. A `plan` argument is the one
+    the caller made from this version before it read `frame`. A plan whose version's own frame
+    does not serve it (`StoredRenderPlan.frame_mode` `None`) returns `None` before the permit
+    and the frame read.
     """
 
     def planned(read_locations: Callable[[], Iterable[StoredArtifactLocation]]) -> StoredRenderPlan:

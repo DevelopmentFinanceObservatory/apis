@@ -324,8 +324,9 @@ def _render_from_stored_frame(
     Before an aged frame renews, `plan_stored_render` decides from the version's record the
     refusals it alone decides, and `refuse_located_frame_past_decode_bound` refuses a frame1
     document past the decode bound on its recorded size, so each raises with no frame
-    re-uploaded or rendered and no slot taken. Whether the aged frame's bytes are still in the store is known only by
-    fetching them, so that refusal also answers a version whose frame bytes are gone."""
+    re-uploaded or rendered and no slot taken. Whether the aged frame's bytes are still in the
+    store is known only by fetching them, so that refusal also answers a version whose frame
+    bytes are gone."""
     render = functools.partial(
         head_rendering,
         subject_id=source.version.subject_id,

@@ -40,7 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import pyarrow as pa
@@ -377,25 +377,23 @@ class LiveRootSource:
             record=record,
             rendering=root_rendering(options),
             rows=manifest.coverage.rows,
-            source=_Handle(
-                artifact=artifact,
-                frame=(
-                    self._stored_frame(spec_id=spec_id, content_version=content_version)
-                    if artifact is None
-                    else None
-                ),
-            ),
+            source=_Handle(artifact=artifact),
         )
 
-    def _stored_frame(self, *, spec_id: str, content_version: str) -> StoredArtifactLocation:
-        """The servable stored frame of the version, located as the root resolves, outside the
-        run's materialise permit, so a frame1 document past `render.frame1_decode_max_bytes`
-        refuses on its recorded size before the run waits for the permit.
+    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+        """`root`, with the version's servable stored frame located when `read` reads it, and a
+        frame1 document past `render.frame1_decode_max_bytes` refused on its recorded size. A
+        root read from its frame-layout file returns as it is.
 
         Raises:
             RootExpired: The version has no servable stored frame.
             OverCeilingError: `bytes`, for a frame1 document past the bound.
         """
+        handle = root.source
+        assert isinstance(handle, _Handle)
+        if handle.artifact is not None:
+            return root
+        spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
         locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
         location = stored_frame_location(select_servable_locations(locations, now=self._deps.now()))
         if location is None:
@@ -407,7 +405,7 @@ class LiveRootSource:
         refuse_frame1_past_decode_bound(
             location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
         )
-        return location
+        return replace(root, source=_Handle(artifact=None, frame=location))
 
     def read(self, root: ResolvedRoot) -> Frame:
         handle = root.source
@@ -425,7 +423,7 @@ class LiveRootSource:
                 ) from None
             return frame_from_frame_layout(data)
         location = handle.frame
-        assert location is not None, "a root with no frame-layout file resolves its stored frame"
+        assert location is not None, "the run locates a root's stored frame before it reads it"
         try:
             data = store.get(artifact_digest=location.artifact_digest, tier=Tier(location.tier))
         except ArtifactNotFoundError:

@@ -164,6 +164,10 @@ class StoredRootSource:
             source=_Located(location=location, frame_layout=bool(columns)),
         )
 
+    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+        """`root` as it is. Its location is read as it resolves."""
+        return root
+
     def read(self, root: ResolvedRoot) -> Frame:
         located = root.source
         assert isinstance(located, _Located)

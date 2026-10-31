@@ -94,6 +94,11 @@ class ClosablePermits(MaterialisePermits):
             return False
         return super().acquire(timeout=timeout, keep_waiting=keep_waiting)
 
+    def acquire_leaving(self, headroom: int) -> bool:
+        if self.closed:
+            return False
+        return super().acquire_leaving(headroom)
+
 
 def closable_permits(monkeypatch: pytest.MonkeyPatch) -> list[ClosablePermits]:
     """The materialise permits each surface built from here on holds, in build order, each

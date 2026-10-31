@@ -1070,7 +1070,7 @@ def read_canonical_frame_table(data: bytes, *, columns: Sequence[str] | None = N
     once.
 
     Raises:
-        FrameError, pa.ArrowException, OSError, ValueError: As `_checked_canonical_table`.
+        FrameError, pa.ArrowException, OSError: As `_checked_canonical_table`.
     """
     return _checked_canonical_table(data, columns=columns, dictionary=True)
 
@@ -1080,7 +1080,7 @@ def read_canonical_frame(data: bytes) -> Frame:
     `_checked_canonical_table` checks it.
 
     Raises:
-        FrameError, pa.ArrowException, OSError, ValueError: As `_checked_canonical_table`.
+        FrameError, pa.ArrowException, OSError: As `_checked_canonical_table`.
     """
     table = _checked_canonical_table(data, columns=None, dictionary=False)
     return Frame.from_table(columns=tuple(table.column_names), table=table)
@@ -1101,8 +1101,8 @@ def _checked_canonical_table(
 
     Raises:
         FrameError: `schema_violation` for a schema or a null cell outside the frame grammar.
-        pa.ArrowException, OSError, ValueError: `data` is no Parquet file, or holds an array its
-            own buffers contradict.
+        pa.ArrowException, OSError: `data` is no Parquet file, or holds an array its own
+            buffers contradict. Arrow's `ArrowInvalid` is also a `ValueError`.
     """
     file = pq.ParquetFile(pa.BufferReader(data))
     schema = file.schema_arrow

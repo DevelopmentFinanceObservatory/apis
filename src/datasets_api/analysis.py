@@ -582,8 +582,20 @@ class RootSource(Protocol):
         """
         ...
 
+    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+        """`root` with what `read` reads located from the records alone, and the refusals they
+        decide made (`locate_roots`). Runs once the run has no stored answer, before it takes
+        its materialise permit.
+
+        Raises:
+            FrameUnavailable: The frame is no longer held.
+            OverCeilingError: `bytes`, for a stored frame past the decode bound.
+        """
+        ...
+
     def read(self, root: ResolvedRoot) -> Frame:
-        """The frame of `root`. Runs under the run's materialise permit.
+        """The frame of `root`, as `locate` returned it. Runs under the run's materialise
+        permit.
 
         Raises:
             FrameUnavailable: The frame is no longer held.
@@ -1623,6 +1635,17 @@ def resolve_roots(
     return resolved
 
 
+def locate_roots(resolved: Sequence[ResolvedRoot], *, source: RootSource) -> list[ResolvedRoot]:
+    """`resolved`, each located (`RootSource.locate`). A run calls this right before it takes
+    its materialise permit, so the refusals the records decide come before any wait, and a
+    stored answer, keyed before, reads no frame location.
+
+    Raises:
+        FrameUnavailable, OverCeilingError: As `RootSource.locate`.
+    """
+    return [source.locate(root) for root in resolved]
+
+
 @dataclass(frozen=True, kw_only=True)
 class Computed:
     """A tree computed and not stored: the engine's evaluation, the roots it read in the
@@ -1721,8 +1744,9 @@ def compute_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
+    located = locate_roots(resolved, source=source)
     with permit():
-        return _evaluated(working, resolved, source=source, bounds=bounds, latest=request.latest)
+        return _evaluated(working, located, source=source, bounds=bounds, latest=request.latest)
 
 
 # The format of a stored answer's body (`AnalysisResult.body`), part of every request key, so
@@ -1826,10 +1850,11 @@ def run_prepared(
         AnalysisTooLarge, AnalysisStoreDiverges: As their docstrings say.
         SnapshotRevoked: The pair the tree computes is taken down.
     """
+    located = locate_roots(prepared.resolved, source=source)
     with permit():
         computed = _evaluated(
             prepared.working,
-            prepared.resolved,
+            located,
             source=source,
             bounds=bounds,
             latest=prepared.latest,
@@ -1931,8 +1956,9 @@ def run_anchor(
     except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail=f"populations: {exc}")) from exc
     resolved = resolve_roots(request.roots, source=source, latest=request.latest, trace_id=trace_id)
+    located = locate_roots(resolved, source=source)
     with permit():
-        frames = _read_roots(resolved, source=source, cap=bounds.max_root_rows)
+        frames = _read_roots(located, source=source, cap=bounds.max_root_rows)
         anchor = latest_period(
             populations,
             [
