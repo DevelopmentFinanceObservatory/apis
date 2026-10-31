@@ -52,13 +52,20 @@ class _FrozenLoop(asyncio.SelectorEventLoop):
     """An event loop whose clock moves only through `advance`, so a timer fires when a test
     says the loop stalled past it and never because the machine was slow. `advance` called
     from a handler is a loop that stalled for that long: nothing runs until it returns, and
-    the next step finds every timer due by then."""
+    the next step finds every timer due by then. A test the clock never moves would wait
+    forever, so after `_FROZEN_LOOP_CAP_S` of real time the clock jumps far ahead, every
+    timer fires, and the test fails on its own assertion."""
+
+    _FROZEN_LOOP_CAP_S = 5.0
 
     def __init__(self) -> None:
         super().__init__()
         self._frozen_now = 0.0
+        self._started = time.monotonic()
 
     def time(self) -> float:
+        if time.monotonic() - self._started > self._FROZEN_LOOP_CAP_S:
+            return self._frozen_now + 1e6
         return self._frozen_now
 
     def advance(self, seconds: float) -> None:
@@ -551,7 +558,7 @@ def test_split_answers_in_hand_at_the_ceiling_are_returned_only_when_every_chunk
                 await asyncio.Event().wait()
             return _answers(request)
 
-        jev.serve(handler, jev_ceiling_s=0.2)
+        jev.serve(handler, jev_ceiling_s=0.2, jev_max_concurrency=chunks)
 
     serve(outstanding=False)
     assert jev.ask(questions, loop_factory=_FrozenLoop).nouls == dict.fromkeys(questions, 0.9)

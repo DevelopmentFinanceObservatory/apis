@@ -462,12 +462,7 @@ class _FrozenMonotonic:
 
     def time_module(self) -> types.SimpleNamespace:
         """The `time` module with this clock as its `monotonic`."""
-        return types.SimpleNamespace(
-            monotonic=lambda: self.now,
-            sleep=time.sleep,
-            time=time.time,
-            perf_counter=time.perf_counter,
-        )
+        return types.SimpleNamespace(monotonic=lambda: self.now, sleep=time.sleep)
 
 
 def test_a_un_resolve_that_expires_in_the_queue_sends_no_request(
