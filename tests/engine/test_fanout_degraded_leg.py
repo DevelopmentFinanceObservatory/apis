@@ -254,6 +254,11 @@ def test_a_stand_in_s_scopes_count_only_where_it_decided_the_answer() -> None:
     assert (lost.reads, lost.unsettled) == (["walk", "dates"], {_SERVED})
 
 
+def test_a_record_given_as_into_cannot_merge_into_the_outer_record() -> None:
+    with pytest.raises(TypeError), recording_degraded_reads(into=DegradedReads(), detached=False):
+        pass
+
+
 def test_infra_error_fails_the_request_and_never_sets_degraded_leg():
     """An infrastructure error fails the request and leaves `degraded_leg` false."""
 

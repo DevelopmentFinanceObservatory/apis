@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from dc_graph import GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
@@ -108,10 +108,7 @@ class _Candidate:
     status rule offers it beside the elected shape (`status_rule`), `None` for the elected
     shape itself and for a reading that rides on a refusal, and the records of the words its
     own read leaves unread, its coverage records (`phase_election.judge_answer_coverage`), `None`
-    for the elected shape, which reads the elected answer's (`requirements.judge`). An
-    alternate's `consulted` is the record of its own reading (`_materialise_alt_shapes`),
-    which the outcome that offers or answers through it carries; the elected shape's
-    reading records into the part's own record, so its `consulted` is empty."""
+    for the elected shape, which reads the elected answer's (`requirements.judge`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
@@ -120,7 +117,6 @@ class _Candidate:
     walked: WalkedMembers | None
     basis: CandidateBasis | None = None
     uncovered: tuple[ResolvedQualifier, ...] | None = None
-    consulted: DegradedReads = field(default_factory=DegradedReads)
 
 
 def _prewarm_places(
@@ -588,7 +584,6 @@ def _materialise_alt_shapes(
                         result,
                         place.settled(result),
                         alternate.walked,
-                        consulted=record,
                     )
                 )
     return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)

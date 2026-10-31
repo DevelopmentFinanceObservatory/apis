@@ -927,7 +927,13 @@ def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
 
 @pytest.mark.parametrize(
     ("first_reading", "degraded"),
-    [("lost", True), ("no-data", True), ("withdrawn", False), ("settled", False)],
+    [
+        ("lost", True),
+        ("no-data", True),
+        ("unsupported", False),
+        ("withdrawn", False),
+        ("settled", False),
+    ],
 )
 def test_a_party_reading_dropped_after_its_answer_marks_the_reply_degraded(
     monkeypatch: pytest.MonkeyPatch, first_reading: str, degraded: bool
@@ -935,7 +941,7 @@ def test_a_party_reading_dropped_after_its_answer_marks_the_reply_degraded(
     """An alternate the first reading left unevaluated holds for this request only, whichever
     reading answers. The first reading finds no series from the party, so a scope it
     consulted decided its withdrawal and holds for this request only too. A reading withdrawn
-    before it answers hands on no scope it consulted."""
+    before it answers, or answering unsupported, hands on no scope it consulted."""
     _party_coverage(monkeypatch, from_the_party=False)
     stating = pipeline_module._stating_unevaluated
     run_phases = pipeline_module._run_phases
@@ -952,6 +958,9 @@ def test_a_party_reading_dropped_after_its_answer_marks_the_reply_degraded(
         if not state.party_words_off and first_reading == "withdrawn":
             note_unsettled_scope("Count_Consulted")
             raise PartyReadingWithdrawn
+        if not state.party_words_off and first_reading == "unsupported":
+            note_unsettled_scope("Count_Consulted")
+            return dataclasses.replace(await run_phases(state), status="unsupported")
         return await run_phases(state)
 
     monkeypatch.setattr(pipeline_module, "_stating_unevaluated", leaving_an_alternate)

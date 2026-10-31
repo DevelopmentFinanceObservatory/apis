@@ -64,15 +64,17 @@ _RECORD: ContextVar[DegradedReads | None] = ContextVar("search_degraded_reads", 
 
 @contextmanager
 def recording_degraded_reads(
-    *, detached: bool = False, into: DegradedReads | None = None
+    *, detached: bool | None = None, into: DegradedReads | None = None
 ) -> Iterator[DegradedReads]:
     """Collect, for the body of the `with` block, the reads it swallows. A `detached` record
     keeps them from the outer record when it closes. Given `into`, the block records into
     that record, which belongs to one reading recorded over several blocks, and is detached:
-    its owner carries it (`carry`)."""
+    its owner carries it (`carry`), so `into` with `detached=False` raises `TypeError`."""
+    if into is not None and detached is False:
+        raise TypeError("a record given as `into` is detached; its owner carries it")
     outer = _RECORD.get()
     record = DegradedReads() if into is None else into
-    detached = detached or into is not None
+    detached = into is not None or bool(detached)
     token = _RECORD.set(record)
     try:
         yield record

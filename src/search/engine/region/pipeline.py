@@ -491,7 +491,7 @@ async def resolve_variable(
                     for event in held:
                         await emit(event)
                 return first
-            no_data = not first.specs
+            no_data = first.status == "no_data"
     result, _lost = await attempt(
         party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
     )

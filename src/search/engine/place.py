@@ -11,7 +11,7 @@ query that names no place takes the default place scope the datasets mint takes
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -113,9 +113,19 @@ class ConsultedPresence:
     def __repr__(self) -> str:
         return f"ConsultedPresence({self._presence!r})"
 
-    def read_more(self, read: Callable[[DefaultPresence], DefaultPresence]) -> ConsultedPresence:
-        """The presence `read` gives over this one, this one itself when it adds nothing."""
-        presence = read(self._presence)
+    def read_more(
+        self,
+        *,
+        graph: EngineGraphClient,
+        sdmx: EngineSdmxClient,
+        stat_vars: Iterable[str],
+        deadline: float | None,
+    ) -> ConsultedPresence:
+        """This presence topped up with the scopes of `stat_vars` it lacks
+        (`read_default_presence`), this one itself when the read adds nothing."""
+        presence = _read_presence(
+            graph=graph, sdmx=sdmx, stat_vars=stat_vars, known=self._presence, deadline=deadline
+        )
         return self if presence is self._presence else ConsultedPresence(presence)
 
     def consulted_scope(self, stat_var: str) -> DefaultPlaceScope:
@@ -180,17 +190,30 @@ def read_default_presence(
     infrastructure failure. The read may be one the datasets door's
     reader started, so the error carries no SDMX client's type. A read the deadline
     ends raises `place_scope.PlaceScopeDeadlineError`, a `TimeoutError`, which Search refuses
-    as a timeout."""
+    as a timeout. A `known` read is topped up with what it lacks (`ConsultedPresence.read_more`)."""
+    if known is not None:
+        return known.read_more(graph=graph, sdmx=sdmx, stat_vars=stat_vars, deadline=deadline)
+    return ConsultedPresence(
+        _read_presence(graph=graph, sdmx=sdmx, stat_vars=stat_vars, known=None, deadline=deadline)
+    )
 
-    def read(raw: DefaultPresence | None) -> DefaultPresence:
-        try:
-            return place_scope.read_default_presence(
-                graph=graph, availability=sdmx, stat_vars=stat_vars, known=raw, deadline=deadline
-            )
-        except (DefaultScopeUnknownError, PlaceScopeReadError) as exc:
-            raise GraphReadFailure(str(exc), upstream_status=exc.upstream_status) from exc
 
-    return ConsultedPresence(read(None)) if known is None else known.read_more(read)
+def _read_presence(
+    *,
+    graph: EngineGraphClient,
+    sdmx: EngineSdmxClient,
+    stat_vars: Iterable[str],
+    known: DefaultPresence | None,
+    deadline: float | None,
+) -> DefaultPresence:
+    """`place_scope.read_default_presence` over Search's clients, its read failures raised as
+    `GraphReadFailure` (`read_default_presence`)."""
+    try:
+        return place_scope.read_default_presence(
+            graph=graph, availability=sdmx, stat_vars=stat_vars, known=known, deadline=deadline
+        )
+    except (DefaultScopeUnknownError, PlaceScopeReadError) as exc:
+        raise GraphReadFailure(str(exc), upstream_status=exc.upstream_status) from exc
 
 
 def earth_countries(
