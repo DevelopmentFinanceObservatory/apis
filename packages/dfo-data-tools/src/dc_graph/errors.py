@@ -1,11 +1,14 @@
 """Errors for `GraphClient` reads from `/v2/node`, `/v2/observation` and `/v2/resolve`.
 
 Callers may supply subclasses through `read_error_cls`, `deadline_error_cls` and
-`cap_error_cls`. Each must preserve the matching constructor signature.
+`cap_error_cls`. Each must preserve the matching constructor signature. A stuck cursor
+raises `GraphNotAdvancingError` itself, and dcids a re-request still omits raise
+`read_error_cls` from a `GraphOmittedDcidsError` naming them.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, Protocol
 
 
@@ -55,6 +58,17 @@ class GraphNotAdvancingError(GraphReadError):
         super().__init__(*args, upstream_status=upstream_status)
         self.dcid = dcid
         self.property = property
+
+
+class GraphOmittedDcidsError(GraphReadError):
+    """The cause of the read error raised when the graph leaves `dcids` out of a response and
+    again out of a re-request scoped to them, so a later read would leave them out too."""
+
+    def __init__(
+        self, *args: object, dcids: Sequence[str], upstream_status: int | None = None
+    ) -> None:
+        super().__init__(*args, upstream_status=upstream_status)
+        self.dcids = tuple(dcids)
 
 
 class GraphCapExceededError(Exception):

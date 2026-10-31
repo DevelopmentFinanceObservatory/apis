@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,6 +23,7 @@ from datasets_api.warning_backfill import (
     run_backfill_warnings,
     select_rows,
 )
+from dc_graph import GraphNotAdvancingError, GraphOmittedDcidsError
 from dc_sdmx import SdmxHttpError, SdmxUnsupportedFilterError
 from materialise import facets as facets_module
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
@@ -792,13 +794,23 @@ def test_a_row_without_a_definition_is_refused_and_the_run_goes_on(capsys):
 
 
 class _StatusGraph(FakeGraphReader):
-    def __init__(self, *, status: int, **kwargs: Any) -> None:
+    def __init__(
+        self, *, status: int | None = None, error: Exception | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
-        self._status = status
+        self._error = error or GraphReadError("graph read failed", upstream_status=status)
 
     def observation_facets_batch_many(self, **kwargs):
         self._count("observation_facets_batch_many")
-        raise GraphReadError("graph read failed", upstream_status=self._status)
+        raise self._error
+
+
+def _omitted(dcids: Sequence[str]) -> GraphReadError:
+    """The read error a graph client raises over dcids its re-request omits too."""
+    omitted = GraphOmittedDcidsError("omitted again", dcids=dcids)
+    error = GraphReadError(str(omitted))
+    error.__cause__ = omitted
+    return error
 
 
 class _StatusAvailability(ScopeAvailability):
@@ -820,6 +832,24 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
         pytest.param(_StatusGraph(status=503, facets=_FACETS), None, True, id="graph-503"),
         pytest.param(_StatusGraph(status=429, facets=_FACETS), None, True, id="graph-429"),
         pytest.param(_StatusGraph(status=401, facets=_FACETS), None, True, id="graph-401"),
+        # A 2xx body the client could not read, and a redirect, are a gateway's fault.
+        pytest.param(_StatusGraph(status=200, facets=_FACETS), None, True, id="graph-200-unread"),
+        pytest.param(_StatusGraph(status=302, facets=_FACETS), None, True, id="graph-302"),
+        pytest.param(
+            _StatusGraph(
+                error=GraphNotAdvancingError("repeated", dcid=_IN, property="nextToken"),
+                facets=_FACETS,
+            ),
+            None,
+            False,
+            id="graph-not-advancing",
+        ),
+        pytest.param(
+            _StatusGraph(error=_omitted([_IN]), facets=_FACETS),
+            None,
+            False,
+            id="graph-omits-a-dcid-again",
+        ),
         pytest.param(
             _SCOPED_GRAPH,
             _StatusAvailability(
@@ -1041,6 +1071,125 @@ def test_a_new_format_row_that_disagrees_warns(capsys):
     assert (row["agrees"], row["severity"]) == (False, "WARNING")
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert (summary["new_format_agreed"], summary["severity"]) == (0, "WARNING")
+
+
+def test_a_new_format_row_left_short_by_the_graph_disagrees(capsys):
+    # The mint counted Var_A..Var_E and Var_F off cadence; the graph no longer holds Var_F.
+    off = ["Var_A", "Var_B", "Var_C", "Var_D", "Var_E"]
+    facets = {**_FACETS, **{(member, _KEN): [_facet(f"f-{member}", "2015")] for member in off}}
+    split = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": "x",
+        "member_count": 7,
+        "off_cadence_members": {"count": 6, "refs": [f"dcid:{member}" for member in off]},
+    }
+    store = _Store([_row(split, zero=[*off, "Var_F"])])
+
+    assert _run(store, graph=FakeGraphReader(facets=facets), dry_run=True) == 0
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (row,) = [line for line in lines if line["event"] == "datasets_warning_backfill_row"]
+    assert (row["agrees"], row["found"]["off_cadence_members"]["count"]) == (False, 5)
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
+    assert (summary["new_format_failed"], summary["new_format_agreed"]) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("method", "field"),
+    [
+        pytest.param("M2", "unserved_members", id="nothing-estimated"),
+        pytest.param("Estimated", None, id="an-estimated-facet"),
+    ],
+)
+def test_a_selection_the_graph_no_longer_holds_is_refused_only_where_it_could_continue(
+    method, field, capsys
+):
+    # The graph no longer holds Var_Served, the one member that held the selected facets.
+    other = "Var_Other"
+    facets = {
+        (other, _KEN): [_facet("f-other", "2018", method=method)],
+    }
+    row = _row(_warning([other]), zero=[other])
+    row["trace"]["facets"].append(_METHOD_SELECTION)
+    store = _Store([row])
+
+    assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
+
+    if field is not None:
+        assert _stored(store)[field] == {"count": 1, "refs": ["dcid:Var_Other"]}
+    else:
+        assert _stored(store) == _warning([other])
+        (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
+        assert failed["refused"] is True
+
+
+def test_a_continuation_is_judged_at_the_cadence_most_members_hold(capsys):
+    # Var_AMonthly, first in the trace, dates the selected facet by month; Var_Served and
+    # Var_Served2 date it by year, so the group dispatches yearly, and Var_Other's estimated
+    # facet continues the yearly series, which the trace does not name.
+    monthly, served2, other = "Var_AMonthly", "Var_Served2", "Var_Other"
+    facets = {
+        **_FACETS,
+        (monthly, _KEN): [_facet("f-served", "2015-01")],
+        (served2, _KEN): [_facet("f-served", "2015")],
+        (other, _KEN): [_facet("f-other", "2018", method="Estimated")],
+    }
+    row = _row(_warning([other]), zero=[other])
+    row["trace"]["resolved_stat_vars"] = sorted(
+        [
+            *row["trace"]["resolved_stat_vars"],
+            *(
+                {"ref": f"dcid:{member}", "roles": ["observationAbout"], "observation_count": 3}
+                for member in (monthly, served2)
+            ),
+        ],
+        key=lambda entry: entry["ref"],
+    )
+    row["trace"]["facets"].append(_METHOD_SELECTION)
+    store = _Store([row])
+
+    assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
+
+    assert _stored(store) == _warning([other])
+    (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
+    assert "Estimated" in failed["error"]
+
+
+def test_a_cadence_tie_breaks_on_the_series_each_facet_holds(capsys):
+    # Var_AMonthly holds the selected source by month at two places, Var_Served by year at
+    # one over more of the window's years. One member holds each cadence; the monthly facet's
+    # two series rank it first, as the mint ranked it, ahead of the years the yearly facet
+    # spans, so the yearly estimate of Var_Other continues nothing.
+    uga = "country/UGA"
+    monthly, other = "Var_AMonthly", "Var_Other"
+    facets = {
+        (monthly, _KEN): [_facet("f-monthly", "2015-01")],
+        (monthly, uga): [_facet("f-monthly", "2015-01")],
+        (_SERVED, _KEN): [
+            replace(
+                _facet("f-served", "2016"),
+                earliest_date="2012",
+                dates=("2012", "2016"),
+                values=(1.0, 1.0),
+            )
+        ],
+        (other, _KEN): [_facet("f-other", "2018", method="Estimated")],
+    }
+    row = _row(_warning([other]), zero=[other], places=(_KEN, uga))
+    row["trace"]["resolved_stat_vars"] = sorted(
+        [
+            *row["trace"]["resolved_stat_vars"],
+            {"ref": f"dcid:{monthly}", "roles": ["observationAbout"], "observation_count": 3},
+        ],
+        key=lambda entry: entry["ref"],
+    )
+    row["trace"]["facets"].append(_METHOD_SELECTION)
+    store = _Store([row])
+
+    assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
+
+    assert _stored(store)["unserved_members"] == {"count": 1, "refs": ["dcid:Var_Other"]}
 
 
 def test_a_repeated_axis_in_the_trace_reads_its_first_entry():

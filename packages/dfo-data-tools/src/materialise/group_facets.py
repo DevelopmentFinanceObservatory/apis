@@ -557,17 +557,14 @@ def elect_group(
         for member in sorted(holders[agreement_key(ranked_pool.ranked[0])])
         if not joint_matches(electable[member], selections)
     )
-    election = facet_election(
+    election = group_election(
+        members,
         selections,
-        matching=_merged_joint_matches(members, selections),
-        member_matches=[joint_matches(member, selections) for member in members],
-        cadence_of=cadences_by_member(members),
         stat_vars=stat_vars,
         window=window,
         breadth=breadth,
         variable_breadth=variable_breadth,
     )
-    election = continued_election(election, members, window=window, breadth=breadth)
     return GroupElection(
         election=election,
         dispatch_ids=tuple(
@@ -703,6 +700,33 @@ def select_group_facets(
     if group.incoherent:
         raise _coherence_refusal(requests, electable, group.incoherent, graph=graph)
     return group
+
+
+def group_election(
+    members: Sequence[Sequence[Facet]],
+    selections: Mapping[str, FacetSelection],
+    *,
+    stat_vars: Sequence[str],
+    window: RequestedWindow | None,
+    breadth: Mapping[str, int] | None = None,
+    variable_breadth: VariableBreadth = None,
+) -> FacetElection:
+    """The election of a group whose `members` hold their candidates in `stat_vars` order,
+    under `selections`: the cadence the most members hold (`facets.facet_election`,
+    `facets.dispatch_cadence`) and the method continuing its served series
+    (`facets.continued_election`). `elect_group` and the stored-warning backfill
+    (`datasets_api.warning_backfill`) elect here."""
+    election = facet_election(
+        selections,
+        matching=_merged_joint_matches(members, selections),
+        member_matches=[joint_matches(member, selections) for member in members],
+        cadence_of=cadences_by_member(members),
+        stat_vars=stat_vars,
+        window=window,
+        breadth=breadth,
+        variable_breadth=variable_breadth,
+    )
+    return continued_election(election, members, window=window, breadth=breadth)
 
 
 def _merged_joint_matches(

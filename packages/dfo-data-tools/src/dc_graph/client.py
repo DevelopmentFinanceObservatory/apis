@@ -39,6 +39,7 @@ from dc_graph.errors import (
     GraphCapExceededError,
     GraphDeadlineExceededError,
     GraphNotAdvancingError,
+    GraphOmittedDcidsError,
     GraphReadError,
     ReadErrorFactory,
 )
@@ -1074,10 +1075,12 @@ class GraphClient:
             retry_data = self._post_node_arcs_batch(suspects, deadline=deadline)
             unanswered = [dcid for dcid in suspects if dcid not in retry_data]
             if unanswered:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph /v2/node omitted {unanswered!r} from both the initial batch "
-                    "and a single-dcid retry"
+                    "and a single-dcid retry",
+                    dcids=unanswered,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             read_alone = len(suspects) == 1
             for dcid in suspects:
                 arcs = (
@@ -1225,10 +1228,12 @@ class GraphClient:
             retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
             still_missing = [dcid for dcid in suspects if dcid not in retry_data]
             if still_missing:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph omitted {still_missing!r} from /v2/node data even after a "
-                    "re-request scoped to just those dcids"
+                    "re-request scoped to just those dcids",
+                    dcids=still_missing,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             still_empty: list[str] = []
             for dcid in suspects:
                 retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
@@ -1246,10 +1251,12 @@ class GraphClient:
             for dcid in to_probe:
                 probe_data = self._post_node_arcs([dcid], properties=properties, deadline=deadline)
                 if dcid not in probe_data:
-                    raise self._read_error_cls(
+                    omitted = GraphOmittedDcidsError(
                         f"graph omitted {dcid!r} from /v2/node data even after an "
-                        "individual re-request scoped to just that dcid"
+                        "individual re-request scoped to just that dcid",
+                        dcids=[dcid],
                     )
+                    raise self._read_error_cls(str(omitted)) from omitted
                 probe_arcs = (probe_data.get(dcid) or {}).get("arcs", {})
                 result[dcid] = (
                     parse_arcs(probe_arcs, properties, mark_unresolved=True) if probe_arcs else None
@@ -1620,10 +1627,12 @@ class GraphClient:
             retry_data = self._fetch_observation_property_chunks(absent, deadline=deadline)
             unanswered = [dcid for dcid in absent if dcid not in retry_data]
             if unanswered:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph omitted {unanswered!r} from both the initial batch and "
-                    "a single-dcid retry"
+                    "a single-dcid retry",
+                    dcids=unanswered,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             data = {**data, **retry_data}
         result: dict[str, tuple[str, ...]] = {}
         for dcid in dcids:

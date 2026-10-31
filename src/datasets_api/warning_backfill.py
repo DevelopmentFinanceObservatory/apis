@@ -38,29 +38,33 @@ A row is refused for good (`permanent`) when it cannot be rewritten from what it
 definition or trace, a named member the trace says served observations, fewer zero-count
 members after the last named one than K counts, a body and column holding different warnings
 (`mismatched`), a composite, an identity the adapter refuses, a probe over its pair ceiling
-or refusing its requests, a graph or SDMX read the client would not resend
-(`_clears_on_resend`: a 4xx outside `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`, or an SDMX
-request refused before it was sent, as `SdmxUnsupportedFilterError`), a dataset the code
-index disagrees with, or a continuation the trace cannot state. The last is a method
-selection the mint continued (`facets.continued_election`) with a method the trace does not
-name, since the trace names one only when it served a row, so the selection cannot be
-rebuilt. A permanent refusal follows from the stored row, the graph's answer and this image,
-so every run refuses it again. A graph or SDMX read failing in transport, timing out or
-answering 5xx or a status among `TRANSIENT_CLIENT_ERRORS`, a UN read recorded as failed beside
-ours (`origin_catalogue.UnBlockedPlaces.failures`), or a member whose default place scope is
-not settled leaves the row for the next run (`transient`). The places the UN front door
+or refusing its requests, a graph or SDMX read a later read would repeat
+(`_clears_on_resend`: a 4xx outside `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`, an SDMX request
+refused before it was sent, as `SdmxUnsupportedFilterError`, a repeated `nextToken` or dcids
+the graph omits again when asked for them alone), a dataset the code index disagrees with,
+or a continuation the trace cannot state. The last is a method selection the mint's group
+election continued (`group_facets.group_election`) with a method the trace does not name,
+since the trace names one only when it served a row, so the selection cannot be rebuilt.
+A permanent refusal follows from the stored row, the graph's answer and this image, so
+every run refuses it again. Any other graph or SDMX read failure, in transport, by timeout
+or with a 5xx, a 3xx, an unreadable 2xx or a status among `TRANSIENT_CLIENT_ERRORS`, a UN
+read recorded as failed beside ours (`origin_catalogue.UnBlockedPlaces.failures`), or a
+member whose default place scope is not settled leaves the row for the next run
+(`transient`). The places the UN front door
 refuses do not: it refused them at the mint too. An update the store fails as an outage does
 (`clears_on_retry`) stops the run, and the rows not yet tried count as `remaining`. Any other
 exception is a defect in this task (`failed`).
 
-The run exits 1 when a later run could still rewrite a row (`transient`, `conflicts`,
-`remaining`) or a row failed with a defect, with an `ERROR` line naming the row. A refusal
-exits 0 with a `WARNING` line naming the row and its count in the summary, so a scheduled run
-does not fail on every run over rows that will never change.
+The run exits 1 when a later run could still rewrite a row, because its read did not
+complete (`transient`), the row changed under the update (`conflicts`), or the deadline or a
+store outage stopped the run before it (`remaining`), or when a row failed with a defect
+(`failed`), each with an `ERROR` line naming the row but the rows not tried. A refusal
+exits 0 with a `WARNING` line naming the row and its count in the summary, so a scheduled
+run does not fail on every run over rows that will never change.
 
 Rows come by subject, and a probe, or its failure, is kept until the subject changes, keyed
-by its members, the mint's window and the provenance the selections dispatch, so
-the versions of one definition probe once. Each row is written in a transaction of its own,
+by its members, the mint's window and the provenance the selections dispatch, so the
+versions of one definition probe once. Each row is written in a transaction of its own,
 and the update holds the row to the warnings it read in both the column and the body, so a
 row changed meanwhile is left (`conflicts`).
 
@@ -104,6 +108,7 @@ from datasets_api.codes_materialise import CompositeUnservable, CurrencyRoleUnde
 from datasets_api.manifest import warning_model
 from datasets_api.operation_store import Clock
 from datasets_api.shape import StatVarShape
+from dc_graph import GraphNotAdvancingError, GraphOmittedDcidsError
 from dc_sdmx import SdmxClientError, SdmxHttpError, SdmxResponseError, SdmxTransportError
 from dc_sdmx.client import TRANSIENT_CLIENT_ERRORS
 from materialise.codes import MATERIALISE_CODE_CATALOGUE, MemberFields
@@ -115,11 +120,10 @@ from materialise.errors import (
 )
 from materialise.facets import (
     ElectedDataset,
-    FacetElection,
     FacetSelection,
-    cadences_by_member,
-    continued_election,
+    MemberProbe,
     dataset_candidates,
+    facet_axis_value,
     probe_collection_candidates,
 )
 from materialise.finish import (
@@ -131,7 +135,13 @@ from materialise.finish import (
 )
 from materialise.generation import dispatched_provenances, reads_absent_as_zero
 from materialise.graph import Facet, GraphReader, GraphReadError
-from materialise.group_facets import UncountedKind, classify_uncounted
+from materialise.group_facets import (
+    UncountedKind,
+    classify_uncounted,
+    group_breadth,
+    group_election,
+)
+from materialise.method_status import status_of
 from materialise.pipeline import MaterialisationRequest
 from materialise.place_scope import AvailabilityReader, PlaceScopeReadError
 from materialise.window import RequestedWindow
@@ -212,10 +222,14 @@ class _Outage(Exception):
 
 @dataclass(frozen=True)
 class _Member:
-    """One zero-count member's probed candidates and those its elected dataset publishes."""
+    """One member's probe and the candidates its elected dataset publishes."""
 
-    candidates: tuple[Facet, ...]
+    probe: MemberProbe
     electable: tuple[Facet, ...]
+
+    @property
+    def candidates(self) -> tuple[Facet, ...]:
+        return self.probe.candidates
 
 
 @dataclass(frozen=True)
@@ -294,12 +308,16 @@ def run_backfill_warnings(
     clears_on_retry: Callable[[BaseException], bool],
 ) -> int:
     """Rewrite the member sentences of `rows` (`select_rows`), starting none once `deadline`
-    has passed, emit one `datasets_warnings_backfilled` line, and return the number of rows a
-    later run can still rewrite: those that failed transiently, lost the compare or were left.
+    has passed, emit one `datasets_warnings_backfilled` line, and return the number of rows
+    that set the exit code: those that failed transiently (`transient`), lost the compare
+    (`conflicts`), were not tried before the deadline or an outage (`remaining`), or failed
+    with a defect (`failed`).
 
-    Each row that fails gets one `datasets_warning_backfill_failed` line, at `ERROR` saying
-    whether it was `transient`, and a new-format row's at `WARNING`. An update the store fails
-    and `clears_on_retry` calls an outage stops the run; any other failure is the row's own."""
+    Each row that fails gets one `datasets_warning_backfill_failed` line saying whether it was
+    `transient` or `refused`: at `ERROR` for a defect, a store outage and a row to rewrite
+    whose read did not complete, and at `WARNING` for a refusal and a new-format row whose
+    read did not complete. An update the store fails and `clears_on_retry` calls an outage
+    stops the run; any other failure is the row's own."""
     counts = _Counts()
     subject = None
     for position, row in enumerate(rows):
@@ -616,7 +634,8 @@ def _split(
     members = _members(
         row, identity, resolved, window=window, selections=selections, readers=readers
     )
-    _continuation_stated(selections, [members[_ref(entry)] for entry in resolved], window=window)
+    refs = [_ref(entry) for entry in resolved]
+    _continuation_stated(selections, [members[ref] for ref in refs], stat_vars=refs, window=window)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
             members[ref].candidates,
@@ -631,19 +650,13 @@ def _split(
     )
     # The old sentence named members with a jointly matching facet, so those fill the count
     # first, each part in dcid order. A mint's fields count only the kinds it names, and none
-    # out of the window when the group reads an absent member as zero.
-    counted = ("off_cadence",) if absent_reads_zero else ("off_cadence", "out_of_window")
-    matched = [
-        ref
-        for ref in after_named
-        if kinds[ref] in (counted if new_format else ("off_cadence", "out_of_window"))
-    ]
+    # out of the window when the group reads an absent member as zero; fewer of those than
+    # the fields count is the graph's movement, which the comparison reports.
+    kinds_counted = (
+        ("off_cadence",) if new_format and absent_reads_zero else ("off_cadence", "out_of_window")
+    )
+    matched = [ref for ref in after_named if kinds[ref] in kinds_counted]
     rest = [] if new_format else [ref for ref in after_named if ref not in matched]
-    if count - len(named) > len(matched) + len(rest):
-        raise _Refused(
-            f"{count - len(named)} more members left out, {len(matched) + len(rest)} members "
-            "a mint counts follow the last named one"
-        )
     left_out = [*named, *[*matched, *rest][: count - len(named)]]
     return Split(
         off_cadence=tuple(ref for ref in left_out if kinds[ref] == "off_cadence"),
@@ -676,40 +689,68 @@ def _continuation_stated(
     selections: Mapping[str, FacetSelection],
     members: Sequence[_Member],
     *,
+    stat_vars: Sequence[str],
     window: RequestedWindow,
 ) -> None:
-    """Raise `_Refused` when the mint continued the selection on `measurementMethod`
-    (`facets.continued_election`) with a method the trace does not name.
+    """Raise `_Refused` when the mint continued the selection on `measurementMethod` with a
+    method the trace does not name.
 
     `trace.continuations` names a continuing method only when it served a row, so a trace
-    naming none leaves a continuation that served none unknown. The election is rebuilt from
-    the selections, every member's candidates in trace order, and the cadence of the method
-    selection's dispatched facet. A range window with an end year whose dispatched facet the
-    graph no longer holds cannot be rebuilt either."""
+    naming none leaves a continuation that served none unknown. The group's election is
+    rebuilt from the selections and `members`' candidates in `stat_vars` order
+    (`group_facets.group_election`), ranked by their series under the window as the mint
+    ranked them (`group_facets.group_breadth`). The job binds no whole-variable breadth
+    reader (`facets.bound_variable_breadth`), so a single-place tie the mint broke by a
+    variable's whole breadth falls here to the unit's name, and its cadence can differ from
+    the mint's. When no member holds a facet matching every selection
+    any more, its cadence is gone, and the row is refused if a member holds an estimated facet
+    of the selected source and unit under a range window with an end year, which is when a
+    series can continue (`facets.continuation`)."""
     method = selections.get(_METHOD_AXIS)
     if method is None or method.continued_by is not None:
         return
     candidates = [member.candidates for member in members]
-    cadence_of = cadences_by_member(candidates)
-    cadence = next(
-        (held[method.dispatch_facet_id] for held in cadence_of if method.dispatch_facet_id in held),
-        None,
-    )
-    if cadence is None:
-        if window.kind == "range" and window.end_year is not None:
-            raise _Refused(f"the graph no longer holds the dispatched {method.dispatch_facet_id}")
-        return
-    election = continued_election(
-        FacetElection(selections=dict(selections), cadence=cadence, cadence_of=cadence_of),
+    election = group_election(
         candidates,
+        selections,
+        stat_vars=stat_vars,
         window=window,
+        breadth=group_breadth([member.probe for member in members], window=window),
     )
+    if election.cadence is None:
+        if _may_continue(candidates, selections, window=window):
+            raise _Refused(
+                "no member holds the selected facets any more, and an estimated facet of the "
+                "selected source and unit could have continued them"
+            )
+        return
     continued_by = election.selections[_METHOD_AXIS].continued_by
     if continued_by is not None:
         raise _Refused(
             f"the mint continued the selected method with {continued_by}, which the trace "
             "does not name"
         )
+
+
+def _may_continue(
+    candidates: Sequence[Sequence[Facet]],
+    selections: Mapping[str, FacetSelection],
+    *,
+    window: RequestedWindow,
+) -> bool:
+    """Whether a range window with an end year leaves a member holding an estimated facet
+    (`method_status.status_of`) of the selected source and unit, the facets
+    `facets.continuation` continues a series with."""
+    if window.kind != "range" or window.end_year is None:
+        return False
+    shared = [selections[axis] for axis in ("provenance", "unit") if axis in selections]
+    return any(
+        facet.facet_id is not None
+        and status_of(facet.measurement_method, facet.provenance_id) == "estimated"
+        and all(selection.admits(facet_axis_value(facet, selection.axis)) for selection in shared)
+        for member in candidates
+        for facet in member
+    )
 
 
 def _members(
@@ -796,7 +837,7 @@ def _probe(
     try:
         return {
             request.stat_var: _Member(
-                candidates=probe.candidates,
+                probe=probe,
                 electable=tuple(dataset_candidates(request, probe.candidates)),
             )
             for request, probe in zip(requests, probes, strict=True)
@@ -807,15 +848,20 @@ def _probe(
 
 def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
     """Whether a later read can get past `exc`, as the SDMX client judges a resend: a graph
-    read no response answered, an SDMX transport failure or unparsable 2xx, or a status of
-    5xx or among `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`. Any other 4xx, and an SDMX request
-    the client refuses before sending it (no status, as `SdmxUnsupportedFilterError`, or
-    `SdmxQueryError` and `SdmxCapExceededError`), would repeat. An availability read failing
-    for a place scope (`PlaceScopeReadError`) is judged by the client error it wraps."""
+    read no response answered, an SDMX transport failure or unparsable 2xx, or any status
+    but a 4xx outside `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`, so a 5xx, a 3xx and a 2xx
+    body the client could not read are retried. A 4xx outside that set, an SDMX request the
+    client refuses before sending it (no status, as `SdmxUnsupportedFilterError`, or
+    `SdmxQueryError` and `SdmxCapExceededError`), a paged read whose `nextToken` repeats
+    (`GraphNotAdvancingError`) and dcids the graph omits from a read and its re-request
+    (`GraphOmittedDcidsError`) would repeat. An availability read failing for a place scope
+    (`PlaceScopeReadError`) is judged by the client error it wraps."""
     if isinstance(exc, PlaceScopeReadError) and isinstance(
         exc.__cause__, GraphReadError | SdmxClientError
     ):
         return _clears_on_resend(exc.__cause__)
+    if isinstance(exc, GraphNotAdvancingError) or isinstance(exc.__cause__, GraphOmittedDcidsError):
+        return False
     if isinstance(exc, SdmxTransportError | SdmxResponseError):
         return True
     if not isinstance(exc, GraphReadError | SdmxHttpError):
@@ -823,7 +869,7 @@ def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
     status = exc.upstream_status
     if status is None:
         return isinstance(exc, GraphReadError)
-    return status >= 500 or status in TRANSIENT_CLIENT_ERRORS
+    return not 400 <= status < 500 or status in TRANSIENT_CLIENT_ERRORS
 
 
 def _ref(entry: Mapping[str, object]) -> str:
@@ -838,7 +884,7 @@ def _request(
     selections: Mapping[str, FacetSelection],
     readers: Readers,
 ) -> MaterialisationRequest:
-    """The mint's request for the zero-count member `entry`: its roles, the mint's `window`,
+    """The mint's request for the member `entry`: its roles, the mint's `window`,
     and, for a definition the code index resolves, the dataset the trace's provenance
     selection elected with every dataset the index records the member under."""
     stat_var = cast(str, entry["ref"])
