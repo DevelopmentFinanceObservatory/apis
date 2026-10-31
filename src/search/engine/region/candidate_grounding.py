@@ -88,10 +88,9 @@ from search.engine.retrieval.bound_values import (
     OpenAxisFact,
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
     entity_role_keys,
     observed_measure_family,
-    open_constraint_axes,
+    served_open_axes,
     shape_query,
     slot_expansions,
 )
@@ -348,7 +347,7 @@ def _candidate_conversions(
     """Each candidate's conversion (`_CandidateConversion`), in input order.
 
     A conversion runs only where the collapse's bound-unit filter reads it: for a candidate
-    with data at the place whose plan serves every StatVar under its elected unit
+    with data at the place whose plan serves a StatVar the unit decision serves under its elected unit
     (`convertibility.unit_gate`). Any other candidate keeps its answer and an empty coverage,
     so a candidate the filter drops or passes unchecked makes no conversion read. Candidates
     read nothing another writes, so several run side by side."""
@@ -635,6 +634,7 @@ def _finish_candidate(
     measure_family_cache: dict[MeasureFamilyCacheKey, tuple[MeasurePartition, ...]],
     *,
     text_recognized_properties: frozenset[str],
+    grouped_properties: frozenset[str],
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
     rivalled: bool,
@@ -679,7 +679,6 @@ def _finish_candidate(
     )
     # Served member facts determine each candidate's measure partition. A missing StatVar
     # entry violates the materialisation contract. Share the partition cache across candidates.
-    cand_measure_bound_values = bound_values_from_bindings(cand_bindings)
     cand_served_member_facts = cand_mat.member_facts or {}
     cand_served_members = [cand_served_member_facts[dcid] for dcid in cand_mat.sv_dcids]
     cand_role_keys = entity_role_keys(
@@ -698,9 +697,10 @@ def _finish_candidate(
         cand_served_members,
         cache=measure_family_cache,
     )
-    cand_open_axis_facts = open_constraint_axes(
-        cand_measure_bound_values,
-        dict(zip(cand_mat.sv_dcids, cand_served_members, strict=True)),
+    cand_open_axis_facts = served_open_axes(
+        cand_bindings,
+        cand_mat.sv_dcids,
+        cand_served_member_facts,
         value_labels=cand_shape.value_labels or {},
     )
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
@@ -754,10 +754,15 @@ def _finish_candidate(
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
+        grouped_properties=(grouped_properties if cand_bindings is state.bindings else frozenset()),
         # Judged under the unit request this candidate is served under, as the definite
         # answer's trace is.
         query_qualifiers=answer_terms(
-            state, cand_shape, cand_bindings, served=bound_prices(cand_facet_bindings)
+            state,
+            cand_shape,
+            cand_bindings,
+            served=bound_prices(cand_facet_bindings),
+            uncovered=cand.uncovered,
         ),
         measure_elected_properties=(
             measure_elected_properties if cand_bindings is state.bindings else frozenset()
@@ -956,6 +961,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     # These forced qualifier, measure, and default bindings belong only to candidates that
     # reuse the elected ``state.bindings`` list.
     text_recognized_properties = state.text_recognized_properties
+    grouped_properties = state.grouped_properties
     measure_elected_properties = state.measure_elected_properties
     defaulted_properties = state.defaulted_properties
     rivalled = any(
@@ -1006,6 +1012,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             prep,
             measure_family_cache,
             text_recognized_properties=text_recognized_properties,
+            grouped_properties=grouped_properties,
             measure_elected_properties=measure_elected_properties,
             defaulted_properties=defaulted_properties,
             rivalled=rivalled,

@@ -2016,11 +2016,11 @@
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
 - id: ent-abbreviation-uk-aid
   query: aid from the UK to Kenya
-  why: The abbreviation "UK" names the United Kingdom as the donor, which the resolver holds under its own words.
+  why: The abbreviation "UK" names the United Kingdom as the donor; DAC2a answers in net disbursements, the OECD's convention for a recipient total.
   tags: {theme: aid, entity: two_roles, direction: both, time: none, operation: none, door: raw_text}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
 - id: ent-04
   query: ODA from the World Bank
@@ -2119,7 +2119,7 @@
         role: destination
 - id: crs-grant-equivalent-kenya
   query: grant equivalent aid to Kenya
-  why: Grant equivalent aid to Kenya fixes measuredProperty grantEquivalent, forces financialFlowType to Disbursement and leaves nettingBasis unbound.
+  why: Grant equivalent aid to Kenya fixes measuredProperty grantEquivalent and Disbursement, leaves nettingBasis unbound, and counts CRS flows 10 and 60 as the OECD's headline does.
   tags:
     directional_flow: na
     conjunction: none
@@ -2133,7 +2133,7 @@
           measurement_qualifier: Nominal
           measurement_denominator: null
         bound:
-          crsTypeOfFlow: CRSTypeOfFlow10
+          crsTypeOfFlow: [CRSTypeOfFlow10, CRSTypeOfFlow60]
           financialFlowType: Disbursement
         open: [crsCooperationModality, crsPurpose, crsTypeOfFinance]
       entities:
@@ -2170,7 +2170,7 @@
         prices: constant
 - id: crs-oda-commitments-health-kenya
   query: ODA commitments to health in Kenya
-  why: ODA commitments to health in Kenya binds crsTypeOfFlow 10, Commitment and the generic health purpose, and resolves to the FinancialObligation family.
+  why: ODA commitments to health in Kenya bind crsTypeOfFlow 10, Commitment and the health grouping, CRS 120 and 130, and resolve to the FinancialObligation family.
   tags:
     directional_flow: na
     conjunction: none
@@ -2184,7 +2184,7 @@
           measurement_qualifier: Nominal
           measurement_denominator: null
         bound:
-          crsPurpose: CRSPurposeCode120
+          crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]
           crsTypeOfFlow: CRSTypeOfFlow10
           financialObligationType: Commitment
         open: [crsCooperationModality, crsTypeOfFinance]
@@ -2237,13 +2237,13 @@
         role: destination
 - id: crs-aid-real-terms-kenya
   query: aid to Kenya in real terms
-  why: Aid to Kenya in real terms is the nominal DAC2a family with a constant-price unit request.
+  why: Aid to Kenya in real terms is DAC2a's net disbursements, the OECD's convention for a recipient total, with a constant-price unit request.
   tags:
     directional_flow: na
     conjunction: none
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities:
       - dcid: DACOfficialDonors
         role: origin
@@ -2253,13 +2253,13 @@
         prices: constant
 - id: crs-aid-constant-2022-kenya
   query: aid to Kenya at constant 2022 prices
-  why: Aid to Kenya at constant 2022 prices drops the price phrase, because it matches no registered RealValue synonym; DAC2a answers the aid measure.
+  why: Aid to Kenya at constant 2022 prices drops the price phrase, which matches no registered RealValue synonym; DAC2a answers in net disbursements by convention.
   tags:
     directional_flow: na
     conjunction: none
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities:
       - dcid: DACOfficialDonors
         role: origin
@@ -2267,7 +2267,7 @@
         role: destination
 - id: crs-education-grants-france
   query: total education grants from France in 2020-2024
-  why: Education grants from France for 2020 to 2024 bind type of finance 100, the education purpose and default flow type 10, and a window from 2020 takes grant equivalent.
+  why: Education grants from France bind type of finance 100, education 110 and flow type 10, and a sector part counts gross CRS disbursements by the OECD's convention.
   tags:
     directional_flow: na
     conjunction: none
@@ -2279,7 +2279,7 @@
       measure:
         shape:
           population_type: FinancialFlow
-          measured_property: grantEquivalent
+          measured_property: amount
           stat_type: measuredValue
           measurement_qualifier: Nominal
           measurement_denominator: null
@@ -2287,6 +2287,8 @@
           crsPurpose: CRSPurposeCode110
           crsTypeOfFinance: CRSTypeOfFinance100
           crsTypeOfFlow: CRSTypeOfFlow10
+          financialFlowType: Disbursement
+          nettingBasis: Gross
       entities:
       - dcid: country/FRA
         role: origin
@@ -3832,22 +3834,22 @@
   query: 'parsed: official development assistance, to Ethiopia, 2021'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}], time_text: '2021'}]
-  why: No donor is named, so DAC2a's donor side reads Official Donors, Total, the OECD's total for every official donor.
+  why: No donor is named, so DAC2a's donor side reads Official Donors, Total, and a recipient total counts net disbursements by the OECD's convention.
   tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       window: {kind: range, start: 2021, end: 2021}
 - id: whole-total-oda-ethiopia-all-donors
   query: 'parsed: official development assistance, to Ethiopia, from all donors, 2021'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: all donors, role_text: from}], time_text: '2021'}]
-  why: '"All donors" names the official and private donors together, which DAC2a publishes as Official Donors, Total and Private Donors, Total.'
+  why: '"All donors" names the official and private donors together, DAC2a''s Official Donors, Total and Private Donors, Total, counted in net disbursements by convention.'
   tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities:
         - {dcid: DACOfficialDonors, role: origin}
         - {dcid: DACPrivateDonors, role: origin}
@@ -3857,21 +3859,21 @@
   query: 'parsed: official development assistance, to Ethiopia, from Official Donors, Total, 2021'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: 'Official Donors, Total', role_text: from}], time_text: '2021'}]
-  why: The total's own label names the whole official donor population on DAC2a.
+  why: The total's own label names the whole official donor population on DAC2a, counted in net disbursements, the OECD's convention for a recipient total.
   tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
 - id: whole-total-oda-ethiopia-all-donors-total-label
   query: 'parsed: official development assistance, to Ethiopia, from All Donors, Total, 2021'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: 'All Donors, Total', role_text: from}], time_text: '2021'}]
-  why: A client's guess at the total's label, "All Donors, Total", is an alias of the official donors' total on DAC2a.
+  why: A client's guess at the label, "All Donors, Total", is an alias of DAC2a's official donors' total, counted in net disbursements by the OECD's convention.
   tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
 - id: whole-total-oda-ethiopia-summed-open-donors
   query: 'parsed: official development assistance, to Ethiopia, open donors, aggregate over origin, 2021'
@@ -3882,11 +3884,11 @@
       time_text: '2021'
       open_roles: [donor]
       operations: [{verb: aggregate, over: origin, phrase: from all donors}]
-  why: A sum over the donors may filter them, so the opened donor side lists every donor and binds no total.
+  why: A sum over the donors may filter them, so the opened donor side lists every donor and binds no total; recipient amounts count net disbursements by convention.
   tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: aggregate, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/ETH, role: destination}]
 - id: whole-total-oda-kenya-range-total
   query: 'parsed: official development assistance received, to Kenya, total from all donors, 2015 to 2022'
@@ -3896,22 +3898,22 @@
       entities: [{text: Kenya, role_text: to}]
       time_text: 2015 to 2022
       operations: [{verb: aggregate, phrase: total ODA received from all donors}]
-  why: A total over no axis leaves the donor side unnamed, which DAC2a reads as Official Donors, Total in every year.
+  why: A total over no axis leaves the donor side unnamed, which DAC2a reads as Official Donors, Total in every year, in net disbursements by the OECD's convention.
   tags: {theme: aid, entity: country, direction: destination_only, time: range, operation: aggregate, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2015, end: 2022}
 - id: whole-total-oda-ethiopia-including-private
   query: 'parsed: official development assistance, to Ethiopia, from all donors including private, 2021'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: Ethiopia, role_text: to}, {text: all donors including private, role_text: from}], time_text: '2021'}]
-  why: The phrase names the union DAC2a publishes as two totals, Official Donors, Total and Private Donors, Total, both bound.
+  why: The phrase names the union DAC2a publishes as Official Donors, Total and Private Donors, Total, both bound, in net disbursements by the OECD's convention.
   tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities:
         - {dcid: DACOfficialDonors, role: origin}
         - {dcid: DACPrivateDonors, role: origin}
@@ -3920,11 +3922,11 @@
   query: 'parsed: official development assistance, from France, to all recipients, 2021'
   door: parsed
   parsed: [{variable_text: official development assistance, entities: [{text: France, role_text: from}, {text: all recipients, role_text: to}], time_text: '2021'}]
-  why: DAC2a publishes All Recipients, Total, the total of every recipient and regional allocation, from 1984.
+  why: DAC2a publishes All Recipients, Total, every recipient and regional allocation, from 1984; a recipient total counts net disbursements by the OECD's convention.
   tags: {theme: aid, entity: two_roles, direction: both, time: year, operation: none, door: parsed}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/FRA, role: origin}, {dcid: DACAllRecipients, role: destination}]
 - id: whole-total-oda-france-all-recipients-1983
   query: 'parsed: official development assistance, from France, to all recipients, 1983'
@@ -3960,31 +3962,31 @@
       entities: [{dcid: country/KEN, role: destination}]
 - id: whole-total-raw-kenya-each-donor-lists-donors
   query: ODA to Kenya from each donor, 2020 to 2024
-  why: '"From each donor" asks for one series per donor, so the donor side opens as open_roles does and binds no total.'
+  why: '"From each donor" asks for one series per donor, so the donor side opens as open_roles does and binds no total; amounts count net disbursements by convention.'
   tags: {theme: aid, entity: country, direction: destination_only, time: range, operation: none, door: raw_text}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2024}
       operations: []
 - id: whole-total-raw-kenya-every-donor-lists-donors
   query: ODA to Kenya from every donor in 2022
-  why: '"Every donor" on the raw-text door asks for one series per donor, so the donor side opens and binds no whole total set.'
+  why: '"Every donor" on the raw-text door asks for one series per donor, so the donor side opens and binds no total set; amounts count net disbursements.'
   tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: raw_text}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
       operations: []
 - id: whole-total-raw-kenya-by-donor-lists-donors
   query: ODA to Kenya by donor in 2022
-  why: '"By donor" is a breakdown and no ranking, so the donor side opens, binds no total and carries no rank operation.'
+  why: '"By donor" is a breakdown and no ranking, so the donor side opens, binds no total and carries no rank operation; amounts count net disbursements.'
   tags: {theme: aid, entity: country, direction: destination_only, time: year, operation: none, door: raw_text}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
       operations: []

@@ -230,11 +230,16 @@ def _arcs(quintile: str) -> dict:
 
 
 def _resolve_mortality(
-    bind_catalogue, variable: str, *, dropped: list[str], binder: Binder | None = None
+    bind_catalogue,
+    variable: str,
+    *,
+    dropped: list[str],
+    binder: Binder | None = None,
+    entity_words: dict[str, str] | None = None,
 ):
     """Resolve `variable` in Kenya over the held family of one under-five mortality member
     per wealth quintile, recall scoring only the highest quintile and the binder leaving the
-    wealth slot open, with the bind's `dropped` phrases."""
+    wealth slot open, with the bind's `dropped` phrases and the request's `entity_words`."""
     from origin_catalogue import BASE
     from search.engine.region import resolve_variable
     from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
@@ -292,6 +297,7 @@ def _resolve_mortality(
             llm=_BindLLM(),
             binder=binder,
             dropped_qualifier_phrases=dropped,
+            entity_words=entity_words,
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -314,24 +320,34 @@ def test_the_reader_opens_the_slot_before_recall_binds_it(bind_catalogue):
 
 
 @pytest.mark.parametrize(
-    ("variable", "asked"),
+    ("variable", "entity_words", "asked"),
     [
-        pytest.param("under-five mortality by wealth quintile", [], id="the_phrase_is_read"),
+        pytest.param("under-five mortality by wealth quintile", None, [], id="the_phrase_is_read"),
         pytest.param(
             "rural under-five mortality by wealth quintile",
+            None,
             [("rural",)],
             id="a_word_outside_the_phrase_is_rated",
         ),
+        pytest.param(
+            "Kenyan under-five mortality by wealth quintile",
+            {"Kenya": "Kenyan"},
+            [],
+            id="the_entity_s_own_words_are_read",
+        ),
     ],
 )
-def test_the_words_of_an_opened_slot_phrase_are_read(bind_catalogue, variable, asked):
+def test_the_words_of_an_opened_slot_phrase_are_read(bind_catalogue, variable, entity_words, asked):
     """The answer serves every value of the slot a breakdown phrase opens, so the coverage
     rule reads the phrase's words and the binder rates none of them: "quintile", which no
     member's name holds, stays off the stated-words read. A word outside the phrase that
-    no reader reads, "rural", is still rated."""
+    no reader reads, "rural", is still rated. The request's own words for an entity
+    ("Kenyan" for Kenya) are the entity's, so the binder rates none of them either."""
     binder = RatingBinder(GeminiBinder())
 
-    region = _resolve_mortality(bind_catalogue, variable, dropped=[], binder=binder)
+    region = _resolve_mortality(
+        bind_catalogue, variable, dropped=[], binder=binder, entity_words=entity_words
+    )
 
     assert region.status == "definite"
     assert [request.words for request in binder.requests] == asked

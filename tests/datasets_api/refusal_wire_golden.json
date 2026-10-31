@@ -375,6 +375,22 @@
   "status": 410,
   "truncated": false
  },
+ "extra-132-FacetNotAvailableError": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "facet_not_available",
+  "constraint_id": null,
+  "count": null,
+  "detail": "exemplar",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 422,
+  "truncated": false
+ },
  "extra-133-FacetNotAvailableError": {
   "alternatives": null,
   "cap": null,
@@ -401,22 +417,6 @@
   "count": null,
   "detail": "exemplar",
   "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 422,
-  "truncated": false
- },
- "extra-135-FacetNotAvailableError": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "facet_not_available",
-  "constraint_id": null,
-  "count": null,
-  "detail": "exemplar",
-  "headers": null,
   "issues": [
    {
     "alternatives": null,
@@ -433,7 +433,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-136-DefaultFacetUndefinedError": {
+ "extra-135-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -449,7 +449,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-137-DefaultFacetUndefinedError": {
+ "extra-136-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -475,7 +475,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-138-DefaultFacetUndefinedError": {
+ "extra-137-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -501,7 +501,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-139-DefaultFacetUndefinedError": {
+ "extra-138-DefaultFacetUndefinedError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -517,7 +517,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-140-RecipeNotDeclaredError": {
+ "extra-139-RecipeNotDeclaredError": {
   "alternatives": null,
   "cap": null,
   "cause": {
@@ -537,7 +537,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-141-NonCurrencyUnitError": {
+ "extra-140-NonCurrencyUnitError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -553,8 +553,8 @@
   "status": 422,
   "truncated": false
  },
- "extra-142-MixedGrainError": null,
- "extra-143-MemberNotResolvable": {
+ "extra-141-MixedGrainError": null,
+ "extra-142-MemberNotResolvable": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -589,7 +589,7 @@
   "status": 422,
   "truncated": true
  },
- "extra-144-ColumnUnknownError": {
+ "extra-143-ColumnUnknownError": {
   "alternatives": [
    {
     "label": "place.name",
@@ -610,7 +610,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-145-PivotOverColumnCapError": {
+ "extra-144-PivotOverColumnCapError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -626,7 +626,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-146-PivotNotUniqueError": {
+ "extra-145-PivotNotUniqueError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -661,7 +661,7 @@
   "status": 422,
   "truncated": true
  },
- "extra-147-OverCeilingError": {
+ "extra-146-OverCeilingError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -677,7 +677,7 @@
   "status": 422,
   "truncated": false
  },
- "extra-148-DatasetsStoreUnavailable": {
+ "extra-147-DatasetsStoreUnavailable": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -693,7 +693,7 @@
   "status": 500,
   "truncated": false
  },
- "extra-149-SnapshotSigningFailed": {
+ "extra-148-SnapshotSigningFailed": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -709,7 +709,7 @@
   "status": 500,
   "truncated": false
  },
- "extra-150-ArtifactInventoryError": {
+ "extra-149-ArtifactInventoryError": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -725,7 +725,7 @@
   "status": 503,
   "truncated": false
  },
- "extra-151-RefreshNotPermitted": {
+ "extra-150-RefreshNotPermitted": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -773,7 +773,7 @@
   "status": 503,
   "truncated": false
  },
- "meta-131-OperationNotFound": {
+ "meta-130-OperationNotFound": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -789,7 +789,7 @@
   "status": 404,
   "truncated": false
  },
- "meta-132-OperationFailed": {
+ "meta-131-OperationFailed": {
   "alternatives": null,
   "cap": null,
   "cause": {
@@ -1862,22 +1862,6 @@
   "status": 500,
   "truncated": false
  },
- "pin-100-DatasetsStoreUnavailable": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "service_unavailable",
-  "constraint_id": null,
-  "count": null,
-  "detail": "a datasets store write failed; retry",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": true,
-  "status": 503,
-  "truncated": false
- },
  "pin-92-SpecNotFound": {
   "alternatives": null,
   "cap": null,
@@ -1958,23 +1942,7 @@
   "status": 404,
   "truncated": false
  },
- "pin-97-PinNotPermitted": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "pin_not_permitted",
-  "constraint_id": null,
-  "count": null,
-  "detail": "no principal header was presented; the pin permission is not granted to this caller",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 403,
-  "truncated": false
- },
- "pin-98-PinBackpressure": {
+ "pin-97-PinBackpressure": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -1990,7 +1958,7 @@
   "status": 503,
   "truncated": false
  },
- "pin-99-PinBudgetExhausted": {
+ "pin-98-PinBudgetExhausted": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2008,279 +1976,7 @@
   "status": 503,
   "truncated": false
  },
- "publish-101-PublishFrameInvalid": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "request_invalid",
-  "constraint_id": null,
-  "count": null,
-  "detail": "exemplar",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 400,
-  "truncated": false
- },
- "publish-102-PublishBodyTooLarge": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "request_invalid",
-  "constraint_id": null,
-  "count": null,
-  "detail": "request Content-Length 1 exceeds this door's own admission limit of 1 bytes; refusing to read a body larger than this door holds in memory for one publish at its own row ceiling",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 400,
-  "truncated": false
- },
- "publish-103-PublishBodyEncodingInvalid": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "request_invalid",
-  "constraint_id": null,
-  "count": null,
-  "detail": "exemplar",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 400,
-  "truncated": false
- },
- "publish-104-PublishContentLengthRequired": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "request_invalid",
-  "constraint_id": null,
-  "count": null,
-  "detail": "this door requires a Content-Length header naming the request body's size in bytes before it will read that body; none was sent. This door's only legitimate client posts a JSON body it already holds in memory, so send Content-Length rather than a chunked/unsized transfer",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 400,
-  "truncated": false
- },
- "publish-105-PublishBytesDiverge": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "publish_conflict",
-  "constraint_id": "publish_requires_matching_frame1_bytes",
-  "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds byte-different frame1 content than this publish call's own bytes; refusing to report success for a digest that was not actually recorded under this pair. This most likely means the analysis engine that minted this content_version did not reproduce the same bytes on a second run -- publish the bytes already held under this id, or mint a new content_version for the corrected recipe; retrying with these same bytes will refuse identically",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 409,
-  "truncated": false
- },
- "publish-106-PublishLineageDiverge": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "publish_conflict",
-  "constraint_id": "publish_requires_matching_input_content_versions",
-  "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds byte-identical frame1 content but a different input_content_versions derivation trace than this publish call's own; refusing to report success for a derivation trace that was not actually recorded under this pair. This most likely means this content_version was minted twice for genuinely different inputs -- mint a new content_version for the corrected derivation, or publish the input_content_versions already held under this id; retrying with these same claimed inputs will refuse identically",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 409,
-  "truncated": false
- },
- "publish-107-SnapshotRevoked": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "snapshot_revoked",
-  "constraint_id": null,
-  "count": null,
-  "detail": "'ops_exemplar' at content_version 'ocv_exemplar' was taken down",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 410,
-  "truncated": false
- },
- "publish-108-PublishRecordMissing": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "internal_error",
-  "constraint_id": null,
-  "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' rendered and wrote frame1 bytes to the artifact store, but no version row is readable back through this door's own snapshot_reader immediately after recording one; this publish door was composed with a version_writer that does not share snapshot_reader's own store, or that writer's insert silently failed to land -- retrying will refuse identically under the same wiring",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 500,
-  "truncated": false
- },
- "publish-109-PublishRecipeStoreMissing": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "internal_error",
-  "constraint_id": null,
-  "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' was published with a recipe, but this publish door was composed without a recipe_store; retrying will refuse identically under the same wiring",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 500,
-  "truncated": false
- },
- "publish-110-PublishNotPermitted": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "publish_not_permitted",
-  "constraint_id": null,
-  "count": null,
-  "detail": "no principal header was presented; the publish permission is not granted to this caller",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 403,
-  "truncated": false
- },
- "publish-111-OverCeilingError": {
-  "alternatives": null,
-  "cap": 1,
-  "cause": null,
-  "ceiling_kind": "rows",
-  "code": "over_ceiling",
-  "constraint_id": null,
-  "count": 1,
-  "detail": "exemplar",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 422,
-  "truncated": false
- },
- "publish-112-PublishBackpressure": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "service_unavailable",
-  "constraint_id": null,
-  "count": null,
-  "detail": "the publish door is at its concurrent-write capacity right now; retry",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": true,
-  "status": 503,
-  "truncated": false
- },
- "publish-113-ArtifactRecordConflictError": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "internal_error",
-  "constraint_id": null,
-  "count": null,
-  "detail": "digest 'sha256:exemplar' tier 'working' already has a stored bucket 'exemplar-bucket' object 'sha256:exemplar' size 1; the incoming bucket 'exemplar-bucket-2' object 'sha256:exemplar' size 2 does not match it",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 500,
-  "truncated": false
- },
- "publish-114-ArtifactInventoryError": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "service_unavailable",
-  "constraint_id": null,
-  "count": null,
-  "detail": "reading the artifact inventory failed; retry",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": true,
-  "status": 503,
-  "truncated": false
- },
- "publish-115-ArtifactWriteError": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "service_unavailable",
-  "constraint_id": null,
-  "count": null,
-  "detail": "writing an artifact to storage failed; retry",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": true,
-  "status": 503,
-  "truncated": false
- },
- "publish-116-RecipeDiverges": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "publish_conflict",
-  "constraint_id": "recipe_requires_matching_normal_form_hash",
-  "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a recipe with a different normal_form_hash than this write's own; a frame's pair identifies one recipe, so the stored recipe stands and retrying with this one will refuse identically",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 409,
-  "truncated": false
- },
- "publish-117-ReplayKeyHeld": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "publish_conflict",
-  "constraint_id": "replay_key_requires_one_frame",
-  "count": null,
-  "detail": "replay_key 'rpk_exemplar' is already held by spec_id 'ops_holder' content_version 'ocv_holder'; refusing to index it for spec_id 'ops_exemplar' content_version 'ocv_exemplar'. One replay key names one frame, so two pairs under it mean the key does not cover everything the frame id hashes; retrying will refuse identically",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": false,
-  "status": 409,
-  "truncated": false
- },
- "publish-118-DatasetsStoreUnavailable": {
+ "pin-99-DatasetsStoreUnavailable": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2296,79 +1992,79 @@
   "status": 503,
   "truncated": false
  },
- "recipe-119-RecipeNotFound": {
+ "publish-100-PublishFrameInvalid": {
   "alternatives": null,
   "cap": null,
   "cause": null,
   "ceiling_kind": null,
-  "code": "recipe_not_found",
+  "code": "request_invalid",
   "constraint_id": null,
   "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' holds no recipe",
+  "detail": "exemplar",
   "headers": null,
   "issues": null,
   "pointer": null,
   "retryable": false,
-  "status": 404,
+  "status": 400,
   "truncated": false
  },
- "recipe-120-ReplayNotFound": {
+ "publish-101-PublishBodyTooLarge": {
   "alternatives": null,
   "cap": null,
   "cause": null,
   "ceiling_kind": null,
-  "code": "recipe_not_found",
+  "code": "request_invalid",
   "constraint_id": null,
   "count": null,
-  "detail": "no frame is stored under replay_key 'rpk_exemplar'",
+  "detail": "request Content-Length 1 exceeds this door's own admission limit of 1 bytes; refusing to read a body larger than this door holds in memory for one publish at its own row ceiling",
   "headers": null,
   "issues": null,
   "pointer": null,
   "retryable": false,
-  "status": 404,
+  "status": 400,
   "truncated": false
  },
- "recipe-121-RecipeBackpressure": {
+ "publish-102-PublishBodyEncodingInvalid": {
   "alternatives": null,
   "cap": null,
   "cause": null,
   "ceiling_kind": null,
-  "code": "service_unavailable",
+  "code": "request_invalid",
   "constraint_id": null,
   "count": null,
-  "detail": "the recipe door is at its concurrent-call capacity right now; retry",
-  "headers": null,
-  "issues": null,
-  "pointer": null,
-  "retryable": true,
-  "status": 503,
-  "truncated": false
- },
- "recipe-122-RecipeFrameNotStored": {
-  "alternatives": null,
-  "cap": null,
-  "cause": null,
-  "ceiling_kind": null,
-  "code": "snapshot_not_found",
-  "constraint_id": null,
-  "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' is not a published frame; publish the frame before writing its recipe",
+  "detail": "exemplar",
   "headers": null,
   "issues": null,
   "pointer": null,
   "retryable": false,
-  "status": 404,
+  "status": 400,
   "truncated": false
  },
- "recipe-123-RecipeDiverges": {
+ "publish-103-PublishContentLengthRequired": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "request_invalid",
+  "constraint_id": null,
+  "count": null,
+  "detail": "this door requires a Content-Length header naming the request body's size in bytes before it will read that body; none was sent. This door's only legitimate client posts a JSON body it already holds in memory, so send Content-Length rather than a chunked/unsized transfer",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 400,
+  "truncated": false
+ },
+ "publish-104-PublishBytesDiverge": {
   "alternatives": null,
   "cap": null,
   "cause": null,
   "ceiling_kind": null,
   "code": "publish_conflict",
-  "constraint_id": "recipe_requires_matching_normal_form_hash",
+  "constraint_id": "publish_requires_matching_frame1_bytes",
   "count": null,
-  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a recipe with a different normal_form_hash than this write's own; a frame's pair identifies one recipe, so the stored recipe stands and retrying with this one will refuse identically",
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds byte-different frame1 content than this publish call's own bytes; refusing to report success for a digest that was not actually recorded under this pair. This most likely means the analysis engine that minted this content_version did not reproduce the same bytes on a second run -- publish the bytes already held under this id, or mint a new content_version for the corrected recipe; retrying with these same bytes will refuse identically",
   "headers": null,
   "issues": null,
   "pointer": null,
@@ -2376,15 +2072,15 @@
   "status": 409,
   "truncated": false
  },
- "recipe-124-ReplayKeyHeld": {
+ "publish-105-PublishLineageDiverge": {
   "alternatives": null,
   "cap": null,
   "cause": null,
   "ceiling_kind": null,
   "code": "publish_conflict",
-  "constraint_id": "replay_key_requires_one_frame",
+  "constraint_id": "publish_requires_matching_input_content_versions",
   "count": null,
-  "detail": "replay_key 'rpk_exemplar' is already held by spec_id 'ops_holder' content_version 'ocv_holder'; refusing to index it for spec_id 'ops_exemplar' content_version 'ocv_exemplar'. One replay key names one frame, so two pairs under it mean the key does not cover everything the frame id hashes; retrying will refuse identically",
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds byte-identical frame1 content but a different input_content_versions derivation trace than this publish call's own; refusing to report success for a derivation trace that was not actually recorded under this pair. This most likely means this content_version was minted twice for genuinely different inputs -- mint a new content_version for the corrected derivation, or publish the input_content_versions already held under this id; retrying with these same claimed inputs will refuse identically",
   "headers": null,
   "issues": null,
   "pointer": null,
@@ -2392,7 +2088,55 @@
   "status": 409,
   "truncated": false
  },
- "recipe-125-PublishNotPermitted": {
+ "publish-106-SnapshotRevoked": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "snapshot_revoked",
+  "constraint_id": null,
+  "count": null,
+  "detail": "'ops_exemplar' at content_version 'ocv_exemplar' was taken down",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 410,
+  "truncated": false
+ },
+ "publish-107-PublishRecordMissing": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "internal_error",
+  "constraint_id": null,
+  "count": null,
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' rendered and wrote frame1 bytes to the artifact store, but no version row is readable back through this door's own snapshot_reader immediately after recording one; this publish door was composed with a version_writer that does not share snapshot_reader's own store, or that writer's insert silently failed to land -- retrying will refuse identically under the same wiring",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 500,
+  "truncated": false
+ },
+ "publish-108-PublishRecipeStoreMissing": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "internal_error",
+  "constraint_id": null,
+  "count": null,
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' was published with a recipe, but this publish door was composed without a recipe_store; retrying will refuse identically under the same wiring",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 500,
+  "truncated": false
+ },
+ "publish-109-PublishNotPermitted": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2408,7 +2152,247 @@
   "status": 403,
   "truncated": false
  },
- "refresh-126-FrameNotRefreshable": {
+ "publish-110-OverCeilingError": {
+  "alternatives": null,
+  "cap": 1,
+  "cause": null,
+  "ceiling_kind": "rows",
+  "code": "over_ceiling",
+  "constraint_id": null,
+  "count": 1,
+  "detail": "exemplar",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 422,
+  "truncated": false
+ },
+ "publish-111-PublishBackpressure": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "service_unavailable",
+  "constraint_id": null,
+  "count": null,
+  "detail": "the publish door is at its concurrent-write capacity right now; retry",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": true,
+  "status": 503,
+  "truncated": false
+ },
+ "publish-112-ArtifactRecordConflictError": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "internal_error",
+  "constraint_id": null,
+  "count": null,
+  "detail": "digest 'sha256:exemplar' tier 'working' already has a stored bucket 'exemplar-bucket' object 'sha256:exemplar' size 1; the incoming bucket 'exemplar-bucket-2' object 'sha256:exemplar' size 2 does not match it",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 500,
+  "truncated": false
+ },
+ "publish-113-ArtifactInventoryError": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "service_unavailable",
+  "constraint_id": null,
+  "count": null,
+  "detail": "reading the artifact inventory failed; retry",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": true,
+  "status": 503,
+  "truncated": false
+ },
+ "publish-114-ArtifactWriteError": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "service_unavailable",
+  "constraint_id": null,
+  "count": null,
+  "detail": "writing an artifact to storage failed; retry",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": true,
+  "status": 503,
+  "truncated": false
+ },
+ "publish-115-RecipeDiverges": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "publish_conflict",
+  "constraint_id": "recipe_requires_matching_normal_form_hash",
+  "count": null,
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a recipe with a different normal_form_hash than this write's own; a frame's pair identifies one recipe, so the stored recipe stands and retrying with this one will refuse identically",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 409,
+  "truncated": false
+ },
+ "publish-116-ReplayKeyHeld": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "publish_conflict",
+  "constraint_id": "replay_key_requires_one_frame",
+  "count": null,
+  "detail": "replay_key 'rpk_exemplar' is already held by spec_id 'ops_holder' content_version 'ocv_holder'; refusing to index it for spec_id 'ops_exemplar' content_version 'ocv_exemplar'. One replay key names one frame, so two pairs under it mean the key does not cover everything the frame id hashes; retrying will refuse identically",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 409,
+  "truncated": false
+ },
+ "publish-117-DatasetsStoreUnavailable": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "service_unavailable",
+  "constraint_id": null,
+  "count": null,
+  "detail": "a datasets store write failed; retry",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": true,
+  "status": 503,
+  "truncated": false
+ },
+ "recipe-118-RecipeNotFound": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "recipe_not_found",
+  "constraint_id": null,
+  "count": null,
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' holds no recipe",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 404,
+  "truncated": false
+ },
+ "recipe-119-ReplayNotFound": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "recipe_not_found",
+  "constraint_id": null,
+  "count": null,
+  "detail": "no frame is stored under replay_key 'rpk_exemplar'",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 404,
+  "truncated": false
+ },
+ "recipe-120-RecipeBackpressure": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "service_unavailable",
+  "constraint_id": null,
+  "count": null,
+  "detail": "the recipe door is at its concurrent-call capacity right now; retry",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": true,
+  "status": 503,
+  "truncated": false
+ },
+ "recipe-121-RecipeFrameNotStored": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "snapshot_not_found",
+  "constraint_id": null,
+  "count": null,
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' is not a published frame; publish the frame before writing its recipe",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 404,
+  "truncated": false
+ },
+ "recipe-122-RecipeDiverges": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "publish_conflict",
+  "constraint_id": "recipe_requires_matching_normal_form_hash",
+  "count": null,
+  "detail": "spec_id 'ops_exemplar' content_version 'ocv_exemplar' already holds a recipe with a different normal_form_hash than this write's own; a frame's pair identifies one recipe, so the stored recipe stands and retrying with this one will refuse identically",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 409,
+  "truncated": false
+ },
+ "recipe-123-ReplayKeyHeld": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "publish_conflict",
+  "constraint_id": "replay_key_requires_one_frame",
+  "count": null,
+  "detail": "replay_key 'rpk_exemplar' is already held by spec_id 'ops_holder' content_version 'ocv_holder'; refusing to index it for spec_id 'ops_exemplar' content_version 'ocv_exemplar'. One replay key names one frame, so two pairs under it mean the key does not cover everything the frame id hashes; retrying will refuse identically",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 409,
+  "truncated": false
+ },
+ "recipe-124-PublishNotPermitted": {
+  "alternatives": null,
+  "cap": null,
+  "cause": null,
+  "ceiling_kind": null,
+  "code": "publish_not_permitted",
+  "constraint_id": null,
+  "count": null,
+  "detail": "no principal header was presented; the publish permission is not granted to this caller",
+  "headers": null,
+  "issues": null,
+  "pointer": null,
+  "retryable": false,
+  "status": 403,
+  "truncated": false
+ },
+ "refresh-125-FrameNotRefreshable": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2424,7 +2408,7 @@
   "status": 422,
   "truncated": false
  },
- "refresh-127-RenderingNotRecorded": {
+ "refresh-126-RenderingNotRecorded": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2440,7 +2424,7 @@
   "status": 422,
   "truncated": false
  },
- "refresh-128-RefreshRebuildFailed": {
+ "refresh-127-RefreshRebuildFailed": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2456,7 +2440,7 @@
   "status": 500,
   "truncated": false
  },
- "refresh-129-RefreshBackpressure": {
+ "refresh-128-RefreshBackpressure": {
   "alternatives": null,
   "cap": null,
   "cause": null,
@@ -2472,7 +2456,7 @@
   "status": 503,
   "truncated": false
  },
- "refresh-130-RefreshNotPermitted": {
+ "refresh-129-RefreshNotPermitted": {
   "alternatives": null,
   "cap": null,
   "cause": null,

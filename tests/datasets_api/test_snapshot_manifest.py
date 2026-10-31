@@ -839,7 +839,7 @@ def test_rendering_key_narrows_to_the_one_matching_rendering():
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
         now=lambda: _NOW,
-        rendering_keys=(target.rendering_key,),
+        rendering_keys=lambda _: (target.rendering_key,),
         settings=DatasetsBuildSettings(),
         enrichment_digest=None,
     )
@@ -858,7 +858,7 @@ def test_rendering_key_matching_nothing_returns_empty_artifacts_with_no_error():
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
         now=lambda: _NOW,
-        rendering_keys=("rk-does-not-exist",),
+        rendering_keys=lambda _: ("rk-does-not-exist",),
         settings=DatasetsBuildSettings(),
         enrichment_digest=None,
     )

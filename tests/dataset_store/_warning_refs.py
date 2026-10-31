@@ -1,4 +1,4 @@
-"""Stored warnings in every format migration 0039 reads, for the live tests of 0039 and of
+"""Stored warnings in every format migration 0045 reads, for the live tests of 0045 and of
 `dataset_store.warning_formats`.
 
 Each old format is the message a writer stored before warnings counted their refs. The new
@@ -25,7 +25,7 @@ FALLBACK = (
 )
 ENTITIES = ["country/BDI", "country/KEN", "country/RWA", "country/SSD"]
 UNSERVED = [*ENTITIES, "country/TZA", "country/UGA", "country/ZMB"]
-# The sentence 0039 writes for members a range window left out, which the row cannot split into
+# The sentence 0045 writes for members a range window left out, which the row cannot split into
 # off-cadence and out-of-window members; `counted` is `N of M`, or `N` when the trace holds no
 # members.
 RANGE_MEMBERS_SENTENCE = (
@@ -91,6 +91,7 @@ def new_coverage(
             countries_fallback=countries_fallback,
             off_cadence=members,
             out_of_window=(),
+            unserved_members=(),
             member_count=member_count,
         )
     )
@@ -109,8 +110,8 @@ def warning_refs_body(warnings: list[dict[str, object]], *, members: int | None)
 
 
 def warning_refs_cases() -> dict[str, tuple[dict, list[dict[str, object]]]]:
-    """Version bodies holding every stored warning format 0039 reads, by case, each with the
-    warnings 0039 leaves in its row."""
+    """Version bodies holding every stored warning format 0045 reads, by case, each with the
+    warnings 0045 leaves in its row."""
     empty = {"code": "empty_result", "severity": "warn", "message": "No rows."}
     deflator_detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"][1]
     cases: dict[str, tuple[dict, list[dict[str, object]]]] = {

@@ -68,7 +68,7 @@ from datasets_api.profile_breadth import open_profile_breadth
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
-from dc_sdmx import SdmxClient
+from dc_sdmx import DATA_HEDGE_AFTER_SECONDS, SdmxClient
 from dfo_platform.build import build_commit
 from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, get_release_service
@@ -299,6 +299,8 @@ def build_worker_app(
                         base_url=live_settings.sdmx_base_url,
                         token=_settings.graph_token,
                         timeout=_settings.sdmx_timeout_seconds,
+                        hedge_after=DATA_HEDGE_AFTER_SECONDS,
+                        total_concurrency=_settings.mint_member_max_concurrency,
                     )
                     artifact_store = LiveArtifactStore(
                         buckets={

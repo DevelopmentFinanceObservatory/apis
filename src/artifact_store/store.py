@@ -41,8 +41,8 @@ from artifact_store.errors import (
     ArtifactNotFoundError,
     ArtifactWriteError,
 )
-from artifact_store.inventory import InventoryBatch, InventoryEntry
-from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, sign_get_url
+from artifact_store.inventory import ArtifactLocation, InventoryBatch, InventoryEntry
+from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, emulator_host, sign_get_url
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import working_tier_expired
 from dfo_platform.timings import count
@@ -171,6 +171,14 @@ class ArtifactStore(Protocol):
         Raises `ArtifactNotFoundError` if the location or object is missing,
         `ArtifactLocationDriftError` if the location's bucket is not the
         tier's, or `ArtifactIntegrityError` if the bytes hash to another digest.
+        """
+        ...
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        """The location the inventory records for `digest` at `tier`, or `None` when it records
+        none. Tier retention can delete an object while its location row persists.
+
+        Raises `ArtifactInventoryError` if the read fails.
         """
         ...
 
@@ -544,6 +552,8 @@ class LiveArtifactStore:
                 f"buckets is missing an entry for tier(s): "
                 f"{[tier.value for tier in missing_tiers]!r}"
             )
+        # Refuse an emulator outside the local stack at start-up, before any link goes out.
+        emulator_host()
         self._buckets = dict(buckets)
         self._inventory = inventory
         self._client = client if client is not None else storage.Client()
@@ -610,6 +620,9 @@ class LiveArtifactStore:
                 digest=artifact_digest, tier=tier, computed_digest=computed_digest
             )
         return data
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        return self._inventory.get_location(digest, tier=tier)
 
     def signed_location_url(
         self,

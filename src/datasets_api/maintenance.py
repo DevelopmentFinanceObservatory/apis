@@ -34,9 +34,10 @@ failed, and reads the settings `sweep` reads.
 `settle` runs on every deploy, after the services move to the new image. Between the migration
 job and the service move the previous image can still write a pin reference holding the raw
 shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
-its label (`SETTLE_STATEMENTS`). Each touches only rows in the old shape, so a repeat run
-changes nothing. It runs them in one transaction, then writes one `datasets_settled` line
-counting the pin references still holding a raw secret, the version rows holding no facts, and
+its label (`SETTLE_STATEMENTS`). Each touches only a pin principal that is neither a label nor
+an open caller's `ip:` key, so a repeat run changes nothing, and the table lock they run under
+holds concurrent pins back until they finish. It runs them in one transaction, then writes one
+`datasets_settled` line counting the pin references still holding a raw secret, the version rows holding no facts, and
 the version rows whose output profile, in the column or the body, still names the party-kind
 enrichment `kind`. Insert triggers repair the previous image's version rows, also for a request
 an old revision finishes after this task: migration 0030's fills the facts of a row written with
@@ -105,6 +106,46 @@ line per version that fails and one `datasets_frame_summed_backfilled` line coun
 `sweep` reads. No deploy runs it, since a row that stays NULL would be read and cut again on
 every deploy.
 
+`diff-recipes --report PATH` runs by hand against an environment to check the analysis runner
+against its stored frames. It computes every recipe in `datasets.frame_recipe` again on its own root versions through
+the analysis runner (`recipe_replay.replay_recipe`) and compares the result frame's `cv_` and
+output digest with the stored frame's. It writes nothing to any store: roots are read only where
+their version already holds the frame or file (`recipe_replay.StoredRootSource`), nothing renders,
+and nothing is published, pinned or recorded. It writes one JSON line per recipe that is not
+equal to `PATH` (default `recipe-diff.jsonl`), each `{spec_id, content_version, family, outcome,
+stored, computed, detail}`, and one `datasets_recipes_diffed` line holding the count of each
+outcome (`equal`, `differs`, `roots_unreadable`, `frame_unreadable`) per family (`compare`,
+`sum_of`, `other`) and in total. It exits 1 when any recipe differs, with that line at `ERROR`
+severity. It reads the settings `sweep` reads.
+
+`record-recipe-golden --out DIR [--limit N] [--max-bytes B] [--origin NAME]` writes up to `N`
+(default 50) recipes whose roots and stored frame it can read, with those frames, into `DIR`, one
+case directory each labelled `NAME` (default `dfo-dev`) (`recipe_golden.record_case`), skipping
+a recipe whose frames together pass `B` bytes (default 2,000,000). It reads the stores as `diff-recipes` does and writes only under
+`DIR`, one `datasets_recipe_golden_recorded` line counting the cases written and skipped.
+
+`normalise-recipes [--dry-run]` runs by hand once, after the website's share migration job.
+For each recipe in `datasets.frame_recipe` whose root `options.columns` are not sorted and
+listed once, or whose root `options.groupby.by` is not sorted, as `analysis_roots.mint_options`
+writes them, it sorts them, recomputes `normal_form_hash` and `replay_key` as the analysis route does, moves the card revisions drawing that frame from the
+old hash to the new one in the Presentation database
+(`presentation_store.store.rehash_derived_rendering`), then rewrites the recipe row. Each
+database commits on its own, revisions first, so a run stopped between them leaves the recipe
+to the next run. It skips a recipe whose stored hashes the stored recipe does not reproduce and
+one whose new replay key another frame's recipe holds (`RecipeSkip`), with one
+`datasets_recipe_normalise_skipped` line each. It writes one `datasets_recipes_normalised` line
+with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
+second run changes nothing. It reads the runtime database settings of both stores.
+
+`take-down-share SHARE_ID` runs by hand to take a share down for its owner, as for the ids the
+website's `share_cleanup` table holds. It takes the share down as the owner's delete with its
+write token does (`ShareStore.delete_share`) and needs no token. It writes one
+`presentation_share_taken_down` line, or `presentation_share_take_down_not_found` when no share
+is up at the id, as for one taken down already, and exits 0 for both, so a re-run changes
+nothing. An id that is not a share id gets one `presentation_share_take_down_refused` `ERROR`
+line and exits 1 without opening the store. It reads the Presentation store's runtime database
+settings.
+
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
 of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
 """
@@ -119,7 +160,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
-from typing import cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
 import pg8000.exceptions
 import pyarrow as pa
@@ -156,6 +198,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from datasets_api.analysis import FrameUnavailable
 from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
 from datasets_api.description_record import backfill_record, computed_inputs
 from datasets_api.description_store import (
@@ -174,6 +217,9 @@ from datasets_api.operation_store import (
 )
 from datasets_api.party_totals import TRACE_KEY as PARTY_TOTALS_TRACE_KEY
 from datasets_api.party_totals import PartyTotalsCut, cut_frame
+from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, record_case
+from datasets_api.recipe_replay import ReplayOutcome, StoredRootSource, replay_recipe
+from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reconciliation import sweep
 from datasets_api.recorded_rendering import (
     derived_version_sums,
@@ -194,6 +240,7 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from description.facts import SCHEMA_VERSION, DescriptionRecord
+from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
@@ -214,6 +261,9 @@ from materialise.statistics import (
     SeriesFigures,
     SeriesStatisticsSink,
 )
+
+if TYPE_CHECKING:
+    from presentation_store import ShareStore
 
 
 class MaintenanceSettings(BaseSettings):
@@ -316,8 +366,14 @@ def _age_operations() -> int:
     return 0
 
 
+_LABELLED = "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32})$'"
+"""Every principal the pin door writes, as a POSIX pattern: a `Principal.label` or a caller key
+(`dfo_platform.caller.address_key`). A pin principal it does not match is the raw secret the
+image before migration 0026 stored."""
+
 SETTLE_STATEMENTS: tuple[str, ...] = (
-    """UPDATE datasets.artifact_reference AS labelled
+    "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE",
+    f"""UPDATE datasets.artifact_reference AS labelled
 SET created_at = LEAST(labelled.created_at, raw.created_at),
     removed_at = CASE
         WHEN labelled.removed_at IS NULL OR raw.removed_at IS NULL THEN NULL
@@ -325,30 +381,33 @@ SET created_at = LEAST(labelled.created_at, raw.created_at),
     END
 FROM datasets.artifact_reference AS raw
 WHERE raw.reference_kind = 'pin'
-  AND NOT starts_with(raw.principal, 'secret-sha256:')
+  AND raw.principal !~ {_LABELLED}
   AND labelled.principal
       = 'secret-sha256:' || left(encode(sha256(convert_to(raw.principal, 'UTF8')), 'hex'), 16)
   AND labelled.artifact_digest = raw.artifact_digest
   AND labelled.subject_id = raw.subject_id
   AND labelled.content_version = raw.content_version
   AND labelled.reference_kind = raw.reference_kind""",
-    """DELETE FROM datasets.artifact_reference AS raw
+    f"""DELETE FROM datasets.artifact_reference AS raw
 USING datasets.artifact_reference AS labelled
 WHERE raw.reference_kind = 'pin'
-  AND NOT starts_with(raw.principal, 'secret-sha256:')
+  AND raw.principal !~ {_LABELLED}
   AND labelled.principal
       = 'secret-sha256:' || left(encode(sha256(convert_to(raw.principal, 'UTF8')), 'hex'), 16)
   AND labelled.artifact_digest = raw.artifact_digest
   AND labelled.subject_id = raw.subject_id
   AND labelled.content_version = raw.content_version
   AND labelled.reference_kind = raw.reference_kind""",
-    """UPDATE datasets.artifact_reference
+    f"""UPDATE datasets.artifact_reference
 SET principal = 'secret-sha256:' || left(encode(sha256(convert_to(principal, 'UTF8')), 'hex'), 16)
 WHERE reference_kind = 'pin'
-  AND NOT starts_with(principal, 'secret-sha256:')""",
+  AND principal !~ {_LABELLED}""",
 )
-"""The three statements of `0026_artifact_reference_principal_label.sql`, verbatim. The
-migration explains them."""
+"""The statements of `0026_artifact_reference_principal_label.sql`, which the migration
+explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:` key and a
+second run are left alone. The lock queues pins until the transaction ends: a pin landing between
+the fold and the rewrite would otherwise make the rewrite collide with its row, or leave a raw
+row the count reports."""
 
 
 def run_settle(*, store: DatasetStore) -> int:
@@ -366,7 +425,7 @@ def run_settle(*, store: DatasetStore) -> int:
         raw = _count(
             tx,
             "SELECT count(*) AS count FROM datasets.artifact_reference "
-            "WHERE reference_kind = 'pin' AND NOT starts_with(principal, 'secret-sha256:')",
+            f"WHERE reference_kind = 'pin' AND principal !~ {_LABELLED}",
         )
         legacy_party_kind = _count(
             tx,
@@ -1080,6 +1139,290 @@ def _backfill_frame_summed() -> int:
         )
 
 
+def stored_recipe_pairs(store: DatasetStore) -> list[tuple[str, str]]:
+    """`(spec_id, content_version)` of every frame holding a recipe, oldest recipe first."""
+    with store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version FROM datasets.frame_recipe "
+            "ORDER BY recorded_at, subject_id, content_version"
+        )
+    return [(str(row["subject_id"]), str(row["content_version"])) for row in rows]
+
+
+def _replay_source(
+    store: DatasetStore, *, artifact_store: ArtifactStore, now: Clock
+) -> StoredRootSource:
+    return StoredRootSource(
+        snapshot_reader=LiveSnapshotReader(store=store),
+        artifact_store=artifact_store,
+        recipes=LiveRecipeStore(store=store),
+        now=now,
+    )
+
+
+def run_diff_recipes(
+    *, store: DatasetStore, artifact_store: ArtifactStore, report: TextIO, now: Clock = utc_now
+) -> int:
+    """Replay every stored recipe, write each one that is not equal to `report` and emit the
+    counts. Return how many differ."""
+    counts = {family: dict.fromkeys(ReplayOutcome, 0) for family in ("compare", "sum_of", "other")}
+    recipes = LiveRecipeStore(store=store)
+    for spec_id, content_version in stored_recipe_pairs(store):
+        record = recipes.read_recipe(spec_id=spec_id, content_version=content_version)
+        if record is None:
+            continue
+        replay = replay_recipe(
+            spec_id=spec_id,
+            content_version=content_version,
+            recipe=record.body,
+            source=_replay_source(store, artifact_store=artifact_store, now=now),
+        )
+        counts[replay.family][replay.outcome] += 1
+        if replay.outcome is not ReplayOutcome.EQUAL:
+            report.write(json.dumps(replay.as_json(), sort_keys=True) + "\n")
+    totals = {outcome: sum(by[outcome] for by in counts.values()) for outcome in ReplayOutcome}
+    differs = totals[ReplayOutcome.DIFFERS]
+    emit(
+        "datasets_recipes_diffed",
+        severity="ERROR" if differs else "INFO",
+        **{outcome.value: count for outcome, count in totals.items()},
+        families={
+            family: {outcome.value: count for outcome, count in by.items()}
+            for family, by in counts.items()
+        },
+    )
+    return differs
+
+
+def _diff_recipes(report: Path) -> int:
+    with report.open("w", encoding="utf-8") as sink:
+        return _run_over_artifacts("diff-recipes", partial(run_diff_recipes, report=sink))
+
+
+def run_record_recipe_golden(
+    *,
+    store: DatasetStore,
+    artifact_store: ArtifactStore,
+    out: Path,
+    limit: int,
+    max_bytes: int,
+    origin: str,
+    now: Clock = utc_now,
+) -> None:
+    """Write up to `limit` readable recipes with their frames under `out`, one case each,
+    labelled `origin`."""
+    written = skipped = 0
+    for spec_id, content_version in stored_recipe_pairs(store):
+        if written >= limit:
+            break
+        try:
+            kept = record_case(
+                spec_id=spec_id,
+                content_version=content_version,
+                source=_replay_source(store, artifact_store=artifact_store, now=now),
+                out=out / f"{spec_id}-{content_version}",
+                origin=origin,
+                max_bytes=max_bytes,
+            )
+        except FrameUnavailable:
+            kept = False
+        written += kept
+        skipped += not kept
+    emit("datasets_recipe_golden_recorded", written=written, skipped=skipped)
+
+
+def _record_recipe_golden(out: Path, limit: int, max_bytes: int, origin: str) -> int:
+    return _run_over_artifacts(
+        "record-recipe-golden",
+        partial(run_record_recipe_golden, out=out, limit=limit, max_bytes=max_bytes, origin=origin),
+    )
+
+
+class RecipeSkip(StrEnum):
+    """Why `normalise-recipes` leaves a recipe whose root options are out of order as it is."""
+
+    # The stored hashes differ from those the analysis route computes from the stored recipe,
+    # as for a tree whose frames different engine builds computed.
+    UNREPRODUCIBLE = "unreproducible"
+    # Another frame's recipe holds the replay key the sorted recipe computes.
+    REPLAY_KEY_HELD = "replay_key_held"
+
+
+def _recipe_hashes(recipe: Mapping[str, Any]) -> tuple[str, str]:
+    """The `normal_form_hash` and `replay_key` of `recipe`, computed as the analysis route
+    computes them for the frame it runs (`datasets_api.analysis._recipe_hashes`)."""
+    roots = recipe["roots"]
+    normal_hash = normal_form_hash(normal_form(recipe["tree"], roots))
+    key = replay_key(
+        normal_form_hash=normal_hash,
+        root_datasets=[
+            root_identity(root["dataset"], enrichment_stamp=root.get("enrichment_stamp"))
+            for root in roots
+        ],
+        execution_identities=[recipe["execution_identity"]],
+    )
+    return normal_hash, key
+
+
+def _with_sorted_options(recipe: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`recipe` with each root's `options.columns` sorted and listed once and its
+    `options.groupby.by` sorted, as `analysis_roots.mint_options` writes them, or `None` when
+    every root's already are."""
+    roots: list[Mapping[str, Any]] = []
+    for root in recipe["roots"]:
+        options = dict(root.get("options", {}))
+        if (columns := options.get("columns")) is not None:
+            options["columns"] = sorted(set(columns))
+        if (groupby := options.get("groupby")) is not None:
+            options["groupby"] = {**groupby, "by": sorted(groupby["by"])}
+        if options != root.get("options", {}):
+            root = {**root, "options": options}
+        roots.append(root)
+    if roots == recipe["roots"]:
+        return None
+    return {**recipe, "roots": roots}
+
+
+def run_normalise_recipes(
+    *, datasets: DatasetStore, presentation: DatasetStore, dry_run: bool = False
+) -> int:
+    """Sort the root columns and `groupby.by` of every stored recipe that lists them out of
+    order, recompute its two hashes, and move the card revisions drawing its frame to the new
+    `normal_form_hash`.
+    Return how many recipes it skipped (`RecipeSkip`).
+
+    The revisions move first, in the Presentation database, then the recipe row, in the
+    Datasets one, so a run stopped between the two leaves the recipe to the next run. With
+    `dry_run` it counts and changes nothing."""
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store.store import rehash_derived_rendering
+
+    with datasets.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version, normal_form_hash, replay_key, recipe "
+            "FROM datasets.frame_recipe ORDER BY recorded_at, subject_id, content_version"
+        )
+    normalised = revisions = 0
+    skipped: dict[RecipeSkip, int] = dict.fromkeys(RecipeSkip, 0)
+    for row in rows:
+        spec_id, content_version = str(row["subject_id"]), str(row["content_version"])
+        stored = cast(Mapping[str, Any], row["recipe"])
+        sorted_recipe = _with_sorted_options(stored)
+        if sorted_recipe is None:
+            continue
+        old_hash, old_key = str(row["normal_form_hash"]), str(row["replay_key"])
+        new_hash, new_key = _recipe_hashes(sorted_recipe)
+        skip: RecipeSkip | None = None
+        if _recipe_hashes(stored) != (old_hash, old_key):
+            skip = RecipeSkip.UNREPRODUCIBLE
+        else:
+            with datasets.transaction() as tx:
+                holder = tx.fetch_one(
+                    "SELECT subject_id, content_version FROM datasets.frame_recipe "
+                    "WHERE replay_key = %s AND superseded_at IS NULL",
+                    (new_key,),
+                )
+            if holder is not None:
+                skip = RecipeSkip.REPLAY_KEY_HELD
+        if skip is not None:
+            skipped[skip] += 1
+            emit(
+                "datasets_recipe_normalise_skipped",
+                severity="WARNING",
+                spec_id=spec_id,
+                content_version=content_version,
+                reason=skip.value,
+                replay_key=new_key,
+            )
+            continue
+        normalised += 1
+        revisions += rehash_derived_rendering(
+            presentation,
+            spec_id=spec_id,
+            content_version=content_version,
+            old_hash=old_hash,
+            new_hash=new_hash,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            continue
+        with datasets.transaction() as tx:
+            tx.execute(
+                "UPDATE datasets.frame_recipe "
+                "SET normal_form_hash = %s, replay_key = %s, recipe = %s "
+                "WHERE subject_id = %s AND content_version = %s AND replay_key = %s",
+                (
+                    new_hash,
+                    new_key,
+                    {**sorted_recipe, "normal_form_hash": new_hash, "replay_key": new_key},
+                    spec_id,
+                    content_version,
+                    old_key,
+                ),
+            )
+    emit(
+        "datasets_recipes_normalised",
+        severity="WARNING" if any(skipped.values()) else "INFO",
+        dry_run=dry_run,
+        normalised=normalised,
+        revisions=revisions,
+        **{reason.value: count for reason, count in skipped.items()},
+    )
+    return sum(skipped.values())
+
+
+def _normalise_recipes(dry_run: bool) -> int:
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store import provider as presentation_provider
+
+    datasets = LiveDatasetStore(connections=shared_pool())
+    try:
+        presentation = LiveDatasetStore(connections=presentation_provider.shared_pool())
+        try:
+            skipped = run_normalise_recipes(
+                datasets=datasets, presentation=presentation, dry_run=dry_run
+            )
+        finally:
+            presentation_provider.close_shared_pool()
+    finally:
+        close_shared_pool()
+    return 1 if skipped else 0
+
+
+def run_take_down_share(*, share_store: ShareStore, share_id: str) -> None:
+    """Take the share `share_id` down as its owner's delete does, and log whether one was up."""
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store import ShareNotFound
+
+    try:
+        share_store.delete_share(share_id=share_id)
+    except ShareNotFound:
+        emit("presentation_share_take_down_not_found", share_id=share_id)
+        return
+    emit("presentation_share_taken_down", share_id=share_id)
+
+
+def _take_down_share(share_id: str) -> int:
+    from presentation_store import LiveShareStore
+    from presentation_store import provider as presentation_provider
+    from presentation_store.ids import SHARE_ID_PATTERN
+
+    if not SHARE_ID_PATTERN.fullmatch(share_id):
+        emit(
+            "presentation_share_take_down_refused",
+            severity="ERROR",
+            share_id=share_id,
+            reason=f"not a share id ({SHARE_ID_PATTERN.pattern})",
+        )
+        return 1
+    presentation = LiveDatasetStore(connections=presentation_provider.shared_pool())
+    try:
+        run_take_down_share(share_store=LiveShareStore(store=presentation), share_id=share_id)
+    finally:
+        presentation_provider.close_shared_pool()
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="datasets-maintenance")
     tasks = parser.add_subparsers(dest="task", required=True)
@@ -1104,8 +1447,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backfill-frame-summed",
         help="record whether each derived version recorded without it stores its collapse",
     ).set_defaults(run=_backfill_frame_summed)
+    diff = tasks.add_parser(
+        "diff-recipes",
+        help="compute every stored recipe again on its own roots and compare its output",
+    )
+    diff.add_argument("--report", type=Path, default=Path("recipe-diff.jsonl"))
+    diff.set_defaults(run=_diff_recipes)
+    golden = tasks.add_parser(
+        "record-recipe-golden",
+        help="write readable recipes with their root and output frames as golden cases",
+    )
+    golden.add_argument("--out", type=Path, required=True)
+    golden.add_argument("--limit", type=int, default=50)
+    golden.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    golden.add_argument("--origin", default="dfo-dev")
+    golden.set_defaults(run=_record_recipe_golden)
+    normalise = tasks.add_parser(
+        "normalise-recipes",
+        help="sort each stored recipe's root columns and move its cards to the new hash",
+    )
+    normalise.add_argument("--dry-run", action="store_true")
+    normalise.set_defaults(run=_normalise_recipes)
+    take_down = tasks.add_parser(
+        "take-down-share", help="take a share down as its owner's delete does, with no token"
+    )
+    take_down.add_argument("share_id")
+    take_down.set_defaults(run=_take_down_share)
     args = parser.parse_args(argv)
-    return args.run()
+    options = {key: value for key, value in vars(args).items() if key not in ("task", "run")}
+    return args.run(**options)
 
 
 if __name__ == "__main__":

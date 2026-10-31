@@ -29,6 +29,7 @@ from assembler.ports import (
     WriteTokenInUse,
 )
 from description.vocabulary import Vocabulary
+from dfo_platform.caller import Caller
 
 __all__ = ["FakeFrameStore", "FakeReleaseRegistry", "FakeRevisionStore", "FakeVocabularySource"]
 
@@ -60,7 +61,7 @@ class FakeFrameStore:
                 reason="io", detail=f"no fake frame registered for {frame_ref!r}"
             ) from None
 
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
+    def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
         if frame_ref not in self._frames:
             raise FrameUnavailable(reason="io", detail=f"cannot pin unknown frame {frame_ref!r}")
         entry = (frame_ref, component_id)

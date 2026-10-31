@@ -7,6 +7,7 @@ minting lives in `content_version.py`, and FRAME1 serialisation in `formats.py`.
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -59,6 +60,36 @@ class ParquetFrameChunks:
         reader = pq.ParquetFile(pa.BufferReader(self.parquet_bytes))
         for row_group_index in range(reader.num_row_groups):
             yield reader.read_row_group(row_group_index, columns=[column])[column]
+
+    @property
+    def num_rows(self) -> int:
+        """The frame's row count, read from the Parquet footer alone."""
+        return pq.ParquetFile(pa.BufferReader(self.parquet_bytes)).metadata.num_rows
+
+
+class ParquetFrameSink:
+    """Writes each frame chunk as one row group of an in-memory Parquet file, which
+    `ParquetFrameChunks` reads back chunk for chunk.
+
+    The first chunk sets the shared schema. `finish()` returns a zero-copy view; durable
+    storage happens only after a successful materialisation.
+    """
+
+    def __init__(self) -> None:
+        self._sink = io.BytesIO()
+        self._writer: pq.ParquetWriter | None = None
+
+    def write(self, table: pa.Table) -> None:
+        if self._writer is None:
+            self._writer = pq.ParquetWriter(self._sink, table.schema)
+        self._writer.write_table(table)
+
+    def finish(self) -> memoryview:
+        assert self._writer is not None, "ParquetFrameSink.finish() called before any chunk"
+        self._writer.close()
+        # `getbuffer()` returns a zero-copy view and keeps the sink alive.
+        # The view blocks later writes, and `finish()` is the final call.
+        return self._sink.getbuffer()
 
 
 def unit_cell_for_rebuild(value: object) -> object:

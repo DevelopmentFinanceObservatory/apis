@@ -243,7 +243,8 @@ def _entity_token(
     )
 
 
-def _join_labels(labels: list[str]) -> str:
+def join_labels(labels: list[str]) -> str:
+    """`labels` as a reader lists them: "a", "a and b", "a, b, and c", empty for none."""
     if not labels:
         return ""
     if len(labels) == 1:

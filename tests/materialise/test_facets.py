@@ -52,7 +52,6 @@ from materialise.facets import (
     probe_facets,
     rank_candidates,
     select_facet,
-    served_facets,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.pipeline import MaterialisationRequest
@@ -63,6 +62,7 @@ from series_coverage.facets import facet_candidates
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
+from ._group_support import served_alone
 from ._scope_availability import NO_SCOPE_READ
 from .conftest import FakeGraphReader
 
@@ -363,10 +363,12 @@ class _ProbeRecordingGraph(FakeGraphReader):
         super().__init__(**kwargs)
         self.probed: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates=False, deadline=None
+    ):
         self.probed.append((tuple(stat_vars), tuple(entities)))
         return super().observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
 
@@ -515,7 +517,22 @@ def test_probe_facets_role_bearing_with_no_bound_role_covers_every_coverage_row(
     assert sum(graph.calls.values()) == 0
 
 
-def test_probe_facets_forwards_deadline_to_the_graph_call():
+_WINDOWS_READ_DATED = [
+    (None, False),
+    (RequestedWindow(kind="all"), False),
+    (RequestedWindow(kind="latest"), False),
+    (RequestedWindow(kind="range", start_year=2010, end_year=2020), True),
+    (RequestedWindow(kind="range", start_year=2010, end_year=2026, end_unstated=True), True),
+]
+
+
+@pytest.mark.parametrize("bound", [("country/KEN",), ()], ids=["bound", "default_scope"])
+@pytest.mark.parametrize(("window", "dated"), _WINDOWS_READ_DATED)
+def test_probe_facets_forwards_deadline_and_reads_dates_under_a_range_only(
+    window: RequestedWindow | None, dated: bool, bound: tuple[str, ...]
+):
+    """The probe of a request binding a place, and of one binding none at its default place
+    scope, reads dates under a range alone."""
     graph = FakeGraphReader(facets={(_STAT_VAR, "country/KEN"): [_FACET_KEN]})
     deadlines: list[float | None] = []
     original = graph.variable_facets_batch
@@ -528,15 +545,17 @@ def test_probe_facets_forwards_deadline_to_the_graph_call():
     deadline = time.monotonic() + 30
 
     probe_facets(
-        availability=NO_SCOPE_READ,
+        availability=NO_SCOPE_READ if bound else graph.scope_availability(),
         stat_var=_STAT_VAR,
-        bound_entities=["country/KEN"],
+        bound_entities=bound,
         settle=True,
         graph=graph,
+        window=window,
         deadline=deadline,
     )
 
     assert deadlines == [deadline]
+    assert graph.facet_reads == [("variable_facets_batch", dated)]
 
 
 def test_probe_facets_observation_about_declared_roles_takes_graph_path_byte_identical():
@@ -1411,7 +1430,7 @@ def test_a_series_and_the_estimates_continuing_it_rank_as_one_candidate(
 def test_a_dispatch_serves_the_series_and_estimates_the_ranking_credited(candidates, served):
     """The ranking credits a series with the estimates its dispatch serves, so the
     election is never won on estimates the version then leaves out."""
-    assert served_facets(candidates, stat_vars=[_STAT_VAR], window=_range(2016, 2030)) == served
+    assert served_alone(candidates, stat_var=_STAT_VAR, window=_range(2016, 2030)) == served
 
 
 def test_estimates_continuing_two_selections_leave_the_election_to_their_own_series():
@@ -1433,7 +1452,7 @@ def test_estimates_continuing_two_selections_leave_the_election_to_their_own_ser
     window = _range(2020, 2030)
 
     for order in itertools.permutations([longer, shorter, estimates]):
-        assert served_facets(order, stat_vars=[_STAT_VAR], window=window) == (
+        assert served_alone(order, stat_var=_STAT_VAR, window=window) == (
             longer,
             estimates,
         ), [f.facet_id for f in order]

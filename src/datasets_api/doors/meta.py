@@ -13,7 +13,7 @@ ceiling fields and cause entities, as `GET /api/datasets/{id}` renders them for
 the same failure.
 A done operation returns the mint manifest narrowed to the rendering its request
 posted, each artifact under its stable download link. The rendering keys are
-`artifact_rendering_keys` of the row's stored `options` under this service's site
+`resolved_rendering_keys` of the row's stored `options` under this service's site
 settings, the keys the synchronous definition door narrows by, so the poll lists
 that rendering's artifact plus statistics artifacts, as the synchronous mint does.
 Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
@@ -93,7 +93,11 @@ from datasets_api.operations.task_client import (
     TaskClient,
 )
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import artifact_rendering_keys, is_statistics_rendering, rendition_token
+from datasets_api.render import (
+    is_statistics_rendering,
+    rendition_token,
+    resolved_rendering_keys,
+)
 from datasets_api.retention import with_retention
 from datasets_api.schema import (
     OperationEnvelope,
@@ -215,7 +219,7 @@ def _load_done_manifest(
     `served_from: materialise` and the `confirmed_at` the row recorded. It carries the
     version's `retention` (`datasets_api.retention`).
 
-    The rendering keys are `artifact_rendering_keys` of the row's `options` under this
+    The rendering keys are `resolved_rendering_keys` of the row's `options` under this
     service's `settings.site` and the serving code index's `enrichment_digest`, the keys the
     synchronous definition door narrows by. A kind-column file linked under an older digest
     matches none of them. The read lists that rendering's artifact plus statistics artifacts.
@@ -226,8 +230,12 @@ def _load_done_manifest(
     failures raise `RuntimeError`. This route maps both to `internal_error`.
     """
     assert operation.subject_id is not None and operation.content_version is not None
-    options = MintOptions.model_validate(operation.options)
-    keys = artifact_rendering_keys(options, site=settings.site, enrichment_digest=enrichment_digest)
+    # The worker resolved any default enrichment against the version it built.
+    keys = resolved_rendering_keys(
+        MintOptions.model_validate(operation.options),
+        site=settings.site,
+        enrichment_digest=enrichment_digest,
+    )
     try:
         manifest = read_snapshot_manifest(
             id=operation.subject_id,
@@ -265,7 +273,7 @@ def _load_done_manifest(
             operation.id,
             operation.subject_id,
             operation.content_version,
-            keys,
+            keys(manifest),
             rendition_token(settings.site),
         )
         return None

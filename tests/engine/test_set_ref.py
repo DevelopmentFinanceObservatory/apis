@@ -364,3 +364,68 @@ def test_collapse_same_shape_set_ref_for_returns_none_propagates() -> None:
     diff_slot = next(s for s in effective[0].spec.resolved.slots if s.binding.kind == "set")
     assert isinstance(diff_slot.binding, BindingSet)
     assert diff_slot.binding.set_ref is None
+
+
+def _set_slot(axis: Axis, *values: SlotValue, set_ref: GraphRef | None = None) -> Slot:
+    return Slot(
+        key=SlotKey(axis=axis, property=_gr("prop/A"), label="prop A"),
+        binding=BindingSet(values=list(values), set_ref=set_ref),
+    )
+
+
+def test_collapse_same_shape_keeps_the_set_ref_of_a_member_set_the_merge_leaves_whole() -> None:
+    """Health (120 and 130, named by its group) folded with HIV/AIDS (13040, under 130)
+    binds health's set, so the merge keeps health's group over `set_ref_for`'s."""
+    health = GraphRef(ref="HealthGroup", label="health")
+    sh = _shape(axis="what")
+    codes = [
+        SlotValue(ref=_gr(c), value_kind="enum_value")
+        for c in ("CRSPurposeCode120", "CRSPurposeCode130")
+    ]
+    r1 = _region(sh, _set_slot("what", *codes, set_ref=health), sv="sv/1", index=0)
+    r2 = _region(sh, _value_slot("what", "CRSPurposeCode13040"), sv="sv/2", index=1)
+
+    (merged,), residual = collapse_same_shape(
+        [r1, r2], set_ref_for=lambda _: GraphRef(ref="WRONG", label="WRONG")
+    )
+
+    assert residual == []
+    (binding,) = (s.binding for s in merged.spec.resolved.slots if s.binding.kind == "set")
+    assert isinstance(binding, BindingSet)
+    assert binding.set_ref == health
+
+
+@pytest.mark.parametrize(
+    ("axis", "second"),
+    [
+        (
+            "where",
+            _set_slot(
+                "where",
+                SlotValue(ref=_gr("c2"), value_kind="entity"),
+                SlotValue(ref=_gr("c3"), value_kind="entity"),
+            ),
+        ),
+        (
+            "when",
+            _set_slot(
+                "when",
+                SlotValue(ref=_gr("c2"), value_kind="enum_value"),
+                SlotValue(literal="c3", value_kind="literal"),
+            ),
+        ),
+    ],
+    ids=["where-axis-set", "set-with-a-literal"],
+)
+def test_collapse_same_shape_refuses_a_set_it_cannot_union(axis: Axis, second: Slot) -> None:
+    """A place set reads a region whose containment the merge cannot read, and a literal
+    names no code, so the second part stays apart. Identity rejects a literal on every axis
+    it hashes (`spec_id`), so the literal sits on the when axis."""
+    sh = _shape(axis=axis)
+    first = _entity_slot(axis, "c1") if axis == "where" else _value_slot(axis, "c1")
+    r1 = _region(sh, first, sv="sv/1", index=0)
+    r2 = _region(sh, second, sv="sv/2", index=1)
+
+    (kept,), residual = collapse_same_shape([r1, r2])
+
+    assert (kept, residual) == (r1, [("test", 1)])

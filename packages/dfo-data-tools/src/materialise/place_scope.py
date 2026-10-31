@@ -92,7 +92,7 @@ import time
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import Future, InvalidStateError, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Final, NamedTuple, Protocol
 
@@ -290,11 +290,14 @@ class DefaultPlaceScope:
 
     `every_place` is true when the places are every place with data, and false when they are
     countries with data, or Earth, because a full list was too large or unavailable. A union
-    is every place only when each of its scopes is.
+    is every place only when each of its scopes is. `settled` is false for a countries
+    fallback this request alone took (`DefaultPresence.unsettled`), which a later request can
+    answer differently. It plays no part in equality.
     """
 
     places: tuple[str, ...]
     every_place: bool
+    settled: bool = field(default=True, compare=False)
 
 
 NO_DEFAULT_SCOPE: Final = DefaultPlaceScope(places=(), every_place=True)
@@ -324,12 +327,12 @@ class DefaultPresence:
         return len(self.cold_read)
 
     def scope(self, stat_var: str) -> DefaultPlaceScope:
-        """The default scope of `stat_var`. A StatVar the read did not cover raises
-        `AssertionError`."""
+        """The default scope of `stat_var`, not `settled` when it is in `unsettled`. A StatVar
+        the read did not cover raises `AssertionError`."""
         scope = self.scopes.get(stat_var)
         if scope is None:
             raise AssertionError(f"no default-scope presence was read for {stat_var!r}")
-        return scope
+        return replace(scope, settled=False) if stat_var in self.unsettled else scope
 
     def facet_entities(self, stat_vars: Iterable[str]) -> list[str]:
         """The union of the scopes of `stat_vars`, in `scope_places` order. One facet read at

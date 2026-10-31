@@ -463,15 +463,16 @@ def test_spec_id_is_byte_identical_with_and_without_provenance_populated():
 
 
 def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
-    """The three provenances build_spec can stamp: a property in
+    """The provenances build_spec can stamp: a property in
     measure_elected_properties gets "measure_elected", one in
-    text_recognized_properties keeps "text_recognized", and every other
-    slot's property gets "binder"."""
+    text_recognized_properties keeps "text_recognized", one grouped as well reads
+    "declared_grouping", and every other slot's property gets "binder"."""
     shape = _PERSON_SHAPE
     slots = [
         value_slot("what", "textProp", "textProp", "val1"),
         value_slot("what", "measureProp", "measureProp", "val2"),
         value_slot("what", "binderProp", "binderProp", "val3"),
+        value_slot("what", "groupedProp", "groupedProp", "val4"),
     ]
     stat_vars = [
         StatVar(ref=_gr("sv"), shape_id=shape.shape_id, slot_values=[], constraint_properties=[])
@@ -483,7 +484,8 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
         stat_vars=stat_vars,
         entities=[],
         coverage=CoverageBare(has_data=True),
-        text_recognized_properties=frozenset({"textProp"}),
+        text_recognized_properties=frozenset({"textProp", "groupedProp"}),
+        grouped_properties=frozenset({"groupedProp"}),
         measure_elected_properties=frozenset({"measureProp"}),
     )
 
@@ -495,6 +497,7 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
     assert _provenance("textProp") == "text_recognized"
     assert _provenance("measureProp") == "measure_elected"
     assert _provenance("binderProp") == "binder"
+    assert _provenance("groupedProp") == "declared_grouping"
 
 
 def test_measure_elected_and_text_recognized_overlap_raises():
@@ -522,15 +525,18 @@ def test_measure_elected_and_text_recognized_overlap_raises():
         )
 
 
-def test_merged_spec_keeps_provenance_through_collapse_same_shape():
+@pytest.mark.parametrize("grouped", [False, True], ids=["text-recognised", "grouped"])
+def test_merged_spec_keeps_provenance_through_collapse_same_shape(grouped):
     """The same merged spec keeps the provenance through
     collapse_same_shape -- unioned across the group, so a property only ONE
-    member forced still reads text_recognized on the merged spec."""
+    member forced still reads text_recognized on the merged spec, and one a member's
+    sector concept bound to its grouping still reads declared_grouping."""
     spec_a = _spec(
         _PERSON_SHAPE,
         "ValA",
         sv_dcid="sv",
         text_recognized_properties=frozenset({"constraintProp"}),
+        grouped_properties=frozenset({"constraintProp"}) if grouped else None,
     )
     spec_b = _spec(_PERSON_SHAPE, "ValB", sv_dcid="sv")  # binder (the default)
     region_a = RegionResult(
@@ -558,7 +564,7 @@ def test_merged_spec_keeps_provenance_through_collapse_same_shape():
     merged_filter = next(
         f for f in merged_spec.resolved.trace.slot_filters if f.key.property.ref == "constraintProp"
     )
-    assert merged_filter.provenance == "text_recognized"
+    assert merged_filter.provenance == ("declared_grouping" if grouped else "text_recognized")
 
 
 def test_merged_spec_keeps_measure_elected_provenance_through_collapse_same_shape():

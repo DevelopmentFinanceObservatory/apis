@@ -15,6 +15,8 @@ from artifact_store import (
 )
 from datasets_api.codes_materialise import (
     CapabilityUnavailable,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     ExcludedByRegistry,
@@ -28,6 +30,7 @@ from datasets_api.codes_materialise import (
     UnSystemUnavailable,
 )
 from datasets_api.doors.mint_errors import MintBackpressure
+from datasets_api.kinds.spec_id import EntityKindRefused, WindowOverCap
 from datasets_api.operation_store import OperationBacklogFull
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -70,6 +73,9 @@ from materialise.reshape import (
     PivotOverColumnCapError,
     RollupNotSummableError,
 )
+from search.models import TimeWindow
+from search.role_kinds import RoleKindRefused
+from search.scope_window import WindowTooLong
 from statvar_members import FiveTuple, MemberReadDeadline
 
 MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
@@ -87,6 +93,10 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     InvalidRoleRef,
     RoleIncompatible,
     CurrencyRoleUndeclared,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
+    WindowOverCap,
+    EntityKindRefused,
     RecipeNotDeclaredError,
     RateCoverageGapError,
     NonCurrencyUnitError,
@@ -153,6 +163,31 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     InvalidRoleRef(stat_var="dcid:exemplar", role="exemplar"),
     RoleIncompatible(stat_var="dcid:exemplar", role="exemplar"),
     CurrencyRoleUndeclared(stat_var="dcid:exemplar", role="exemplar", declared_roles=("exemplar",)),
+    CompositeUnservable("exemplar", identity_pointer="/slots/0"),
+    CompositeWindowUnsupported(composite="provenance/exemplar"),
+    WindowOverCap(
+        pointer="/input/scope/window",
+        start_year=1960,
+        end_year=2060,
+        too_long=WindowTooLong(
+            read=TimeWindow(start_year=1960, end_year=2060),
+            years=101,
+            cap=80,
+            first_year=1960,
+            last_year=2087,
+        ),
+    ),
+    EntityKindRefused(
+        pointer="/input/scope/entities/origin",
+        refused=RoleKindRefused(
+            role="origin",
+            axis="origin",
+            dcid="Count_Person",
+            kind="stat_var",
+            allowed=("country", "organisation"),
+            family=None,
+        ),
+    ),
     RecipeNotDeclaredError("exemplar", cause="recipe_undeclared"),
     RateCoverageGapError("exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)),
     NonCurrencyUnitError("exemplar", unit="Exemplar"),

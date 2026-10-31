@@ -1147,6 +1147,19 @@ def test_definition_version_record_stores_its_facts(
         stored=replace(stored_version, facts=without_records), served=manifest
     ) == persisted_manifest(stored=stored_version, served=manifest)
 
+    derived = definition_version_record(
+        manifest=manifest,
+        stored=stored,
+        materialisation=result,
+        artifacts=[],
+        base_content_version="cv_" + "0" * 32,
+        frame_summed=True,
+    )
+    # Only raw versions are read for per-series records, so a derived version's record stores none.
+    assert isinstance(derived.facts, ManifestFacts)
+    assert derived.facts.series_conversions is None
+    assert derived.facts == replace(facts, series_conversions=None)
+
 
 def _stored_version(record: VersionRecord) -> StoredVersion:
     return StoredVersion(

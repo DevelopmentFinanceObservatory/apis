@@ -106,7 +106,7 @@ class _CountingStep:
         self.calls = 0
         self.ratings: list[object] = []
 
-    def __call__(self, pool, *, ratings=None, holds=None):
+    def __call__(self, pool, *, ratings=None, holds=None, drafts=None):
         self.calls += 1
         self.ratings.append(ratings)
         return keep_the_pick(pool)
@@ -289,7 +289,7 @@ _RESTATED_UNBOUND = SlotBindingDraft(axis="how", property_dcid="undataAge", kind
 
 
 def _restated_request(
-    bindings: tuple[SlotBindingDraft, ...], rated: dict[str, float]
+    bindings: tuple[SlotBindingDraft, ...], rated: dict[str, float], served: tuple[str, ...] = ()
 ) -> StatedWordsRequest:
     decision = BindResult(
         output=_ELECTS_FIRST,
@@ -303,6 +303,7 @@ def _restated_request(
         words=("girls", "rural"),
         bindings=bindings,
         decision=decision,
+        served=served,
     )
 
 
@@ -342,6 +343,40 @@ def test_jev_rates_its_unread_words_again_on_the_bound_values(bindings, rated, a
     assert "parts selectable by Age" in quoted
     assert "Sex" not in quoted
     assert usage == JevCall(ms=0, input_tokens=120, output_tokens=4).usage
+
+
+@pytest.mark.parametrize(
+    ("served", "asked", "quoted"),
+    [
+        ((), (), None),
+        (("School completion rate",), (), None),
+        (("Primary completion rate",), ("girls", "rural"), "the series 'Primary completion rate'"),
+        (
+            ("School completion rate", "Primary completion rate"),
+            ("girls", "rural"),
+            "each of these series: 'School completion rate'; 'Primary completion rate'",
+        ),
+    ],
+    ids=["none", "the-label", "one-other", "several"],
+)
+def test_jev_rates_its_words_again_on_the_served_series(served, asked, quoted):
+    """The bind rated the words on the shape's label, so where the answer serves other
+    series, one as several, every word it rated is asked again quoting them. An answer
+    serving the label's series alone keeps the bind's ratings and sends no request."""
+    ask = FakeAsk({}, stated={"girls": 0.1, "rural": 0.2})
+    request = _restated_request((_RESTATED_UNBOUND,), {"girls": 0.9, "rural": 0.8}, served)
+
+    got, _usage = asyncio.run(JevBinder(ask=ask).rate_words_stated(request, llm=None))
+
+    if not asked:
+        assert (ask.requests, got) == ([], {"girls": 0.9, "rural": 0.8})
+        return
+    ((state, questions),) = ask.requests
+    assert (state, questions) == restated_request(
+        _RESTATED_VARIABLE, _COMPLETION, 0, asked, bindings=(_RESTATED_UNBOUND,), served=served
+    )
+    assert f"served as {quoted}" in questions["unread|0|0"]["instructions"]
+    assert got == {"girls": 0.1, "rural": 0.2}
 
 
 _AGE_60 = SlotBindingDraft(axis="how", property_dcid="age", kind="value", value_dcids=["Years60"])

@@ -23,6 +23,7 @@ from code_index.types import (
     BroadReading,
     CodeRow,
     CodeSystemDeclaration,
+    CompositeDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
     HouseDefaultCase,
@@ -394,6 +395,7 @@ class CodeIndex:
         "_codes_by_text",
         "_codes_by_tokens",
         "_codes_by_word",
+        "_composites",
         "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
@@ -456,8 +458,10 @@ class CodeIndex:
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
         whole_total_sets: Iterable[WholeTotalSet] = (),
+        composites: Iterable[CompositeDeclaration] = (),
     ) -> None:
         self.stamp = stamp
+        self._composites = {composite.provenance: composite for composite in composites}
         self.shape_slot_defaults = tuple(shape_slot_defaults)
         """The open-slot defaults declared per `populationType` for properties outside the
         code systems, in declaration order."""
@@ -742,6 +746,14 @@ class CodeIndex:
         """Whether `dcid` is a code system's graph id (`CodeSystemDeclaration.enum_dcid`)."""
         return any(d.enum_dcid == dcid for d in self.declarations.values())
 
+    def system_of_code(self, dcid: str) -> str | None:
+        """The graph id of the system the code `dcid` belongs to (its declaration's
+        `enum_dcid`), or `None` when this index holds no such code or its system declares no
+        graph id."""
+        row = self._codes_by_dcid.get(dcid)
+        declaration = self.declarations.get(row.code_system) if row is not None else None
+        return declaration.enum_dcid if declaration is not None else None
+
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> PartyKind | None:
         """The kind of the party `dcid` whose graph types are `types`, read for no dataset: its
         row's kind in every dataset that publishes it when `parties` lists it
@@ -844,6 +856,12 @@ class CodeIndex:
                 menu.setdefault(child)
         return CandidateCodes(hits=tuple(hits), codes=tuple(menu)[:CANDIDATE_LIMIT])
 
+    def names_word(self, word: str) -> bool:
+        """Whether the label or a synonym of some code holds `word`, compared as
+        `candidate_codes` compares it (`fold_word`). "malaria" is such a word
+        (CRS 12262, "Malaria control")."""
+        return fold_word(word) in self._codes_by_word
+
     def words_shared(self, dcid: str, words: Iterable[str]) -> frozenset[str]:
         """The words of `words` the label or a synonym of the code `dcid` holds, compared
         as `candidate_codes` compares them: casefolded, less one trailing "s" on a word
@@ -898,9 +916,20 @@ class CodeIndex:
 
     def absent_observation(self, provenance: str) -> AbsentObservation:
         """Returns the dataset's declared absent-observation rule, or `unknown` when no dataset
-        declares `provenance`."""
+        declares `provenance`. A composite (`composite`) reads `zero` when every one of its
+        component tables does, as a sum over its frame then reads each component's absent
+        member, and `unknown` otherwise."""
+        composite = self._composites.get(provenance)
+        if composite is not None:
+            readings = {self.absent_observation(recipe.dataset) for recipe in composite.components}
+            return "zero" if readings == {"zero"} else "unknown"
         dataset = self.datasets.get(provenance)
         return dataset.absent_observation if dataset is not None else "unknown"
+
+    def composite(self, provenance: str) -> CompositeDeclaration | None:
+        """The composite `provenance` declares when the index serves every one of its
+        component tables (`code_index.loader.parse_index`), else `None`."""
+        return self._composites.get(provenance)
 
     def house_case_systems(self) -> dict[str, HouseDefaultCase]:
         """Each code system that declares a kind of question (`CodeSystemDeclaration.house_case`)

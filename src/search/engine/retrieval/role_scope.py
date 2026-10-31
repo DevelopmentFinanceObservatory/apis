@@ -45,7 +45,6 @@ from search.engine.retrieval.read_plan import (
     PlanSeries,
     ReadPlan,
     RoleYears,
-    WindowTooLong,
     asked_years,
     in_elected_datasets,
     plan_role_read,
@@ -53,6 +52,7 @@ from search.engine.retrieval.read_plan import (
     window_gap,
 )
 from search.models import CoverageBare, EntityRoleKey
+from search.scope_window import WindowTooLong
 from series_coverage.schema import ABSENT_ENTITY
 
 if TYPE_CHECKING:
@@ -166,7 +166,7 @@ _SCOPE_TOO_BROAD_REMEDY = (
 
 def scope_too_broad(*, axis: RoleAxis, detail: str) -> UnsupportedDraft:
     """The role routes' window refusal: a requested window whose year list passes
-    `scope_max_window_years` (`read_plan.WindowTooLong`), reported before any coverage
+    `scope_max_window_years` (`search.scope_window.WindowTooLong`), reported before any coverage
     lookup runs."""
     from search.engine.retrieval.retrieve import UnsupportedDraft
 

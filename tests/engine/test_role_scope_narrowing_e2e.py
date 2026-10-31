@@ -275,8 +275,8 @@ def test_unit_binding_narrows_which_sources_are_cited(monkeypatch, search_settin
 
 
 def test_a_facet_without_provenance_is_read_by_its_facet_id_and_cites_nothing(monkeypatch):
-    """A facet without a provenance serves each pair: the preview binds the provenance axis to
-    the null ref and reads the facet by its id, one request per pair. Coverage counts both
+    """A facet without a provenance serves each pair: the preview, which does not require
+    provenance, reads the facet by its id, one request per pair. Coverage counts both
     recipients and no source, and nothing is cited."""
     rows, role_names = _coverage_seed_for("debtor", [_KEN, _NOR], [_SV_DCID])
     observations = {

@@ -104,7 +104,8 @@ SKILLS_INDEX_FIRST_BUILD_RETRY_INITIAL_SECONDS = 2.0
 SKILLS_INDEX_FIRST_BUILD_RETRY_CEILING_SECONDS = 60.0
 
 # `acquire_shared_index` holds application startup for up to 120 seconds while the first
-# build runs. Cloud Run throttles CPU outside requests once an instance is ready, and the
+# build runs, counted from the index's creation, so Search and Skills acquiring it in turn
+# wait once. Cloud Run throttles CPU outside requests once an instance is ready, and the
 # build reads the in-memory release, so a build left to the background stalls until traffic
 # arrives while the doors answer 503. Past the bound, or after a failed first build, startup
 # completes and the retry backoff continues.

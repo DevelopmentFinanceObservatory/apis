@@ -19,6 +19,7 @@ from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
+from materialise.enrichment import party_count
 from materialise.roles import axis_noun
 from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient
@@ -60,6 +61,7 @@ from search.engine.retrieval.bound_values import (
     five_tuple_member_facts,
     identity_query,
     index_carries_shape,
+    served_open_axes,
     shape_population_arcs,
     shape_query,
     slot_expansions,
@@ -278,9 +280,15 @@ def bound_opposite_role_dcids(discovered: DiscoveredScope, roles: EntityRoles) -
     return list(dict.fromkeys(dcid for dcid, role in role_bindings(roles) if role == opposite_role))
 
 
+def _role_scope_axis_clause(axis: EntityRoleKey) -> str:
+    """The clause opening every `role_scope_defaulted` warning on `axis`, which
+    `restate_role_scope_warnings` matches a warning by."""
+    return f"No {axis_noun(axis)} was named"
+
+
 def _role_scope_defaulted_base(axis: EntityRoleKey) -> str:
     noun = axis_noun(axis)
-    return f"no {noun} was named; the answer was resolved across every {noun} with data"
+    return f"{_role_scope_axis_clause(axis)}, so the answer covers every {noun} with data"
 
 
 def role_scope_defaulted_message(
@@ -292,9 +300,10 @@ def role_scope_defaulted_message(
 ) -> str:
     """Build the defaulted-scope warning with member count and any bound opposite-role entities.
 
-    `member_count` is how many members of the open axis the materialised read plan serves
-    (`Materialised.scope_member_dcids`), or None for a response whose answers serve different
-    members, which the warning then counts as every member with data. Use `from` when
+    `member_count` is how many parties of the open axis the materialised read plan serves
+    (`Materialised.scope_member_dcids`, counted by `enrichment.party_count`), or None for a
+    response whose answers serve different members, which the warning then counts as every
+    member with data. Use `from` when
     destination is discovered, otherwise `to`. Spell out up to three labels; for four or
     more, report the count and opposite-axis noun without label lookup. `label_of` returns
     labels in the input order.
@@ -303,10 +312,11 @@ def role_scope_defaulted_message(
     if member_count is None:
         base = _role_scope_defaulted_base(discovered.axis)
     else:
-        noun_phrase = noun if member_count == 1 else f"{noun}s"
+        counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
+            member_count, f"all {member_count} {noun}s"
+        )
         base = (
-            f"no {noun} was named; the answer was resolved across the {member_count} "
-            f"{noun_phrase} with data"
+            f"{_role_scope_axis_clause(discovered.axis)}, so the answer covers {counted} with data"
         )
     if not bound_dcids:
         return f"{base}."
@@ -360,8 +370,10 @@ def role_scope_defaulted_warnings(
 ) -> list[Warning]:
     """Build warnings for each open role axis in `mat`.
 
-    A discovered scope reports how many members the answer serves (`members`, by default
-    `mat.scope_member_dcids`, those of the materialised read plan), or with `state_count`
+    A discovered scope reports how many parties the answer serves (`members`, by default
+    `mat.scope_member_dcids`, those of the materialised read plan), leaving out the totals
+    the code index declares in the datasets of `mat.sv_dcids` as the role's
+    `RoleAxisFact.member_count` does (`enrichment.party_count`), or with `state_count`
     false every member with data, and any bound opposite-role entities. A second open axis
     adds an unqualified warning. A bound
     destination with an open origin also warns, even when `open_origin_dcids` is empty.
@@ -380,8 +392,8 @@ def role_scope_defaulted_warnings(
                     severity="warn",
                     message=role_scope_defaulted_message(
                         discovered,
-                        member_count=len(
-                            members if members is not None else mat.scope_member_dcids or ()
+                        member_count=_scope_party_count(
+                            mat, members if members is not None else mat.scope_member_dcids
                         )
                         if state_count
                         else None,
@@ -412,6 +424,17 @@ def role_scope_defaulted_warnings(
     return warnings
 
 
+def _scope_party_count(mat: Materialised, members: Collection[str] | None) -> int:
+    """How many of `members` the warning counts: the parties `enrichment.party_count`
+    keeps, read in the datasets that publish `mat`'s StatVars."""
+    index = get_index()
+    return party_count(
+        frozenset(members or ()),
+        parties=index.parties,
+        datasets=index.statvar_provenances(mat.sv_dcids),
+    )
+
+
 def restate_role_scope_warnings(
     warnings: list[Warning],
     mat: Materialised,
@@ -426,13 +449,13 @@ def restate_role_scope_warnings(
     `mat` so it counts `members`, the scope the answer lists under the request's facet
     filter (`scope.stated_scope_members`), or with `state_count` false names every member
     with data, for a response whose answers list different scopes. The warning is the
-    `role_scope_defaulted` one opening with the same axis clause ("no recipient was named"),
+    `role_scope_defaulted` one opening with the same axis clause ("No recipient was named"),
     whatever count it states, so a response restates it once its candidates are grounded
     and again once they are filtered. It keeps its position, and `label_of`, the memoised
     lookup that built it (`memoised_labels`), makes no new request.
 
-    An empty `members` is an answer that lists no member on the axis: it resolved across
-    none, so the warning is removed. An axis in `unnamed_wholes` built no warning
+    An empty `members` is an answer that lists no member on the axis: it covers none, so
+    the warning is removed. An axis in `unnamed_wholes` built no warning
     (`role_scope_defaulted_warnings`), so there is none to restate."""
     if (
         mat.discovered_scope is None
@@ -451,9 +474,9 @@ def restate_role_scope_warnings(
     # The discovered axis's warning leads. A companion axis's warning states no count, so it
     # stands as built.
     restated: Warning | None = fresh[0] if members or not state_count else None
-    axis_clause = fresh[0].message.split(";", 1)[0]
+    axis_clause = f"{_role_scope_axis_clause(mat.discovered_scope.axis)},"
     for index, old in enumerate(warnings):
-        if old.code == ROLE_SCOPE_DEFAULTED and old.message.split(";", 1)[0] == axis_clause:
+        if old.code == ROLE_SCOPE_DEFAULTED and old.message.startswith(axis_clause):
             if restated is None:
                 del warnings[index]
             else:
@@ -993,6 +1016,7 @@ class _RelaxationProbeContext:
     materialise_graph: GraphReader | None
     role_class_walks: RoleClassWalks | None
     text_recognized_properties: frozenset[str]
+    grouped_properties: frozenset[str]
     measure_elected_properties: frozenset[str]
     defaulted_properties: frozenset[str]
     # The groups the request named, kept because a relaxation keeps their entities.
@@ -1342,6 +1366,14 @@ def _relaxed_binding_suggestion(
             entities=entities_list,
             coverage=mat.coverage,
             plan=mat.read_plan,
+            # The relaxed query's own answer states this headline and these axes.
+            headline=mat.headline,
+            open_axis_facts=served_open_axes(
+                relaxed,
+                mat.sv_dcids,
+                mat.member_facts or {},
+                value_labels=shape.value_labels or {},
+            ),
             coverage_index=ctx.coverage.index,
             pin_served_provenance=ctx.pin_served_provenance,
             resolved_sources=source_refs,
@@ -1361,6 +1393,7 @@ def _relaxed_binding_suggestion(
             inapplicable_slots=inapplicable_slots,
             unresolved_slots=unresolved_slots,
             text_recognized_properties=ctx.text_recognized_properties,
+            grouped_properties=ctx.grouped_properties,
             measure_elected_properties=ctx.measure_elected_properties,
             defaulted_properties=ctx.defaulted_properties,
             named_groups=ctx.named_groups,
@@ -1411,6 +1444,7 @@ def _suggest_nearest_real(
     role_class_walks: RoleClassWalks | None = None,
     query_entity_text_by_dcid: Mapping[str, str] | None = None,
     text_recognized_properties: frozenset[str] = frozenset(),
+    grouped_properties: frozenset[str] = frozenset(),
     measure_elected_properties: frozenset[str] = frozenset(),
     defaulted_properties: frozenset[str] = frozenset(),
     named_groups: tuple[NamedGroup, ...] = (),
@@ -1447,8 +1481,8 @@ def _suggest_nearest_real(
     A value bound as its slot's sole option (`bind.sole_option_properties`) is not relaxed:
     the request did not name it, and every member of the family asserts it, so the
     relaxed query reads the same members as the answer that had no data.
-    `text_recognized_properties`, `measure_elected_properties`, and `defaulted_properties`
-    preserve the original query's slot provenance after relaxation, and `named_groups` the
+    `text_recognized_properties`, `grouped_properties`, `measure_elected_properties`, and
+    `defaulted_properties` preserve the original query's slot provenance after relaxation, and `named_groups` the
     groups the request named, which a suggestion states for the roles that still bind
     exactly their members. With `pin_served_provenance` each suggestion's identity binds
     the provenances that serve it, as the part's answer would.
@@ -1472,6 +1506,7 @@ def _suggest_nearest_real(
         materialise_graph=materialise_graph,
         role_class_walks=role_class_walks,
         text_recognized_properties=text_recognized_properties,
+        grouped_properties=grouped_properties,
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
         named_groups=named_groups,

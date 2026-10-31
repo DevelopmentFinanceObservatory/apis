@@ -77,9 +77,17 @@ class DepartureFact:
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
       group counts beside its members ("Africa, unallocated by country (DAC)"), which the
       members leave out, in the code index's order. Empty for a group no total holds.
+    - `included` (`group_read_as_members`): the labels of the residuals the role binds
+      beside the members, where the part sums the group with them (`scope.region`), in the
+      answer's entity order.
     - `sum_differs` (`group_read_as_members`): a dataset the answer serves publishes, on the
       role's flow axis, its own figure for the group, which can differ from one built from its
       members (`PartyRow.sums_members` false).
+    - `members` (`member_unavailable`): the labels of the variables the answer's one group
+      leaves out, in member order; `asked` joins them and `shown` names the source the
+      answer reads.
+    - `unit` (`member_unavailable`): the name of the unit the answer reads, as its served
+      series carry it, when they carry one.
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -94,6 +102,12 @@ class DepartureFact:
       converts over fewer years than the data holds, the first and last years the
       conversion covers, and the table that leaves the rest out (exchange rates or
       deflators). `data_years` is then the years the data serves before the conversion.
+    - `covered_years` and `limited_by` (`year_unavailable`): on an answer a scope option
+      the request's words asked for serves over fewer years than asked
+      (`OptionAvailability.status` partial), the runs of years the option covers, and what
+      leaves the rest out: the imputed multilateral line of the inclusive provider scope,
+      or the published total a provider option reads; None when the option's reason names
+      neither. `shown` is the run the answer serves.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.
@@ -117,10 +131,13 @@ class DepartureFact:
     over: RoleAxis | None = None
     entities: tuple[str, ...] = ()
     sets: tuple[UnservedMembers, ...] = ()
+    members: tuple[str, ...] = ()
+    unit: str | None = None
     group: str | None = None
     group_size: int | None = None
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
+    included: tuple[str, ...] = ()
     sum_differs: bool = False
     whole_of: tuple[PartyClass, ...] = ()
     side_classes: tuple[PartyClass, ...] = ()
@@ -132,7 +149,10 @@ class DepartureFact:
     requested_years: tuple[int | None, int | None] | None = None
     data_years: tuple[int, int] | None = None
     converted_years: tuple[int, int] | None = None
-    limited_by: Literal["exchange_rates", "deflators"] | None = None
+    limited_by: (
+        Literal["exchange_rates", "deflators", "imputed_multilateral", "published_total"] | None
+    ) = None
+    covered_years: tuple[tuple[int, int], ...] = ()
     omitted_years: tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...] = ()
     omitted_unnamed: int = 0
     omission_undecided: bool = False

@@ -9,7 +9,7 @@ from code_index.shared import get_index
 from dataset_store.clock import utc_now
 from datasets_api.admission import MaterialisePermits, RebuildFlights
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.deps import Deps, DepsCell, build_executors
+from datasets_api.deps import Deps, DepsCell, build_analysis_executor, build_executors
 from datasets_api.operation_store import NullOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.versions import NullHeadWriter
@@ -59,6 +59,7 @@ def fake_deps(**overrides: object) -> Deps:
         "rebuilds": RebuildFlights(),
         "read_executor": read_executor,
         "work_executor": work_executor,
+        "analysis_executor": build_analysis_executor(settings),
     }
     defaults.update(
         offline_version_pair(

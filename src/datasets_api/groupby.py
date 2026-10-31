@@ -18,8 +18,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
+from code_index.composites import component_of
 from code_index.query import CodeIndex
-from code_index.types import CodeSystemDeclaration, summable_axes
+from code_index.types import (
+    CodeSystemDeclaration,
+    CompositeDeclaration,
+    StatVarRow,
+    summable_axes,
+)
 from materialise.reshape import RollupNotSummableError, TableLike
 from materialise.roles import KNOWN_ROLE_NAMES
 
@@ -90,18 +96,37 @@ def levels_in_frame(
     return {axis: depth for axis, depth in (levels or {}).items() if axis in decoded}
 
 
+def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
+    """Return true when the groupby adds the components of the stacked composite `composite`,
+    the composite the frame's rows carry as their provenance or `None`, into one total: `by`
+    keeps no `stat_var`.
+
+    A stacked composite's components are parts of one total by declaration, so their StatVars
+    sum whether or not they decode a summable axis. DAC2a's total ODA and its imputed
+    multilateral ODA differ only on the aid type, which is not summable."""
+    return composite is not None and composite.kind == "stacked" and _STAT_VAR_COLUMN not in by
+
+
 def sums_stat_vars(
     *,
     by: Sequence[str],
     levels: Mapping[str, int] | None,
     decoded_code_systems: Sequence[str],
     declarations: Mapping[str, CodeSystemDeclaration],
+    composite: CompositeDeclaration | None = None,
 ) -> bool:
     """Return true when the groupby sums this frame's StatVars: a decoded summable axis
-    collapses, or a kept axis rolls up to a level."""
-    return bool(
-        collapse_axes(by=by, decoded_code_systems=decoded_code_systems, declarations=declarations)
-    ) or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
+    collapses, a kept axis rolls up to a level, or the frame's stacked composite adds its
+    components (`sums_components`)."""
+    return (
+        bool(
+            collapse_axes(
+                by=by, decoded_code_systems=decoded_code_systems, declarations=declarations
+            )
+        )
+        or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
+        or sums_components(by=by, composite=composite)
+    )
 
 
 def kept_axes(
@@ -122,20 +147,22 @@ def yields_grammar_frame(
     decoded_code_systems: Sequence[str],
     declarations: Mapping[str, CodeSystemDeclaration],
     lookup: Mapping[str, Mapping[str, str]],
+    components: bool = False,
 ) -> bool:
-    """Return true when the sum leaves a grammar frame: this frame decodes a summable axis,
-    and every unsummed axis holds one value across the resolved members in `lookup`.
+    """Return true when the sum leaves a grammar frame: this frame decodes a summable axis, or
+    the sum adds a stacked composite's components (`components`, `sums_components`), and
+    every unsummed axis holds one value across the resolved members in `lookup`.
 
     The frame carries one `stat_var` on every row and keeps each summable axis named in `by`
     (`kept_axes`) as a string grain column. An unsummed axis holding one value describes the
     whole family, so its constant column is left out of that frame. One holding several values
     keeps its column and the rows stay a table grouped by it. An empty summable axis set is
-    false.
+    false unless `components`.
     """
     present = declared_axes_present(
         decoded_code_systems=decoded_code_systems, declarations=declarations
     )
-    if not present:
+    if not present and not components:
         return False
     return all(
         len({cells.get(code_system) for cells in lookup.values()}) == 1
@@ -193,7 +220,11 @@ def contributing_dcids(table: TableLike) -> frozenset[str]:
 
 
 def refuse_stat_var_collision(
-    table: TableLike, *, index: CodeIndex, decoded_code_systems: Sequence[str]
+    table: TableLike,
+    *,
+    index: CodeIndex,
+    decoded_code_systems: Sequence[str],
+    composite: CompositeDeclaration | None = None,
 ) -> None:
     """Raise `RollupNotSummableError` (`rollup_not_summable`,
     `stat_var_ambiguous`) when distinct StatVars share values across all decoded axes.
@@ -202,6 +233,12 @@ def refuse_stat_var_collision(
     type, measured property, and related identity fields sit outside the frame,
     so matching axes can merge distinct measures. Check every StatVar before
     collapsing, even when rows differ elsewhere.
+
+    `composite` is the declared composite the frame's rows carry as their provenance, or
+    `None`. Its components' members are parts of one total, so a group of StatVars passes
+    when each is a member of a different component (`code_index.composites.component_of`),
+    as the bilateral and imputed parts of one sector are, or the net and grant-equivalent
+    years of one aid type, which share no year.
     """
     if _STAT_VAR_COLUMN not in table.columns:
         return
@@ -220,7 +257,7 @@ def refuse_stat_var_collision(
         groups.setdefault(key, set()).add(row.dcid)
 
     for dcids in groups.values():
-        if len(dcids) > 1:
+        if len(dcids) > 1 and not _one_per_component(dcids, composite, statvar_by_dcid):
             named = ", ".join(sorted(dcids))
             raise RollupNotSummableError(
                 f"groupby axis 'stat_var' refused: StatVar(s) {named} decode to the same "
@@ -229,6 +266,18 @@ def refuse_stat_var_collision(
                 axis=_STAT_VAR_COLUMN,
                 precondition="stat_var_ambiguous",
             )
+
+
+def _one_per_component(
+    dcids: Iterable[str],
+    composite: CompositeDeclaration | None,
+    statvar_by_dcid: Mapping[str, StatVarRow],
+) -> bool:
+    """Whether each of `dcids` is a member of a different component of `composite`."""
+    if composite is None:
+        return False
+    roles = [component_of(composite, statvar_by_dcid[dcid]) for dcid in dcids]
+    return None not in roles and len(set(roles)) == len(roles)
 
 
 def refuse_unknown_by_axes(

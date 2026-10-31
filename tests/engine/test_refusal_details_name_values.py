@@ -527,16 +527,11 @@ _DOOR_ECHOES: dict[str, tuple[Callable, str, str, str | None]] = {
         "facet_not_available",
         "/input/entries/0/identity/facets/provenance",
     ),
-    "part-pinning-one-text-twice": (
-        lambda _: _parsed_part(
-            entities=[
-                {"text": "Kenya", "dcid": f"a{_LONG_DCID}"},
-                {"text": "Kenya", "dcid": f"b{_LONG_DCID}"},
-            ]
-        ),
+    "part-pinning-a-dcid-absent-from-the-graph": (
+        lambda _: _parsed_part(entities=[{"text": "Kenya", "dcid": _LONG_DCID}]),
         _LONG_DCID,
-        "request_invalid",
-        "/input/parts/0/entities",
+        "invalid_role_ref",
+        "/input/parts/0/entities/0/dcid",
     ),
     "part-member-the-model-does-not-declare": (
         lambda _: _parsed_part(**{_OVERSIZED: 1}),

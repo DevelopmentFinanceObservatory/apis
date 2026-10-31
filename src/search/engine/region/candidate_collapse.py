@@ -5,6 +5,7 @@ equivalent-reading diversion and no-data checks.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 from typing import cast
 
@@ -14,7 +15,7 @@ from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.reading_coverage import covers
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.candidate_admission import _AlternatesAdmission
 from search.engine.region.candidate_grounding import (
     _GroundedCandidates,
@@ -60,6 +61,7 @@ from search.engine.region.observations.dispatch import (
     _resolve_spec_observations,
 )
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.region.phase_election import judge_answer_coverage
 from search.engine.region.phase_place_materialise import (
     note_denominator_unverified,
     refuse_unserved_quantity,
@@ -122,7 +124,7 @@ def _apply_bound_unit_filter(
     An empty input proceeds to the elected shape's no-data reason.
 
     Each candidate passes the single-shape gate over its own read plan, which fetches nothing:
-    the plan serves every StatVar under its elected unit (`bound_unit_gate.bound_unit_gate_reason`)
+    the plan serves a StatVar the unit decision serves under its elected unit (`bound_unit_gate.bound_unit_gate_reason`)
     and every row it serves converts, as grounding found it (`cand_unit_coverage`). A candidate
     whose rows do not convert is dropped, and its refusal is recorded beside its election's
     (`cand_unit_refusals`). A passing candidate whose conversion omits the rows of entities
@@ -140,7 +142,8 @@ def _apply_bound_unit_filter(
             continue
         _s_svs, _s_ents = grounded.cand_obs_entities.get(s.spec_id, ([], {}))
         _gate_plan = grounded.cand_gate_plans.get(s.spec_id, grounded.cand_plans.get(s.spec_id))
-        if bound_unit_gate_reason(_gate_plan, _s_ents, _s_svs) is None:
+        _s_served = unit_served(grounded.cand_elected.get(s.spec_id), _s_svs)
+        if bound_unit_gate_reason(_gate_plan, _s_ents, _s_served) is None:
             available.append(s)
     for s in available:
         coverage = grounded.cand_unit_coverage.get(s.spec_id, UnitCoverage())
@@ -314,7 +317,7 @@ def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, sp
     """Judge the lone survivor a refusal carries on its own shape and bindings, the ones its
     trace records (`requirements.settle_flagged`)."""
     candidate = grounded.cand_candidates[spec.spec_id]
-    settle_flagged(state, candidate.shape, candidate.bindings)
+    settle_flagged(state, candidate.shape, candidate.bindings, uncovered=candidate.uncovered)
 
 
 def _in_currency(facets: list[Facet], currency: str | None) -> bool:
@@ -507,8 +510,9 @@ async def _assemble_definite(
     on the same property, or, as a sibling every member of which holds Female, apply
     "female". Its refusal names the terms
     its flagged match's trace records (`requirements.answer_terms`): the elected reading's
-    unbound query terms, which no answer is shown to apply, and each code and value
-    requirement its own answer leaves unmet.
+    unbound query terms other than its coverage records, its own coverage records
+    (`_Candidate.uncovered`), and each code and value requirement its own answer leaves
+    unmet.
     """
     _survivor = grounded.cand_candidates[unique_specs[0].spec_id]
     if unique_specs[0].spec_id != grounded.elected_spec_id:
@@ -518,7 +522,11 @@ async def _assemble_definite(
             departure_facts=state.departure_facts,
         )
     _survivor_unbound_qualifiers = settle_answer(
-        state, _survivor.shape, _survivor.bindings, served=served_prices(unique_specs[0])
+        state,
+        _survivor.shape,
+        _survivor.bindings,
+        served=served_prices(unique_specs[0]),
+        uncovered=_survivor.uncovered,
     )
     if _survivor_unbound_qualifiers:
         return state.no_data(
@@ -683,9 +691,9 @@ async def _assemble_candidate_set(
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
         state.warnings.append(_elected_no_data_warning(state, unique_specs))
-    # Each survivor is judged on its own shape and bindings and the unit request its Spec is
-    # served under, and a requirement departs unless every survivor meets it
-    # (`requirements.settle_candidate_set`).
+    # Each survivor is judged on its own shape and bindings, the unit request its Spec is
+    # served under and its own coverage records, and a requirement departs unless every
+    # survivor meets it (`requirements.settle_candidate_set`).
     settle_candidate_set(
         state,
         [
@@ -696,6 +704,7 @@ async def _assemble_candidate_set(
             for spec in unique_specs
         ],
         served=[served_prices(spec) for spec in unique_specs],
+        uncovered=[grounded.cand_candidates[spec.spec_id].uncovered for spec in unique_specs],
     )
     # State each candidate's unit lexicon version. Its identity already carries the binding,
     # and the outcome's warnings were merged earlier.
@@ -768,7 +777,15 @@ async def assemble_candidates(
                 state.walked,
             )
         )
-    candidates.extend(admission.admitted)
+    # Each candidate beside the elected answer is judged on the members its own read
+    # served (`judge_answer_coverage`), before grounding records each one's trace.
+    uncovered = await judge_answer_coverage(
+        state, [(cand.shape, cand.bindings, cand.mat) for cand in admission.admitted]
+    )
+    candidates.extend(
+        dataclasses.replace(cand, uncovered=own)
+        for cand, own in zip(admission.admitted, uncovered, strict=True)
+    )
     if state.elected_has_data:
         # The elected shape most often survives, so its related measures are read beside
         # the grounding and assembly of every candidate (`related_read_for`).

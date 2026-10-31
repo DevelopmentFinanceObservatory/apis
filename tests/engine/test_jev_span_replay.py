@@ -102,7 +102,7 @@ def recorded_answers(run: dict[str, Any]) -> JevAnswers:
 
 
 def replay(record: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, list[str]], Confidence]:
-    """The values each slot's named draft binds (`gemini.mentioned_drafts`'s evidence) once
+    """The values each slot's named draft binds (`election.mentioned_drafts`'s evidence) once
     the run's answers are assembled over the recorded population."""
     population = record["population"]
     output, conf = assemble(

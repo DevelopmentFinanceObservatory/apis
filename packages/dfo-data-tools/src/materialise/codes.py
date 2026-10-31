@@ -33,6 +33,14 @@ class CountedEntityYears(TypedDict):
     entities: list[EntityYears]
 
 
+class YearRange(TypedDict):
+    """A run of years from `start` to `end`, both included. A requested range leaves out the
+    bound its definition left open."""
+
+    start: NotRequired[int]
+    end: NotRequired[int]
+
+
 class MaterialisationWarning(TypedDict):
     """One `{code, severity, message}` warning entry, as carried on
     `MaterialisationResult.warnings` (pipeline.py). `severity` is always one
@@ -42,13 +50,17 @@ class MaterialisationWarning(TypedDict):
 
     A group's `coverage_below_scope` also carries `member_count`, the series the group
     requested, with `off_cadence_members`, those reporting the requested years at another
-    frequency than the group serves, and `out_of_window_members`, those holding no observation
-    in the requested years, each present only when it names a member. `coverage_below_scope`
+    frequency than the group serves, `out_of_window_members`, those holding no observation
+    in the requested years, and `unserved_members`, those holding no observation under the
+    source, unit and method the group serves, each present only when it names a member. `coverage_below_scope`
     carries `unserved_entities`, the bound entities that served no observation,
     `currency_unmapped_omitted` `omitted_entities`, the entities whose rows the conversion
     left out, and `deflator_missing_omitted` `omitted_entity_years`, those entities with the
     years of their rows. Each message counts what these fields hold
-    and names none of it, so a stored version holds no name that can go stale.
+    and names none of it, so a stored version holds no name that can go stale. A
+    `coverage_below_scope` whose data covers fewer years than its range asked carries
+    `requested_years`, the range asked, and `served_years`, the years served, and its message
+    states both.
 
     This is a `TypedDict`. No shared platform pydantic warning model
     exists yet to alias.
@@ -60,9 +72,12 @@ class MaterialisationWarning(TypedDict):
     member_count: NotRequired[int]
     off_cadence_members: NotRequired[CountedRefs]
     out_of_window_members: NotRequired[CountedRefs]
+    unserved_members: NotRequired[CountedRefs]
     unserved_entities: NotRequired[CountedRefs]
     omitted_entities: NotRequired[CountedRefs]
     omitted_entity_years: NotRequired[CountedEntityYears]
+    requested_years: NotRequired[YearRange]
+    served_years: NotRequired[YearRange]
 
 
 MATERIALISE_CODE_CATALOGUE: CodeCatalogue = {

@@ -294,11 +294,11 @@ def test_a_group_ranks_its_shared_facets_by_the_places_they_cover_across_its_mem
     assert breadth == {"fLong": 2, "fMid": 3}
     selections = select_group_facets(
         requests, [probe.candidates for probe in probes], graph=graph, breadth=breadth
-    ).selections
+    ).election.selections
     assert selections["provenance"].dispatch_facet_id == "fMid"
     without = select_group_facets(
         requests, [probe.candidates for probe in probes], graph=graph
-    ).selections
+    ).election.selections
     assert without["provenance"].dispatch_facet_id == "fLong"
 
 

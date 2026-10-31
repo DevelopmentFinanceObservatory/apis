@@ -15,7 +15,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
@@ -59,9 +59,16 @@ from dataset_store.snapshot import (
     VersionFacts,
     VersionState,
 )
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceExhausted,
+    AllowanceKind,
+    LiveAllowanceLedger,
+)
 from datasets_api.manifest import version_document
 from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import ReferenceWrite
+from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from description.citation import citation_line
 from description.facts import (
@@ -78,6 +85,7 @@ from description.facts import (
 )
 from description.steps import Step
 from description.vocabulary import SourceDocumentFacts
+from dfo_platform.caller import Caller
 from dfo_platform.timings import PhaseTimings, collecting
 from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
@@ -102,6 +110,7 @@ from spec_registry.errors import (
 )
 from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
+from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.graph_release.support import release_at_revision
 from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
@@ -445,6 +454,9 @@ class _FakeReferenceWriter:
         # WHERE removed_at IS NULL` that matches zero rows commits fine).
         self.records.pop(key, None)
 
+    def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
+        return any(key[2:4] == (subject_id, content_version) for key in self.records)
+
 
 class _LegacyReferenceWriter:
     """Writer with `record_reference_unless_revoked` but no claim method."""
@@ -578,6 +590,7 @@ def _store(
     artifacts: _FakeArtifactStore | None = None,
     graph=None,
     reference_writer: _FakeReferenceWriter | None = None,
+    allowances: LiveAllowanceLedger | None = None,
     now: Callable[[], datetime] = lambda: _NOW,
     **kwargs,
 ) -> LiveFrameStore:
@@ -588,6 +601,7 @@ def _store(
         reference_writer=reference_writer
         if reference_writer is not None
         else _FakeReferenceWriter(),
+        allowances=allowances,
         now=now,
         **kwargs,
     )
@@ -1318,6 +1332,48 @@ def test_load_cache_hit_skips_the_byte_fetch_but_still_rechecks_state():
     assert second is first
     assert len(snapshots.calls) == 2 * snapshot_calls_after_first
     assert len(artifacts.calls) == artifact_calls_after_first
+
+
+def test_load_states_the_rendering_the_versions_linked_files_record_at_each_load():
+    """A cut file alone makes the version that rendering. A plain file linked later makes it
+    ambiguous, and the next load says so though the frame is cached."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    (stored_frame,) = snapshots.locations[key]
+    snapshots.locations[key] = [replace(stored_frame, rendering={"format": "frame1"})]
+    csv = {"format": "csv", "bundle": False}
+    snapshots.locations[key].append(
+        _location(
+            digest=digest,
+            tier=Tier.working.value,
+            media_type="text/csv",
+            rendering_key="cut",
+            rendering={**csv, "without_party_totals": True},
+        )
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    cut = store.load(frame_ref=frame_ref).rendering
+    snapshots.locations[key].append(
+        _location(
+            digest=digest,
+            tier=Tier.working.value,
+            media_type="text/csv",
+            rendering_key="plain",
+            rendering=csv,
+        )
+    )
+    ambiguous = store.load(frame_ref=frame_ref).rendering
+
+    minting = {"groupby": None, "without_party_totals": True}
+    assert cut == {
+        "base_content_version": frame_ref.content_version,
+        "minting": minting,
+        "ambiguous": False,
+        "collapsed": False,
+        "mintings": [minting],
+    }
+    assert ambiguous == {**cut, "ambiguous": True}
 
 
 def test_load_cache_hit_refuses_once_the_frame_is_revoked_after_the_first_load():
@@ -3650,6 +3706,7 @@ def test_cache_evicts_oldest_insertion_once_over_the_byte_budget():
         artifacts=artifacts,
         graph=None,
         reference_writer=_FakeReferenceWriter(),
+        allowances=None,
         now=lambda: _NOW,
         cache_max_bytes=entry_bytes + entry_bytes // 2,
     )
@@ -3698,13 +3755,19 @@ class _FakeRecipeReader:
         self.recipes: dict[tuple[str, str], RecipeRecord] = {}
         self.reads = 0
 
-    def put(self, frame_ref: FrameRef, *, anchor: dict[str, object] | None) -> None:
+    def put(
+        self,
+        frame_ref: FrameRef,
+        *,
+        anchor: dict[str, object] | None,
+        roots: list[dict[str, object]] | None = None,
+    ) -> None:
         self.recipes[(frame_ref.spec_id, frame_ref.content_version)] = RecipeRecord(
             spec_id=frame_ref.spec_id,
             content_version=frame_ref.content_version,
             normal_form_hash="rnf_" + "1" * 32,
             replay_key="rpk_" + "2" * 32,
-            body={"schema_version": 1, "tree": {}, "roots": [], "anchor": anchor},
+            body={"schema_version": 1, "tree": {}, "roots": roots or [], "anchor": anchor},
         )
 
     def read_recipe(self, *, spec_id: str, content_version: str) -> RecipeRecord | None:
@@ -3822,14 +3885,17 @@ def test_load_reads_the_left_out_labels_again_after_a_failed_graph_read():
 
 
 @pytest.mark.parametrize(
-    ("anchor_recorded", "replay_key"),
-    [(True, "rpk_" + "2" * 32), (False, None)],
+    ("anchor_recorded", "replay_key", "rendering"),
+    [
+        (True, "rpk_" + "2" * 32, {"normal_form_hash": "rnf_" + "1" * 32}),
+        (False, None, None),
+    ],
     ids=["null-anchor", "no-recipe"],
 )
 def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reader(
-    anchor_recorded, replay_key
+    anchor_recorded, replay_key, rendering
 ):
-    """A recipe with a null anchor still names the frame's replay key."""
+    """A recipe with a null anchor still names the frame's replay key and its rendering."""
     snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
     recipes = _FakeRecipeReader()
     if anchor_recorded:
@@ -3840,7 +3906,7 @@ def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reade
     )
 
     assert store.load(frame_ref=frame_ref) == replace(
-        plain.load(frame_ref=frame_ref), replay_key=replay_key
+        plain.load(frame_ref=frame_ref), replay_key=replay_key, rendering=rendering
     )
 
 
@@ -3857,6 +3923,80 @@ def test_a_frame_cached_before_its_recipe_was_written_gains_the_anchor_without_a
 
     assert (before.anchor, after.anchor) == (None, RollingAnchor(period="2024", rule="half1"))
     assert artifacts.calls.count(("get", Tier.working, digest)) == fetches == 1
+
+
+_WDI_SOURCE = {
+    **_OECD_CITATION["sources"][0],
+    "ref": "dc/base/WorldDevelopmentIndicators",
+    "label": "World Development Indicators",
+    "url": "https://example.org/wdi",
+}
+
+
+def _derived_over_cited_roots() -> tuple[
+    _FakeSnapshotReader, _FakeArtifactStore, FrameRef, _FakeRecipeReader
+]:
+    """`_derived_over_a_root`, whose root version cites the frame's `src_oecd_dac` with its
+    licence type unset and a WDI source no row of the frame names, and a recipe reader that
+    holds no recipe yet."""
+    snapshots, artifacts, frame_ref, _, root_ref, _ = _derived_over_a_root()
+    oecd = {**_OECD_CITATION["sources"][0], "label": "Stored label", "license_type": None}
+    root = snapshots.versions[(root_ref.spec_id, root_ref.content_version)]
+    snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = replace(
+        root,
+        facts=replace(root.facts, citation={"text": "Root text.", "sources": [oecd, _WDI_SOURCE]}),
+    )
+    return snapshots, artifacts, frame_ref, _FakeRecipeReader()
+
+
+def _put_recipe_over_the_root(recipes: _FakeRecipeReader, frame_ref: FrameRef) -> None:
+    root_ref = malaria_ethiopia_frame_ref()
+    pair = {"spec_id": root_ref.spec_id, "content_version": root_ref.content_version}
+    recipes.put(frame_ref, anchor=None, roots=[{"dataset": pair, "options": {}}])
+
+
+def _cited(manifest: Mapping[str, object]) -> list[tuple[str, str, str | None]]:
+    citation = cast("Mapping[str, Any]", manifest["citation"])
+    return [
+        (source["ref"], source["label"], source["license_type"]) for source in citation["sources"]
+    ]
+
+
+def test_load_cites_a_derived_frame_with_its_recipe_roots_sources_filled_from_the_graph():
+    """The frame cites its root's two sources, as the derived manifest does, the root's WDI
+    source among them though no row names it; the stored label stands and the empty licence
+    type is filled from the graph."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    _put_recipe_over_the_root(recipes, frame_ref)
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert _cited(resolved.manifest) == [
+        ("src_oecd_dac", "Stored label", "license/cc_by_4"),
+        (_WDI_SOURCE["ref"], "World Development Indicators", "license/cc_by_4"),
+    ]
+    assert cast("Mapping[str, Any]", resolved.manifest["citation"])["text"] == "Root text."
+
+
+def test_a_derived_frame_cached_before_its_recipe_was_written_cites_its_roots_once_it_is():
+    """Before its recipe, the frame cites its provenance refs from the graph; the load that
+    first reads the recipe cites the roots' sources instead."""
+    snapshots, artifacts, frame_ref, recipes = _derived_over_cited_roots()
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+    before = store.load(frame_ref=frame_ref)
+
+    _put_recipe_over_the_root(recipes, frame_ref)
+    after = store.load(frame_ref=frame_ref)
+
+    assert _cited(before.manifest) == [
+        ("src_oecd_dac", "OECD Creditor Reporting System", "license/cc_by_4")
+    ]
+    assert [ref for ref, _, _ in _cited(after.manifest)] == ["src_oecd_dac", _WDI_SOURCE["ref"]]
 
 
 def test_a_rolling_card_on_a_derived_frame_is_created_at_the_recipe_s_anchor():
@@ -3932,30 +4072,194 @@ def test_pin_promotes_working_and_writes_a_reference():
     assert key in reference_writer.records
 
 
-def test_pin_promotes_working_for_a_published_ops_frame():
-    """`write_component` (`assembler.write.write_component`) calls `pin()`
-    unconditionally on every create whose candidate resolved a frame,
-    including one resolved under a published `ops_`/`ocv_` pair. `pin()`
-    needs nothing an `ops_` pair lacks: the publish route gave it a real
-    `artifact_digest` and `tier` exactly like a definition mint's
-    `StoredArtifactLocation`, so this promotion sequence runs
-    unchanged."""
+def _derived_over_a_root() -> tuple[
+    _FakeSnapshotReader, _FakeArtifactStore, FrameRef, str, FrameRef, str
+]:
+    """A published `ops_` frame and the dataset frame its recipe's one root names, each with
+    its own working-tier artifact."""
     snapshots, artifacts, frame_ref, digest = _ops_happy_path_fixture()
+    root_ref = malaria_ethiopia_frame_ref()
+    root_digest = artifacts.seed(tier=Tier.working, data=_frame_bytes() + b"\n")
+    snapshots.versions[(root_ref.spec_id, root_ref.content_version)] = _version(root_ref)
+    snapshots.locations[(root_ref.spec_id, root_ref.content_version)] = [
+        _location(digest=root_digest, tier=Tier.working.value)
+    ]
+    return snapshots, artifacts, frame_ref, digest, root_ref, root_digest
+
+
+def test_pin_of_a_derived_frame_pins_the_root_versions_its_recipe_names():
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _FakeRecipeReader()
+    recipes.put(
+        frame_ref,
+        anchor=None,
+        roots=[
+            {
+                "frame": {"spec_id": "spec_analysis_side", "content_version": "cv_other"},
+                "dataset": {
+                    "spec_id": root_ref.spec_id,
+                    "content_version": root_ref.content_version,
+                },
+            }
+        ],
+    )
     reference_writer = _FakeReferenceWriter()
-    store = _store(snapshots=snapshots, artifacts=artifacts, reference_writer=reference_writer)
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    assert store.pin(frame_ref=frame_ref, component_id="cmp_test") is True
+
+    assert {(Tier.pinned, digest), (Tier.pinned, root_digest)} <= set(artifacts.objects)
+    assert {
+        (key[2], key[3]) for key in reference_writer.records if key[0] == "presentation:cmp_test"
+    } == {
+        (frame_ref.spec_id, frame_ref.content_version),
+        (root_ref.spec_id, root_ref.content_version),
+    }
+
+
+def _recipe_naming(root_ref: FrameRef) -> list[dict[str, object]]:
+    return [
+        {
+            "frame": {"spec_id": "spec_analysis_side", "content_version": "cv_other"},
+            "dataset": {"spec_id": root_ref.spec_id, "content_version": root_ref.content_version},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("recipe_roots", "reason"),
+    [
+        (None, "recipe_unreadable"),
+        ([{"frame": {"spec_id": "spec_x", "content_version": "cv_x"}}], "recipe_unreadable"),
+        ([], "recipe_pending"),
+    ],
+    ids=["no-recipe-reader", "root-without-dataset", "no-recipe-yet"],
+)
+def test_pin_of_a_derived_frame_whose_roots_cannot_be_named_refuses_and_pins_nothing(
+    recipe_roots, reason
+):
+    snapshots, artifacts, frame_ref, digest, _, _ = _derived_over_a_root()
+    recipes = None
+    if recipe_roots is not None:
+        recipes = _FakeRecipeReader()
+        if recipe_roots:
+            recipes.put(frame_ref, anchor=None, roots=recipe_roots)
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+    assert excinfo.value.reason == reason
+    assert (Tier.pinned, digest) not in artifacts.objects
+    assert reference_writer.records == {}
+
+
+def test_pin_of_a_derived_frame_with_no_recipe_whose_bytes_are_pinned_still_refuses():
+    """Another pair holding the same bytes pinned them, and no reference names this pair, so
+    its recipe may still be on its way."""
+    snapshots, artifacts, frame_ref, digest, _, _ = _derived_over_a_root()
+    artifacts.seed(tier=Tier.pinned, data=artifacts.objects[(Tier.working, digest)])
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    snapshots.locations[key] = [_location(digest=digest, tier=Tier.pinned.value)]
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=_FakeRecipeReader(),
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+    assert excinfo.value.reason == "recipe_pending"
+    assert reference_writer.records == {}
+
+
+class _RecipeWrittenAfterFirstRead(_FakeRecipeReader):
+    """Answers no recipe on its first read and the stored one after, as a recipe write
+    landing between two reads would."""
+
+    def read_recipe(self, *, spec_id: str, content_version: str) -> RecipeRecord | None:
+        first = self.reads == 0
+        recipe = super().read_recipe(spec_id=spec_id, content_version=content_version)
+        return None if first else recipe
+
+
+def test_pin_of_a_referenced_derived_frame_whose_recipe_lands_meanwhile_pins_its_roots():
+    """A reference names the frame, and its recipe is written after the first read, so the
+    second read names the root."""
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _RecipeWrittenAfterFirstRead()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    reference_writer = _FakeReferenceWriter()
+    reference_writer.records[
+        (
+            "presentation:cmp_earlier",
+            digest,
+            frame_ref.spec_id,
+            frame_ref.content_version,
+            PRESENTATION_PIN_REFERENCE_KIND,
+        )
+    ] = _NOW
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
 
     store.pin(frame_ref=frame_ref, component_id="cmp_test")
 
-    assert ("copy", Tier.working, digest) in artifacts.calls
-    assert (Tier.pinned, digest) in artifacts.objects
-    key = (
-        "presentation:cmp_test",
-        digest,
-        frame_ref.spec_id,
-        frame_ref.content_version,
-        PRESENTATION_PIN_REFERENCE_KIND,
+    assert (Tier.pinned, root_digest) in artifacts.objects
+
+
+def _root_aged_out(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:
+    key = (root_ref.spec_id, root_ref.content_version)
+    snapshots.locations[key] = [
+        dataclasses.replace(location, stored_at=_NOW - timedelta(days=31))
+        for location in snapshots.locations[key]
+    ]
+
+
+def _root_revoked(snapshots: _FakeSnapshotReader, root_ref: FrameRef) -> None:
+    snapshots.revocations[(root_ref.spec_id, root_ref.content_version)] = Revocation(
+        reason="takedown", revoked_at=_NOW
     )
-    assert key in reference_writer.records
+
+
+@pytest.mark.parametrize("lapse", [_root_aged_out, _root_revoked], ids=["expired", "revoked"])
+def test_pin_of_a_derived_frame_pins_the_frame_when_a_root_is_no_longer_held(lapse):
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    lapse(snapshots, root_ref)
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    reference_writer = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        recipe_reader=recipes,
+    )
+
+    assert store.pin(frame_ref=frame_ref, component_id="cmp_test") is True
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert (Tier.pinned, root_digest) not in artifacts.objects
+    assert {(key[2], key[3]) for key in reference_writer.records} == {
+        (frame_ref.spec_id, frame_ref.content_version)
+    }
 
 
 def test_pin_maps_a_copy_write_failure_to_frame_unavailable_io():
@@ -4057,6 +4361,129 @@ def test_pin_maps_a_write_time_refusal_to_frame_unavailable(
 
     assert excinfo.value.reason == reason
     assert reference_writer.records == {}
+
+
+_OPEN_CALLER = Caller(kind="address", key="ip:" + "0" * 32)
+
+
+def _ledger(**limits: int) -> LiveAllowanceLedger:
+    """A ledger over a fresh store, 500 of each pin kind unless `limits` names it."""
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={
+            kind: limits.get(kind.value, 500)
+            for kind in (AllowanceKind.pin_budget, AllowanceKind.open_pin_budget, AllowanceKind.pin)
+        },
+    )
+
+
+def _units(ledger: LiveAllowanceLedger) -> dict[tuple[str, str], int]:
+    """Each `(key, kind)` the ledger holds a count for, with the count."""
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
+    return {
+        (cast(str, row["caller_key"]), cast(str, row["kind"])): cast(int, row["count"])
+        for row in rows
+    }
+
+
+def _derived_store(ledger: LiveAllowanceLedger):
+    """A store spending from `ledger` over a derived frame and its one root, both working-tier,
+    with `_derived_over_a_root`'s fixtures."""
+    snapshots, artifacts, frame_ref, digest, root_ref, root_digest = _derived_over_a_root()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=None, roots=_recipe_naming(root_ref))
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, recipe_reader=recipes, allowances=ledger
+    )
+    return store, snapshots, artifacts, frame_ref, digest, root_ref, root_digest
+
+
+def _set_of_units(caller: Caller | None, count: int) -> dict[tuple[str, str], int]:
+    units = {(BUDGET_KEY, AllowanceKind.pin_budget.value): count}
+    if caller is not None:
+        units[(BUDGET_KEY, AllowanceKind.open_pin_budget.value)] = count
+        units[(caller.key, AllowanceKind.pin.value)] = count
+    return units
+
+
+@pytest.mark.parametrize("caller", [_OPEN_CALLER, None], ids=["open-caller", "no-caller"])
+@pytest.mark.parametrize("reads_pinned", [True, False], ids=["reads-pinned", "races-to-a-copy"])
+def test_pin_spends_one_set_of_units_per_new_copy_and_none_for_a_frame_already_pinned(
+    caller: Caller | None, reads_pinned: bool
+):
+    """The derived frame and its root are two new copies. A second pin spends nothing, whether
+    it reads both pinned or still reads them working and finds the pinned bytes made."""
+    ledger = _ledger()
+    store, snapshots, _, frame_ref, _, root_ref, _ = _derived_store(ledger)
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=caller)
+    assert _units(ledger) == _set_of_units(caller, 2)
+    if reads_pinned:
+        for ref in (frame_ref, root_ref):
+            key = (ref.spec_id, ref.content_version)
+            snapshots.locations[key] = [
+                dataclasses.replace(location, tier=Tier.pinned.value)
+                for location in snapshots.locations[key]
+            ]
+    store.pin(frame_ref=frame_ref, component_id="cmp_b", caller=caller)
+
+    assert _units(ledger) == _set_of_units(caller, 2)
+
+
+@pytest.mark.parametrize(
+    ("limit", "refusal"),
+    [
+        ("pin", AllowanceExhausted),
+        ("open_pin_budget", OpenPinBudgetExhausted),
+        ("pin_budget", PinBudgetExhausted),
+    ],
+)
+def test_pin_refuses_at_the_root_a_spent_budget_stops_and_the_frames_copy_keeps_its_units(
+    limit: str, refusal: type[Exception]
+):
+    ledger = _ledger(**{limit: 1})
+    store, _, artifacts, frame_ref, digest, _, root_digest = _derived_store(ledger)
+
+    with pytest.raises(refusal):
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert (Tier.pinned, root_digest) not in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_keeps_the_units_of_a_copy_whose_reference_write_then_fails():
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    ledger = _ledger()
+    reference_writer = _FakeReferenceWriter(
+        revoked={(frame_ref.spec_id, frame_ref.content_version)}
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        reference_writer=reference_writer,
+        allowances=ledger,
+    )
+
+    with pytest.raises(FrameUnavailable):
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert (Tier.pinned, digest) in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_gives_back_the_units_of_a_copy_whose_working_bytes_are_gone():
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    del artifacts.objects[(Tier.working, digest)]
+    ledger = _ledger()
+    store = _store(snapshots=snapshots, artifacts=artifacts, allowances=ledger)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert excinfo.value.reason == "expired"
+    assert _units(ledger) == {}
 
 
 def test_pin_refuses_a_collapsed_frame_whose_base_version_is_revoked():

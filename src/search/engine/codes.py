@@ -20,6 +20,8 @@ refusals, including:
 - ``population_empty`` marks a shape with no StatVar population in the code index or graph.
   ``exact_binding_unsupported`` marks a posted exact slot binding.
   ``directional_children_unsupported`` reserves flow-axis children scope.
+- ``requested_option_unavailable`` and ``conflicting_requested_options`` refuse the scope
+  entries of a dataset_resubmit identity entry.
   ``resolution_ambiguous`` is also contract-reserved.
 
 ``SEARCH_CODE_CATALOGUE`` supplies client-safe titles and default details.
@@ -76,6 +78,10 @@ SEARCH_REFUSAL_CODES: frozenset[str] = frozenset(
         "exact_binding_unsupported",
         # Flow axes lack a containment hierarchy for children scope.
         "directional_children_unsupported",
+        # A posted scope entry names an option its part cannot serve, or two entries
+        # cannot hold together (`search.scope.compile`).
+        "requested_option_unavailable",
+        "conflicting_requested_options",
     }
 )
 
@@ -175,6 +181,16 @@ SEARCH_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Directional Children Unsupported",
         "A flow role's options were requested with a children scope, but a flow axis has no "
         "containment hierarchy to expand and serves its members from one availability read.",
+    ),
+    "requested_option_unavailable": (
+        "Requested Option Unavailable",
+        "A posted scope entry asks for an option this part cannot serve: its axis is not "
+        "settled on this part, the axis offers no such option, or the option is unavailable.",
+    ),
+    "conflicting_requested_options": (
+        "Conflicting Requested Options",
+        "Two posted scope entries cannot hold together: they ask for different options on "
+        "one axis, or for options of two axes that exclude each other.",
     ),
 }
 

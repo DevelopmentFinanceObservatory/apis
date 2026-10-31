@@ -273,9 +273,19 @@ def _request_satisfied(
     elected_units: Mapping[str, frozenset[str]] | None = None,
     deadline: float | None,
 ) -> bool:
-    """The request-form counterpart of `_member_present`: every sv must have
-    its own facet honouring `request` (`_unit_request_admits`, keyed on the
-    real `sv` from `facets_by_sv` when `elected_units` is given)."""
+    """The request-form counterpart of `_member_present`: every sv judged must have its own
+    facet honouring `request` (`_unit_request_admits`). With `elected_units` the judged svs
+    are those the unit decision serves (`convertibility.decide_spec_unit`), and the request
+    is unsatisfied when it serves none: a request-form unit elects one group and leaves the
+    members it does not hold unserved, as the mint does (`group_facets._group_pool` narrows
+    to the requested currency after the most-holders filter). Without `elected_units` every
+    sv is judged. A bound ref or set refuses on any populated sv lacking it
+    (`_member_present`), the mint's `group_facets._check_bound_axes`."""
+    judged = (
+        facets_by_sv.keys() if elected_units is None else facets_by_sv.keys() & elected_units.keys()
+    )
+    if elected_units is not None and not judged:
+        return False
     return all(
         any(
             facet.obs_count > 0
@@ -283,9 +293,9 @@ def _request_satisfied(
             and _other_axes_satisfied(
                 graph, facet, relevant, axis, sv=sv, elected_units=elected_units, deadline=deadline
             )
-            for facet in sv_facets
+            for facet in facets_by_sv[sv]
         )
-        for sv, sv_facets in facets_by_sv.items()
+        for sv in judged
     )
 
 

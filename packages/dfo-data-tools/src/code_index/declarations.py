@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 from code_index.types import (
     BroadReading,
+    ComponentRecipe,
+    CompositeDeclaration,
     DatasetDeclaration,
     DeclaredDefault,
     HouseDefaultCase,
@@ -30,6 +32,7 @@ from code_index.types import (
     StatedWord,
     StatTypeWordDeclaration,
     WholeTotalSet,
+    YearPeriod,
 )
 from dfo_platform.roles import RoleAxis
 
@@ -71,12 +74,34 @@ class CodeSystemConfig:
     house_case: HouseDefaultCase | None = None
 
 
-_CRS = "provenance/OECDCreditorReportingSystem"
+CRS = "provenance/OECDCreditorReportingSystem"
 _IMPUTED_MULTILATERAL_SECTORS = "provenance/ONEImputedMultilateralSectors"
-_DAC1 = "provenance/OECDDAC1"
-_DAC2A = "provenance/OECDDAC2A"
+DAC1 = "provenance/OECDDAC1"
+DAC2A = "provenance/OECDDAC2A"
 _DAC2B = "provenance/OECDDAC2B"
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
+
+# Codes only one dataset carries, which the scope conventions name through these constants.
+CRS_PURPOSE_HEALTH = "CRSPurposeCode120"
+CRS_PURPOSE_REPRODUCTIVE_HEALTH = "CRSPurposeCode130"
+CRS_PURPOSE_EMERGENCY_RESPONSE = "CRSPurposeCode720"
+CRS_PURPOSE_RECONSTRUCTION_RELIEF = "CRSPurposeCode730"
+CRS_FLOW_PRIVATE_SECTOR_INSTRUMENTS = "CRSTypeOfFlow60"
+DAC1_TOTAL_ODA = "DAC1AidType1010"
+DAC1_BILATERAL_ODA = "DAC1AidType1015"
+DAC1_MULTILATERAL_ODA = "DAC1AidType2000"
+DAC2A_TOTAL_ODA = "DAC2aAidType206"
+DAC2A_IMPUTED_MULTILATERAL_ODA = "DAC2aAidType106"
+
+# The stacked composites of a donor's bilateral flows and its imputed share of multilateral
+# spending (`COMPOSITES`): one over the CRS and ONE's imputed multilateral table, one over
+# DAC2a's own two lines.
+CRS_INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
+DAC2A_INCLUSIVE = "provenance/ONEDAC2aBilateralAndImputedMultilateral"
+
+# The DAC's published total of the multilateral organisations' own outflows, a provider of DAC1,
+# DAC2a and DAC2b.
+DAC_MULTILATERALS = "DACMultilaterals"
 
 # Datasets whose StatVars declare no code system, so no code read reaches them. The export lists
 # their StatVars from the coverage build into `listed_statvars` (`listed_dcids`).
@@ -92,7 +117,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(_CRS, _IMPUTED_MULTILATERAL_SECTORS),
+        declared_by_every_statvar_of=(CRS, _IMPUTED_MULTILATERAL_SECTORS),
         plain_name="sector",
         house_case="sector",
         # The CRS tags climate finance with its Rio markers, which the pipeline drops, and no
@@ -107,7 +132,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(_CRS,),
+        declared_by_every_statvar_of=(CRS,),
         plain_name="instrument",
     ),
     CodeSystemConfig(
@@ -127,7 +152,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=True,
         summable=True,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(_CRS, _IMPUTED_MULTILATERAL_SECTORS),
+        declared_by_every_statvar_of=(CRS, _IMPUTED_MULTILATERAL_SECTORS),
         plain_name="flow",
         # A grant bound under CRSTypeOfFinance100 defaults to ODA when no flow is named.
         # `when_named=("aid",)` also covers a variable phrase naming only "aid". The trigger
@@ -152,12 +177,12 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=False,
         summable=False,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(_IMPUTED_MULTILATERAL_SECTORS, _DAC2A),
+        declared_by_every_statvar_of=(_IMPUTED_MULTILATERAL_SECTORS, DAC2A),
         plain_name="aid type",
         # A DAC2a question that names no aid type asks about total ODA. The imputed table's
         # slot holds its invariant code alone, so the default binds nothing there.
         default=DeclaredDefault(
-            code="DAC2aAidType206",
+            code=DAC2A_TOTAL_ODA,
             when_bound_under=(),
             when_open=True,
             note="The answer covers official development assistance of every aid type.",
@@ -172,11 +197,11 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         disjoint_from_children=False,
         summable=False,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(_DAC1,),
+        declared_by_every_statvar_of=(DAC1,),
         plain_name="aid type",
         # A DAC1 question that names no aid type asks about total ODA.
         default=DeclaredDefault(
-            code="DAC1AidType1010",
+            code=DAC1_TOTAL_ODA,
             when_bound_under=(),
             when_open=True,
             note="The answer covers official development assistance of every aid type.",
@@ -213,7 +238,9 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # explicit zero rows, so a missing row for those cells reads as zero, and the imputed sectors table
 # reads the same way. DAC1, DAC2a and DAC2b read a missing row as unknown, the reading for a table
 # with no zero-row evidence. A question answers from the imputed table only when it names the
-# table. Of two tables that can serve one family, the lower rank serves it. DAC1, DAC2a and DAC2b
+# table, or names or ranks a breakdown such as a sector that no other table of its measure
+# offers, so DAC2a's imputed multilateral line answers the rest (`phase_rank_bind._without_unasked_opt_in`).
+# Of two tables that can serve one family, the lower rank serves it. DAC1, DAC2a and DAC2b
 # share the CRS five-tuples under their own codes (`dac1AidType`, `dac2aAidType`,
 # `dac2bAidType`), and DAC2a's one `attributedAmount` row declares fewer properties than the
 # imputed rows, so each forms families of its own (`CodeIndex.family_of`) and its rank orders it
@@ -236,12 +263,12 @@ _MULTILATERAL_PROVIDER = PartyWord(
     word="multilateral",
     measured_property="amount",
     axis="origin",
-    party="DACMultilaterals",
+    party=DAC_MULTILATERALS,
     where={"destination": "country"},
 )
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
-        provenance=_CRS,
+        provenance=CRS,
         label="OECD Creditor Reporting System (CRS)",
         description=(
             "Development finance that providers report to the OECD activity by activity, by"
@@ -272,7 +299,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         invariants={"crsTypeOfFlow": "CRSTypeOfFlow10", "dac2aAidType": "DAC2aAidType106"},
     ),
     DatasetDeclaration(
-        provenance=_DAC1,
+        provenance=DAC1,
         label="OECD DAC1",
         description=(
             "Donors' aggregate official and private flows reported to the OECD, as totals by"
@@ -286,7 +313,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ratio_base_axis="origin",
     ),
     DatasetDeclaration(
-        provenance=_DAC2A,
+        provenance=DAC2A,
         label="OECD DAC2a",
         description=(
             "Donors' official development assistance disbursements reported to the OECD, by"
@@ -322,6 +349,92 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             ),
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
+    ),
+)
+
+
+# The provenances declared as composites of other tables' series (`CompositeDeclaration`). The
+# graph holds no node for either: the mint composes each from its components' frames
+# (`code_index.composites`, `materialise.composite`).
+#
+# A donor's spending including its imputed share of multilateral spending stacks the CRS's
+# bilateral flows and the imputed multilateral sectors table on the same years. The imputed
+# component binds its table, the one imputed multilateral aid type every imputed row holds, and
+# the measure the table publishes it under, and leaves out the modality and type-of-finance
+# slots its rows do not declare. The imputed table reads a missing row as zero, so inside the
+# years both tables cover a recipient the CRS serves and the imputed table does not gets an
+# imputed zero row. The CRS's absence is left unfilled: the composite then equals bilateral plus
+# imputed on every year it serves.
+#
+# DAC2a's own total ODA (aid type 206) stacks on its imputed multilateral ODA (aid type 106)
+# for the same donors and recipients. DAC2a publishes the imputed line as gross disbursements
+# alone, an estimate that is neither gross nor net in substance, and the convention adds it to
+# total ODA on either basis, so the imputed component reads the gross line whatever basis the
+# composite asks for. Both components read DAC2a, so each binds its own aid type, and a row's
+# aid type names the one component it belongs to (`code_index.composites.component_of`).
+# DAC2a reads a missing row as unknown, so the imputed component writes no zero rows.
+#
+# The OECD headline ODA splices DAC1's net flows to 2017 and its grant equivalents from 2018,
+# the year the OECD made grant equivalents its headline measure.
+COMPOSITES: tuple[CompositeDeclaration, ...] = (
+    CompositeDeclaration(
+        provenance=CRS_INCLUSIVE,
+        label="bilateral plus imputed multilateral (OECD CRS and ONE Imputed Multilateral Sectors)",
+        measure_noun="including imputed multilateral spending",
+        kind="stacked",
+        components=(
+            ComponentRecipe(role="bilateral", dataset=CRS),
+            ComponentRecipe(
+                role="imputed",
+                dataset=_IMPUTED_MULTILATERAL_SECTORS,
+                provenance=_IMPUTED_MULTILATERAL_SECTORS,
+                measured_property="attributedAmount",
+                bind={"dac2aAidType": DAC2A_IMPUTED_MULTILATERAL_ODA},
+                drop_unbound=frozenset({"crsCooperationModality", "crsTypeOfFinance"}),
+                zero_absent=True,
+            ),
+        ),
+    ),
+    CompositeDeclaration(
+        provenance=DAC2A_INCLUSIVE,
+        label=(
+            "bilateral plus imputed multilateral (OECD DAC2a ODA plus imputed multilateral ODA,"
+            " added as published)"
+        ),
+        measure_noun="including imputed multilateral ODA",
+        kind="stacked",
+        components=(
+            ComponentRecipe(
+                role="bilateral", dataset=DAC2A, bind={"dac2aAidType": DAC2A_TOTAL_ODA}
+            ),
+            ComponentRecipe(
+                role="imputed",
+                dataset=DAC2A,
+                provenance=DAC2A,
+                basis=("attributedAmount", "Gross"),
+                bind={"dac2aAidType": DAC2A_IMPUTED_MULTILATERAL_ODA},
+            ),
+        ),
+    ),
+    CompositeDeclaration(
+        provenance="provenance/ONEOECDHeadlineODA",
+        label="OECD headline ODA (net flows to 2017, grant equivalents from 2018)",
+        measure_noun="OECD headline ODA",
+        kind="spliced",
+        components=(
+            ComponentRecipe(
+                role="headline_net",
+                dataset=DAC1,
+                periods=YearPeriod(first=None, last=2017),
+                basis=("amount", "Net"),
+            ),
+            ComponentRecipe(
+                role="headline_ge",
+                dataset=DAC1,
+                periods=YearPeriod(first=2018, last=None),
+                basis=("grantEquivalent", None),
+            ),
+        ),
     ),
 )
 
@@ -401,8 +514,8 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
         "InternationalMonetaryFund in DAC2A: equal to the dollar in gross ODA in every year the "
         "trust funds report (Kenya 1988 to 2024, 19 years, 756.1m in 2020; Bangladesh 1987 to "
         "2024, 18 years); a party in the CRS, which never publishes the IMF",
-        datasets=frozenset({_DAC2A}),
-        reviewed=frozenset({_CRS, _DAC2A}),
+        datasets=frozenset({DAC2A}),
+        reviewed=frozenset({CRS, DAC2A}),
     ),
     "IMFResilienceAndSustainabilityTrust": KindOverride(
         "total",
@@ -410,7 +523,7 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
         "one year it reports (Kenya 2024: 180.2m); a party in the CRS, which never publishes "
         "the IMF",
         datasets=frozenset({_DAC2B}),
-        reviewed=frozenset({_CRS, _DAC2B}),
+        reviewed=frozenset({CRS, _DAC2B}),
     ),
     "InterAmericanDevelopmentBankGroup": KindOverride(
         "total", "InterAmericanDevelopmentBank plus IDBInvest"
@@ -633,7 +746,10 @@ class WholeWindow:
 
 @dataclass(frozen=True)
 class WholePopulationTotal:
-    """A total that holds a whole population on `axis`, with the datasets where it does.
+    """A total that holds a whole population on `axis`, with the datasets where it does: in
+    each it covers every party of the classes its window names (`WholeWindow.covers`), so it
+    and the sum of those parties count the same population. A total that holds a named group
+    and not a whole class is a containing total (`ContainingTotal`).
 
     `datasets` maps a provenance to what the total holds there. A dataset that publishes the total
     and is not named reads it as an ordinary total. `reason` states the composition check and the
@@ -680,7 +796,7 @@ class WholePopulationTotal:
 WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
     "DACAllRecipients": WholePopulationTotal(
         axis="destination",
-        datasets={_DAC2A: WholeWindow(("official", "residual"), first_year=1984)},
+        datasets={DAC2A: WholeWindow(("official", "residual"), first_year=1984)},
         reason=(
             "DAC2A: official plus residual recipients equal the total from 1984 to 2024 for seven "
             "donors, apart from Japan 1988 (0.19%), Germany 2002 (0.22%) and France 2008 "
@@ -689,7 +805,7 @@ WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
     ),
     "DACOfficialDonors": WholePopulationTotal(
         axis="origin",
-        datasets={_DAC2A: WholeWindow(("official",)), _DAC2B: WholeWindow(("official",))},
+        datasets={DAC2A: WholeWindow(("official",)), _DAC2B: WholeWindow(("official",))},
         reason=(
             "DACCountriesTotal plus DACNonDACCountries plus DACMultilaterals, to the dollar in "
             "every year, DAC2A and DAC2B, at four recipients"
@@ -697,10 +813,39 @@ WHOLE_POPULATION_TOTALS: Mapping[str, WholePopulationTotal] = {
     ),
     "DACPrivateDonors": WholePopulationTotal(
         axis="origin",
-        datasets={_DAC2A: WholeWindow(("private",))},
+        datasets={DAC2A: WholeWindow(("private",))},
         reason=(
             "the sum of the PRIVATE_PROVIDERS rows, to the dollar in every year from 2009, "
             "DAC2A, at three recipients; DAC2B does not publish it"
+        ),
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ContainingTotal:
+    """A published group total that Search binds on a flow side a question leaves open, in the
+    one dataset that publishes it there. It holds the members of the group `TOTAL_GROUPS` gives
+    it, which the membership registry lists, and not every party of a class, so it is no
+    whole-population total (`WholePopulationTotal`): other parties the dataset holds on the
+    side stay outside it. `reason` states why the total contains a part on that side."""
+
+    total: str
+    reason: str
+
+
+# The total each dataset serves on a flow side the question leaves open, by dataset and axis
+# (`search.engine.region.whole_totals.containing_reading`). DAC1 publishes donor totals for
+# DAC countries, non-DAC countries, multilaterals and official donors. The DAC countries'
+# total is the one a DAC member's figure sits in: a sum over every donor would count each
+# multilateral's outflows on top of the members' core contributions to it, which DAC1's
+# total ODA already counts.
+CONTAINING_TOTALS: Mapping[tuple[str, RoleAxis], ContainingTotal] = {
+    (DAC1, "origin"): ContainingTotal(
+        total="DACCountriesTotal",
+        reason=(
+            "DAC countries, total holds every DAC member's ODA, and no multilateral's outflows "
+            "beside the core contributions the members' totals count"
         ),
     ),
 }
@@ -870,7 +1015,7 @@ MEASURE_WORD_SYNONYMS_KEPT: frozenset[str] = frozenset(
 CONCEPT_GROUPS: tuple[tuple[tuple[str, str], ...], ...] = (
     (
         ("crsTypeOfFlow", "CRSTypeOfFlow10"),
-        ("dac1AidType", "DAC1AidType1010"),
+        ("dac1AidType", DAC1_TOTAL_ODA),
         ("dac2aAidType", "DAC2aAidType206"),
     ),
     (

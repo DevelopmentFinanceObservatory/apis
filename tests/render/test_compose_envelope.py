@@ -1382,7 +1382,7 @@ def test_an_ambiguous_wording_keeps_its_slot_token_beside_a_resolved_sibling():
         "entity_ambiguous",
         entity_terms=["Congo"],
         ambiguous_candidates=["Congo [DRC]", "Congo [Republic]"],
-        ambiguous_roles={"Congo": "destination"},
+        ambiguous_roles=["destination"],
     )
     ambiguous = _no_data_with_plan("entity_ambiguous", "GDP", plan)
 
@@ -1391,6 +1391,7 @@ def test_an_ambiguous_wording_keeps_its_slot_token_beside_a_resolved_sibling():
     (token,) = [t for t in composed if t.part_index == 1 and t.kind == "slot" and t.axis != "what"]
     assert token.text == "Congo"
     assert token.role == "destination"
+    assert token.entity_choice == 0
     assert rendered is not None
     assert rendered.endswith(f". {sentence_from_plan(plan)}")
 

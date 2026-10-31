@@ -11,7 +11,10 @@ from typing import Any
 import httpx
 import pytest
 
+from code_index.composites import declared_composite_digest
+from code_index.declarations import CRS_INCLUSIVE
 from dc_sdmx import SdmxClient
+from graph_release.context import current_release
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_group
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
@@ -27,8 +30,11 @@ from materialise.facets import FacetBinding, ProvenanceRefresh, probe_collection
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.window import LatestYear, RequestedWindow, election_window
+from origin_catalogue import DataCommons, bound_catalogue
+from origin_catalogue.origins import BASE, DFO, UN_SYSTEM
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from .conftest import FakeGraphReader
 
@@ -61,6 +67,7 @@ def _stored(**changes: Any) -> dict[str, object]:
         pytest.param(None, ("schema",), id="no-stored-fingerprint"),
         pytest.param({**_BASE.as_json(), "schema": 2}, ("schema",), id="unknown-schema"),
         pytest.param({"schema": 1, "members": "x"}, ("schema",), id="malformed"),
+        pytest.param({**_BASE.as_json(), "imported_data": 7}, ("schema",), id="non-text-import"),
         pytest.param(_stored(members=members_digest(["A"])), ("members",), id="members"),
         pytest.param(
             _stored(sources=(("provenance/OECDDAC2A", "2026-10-01"), ("provenance/IMF", None))),
@@ -96,6 +103,7 @@ def _stored(**changes: Any) -> dict[str, object]:
         ),
         pytest.param(_stored(window=(2015, 2025)), ("window",), id="window"),
         pytest.param(_stored(window=None), ("window",), id="window-missing"),
+        pytest.param(_stored(imported_data="sha256:a"), (), id="import-never-compared"),
         pytest.param(
             _stored(members=members_digest(["C"]), window=(2014, 2026)),
             ("members", "window"),
@@ -139,6 +147,8 @@ def test_build_dependencies_records_each_latest_member_and_the_stored_shape_read
         provenance_refresh={},
         conversion_records=(),
         latest_years={"dcid:A": _LATEST_A},
+        candidate_provenances=(),
+        scope_settled=True,
     )
 
     assert dependencies.latest_years == (
@@ -191,6 +201,40 @@ def test_a_refreshed_fingerprint_reads_every_stored_ref_in_one_call():
     )
 
 
+@pytest.mark.parametrize(
+    ("stored_digest", "provenance", "changed"),
+    [
+        pytest.param(None, CRS_INCLUSIVE, False, id="deployed-declaration"),
+        pytest.param("sha256:old", CRS_INCLUSIVE, True, id="changed-declaration"),
+        pytest.param("sha256:old", "provenance/NoLongerDeclared", True, id="dropped-composite"),
+    ],
+)
+def test_a_composite_head_rebuilds_when_its_deployed_declaration_changes(
+    stored_digest, provenance, changed
+):
+    digest = stored_digest or declared_composite_digest(provenance)
+    stored = replace(_BASE, composites=((provenance, digest),))
+    graph = FakeGraphReader(
+        arcs={
+            "provenance/OECDDAC2A": {"lastDataRefreshDate": ("2026-10-07",)},
+            "provenance/ONEConversionTablesDAC": {"lastDataRefreshDate": ("2026-09-30",)},
+        }
+    )
+    window = election_window(RequestedWindow(kind="range", start_year=2015), clock_year=2026)
+    current = replace(
+        refreshed_dependencies(
+            stored, [_request("A", window), _request("B", window)], graph=graph, coverage=None
+        ),
+        recipes=stored.recipes,
+    )
+
+    decoded = decode_dependencies(stored.as_json())
+    assert decoded is not None and decoded.composites == stored.composites
+    assert dependency_changes(stored.as_json(), current) == (
+        (f"composites:{provenance}",) if changed else ()
+    )
+
+
 def test_a_source_with_no_date_on_both_sides_is_unchanged():
     current = replace(_BASE, sources=(("provenance/IMF", None),))
     assert dependency_changes(current.as_json(), current) == ()
@@ -235,6 +279,8 @@ def test_build_dependencies_records_what_the_run_dispatched():
         },
         conversion_records=[record, None, record],
         latest_years={},
+        candidate_provenances=(),
+        scope_settled=True,
     )
 
     assert dependencies.members == members_digest(["A", "B"])
@@ -255,6 +301,81 @@ def test_build_dependencies_records_what_the_run_dispatched():
     }
 
 
+_TABLES = "provenance/Tables"
+
+
+def _keyed_run(
+    source_origins: dict[str, DataCommons],
+    tables: DataCommons,
+    *,
+    held_by_dfo: bool = True,
+) -> Dependencies:
+    """The fingerprint of a run over the sources `source_origins` names, converted under
+    `_TABLES`, with the bound catalogue listing each provenance under the origin given."""
+    record = _record(recipe_id=_RECIPE_ID, provenance=_TABLES, refresh="2026-09-30")
+    rows = {ref: provenance_row(ref, origin) for ref, origin in source_origins.items()}
+    catalogue = FakeCatalogue(
+        provenances={**rows, _TABLES: provenance_row(_TABLES, tables)},
+        dfo_variables=frozenset({_BARE_STAT_VAR} if held_by_dfo else ()),
+    )
+    with bound_catalogue(catalogue):
+        return build_dependencies(
+            [_request(_STAT_VAR, RequestedWindow(kind="all"))],
+            source_refs=source_origins,
+            provenance_refresh={},
+            conversion_records=[record],
+            latest_years={},
+            candidate_provenances=(),
+            scope_settled=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_origins", "tables", "keyed"),
+    [
+        pytest.param({"provenance/X": DFO, "provenance/Y": DFO}, DFO, True, id="all-dfo"),
+        pytest.param({"provenance/X": DFO, "provenance/Y": BASE}, DFO, False, id="base-source"),
+        pytest.param({"provenance/X": DFO, "undata/Y": UN_SYSTEM}, DFO, False, id="un-source"),
+        pytest.param({"provenance/X": DFO}, BASE, False, id="base-rate-tables"),
+    ],
+)
+def test_a_run_keys_on_the_bound_import_only_when_every_provenance_is_dfos(
+    source_origins, tables, keyed
+):
+    dependencies = _keyed_run(source_origins, tables)
+
+    expected = current_release().imported_data if keyed else None
+    assert dependencies.imported_data == expected
+    assert dependencies.as_json().get("imported_data") == expected
+    assert decode_dependencies(dependencies.as_json()) == dependencies
+
+
+def test_a_provenance_the_catalogue_does_not_list_keys_on_no_import():
+    with bound_catalogue(FakeCatalogue()):
+        dependencies = build_dependencies(
+            [_request(_STAT_VAR, RequestedWindow(kind="all"))],
+            source_refs=["provenance/X"],
+            provenance_refresh={},
+            conversion_records=(),
+            latest_years={},
+            candidate_provenances=(),
+            scope_settled=True,
+        )
+
+    assert dependencies.imported_data is None
+
+
+def test_a_run_over_a_statvar_another_origin_holds_keys_on_no_import():
+    """The fake catalogue names base as holding every StatVar outside `dfo_variables`, so a
+    base facet could win the member's election though the run dispatched DFO's."""
+    assert _keyed_run({"provenance/X": DFO}, DFO, held_by_dfo=False).imported_data is None
+
+
+@pytest.mark.unbound_release
+def test_a_run_with_no_release_bound_keys_on_none():
+    assert _keyed_run({"provenance/X": DFO}, DFO).imported_data is None
+
+
 @pytest.mark.parametrize(
     "window",
     [
@@ -270,6 +391,8 @@ def test_a_window_that_reads_no_clock_has_no_window_member(window):
         provenance_refresh={},
         conversion_records=(),
         latest_years={},
+        candidate_provenances=(),
+        scope_settled=True,
     )
     assert dependencies.window is None
 
@@ -287,6 +410,8 @@ def test_a_recipe_without_a_body_records_no_digest():
         provenance_refresh={},
         conversion_records=[_record(recipe_id="NoSuchRecipe", provenance="p", refresh=None)],
         latest_years={},
+        candidate_provenances=(),
+        scope_settled=True,
     )
     assert dependencies.recipes == (("NoSuchRecipe", None),)
 
@@ -321,11 +446,17 @@ def _csv(request: httpx.Request) -> str:
     )
 
 
-def _materialise(*, with_probe: bool, refreshed_during_fetch: str | None = None, members: int = 1):
+def _materialise(
+    *,
+    with_probe: bool,
+    refreshed_during_fetch: str | None = None,
+    members: int = 1,
+    other_provenance: str | None = None,
+):
     """Materialise `members` members (one or two) against a fake graph whose `OECD_DAC2A`
     refresh date reads 2026-10-07, moving to `refreshed_during_fetch` on the first SDMX request
-    when given. Returns the result, the refresh reads the run made, the graph and the
-    requests."""
+    when given, and whose coverage also holds a facet of `other_provenance` when given.
+    Returns the result, the refresh reads the run made, the graph and the requests."""
     stat_vars = (_STAT_VAR, _SECOND_STAT_VAR)[:members]
     bare = [stat_var.removeprefix("dcid:") for stat_var in stat_vars]
     arcs: dict[str, dict[str, tuple[str, ...]]] = {
@@ -347,13 +478,21 @@ def _materialise(*, with_probe: bool, refreshed_during_fetch: str | None = None,
     graph = FakeGraphReader(
         arcs=arcs, facets={(stat_var, "country/TGO"): [_FACET] for stat_var in bare}
     )
+    facet_ids = ["facet1"] if other_provenance is None else ["facet1", "facetOther"]
     coverage = build_coverage_index(
-        [(stat_var, "facet1", "country/DONOR", "country/TGO", [2015]) for stat_var in bare],
+        [
+            (stat_var, facet_id, "country/DONOR", "country/TGO", [2015])
+            for stat_var in bare
+            for facet_id in facet_ids
+        ],
         role_names={stat_var: RoleNames(donor="donor", recipient="recipient") for stat_var in bare},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
-            )
+            ),
+            "facetOther": FacetMetadata(
+                provenance_id=other_provenance or "", measurement_method="Other", unit="EUR"
+            ),
         },
     )
     requests = [
@@ -426,3 +565,32 @@ def test_a_refresh_during_the_fetch_records_the_pre_fetch_token_and_the_next_che
     assert result.dependencies.sources == (("OECD_DAC2A", "2026-10-07"),)
     current = refreshed_dependencies(result.dependencies, requests, graph=graph, coverage=None)
     assert dependency_changes(result.dependencies.as_json(), current) == ("sources:OECD_DAC2A",)
+
+
+@pytest.mark.parametrize("members", [1, 2], ids=["member", "group"])
+@pytest.mark.parametrize(
+    ("other_provenance", "keyed"),
+    [(None, True), ("dc/base/Other", False), ("OECD_DAC2A_TWIN", True)],
+    ids=["dfo-alone", "base-candidate", "dfo-candidate"],
+)
+def test_a_run_keys_on_no_import_when_its_election_ranked_a_facet_outside_dfo(
+    bind_catalogue, other_provenance, keyed, members
+):
+    """A base facet the mixer holds for a StatVar the catalogue lists under DFO alone, at a
+    place the catalogue's scan does not cover, is a candidate election ranks though the run
+    dispatches DFO's. The run that ranked it keys on no import."""
+    bind_catalogue(
+        FakeCatalogue(
+            provenances={
+                ref: provenance_row(ref, DFO) for ref in ("OECD_DAC2A", "OECD_DAC2A_TWIN")
+            },
+            dfo_variables=frozenset({_BARE_STAT_VAR, _SECOND_STAT_VAR.removeprefix("dcid:")}),
+        )
+    )
+
+    result, _, _, _ = _materialise(
+        with_probe=False, members=members, other_provenance=other_provenance
+    )
+
+    assert result.dependencies.sources == (("OECD_DAC2A", "2026-10-07"),)
+    assert result.dependencies.imported_data == (current_release().imported_data if keyed else None)

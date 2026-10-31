@@ -229,8 +229,10 @@ def test_a_hallucinated_requested_all_phrase_not_in_the_input_list_is_discarded(
     all_messages = [w.message for w in envelope_warnings + part_warnings]
     assert all_messages == [f'The requested qualifier "{_BREADTH_PHRASE}" was not applied.']
 
+    # Grant equivalents count the ODA default as CRS flows 10 and 60 (`BASIS_MEASURES`).
     flow_filter = _filter_for(response.parts[0].spec, "crsTypeOfFlow")
-    assert flow_filter.binding_kind == "value"
+    assert flow_filter.binding_kind == "set"
+    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
     assert flow_filter.provenance == "declared_default"
 
 

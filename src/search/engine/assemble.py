@@ -12,6 +12,7 @@ from dfo_platform.roles import FlowFamily
 from search.engine.closest_match import spec_closest_match_fact, substituted_readings_fact
 from search.engine.departures import (
     NO_ENTITY_WORDS,
+    member_unavailable_fact,
     merged_entity_facts,
     scope_limited_fact,
     spec_departure_facts,
@@ -47,6 +48,7 @@ from search.models import (
     Operation,
     Ordering,
     ParsedPart,
+    PartScope,
     ResolvedQualifier,
     RoleAxis,
     Timing,
@@ -55,7 +57,7 @@ from search.models import (
     UnsupportedPart,
     Warning,
 )
-from search.render.assumptions import assumptions_for, common_assumptions
+from search.render.assumptions import NameCorrection, assumptions_for, common_assumptions
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.departures import departures_from_facts
 from search.render.heading import (
@@ -73,6 +75,8 @@ from search.render.no_data import (
 )
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_words, sentence_from_plan
+from search.scope.basis import offers_basis_of
+from search.scope.build import served_scope
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -208,6 +212,33 @@ def with_skills(spec: Spec, *, index: SkillsIndex) -> Spec:
                 }
             )
             for twin in twins
+        ]
+    return spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
+
+
+def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
+    """Attach how the part was counted under ``resolved.scope_choices``, its compiled record
+    restated from ``spec``'s own definition: the identity the part serves, which the resolve
+    may have canonicalised after the scope compiled. A compiled record of ``spec`` itself
+    stands as it is, since a composite's states the years each component serves. An
+    alternative measure on a basis the measure-basis choice offers
+    (`scope.basis.offers_basis_of`) leaves ``resolved.alternative_measures``, since the choice
+    is the part's one route to it. Update ``resolved`` because ``model_copy(update=...)``
+    skips validation and the field belongs to it."""
+    served = (
+        scope
+        if scope.compiled.spec_id == spec.spec_id
+        else scope.model_copy(
+            update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
+        )
+    )
+    update: dict[str, object] = {"scope_choices": served}
+    alternatives = spec.resolved.alternative_measures
+    if alternatives is not None:
+        update["alternative_measures"] = [
+            alternative
+            for alternative in alternatives
+            if not offers_basis_of(served, alternative.definition.identity)
         ]
     return spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
 
@@ -417,9 +448,11 @@ def build_definite_part(
     departure_facts: Sequence[DepartureFact] = (),
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
     assumption_echo: Sequence[Assumption] | None = None,
+    name_corrections: Sequence[NameCorrection] = (),
     asked_axes: frozenset[RoleAxis] = frozenset(),
     own_spec: Spec | None = None,
     members_in_words: bool = False,
+    scope_choices: PartScope | None = None,
 ) -> DefinitePart:
     """Build a definite part around its answering spec.
 
@@ -431,17 +464,22 @@ def build_definite_part(
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
     ``assumption_echo`` is the list a dataset resubmit entry echoed
     (`RegionResult.assumption_echo`), of which the part states those that still hold
-    (`render.assumptions.assumptions_for`), None when it echoed none. ``asked_axes`` are
-    the flow axes the request's words asked every member of
+    (`render.assumptions.assumptions_for`), None when it echoed none.
+    ``name_corrections`` are the entity names the request's door read in place of its
+    typed words (`RegionResult.name_corrections`), of which the part states those ``spec``
+    binds. ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
     open role. ``own_spec`` is the part's own Spec before a same-shape merge gave it
     ``spec``, from which its declared defaults are read; None when ``spec`` is its own.
     ``members_in_words`` is whether the part's door asks for a flow side's members in the
-    question's words (`RegionResult.members_in_words`).
+    question's words (`RegionResult.members_in_words`). ``scope_choices`` is how the part
+    was counted (`RegionResult.scope_choices`), attached to ``spec`` when given.
     """
     # A definite spec must carry at least one confirmed StatVar.
     assert spec.resolved.members, "definite Spec has empty stat_vars"
     spec = with_sentence(spec)
+    if scope_choices is not None:
+        spec = with_scope_choices(spec, scope_choices)
     if include_skills and skills_index is not None:
         spec = with_skills(spec, index=skills_index)
     return DefinitePart(
@@ -466,6 +504,7 @@ def build_definite_part(
         assumptions=assumptions_for(
             spec,
             echo=assumption_echo,
+            corrections=name_corrections,
             asked_axes=asked_axes,
             operations=operations,
             own_spec=own_spec,
@@ -529,7 +568,7 @@ def build_no_data_part(
     bound_role_dcids: Mapping[EntityRoleKey, Sequence[str]] | None = None,
     ambiguous_candidates: list[str] | None = None,
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
-    ambiguous_roles: Mapping[str, RoleAxis] | None = None,
+    ambiguous_roles: Sequence[RoleAxis | None] | None = None,
     options: list[NoDataOption] | None = None,
     source_terms: list[str] | None = None,
     ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
@@ -565,8 +604,8 @@ def build_no_data_part(
     query-bound role values for alternate validation, including when both roles are bound.
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
-    the sentence marks as a slot. ``options`` are the ready requests of a refusal that
-    asks for a choice (`conjoin._options`).
+    the sentence marks as a slot, parallel to ``entity_terms``. ``options`` are the ready
+    requests of a refusal that asks for a choice (`conjoin._options`).
     ``source_terms`` are the source wordings a ``source_not_resolved`` or
     ``source_ambiguous`` outcome rests on, or the series code a ``source_code_*`` outcome
     rests on, and ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
@@ -710,6 +749,7 @@ def build_no_data_part(
                 entity_groups=entity_groups,
                 role_axis=role_axis,
                 ambiguous_candidates=ambiguous_candidates,
+                ambiguous_roles=ambiguous_roles,
                 elected_stat_vars=elected_stat_vars,
                 qualifier_terms=qualifier_terms,
                 source_terms=source_terms,
@@ -807,6 +847,7 @@ def build_candidates_part(
     departure_facts: Sequence[DepartureFact] = (),
     reading_facts: Mapping[str, Sequence[DepartureFact]] = NO_READING_FACTS,
     request_words: bool = True,
+    name_corrections: Sequence[NameCorrection] = (),
     asked_axes: frozenset[RoleAxis] = frozenset(),
     assumption_echoes: Mapping[str, Sequence[Assumption]] = MappingProxyType({}),
 ) -> CandidatesPart:
@@ -823,7 +864,9 @@ def build_candidates_part(
     the remaining distinctions. ``include_observations`` adds a warning because no candidate
     is selected for observation retrieval. Requested skills attach to each clamped candidate
     when the index snapshot is available. ``departure_facts`` are the raised facts that
-    hold for every reading the part shows; no single spec answers, so none is read off one.
+    hold for every reading the part shows. A reading's `member_unavailable` is read off its
+    own spec (`member_unavailable_fact`), and its text names the source that reading reads,
+    which ties it to the reading.
     ``reading_facts`` are the facts of each reading by `spec_id`, each naming the dataset
     it holds for (`RegionResult.unpublished_whole_facts`); the part states those of the
     readings it shows, once each. Their text names roles in the flow family every clamped
@@ -831,6 +874,8 @@ def build_candidates_part(
     `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
+    ``name_corrections`` are the entity names the request's door read in place of its
+    typed words (`RegionResult.name_corrections`); each reading states those it binds.
     ``asked_axes`` are the flow axes the request's words asked every member of
     (`RegionResult.every_member_axes`); they and the axes ``operations`` run over state no
     open role. `CandidatesPart.reading_assumptions` holds each shown reading's own list, as
@@ -861,6 +906,7 @@ def build_candidates_part(
                 raised=[
                     *departure_facts,
                     *(fact for spec in clamped for fact in reading_facts.get(spec.spec_id, ())),
+                    *(fact for spec in clamped if (fact := member_unavailable_fact(spec))),
                 ],
                 operations=operations,
             ),
@@ -880,6 +926,7 @@ def build_candidates_part(
         assumptions_for(
             spec,
             echo=assumption_echoes.get(spec.spec_id),
+            corrections=name_corrections,
             asked_axes=asked_axes,
             operations=operations,
         )

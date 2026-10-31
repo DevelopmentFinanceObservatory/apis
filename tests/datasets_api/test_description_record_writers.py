@@ -66,7 +66,7 @@ def test_a_spec_mint_writes_its_record_with_basis_mint() -> None:
     assert (record.id, record.content_version, record.schema_version, record.basis) == (
         spec_id,
         content_version,
-        1,
+        2,
         "mint",
     )
     assert record.computed is None
@@ -87,11 +87,20 @@ def _summed_steps(record) -> list:
 def _assert_derived_from_raw(collapsed, raw) -> None:
     """A collapsed version's record keeps its raw version's population, evidence and steps, and
     adds one step naming the two members it summed. The groupby by recipient sums the test
-    axis away, so the collapse holds no dimension."""
+    axis away; the definition binds it to the set of both members, so the collapse is the
+    set's total and keeps the axis narrowed to the set, varying over no value."""
     assert collapsed.basis == "mint"
     assert raw.variables is not None
-    assert [dimension.property for dimension in raw.variables.dimensions or ()] == [FAMILY_AXIS]
-    assert collapsed.variables == raw.variables.model_copy(update={"dimensions": []})
+    (axis,) = raw.variables.dimensions or ()
+    assert axis.property == FAMILY_AXIS
+    assert axis.within_set == ["TestAxisA", "TestAxisB"]
+    assert collapsed.variables == raw.variables.model_copy(
+        update={
+            "dimensions": [
+                axis.model_copy(update={"values": [], "undeclared_variables": 0, "partial": False})
+            ]
+        }
+    )
     assert collapsed.evidence.prepared == raw.evidence.prepared
     assert collapsed.evidence.sources == raw.evidence.sources
     assert raw.steps is not None

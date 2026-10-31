@@ -70,7 +70,7 @@
 -- shapes: the image that writes the new shapes is the previous image of the
 -- deploy that carries it.
 
-CREATE FUNCTION datasets.warning_counted_refs_0039(warning jsonb, member_count integer)
+CREATE FUNCTION datasets.warning_counted_refs_0045(warning jsonb, member_count integer)
 RETURNS jsonb
 LANGUAGE plpgsql IMMUTABLE AS $rewrite$
 DECLARE
@@ -229,7 +229,7 @@ FROM (
         r.content_version,
         (
             SELECT jsonb_agg(
-                datasets.warning_counted_refs_0039(
+                datasets.warning_counted_refs_0045(
                     warning.value,
                     CASE
                         WHEN jsonb_typeof(r.trace -> 'resolved_stat_vars') = 'array'
@@ -250,4 +250,4 @@ WHERE v.subject_id = rewritten.subject_id
     AND v.content_version = rewritten.content_version
     AND v.warnings IS DISTINCT FROM rewritten.warnings;
 
-DROP FUNCTION datasets.warning_counted_refs_0039(jsonb, integer);
+DROP FUNCTION datasets.warning_counted_refs_0045(jsonb, integer);

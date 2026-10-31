@@ -3,7 +3,7 @@
 `datasets_surface()` combines each door's router, classifier, exception types, and admission
 checks, and owns the one lifespan that builds the doors' shared `Deps` (`datasets_api.deps`). The
 meta door mounts first. Static paths are disjoint from subject-id routes. Those routes accept only
-`spec_` ids.
+`spec_` ids, but for the description routes and the derived door's, which take an `ops_` id.
 
 Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
@@ -15,7 +15,10 @@ Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `POST /api/datasets`, `POST /api/datasets/frames/publish`, `POST /api/datasets/frames/refresh`,
 the recipe door's
 `PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe` and
-`GET /api/datasets/recipes/replays/{replay_key}`, and `GET /api/datasets/{spec_id}/versions`.
+`GET /api/datasets/recipes/replays/{replay_key}`, `POST /api/datasets/analysis` and its
+`/anchor` route, the derived door's `GET /api/datasets/derived/{ops_id}/{content_version}` and its
+`/file`, `GET /api/datasets/{spec_id}/versions`, and the exports door's
+`POST /api/datasets/exports` and `GET /api/datasets/exports/{export_id}`.
 Registration stores definitions for later materialisation. The mint route handles four input
 kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes.
 The versions door mounts before the snapshot door, whose
@@ -41,13 +44,21 @@ from artifact_store import ArtifactStore
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import SnapshotReader
+from dataset_store.snapshot import ArtifactReferenceWriter, SnapshotReader
+from datasets_api.allowance import SharedAllowanceLedger
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell, DepsOverrides, open_deps
 from datasets_api.description_store import LiveDescriptionStore
+from datasets_api.doors.analysis import (
+    RunningAnalyses,
+    build_analysis_door,
+    classify_analysis_exception,
+)
 from datasets_api.doors.definition import build_definition_door, classify_definition_exception
+from datasets_api.doors.derived import build_derived_door, build_derived_files_door
 from datasets_api.doors.description import build_description_door
+from datasets_api.doors.exports import build_export_link_door, build_exports_door
 from datasets_api.doors.files import build_files_door, classify_files_exception
 from datasets_api.doors.meta import build_meta_door, classify_meta_exception
 from datasets_api.doors.mint import build_mint_door
@@ -69,10 +80,10 @@ from datasets_api.doors.register import (
 )
 from datasets_api.doors.snapshot import build_snapshot_door
 from datasets_api.doors.versions import build_versions_door
+from datasets_api.export_store import ExportStore
 from datasets_api.operation_store import OperationStore, classify_operation_store_exception
 from datasets_api.operations.task_client import TaskClient
 from datasets_api.recipe_store import RecipeStore
-from datasets_api.reference_store import PinReferenceWriter
 from datasets_api.routing import build_id_grammar_refusal_router
 from datasets_api.store_errors import classify_store_exception
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
@@ -104,6 +115,7 @@ classify_datasets_exception = combine_classifiers(
     classify_publish_exception,
     classify_recipe_exception,
     classify_refresh_exception,
+    classify_analysis_exception,
     classify_store_exception,
     classify_operation_store_exception,
 )
@@ -120,8 +132,10 @@ def datasets_surface(
     version_lister: VersionLister | None = None,
     operation_store: OperationStore | None = None,
     recipe_store: RecipeStore | None = None,
+    export_store: ExportStore | None = None,
     description_store: LiveDescriptionStore | None = None,
-    reference_writer: PinReferenceWriter | None = None,
+    reference_writer: ArtifactReferenceWriter | None = None,
+    allowances: SharedAllowanceLedger | None = None,
     graph: GraphReader | None = None,
     sdmx: SdmxClient | None = None,
     artifact_store: ArtifactStore | None = None,
@@ -134,6 +148,8 @@ def datasets_surface(
     publish_allowed_principals: frozenset[str] | None = None,
     catalogue: CatalogueService | None = None,
     release: ReleaseService | None = None,
+    deps_cell: DepsCell | None = None,
+    running_analyses: RunningAnalyses | None = None,
 ) -> Surface:
     """Build the Datasets `Surface` from its doors.
 
@@ -151,8 +167,9 @@ def datasets_surface(
 
     `pin_allowed_principals` and `publish_allowed_principals` set separate allowlists,
     defaulting to `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` and `DATASETS_FIRST_PARTY_PRINCIPAL`.
-    Pinning has no delete route, so publish permission grants no pin permission. The recipe
-    door admits the publish allowlist. The frame refresh door admits
+    Pinning has no delete route, so publish permission grants no pin permission. The exports
+    door reads the pin allowlist as the pin door does: its holders spend the daily pin budget
+    alone. The recipe door admits the publish allowlist. The frame refresh door admits
     `settings.live_refresh_principal` alone.
 
     Each request binds `catalogue`'s loaded snapshot. It defaults to the process-wide service,
@@ -163,11 +180,17 @@ def datasets_surface(
     Each request also binds `release`'s served release, and a swap holds every materialise
     permit. `release` defaults to the process-wide service, so an unset `GRAPH_RELEASE_URI` or
     an unreadable release fails startup.
+
+    `deps_cell` is the cell the lifespan sets the surface's `Deps` in, given when another
+    surface reads them too (`dfo_apis.app` gives Presentation's live share slots the same cell).
+    `running_analyses` is the analysis keys the process is computing, given with `deps_cell` so
+    the live share slots and `POST /api/datasets/analysis` compute one key once. Left out, the
+    analysis door holds a set of its own.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
     _release = release if release is not None else get_release_service()
-    cell = DepsCell()
+    cell = deps_cell if deps_cell is not None else DepsCell()
     # The doors read the code index as they are built, so they are built under the release a
     # request would bind, and keep none of what they read.
     with bound_served_release(_release):
@@ -179,6 +202,12 @@ def datasets_surface(
             build_mint_door(deps=cell),
             build_definition_door(deps=cell),
             build_refresh_door(deps=cell, settings=_settings),
+            build_analysis_door(
+                deps=cell,
+                running=running_analyses if running_analyses is not None else RunningAnalyses(),
+            ),
+            build_derived_door(deps=cell),
+            build_derived_files_door(deps=cell),
             build_recipe_door(
                 deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
             ),
@@ -193,6 +222,10 @@ def datasets_surface(
             build_publish_door(
                 deps=cell, settings=_settings, allowed_principals=publish_allowed_principals
             ),
+            build_exports_door(
+                deps=cell, settings=_settings, allowed_principals=pin_allowed_principals
+            ),
+            build_export_link_door(deps=cell),
         )
     overrides = DepsOverrides(
         coverage=coverage if coverage is not None else get_coverage_service(),
@@ -207,8 +240,10 @@ def datasets_surface(
         version_lister=version_lister,
         operation_store=operation_store,
         recipe_store=recipe_store,
+        export_store=export_store,
         description_store=description_store,
         reference_writer=reference_writer,
+        allowances=allowances,
         graph=graph,
         sdmx=sdmx,
         artifact_store=artifact_store,

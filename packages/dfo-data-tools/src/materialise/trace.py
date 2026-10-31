@@ -111,6 +111,10 @@ class ManifestTrace:
     # `datasets_api.serve` (`datasets_api.party_totals.PartyTotalsCut.trace_entries`): one
     # `role`, `provenance` (null for rows with none) and its `entities` in dcid order per open
     # party role and provenance that lost rows. Omitted from `to_dict()` when empty.
+    components: tuple[dict[str, object], ...] = ()
+    # Each component a composite's frame was composed from
+    # (`materialise.composite.ComponentSummary.as_trace_entry`), in declaration order. Empty
+    # for a plain definition, and omitted from `to_dict()` then.
 
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.
@@ -147,6 +151,8 @@ class ManifestTrace:
             result["origin_gaps"] = list(self.origin_gaps)
         if self.party_totals_left_out:
             result["party_totals_left_out"] = list(self.party_totals_left_out)
+        if self.components:
+            result["components"] = list(self.components)
         result["frame_grammar_version"] = self.frame_grammar_version
         result["materialiser_build"] = self.materialiser_build
         result["capability_version"] = self.capability_version

@@ -35,7 +35,6 @@ from materialise.facets import (
     Cadence,
     bound_variable_breadth,
     probe_collection_candidates,
-    served_facets,
 )
 from materialise.graph import Facet
 from materialise.group_facets import group_breadth, group_variable_breadth, select_group_facets
@@ -58,6 +57,7 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 from tests.origin_catalogue.support import CRS, WDI, sample_tables
 
+from ._group_support import served_alone
 from .conftest import FakeGraphReader
 
 _POPULATION = "Count_Person"
@@ -180,9 +180,9 @@ def _preview(
     ],
 )
 def test_dfo_leads_only_when_it_covers_at_least_as_many_places(dfo_breadth, base_breadth, elected):
-    served = served_facets(
+    served = served_alone(
         [_DFO_FACET, _BASE_FACET],
-        stat_vars=[_POPULATION],
+        stat_var=_POPULATION,
         window=None,
         breadth={"fD": dfo_breadth, "fB": base_breadth},
     )
@@ -193,7 +193,7 @@ def test_dfo_leads_only_when_it_covers_at_least_as_many_places(dfo_breadth, base
 @pytest.mark.usefixtures("overlap")
 def test_a_single_series_keeps_dfo_precedence():
     """With no breadth (one series) the ranking is today's: DFO's facet first."""
-    served = served_facets([_DFO_FACET, _BASE_FACET], stat_vars=[_POPULATION], window=None)
+    served = served_alone([_DFO_FACET, _BASE_FACET], stat_var=_POPULATION, window=None)
 
     assert [facet.facet_id for facet in served] == ["fD"]
 
@@ -410,10 +410,10 @@ def _failing_profile(eur: Facet, usd: Facet) -> tuple[dict[str, list[Facet]], Fa
 def _defective_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes every profile's election raise a defect, an error that is no failed read."""
 
-    def served_facets(*args, **kwargs):
+    def group_served(*args, **kwargs):
         raise ValueError("profile election bug")
 
-    monkeypatch.setattr(facet_profile, "served_facets", served_facets)
+    monkeypatch.setattr(facet_profile, "group_served", group_served)
 
 
 @pytest.mark.parametrize(
@@ -549,7 +549,7 @@ def test_a_group_at_one_place_breaks_its_tie_on_its_members_whole_breadth():
         graph=graph,
         breadth=group_breadth(probes, window=_ALL),
         variable_breadth=group_variable_breadth(probes),
-    )
+    ).election
 
     assert reads == [(_GDP, other)]
     assert election.selections["unit"].ref == "CurrencyUSD"
@@ -575,10 +575,13 @@ class _UnGraph(FakeGraphReader):
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
-        found = super().observation_facets_batch_many(stat_vars=stat_vars, entities=entities)
+        found = super().observation_facets_batch_many(
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates
+        )
         if _GDP not in stat_vars:
             return found
         if self.un_fails:
@@ -712,7 +715,9 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
 ):
     """Two facets of one import, held by both members at France, tie on every key before
     breadth and state no period. A member reads a facet as annual unless its dates show a
-    month (`cadences_by_member`)."""
+    month (`cadences_by_member`). The request asks for the facets' whole span as a range, the
+    one window under which the probe reads their dates."""
+    window = RequestedWindow(kind="range", start_year=1980, end_year=2025)
     other = f"{_GDP}_PerCapita"
     annual = replace(_weo("fAnnual", "CurrencyUSD"), dates=("1980", "2025"), dates_complete=True)
     monthly_copy = replace(annual, facet_id="fMonthly", dates=("1980", "2000-06", "2025"))
@@ -729,7 +734,7 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
             role_bindings={"observationAbout": [_FRANCE]},
             declared_roles=("observationAbout",),
             facet_bindings={},
-            window=_ALL,
+            window=window,
         )
         for variable in (_GDP, other)
     ]
@@ -743,9 +748,9 @@ def test_a_group_refuses_only_a_cadence_its_unread_breadth_would_decide(
                 requests,
                 [probe.candidates for probe in probes],
                 graph=graph,
-                breadth=group_breadth(probes, window=_ALL),
+                breadth=group_breadth(probes, window=window),
                 variable_breadth=group_variable_breadth(probes),
-            )
+            ).election
 
     if refused:
         with pytest.raises(VariableBreadthUnreadError) as refusal:

@@ -222,6 +222,7 @@ def _frame_store(
         artifacts=artifact_store,
         graph=None,
         reference_writer=_NoOpReferenceWriter(),
+        allowances=None,
         now=lambda: _NOW,
     )
 

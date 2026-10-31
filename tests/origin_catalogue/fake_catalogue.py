@@ -49,6 +49,7 @@ from origin_catalogue.families import (
     family_tables,
     summarise_table,
 )
+from origin_catalogue.frozen_arcs import FrozenArcs, served_arcs
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
@@ -160,10 +161,13 @@ class FakeCatalogue:
     def is_admitted(self, provenance_id: str) -> bool:
         return True
 
+    def admits_in_scope(self, provenance_id: str) -> bool:
+        return self.scope is None or provenance_id in self.scope
+
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
         present = dict.fromkeys(provenance_ids)
         return SeriesAdmission(
-            admitted=tuple(pid for pid in present if self.scope is None or pid in self.scope),
+            admitted=tuple(pid for pid in present if self.admits_in_scope(pid)),
             withheld=(),
         )
 
@@ -195,6 +199,9 @@ class FakeCatalogue:
 
     def held_arcs(self, dcid: str) -> tuple[UnArc, ...] | None:
         return release_held_arcs(self.arcs, dcid)
+
+    def arc_answer(self, dcid: str, rows: tuple[UnArc, ...]) -> FrozenArcs:
+        return served_arcs(rows)
 
     def held_family(self, key: FamilyKey) -> FamilySummary | None:
         return release_held_family(

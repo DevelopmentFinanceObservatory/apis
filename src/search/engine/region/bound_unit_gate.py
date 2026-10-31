@@ -28,9 +28,9 @@ class UnitEvidence:
 
     confirmed: frozenset[str]
 
-    def covers(self, sv_dcids: Collection[str]) -> bool:
-        """Whether every StatVar is confirmed. An empty list is vacuously covered."""
-        return set(sv_dcids) <= self.confirmed
+    def serves_any(self, served: Collection[str]) -> bool:
+        """Whether any of the `served` StatVars is confirmed."""
+        return not self.confirmed.isdisjoint(served)
 
 
 def _bulk_served(plan: BulkPlan) -> frozenset[str]:
@@ -67,14 +67,24 @@ def plan_unit_evidence(plan: ReadPlan | None) -> UnitEvidence:
 def bound_unit_gate_reason(
     plan: ReadPlan | None,
     obs_entities: Mapping[str, Sequence[str]],
-    sv_dcids: Collection[str],
+    served: Collection[str],
 ) -> NoDataReason | None:
     """The no-data reason a bound unit request answers over `plan`, or None when honoured.
 
-    A request with no probe entity cannot honour a unit filter, and otherwise every resolved
-    StatVar needs evidence under its elected unit (`plan_unit_evidence`): coverage cannot
-    pool across StatVars. Either failure answers ``facet_not_available``.
+    `served` are the StatVars the unit decision serves (`unit_served`). A request with no
+    probe entity cannot honour a unit filter, and otherwise at least one served StatVar
+    needs evidence under its elected unit (`plan_unit_evidence`). A served StatVar without
+    a point in the years still leaves the answer to the rest, as the mint names such a
+    member and serves the others (`generation._GroupPlan.out_of_window_members`). Either
+    failure answers ``facet_not_available``.
     """
-    if not obs_entities or not plan_unit_evidence(plan).covers(sv_dcids):
+    if not obs_entities or not plan_unit_evidence(plan).serves_any(served):
         return "facet_not_available"
     return None
+
+
+def unit_served(elected: Mapping[str, object] | None, sv_dcids: Sequence[str]) -> Collection[str]:
+    """The StatVars a bound unit's decision serves: the keys of its selections
+    (`convertibility.decide_spec_unit`), or with no decision `sv_dcids`, every resolved
+    StatVar."""
+    return list(elected) if elected is not None else sv_dcids

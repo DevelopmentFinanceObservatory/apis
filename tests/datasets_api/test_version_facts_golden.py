@@ -7,7 +7,7 @@ output profile, conversion records and default scope a preview reads, the manife
 returns, and the document a Presentation frame carries. Each body is projected onto its facts
 as migration 0031 backfills them, and the read-time assembler must render the same JSON. The
 writers must store the same facts the body held, and the `immutable_body` each version write
-derives from its facts (`version_body`) must be the body itself.
+derives from its facts (`version_body`) must be the body without its `series_conversions`.
 """
 
 from __future__ import annotations
@@ -280,9 +280,9 @@ def test_a_writer_stores_the_facts_its_body_held(name: str) -> None:
         case["content_version"],
         case["base_content_version"],
     )
-    assert _as_json(asdict(record.facts)) == _as_json(
-        asdict(facts_from_body(_as_written(case["body"])))
-    )
+    expected = facts_from_body(_as_written(case["body"]))
+    assert isinstance(expected, ManifestFacts)
+    assert _as_json(asdict(record.facts)) == _as_json(asdict(expected))
 
 
 @pytest.mark.parametrize("name", _FRAME_CASES)
@@ -311,12 +311,13 @@ def _published_record(name: str) -> VersionRecord:
 @pytest.mark.parametrize(
     "name", ["definition", "collapsed", "warnings", "conversions", *_FRAME_CASES]
 )
-def test_a_version_body_is_the_body_the_previous_writer_stored(name: str) -> None:
-    """The previous image reads `immutable_body`, so the body a write derives from today's facts
-    is byte for byte the JSON the previous writer stored for the same version, less the
-    warnings today's writers no longer store (`_as_written`)."""
+def test_a_version_body_is_the_stored_body_without_its_conversion_records(name: str) -> None:
+    """The body a write derives from the facts is the JSON a case stored for the same version,
+    less the warnings the writers do not store (`_as_written`) and the per-series conversion
+    records, which only the `series_conversions` column holds."""
     if name in _FRAME_CASES:
         assert _as_json(version_body(_published_record(name))) == _CASES[name]["body"]
     else:
         body = _as_json(version_body(_written_records()[name]))
-        assert body == _as_written(_CASES[name]["body"])
+        stored = _as_written(_CASES[name]["body"])
+        assert body == {key: value for key, value in stored.items() if key != "series_conversions"}

@@ -41,11 +41,13 @@ import dataclasses
 import logging
 import threading
 
+from datasets_api.adapter import identity_composite
 from datasets_api.admission import (
     refuse_async_over_ceiling,
     sync_estimate,
 )
 from datasets_api.current import DefinitionDeps, serve_current, trace_confirmed_at
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.definition import _resolve_spec_requests, classify_definition_exception
 from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.manifest_models import Manifest
@@ -195,6 +197,7 @@ def run_operation(
                 requests,
                 index=coverage_snapshot.index,
                 member_concurrency=deps.member_concurrency,
+                composite=identity_composite(stored.identity, code_index=deps.code_index),
             )
             recorded = operation_store.record_estimate(
                 operation.id, attempt=operation.attempt_count, estimate=estimate
@@ -222,6 +225,9 @@ def run_operation(
 
         manifest = _run(deps.coverage.snapshot())
         completed_subject_id = manifest.definition.spec_id
+        if options.enrichment is not None:
+            # The serve resolved the default enrichment against the version it built.
+            options = resolve_enrichment(options, coverage=manifest.coverage)
         keys = artifact_rendering_keys(
             options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
         )

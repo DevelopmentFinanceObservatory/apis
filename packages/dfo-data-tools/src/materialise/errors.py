@@ -61,7 +61,8 @@ class CollectionProbeCeilingExceededError(MaterialisationError):
 
 class DefaultFacetUndefinedError(MaterialisationError):
     """422 `default_facet_undefined`. Raised when an unbound axis has no default candidate.
-    None survives narrowing by the bound axes, or the winning candidate carries no provenance.
+    None survives narrowing by the bound axes, or the winning candidate carries no provenance
+    under a request that requires one (`pipeline.MaterialisationRequest.requires_provenance`).
     Aggregated member errors give this refusal priority over `facet_not_available`. `request`
     names the member whose selection failed, where one member's selection raised it."""
 

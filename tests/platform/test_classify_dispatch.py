@@ -391,3 +391,54 @@ def test_classify_default_maps_a_bare_exception_to_the_unhandled_default():
     assert spec.status == 500
     assert spec.code == "internal_error"
     assert spec.retryable is False
+
+
+@pytest.mark.parametrize("cors_origins", [(), ("https://app.example.com",)], ids=["off", "on"])
+@pytest.mark.parametrize("origin", ["https://news.example", "https://app.example.com"])
+def test_a_public_paths_get_refused_before_routing_allows_any_origin_and_a_put_does_not(
+    cors_origins: tuple[str, ...], origin: str
+):
+    """An admission refusal never reaches the route, so the CORS layer allows any origin on a
+    public path's `GET` itself, once, and leaves another method or path as it lists them."""
+    router = APIRouter()
+
+    @router.get("/api/a/shares/{share_id}")
+    async def read_share(share_id: str):
+        return {"id": share_id}
+
+    @router.put("/api/a/shares/{share_id}")
+    async def write_share(share_id: str):
+        return {"id": share_id}
+
+    @router.get("/api/a/private")
+    async def read_private():
+        return {}
+
+    def refuse_all(request) -> ProblemSpec:
+        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+
+    surface = Surface(
+        name="a",
+        prefix="/api/a",
+        router=router,
+        capability_version="va",
+        codes={},
+        middleware=(refuse_all,),
+        public_paths=frozenset({"/api/a/shares/{share_id}"}),
+    )
+    client = TestClient(
+        create_app([surface], cors_origins=cors_origins), raise_server_exceptions=False
+    )
+    headers = {"Origin": origin}
+
+    read = client.get("/api/a/shares/Ab3dEf7h", headers=headers)
+    unsent = client.get("/api/a/shares/Ab3dEf7h")
+    write = client.put("/api/a/shares/Ab3dEf7h", headers=headers)
+    private = client.get("/api/a/private", headers=headers)
+
+    assert [resp.status_code for resp in (read, unsent, write, private)] == [503] * 4
+    assert read.headers.get_list("access-control-allow-origin") == ["*"]
+    assert unsent.headers.get_list("access-control-allow-origin") == ["*"]
+    listed = [origin] if origin in cors_origins else []
+    assert write.headers.get_list("access-control-allow-origin") == listed
+    assert private.headers.get_list("access-control-allow-origin") == listed

@@ -8,8 +8,9 @@ import httpx
 
 from dc_sdmx import SdmxClient
 from materialise import MaterialisationRequest
-from materialise.facets import FacetBinding
+from materialise.facets import CoverageAdmission, FacetBinding, MemberProbe
 from materialise.graph import Facet
+from materialise.group_facets import group_served
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -152,3 +153,20 @@ def _coverage_for(
         role_names=role_names,
         facet_metadata=facet_metadata,
     )
+
+
+def served_alone(
+    candidates: Sequence[Facet],
+    *,
+    stat_var: str,
+    window: RequestedWindow | None,
+    breadth: dict[str, int] | None = None,
+) -> tuple[Facet, ...]:
+    """The facets `group_served` serves `stat_var` alone holding `candidates`, its series
+    counted by `breadth` under every window, or uncounted with None."""
+    probe = MemberProbe(
+        candidates=tuple(candidates),
+        admission=CoverageAdmission(),
+        breadth=None if breadth is None else (lambda _window: breadth),
+    )
+    return group_served({stat_var: probe}, window=window)[stat_var]

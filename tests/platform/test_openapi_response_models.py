@@ -42,9 +42,10 @@ def _schema_path(path: str) -> str:
     return _CONVERTER_SUFFIX_RE.sub(r"{\1}", path)
 
 
-# Operations allowed to omit a 2xx response. The Datasets download link answers 302.
+# Operations allowed to omit a 2xx response. The Datasets download and export links answer 302.
 _NO_2XX_EXEMPT: frozenset[tuple[str, str]] = frozenset(
     {
+        ("/api/datasets/exports/{export_id}", "get"),
         ("/api/datasets/{id}/{content_version}/file", "get"),
         ("/api/datasets/{id}/{content_version}/files/{digest}", "get"),
     }
@@ -201,6 +202,7 @@ def test_every_object_schema_names_its_properties(schema: dict[str, Any]):
 _HANDLER_VERBS = frozenset(
     {
         "create",
+        "delete",
         "get",
         "list",
         "mint",
@@ -211,6 +213,7 @@ _HANDLER_VERBS = frozenset(
         "refresh",
         "register",
         "render",
+        "replace",
         "resolve",
         "revise",
     }

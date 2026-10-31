@@ -19,7 +19,10 @@ from search.engine.response_cache_keys import (
     parsed_key,
     scope_document,
 )
+from search.engine.stated_scope import intake_key_document, part_scope_intakes
 from search.models import (
+    ChoiceOrigin,
+    Entry,
     Operation,
     ParsedEntity,
     ParsedInput,
@@ -132,6 +135,7 @@ def _layer2_key(
     every_member_axes: list[str | None] | None = None,
     measure_qualifiers: list[tuple[str, ...]] | None = None,
     open_axes: list[frozenset[str]] | None = None,
+    stated_scopes: list[dict[str, object] | None] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -184,6 +188,7 @@ def _layer2_key(
         every_member_axes=every_member_axes if every_member_axes is not None else (),
         measure_qualifiers=measure_qualifiers if measure_qualifiers is not None else (),
         open_axes=open_axes if open_axes is not None else (),
+        stated_scopes=stated_scopes if stated_scopes is not None else (),
     )
 
 
@@ -698,6 +703,59 @@ def test_the_role_a_part_lists_member_by_member_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, open_axes=[frozenset(), frozenset({"origin"})])
     assert len({plain, first, second}) == 3
     assert plain == _layer2_key(variables=variables, open_axes=[frozenset(), frozenset()])
+
+
+def test_the_scope_a_query_states_changes_layer2_key() -> None:
+    """Queries whose extractions match but whose words state another scope ("bilateral",
+    "net") or a total key apart; a query stating none keys as one that omits the field."""
+
+    def stated(text: str) -> dict[str, object] | None:
+        return intake_key_document(part_scope_intakes(message=text, part_texts=[text])[0])
+
+    keys = {
+        _layer2_key(stated_scopes=[stated(text)])
+        for text in (
+            "ODA to Kenya",
+            "bilateral ODA to Kenya",
+            "net ODA to Kenya",
+            "net bilateral ODA to Kenya",
+            "total ODA to Kenya",
+        )
+    }
+    assert len(keys) == 5
+    assert _layer2_key(stated_scopes=[stated("ODA to Kenya")]) == _layer2_key()
+
+
+def test_the_parsed_key_states_the_scope_the_message_and_carried_entries_post() -> None:
+    """The parsed door keys the scope each part is posted with, not the message's words:
+    two messages that state no scope share a key, and a stated or carried entry keys apart."""
+    part = ParsedPart(variable_text="health aid")
+    carried = Entry(
+        axis="measure_basis",
+        option_id="measure_basis:net",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="spec:measure_basis"),
+    )
+
+    def key(*, user_message: str | None = None, carried: list[Entry] | None = None) -> str:
+        parsed = ParsedInput(parts=[part], user_message=user_message, carried_entries=carried)
+        intakes = part_scope_intakes(
+            message=user_message, part_texts=[part.variable_text], carried=carried or ()
+        )
+        return parsed_key(
+            parsed=parsed,
+            scope=_scope(),
+            stated_scopes=[intake_key_document(intake) for intake in intakes],
+        )
+
+    plain = key(user_message="health aid to Kenya in 2023?")
+    assert plain == key(user_message="what about health aid to Kenya in 2023") == key()
+    keys = {
+        plain,
+        key(user_message="bilateral health aid to Kenya in 2023"),
+        key(carried=[carried]),
+    }
+    assert len(keys) == 3
 
 
 def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:

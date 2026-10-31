@@ -27,7 +27,7 @@ from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
 )
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.candidates import resolve_candidates
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
@@ -37,7 +37,7 @@ from search.engine.region.codes import (
 from search.engine.region.convertibility import (
     conversion_period_departure,
     convertible_answer,
-    decide_part_unit,
+    decide_spec_unit,
     deflator_omission_departure,
     elected_unit_refs,
     option_pins,
@@ -124,8 +124,7 @@ from search.engine.retrieval.bound_values import (
     OptionServedFact,
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
-    open_constraint_axes,
+    served_open_axes,
     slot_expansions,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets
@@ -223,7 +222,7 @@ async def _decide_bound_unit_convertibility(
     _declared_roles = survivor_declared_roles(mat_result)
     try:
         _decided_selections = await asyncio.to_thread(
-            decide_part_unit,
+            decide_spec_unit,
             mat_result.sv_dcids,
             unit_request=state.unit_request,
             role_bindings=_decision_role_bindings,
@@ -370,7 +369,7 @@ def _runs_unit_conversion(
 ) -> bool:
     """Whether the bound-unit gate will read the answer's conversion: a bound unit, no
     carve-out ahead of the gate (`_gate_carve_out`), a StatVar to convert, and a plan that
-    serves every StatVar under its elected unit (`convertibility.unit_gate`). The plan the
+    serves a StatVar the unit decision serves under its elected unit (`convertibility.unit_gate`). The plan the
     gate read is recorded for the final gate (`ResolveState.unit_gate_plan`)."""
     if state.bound_unit_outcome is None or not mat_result.sv_dcids:
         return False
@@ -758,11 +757,15 @@ def _bound_unit_refusal(
     state: ResolveState, mat_result: Materialised, setup: _DefiniteSetup
 ) -> RegionResult | None:
     """The answer a bound unit request refuses with at the gate, or None when the elected
-    plan serves every StatVar under its unit and every served row converts, as grounding
+    plan serves a StatVar the unit decision serves under its unit and every served row converts, as grounding
     found it (`ResolveState.unit_coverage`). A pass whose conversion omits the rows of
     entities no currency names adds `currency_unmapped_omitted` to the answer's warnings."""
     gate_plan = state.unit_gate_plan if state.unit_gate_plan is not None else state.elected_plan
-    reason = bound_unit_gate_reason(gate_plan, setup.obs_entities, mat_result.sv_dcids)
+    reason = bound_unit_gate_reason(
+        gate_plan,
+        setup.obs_entities,
+        unit_served(state.unit_elected_selections, mat_result.sv_dcids),
+    )
     if reason is not None:
         return state.no_data(reason, llm_usage=state.var_usage)
     # Grounding ran the conversion on every path that reaches here (`_runs_unit_conversion`).
@@ -796,7 +799,7 @@ async def _gather_definite_coverage(
     skip_coverage_probe = _gate_carve_out(state, mat_result) or not state.stat_vars
 
     # The bound unit is decided from the answer's read plan before any fetch, so a request
-    # without a preview reads none: the plan must serve every StatVar under its elected unit
+    # without a preview reads none: the plan must serve a StatVar the unit decision serves, under its elected unit
     # (`bound_unit_gate`), and every row it serves must convert (`unit_coverage`). A
     # known carve-out decides first.
     if state.bound_unit_outcome is not None and not skip_coverage_probe:
@@ -954,15 +957,15 @@ def _build_definite_spec(
 
     # Assemble the Spec
     slots = apply_slot_expansions(slots, slot_expansions(state.bindings))
-    measure_bound_values = bound_values_from_bindings(state.bindings)
     # Grounding reads the family before assembly starts.
     measure_partition, measure_siblings = cast(MeasureFamily, state.measure_family)
     served_member_facts = mat_result.member_facts or {}
     served_members = [served_member_facts[dcid] for dcid in mat_result.sv_dcids]
     # Record served values for every open constraint axis.
-    open_axis_facts = open_constraint_axes(
-        measure_bound_values,
-        dict(zip(mat_result.sv_dcids, served_members, strict=True)),
+    open_axis_facts = served_open_axes(
+        state.bindings,
+        mat_result.sv_dcids,
+        served_member_facts,
         value_labels=state.shape_draft.value_labels or {},
     )
     spec = build_spec(
@@ -1002,6 +1005,7 @@ def _build_definite_spec(
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
         text_recognized_properties=state.text_recognized_properties,
+        grouped_properties=state.grouped_properties,
         # The trace is judged under the unit request the answer is served under, as its
         # carve-outs judge it (`settle_answer`).
         query_qualifiers=answer_terms(

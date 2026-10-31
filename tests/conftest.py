@@ -343,29 +343,34 @@ def search_settings(monkeypatch: pytest.MonkeyPatch) -> "Callable[..., SearchSet
     """Return a factory for installing validated settings with keyword overrides.
 
     Each call layers onto current settings. `model_validate` recomputes derived fields.
-    Overrides of the observation preview caps (`ObservationSettings` fields) install a new
-    `search.observations` settings object, ahead of the search settings so the capability
+    Overrides of the observation preview caps (`ObservationSettings` fields) and the scope
+    window (`ScopeWindowSettings` fields) install a new `search.observations` or
+    `search.scope_window` settings object, ahead of the search settings so the capability
     version sees them. `monkeypatch` restores settings at teardown. Lazy import lets reduced
     installs collect this fixture without the engine extra.
     """
 
     def _install(**overrides: object) -> "SearchSettings":
-        from search import observations
+        from search import observations, scope_window
         from search.engine import config
         from search.engine.config import SearchSettings
         from search.observations import ObservationSettings
+        from search.scope_window import ScopeWindowSettings
 
-        obs_overrides = {
-            k: v for k, v in overrides.items() if k in ObservationSettings.model_fields
-        }
-        if obs_overrides:
-            obs_base = observations.observation_settings().model_dump()
-            monkeypatch.setattr(
-                observations,
-                "_SETTINGS",
-                ObservationSettings.model_validate({**obs_base, **obs_overrides}),
-            )
-        search_overrides = {k: v for k, v in overrides.items() if k not in obs_overrides}
+        shared_overrides: set[str] = set()
+        for module, cls, current in (
+            (observations, ObservationSettings, observations.observation_settings),
+            (scope_window, ScopeWindowSettings, scope_window.scope_window_settings),
+        ):
+            module_overrides = {k: v for k, v in overrides.items() if k in cls.model_fields}
+            if module_overrides:
+                monkeypatch.setattr(
+                    module,
+                    "_SETTINGS",
+                    cls.model_validate({**current().model_dump(), **module_overrides}),
+                )
+                shared_overrides.update(module_overrides)
+        search_overrides = {k: v for k, v in overrides.items() if k not in shared_overrides}
         base = config.settings().model_dump(
             exclude={"capability_version_override", "jev_api_key", "max_entity_occurrences"}
         )

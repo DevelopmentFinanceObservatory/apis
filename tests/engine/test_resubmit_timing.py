@@ -8,8 +8,10 @@ from __future__ import annotations
 import itertools
 
 from search.engine.region import (
+    phase_timing,
     promote_bindings,
     promote_edits,
+    promote_finalize,
     promote_ground,
     promote_materialise,
     promote_places,
@@ -18,7 +20,9 @@ from search.engine.region import (
     promote_survivors,
     promote_validate,
     resolve_spec_resubmit,
+    resubmit_promote,
 )
+from search.engine.region.resubmit_promote import _PROMOTE_PHASES
 from search.engine.region.state import EngineOptions
 from search.models import (
     RawTextInput,
@@ -75,6 +79,8 @@ _PROMOTE_PHASE_MODULES = (
     promote_bindings,
     promote_materialise,
     promote_ground,
+    promote_finalize,
+    phase_timing,
 )
 
 
@@ -145,10 +151,51 @@ def test_standard_promote_resubmit_times_every_phase(monkeypatch):
         "where_places",
         "bind",
         "materialise",
+        "ground_related",
+        "ground_units",
+        "ground_facets",
+        "ground_convert",
         "answer",
+        "ground_gates",
+        "finalize_preview",
+        "options",
+        "finalize_related",
+        "finalize_wholes",
+        "finalize_relaunch",
     ):
         assert key in by_step, f"expected {key!r} in timing_by_step, got {by_step!r}"
         assert by_step[key] >= 1, f"{key!r} should read a nonzero tick, got {by_step[key]!r}"
+
+
+def test_standard_promote_resubmit_books_its_whole_wall_time(monkeypatch):
+    """Each phase's time its own steps leave out is booked under `phase_<name>`, so the
+    steps sum to the pass's wall time, grounding and finalisation included."""
+    # Every step's clock read moves the clock on; the pass's own reads do not, so the
+    # pass's wall time is the ticks its phases took.
+    clock = [1_000]
+
+    def tick() -> int:
+        clock[0] += 1
+        return clock[0]
+
+    for module in _PROMOTE_PHASE_MODULES:
+        monkeypatch.setattr(module, "now_ms", tick)
+    monkeypatch.setattr(resubmit_promote, "now_ms", lambda: clock[0])
+
+    region = resolve_spec_resubmit(
+        inp=_standard_promote_input(),
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph(), EngineOptions(include_option_coverage=False)),
+    )
+
+    assert region.status == "definite"
+    by_step = region.timing_by_step
+    phases = {f"phase_{phase.__name__.removeprefix('_phase_')}" for phase in _PROMOTE_PHASES}
+    assert phases <= set(by_step)
+    assert by_step["phase_ground_build"] >= 1 and by_step["phase_finalize"] >= 1
+    assert sum(by_step.values()) == clock[0] - 1_000
 
 
 def test_standard_promote_early_no_data_exit_times_ran_phases(monkeypatch):

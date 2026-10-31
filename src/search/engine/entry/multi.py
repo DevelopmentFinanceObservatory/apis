@@ -18,6 +18,7 @@ from search.engine.envelope import _sum_usage, now_ms
 from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.region import RegionResult, detect_set_ref
 from search.engine.region.option_coverage import _maybe_build_facet_options
+from search.engine.region.pipeline import merged_scope_choices
 from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.models import QueryEcho, Warning
@@ -72,6 +73,7 @@ async def _stream_combined_regions(
                 coverage=params.coverage.index,
                 deadline=params.deadline,
             ),
+            scope_for=functools.partial(merged_scope_choices, coverage=params.coverage),
         )
         # A timed-out fan-out still combines completed regions into its partial answer.
         if timed_out:

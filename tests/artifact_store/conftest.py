@@ -27,6 +27,12 @@ def _fresh_process_credentials(monkeypatch):
     monkeypatch.setattr(signing, "_process_credentials", signing._ProcessCredentials())
 
 
+@pytest.fixture(autouse=True)
+def _no_storage_emulator(monkeypatch):
+    """Sign as production does, even in a shell that has sourced the local stack's env."""
+    monkeypatch.delenv(signing.STORAGE_EMULATOR_ENV, raising=False)
+
+
 class _BufferedSink(io.BytesIO):
     """A plain in-memory `ArtifactSink` stand-in: `io.BytesIO` already
     satisfies `write`/`tell`/`flush`/`readable`/`writable`/`seekable`, so

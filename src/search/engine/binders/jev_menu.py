@@ -27,10 +27,11 @@ from search.engine.binders.base import BindRequest
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.shape import ShapeDraft
 from search.engine.stated_words_read import (
-    bound_value_label,
+    bound_values_label,
     implied_values,
     restricting,
     served_series,
+    serves_beyond_label,
 )
 from search.models import Axis
 
@@ -149,11 +150,13 @@ def describe(
     """One shape as a question quotes it: its label, then what its five-tuple, fixed values
     and the values `bindings` restrict it to (`restricting`) state beyond the label, and the
     slots left that select parts of it. A bound value reads by
-    `stated_words_read.bound_value_label`, a set's values joined by "or". With
+    `stated_words_read.bound_values_label`: a declared grouping by its label, another
+    set's values joined by "or". With
     `definition`, it also quotes the values the measure's definition fixes on properties
     `bindings` leave unrestricted (`stated_words_read.implied_values`), as the stated-word
-    questions and Gemini's stated-words prompt do, and so do both for the `served` series
-    an answer serving several serves (`stated_words_read.served_series`)."""
+    questions and Gemini's stated-words prompt do. It also quotes the `served` series when
+    they differ from the label (`stated_words_read.serves_beyond_label`,
+    `stated_words_read.served_series`)."""
     reading = stated_reading(shape)
     parts = [f"{reading.measured_property} of {reading.population_type}"]
     if reading.qualifier:
@@ -162,15 +165,14 @@ def describe(
         parts.append(f"divided by {reading.denominator}")
     bound = restricting(bindings)
     restricted = [m.label for m in fixed] + [
-        " or ".join(bound_value_label(shape, prop, dcid) for dcid in values)
-        for prop, values in bound.items()
+        bound_values_label(shape, prop, values) for prop, values in bound.items()
     ]
     if restricted:
         parts.append("restricted to " + ", ".join(dict.fromkeys(restricted)))
     if definition and (implied := implied_values(shape, bindings)):
         parts.append(f"its definition fixes {implied}")
-    if served:
-        parts.append(f"served as each of these series: {served_series(served)}")
+    if serves_beyond_label(shape, served):
+        parts.append(f"served as {served_series(served)}")
     slots = [
         s.label
         for s in shape.slot_keys

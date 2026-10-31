@@ -45,6 +45,7 @@ surface's `Deps` (`datasets_api.deps`) and builds none.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import logging
 import time
@@ -75,6 +76,8 @@ from datasets_api.adapter import (
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_materialise import (
     CapabilityUnavailable,
+    CompositeUnservable,
+    CompositeWindowUnsupported,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     ExcludedByRegistry,
@@ -101,6 +104,8 @@ from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.doors.register import classify_register_exception
 from datasets_api.headers import no_store_headers
 from datasets_api.kinds.spec_id import (
+    EntityKindRefused,
+    WindowOverCap,
     admit_sidecar,
     register_sidecar,
     resolve_served_definition,
@@ -176,6 +181,9 @@ from materialise.reshape import (
     PivotOverColumnCapError,
     RollupNotSummableError,
 )
+from search.models import TimeWindow
+from search.role_kinds import RoleKindRefused
+from search.scope_window import WindowTooLong
 from spec_registry import SpecIdMismatch, SpecRegistryUnavailable
 from spec_registry.errors import IdentityCollision, IdentityQuarantined
 from spec_registry.reader import StoredDefinition
@@ -274,7 +282,7 @@ def _served_or_none(
     )
 
 
-def _served_spec(
+def served_spec(
     *, spec_id: str, deps: DefinitionDeps, trace_id: str | None = None
 ) -> StoredDefinition:
     """`_served_or_none`, raising `SpecNotFound` for an unregistered id."""
@@ -292,7 +300,7 @@ def _resolve_spec_requests(
     Wrap `MemberNotResolvable` so the GET route uses retrieval's pointer-free refusal.
     """
     with phase("resolve"):
-        stored = _served_spec(spec_id=spec_id, deps=deps)
+        stored = served_spec(spec_id=spec_id, deps=deps)
         return stored, _rehydrate_stored(stored, deps=deps)
 
 
@@ -337,7 +345,12 @@ def _register_posted_definition(
     """
     try:
         registered, shapes = register_sidecar(
-            body.definition, spec_id=spec_id, scope=None, deps=deps, trace_id=trace_id
+            body.definition,
+            spec_id=spec_id,
+            scope=None,
+            deps=deps,
+            trace_id=trace_id,
+            definition_pointer=_DEFINITION_POINTER,
         )
     except MemberNotResolvable as exc:
         raise DefinitionMemberNotResolvable.wrapping(exc) from exc
@@ -351,7 +364,7 @@ def _register_posted_definition(
     return stored, requests
 
 
-def _serve_spec(
+def serve_spec(
     *,
     stored: StoredDefinition,
     options: MintOptions | None,
@@ -398,7 +411,7 @@ def _serve_spec_options(
     body: DefinitionOptionsRequest | None,
     head_read: HeadRead | None,
 ) -> OptionsEnvelope:
-    """`_serve_spec` with no rendering: a rebuild records the version and advances the head
+    """`serve_spec` with no rendering: a rebuild records the version and advances the head
     as a GET does, and the envelope carries the manifest's fields alone.
 
     `head_read` is the head `_serve_spec_options_head` read for the served definition, and
@@ -421,7 +434,7 @@ def _serve_spec_options(
                     spec_id=spec_id, body=body, deps=deps, trace_id=trace_id
                 )
         stored = served
-    manifest = _serve_spec(
+    manifest = serve_spec(
         stored=stored,
         options=None,
         trigger="options",
@@ -462,7 +475,13 @@ def _resolve_spec_members(
                 )
                 return stored.spec_id, stored.identity, shapes
             assert definition is not None
-            recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=None, deps=deps)
+            recomputed, shapes = admit_sidecar(
+                definition,
+                spec_id=spec_id,
+                scope=None,
+                deps=deps,
+                definition_pointer=_DEFINITION_POINTER,
+            )
         except MemberNotResolvable as exc:
             raise DefinitionMemberNotResolvable.wrapping(exc) from exc
     return spec_id, recomputed.identity, shapes
@@ -553,6 +572,25 @@ def definition_deps(deps: Deps, *, deadline: float | None) -> DefinitionDeps:
     )
 
 
+def inline_definition_deps(deps: Deps, *, seconds: float) -> DefinitionDeps:
+    """`definition_deps` for a caller that waits `seconds`, less than the
+    `definition_timeout_seconds` the sync budgets are sized for, and retries. The budgets shrink
+    in the same proportion, so a rebuild too large to finish in `seconds` is submitted as an
+    operation a retry finds. Read inline, it would reach the deadline, record nothing, and start
+    again on every retry."""
+    settings = deps.settings
+    share = min(1.0, seconds / settings.definition_timeout_seconds)
+    return dataclasses.replace(
+        definition_deps(deps, deadline=time.monotonic() + seconds),
+        settings=settings.model_copy(
+            update={
+                "sync_budget_rows": max(1, int(settings.sync_budget_rows * share)),
+                "sync_budget_requests": max(1, int(settings.sync_budget_requests * share)),
+            }
+        ),
+    )
+
+
 def request_definition_deps(deps: Deps) -> DefinitionDeps:
     """`definition_deps` under a deadline `definition_timeout_seconds` from now."""
     return definition_deps(deps, deadline=_sdmx_deadline(deps.settings.definition_timeout_seconds))
@@ -589,10 +627,10 @@ def _serve_spec_head(
     *, spec_id: str, options: MintOptions, deps: DefinitionDeps, trace_id: str | None
 ) -> Manifest | HeadRead:
     """The served definition's answer from a current head that holds the requested rendering,
-    or the head read for `_serve_spec` (`serve_fresh_head`). The head honours revocations
+    or the head read for `serve_spec` (`serve_fresh_head`). The head honours revocations
     under the served id and under `spec_id`, the id the request named."""
     with phase("resolve"):
-        stored = _served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
+        stored = served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
     return serve_fresh_head(
         stored,
         deps=deps,
@@ -654,7 +692,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             manifest = (
                 await _run_retrieval(
                     deps.work_executor,
-                    retaining(_serve_spec, reader=deps.snapshot_reader, now=deps.now),
+                    retaining(serve_spec, reader=deps.snapshot_reader, now=deps.now),
                     timings=call.timings,
                     stored=head_answer.stored,
                     options=options,
@@ -768,6 +806,10 @@ _RESOLUTION_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     GraphDeadlineExceededError,
     MemberReadDeadline,
     CurrencyRoleUndeclared,
+    # A composite identity's components are derived and resolved with its members
+    # (`adapter.resolve_definition_members`).
+    CompositeUnservable,
+    CompositeWindowUnsupported,
 )
 
 # The failures of a materialisation run, which the definition and options routes make.
@@ -816,6 +858,7 @@ _ANY_ROUTE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     SpecNotExportable,
     RoleSignatureIncompatible,
     OverCeilingError,
+    WindowOverCap,
     # The surface composes the store classifier. Version and head writes can raise this type.
     DatasetsStoreUnavailable,
     # Resolving a registered id registers its served identity when that one is new
@@ -873,13 +916,15 @@ SERVING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     *_ANY_ROUTE_EXCEPTION_TYPES,
     *_MATERIALISING_EXCEPTION_TYPES,
 )
-"""The refusals of serving a registered id's current version (`_served_spec`, then
-`_serve_spec`), the requested rendering aside."""
+"""The refusals of serving a registered id's current version (`served_spec`, then
+`serve_spec`), the requested rendering aside."""
 
 ROUTE_EXCEPTION_TYPES: Mapping[str, tuple[type[Exception], ...]] = {
     "datasets.definition": (*SERVING_EXCEPTION_TYPES, *_RENDERING_EXCEPTION_TYPES),
-    # A posted body is verified against the path id on the options and members routes.
-    "datasets.options": (*SERVING_EXCEPTION_TYPES, SpecIdMismatch),
+    # A posted body is verified against the path id on the options and members routes. The
+    # options route registers a posted definition, refusing a flow-role entity of a kind its
+    # role does not take (`kinds.spec_id.register_sidecar`).
+    "datasets.options": (*SERVING_EXCEPTION_TYPES, SpecIdMismatch, EntityKindRefused),
     "datasets.members": (*_ANY_ROUTE_EXCEPTION_TYPES, SpecIdMismatch),
 }
 """The refusals each route of this door can raise, keyed by the code registry's endpoint name.
@@ -992,6 +1037,29 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
                 spec_id="spec_exemplar", roles_by_stat_var={"dcid:exemplar": ("recipient",)}
             ),
             OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
+            WindowOverCap(
+                pointer=f"{_DEFINITION_POINTER}/identity/requested_window",
+                start_year=1960,
+                end_year=2060,
+                too_long=WindowTooLong(
+                    read=TimeWindow(start_year=1960, end_year=2060),
+                    years=101,
+                    cap=80,
+                    first_year=1960,
+                    last_year=2087,
+                ),
+            ),
+            EntityKindRefused(
+                pointer=f"{_DEFINITION_POINTER}/identity/entities/origin",
+                refused=RoleKindRefused(
+                    role="origin",
+                    axis="origin",
+                    dcid="Count_Person",
+                    kind="stat_var",
+                    allowed=("country", "organisation"),
+                    family=None,
+                ),
+            ),
             RecipeNotDeclaredError("exemplar", cause="recipe_undeclared"),
             RateCoverageGapError(
                 "exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)

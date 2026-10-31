@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from dc_sdmx import SdmxClient
+from graph_release.context import current_release
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
@@ -20,6 +21,7 @@ from materialise import (
     materialise_spec,
     place_scope,
 )
+from materialise import facets as facets_module
 from materialise.errors import MaterialisationUsageError
 from materialise.facets import (
     CoverageAdmission,
@@ -32,6 +34,8 @@ from materialise.facets import (
 from materialise.generation import _plan_collection_chunks
 from materialise.pipeline import ConcatenatedFrameChunks
 from materialise.window import RequestedWindow
+from origin_catalogue.origins import DFO
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from ._group_support import (
     _BARE_A,
@@ -295,6 +299,42 @@ def test_a_member_returns_the_rows_it_returns_alone_in_a_group(order):
     assert group == alone
     assert {_KEN in repr(row) for row in alone[_BARE_B]} == {True, False}
     assert alone[_BARE_C] and all("Earth" in repr(row) for row in alone[_BARE_C])
+
+
+_DFO_PROV1 = FakeCatalogue(
+    provenances={"PROV1": provenance_row("PROV1", DFO)},
+    dfo_variables=frozenset({_BARE_B, _BARE_C}),
+)
+
+
+@pytest.mark.parametrize("unsettled", [False, True], ids=["settled", "unsettled"])
+@pytest.mark.parametrize("mint", [materialise_spec, materialise_group], ids=["member", "group"])
+def test_a_run_whose_default_scope_this_request_alone_took_keys_on_no_import(
+    monkeypatch, bind_catalogue, mint, unsettled
+):
+    """A countries fallback this request alone took (`DefaultPresence.unsettled`) is a scope a
+    later request can answer differently, so its run is keyed on no import and its head keeps
+    the day limit."""
+    read = facets_module.read_default_presence
+
+    def _read(**kwargs):
+        presence = read(**kwargs)
+        held = frozenset(presence.scopes) if unsettled else frozenset()
+        return dataclasses.replace(presence, unsettled=held)
+
+    monkeypatch.setattr(facets_module, "read_default_presence", _read)
+    bind_catalogue(_DFO_PROV1)
+    requests = (
+        _subject_only(_BARE_B)
+        if mint is materialise_spec
+        else [_subject_only(_BARE_B), _subject_only(_BARE_C)]
+    )
+
+    result = _mint(mint, requests)
+
+    assert result.coverage.rows
+    expected = None if unsettled else current_release().imported_data
+    assert result.dependencies.imported_data == expected
 
 
 # Twenty StatVars, each with data at Kenya, Togo and Earth, so every place and the countries

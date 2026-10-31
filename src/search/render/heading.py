@@ -61,9 +61,9 @@ from .labels import (
     _humanize,
     _humanize_ref,
     _humanize_source_label,
-    _join_labels,
     axis_ref,
     group_text,
+    join_labels,
 )
 from .what import (
     _authored_measure_noun,
@@ -331,7 +331,7 @@ def _bound_method_text(spec: Spec) -> str | None:
     served = spec.resolved.facets.get("measurementMethod")
     if served is not None and served.ref is not None and served.ref in refs:
         return _humanize_ref(served.ref, served.label)
-    return _join_labels([_humanize_ref(ref, None) for ref in refs])
+    return join_labels([_humanize_ref(ref, None) for ref in refs])
 
 
 def declared_axis_names() -> dict[str, str]:
@@ -571,7 +571,7 @@ def _resolve_noun(
     what_slot = _find_slot(slots, axis="what")
     what_labels = _binding_labels(what_slot.binding) if what_slot else []
     if what_labels:
-        return MeasureNoun(_join_labels(what_labels), "bound", what_slot)
+        return MeasureNoun(join_labels(what_labels), "bound", what_slot)
     if measure_label is not None:
         return _stated_noun(
             measure_label,
@@ -725,7 +725,7 @@ def _entities_text(labels: list[str], *, group: EntityGroup | None, plural: str)
         return group_text(len(labels), group)
     if len(labels) > _MAX_NAMED_ENTITIES:
         return f"{len(labels)} {plural}"
-    return _join_labels(labels)
+    return join_labels(labels)
 
 
 def _open_role_reading(
@@ -978,7 +978,7 @@ def _source_phrase(
     source_labels = _binding_labels(source_slot.binding) if source_slot else []
     if source_labels:
         # Humanise before joining because source-identifier matching uses the full label.
-        text = _join_labels([_humanize_source_label(label) for label in source_labels])
+        text = join_labels([_humanize_source_label(label) for label in source_labels])
         return SourcePhrase(text, source_slot)
     resolved_source = _resolved_source_text(resolved_sources)
     if resolved_source:
@@ -1026,4 +1026,4 @@ def _resolved_source_text(resolved_sources: Sequence[GraphRef] | None) -> str:
         return ""
     if len(resolved_sources) >= 4:
         return f"{len(resolved_sources)} sources"
-    return _join_labels([_humanize_source_label(_humanize(ref)) for ref in resolved_sources])
+    return join_labels([_humanize_source_label(_humanize(ref)) for ref in resolved_sources])

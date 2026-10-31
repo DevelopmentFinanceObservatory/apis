@@ -1,7 +1,8 @@
 """These tests pin `CurrencyRoleUndeclared` pointers across sidecar mints and stored-spec
 retrieval.
 
-Every refusal also reports the StatVar's declared roles as `alternatives`.
+Every refusal also reports, as `alternatives`, the currency roles that bind one of the
+StatVar's declared roles.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def test_sidecar_mint_refuses_request_invalid_with_the_spec_id_pointer():
     problem = resp.json()
     assert problem["code"] == "request_invalid"
     assert problem["pointer"] == "/input/spec_id"
-    assert problem["alternatives"] == [{"ref": "recipient", "label": "recipient"}]
+    assert problem["alternatives"] == [{"ref": "destination", "label": "destination"}]
 
 
 def test_stored_spec_retrieval_refuses_request_invalid_with_no_pointer():
@@ -52,4 +53,4 @@ def test_stored_spec_retrieval_refuses_request_invalid_with_no_pointer():
     assert problem["code"] == "request_invalid"
     assert "pointer" not in problem
     assert "issues" not in problem or problem["issues"] is None
-    assert problem["alternatives"] == [{"ref": "recipient", "label": "recipient"}]
+    assert problem["alternatives"] == [{"ref": "destination", "label": "destination"}]

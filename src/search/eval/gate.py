@@ -25,11 +25,16 @@ The rows, in the order they apply:
   until an override releases it;
 - every reached base sample passes ``disposition`` or ``answer`` on a wrong answer (see
   below): wrong answer at base, which does not block;
+- every reached base sample passes and one of them stayed degraded after its retries
+  (``Observation.degraded``): base inconclusive, which counts as infra. A degraded answer
+  is a partial one, so its pass is no baseline to regress from, while its failure still
+  shows the base fails;
 - every reached base sample passes: the confirm round decides. Infra in it is infra as
-  above. A confirm head sample that fails or is unverifiable is a regression when the
-  confirm base sample passes and unverifiable at base when it is unverifiable; anything
-  else, an unreached sample on either side included, is unstable. A base with one right
-  sample regresses through the confirm round whatever its confirm base sample answers.
+  above. A confirm head sample that passes or is unreached is unstable. Otherwise a
+  confirm base sample that passes is a regression, or base inconclusive when it stayed
+  degraded, and one that is unverifiable is unverifiable at base; anything else, an
+  unreached confirm base sample included, is unstable. A base with one right sample
+  regresses through the confirm round whatever its confirm base sample answers.
 
 ``scripts/eval_paired.py`` hands in a head sample whose run failed as a failed
 ``task_outcome`` sample with no infra flag, so a head-side ``"run"`` failure in the first row
@@ -97,6 +102,7 @@ class Outcome(StrEnum):
     UNVERIFIABLE_AT_BASE = "unverifiable_at_base"
     WRONG_ANSWER_AT_BASE = "wrong_answer_at_base"
     INFRA = "infra"
+    BASE_INCONCLUSIVE = "base_inconclusive"
     NEEDS_BASE = "needs_base"
     NEEDS_CONFIRM = "needs_confirm"
 
@@ -110,6 +116,9 @@ BLOCKING = frozenset(
     }
 )
 """Outcomes that fail the gate with exit 1. The ``eval-override`` label releases them."""
+
+NOT_JUDGED = frozenset({Outcome.INFRA, Outcome.BASE_INCONCLUSIVE})
+"""Outcomes the gate could not judge, which fail it with exit 3 unless a verdict blocks."""
 
 WRONG_ANSWER_CHECKS = frozenset({"disposition", ANSWER})
 """Checks a base sample can pass on a wrong answer: the right status on the wrong series."""
@@ -228,6 +237,8 @@ def judge(
         return verdict(Outcome.UNVERIFIABLE_AT_BASE)
     if all(_wrong_answer(o, check=check, failed=failed) for o, _ in reached_base):
         return verdict(Outcome.WRONG_ANSWER_AT_BASE)
+    if any(o.degraded for o, _ in reached_base):
+        return verdict(Outcome.BASE_INCONCLUSIVE)
     if confirm is None:
         return verdict(Outcome.NEEDS_CONFIRM)
     read += confirm
@@ -238,6 +249,8 @@ def judge(
     if _effective(confirm[0], "head") in (Verdict.PASS, Verdict.UNREACHED):
         return verdict(Outcome.UNSTABLE)
     match _effective(confirm[1], "base", failed=_failed_parts(confirm[:1])):
+        case Verdict.PASS if confirm[1].degraded:
+            return verdict(Outcome.BASE_INCONCLUSIVE)
         case Verdict.PASS:
             return verdict(Outcome.REGRESSION)
         case Verdict.UNVERIFIABLE:
@@ -321,7 +334,8 @@ def is_new_case(case_id: str, head_hash: str, base_hashes: Mapping[str, str] | N
 
 
 def exit_code(outcomes: Iterable[Outcome]) -> int:
-    """1 when any verdict blocks, else 3 when any is infra, else 0.
+    """1 when any verdict blocks, else 3 when any could not be judged (``NOT_JUDGED``),
+    else 0.
 
     A blocking verdict is a finding whatever else could not be judged, so it outranks
     infra. Raises ``ValueError`` on a verdict still waiting for a run.
@@ -331,4 +345,4 @@ def exit_code(outcomes: Iterable[Outcome]) -> int:
         raise ValueError(f"unresolved verdicts: {sorted(waiting)}")
     if seen & BLOCKING:
         return 1
-    return 3 if Outcome.INFRA in seen else 0
+    return 3 if seen & NOT_JUDGED else 0

@@ -156,27 +156,38 @@ def classify_files_exception(exc: BaseException) -> ProblemSpec | None:
     return classify_mint_exception(exc)
 
 
-def _signed_url(
-    location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
-) -> str:
-    """A URL signed for `DOWNLOAD_SIGNED_URL_TTL` over the location in hand, naming the download
-    as the mint names it. Raises `SnapshotSigningFailed` when signing fails."""
+def artifact_file_name(location: StoredArtifactLocation, *, stored: ServableVersion) -> str:
+    """The download name of the version's file at `location`, as the mint names it."""
     facts = stored_manifest_facts(stored.version)
-    file_name = stored_artifact_file_name(
+    return stored_artifact_file_name(
         location,
         citation=CitationModel.model_validate(facts.citation),
         prepared_at=facts.prepared_at,
         content_version=stored.version.content_version,
     )
+
+
+def signed_download_url(
+    digest: str,
+    *,
+    tier: Tier,
+    bucket: str,
+    object_name: str,
+    media_type: str,
+    file_name: str,
+    artifact_store: ArtifactStore,
+) -> str:
+    """A URL signed for `DOWNLOAD_SIGNED_URL_TTL` over a location the caller holds, naming the
+    download `file_name`. Raises `SnapshotSigningFailed` when signing fails."""
     try:
         with phase("sign"):
             url = artifact_store.signed_location_url(
-                location.artifact_digest,
-                tier=Tier(location.tier),
-                bucket=location.bucket,
-                object_name=location.object_name,
+                digest,
+                tier=tier,
+                bucket=bucket,
+                object_name=object_name,
                 ttl=DOWNLOAD_SIGNED_URL_TTL,
-                response_type=location.media_type,
+                response_type=media_type,
                 response_disposition=artifact_content_disposition(file_name),
             )
     except ArtifactSigningError as exc:
@@ -186,11 +197,27 @@ def _signed_url(
     else:
         return url
     raise SnapshotSigningFailed(
-        bucket=location.bucket,
-        object_name=location.object_name,
-        digest=location.artifact_digest,
+        bucket=bucket,
+        object_name=object_name,
+        digest=digest,
         error_class_name=failure[0],
         status_code=failure[1],
+    )
+
+
+def _signed_url(
+    location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
+) -> str:
+    """`signed_download_url` over the location in hand, naming the download as the mint names
+    it."""
+    return signed_download_url(
+        location.artifact_digest,
+        tier=Tier(location.tier),
+        bucket=location.bucket,
+        object_name=location.object_name,
+        media_type=location.media_type,
+        file_name=artifact_file_name(location, stored=stored),
+        artifact_store=artifact_store,
     )
 
 
@@ -204,7 +231,7 @@ def _read(
     re-render replaced, and refuses `ArtifactExpired`. A digest it never stored refuses
     `ArtifactNotFound`."""
     try:
-        stored, subject_ids = _read_version(
+        stored, subject_ids = read_version(
             id=id, content_version=content_version, deps=deps, artifact_digest=digest
         )
     except ArtifactNotFound:
@@ -429,7 +456,7 @@ serves."""
 
 # The rendering refusals a render from the stored frame can raise for a format, a bundle, a
 # layout and a derived version's own minting options.
-_SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     StoredTraceMissingResolvedStatVars,
     CapabilityUnavailable,
     ExcelLimitError,
@@ -456,7 +483,7 @@ def selector_options(items: Sequence[tuple[str, str]]) -> MintOptions:
     return parse_query_options(items)
 
 
-def _read_version(
+def read_version(
     *,
     id: str,
     content_version: str,
@@ -501,18 +528,20 @@ def _version_options(stored: ServableVersion, requested: MintOptions, *, id: str
     )
 
 
-def select_file(
-    *, id: str, content_version: str, requested: MintOptions, enrichment_digest: str, deps: Deps
-) -> str | None:
-    """The signed URL of the file the version links under the rendering `requested` names, or
-    `None` when the version lists no servable file of that rendering and it must render first
-    (`render_and_select`). The version's listable files are the ones its snapshot lists
-    (`doors.snapshot.servable_listable_locations`), and a file holding party cells is the one
-    linked under a key current for `enrichment_digest`, the serving code index's.
-
-    Raises `SpecNotFound`, `IdentityQuarantined`, `SnapshotNotFound`, `SnapshotRevoked` or
-    `ArtifactExpired` before any signing."""
-    stored, _subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
+def listed_file_location(
+    stored: ServableVersion,
+    *,
+    id: str,
+    requested: MintOptions,
+    enrichment_digest: str,
+    deps: Deps | DefinitionDeps,
+) -> StoredArtifactLocation | None:
+    """The servable location of the file the version `stored` links under the rendering
+    `requested` names, or `None` when its snapshot lists none. The version's listable files are
+    the ones its snapshot lists (`doors.snapshot.servable_listable_locations`), and a file
+    holding party cells is the one linked under a key current for `enrichment_digest`, the
+    serving code index's. A derived version whose files record no minting options refuses
+    `ArtifactExpired` naming `id`, the id the request named."""
     keys = artifact_rendering_keys(
         _version_options(stored, requested, id=id),
         site=deps.settings.site,
@@ -525,7 +554,22 @@ def select_file(
         # `keys` are the current keys, so matching them keeps only current links.
         enrichment_digest=None,
     )
-    location = next((loc for loc in listable if loc.rendering_key in keys), None)
+    return next((loc for loc in listable if loc.rendering_key in keys), None)
+
+
+def select_file(
+    *, id: str, content_version: str, requested: MintOptions, enrichment_digest: str, deps: Deps
+) -> str | None:
+    """The signed URL of the file the version links under the rendering `requested` names
+    (`listed_file_location`), or `None` when the version lists no servable file of that
+    rendering and it must render first (`render_and_select`).
+
+    Raises `SpecNotFound`, `IdentityQuarantined`, `SnapshotNotFound`, `SnapshotRevoked` or
+    `ArtifactExpired` before any signing."""
+    stored, _subject_ids = read_version(id=id, content_version=content_version, deps=deps)
+    location = listed_file_location(
+        stored, id=id, requested=requested, enrichment_digest=enrichment_digest, deps=deps
+    )
     if location is None:
         return None
     return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
@@ -558,19 +602,26 @@ def _render_digest(
     )
 
 
-def render_and_select(
-    *, id: str, content_version: str, requested: MintOptions, deps: DefinitionDeps
-) -> str:
-    """Serve the rendering `requested` names of the version, which lists no servable file of
-    it, and return the signed URL of the file served.
+def render_file_location(
+    stored: ServableVersion,
+    *,
+    id: str,
+    subject_ids: tuple[str, ...],
+    requested: MintOptions,
+    deps: DefinitionDeps,
+) -> tuple[ServableVersion, StoredArtifactLocation]:
+    """Serve the rendering `requested` names of the version `stored`, which lists no servable
+    file of it, and return the version as read again and the servable location of the file
+    served.
 
     A file of that rendering past working retention whose bytes survive renews (`_renew`), as
     its download link's renewal does. Otherwise the version renders from its stored frame
     (`render_version_from_frame`), and the file served is the manifest's artifact whose
     complete rendering (`render.complete_rendering`) is the requested one, named by digest, so
     a render linked as incomplete (`render.incomplete_rendering`) is served too. A version with
-    no frame bytes left, or a render that gives another version, refuses `ArtifactExpired`."""
-    stored, subject_ids = _read_version(id=id, content_version=content_version, deps=deps)
+    no frame bytes left, or a render that gives another version, refuses `ArtifactExpired`
+    naming `id`, the id the request named."""
+    content_version = stored.version.content_version
     options = _version_options(stored, requested, id=id)
     rendering = artifact_rendering(options, site=deps.settings.site)
     # A file linked under an earlier code index's digest holds stale party cells, so only a
@@ -600,6 +651,18 @@ def render_and_select(
     location = rendered.servable_digest(digest)
     if location is None:
         raise ArtifactExpired(id=id, content_version=content_version)
+    return rendered, location
+
+
+def render_and_select(
+    *, id: str, content_version: str, requested: MintOptions, deps: DefinitionDeps
+) -> str:
+    """Serve the rendering `requested` names of the version, which lists no servable file of
+    it (`render_file_location`), and return the signed URL of the file served."""
+    stored, subject_ids = read_version(id=id, content_version=content_version, deps=deps)
+    rendered, location = render_file_location(
+        stored, id=id, subject_ids=subject_ids, requested=requested, deps=deps
+    )
     return _signed_url(location, stored=rendered, artifact_store=deps.artifact_store)
 
 
@@ -617,7 +680,7 @@ def _option_query_schema(name: str) -> dict[str, object]:
     return schema
 
 
-_SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
+SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
     {
         "name": "format",
         "in": "query",
@@ -641,7 +704,7 @@ _SELECTOR_QUERY_PARAMETERS: list[dict[str, object]] = [
     },
 ]
 
-_REDIRECT_RESPONSE = {
+REDIRECT_RESPONSE = {
     "description": "a redirect to the artifact's bytes",
     "headers": {
         "Location": {
@@ -661,7 +724,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         "/api/datasets/{id:dfo_spec_id}/{content_version}/files/{digest}",
         status_code=302,
         response_class=RedirectResponse,
-        responses={302: _REDIRECT_RESPONSE},
+        responses={302: REDIRECT_RESPONSE},
     )
     async def get_file(id: str, content_version: str, digest: str) -> RedirectResponse:
         current = deps.get()
@@ -697,8 +760,8 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         "/api/datasets/{id:dfo_spec_id}/{content_version}/file",
         status_code=302,
         response_class=RedirectResponse,
-        responses={302: _REDIRECT_RESPONSE},
-        openapi_extra={"parameters": _SELECTOR_QUERY_PARAMETERS},
+        responses={302: REDIRECT_RESPONSE},
+        openapi_extra={"parameters": SELECTOR_QUERY_PARAMETERS},
     )
     async def get_version_file(id: str, content_version: str, request: Request) -> RedirectResponse:
         """Redirect to the version's file in the format, bundle and layout the query names,
@@ -757,7 +820,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             ArtifactSigningError,
             # The file selector's query and its render from the stored frame.
             QueryOptionsInvalid,
-            *_SELECTOR_RENDERING_EXCEPTION_TYPES,
+            *SELECTOR_RENDERING_EXCEPTION_TYPES,
         ),
         exception_exemplars=(
             SpecNotFound(id="spec_exemplar"),
@@ -786,7 +849,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             *(
                 exemplar
                 for exemplar in MINT_EXCEPTION_EXEMPLARS
-                if isinstance(exemplar, _SELECTOR_RENDERING_EXCEPTION_TYPES)
+                if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
             ),
         ),
     )

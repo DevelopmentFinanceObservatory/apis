@@ -35,8 +35,9 @@ class Alternative(BaseModel):
 class Cause(BaseModel):
     """The `cause` extension: why a refusal fired, beneath its own top-level
     `code` -- present only on a refusal that carries one (`recipe_not_declared`,
-    `rate_coverage_gap`, `operation_failed`). On `operation_failed`, `code` is
-    the failed operation's refusal code. Mirrors `alternatives`/`truncated`'s
+    `rate_coverage_gap`, `operation_failed`, `frame_unavailable`). On
+    `operation_failed`, `code` is the failed operation's refusal code, and on
+    `frame_unavailable` the reason the frame does not load. Mirrors `alternatives`/`truncated`'s
     own extension style: `entities` names what the cause concerns (entity or
     `entity@year` keys), capped, with `truncated` set when the cap cut items
     short.
@@ -45,7 +46,8 @@ class Cause(BaseModel):
     code: str = Field(
         description=(
             "the cause code: a sub-cause such as nominal_undeclared, recipe_undeclared, or "
-            "rate_missing, or on operation_failed the failed operation's own refusal code"
+            "rate_missing, on operation_failed the failed operation's own refusal code, or on "
+            "frame_unavailable the reason the frame does not load"
         )
     )
     entities: list[str] = Field(
@@ -132,7 +134,7 @@ class ProblemDetails(BaseModel):
     )
     cause: Cause | None = Field(
         default=None,
-        description="why the refusal fired, for the two codes that carry one -- omitted otherwise",
+        description="why the refusal fired, for the codes that carry one -- omitted otherwise",
     )
     constraint_id: str | None = Field(
         default=None,

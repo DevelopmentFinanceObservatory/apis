@@ -28,10 +28,12 @@ from search.engine.region.grounding import (
     requested_window_from_date_request,
     role_bindings,
 )
+from search.engine.region.phase_election import judge_coverage
 from search.engine.region.place_roles import (
     direction_readings,
     request_named_groups,
     untold_direction_groups,
+    untold_direction_labels,
     untold_direction_names,
 )
 from search.engine.region.qualifier_readings import shape_carries_measure_match
@@ -162,7 +164,9 @@ def _unsupported(
             definition=_unsupported_definition(state, facets, candidate=candidate),
         ),
         refused_answer=(
-            None if candidate is None else (candidate.shape, tuple(candidate.bindings))
+            None
+            if candidate is None
+            else (candidate.shape, tuple(candidate.bindings), candidate.uncovered)
         ),
     )
 
@@ -315,9 +319,14 @@ async def _elected_flagged_match(
     (`requirements.settle_flagged`): the trace records the query terms it leaves unmet,
     which the refusal does not name, and each of them departs.
 
+    The judgement reads stated-word coverage, judged first where the pass has not judged
+    it (`phase_election.judge_coverage`), on the members the read served or, on a refusal
+    before the read, on the shape's own names.
+
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
     entities, trace, and identity agree. Early refusals have no mapping to retain."""
     await read_held_families((state.shape_draft,))
+    await judge_coverage(state)
     sv_dcids = list(members) if members else list(state.shape_draft.sv_arc_facts or ())
     (
         five_tuple_refs,
@@ -392,6 +401,7 @@ async def _elected_flagged_match(
         # bindings list _phase_settle may have forced a qualifier-match
         # value onto. Every caller runs after that phase, so the forced set is final.
         text_recognized_properties=state.text_recognized_properties,
+        grouped_properties=state.grouped_properties,
         # Every caller runs from _phase_place_bindings or later (the role refusals and
         # the materialise quantity gate), and all of those phases run after
         # _phase_settle's measure-election splice, so
@@ -426,8 +436,8 @@ async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> 
     refusal always stands. Either way every requirement is named, departs or is met,
     once."""
     if result.refused_answer is not None:
-        shape, bindings = result.refused_answer
-        settle_flagged(state, shape, bindings)
+        shape, bindings, uncovered = result.refused_answer
+        settle_flagged(state, shape, bindings, uncovered=uncovered)
         return result
     reason = result.no_data_reason
     if (
@@ -467,7 +477,8 @@ async def _role_not_resolved_no_data(state: ResolveState, *, offer: bool = True)
     wording that contradicts a supplied axis. A `flagged_match` requires a resolved role map,
     which this refusal lacks. The names whose direction it could not tell
     (`untold_direction_names`) ride as the result's `unresolved_entity_names`, grouped by
-    place (`untold_direction_groups`) as its `untold_groups`, and the readings of their
+    place (`untold_direction_groups`) as its `untold_groups` with each place's graph label
+    (`untold_direction_labels`) as its `untold_labels`, and the readings of their
     directions (`direction_readings`) as its `role_assignments`. The readings are left out
     when `offer` is false, because every reading was read and none holds data."""
     return state.no_data(
@@ -475,5 +486,6 @@ async def _role_not_resolved_no_data(state: ResolveState, *, offer: bool = True)
         llm_usage=state.var_usage,
         unresolved_entity_names=untold_direction_names(state),
         untold_groups=untold_direction_groups(state),
+        untold_labels=untold_direction_labels(state),
         role_assignments=direction_readings(state) if offer else (),
     )

@@ -7,16 +7,17 @@ head app, and scores every sample. It re-runs at base, ``--samples`` times, only
 whose verdict needs base (``search.eval.gate``), then runs one interleaved confirm round,
 a head sample and then a base sample, for each candidate regression. It writes a JSON
 report and a Markdown summary and exits 0 when nothing blocks, 1 on a blocking verdict,
-and 3 when a base run or a check's graph or coverage read failed on infrastructure. A
-setup error, such as an unreadable head corpus or an unknown base ref, or any crash
-exits 2.
+and 3 when a base run or a check's graph or coverage read failed on infrastructure, or when
+a base pass a regression would rest on was degraded (``base_inconclusive``). A setup error,
+such as an unreadable head corpus or an unknown base ref, or any crash exits 2.
 
 A head sample that fails on infrastructure (a 502, 503 or 504, a timeout, a transport
 error) is retried twice, except the app's own request timeout (a 504 whose problem body
 has code ``timeout``), which a retry would only repeat. A sample still failing fails
-``task_outcome`` and ``answer`` and is n/a on every other check. A query the change makes time out therefore goes to base, and it is a regression
-when base answers and the confirm round agrees. On a case whose ``known_failure.checks``
-holds ``task_outcome`` it is a known failure.
+``task_outcome`` and ``answer`` and is n/a on every other check. A query the change makes
+time out therefore goes to base, and it is a regression when base answers and the confirm
+round agrees. On a case whose ``known_failure.checks`` holds ``task_outcome`` it is a known
+failure.
 
 A base sample that answers in the expected status on the wrong series or places, failing
 ``measure``, ``entities`` or ``provenance``, gives a head that stops answering it nothing
@@ -106,6 +107,7 @@ from search.eval.checks import (
 )
 from search.eval.gate import (
     CONTENT_CHECKS,
+    NOT_JUDGED,
     WRONG_ANSWER_CHECKS,
     Judgement,
     Observation,
@@ -263,7 +265,7 @@ class CaseState:
         failures has no head pass from a sample that reached it, or a known failure passed,
         which is reported fixed only when it passes on every sample. Infra and a known task
         failure's failed run stay what they are on any number of samples."""
-        settled = {Outcome.PASS, Outcome.INFRA, Outcome.KNOWN_FAILURE}
+        settled = {Outcome.PASS, Outcome.KNOWN_FAILURE, *NOT_JUDGED}
         return any(
             judgement.fixed
             if check in self.known

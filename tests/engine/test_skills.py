@@ -308,6 +308,18 @@ class TestProjectSpecDcids:
                 id="selected-provenance-adds-its-dcid",
             ),
             pytest.param(
+                {
+                    "provenance": ResolvedFacet(
+                        basis="bound", ref="provenance/ONEBilateralAndImputedMultilateral"
+                    )
+                },
+                {
+                    "provenance/OECDCreditorReportingSystem",
+                    "provenance/ONEImputedMultilateralSectors",
+                },
+                id="composite-provenance-adds-its-component-tables",
+            ),
+            pytest.param(
                 {"provenance": ResolvedFacet(basis="fallback", selection="per_series")},
                 set(),
                 id="per-series-provenance-adds-nothing",

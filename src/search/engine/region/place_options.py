@@ -49,7 +49,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import create_owned_task
 from search.engine.config import settings
-from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInfraError, EngineInputError
 from search.engine.events import PlaceOptionsEvent
@@ -220,17 +220,23 @@ async def build_place_options_events(
             }
         )
 
+    # The target's reads mark every scope's options and leave the region unmarked (`_computed_for_scope`).
+    target_lost = DegradedReads()
+
     def _resolve_target() -> ResolvedOptionsTarget | _Refused | None:
         try:
-            # The target is scope-independent. Avoid joining another caller's derivation.
-            return resolve_options_target(
-                _request(None),
-                graph=graph,
-                materialise_graph=materialise_graph,
-                population_memo=population_memo,
-                deadline=deadline,
-                join_inflight=False,
-            )
+            with recording_degraded_reads(detached=True) as lost:
+                # The target is scope-independent. Avoid joining another caller's derivation.
+                resolved = resolve_options_target(
+                    _request(None),
+                    graph=graph,
+                    materialise_graph=materialise_graph,
+                    population_memo=population_memo,
+                    deadline=deadline,
+                    join_inflight=False,
+                )
+            target_lost.reads.extend(lost.reads)
+            return resolved
         except PopulationInFlight:
             logger.info("place_options: prefetch dropped, population key already in flight")
             return None
@@ -245,7 +251,9 @@ async def build_place_options_events(
 
     def _computed_for_scope(scope: Scope) -> ComputedOptions | _Refused | None:
         try:
-            with recording_degraded_reads() as lost:
+            # Detached: the task copies the context its region's resolution bound, and place
+            # options are not in the response bundle, so their reads must not mark the part.
+            with recording_degraded_reads(detached=True) as lost:
                 computed = compute_options(
                     _request(scope),
                     target,
@@ -259,7 +267,7 @@ async def build_place_options_events(
             return _REFUSED
         except EngineInfraError:
             return None
-        return replace(computed, degraded=lost.degraded)
+        return replace(computed, degraded=lost.degraded or target_lost.degraded)
 
     cache = pool.options_cache
     if cache is None:

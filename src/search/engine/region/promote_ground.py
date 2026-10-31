@@ -7,7 +7,7 @@ from typing import cast
 
 from code_index.shared import get_index, get_measure_index
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
-from materialise.facets import role_bearing_facet_candidates
+from materialise.facets import role_bearing_facet_candidates_of
 from materialise.recipes import (
     NonCurrencyUnitError,
     RateCoverageGapError,
@@ -32,7 +32,7 @@ from search.engine.region.convertibility import (
     bound_facet_refs,
     conversion_period_departure,
     convertible_answer,
-    decide_part_unit,
+    decide_spec_unit,
     deflator_omission_departure,
     elected_unit_refs,
     over_conversion_period,
@@ -67,6 +67,7 @@ from search.engine.region.option_coverage import (
     role_axis_facts_for_materialised,
     role_served_filter,
 )
+from search.engine.region.phase_timing import timed_step
 from search.engine.region.promote_materialise import _graph_labels
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
@@ -91,10 +92,9 @@ from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
     entity_role_keys,
     observed_measure_family,
-    open_constraint_axes,
+    served_open_axes,
     shape_query,
     slot_expansions,
 )
@@ -171,7 +171,7 @@ def _decide_unit_convertibility(state: _PromoteState, mat_result: Materialised) 
     _bound_facets = bound_facet_refs(state.inp.identity.facets, state.source_dcids)
     _declared_roles = survivor_declared_roles(mat_result)
     try:
-        state.elected_unit = decide_part_unit(
+        state.elected_unit = decide_spec_unit(
             mat_result.sv_dcids,
             unit_request=_convertibility_request,
             role_bindings=_decision_role_bindings,
@@ -493,12 +493,14 @@ def _ground_and_build_spec(
         )
     slots = state.slots = apply_slot_expansions(slots, slot_expansions(state.bindings))
     # Grounding starts with the measure family (`_start_related_read`).
-    _measure_bound_values = bound_values_from_bindings(state.bindings)
     _served_members = _served_member_facts(state)
-    # Open constraint axes come from the same final survivor facts.
-    _open_axis_facts = open_constraint_axes(
-        _measure_bound_values,
-        dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True)),
+    _survivor_facts = dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True))
+    # Open constraint axes are stated over the survivors the read serves, as the first
+    # answer states them.
+    _open_axis_facts = served_open_axes(
+        state.bindings,
+        mat_result.sv_dcids,
+        _survivor_facts,
         value_labels=state.shape_draft.value_labels or {},
     )
     state.open_axis_facts = _open_axis_facts
@@ -523,7 +525,7 @@ def _ground_and_build_spec(
         shape=state.shape_draft,
         bindings=state.bindings,
         plan=state.narrowed_plan,
-        member_facts=dict(zip(state.resolved_stat_var_dcids, _served_members, strict=True)),
+        member_facts=_survivor_facts,
         served_filter=_served_filter,
         facets_pinned=pins_facets(state.inp.identity.facets),
         conversion=_conversion,
@@ -695,33 +697,25 @@ def _role_candidate_facets(
     datasets = elected_datasets(mat_result.member_facts)
     years = mat_result.preview_years
     bounds = (years.start_year, years.end_year) if isinstance(years, TimeWindow) else None
-    windowed: dict[str, list[Facet]] = {}
-    lifetime: dict[str, list[Facet]] = {}
-    for sv in mat_result.sv_dcids:
-        candidates = role_bearing_facet_candidates(
-            stat_var=sv,
+    members = list(mat_result.sv_dcids)
+    lifetime = {
+        sv: published(datasets, sv, candidates)
+        for sv, candidates in role_bearing_facet_candidates_of(
+            stat_vars=members,
             role_bindings=state.probe_role_entities,
             coverage=state.coverage.index,
-        )
-        if candidates is None:
-            continue
-        lifetime[sv] = published(datasets, sv, candidates)
-        windowed[sv] = (
-            lifetime[sv]
-            if bounds is None
-            else published(
-                datasets,
-                sv,
-                role_bearing_facet_candidates(
-                    stat_var=sv,
-                    role_bindings=state.probe_role_entities,
-                    coverage=state.coverage.index,
-                    first_year=bounds[0],
-                    last_year=bounds[1],
-                )
-                or [],
-            )
-        )
+        ).items()
+    }
+    if bounds is None:
+        return dict(lifetime), lifetime
+    in_years = role_bearing_facet_candidates_of(
+        stat_vars=list(lifetime),
+        role_bindings=state.probe_role_entities,
+        coverage=state.coverage.index,
+        first_year=bounds[0],
+        last_year=bounds[1],
+    )
+    windowed = {sv: published(datasets, sv, in_years[sv]) for sv in lifetime}
     return windowed, lifetime
 
 
@@ -769,12 +763,15 @@ def _phase_ground_build(state: _PromoteState) -> RegionResult | None:
     for `no_observations` at the place or `no_matching_slice` after; facet and convertibility
     failures raise. A clean pass leaves option probing and observation previews to finalisation."""
     mat_result = cast(Materialised, state.mat_result)
-    _start_related_read(state)
+    with timed_step(state, "ground_related"):
+        _start_related_read(state)
 
-    _decide_unit_convertibility(state, mat_result)
+    with timed_step(state, "ground_units"):
+        _decide_unit_convertibility(state, mat_result)
 
-    _narrow_ground_facets(state, mat_result)
-    mat_result = _over_conversion_period(state, mat_result)
+    with timed_step(state, "ground_facets"):
+        _narrow_ground_facets(state, mat_result)
+        mat_result = _over_conversion_period(state, mat_result)
     required = posted_refusal_terms(state)
 
     # Data at the place in other years only: `no_observations` for the window, with the
@@ -811,16 +808,18 @@ def _phase_ground_build(state: _PromoteState) -> RegionResult | None:
     _derive_observation_entities(state, mat_result)
     # The conversion runs only where finalisation's bound-unit gate reads it, and after the
     # facet check, which follows both no-data gates; the gates then skip that check.
-    facet_checked = _may_convert(state, mat_result, required)
-    if facet_checked:
-        _raise_facet_refusal(state, mat_result)
-        if _unit_gate_passes(state, mat_result):
-            _convert_narrowed_answer(state, mat_result)
+    with timed_step(state, "ground_convert"):
+        facet_checked = _may_convert(state, mat_result, required)
+        if facet_checked:
+            _raise_facet_refusal(state, mat_result)
+            if _unit_gate_passes(state, mat_result):
+                _convert_narrowed_answer(state, mat_result)
 
     spec = _ground_and_build_spec(state, mat_result, state.place.roles.roles)
-    return _ground_build_gates(
-        state, mat_result, spec, required=required, facet_checked=facet_checked
-    )
+    with timed_step(state, "ground_gates"):
+        return _ground_build_gates(
+            state, mat_result, spec, required=required, facet_checked=facet_checked
+        )
 
 
 def _served_member_facts(state: _PromoteState) -> list[ArcsMemberFacts]:
@@ -879,7 +878,7 @@ def _may_convert(
 
 def _unit_gate_passes(state: _PromoteState, mat_result: Materialised) -> bool:
     """Whether the bound-unit gate passes before the conversion runs: the narrowed plan
-    serves every StatVar under its elected unit (`convertibility.unit_gate`). The plan the
+    serves a StatVar the unit decision serves under its elected unit (`convertibility.unit_gate`). The plan the
     gate read is recorded for finalisation's gate (`_PromoteState.unit_gate_plan`)."""
     gate = unit_gate(
         mat_result,

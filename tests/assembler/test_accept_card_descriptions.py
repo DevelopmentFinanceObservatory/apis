@@ -70,7 +70,7 @@ from description.vocabulary import (
     vocabulary_revision,
 )
 
-from ._pipeline_support import _malaria_intent
+from ._pipeline_support import _malaria_intent, computed_record
 
 _CRS = "provenance/OECDCreditorReportingSystem"
 _CRS_NAME = "OECD Creditor Reporting System (CRS)"
@@ -129,7 +129,7 @@ def _record(
     return DescriptionRecord(
         id=frame.frame_ref.spec_id,
         content_version=frame.frame_ref.content_version,
-        schema_version=1,
+        schema_version=2,
         basis="mint",
         index_stamp=None,
         variables=None
@@ -1060,6 +1060,381 @@ def test_a_cards_description_counts_the_series_it_draws(
     ]
 
 
+_TOP_DONOR_FRAME = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
+_IDA = "InternationalDevelopmentAssociation"
+_USA = "country/USA"
+_GBR = "country/GBR"
+_IDA_NAME = "International Development Association"
+_GBR_NAME = "United Kingdom"
+_USA_NAME = "United States of America"
+# Each year's top donor of net ODA to Kenya, as the deployed per-period rank kept it.
+_TOP_DONOR_BY_YEAR = (
+    ("2018", _USA, 829_231_420.0),
+    ("2019", _IDA, 1_357_452_310.0),
+    ("2020", _IDA, 1_570_237_409.0),
+    ("2021", _IDA, 1_151_749_460.0),
+    ("2022", _IDA, 938_795_140.0),
+)
+_TOP_ONE = {
+    "id": "s2",
+    "op": "rank",
+    "input": "s1",
+    "policy": "rank_what_is_present",
+    "params": {
+        "aggregation": "sum",
+        "limit": 1,
+        "order": "descending",
+        "per_period": True,
+        "rank_by": ["financingProvider"],
+    },
+}
+# The table of the Kenya frame as a per-period top one: each year's top donor alone.
+_KEPT = [
+    (year, _IDA_NAME if provider == _IDA else _USA_NAME, value)
+    for year, provider, value in _TOP_DONOR_BY_YEAR
+]
+# The table of a frame that selects nothing in each period: both donors in every year, a
+# year a donor holds no row in reading `missing`.
+_PADDED = sorted(
+    [(year, _IDA_NAME, "missing") for year, provider, _ in _TOP_DONOR_BY_YEAR if provider != _IDA]
+    + [(year, _USA_NAME, "missing") for year, provider, _ in _TOP_DONOR_BY_YEAR if provider != _USA]
+    + [
+        (year, _IDA_NAME if provider == _IDA else _USA_NAME, value)
+        for year, provider, value in _TOP_DONOR_BY_YEAR
+    ]
+)
+_ALL_YEARS = tuple(year for year, _, _ in _TOP_DONOR_BY_YEAR)
+
+
+def _two_sided(op: str, **inputs: str) -> dict[str, object]:
+    """The record of `op` reading the earlier steps `inputs` names by role."""
+    return {"id": "s3", "op": op, "inputs": inputs}
+
+
+_VALUE_FILTER = {
+    "id": "s2",
+    "op": "filter",
+    "input": "s1",
+    "params": {"predicates": [{"column": "value", "op": "gt", "operand": 8e8}]},
+}
+
+
+def _top_donor_card(
+    frame_store,
+    revision_store,
+    release_registry,
+    *,
+    steps: Sequence[Mapping[str, object]] | None,
+    top_donors: Sequence[tuple[str, str, float]] = _TOP_DONOR_BY_YEAR,
+    years: Sequence[str] | None = None,
+    donors: Sequence[str] | str | None = None,
+    member: str = "table",
+    window: Mapping[str, object],
+) -> WriteReply:
+    """A `member` card, by default a table, naming `donors`, one donor or a list, by default
+    every donor of `top_donors`, over `window`, from a frame holding each year's top donor to
+    Kenya in `years`, by default every year, computed by `steps` after its retrieve, or with
+    no description record when `steps` is `None`."""
+    frame = _described(
+        build_resolved_frame(
+            frame_ref=_TOP_DONOR_FRAME,
+            role_keys=("financingProvider",),
+            rows=[
+                {
+                    "stat_var": "dcid:MalariaGrantDisbursements",
+                    "financingProvider": provider,
+                    "time_period": year,
+                    "value": value,
+                    "unit": "CurrencyUSD",
+                    "measurementMethod": None,
+                    "provenance": None,
+                }
+                for year, provider, value in top_donors
+                if years is None or year in years
+            ],
+            labels={_IDA: _IDA_NAME, _USA: _USA_NAME, _GBR: _GBR_NAME},
+        ),
+        None if steps is None else computed_record(frame_ref=_TOP_DONOR_FRAME, steps=steps),
+    )
+    frame_store.put(resolved_frame=frame)
+    return _write(
+        _intent(
+            frame,
+            member,
+            select={
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "financingProvider": donors
+                if isinstance(donors, str)
+                else list(donors or dict.fromkeys(one for _, one, _ in top_donors)),
+            },
+            window=window,
+        ),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+
+def _table_cells(payload: Mapping[str, object]) -> list[tuple[str, str, object]]:
+    """Each table row as `(period, donor, value or status)`, sorted."""
+    rows = cast("list[dict[str, Any]]", cast("dict[str, Any]", payload["component"])["rows"])
+    return sorted(
+        (
+            row["period"],
+            row["dimensions"]["financingProvider"],
+            row["value"] if "value" in row else row["status"],
+        )
+        for row in rows
+    )
+
+
+@pytest.mark.parametrize(
+    ("steps", "years", "cells"),
+    [
+        pytest.param(
+            [_TOP_ONE],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _KEPT,
+            id="top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, {**_VALUE_FILTER, "id": "s3", "input": "s2"}],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _KEPT,
+            id="filter-over-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE],
+            ("2018", "2019", "2021", "2022"),
+            [
+                ("2018", _USA_NAME, 829_231_420.0),
+                ("2019", _IDA_NAME, 1_357_452_310.0),
+                ("2020", _IDA_NAME, "missing"),
+                ("2020", _USA_NAME, "missing"),
+                ("2021", _IDA_NAME, 1_151_749_460.0),
+                ("2022", _IDA_NAME, 938_795_140.0),
+            ],
+            id="top-one-over-a-year-no-donor-holds",
+        ),
+        pytest.param(
+            [_VALUE_FILTER],
+            ("2018", "2020", "2022"),
+            [
+                ("2018", _IDA_NAME, "missing"),
+                ("2018", _USA_NAME, 829_231_420.0),
+                ("2019", _IDA_NAME, "missing"),
+                ("2019", _USA_NAME, "missing"),
+                ("2020", _IDA_NAME, 1_570_237_409.0),
+                ("2020", _USA_NAME, "missing"),
+                ("2021", _IDA_NAME, "missing"),
+                ("2021", _USA_NAME, "missing"),
+                ("2022", _IDA_NAME, 938_795_140.0),
+                ("2022", _USA_NAME, "missing"),
+            ],
+            id="value-filter",
+        ),
+        pytest.param(None, ("2018", "2019", "2020", "2021", "2022"), _PADDED, id="no-record"),
+        pytest.param([], ("2018", "2019", "2020", "2021", "2022"), _PADDED, id="retrieve-only"),
+        pytest.param(
+            [
+                {
+                    **_TOP_ONE,
+                    "params": {k: v for k, v in _TOP_ONE["params"].items() if k != "limit"},
+                }
+            ],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _PADDED,
+            id="per-period-rank-without-a-limit",
+        ),
+        pytest.param(
+            [{**_TOP_ONE, "params": {**_TOP_ONE["params"], "per_period": False}}],
+            ("2018", "2019", "2020", "2021", "2022"),
+            _PADDED,
+            id="whole-window-rank",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("share", denominator="s2", numerator="s1")],
+            _ALL_YEARS,
+            _PADDED,
+            id="share-over-a-per-period-top-one",
+        ),
+        pytest.param(
+            [
+                _TOP_ONE,
+                {
+                    **_two_sided("share", denominator="s2", numerator="s1"),
+                    "params": {
+                        "denominator_by": {"financingProvider": "financingProvider"},
+                        "numerator_by": ["financingProvider"],
+                    },
+                },
+            ],
+            _ALL_YEARS,
+            _KEPT,
+            id="share-over-a-per-period-top-one-by-donor",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("share", denominator="s1", numerator="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="share-of-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("share", denominator="s2", numerator="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="share-within-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("quotient", denominator="s1", numerator="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="quotient-of-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("join", left="s1", right="s2")],
+            _ALL_YEARS,
+            _KEPT,
+            id="join-with-a-per-period-top-one",
+        ),
+        pytest.param(
+            [_TOP_ONE, _two_sided("sum", left="s2", right="s1")],
+            _ALL_YEARS,
+            _PADDED,
+            id="sum-with-a-per-period-top-one",
+        ),
+    ],
+)
+def test_a_table_over_a_per_period_top_one_lists_the_donors_each_year_kept(
+    frame_store, revision_store, release_registry, steps, years, cells
+):
+    """A per-period top one, or a step reading only its output, leaves a donor out of a year
+    another donor holds, so the table lists only the frame's rows there. A year no donor holds
+    is a gap in the data and keeps a missing row per donor. A share, quotient or join takes its
+    rows from a top one it reads as its numerator or either side, or as a denominator each
+    donor is paired with by `denominator_by`, and keeps its selection. A frame that selects
+    nothing in each period, whether a filter, a retrieve alone, a rank without a limit or over
+    the whole window, a share over a whole top one or a sum with one computed it, or whose
+    steps are unknown, pads every absent year."""
+    created = _top_donor_card(
+        frame_store,
+        revision_store,
+        release_registry,
+        steps=steps,
+        years=years,
+        window={"start": "2018", "end": "2022"},
+    )
+    assert _table_cells(created.resolved_payload) == cells
+
+
+def test_a_table_over_a_per_period_top_one_describes_only_the_donors_it_lists(
+    frame_store, revision_store, release_registry
+):
+    """From 2019 to 2022 the top donor is the International Development Association each
+    year, so the table lists four of its rows, and its fact summary and description count
+    and name that one donor."""
+    created = _top_donor_card(
+        frame_store,
+        revision_store,
+        release_registry,
+        steps=[_TOP_ONE],
+        window={"start": "2019", "end": "2022"},
+    )
+    payload = created.resolved_payload
+    description = _description(payload)
+
+    assert [cell[:2] for cell in _table_cells(payload)] == [
+        (year, _IDA_NAME) for year in ("2019", "2020", "2021", "2022")
+    ]
+    assert [one["label"] for one in created.fact_summary["series"]] == [_IDA_NAME]
+    _, select_step = _step(description, "select")
+    assert select_step["params"]["coordinates"]["financingProvider"] == [_IDA]
+    assert select_step["params"]["window"] == {"start": "2019", "end": "2022"}
+    assert select_step["kept"] == {"series": 1}
+    assert description["about"]["drawn"]["series"] == 1
+
+
+_LATEST = {"anchor": "latest", "offset": 0}
+_LAST_THREE_YEARS = {"start": {"anchor": "latest", "offset": -2}, "end": _LATEST}
+
+
+@pytest.mark.parametrize(
+    ("member", "donors", "window", "resolved", "cells"),
+    [
+        pytest.param(
+            "table",
+            (_IDA, _USA, _GBR),
+            _LAST_THREE_YEARS,
+            {"start": "2019", "end": "2021"},
+            [("2019", _IDA_NAME, 3.0), ("2020", _USA_NAME, 4.0), ("2021", _GBR_NAME, 4.0)],
+            id="every-donor",
+        ),
+        pytest.param(
+            "table",
+            (_IDA, _USA),
+            _LAST_THREE_YEARS,
+            {"start": "2018", "end": "2020"},
+            [
+                ("2018", _IDA_NAME, 3.0),
+                ("2018", _USA_NAME, 3.0),
+                ("2019", _IDA_NAME, 3.0),
+                ("2020", _USA_NAME, 4.0),
+            ],
+            id="a-donor-left-out-leads-the-newest-year",
+        ),
+        pytest.param(
+            "table",
+            (_IDA, _USA),
+            {"start": _LATEST, "end": _LATEST},
+            {"start": "2020", "end": "2020"},
+            [("2020", _USA_NAME, 4.0)],
+            id="latest-year-a-donor-left-out-leads",
+        ),
+        pytest.param(
+            "stat_card",
+            _USA,
+            {"start": _LATEST, "end": _LATEST},
+            {"start": "2020", "end": "2020"},
+            None,
+            id="stat-card-a-donor-left-out-leads",
+        ),
+    ],
+)
+def test_a_rolling_card_over_a_per_period_top_one_ends_at_the_newest_year_its_donors_lead(
+    frame_store, revision_store, release_registry, member, donors, window, resolved, cells
+):
+    """No year after 2018 has two of the three donors at the top, so "latest" is the newest
+    year any of the card's donors leads, and no donor is named as left out there. The United
+    Kingdom leads 2021, so a card without it ends at 2020, where the United States leads."""
+    created = _top_donor_card(
+        frame_store,
+        revision_store,
+        release_registry,
+        steps=[_TOP_ONE],
+        top_donors=(
+            ("2018", _IDA, 3.0),
+            ("2018", _USA, 3.0),
+            ("2019", _IDA, 3.0),
+            ("2020", _USA, 4.0),
+            ("2021", _GBR, 4.0),
+        ),
+        donors=donors,
+        member=member,
+        window=window,
+    )
+    payload = created.resolved_payload
+    if cells is None:
+        component = cast("dict[str, Any]", payload["component"])
+        assert (component["period"], component["value"]) == ("2020", 4.0)
+    else:
+        assert _table_cells(payload) == cells
+    description = _description(payload)
+    _, select_step = _step(description, "select")
+    assert select_step["params"]["window"] == resolved
+    assert description["caveats"] == []
+
+
 _MALARIA_CONTROL = "CRSPurposeCode12262"
 
 
@@ -1142,8 +1517,8 @@ def test_a_cards_description_names_its_versions_measure_and_fixed_values_and_wha
     ]
     (recipients,) = about["drawn"]["dimensions"]
     assert recipients["values"] == [
-        {"ref": "country/KEN", "label": "Kenya"},
         {"ref": "country/ETH", "label": "Ethiopia"},
+        {"ref": "country/KEN", "label": "Kenya"},
     ]
 
 
@@ -1784,3 +2159,95 @@ def test_a_revise_with_a_heads_intent_over_a_computed_version(
     assert revised.revision == revision
     assert "description" in revised.resolved_payload
     assert _stored(revision_store, created.component_id)[0] == _bytes(created.resolved_payload)
+
+
+_WDI = "dc/base/WorldDevelopmentIndicators"
+_ROOTS_CITATION = {
+    "text": f"{_CRS_NAME}.\n\nWorld Development Indicators.",
+    "sources": [
+        {"ref": _CRS, "label": _CRS_NAME, "license": None, "url": ""},
+        {"ref": _WDI, "label": "World Development Indicators", "license": None, "url": ""},
+    ],
+}
+"""The citation the frame store gives a quotient of a CRS root over a WDI root
+(`datasets_api.derived.recipe_citation`)."""
+
+
+@pytest.mark.parametrize("member", ["line_chart", "table"])
+def test_a_card_over_a_computed_version_published_without_steps_cites_its_roots(
+    frame_store, revision_store, release_registry, member
+):
+    """A card over an `ops_` version whose rows name no source and whose record, written by a
+    publish without steps, knows no input id, carries no description: its rows name the first
+    source the roots cite, which the record does not list. Its provenance lists every source
+    the roots cite, and each `source_ref` names one of them."""
+    frame = dataclasses.replace(
+        _computed_frame(), manifest={"schema_version": 1, "citation": _ROOTS_CITATION}
+    )
+    record = _computed_record(frame)
+    assert record.computed is not None
+    unknown = [
+        InputVersion(id=None, content_version=one.content_version) for one in record.computed.inputs
+    ]
+    frame_store.put(
+        resolved_frame=_described(
+            frame,
+            record.model_copy(
+                update={"computed": record.computed.model_copy(update={"inputs": unknown})}
+            ),
+        )
+    )
+    created = _write(
+        _intent(frame, member, title="Malaria grants per dollar of GNI"),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    payload = created.resolved_payload
+
+    assert "description" not in payload
+    sources = cast("list[dict[str, Any]]", cast("dict", payload["provenance"])["sources"])
+    assert [(one["name"], one["ref"]) for one in sources] == [
+        (_CRS_NAME, _CRS),
+        ("World Development Indicators", _WDI),
+    ]
+    assert set(_source_refs(payload["component"])) == {sources[0]["id"]}
+
+
+def test_a_card_whose_series_name_the_cited_source_and_none_carries_no_description(
+    frame_store, revision_store, release_registry
+):
+    """A line chart over an `ops_` version where Ethiopia's rows name the CRS and the other
+    rows name no source, both named by the CRS's provenance id, carries no description, since
+    the description would name Ethiopia's series by the version's first input."""
+    frame = build_resolved_frame(
+        frame_ref=_OPS_FRAME,
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "recipient": recipient,
+                "time_period": period,
+                "value": 100.0,
+                "unit": "CurrencyUSD",
+                "measurementMethod": None,
+                "provenance": _CRS if recipient == "country/ETH" else None,
+            }
+            for recipient in _RECIPIENTS
+            for period in _PERIODS
+        ],
+        manifest={"schema_version": 1, "citation": _ROOTS_CITATION},
+    )
+    frame_store.put(resolved_frame=_described(frame, _computed_record(frame)))
+    intent = _intent(frame, "line_chart", title="Malaria grants per dollar of GNI")
+    intent["select"] = {"stat_var": "dcid:MalariaGrantDisbursements"}
+    created = _write(
+        intent,
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    assert "description" not in created.resolved_payload

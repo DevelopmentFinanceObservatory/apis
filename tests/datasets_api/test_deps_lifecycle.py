@@ -20,6 +20,7 @@ from datasets_api.deps import Deps, DepsOverrides, open_deps
 from datasets_api.door_executor import DoorExecutor
 from datasets_api.operations.task_client import FakeTaskClient, LiveTaskClient
 from datasets_api.shutdown import ShutdownBudget
+from dc_sdmx import DATA_HEDGE_AFTER_SECONDS
 from graph_generation.fake import FakeGeneration
 from graph_release.service import get_release_service
 from materialise.rate_tables import RateTableCache
@@ -49,16 +50,25 @@ _SETTINGS_ENV = {
 
 
 class _RecordingClient:
-    """Recording stand-in for the SDMX client. Accepts `timeout` as `SdmxClient` does."""
+    """Recording stand-in for the SDMX client. Accepts `timeout`, `hedge_after` and
+    `total_concurrency` as `SdmxClient` does."""
 
     created: ClassVar[list[_RecordingClient]] = []
 
     def __init__(
-        self, *, base_url: str, token: str | None = None, timeout: float | None = None
+        self,
+        *,
+        base_url: str,
+        token: str | None = None,
+        timeout: float | None = None,
+        hedge_after: float | None = None,
+        total_concurrency: int | None = None,
     ) -> None:
         self.base_url = base_url
         self.token = token
         self.timeout = timeout
+        self.hedge_after = hedge_after
+        self.total_concurrency = total_concurrency
         self.closed = False
         self.closed_at: float | None = None
         type(self).created.append(self)
@@ -186,8 +196,10 @@ def _every_store_injected() -> dict[str, object]:
             "version_lister",
             "operation_store",
             "recipe_store",
+            "export_store",
             "description_store",
             "reference_writer",
+            "allowances",
         )
     } | {"artifact_store": FakeArtifactStore()}
 
@@ -238,10 +250,19 @@ def test_live_clients_take_the_sdmx_timeout_and_searchs_graph_cache_sizes(
 ) -> None:
     _open_and_close(
         _overrides(**_every_store_injected(), task_client=FakeTaskClient()),
-        settings=DatasetsBuildSettings(sdmx_timeout_seconds=42),
+        settings=DatasetsBuildSettings(sdmx_timeout_seconds=42, mint_member_max_concurrency=12),
     )
 
     assert [client.timeout for client in _RecordingSdmxClient.created] == [42, 42]
+    # Only the mint's client on our mixer hedges its data reads, and it allows as many GETs
+    # in flight as a mint has fetch workers.
+    assert {
+        client.base_url: (client.hedge_after, client.total_concurrency)
+        for client in _RecordingSdmxClient.created
+    } == {
+        _SETTINGS_ENV["DATASETS_SDMX_BASE_URL"]: (DATA_HEDGE_AFTER_SECONDS, 12),
+        UN_BASE_URL: (None, None),
+    }
     (graph,) = _RecordingGraphReader.created
     assert graph.cache_sizes == {
         "label_cache_size": LABEL_TYPE_CACHE_SIZE,
@@ -331,8 +352,10 @@ def test_every_omitted_store_shares_one_pool_borrow_and_one_store(pool: _Recordi
         "version_lister",
         "operation_store",
         "recipe_store",
+        "export_store",
         "description_store",
         "reference_writer",
+        "allowances",
     ):
         assert getattr(deps, name)._store is store, name
     assert isinstance(deps.artifact_store, RecordingArtifactStore)

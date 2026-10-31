@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import logging
 
 import pytest
 
@@ -19,7 +18,7 @@ from assembler.errors import (
     SchemaInvalid,
 )
 from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
-from assembler.pipeline import ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER, write_component
+from assembler.pipeline import write_component
 from assembler.ports import FrameRef
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
 
@@ -625,16 +624,15 @@ def _minted_bytes(payload):
 
 
 def test_an_oversized_create_refuses_before_pinning_or_storing(
-    frame_store, revision_store, release_registry, monkeypatch, caplog
+    frame_store, revision_store, release_registry, monkeypatch
 ):
-    """The cap runs in `_finish_candidate`, ahead of the frame pin and the
-    write transaction, so an oversized create leaves no pin, no revision,
-    and no reconciliation marker behind."""
+    """The cap runs in `_finish_candidate`, ahead of the write transaction, so an
+    oversized create leaves no pin and no revision behind."""
     monkeypatch.setattr(candidate_module, "MAX_ENVELOPE_BYTES", 100)
     frame, intent = _malaria_intent()
     frame_store.put(resolved_frame=frame)
 
-    with caplog.at_level(logging.ERROR), pytest.raises(ResourceExhausted) as excinfo:
+    with pytest.raises(ResourceExhausted) as excinfo:
         write_component(
             intent=intent,
             component_id=None,
@@ -647,7 +645,6 @@ def test_an_oversized_create_refuses_before_pinning_or_storing(
     assert excinfo.value.limit_name == "MAX_ENVELOPE_BYTES"
     assert frame_store.pins == ()
     assert revision_store._revisions == {}
-    assert ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER not in caplog.text
 
 
 def test_an_oversized_revise_refuses_and_leaves_the_head_revision(

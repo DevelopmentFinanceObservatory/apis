@@ -17,6 +17,13 @@ builds the version's record, the `backfill-descriptions` task included, repairs 
 later image: it reads as no record here too, without the marker, and nothing here overwrites
 it, so a rollback keeps the later image's records, their basis and late fields included.
 
+Every write stores a record at the lowest schema version that describes it
+(`description.facts.lowest_schema_version`), so a rollback to an image of an earlier version
+loses only the records holding a member that version lacks. A row of an earlier schema version
+reads as this image's version (`upgraded_record`). Reading it writes nothing, so the row keeps
+its version until a write replaces or fills it, and every write stores the record's JSON and
+its `schema_version` column together.
+
 `fill_late_fields` sets members that are `null` in a stored record, once each, and notes the
 member's path, arrival time and basis in the record's `late_fields`. A member that holds a value
 is never changed, except a member derived from one the same write fills, such as the computed
@@ -42,7 +49,13 @@ from pydantic import JsonValue, ValidationError
 from dataset_store import DatasetStore, Transaction
 from dataset_store.clock import Clock, utc_now
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from description.facts import SCHEMA_VERSION, Basis, DescriptionRecord, LateField
+from description.facts import (
+    SCHEMA_VERSION,
+    Basis,
+    DescriptionRecord,
+    LateField,
+    lowest_schema_version,
+)
 from description.stored import FieldPath, canonical_json
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
@@ -74,6 +87,7 @@ def insert_description(
     under the lock `fill_late_fields` takes, so of two concurrent writers only the first
     replaces it. A row of a later schema version stands, and the call returns `False`.
     """
+    record = _at_lowest_version(record)
     stored = tx.fetch_one(
         "INSERT INTO datasets.description_record "
         "(subject_id, content_version, schema_version, basis, record, recorded_at) "
@@ -153,7 +167,9 @@ def validated_record(
         )
         return None
     try:
-        return DescriptionRecord.model_validate(stored)
+        return DescriptionRecord.model_validate(
+            upgraded_record(stored, schema_version=schema_version)
+        )
     except ValidationError:
         logger.exception(
             "%s id=%s content_version=%s",
@@ -162,6 +178,21 @@ def validated_record(
             content_version,
         )
         return None
+
+
+def upgraded_record(stored: object, *, schema_version: int) -> object:
+    """`stored`, a row's record JSON of `schema_version`, as this image's `SCHEMA_VERSION`
+    reads it.
+
+    Each version's record is the previous version's with members added, each unset in a record
+    written before it, so a row of an earlier version upgrades by taking this version's number
+    alone: a version 1 record is a version 2 record whose dimensions hold no `within_set`. A
+    version whose upgrade would change or drop a member breaks this rule and needs a step of
+    its own here. The upgrade happens in memory: a read never rewrites the row. A row of this
+    version or a later one, or JSON that is no object, is returned as stored."""
+    if schema_version >= SCHEMA_VERSION or not isinstance(stored, dict):
+        return stored
+    return {**cast(dict[str, object], stored), "schema_version": SCHEMA_VERSION}
 
 
 def _lock(tx: Transaction, *, id: str, content_version: str) -> None:
@@ -211,7 +242,10 @@ def fill_late_fields(
 ) -> list[FieldPath]:
     """Fill each member of the stored record that `values` names and that is `null`, and note
     it in `late_fields` with `arrived` and `basis`. When this call fills any, it also sets each
-    `derived` member, replacing what it held, and notes it the same way. Return the paths this
+    `derived` member, replacing what it held, and notes it the same way. A record of an earlier
+    schema version is filled as this version reads it (`upgraded_record`). The filled record is
+    stored at the lowest version that describes it (`lowest_schema_version`), its column with
+    it, so a fill leaves a record an earlier image reads readable there. Return the paths this
     call filled or set, which leave out a member that already held a value or a value that is
     `None`.
 
@@ -222,12 +256,16 @@ def fill_late_fields(
     """
     _lock(tx, id=id, content_version=content_version)
     row = tx.fetch_one(
-        "SELECT record FROM datasets.description_record WHERE subject_id = %s AND content_version = %s",
+        "SELECT schema_version, record FROM datasets.description_record "
+        "WHERE subject_id = %s AND content_version = %s",
         (id, content_version),
     )
     if row is None:
         raise DescriptionNotStored(id=id, content_version=content_version)
-    record = cast(dict[str, object], row["record"])
+    record = cast(
+        dict[str, object],
+        upgraded_record(row["record"], schema_version=cast(int, row["schema_version"])),
+    )
     filled = [
         path
         for path, value in values.items()
@@ -243,12 +281,18 @@ def fill_late_fields(
         LateField(field=path, arrived=arrived, basis=basis).model_dump(mode="json")
         for path in filled
     )
-    updated = DescriptionRecord.model_validate(record)
+    updated = _at_lowest_version(DescriptionRecord.model_validate(record))
     tx.execute(
-        "UPDATE datasets.description_record SET record = %s WHERE subject_id = %s AND content_version = %s",
-        (_stored_json(updated), id, content_version),
+        "UPDATE datasets.description_record SET schema_version = %s, record = %s "
+        "WHERE subject_id = %s AND content_version = %s",
+        (updated.schema_version, _stored_json(updated), id, content_version),
     )
     return filled
+
+
+def _at_lowest_version(record: DescriptionRecord) -> DescriptionRecord:
+    """`record` stamped the lowest schema version that describes it, as the store writes it."""
+    return record.model_copy(update={"schema_version": lowest_schema_version(record.variables)})
 
 
 def _fill_member(record: dict[str, object], path: str, value: JsonValue) -> bool:

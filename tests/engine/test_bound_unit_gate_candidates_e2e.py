@@ -90,7 +90,7 @@ def test_unestablished_candidate_election_fails_the_request(monkeypatch):
     def _raise(*args, **kwargs):
         raise UpstreamVersionChangedError("rate table changed version during its load")
 
-    monkeypatch.setattr(candidate_unit_election_module, "decide_part_unit", _raise)
+    monkeypatch.setattr(candidate_unit_election_module, "decide_spec_unit", _raise)
     with pytest.raises(UpstreamVersionChangedError):
         _run(
             obs=_three_way_obs(),

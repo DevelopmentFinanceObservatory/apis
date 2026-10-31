@@ -14,6 +14,7 @@ from typing import Literal, Protocol
 from assembler.catalogue import CatalogueRelease
 from description.facts import DescriptionRecord
 from description.vocabulary import SourceDocumentFacts, Vocabulary
+from dfo_platform.caller import Caller
 from materialise.continued_series import ContinuedSeries
 
 __all__ = [
@@ -151,7 +152,10 @@ class ResolvedFrame:
     nothing continues the frame's series. `descriptions` holds the graph `description` of the
     one variable the version's definition resolved to, by bare dcid, when that variable is a
     World Development Indicators variable, and defines the version's measure
-    (`description.world_bank`); it is empty otherwise.
+    (`description.world_bank`); it is empty otherwise. `rendering` is the JSON object a card
+    revision stores with the frame (`RevisionRecord.frame_rendering`), as the frame's stored
+    records say at this load. It holds a dataset frame's groupby and party-totals cut, or a
+    derived frame's recipe `normal_form_hash`, and is `None` when the records do not say.
     """
 
     frame_ref: FrameRef
@@ -169,12 +173,17 @@ class ResolvedFrame:
     input_records: Sequence[DescriptionRecord] = ()
     continuation: Continuation | None = None
     descriptions: Mapping[str, str] = field(default_factory=dict)
+    rendering: Mapping[str, object] | None = None
 
 
 class FrameUnavailable(Exception):
     # reason: "revoked" | "expired" | "missing_rendering" | "digest_mismatch" |
-    # "ops_unsupported" | "quarantined" | "io" | "unknown"
+    # "ops_unsupported" | "quarantined" | "recipe_pending" | "recipe_unreadable" | "io" |
+    # "unknown"
     # Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed on retry.
+    # `recipe_pending` (a derived frame with no recipe yet) and `recipe_unreadable` (a store with
+    # no recipe reader, or a recipe root naming no dataset version) refuse a pin, and both are
+    # retryable.
     def __init__(self, *, reason: str, detail: str) -> None:
         self.reason = reason
         self.detail = detail
@@ -184,8 +193,11 @@ class FrameUnavailable(Exception):
 class FrameStore(Protocol):
     def load(self, *, frame_ref: FrameRef) -> ResolvedFrame: ...
     # `True` means created or reactivated. `False` means already active.
-    # `None` leaves the change status unknown.
-    def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool | None: ...
+    # `None` leaves the change status unknown. A new pinned copy spends the pin budgets, and an
+    # open `caller`'s `pin` allowance too (`datasets_api.retention_admission`).
+    def pin(
+        self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None
+    ) -> bool | None: ...
 
 
 @dataclass(frozen=True)
@@ -204,6 +216,12 @@ class RevisionRecord:
     # The instant the store recorded the revision, which never changes. `None` only on a record
     # the write path builds before the store stamps it. Every read returns it set.
     created_at: datetime.datetime | None = None
+    # The rendering of the frame `stored_intent.frame_ref` names, recorded when the revision
+    # first drew that frame (`ResolvedFrame.rendering`) and kept by every revision on the same
+    # frame, so a draw on a later frame matches the rendering the card was made from. Recorded
+    # at create; `None` for a note, a frame whose records did not say, and a revision stored
+    # before migration 0011.
+    frame_rendering: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)

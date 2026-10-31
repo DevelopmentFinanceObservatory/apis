@@ -28,7 +28,7 @@ from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
 
-from ._app_factories import make_client
+from ._app_factories import make_client, offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
@@ -543,6 +543,7 @@ def _pin_client():
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=FakeArtifactReferenceWriter(),
+            allowances=offline_allowances(),
             now=lambda: _NOW,
         ),
         settings=DatasetsBuildSettings.from_env(),

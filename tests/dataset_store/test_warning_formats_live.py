@@ -36,7 +36,7 @@ def live_store():
 
 def test_warning_formats_counts_each_old_format(live_store, monkeypatch, capsys):
     """The command prints a line per format with the warnings and version rows a row of each
-    old format adds, checks `member_count` against the trace, and counts the rows 0039
+    old format adds, checks `member_count` against the trace, and counts the rows 0045
     rewrites."""
     suffix = uuid4().hex
     bodies = format_count_bodies()

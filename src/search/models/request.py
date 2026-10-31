@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import (
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -14,6 +15,7 @@ from .assumption import Assumption
 from .base import StrictModel
 from .entity import EntityGroup
 from .identity import BaseIdentity
+from .scope import Entry
 from .vocab import (
     SCHEMA_VERSION,
     EntityRoleKey,
@@ -73,6 +75,14 @@ _PARSED_MAX_PART_OPERATIONS = 8
 # One declared default per identity slot (BaseIdentity.slots holds at most 64), two flow
 # roles and the place scope: the most assumptions one part carries.
 _RESUBMIT_MAX_ASSUMPTIONS = 67
+# Four scope axes, each with one explicit entry and the carried entries of earlier parts:
+# a bound well past the four entries one part applies.
+_RESUBMIT_MAX_SCOPE_ENTRIES = 16
+# The choices a conversation carries: one per axis, and on the sector axis one per concept
+# asked for, the same bound a resubmitted part's scope entries hold.
+_PARSED_MAX_CARRIED_ENTRIES = 16
+# A user's message, which can quote a pasted answer beside the question.
+_PARSED_MAX_USER_MESSAGE_CHARS = 4000
 # Equal to config's max_dropped_qualifier_length, the length a dropped qualifier keeps;
 # extract discards an operation whose phrase is longer. A test pins the relation.
 _PARSED_MAX_OPERATION_PHRASE_CHARS = 200
@@ -179,7 +189,28 @@ class ParsedEntity(StrictModel):
     text: str = Field(
         min_length=1,
         max_length=_PARSED_MAX_ENTITY_TEXT_CHARS,
-        description="the entity's text as the caller identified it",
+        description=(
+            "the entity's text as the caller identified it: the request's own words for "
+            "it, which name resolution reads and a rendered sentence quotes"
+        ),
+    )
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_ENTITY_TEXT_CHARS,
+        description=(
+            "the entity's name, when its words (`text`) could name more than one entity "
+            "and no `dcid` pins it: the row's identity, which keys its role and members "
+            "within the part. Name resolution reads `text` with `name` beside it, as the "
+            "raw-text door reads a query's words beside the name extraction gave them, so "
+            "two rows whose words are alike stay two entities. Words that differ from `name` "
+            "only in case read as `name`, and one `name` posted with two texts that differ "
+            "beyond case in a part refuses `request_invalid`. Without it, `text` is the "
+            "identity; a `name` equal to `text` is the field left out, and a `name` beside a "
+            "`dcid` is invalid. A row no dcid pins whose identity, its `name` or else its "
+            "`text`, is a dcid another row of the part pins refuses `request_invalid` at the "
+            "row"
+        ),
     )
     role_text: str | None = Field(
         default=None,
@@ -207,7 +238,10 @@ class ParsedEntity(StrictModel):
             "still confirmed against the graph. An unconfirmable dcid (absent from "
             "the graph, or present but type-less) refuses invalid_role_ref (422). "
             "`text` stays required and is not re-derived from the dcid; it is still "
-            "what a rendered sentence and any further restatement echo back."
+            "what a rendered sentence and any further restatement echo back. The dcid is "
+            "the row's identity, so rows pinning one dcid under different texts are one "
+            "entity, whose words are the first row's. A row no dcid pins whose `name`, or "
+            "else `text`, is this dcid refuses request_invalid at that row."
         ),
     )
     members: bool | None = Field(
@@ -220,7 +254,7 @@ class ParsedEntity(StrictModel):
             "is honoured for a continent or subregion that the membership policy holds or "
             "omits, whatever the node's graph type, and refuses request_invalid "
             "for a group's own node, whose members a pin cannot supply. One part names a "
-            "set once: the same `text` posted with both values refuses request_invalid"
+            "set once: the same entity posted with both values refuses request_invalid"
         ),
     )
 
@@ -229,6 +263,25 @@ class ParsedEntity(StrictModel):
     def _false_is_unset(cls, members: bool | None) -> bool | None:
         """An entity asks for members or does not: a posted false is the field left out."""
         return members or None
+
+    @field_validator("name")
+    @classmethod
+    def _text_is_unnamed(cls, name: str | None, info: ValidationInfo) -> str | None:
+        """A name equal to the entity's text is the field left out."""
+        return None if name == info.data.get("text") else name
+
+    @model_validator(mode="after")
+    def _pinned_is_unnamed(self) -> ParsedEntity:
+        """A pinned row's identity is its dcid, so a name beside it is a second one."""
+        if self.dcid is not None and self.name is not None:
+            raise ValueError("an entity with a dcid takes no name; the dcid is its identity")
+        return self
+
+    @property
+    def identity(self) -> str:
+        """The entity's identity within its part: its `dcid`, else its `name`, else its
+        `text`."""
+        return self.dcid or self.name or self.text
 
 
 def _is_false(value: bool) -> bool:
@@ -492,6 +545,39 @@ class ParsedInput(StrictModel):
         max_length=_PARSED_MAX_RAW_QUERY_CHARS,
         description="original query text, for echo only; does not affect resolution",
     )
+    user_message: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_USER_MESSAGE_CHARS,
+        description=(
+            "the user's own message for the turn, as written. On a request of one part, "
+            "the scope words it states ('bilateral', 'excluding multilateral', 'net', "
+            "'gross', 'grant equivalent', 'commitments') become explicit scope entries and "
+            "'total' a total intent, read in place of the part's variable_text. A request "
+            "of several parts reads each part's own variable_text, so one part's words "
+            "never reach another. None reads the part's variable_text"
+        ),
+    )
+    carried_entries: list[Entry] | None = Field(
+        default=None,
+        max_length=_PARSED_MAX_CARRIED_ENTRIES,
+        description=(
+            "the scope entries earlier searches of the conversation settled, each with "
+            "provenance carried, from their resolved.scope_choices. Each attaches to the "
+            "parts that settle its axis, and an entry made for a concept only to a part "
+            "asking for that concept. An explicit entry on the same axis wins; a carried "
+            "entry a part cannot take is reported in that part's "
+            "resolved.scope_choices.dropped_entries. None carries none"
+        ),
+    )
+
+    @field_validator("carried_entries")
+    @classmethod
+    def _entries_carried(cls, entries: list[Entry] | None) -> list[Entry] | None:
+        for i, entry in enumerate(entries or ()):
+            if entry.provenance != "carried":
+                raise ValueError(f"carried_entries[{i}] has provenance {entry.provenance!r}")
+        return entries
 
 
 _ENTITY_GROUPS_DESCRIPTION = (
@@ -602,6 +688,24 @@ class ResubmitIdentityEntry(StrictModel):
             "echoed default from one the caller writes for a slot it chose itself, and "
             "states such an item while the slot binds its refs. An echo shapes only the "
             "caller's own response"
+        ),
+    )
+
+    scope_entries: list[Entry] | None = Field(
+        default=None,
+        max_length=_RESUBMIT_MAX_SCOPE_ENTRIES,
+        description=(
+            "the part's explicit and carried scope entries, one per axis: the entries of its "
+            "resolved.scope_choices, with the entry on a switched axis replaced by the "
+            "switch, an explicit entry whose origin names the choice, posted with that "
+            "scope's base.identity as identity. An entry posted with no concept on an axis "
+            "asked for a concept takes that concept, which the response's entries echo. The engine compiles them over "
+            "identity and resolves the result, whose "
+            "resolved.scope_choices states every choice, the entries applied and the "
+            "carried entries left out. Refuses requested_option_unavailable (422) for an "
+            "explicit entry this part cannot serve and conflicting_requested_options (422) "
+            "for two that cannot hold together. None, the default, resolves identity as "
+            "posted"
         ),
     )
 

@@ -1,10 +1,10 @@
-"""Creates or revises components, pins create frames, and appends revisions transactionally."""
+"""Creates or revises components and appends revisions transactionally."""
 
 from __future__ import annotations
 
 import datetime
 import json
-import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -26,6 +26,7 @@ from assembler.ports import (
     FrameStore,
     PriorCreate,
     ReleaseRegistry,
+    ResolvedFrame,
     RevisionRecord,
     RevisionStore,
     VocabularySource,
@@ -44,14 +45,6 @@ from assembler.write_token import (
     write_token_digest,
     write_token_matches,
 )
-
-logger = logging.getLogger(__name__)
-
-# A create that fails after writing a frame reference logs this marker with
-# `component_id`, `spec_id`, and `content_version`. A concurrent writer may use
-# the same idempotent reference. Reconciliation determines whether cleanup is
-# needed.
-ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER = "presentation_pin_reconciliation_required"
 
 
 def _utc_now() -> datetime.datetime:
@@ -93,6 +86,33 @@ def _series_coordinates_equal(
 # -- write_component -----------------------------------------------------
 
 
+BARE_SPEC_ID = re.compile(r"spec_[0-9a-f]{32}")
+"""A dataset id a bare `frame_ref` may name, the id a Spec root of the analysis runner takes."""
+
+
+def bare_frame_ref(intent: Mapping[str, object]) -> str | None:
+    """The dataset id of `intent`'s `frame_ref` when it names that id alone, else `None`."""
+    frame_ref = intent.get("frame_ref")
+    if not isinstance(frame_ref, Mapping) or frame_ref.keys() != {"spec_id"}:
+        return None
+    spec_id = cast("Mapping[str, object]", frame_ref)["spec_id"]
+    return spec_id if isinstance(spec_id, str) and BARE_SPEC_ID.fullmatch(spec_id) else None
+
+
+def _with_resolved_frame_ref(
+    intent: Mapping[str, object], *, resolve_spec: Callable[[str], FrameRef]
+) -> Mapping[str, object]:
+    """`intent` with a bare `frame_ref` replaced by the pair `resolve_spec` gives."""
+    spec_id = bare_frame_ref(intent)
+    if spec_id is None:
+        return intent
+    frame = resolve_spec(spec_id)
+    return {
+        **intent,
+        "frame_ref": {"spec_id": frame.spec_id, "content_version": frame.content_version},
+    }
+
+
 def write_component(
     *,
     intent: Mapping[str, object],
@@ -104,6 +124,7 @@ def write_component(
     revision_store: RevisionStore,
     release_registry: ReleaseRegistry,
     vocabulary_source: VocabularySource | None = None,
+    resolve_spec: Callable[[str], FrameRef] | None = None,
     clock: Callable[[], datetime.datetime] = _utc_now,
 ) -> WriteReply:
     """Create a component, or revise the one at `component_id`.
@@ -115,16 +136,22 @@ def write_component(
     everything a reader sees is a no-op (`_structurally_equal`). One that gains, loses or
     rewords a description, or changes a source, citation or warning, writes a revision.
 
+    A write pins nothing. A card's frame stays in the working tier, held 30 days from when DFO
+    stored it, until a share first includes the card (`presentation_store.pin_card_frames`).
+    Each revision stores the rendering of the frame it draws (`RevisionRecord.frame_rendering`).
+    A create stores the one the frame's records give, and every revise keeps the one the
+    component was created with, `None` for a component created before renderings were recorded.
+
     `write_token` is the caller's `x-dfo-write-token`. A revise needs the component's own
     token, and a create into an existing composition needs that composition's token. Both
-    checks run before any frame work, so a refused write pins nothing. A create mints the new
+    checks run before any frame work. A create mints the new
     component's token, plus the new composition's token for `composition_id="new"`, and the
     reply carries each once.
 
     `create_write_token` is a `cmw_` token the client minted for this create; it becomes the
     new component's token and keys the create. A create whose token a stored component already
     holds, sent with the same intent and `composition_id`, returns that component's create
-    reply rebuilt from its revision 1, without resolving or pinning a frame. The same token
+    reply rebuilt from its revision 1, without resolving a frame. The same token
     with a different request, or on a component created without a request hash, raises
     `CreateRequestInvalid`. So does a malformed token, a token on a revise, or one sent with
     `composition_id="new"`. A create that loses a race to another create with the same token
@@ -132,7 +159,14 @@ def write_component(
 
     A revise whose head was minted under a newer catalogue release than this deployment's
     raises `ReleaseMismatch` before any frame work, and again if a concurrent write moves the
-    head to a newer release before this one commits."""
+    head to a newer release before this one commits.
+
+    `resolve_spec` names the frame a create intent's bare `frame_ref`, `{"spec_id"}` with a
+    dataset id alone, stands for (`bare_frame_ref`), after the replay check. The revision stores
+    the pair it names, and the request hash covers the intent as sent, so a create retried with
+    its `cmw_` token replays without resolving again. With no `resolve_spec`, a bare `frame_ref`
+    is checked as any other and refused for its missing `content_version`. A revise keeps its
+    component's frame, so it resolves nothing."""
     _check_intent_size(intent=intent)
     release = release_registry.pinned()
     is_create = component_id is None
@@ -170,6 +204,8 @@ def write_component(
                 client_create=client_create,
                 revision_store=revision_store,
             )
+    if is_create and resolve_spec is not None:
+        intent = _with_resolved_frame_ref(intent, resolve_spec=resolve_spec)
     if not is_create:
         new_write_token = None
     elif client_create is not None:
@@ -200,9 +236,8 @@ def write_component(
             raise EditConflict
         _require_release_not_behind(head=current, release=release)
 
-    # Allocate before the transaction so frame pinning can do network I/O outside
-    # the row lock, and before the candidate so its description names the component. The
-    # store owns id formats. Revises reuse their pinned frame.
+    # Allocate before the candidate so its description names the component. The store owns
+    # id formats.
     working_component_id = component_id if not is_create else revision_store.allocate_component_id()
 
     def described(revision: int) -> DescribedRevision | None:
@@ -224,17 +259,6 @@ def write_component(
         clock=clock,
         described=described(revision),
     )
-    pinned_frame_ref: FrameRef | None = None
-    if is_create and candidate.resolved_frame is not None:
-        # note_narration resolves no frame (no `frame_ref` on its grammar
-        # shape), so there is nothing to pin.
-        pin_created = frame_store.pin(
-            frame_ref=candidate.resolved_frame.frame_ref, component_id=working_component_id
-        )
-        # A `None` result leaves creation status unknown, so report the pin if the write fails.
-        if pin_created is not False:
-            pinned_frame_ref = candidate.resolved_frame.frame_ref
-
     is_noop = False
     try:
         with revision_store.begin_write(
@@ -303,6 +327,9 @@ def write_component(
                     schema_version=release.schema_version,
                     formatter_profile=release.formatter_profile,
                     series_coordinates=series_coordinates,
+                    frame_rendering=_frame_rendering(
+                        current=current, resolved_frame=candidate.resolved_frame
+                    ),
                 )
                 composition_entry = (
                     CompositionAppend(composition_id=ctx.composition_id, actor="model")
@@ -314,11 +341,6 @@ def write_component(
                 )
                 minted_composition_id = ctx.composition_id
     except WriteTokenInUse:
-        _log_orphaned_pin(
-            frame_ref=pinned_frame_ref,
-            component_id=working_component_id,
-            with_traceback=client_create is None,
-        )
         if client_create is None:
             raise
         # Another create with this token committed first. The lookup runs in a fresh
@@ -328,9 +350,6 @@ def write_component(
             client_create=client_create,
             revision_store=revision_store,
         )
-    except BaseException:
-        _log_orphaned_pin(frame_ref=pinned_frame_ref, component_id=working_component_id)
-        raise
 
     if is_noop:
         # Membership lookup uses a separate transaction, so it follows this commit.
@@ -365,21 +384,18 @@ def write_component(
     )
 
 
-def _log_orphaned_pin(
-    *, frame_ref: FrameRef | None, component_id: str, with_traceback: bool = True
-) -> None:
-    # Leave the reference for reconciliation. Another create can share this pin and commit.
-    # A create that lost the race for its own write token is expected, so it logs no traceback.
-    if frame_ref is None:
-        return
-    logger.error(
-        "%s component_id=%s spec_id=%s content_version=%s",
-        ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER,
-        component_id,
-        frame_ref.spec_id,
-        frame_ref.content_version,
-        exc_info=with_traceback,
-    )
+def _frame_rendering(
+    *, current: RevisionRecord | None, resolved_frame: ResolvedFrame | None
+) -> Mapping[str, object] | None:
+    """The rendering a new revision drawing `resolved_frame` stores. A create stores the one
+    the frame's records give. A revise draws the current revision's frame, since `frame_ref` is
+    create-only, so it keeps the current revision's rendering, `None` for a revision stored
+    before renderings were recorded."""
+    if resolved_frame is None:
+        return None
+    if current is not None:
+        return current.frame_rendering
+    return resolved_frame.rendering
 
 
 @dataclass(frozen=True)

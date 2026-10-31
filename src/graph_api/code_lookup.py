@@ -29,8 +29,7 @@ class CodeIndexCodes:
         index = self.index()
         hits: list[CodeHit] = []
         for row in index.codes_by_text(text):
-            declaration = index.declarations.get(row.code_system)
-            enum_dcid = declaration.enum_dcid if declaration is not None else None
+            enum_dcid = index.system_of_code(row.dcid)
             if enum_dcid is None or (code_system is not None and enum_dcid != code_system):
                 continue
             entity = Entity(dcid=row.dcid, name=row.label, kind="code", graph_type=enum_dcid)
