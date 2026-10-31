@@ -2154,8 +2154,8 @@ def continuing_candidates(
     `units` that ends in the year `after` (`continuation`), in candidate order: those that
     share the provenance and a unit, sit at the served cadence (`serves`, by facet id), hold
     estimated values (`method_status.status_of`), reach a later year than `after` and hold a
-    point in the window. None under a window that is not a range with an end year, for an
-    estimated `method`, or when `after` reaches the window's end. The units share one value
+    point in the window. An empty list under a window that is not a range with an end year,
+    for an estimated `method`, or when `after` reaches the window's end. The units share one value
     except under a national-currency binding, where each place's admission keeps its own.
     `after` None sets no lower bound, for a series whose end is unknown."""
     if window is None or window.kind != "range" or window.end_year is None:

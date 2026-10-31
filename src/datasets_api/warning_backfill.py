@@ -40,20 +40,21 @@ members after the last named one than K counts, a body and column holding differ
 (`mismatched`), a composite, an identity the adapter refuses, a probe over its pair ceiling
 or refusing its requests, a graph or SDMX read a later read would repeat
 (`_clears_on_resend`: a 4xx outside `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`, an SDMX request
-refused before it was sent, as `SdmxUnsupportedFilterError`, a repeated `nextToken` or dcids
-the graph omits again when asked for them alone), a dataset the code index disagrees with,
-or a continuation the trace cannot state. The last is a method selection the mint's group
-election continued (`group_facets.group_election`) with a method the trace does not name,
-since the trace names one only when it served a row, so the selection cannot be rebuilt.
-A permanent refusal follows from the stored row, the graph's answer and this image, so
-every run refuses it again. Any other graph or SDMX read failure, in transport, by timeout
-or with a 5xx, a 3xx, an unreadable 2xx or a status among `TRANSIENT_CLIENT_ERRORS`, a UN
-read recorded as failed beside ours (`origin_catalogue.UnBlockedPlaces.failures`), or a
-member whose default place scope is not settled leaves the row for the next run
-(`transient`). The places the UN front door
-refuses do not: it refused them at the mint too. An update the store fails as an outage does
-(`clears_on_retry`) stops the run, and the rows not yet tried count as `remaining`. Any other
-exception is a defect in this task (`failed`).
+refused before it was sent, as `SdmxUnsupportedFilterError`, a repeated `nextToken`, a read
+still reporting one at its page cap, or dcids the graph omits again when asked for them
+alone), a dataset the code index disagrees with, or a continuation the trace cannot state.
+The last is a method selection the mint's group election continued
+(`group_facets.group_election`) with a method the trace does not name, since the trace
+names one only when it served a row, so the selection cannot be rebuilt. A permanent
+refusal follows from the stored row, the graph's answer and this image, so every run
+refuses it again, and its failed line carries a `reason` code an operator filters by. Any
+other graph or SDMX read failure, in transport, by timeout or with a 5xx, a 3xx, an
+unreadable 2xx or a status among `TRANSIENT_CLIENT_ERRORS`, a UN read recorded as failed
+beside ours (`origin_catalogue.UnBlockedPlaces.failures`), or a member whose default place
+scope is not settled leaves the row for the next run (`transient`). The places the UN
+front door refuses do not: it refused them at the mint too. An update the store fails as an
+outage does (`clears_on_retry`) stops the run, and the rows not yet tried count as
+`remaining`. Any other exception is a defect in this task (`failed`).
 
 The run exits 1 when a later run could still rewrite a row, because its read did not
 complete (`transient`), the row changed under the update (`conflicts`), or the deadline or a
@@ -120,6 +121,7 @@ from materialise.errors import (
 )
 from materialise.facets import (
     ElectedDataset,
+    FacetElection,
     FacetSelection,
     MemberProbe,
     continues_selection,
@@ -206,15 +208,18 @@ def select_rows(store: DatasetStore, *, new_format: bool) -> list[WarningRow]:
 
 class _Refused(Exception):
     """The row cannot be rewritten from what it stores. A later run refuses it too. `reason`
-    names the refusals a log reader tells apart, `None` for the rest."""
+    is the code an operator filters the refusal by."""
 
-    def __init__(self, message: str, *, reason: str | None = None) -> None:
+    def __init__(self, message: str, *, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
 
 
 class _Mismatched(_Refused):
     """The row's body holds other warnings than its column, so no rewrite of one fits both."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, reason="mismatch")
 
 
 class _Unread(Exception):
@@ -239,11 +244,15 @@ class _Member:
 
 @dataclass
 class _Probed:
-    """One probe's members, keyed by ref in `stat_vars` order, under `window`."""
+    """One probe's members, keyed by ref in `stat_vars` order, under `window`, and the
+    group's elections over them, by selections."""
 
     members: Mapping[str, _Member]
     stat_vars: tuple[str, ...]
     window: RequestedWindow
+    elections: dict[tuple[tuple[str, FacetSelection], ...], FacetElection] = field(
+        default_factory=dict
+    )
 
     @cached_property
     def breadth(self) -> Mapping[str, int] | None:
@@ -251,6 +260,20 @@ class _Probed:
         return group_breadth(
             [self.members[ref].probe for ref in self.stat_vars], window=self.window
         )
+
+    def election(self, selections: Mapping[str, FacetSelection]) -> FacetElection:
+        """The group's election under `selections` (`group_facets.group_election`), ranked by
+        `breadth`, built once per selections."""
+        key = tuple(sorted(selections.items(), key=lambda item: item[0]))
+        if key not in self.elections:
+            self.elections[key] = group_election(
+                [self.members[ref].candidates for ref in self.stat_vars],
+                selections,
+                stat_vars=self.stat_vars,
+                window=self.window,
+                breadth=self.breadth,
+            )
+        return self.elections[key]
 
 
 @dataclass(frozen=True)
@@ -332,11 +355,12 @@ def run_backfill_warnings(
     (`conflicts`), were not tried before the deadline or an outage (`remaining`), or failed
     with a defect (`failed`).
 
-    Each row that fails gets one `datasets_warning_backfill_failed` line saying whether it was
-    `transient`, `refused` or a `conflict`: at `ERROR` for a defect, a store outage, a
-    conflict and a row to rewrite whose read did not complete, and at `WARNING` for a refusal
-    and a new-format row whose read did not complete. An update the store fails and `clears_on_retry` calls an outage
-    stops the run; any other failure is the row's own."""
+    Each row that fails gets one `datasets_warning_backfill_failed` line with its refusal
+    `reason` (null for any other failure) and whether it was `refused`, `transient` or a
+    `conflict`, which is transient too: at `ERROR` for a defect, a store outage, a conflict
+    and a row to rewrite whose read did not complete, and at `WARNING` for a refusal and a
+    new-format row whose read did not complete. An update the store fails and
+    `clears_on_retry` calls an outage stops the run; any other failure is the row's own."""
     counts = _Counts()
     subject = None
     for position, row in enumerate(rows):
@@ -386,9 +410,10 @@ def run_backfill_warnings(
                 subject_id=row.subject_id,
                 content_version=row.content_version,
                 new_format=not task,
-                transient=transient,
-                refused=not (transient or defect),
                 reason=exc.reason if isinstance(exc, _Refused) else None,
+                refused=not (transient or defect),
+                transient=transient,
+                conflict=False,
                 error=f"{type(exc).__name__}: {exc}",
                 traceback=traceback.format_exc(),
             )
@@ -482,8 +507,10 @@ def _backfill_row(
                 subject_id=row.subject_id,
                 content_version=row.content_version,
                 new_format=False,
-                transient=False,
+                reason=None,
                 refused=False,
+                # A rerun reads the changed row again; `conflicts` counts it apart.
+                transient=True,
                 conflict=True,
                 error="the row's warnings changed after they were read",
             )
@@ -616,14 +643,14 @@ def _new_format_row(row: WarningRow, *, readers: Readers) -> bool:
 
 def _trace(row: WarningRow) -> Mapping[str, object]:
     if not isinstance(row.trace, Mapping):
-        raise _Refused("the row stores no trace")
+        raise _Refused("the row stores no trace", reason="no_trace")
     return cast("Mapping[str, object]", row.trace)
 
 
 def _identity(row: WarningRow) -> Mapping[str, object]:
     identity = row.definition.get("identity") if isinstance(row.definition, Mapping) else None
     if not isinstance(identity, Mapping):
-        raise _Refused("the row stores no definition identity")
+        raise _Refused("the row stores no definition identity", reason="no_definition")
     return cast("Mapping[str, object]", identity)
 
 
@@ -653,12 +680,16 @@ def _split(
     zero_refs = [cast(str, entry["ref"]) for entry in zero]
     missing = [ref for ref in named if ref not in zero_refs]
     if missing:
-        raise _Refused(f"named members hold observations in the trace or are not in it: {missing}")
+        raise _Refused(
+            f"named members hold observations in the trace or are not in it: {missing}",
+            reason="named_member_served",
+        )
     after_named = zero_refs[max((zero_refs.index(ref) for ref in named), default=-1) + 1 :]
     if count - len(named) > len(after_named):
         raise _Refused(
             f"{count - len(named)} more members left out, {len(after_named)} zero-count members "
-            "follow the last named one"
+            "follow the last named one",
+            reason="too_few_members",
         )
     window = identity_requested_window(identity, clock_year=row.recorded_at.year)
     selections = _selections(trace)
@@ -721,8 +752,8 @@ def _continuation_stated(selections: Mapping[str, FacetSelection], probed: _Prob
     `trace.continuations` names a continuing method only when it served a row, so a trace
     naming none leaves a continuation that served none unknown. The group's election is
     rebuilt from the selections and the probed members' candidates in trace order
-    (`group_facets.group_election`), ranked by their series under the window as the mint
-    ranked them (`_Probed.breadth`).
+    (`_Probed.election`), ranked by their series under the window as the mint ranked them
+    (`_Probed.breadth`).
     The job binds no whole-variable breadth reader (`facets.bound_variable_breadth`), so a
     single-place tie the mint broke by a variable's whole breadth falls here to the unit's
     name, and its cadence can differ from the mint's. When no member holds a facet matching
@@ -731,15 +762,9 @@ def _continuation_stated(selections: Mapping[str, FacetSelection], probed: _Prob
     method = selections.get(_METHOD_AXIS)
     if method is None or method.continued_by is not None:
         return
-    candidates = [probed.members[ref].candidates for ref in probed.stat_vars]
-    election = group_election(
-        candidates,
-        selections,
-        stat_vars=probed.stat_vars,
-        window=probed.window,
-        breadth=probed.breadth,
-    )
+    election = probed.election(selections)
     if election.cadence is None:
+        candidates = [probed.members[ref].candidates for ref in probed.stat_vars]
         if _may_continue(candidates, selections, window=probed.window):
             raise _Refused(
                 "no member holds the selected facets any more, and an estimated facet of the "
@@ -810,8 +835,12 @@ def _probed(
     )
     held = readers.probes.get(key)
     if isinstance(held, Exception):
-        kind = type(held) if isinstance(held, _Refused | _Unread) else RuntimeError
-        raise kind(f"an earlier row's probe of the same requests failed: {held}") from held
+        message = f"an earlier row's probe of the same requests failed: {held}"
+        if isinstance(held, _Refused):
+            raise _Refused(message, reason=held.reason) from held
+        if isinstance(held, _Unread):
+            raise _Unread(message) from held
+        raise RuntimeError(message) from held
     if held is not None:
         return held
     try:
@@ -839,13 +868,18 @@ def _probe(
     readers.probe_calls += 1
     try:
         if composite_components(identity, code_index=readers.code_index) is not None:
-            raise _Refused("a composite's members are probed under its component identities")
+            raise _Refused(
+                "a composite's members are probed under its component identities",
+                reason="composite",
+            )
         requests = [
             _request(identity, entry, window=window, selections=selections, readers=readers)
             for entry in resolved
         ]
     except (CompositeUnservable, CurrencyRoleUndeclared, IdentityError) as exc:
-        raise _Refused(f"the identity is refused: {type(exc).__name__}: {exc}") from exc
+        raise _Refused(
+            f"the identity is refused: {type(exc).__name__}: {exc}", reason="identity_refused"
+        ) from exc
     try:
         with (
             definition_read_scope(identity, code_index=readers.code_index),
@@ -860,11 +894,15 @@ def _probe(
                 deadline=time.monotonic() + PROBE_DEADLINE_SECONDS,
             )
     except (CollectionProbeCeilingExceededError, MaterialisationUsageError) as exc:
-        raise _Refused(f"the probe refused: {type(exc).__name__}: {exc}") from exc
+        raise _Refused(
+            f"the probe refused: {type(exc).__name__}: {exc}", reason="probe_refused"
+        ) from exc
     except (GraphReadError, SdmxClientError) as exc:
         if _clears_on_resend(exc):
             raise _Unread(f"the probe failed: {type(exc).__name__}: {exc}") from exc
-        raise _Refused(f"the probe was refused: {type(exc).__name__}: {exc}") from exc
+        raise _Refused(
+            f"the probe was refused: {type(exc).__name__}: {exc}", reason=_refusal_reason(exc)
+        ) from exc
     except TimeoutError as exc:
         # `place_scope.PlaceScopeDeadlineError` among them: the read ran past its deadline.
         raise _Unread(f"the probe timed out: {exc}") from exc
@@ -881,7 +919,7 @@ def _probe(
             for request, probe in zip(requests, probes, strict=True)
         }
     except DatasetDisagreementError as exc:
-        raise _Refused(f"the code index disagrees: {exc}") from exc
+        raise _Refused(f"the code index disagrees: {exc}", reason="dataset_disagreement") from exc
 
 
 def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
@@ -890,11 +928,11 @@ def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
     but a 4xx outside `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`, so a 5xx, a 3xx and a 2xx
     body the client could not read are retried. A 4xx outside that set, an SDMX request the
     client refuses before sending it (no status, as `SdmxUnsupportedFilterError`, or
-    `SdmxQueryError` and `SdmxCapExceededError`), a paged read whose `nextToken` repeats
-    (`GraphNotAdvancingError`) and dcids the graph omits from a read and its re-request
-    (`GraphOmittedDcidsError`) would repeat, at any depth of the cause chain. An availability
-    read failing for a place scope (`PlaceScopeReadError`) is judged by the client error it
-    wraps."""
+    `SdmxQueryError` and `SdmxCapExceededError`), a paged read whose `nextToken` repeats or
+    that still reports one at its page cap (`GraphNotAdvancingError`) and dcids the graph
+    omits from a read and its re-request (`GraphOmittedDcidsError`) would repeat, at any
+    depth of the cause chain. An availability read failing for a place scope
+    (`PlaceScopeReadError`) is judged by the client error it wraps."""
     if any(
         isinstance(cause, GraphNotAdvancingError | GraphOmittedDcidsError) for cause in _causes(exc)
     ):
@@ -911,6 +949,18 @@ def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
     if status is None:
         return isinstance(exc, GraphReadError)
     return not 400 <= status < 500 or status in TRANSIENT_CLIENT_ERRORS
+
+
+def _refusal_reason(exc: BaseException) -> str:
+    """The reason code of a read a later read would repeat (`_clears_on_resend`): a paged read
+    that does not advance, dcids the graph omits again, or a request the server or client
+    refuses."""
+    for cause in _causes(exc):
+        if isinstance(cause, GraphNotAdvancingError):
+            return "not_advancing"
+        if isinstance(cause, GraphOmittedDcidsError):
+            return "omitted"
+    return "client_refusal"
 
 
 def _causes(exc: BaseException) -> Iterator[BaseException]:

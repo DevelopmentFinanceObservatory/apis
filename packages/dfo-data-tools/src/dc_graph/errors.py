@@ -6,7 +6,8 @@ Callers may supply subclasses through `read_error_cls`, `deadline_error_cls` and
 `nextToken` repeats, and every paged read still reporting one at its page cap, raises
 `read_error_cls` from a `GraphNotAdvancingError`, and dcids a re-request still omits raise
 it from a `GraphOmittedDcidsError` naming them, so a caller can tell both apart from a
-failure a later read could clear by the cause chain.
+failure a later read could clear by the cause chain. `node_subjects_many` raises nothing at
+its page cap: it returns each lead it had not finished as `budget_exhausted`.
 """
 
 from __future__ import annotations
@@ -50,8 +51,8 @@ class GraphNotAdvancingError(GraphReadError):
     """A paged read whose `nextToken` repeats, that still reports one at its page cap, or, in
     `node_subjects`, that sees 3 fresh-token pages with no new dcids. Each would page the
     same way again. `node_subjects` raises a stuck cursor itself; every other case raises
-    the read's `read_error_cls` from it. `dcid` names the stuck read's dcids, comma-joined when it pages
-    several, and `property` its arc expression.
+    the read's `read_error_cls` from it. `dcid` names the stuck read's dcids, comma-joined
+    when it pages several, and `property` its arc expression.
     """
 
     def __init__(

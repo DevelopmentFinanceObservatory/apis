@@ -348,7 +348,7 @@ def test_too_few_members_after_the_last_named_one_is_refused_for_good(capsys):
 
     assert _stored(store) == warning
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert failed["transient"] is False
+    assert (failed["reason"], failed["transient"]) == ("too_few_members", False)
 
 
 def test_every_zero_count_member_matching_no_selection_is_named_unserved():
@@ -552,7 +552,7 @@ def test_more_members_named_than_hold_no_observation_is_refused_for_good(capsys)
 
     assert _stored(store) == warning
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert failed["transient"] is False
+    assert (failed["reason"], failed["transient"]) == ("too_few_members", False)
 
 
 def test_a_second_run_finds_no_row():
@@ -582,7 +582,8 @@ def test_a_row_changed_after_it_was_read_keeps_the_change(where, capsys):
     assert json.loads(json.dumps(store.rows[("spec_a", "cv_a")], default=str)) == after != before
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
-    assert (failed["conflict"], failed["transient"], failed["severity"]) == (True, False, "ERROR")
+    assert (failed["conflict"], failed["transient"], failed["severity"]) == (True, True, "ERROR")
+    assert (failed["reason"], failed["refused"]) == (None, False)
     assert failed["subject_id"] == "spec_a"
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert summary["conflicts"] == 1
@@ -600,7 +601,7 @@ def test_a_row_whose_body_and_column_disagree_is_refused_for_good(capsys):
     assert json.loads(json.dumps(store.rows[("spec_a", "cv_a")], default=str)) == before
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
-    assert (failed["transient"], failed["severity"]) == (False, "WARNING")
+    assert (failed["reason"], failed["severity"]) == ("mismatch", "WARNING")
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert (summary["permanent"], summary["mismatched"], summary["severity"]) == (1, 1, "WARNING")
 
@@ -624,6 +625,7 @@ def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
         "spec_b",
         "cv_b",
     )
+    assert failed["reason"] == "named_member_served"
 
 
 def test_a_dry_run_writes_nothing_and_compares_a_mint_split(capsys):
@@ -746,8 +748,11 @@ class _BrokenGraph(FakeGraphReader):
         raise ValueError("a defect, not a failed read")
 
 
-@pytest.mark.parametrize("fault", ["ceiling", "malformed-identity"])
-def test_a_deterministic_failure_is_refused_for_good(fault, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [("ceiling", "probe_refused"), ("malformed-identity", "identity_refused")],
+)
+def test_a_deterministic_failure_is_refused_for_good(fault, reason, monkeypatch, capsys):
     row = _row(_warning([_IN]), zero=[_IN])
     if fault == "ceiling":
         monkeypatch.setattr(facets_module, "_MAX_COLLECTION_PROBE_PAIRS", 0)
@@ -758,7 +763,8 @@ def test_a_deterministic_failure_is_refused_for_good(fault, monkeypatch, capsys)
     assert _run(store) == 0
 
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert (failed["transient"], failed["refused"], failed["severity"]) == (
+    assert (failed["reason"], failed["transient"], failed["refused"], failed["severity"]) == (
+        reason,
         False,
         True,
         "WARNING",
@@ -795,7 +801,7 @@ def test_a_row_without_a_definition_is_refused_and_the_run_goes_on(capsys):
 
     assert store.rows[("spec_b", "cv_a")]["warnings"][0]["off_cadence_members"]
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert (failed["subject_id"], failed["transient"]) == ("spec_bare", False)
+    assert (failed["subject_id"], failed["reason"]) == ("spec_bare", "no_definition")
 
 
 class _StatusGraph(FakeGraphReader):
@@ -838,15 +844,17 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
 
 
 @pytest.mark.parametrize(
-    ("graph", "availability", "transient"),
+    ("graph", "availability", "reason"),
     [
-        pytest.param(_StatusGraph(status=404, facets=_FACETS), None, False, id="graph-404"),
-        pytest.param(_StatusGraph(status=503, facets=_FACETS), None, True, id="graph-503"),
-        pytest.param(_StatusGraph(status=429, facets=_FACETS), None, True, id="graph-429"),
-        pytest.param(_StatusGraph(status=401, facets=_FACETS), None, True, id="graph-401"),
+        pytest.param(
+            _StatusGraph(status=404, facets=_FACETS), None, "client_refusal", id="graph-404"
+        ),
+        pytest.param(_StatusGraph(status=503, facets=_FACETS), None, None, id="graph-503"),
+        pytest.param(_StatusGraph(status=429, facets=_FACETS), None, None, id="graph-429"),
+        pytest.param(_StatusGraph(status=401, facets=_FACETS), None, None, id="graph-401"),
         # A 2xx body the client could not read, and a redirect, are a gateway's fault.
-        pytest.param(_StatusGraph(status=200, facets=_FACETS), None, True, id="graph-200-unread"),
-        pytest.param(_StatusGraph(status=302, facets=_FACETS), None, True, id="graph-302"),
+        pytest.param(_StatusGraph(status=200, facets=_FACETS), None, None, id="graph-200-unread"),
+        pytest.param(_StatusGraph(status=302, facets=_FACETS), None, None, id="graph-302"),
         pytest.param(
             _StatusGraph(
                 error=_chained(
@@ -857,13 +865,13 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
                 facets=_FACETS,
             ),
             None,
-            False,
+            "not_advancing",
             id="graph-not-advancing-wrapped-twice",
         ),
         pytest.param(
             _StatusGraph(error=_omitted([_IN]), facets=_FACETS),
             None,
-            False,
+            "omitted",
             id="graph-omits-a-dcid-again",
         ),
         pytest.param(
@@ -871,7 +879,7 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
             _StatusAvailability(
                 error=SdmxHttpError("refused", upstream_status=404), data=[(_IN, _KEN)]
             ),
-            False,
+            "client_refusal",
             id="availability-404",
         ),
         pytest.param(
@@ -879,7 +887,7 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
             _StatusAvailability(
                 error=SdmxHttpError("refused", upstream_status=403), data=[(_IN, _KEN)]
             ),
-            True,
+            None,
             id="availability-403",
         ),
         pytest.param(
@@ -888,21 +896,26 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
                 error=SdmxUnsupportedFilterError("TIME_PERIOD", upstream_status=None),
                 data=[(_IN, _KEN)],
             ),
-            False,
+            "client_refusal",
             id="availability-refused-before-sending",
         ),
     ],
 )
 def test_a_client_status_is_refused_for_good_and_a_server_status_is_retried(
-    graph, availability, transient, capsys
+    graph, availability, reason, capsys
 ):
     places = () if availability is not None else (_KEN,)
     store = _Store([_row(_warning([_IN]), zero=[_IN], places=places)])
 
-    assert _run(store, graph=graph, availability=availability) == int(transient)
+    assert _run(store, graph=graph, availability=availability) == int(reason is None)
 
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert failed["transient"] is transient
+    assert {key: failed[key] for key in ("reason", "refused", "transient", "conflict")} == {
+        "reason": reason,
+        "refused": reason is not None,
+        "transient": reason is None,
+        "conflict": False,
+    }
 
 
 class _StuckPagingGraph(FakeGraphReader):
@@ -935,7 +948,7 @@ def test_a_paged_read_whose_token_repeats_is_refused_for_good(capsys):
 
     assert _stored(store) == _warning([_IN])
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert (failed["refused"], failed["transient"]) == (True, False)
+    assert (failed["reason"], failed["transient"]) == ("not_advancing", False)
 
 
 def test_a_probe_timeout_is_retried_and_the_run_goes_on(monkeypatch, capsys):
@@ -973,7 +986,10 @@ def test_a_defect_fails_the_run_and_its_probe_is_kept(capsys):
     assert graph.calls["observation_facets_batch_many"] == 1
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     failed = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
-    assert [(line["refused"], line["severity"]) for line in failed] == [(False, "ERROR")] * 2
+    assert [
+        (line["reason"], line["refused"], line["transient"], line["conflict"], line["severity"])
+        for line in failed
+    ] == [(None, False, False, False, "ERROR")] * 2
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert (summary["failed"], summary["permanent"], summary["probes"]) == (2, 0, 1)
 

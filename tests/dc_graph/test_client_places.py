@@ -357,9 +357,10 @@ def test_child_places_batch_page_budget_exhausted_raises(monkeypatch) -> None:
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    with pytest.raises(GraphReadError):
+    with pytest.raises(GraphReadError) as raised:
         client.child_places_batch(["africa"], "Country")
     assert len(calls) == 2
+    assert isinstance(raised.value.__cause__, GraphNotAdvancingError)
 
 
 def test_child_places_batch_repeated_token_raises(monkeypatch) -> None:
