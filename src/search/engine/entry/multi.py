@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import functools
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
@@ -91,16 +92,19 @@ async def _stream_combined_regions(
         warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
         incomplete: list[str] = []
-        async for event in _stream_slot_options(
-            streaming_regions,
-            deadline=params.deadline,
-            warnings_out=warnings,
-            late_departures_out=late_departures,
-            incomplete_out=incomplete,
-            response=response,
-            answered=regions,
-        ):
-            yield event
+        async with aclosing(
+            _stream_slot_options(
+                streaming_regions,
+                deadline=params.deadline,
+                warnings_out=warnings,
+                late_departures_out=late_departures,
+                incomplete_out=incomplete,
+                response=response,
+                answered=regions,
+            )
+        ) as events:
+            async for event in events:
+                yield event
         if scope is not None:
             scope.note_health(trailing_incomplete=bool(incomplete))
         yield DoneEvent(

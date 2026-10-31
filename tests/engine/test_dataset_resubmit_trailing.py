@@ -25,7 +25,6 @@ from search.engine.entry.dataset_entries import _build_candidates_region
 from search.engine.entry.params import EntryParams
 from search.engine.events import DoneEvent
 from search.engine.region import RegionResult
-from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.models import (
     DatasetResubmitInput,
     ResubmitCandidate,
@@ -154,9 +153,8 @@ def test_a_degraded_part_marks_the_done_event_degraded_leg(
     assert [event.degraded_leg for event in done] == [degraded]
 
 
-@pytest.mark.parametrize("flag", ["degraded", "scope_unsettled"])
-def test_a_degraded_candidate_marks_the_done_event_degraded_leg(flag: str):
-    regions = [_stub_region(None), dataclasses.replace(_stub_region(None), **{flag: True})]
+def test_a_degraded_candidate_marks_the_done_event_degraded_leg():
+    regions = [_stub_region(None), dataclasses.replace(_stub_region(None), degraded=True)]
 
     _trailing, done = _run(regions, deadline=time.monotonic() + 30, stream=False, candidates=True)
 
@@ -172,22 +170,13 @@ def _promote(status: str, spec_id: str = "") -> RegionResult:
     )
 
 
-@pytest.mark.parametrize(
-    "flag",
-    [
-        {"degraded": True},
-        {"scope_unsettled": True},
-        {"warnings": (alternates_unevaluated_warning("timed_out"),)},
-    ],
-    ids=["degraded", "scope_unsettled", "alternates_left_out"],
-)
 @pytest.mark.parametrize("survivors", [0, 1, 2])
-def test_a_candidates_part_keeps_the_read_health_of_a_discarded_promote(survivors: int, flag: dict):
+def test_a_candidates_part_keeps_the_read_health_of_a_discarded_promote(survivors: int):
     """Each branch of `_build_candidates_region` keeps it: rebuilding a set, collapsing to a
     survivor and collapsing to no_data."""
     promoted = [
         *(_promote("definite", f"spec-{i}") for i in range(survivors)),
-        dataclasses.replace(_promote("no_data"), **flag),
+        dataclasses.replace(_promote("no_data"), degraded=True),
     ]
     entry = SimpleNamespace(
         variable_text="GDP",
@@ -199,4 +188,4 @@ def test_a_candidates_part_keeps_the_read_health_of_a_discarded_promote(survivor
 
     region = _build_candidates_region(entry, promoted, index=0)
 
-    assert region.leg_degraded is True
+    assert region.degraded is True

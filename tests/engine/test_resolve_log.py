@@ -10,10 +10,11 @@ import unicodedata
 from collections.abc import Iterator
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from dfo_platform.trace import reset_trace_id, set_trace_id
-from search.engine.core import _log_resolve, _ResolveRecord, resolve_events
+from search.engine.core import ResolveRecord, _log_resolve, resolve_events
 from search.engine.envelope import make_diagnostics, make_query_echo
 from search.engine.errors import EngineInfraError, EngineInputError
 from search.engine.events import DoneEvent, DoneTelemetry, ResponseEvent
@@ -37,9 +38,11 @@ from search.models import (
     UnsupportedPart,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import make_request, resolve_log_lines
+from tests.engine._harness import EMPTY_SDMX, make_request, parse_sse, resolve_log_lines
+from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
+_RAW_BODY = {"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}}
 _KEY = "query-key"
 _TRACE_ID = "abc123"
 _USAGE = {"input_tokens": 120, "output_tokens": 30, "cached_tokens": 0}
@@ -65,7 +68,7 @@ def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
     )
 
 
-def _logged(request: ResolveRequest, record: _ResolveRecord) -> dict:
+def _logged(request: ResolveRequest, record: ResolveRecord) -> dict:
     """The JSON object of the one line `_log_resolve` writes for `record`."""
     with resolve_log_lines() as lines:
         _log_resolve(request, record, caller=None, transport="buffered")
@@ -254,7 +257,7 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
         "catalogue": CatalogueAnswer(query_echo=_echo(), diagnostics=_diagnostics(), scope=Scope()),
         "no_response": None,
     }[family]
-    record = _ResolveRecord(response=response, done=done)
+    record = ResolveRecord(response=response, done=done)
 
     logged = _logged(request_, record)
 
@@ -273,152 +276,171 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
     assert hashlib.sha256(bare_text.encode()).hexdigest() not in json.dumps(logged)
 
 
-_NEVER = 60.0
-_SOON = 0.01
+def _client() -> TestClient:
+    graph = FakeGraph()
+    app = search_app(graph=graph, resolver=make_resolver(graph), llm=FakeLLM(), sdmx=EMPTY_SDMX)
+    return TestClient(app, raise_server_exceptions=False)
 
 
-def _ending(
-    id: str,
-    error_code: str | None,
-    timed_out: bool | None,
-    *,
-    raises: Exception | None = None,
-    cap_in: float = _NEVER,
-    responds: bool = False,
-    done: bool = False,
-    sse: bool = False,
-    unwinds_s: float = 0,
+_BOOM = RuntimeError("boom")
+_NOT_RAN = EngineInputError("no such door", code="door_not_implemented", status=501)
+
+
+@pytest.mark.parametrize("transport", ["buffered", "sse"])
+@pytest.mark.parametrize(
+    ("raises", "error_code", "timed_out"),
+    [
+        pytest.param(_NOT_RAN, "door_not_implemented", None, id="refused"),
+        pytest.param(EngineInfraError("down"), "service_unavailable", None, id="infra"),
+        pytest.param(_BOOM, "internal_error", None, id="unhandled"),
+        pytest.param(TimeoutError("past it"), "timeout", True, id="soft_deadline_failure"),
+    ],
+)
+def test_the_resolve_line_names_the_code_the_route_served(
+    monkeypatch, transport, raises, error_code, timed_out
 ):
-    return pytest.param(
-        error_code, timed_out, raises, cap_in, responds, done, sse, unwinds_s, id=id
-    )
+    async def _pipeline(*_args, **_kwargs):
+        raise raises
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
+    headers = {"Accept": "text/event-stream"} if transport == "sse" else {}
+
+    with resolve_log_lines() as lines:
+        resp = _client().post("/api/search/resolve", json=_RAW_BODY, headers=headers)
+
+    [logged] = lines
+    assert logged["transport"] == transport
+    assert logged["error_code"] == error_code
+    assert logged["timed_out"] is timed_out
+    served = parse_sse(resp.text)[-1][1] if transport == "sse" else resp.json()
+    assert served["code"] == error_code
 
 
 @pytest.mark.parametrize(
-    (
-        "error_code",
-        "timed_out",
-        "raises",
-        "cap_in",
-        "responds",
-        "done",
-        "sse",
-        "unwinds_s",
-    ),
+    ("transport", "after_done", "status", "error_code", "timed_out"),
     [
-        _ending(
-            "refused",
-            "door_not_implemented",
-            None,
-            raises=EngineInputError("no such door", code="door_not_implemented", status=501),
-        ),
-        _ending("infra", "service_unavailable", None, raises=EngineInfraError("graph down")),
-        _ending("unhandled", "internal_error", None, raises=RuntimeError("boom")),
-        _ending("soft_deadline_failure", "timeout", True, raises=TimeoutError("past it")),
-        _ending("hard_cap", "timeout", True, cap_in=_SOON),
-        _ending("disconnect", "cancelled", None),
-        _ending("disconnect_after_response", "cancelled", None, responds=True),
-        _ending("disconnect_crossing_the_cap", "cancelled", None, cap_in=0.02, unwinds_s=0.5),
-        _ending("sse_cap_after_done", None, False, cap_in=_SOON, done=True, sse=True),
-        _ending("sse_teardown_after_done", None, False, done=True, sse=True),
-        _ending(
-            "sse_failure_after_done", None, False, raises=RuntimeError("boom"), done=True, sse=True
-        ),
-        _ending("buffered_cap_after_done", "timeout", True, cap_in=_SOON, done=True),
-        _ending(
-            "buffered_failure_after_done",
-            "internal_error",
-            False,
-            raises=RuntimeError("boom"),
-            done=True,
-        ),
+        pytest.param("buffered", "raises", 500, "internal_error", False, id="buffered_failure"),
+        pytest.param("buffered", "stalls", 504, "timeout", True, id="buffered_hard_cap"),
+        pytest.param("sse", "raises", 200, None, False, id="sse_failure"),
+        pytest.param("sse", "stalls", 200, None, False, id="sse_hard_cap"),
     ],
 )
-def test_the_resolve_line_says_how_a_cut_request_ended(
-    monkeypatch, error_code, timed_out, raises, cap_in, responds, done, sse, unwinds_s
+def test_what_follows_done_ends_the_request_only_where_the_client_lacks_its_answer(
+    monkeypatch, search_settings, transport, after_done, status, error_code, timed_out
 ):
-    """A request that raises ends with it. One that does not stalls until the cap fires or,
-    when no cap is due, its task is cancelled."""
-    stalled = asyncio.Event()
+    """An SSE client already holds `done`. A buffered client holds nothing yet."""
+    search_settings(request_timeout_s=0.05, finalise_grace_s=0.05)
 
     async def _pipeline(*_args, **_kwargs):
-        if responds:
-            yield ResponseEvent(response=_resolution([_NO_DATA]))
-        if done:
-            yield _done()
-        if raises is not None:
-            raise raises
-        stalled.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await asyncio.sleep(unwinds_s)
+        yield ResponseEvent(response=_resolution([_NO_DATA]))
+        yield _done()
+        if after_done == "raises":
+            raise _BOOM
+        await asyncio.sleep(5)
 
     monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
-    graph = FakeGraph()
-
-    async def _capped() -> None:
-        async with asyncio.timeout(cap_in) as cap:
-            async for _event in resolve_events(
-                make_request("q"),
-                graph=graph,
-                resolver=make_resolver(graph),
-                llm=FakeLLM(),
-                sdmx=FakeSdmxClient(),
-                stream_slot_options=sse,
-                hard_cap=cap,
-            ):
-                pass
-
-    async def _run() -> None:
-        request = asyncio.create_task(_capped())
-        await asyncio.wait(
-            {request, asyncio.create_task(stalled.wait())},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if cap_in != _SOON:
-            request.cancel()
-        await asyncio.gather(request, return_exceptions=True)
+    headers = {"Accept": "text/event-stream"} if transport == "sse" else {}
 
     with resolve_log_lines() as lines:
-        asyncio.run(_run())
+        resp = _client().post("/api/search/resolve", json=_RAW_BODY, headers=headers)
 
+    assert resp.status_code == status
     [logged] = lines
+    assert logged["outcome"] == "no_data"
     assert logged["error_code"] == error_code
     assert logged["timed_out"] is timed_out
-    assert logged["outcome"] == ("no_data" if responds else None)
 
 
-def test_a_request_closed_at_a_yield_logs_after_the_pipeline_finished(monkeypatch):
-    """Closing the stream closes the pipeline first, so its `finally` reaches the line."""
-    events: list[str] = []
+def test_a_failure_in_the_route_s_own_work_after_the_pipeline_reads_on_the_line(monkeypatch):
+    def _failing_response(*_args, **_kwargs):
+        raise _BOOM
+
+    monkeypatch.setattr("search.engine.app.JSONResponse", _failing_response)
+
+    with resolve_log_lines() as lines:
+        resp = _client().post("/api/search/resolve", json=_RAW_BODY)
+
+    assert resp.status_code == 500
+    [logged] = lines
+    assert logged["outcome"] is not None
+    assert logged["error_code"] == "internal_error"
+
+
+def test_a_failure_classification_cannot_finish_still_reads_as_a_failure(monkeypatch):
+    def _broken(_exc):
+        raise ValueError("no classification")
+
+    async def _pipeline(*_args, **_kwargs):
+        raise _BOOM
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr("search.engine.core.served_problem", _broken)
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
+
+    with resolve_log_lines() as lines:
+        resp = _client().post("/api/search/resolve", json=_RAW_BODY)
+
+    assert resp.status_code == 500
+    [logged] = lines
+    assert logged["error_code"] == "internal_error"
+
+
+@pytest.mark.parametrize("transport", ["buffered", "sse"])
+def test_a_log_line_that_raises_leaves_the_response_standing(monkeypatch, transport):
+    def _raising_log_line(*_args, **_kwargs):
+        raise ValueError("simulated log failure")
+
+    monkeypatch.setattr("search.engine.core._log_resolve", _raising_log_line)
+    headers = {"Accept": "text/event-stream"} if transport == "sse" else {}
+
+    resp = _client().post("/api/search/resolve", json=_RAW_BODY, headers=headers)
+
+    assert resp.status_code == 200
+    if transport == "sse":
+        assert parse_sse(resp.text)[-1][0] == "done"
+
+
+def test_a_stream_closed_at_a_yield_closes_the_pipeline_first(monkeypatch):
+    """A consumer's close runs the pipeline's `finally` before the stream's own cleanup, and
+    is no ending of the request."""
+    closed: list[str] = []
 
     async def _pipeline(*_args, record, **_kwargs):
         try:
             yield _done()
         finally:
             record.cache = "miss"
-            events.append("pipeline")
+            closed.append("pipeline")
+
+    class _ClosingGraph(FakeGraph):
+        def close(self):
+            closed.append("graph")
+
+    class _OwnGraph:
+        @staticmethod
+        def from_search_settings(*_args, **_kwargs):
+            return _ClosingGraph()
 
     monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
-    graph = FakeGraph()
+    monkeypatch.setattr("search.engine.core.LiveGraphClient", _OwnGraph)
+    record = ResolveRecord()
 
     async def _run() -> None:
         stream = resolve_events(
             make_request("q"),
-            graph=graph,
-            resolver=make_resolver(graph),
+            resolver=make_resolver(FakeGraph()),
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(),
+            record=record,
         )
         await anext(stream)
         await stream.aclose()
 
-    with resolve_log_lines() as lines:
-        asyncio.run(_run())
+    asyncio.run(_run())
 
-    [logged] = lines
-    assert logged["cache"] == "miss"
+    assert closed == ["pipeline", "graph"]
+    assert (record.cache, record.error_code) == ("miss", None)
 
 
 def test_a_request_cancelled_in_the_cache_lookup_reports_its_cache(monkeypatch, search_settings):
@@ -431,6 +453,7 @@ def test_a_request_cancelled_in_the_cache_lookup_reports_its_cache(monkeypatch, 
 
     monkeypatch.setattr(CacheScope, "lookup_raw", _stalled_lookup)
     graph = FakeGraph()
+    record = ResolveRecord()
 
     async def _drain() -> None:
         async for _event in resolve_events(
@@ -440,6 +463,7 @@ def test_a_request_cancelled_in_the_cache_lookup_reports_its_cache(monkeypatch, 
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(),
             response_cache=ResponseCache(),
+            record=record,
         ):
             pass
 
@@ -449,9 +473,6 @@ def test_a_request_cancelled_in_the_cache_lookup_reports_its_cache(monkeypatch, 
         request.cancel()
         await asyncio.gather(request, return_exceptions=True)
 
-    with resolve_log_lines() as lines:
-        asyncio.run(_run())
+    asyncio.run(_run())
 
-    [logged] = lines
-    assert logged["cache"] == "miss"
-    assert logged["error_code"] == "cancelled"
+    assert record.cache == "miss"

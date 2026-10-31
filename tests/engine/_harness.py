@@ -36,7 +36,7 @@ from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, RoleFacetIndex
-from search.engine.core import resolve_async, resolve_events
+from search.engine.core import ResolveRecord, resolve_async, resolve_events
 from search.engine.errors import GraphInfraError
 from search.engine.events import Event
 from search.engine.extract import DateRequest
@@ -1020,6 +1020,7 @@ def offline_resolve(
     rate_cache: RateTableCache | None = None,
     part_memo: PartMemo | None = None,
     binder: Binder | None = None,
+    record: ResolveRecord | None = None,
 ) -> ResolveResponse:
     """Run `resolve_async` with fake clients and a fixed extraction date.
 
@@ -1037,7 +1038,8 @@ def offline_resolve(
     without network access.
 
     Pass `rate_cache` for request-form unit conversion; that path raises before
-    fetching without it. Pass `part_memo` to serve resubmitted identities from it.
+    fetching without it. Pass `part_memo` to serve resubmitted identities from it, and
+    `record` to read what the request's log line would report.
 
     A dataset_resubmit over a fixture graph with no `materialise_graph` walks the mint's
     member enumeration over that graph's nodes (`member_walk_reader`), as a resubmit elects
@@ -1056,6 +1058,7 @@ def offline_resolve(
                 rate_cache=rate_cache,
                 part_memo=part_memo,
                 binder=binder,
+                record=record,
             )
         )
 

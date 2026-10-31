@@ -191,7 +191,7 @@ def classify_default(exc: BaseException) -> ProblemSpec:
     Surface classifiers use this when they return `None`."""
     if isinstance(exc, asyncio.TimeoutError):
         _logger.error("Request timed out")
-    elif not isinstance(exc, (RequestValidationError, StarletteHTTPException)):
+    elif not isinstance(exc, _DEFAULT_EXCEPTION_TYPES):
         _logger.error("Unhandled platform error: %s", exc, exc_info=exc)
     return default_problem(exc)
 

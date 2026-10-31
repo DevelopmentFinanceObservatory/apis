@@ -14,6 +14,10 @@ pass runs, so `pipeline._fill_gap` notes them then, and a place-options scope's 
 (`place_options.build_place_options_events`) mark only its options, which the response bundle
 does not hold.
 
+The record spans every pass of a resolution, so a fact noted in a pass reaches the region
+whichever pass answers. A party reading abandoned for the reading without party words hands its
+reads to that reading (`pipeline.resolve_variable`).
+
 Only a read that was made and lost is noted. A fact left unknown because no read was made for
 it is not: a one-shape bind menu skips the availability read over a named set's places
 (`phase_rank_bind._phase_prune_and_rank`), so that shape's availability there is unknown,

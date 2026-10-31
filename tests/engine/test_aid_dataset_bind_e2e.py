@@ -924,6 +924,52 @@ def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
 
 
 @pytest.mark.parametrize(
+    ("fact", "read"),
+    [
+        pytest.param("scope", "default scope presence", id="default-scope-unsettled"),
+        pytest.param("alternate", "alternate presence", id="alternate-left-unevaluated"),
+    ],
+)
+def test_a_party_reading_dropped_after_its_answer_marks_the_reply_degraded(
+    monkeypatch: pytest.MonkeyPatch, fact: str, read: str
+):
+    """What the first reading could not settle holds for this request only, whichever reading
+    answers, so the resolution without party words notes it again."""
+    _party_coverage(monkeypatch, from_the_party=False)
+    noted: list[str] = []
+    note = pipeline_module.note_degraded_read
+
+    def noting(lost: str) -> None:
+        noted.append(lost)
+        note(lost)
+
+    stating = pipeline_module._stating_unevaluated
+
+    def leaving_an_alternate(result, state):
+        if fact == "alternate" and not state.party_words_off:
+            state.unevaluated_alternates = True
+            state.alternates_presence_failure = "timed_out"
+        return stating(result, state)
+
+    monkeypatch.setattr(pipeline_module, "note_degraded_read", noting)
+    monkeypatch.setattr(pipeline_module, "_stating_unevaluated", leaving_an_alternate)
+    monkeypatch.setattr(
+        pipeline_module,
+        "_scope_unsettled",
+        lambda state: fact == "scope" and not state.party_words_off,
+    )
+    variable = "multilateral ODA"
+
+    _resolve_scripted(
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable),
+        graph=_party_graph(variable, "ODA"),
+    )
+
+    assert noted == [read, read]
+
+
+@pytest.mark.parametrize(
     ("variable", "from_the_party"),
     [
         pytest.param("multilateral ODA", True, id="stands"),

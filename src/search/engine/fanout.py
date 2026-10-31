@@ -10,7 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
@@ -110,19 +110,10 @@ class _FanOutResult:
 
     regions: list[RegionResult] = field(default_factory=list)
     timed_out: bool = False
-    # True when a leg's answer is weaker than its response part shows. A consumer that must
-    # tell a transient upstream failure from a settled negative one, such as the response
-    # cache deciding what is safe to store, reads this flag instead of the response body.
-    # It is True when:
-    # - a leg's exception, other than an EngineInfraError or a RATE_TABLE_REFUSALS member,
-    #   was swallowed into a `_placeholder_no_data` result under `degrade_on_error`, which
-    #   looks like a genuine no_data answer (`RegionResult.degraded`);
-    # - a leg's answer states `alternates_unevaluated` (`RegionResult.alternates_left_out`)
-    #   because an alternate lacked a presence read;
-    # - a presence read left a StatVar's default scope unsettled
-    #   (`RegionResult.scope_unsettled`);
-    # - a leg swallowed a graph read failure (`RegionResult.degraded`).
-    # The deadline backfill is reported by `timed_out` and does not set it.
+    # True when a leg's answer is weaker than its response part shows (`RegionResult.degraded`).
+    # A consumer that must tell a transient upstream failure from a settled negative one, such
+    # as the response cache deciding what is safe to store, reads this flag instead of the
+    # response body. The deadline backfill is reported by `timed_out` and does not set it.
     degraded_leg: bool = False
 
 
@@ -322,14 +313,15 @@ def _placeholder_no_data(
     operations: tuple[Operation, ...] = (),
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
+    degraded: bool = False,
 ) -> RegionResult:
     """Build a `no_data` result for a leg with no answer of its own: `timed_out` for one
     the soft deadline cut short, `variable_not_resolved` for one whose error was swallowed.
 
     Its restatement and operations use the leg's own inputs. The door's axis map supplies
     entity roles; without an axis, a non-empty `role_query` makes direction
-    uncertain and suppresses the echo. A placeholder is `degraded` unless the deadline cut it,
-    which `timed_out` reports.
+    uncertain and suppresses the echo. `degraded` marks a swallowed error, which reads as a
+    real miss. The deadline's cut is reported by `timed_out`.
     """
     restatement = _leg_restatement(
         variable,
@@ -356,7 +348,7 @@ def _placeholder_no_data(
         restatement=restatement,
         operations=operations,
         separate=separate,
-        degraded=reason != "timed_out",
+        degraded=degraded,
     )
 
 
@@ -598,6 +590,7 @@ async def _stream_one_variable(
             operations=operations,
             open_axes=open_axes,
             separate=separate,
+            degraded=True,
         )
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
@@ -977,7 +970,7 @@ def _handle_fanout_item(
     """
     if isinstance(item, _RegionDone):
         progress.results[item.index] = item.region
-        if item.region.leg_degraded:
+        if item.region.degraded:
             progress.degraded_leg = True
         progress.n_pending -= 1
         return None
@@ -1043,7 +1036,7 @@ async def _run_variables_streaming(
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
     door: EntryPath = "parsed",
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     """Run one task per variable and yield each leg's events as they arrive.
 
     The deadline and caller-initiated close cancel unfinished legs. Any

@@ -1399,6 +1399,7 @@ def test_done_carries_the_departures_a_streamed_read_adds(projected_count, late)
         return late_departures
 
     done = DoneEvent(
+        degraded_leg=False,
         elapsed_ms=1,
         trace_id="t",
         telemetry=DoneTelemetry(),

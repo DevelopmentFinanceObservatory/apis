@@ -24,7 +24,7 @@ import rfc8785
 from pydantic import TypeAdapter
 
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
-from search.engine.events import DoneEvent, Event, ResponseEvent
+from search.engine.events import STORED_DONE_CONTEXT, DoneEvent, Event, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
@@ -524,7 +524,7 @@ class StoredBundle(NamedTuple):
 
 def from_bundle(entry: bytes) -> StoredBundle:
     """Revalidate a stored bundle: a `response` event, the trailing events, a `done` event."""
-    events = _BUNDLE_ADAPTER.validate_json(entry)
+    events = _BUNDLE_ADAPTER.validate_json(entry, context=STORED_DONE_CONTEXT)
     response, done = events[0], events[-1]
     assert isinstance(response, ResponseEvent) and isinstance(done, DoneEvent)
     return StoredBundle(response=response, trailing=events[1:-1], done=done)
@@ -625,10 +625,9 @@ def is_storable(
 def is_region_storable(region: RegionResult, *, refused_at_build: frozenset[str]) -> bool:
     """Return whether a resubmitted identity's region is complete and safe to memoise.
 
-    Reject a region that is a degraded leg (`RegionResult.leg_degraded`: it swallowed a read
-    failure, a presence read left its default scope unsettled, or it left an alternate
-    unevaluated), or that carries a warning `is_storable` rejects under `refused_at_build`."""
+    Reject a region that swallowed a read failure (`RegionResult.degraded`), or that carries
+    a warning `is_storable` rejects under `refused_at_build`."""
     return not (
-        region.leg_degraded
+        region.degraded
         or _has_unstorable_warning(region.warnings, refused_at_build=refused_at_build)
     )

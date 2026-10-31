@@ -30,7 +30,7 @@ from search.engine.spec_build import build_unsupported_definition
 from search.models import RawTextInput, Resolution, ResolveRequest
 from tests.conftest import OfflineContractViolation
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import EMPTY_SDMX, resolve_log_lines
+from tests.engine._harness import EMPTY_SDMX
 from tests.engine._options_fixtures import _options_request
 from tests.engine.test_llm_transport import install_scripted_models
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
@@ -151,16 +151,12 @@ class TestResolveAsyncLifecycle:
 
         assert len(closed_instances) == 1
 
-    @pytest.mark.parametrize("log_line", ["logs", "raises"])
     @pytest.mark.parametrize("raising", ["pipeline", "coverage_snapshot"])
-    def test_both_self_built_clients_close_once_when_pipeline_raises(
-        self, monkeypatch, raising, log_line
-    ):
+    def test_both_self_built_clients_close_once_when_pipeline_raises(self, monkeypatch, raising):
         """Cleanup when both clients are self-built and the pipeline, or the coverage
         snapshot read before it, raises: the branch a reordering of the two close() calls,
         or an early return or read added ahead of them, would silently break. The shared
-        resolvekit is released once too. A log line that raises neither replaces the
-        request's own failure nor skips the cleanup."""
+        resolvekit is released once too."""
         graph_closes: list[bool] = []
         sdmx_closes: list[bool] = []
 
@@ -195,12 +191,6 @@ class TestResolveAsyncLifecycle:
 
         monkeypatch.setattr("search.engine.core.release_shared", _release)
 
-        def _raising_log_line(*_args, **_kwargs):
-            raise ValueError("simulated log failure")
-
-        if log_line == "raises":
-            monkeypatch.setattr("search.engine.core._log_resolve", _raising_log_line)
-
         class _FakeLiveGraphClientClass:
             @staticmethod
             def from_search_settings(*_args, **_kwargs):
@@ -217,7 +207,7 @@ class TestResolveAsyncLifecycle:
         assert sdmx_closes == [True]
         assert len(released) == 1
 
-    def test_a_setup_failure_closes_the_graph_built_before_it_and_logs_the_line(self):
+    def test_a_setup_failure_closes_the_graph_built_before_it(self):
         """Setup builds the clients one by one, so the first can outlive a failure in the next."""
         closes: list[bool] = []
 
@@ -233,14 +223,11 @@ class TestResolveAsyncLifecycle:
         with (
             patch("search.engine.core.LiveGraphClient", new=_FakeLiveGraphClientClass),
             patch("search.engine.core.LiveSdmxClient", side_effect=RuntimeError("no sdmx")),
-            resolve_log_lines() as lines,
             pytest.raises(RuntimeError, match="no sdmx"),
         ):
             _run("health ODA grants from USA to Ethiopia", graph=None, sdmx=None)
 
         assert closes == [True]
-        [logged] = lines
-        assert logged["error_code"] == "internal_error"
 
 
 def test_lifespan_leaves_the_search_logger_to_propagate_to_root():

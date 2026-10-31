@@ -1232,10 +1232,23 @@ def test_the_hard_cap_reads_as_a_timeout_on_the_resolve_line(
     assert logged["outcome"] is None
 
 
-def test_a_client_disconnect_reads_as_cancelled_under_the_request_trace_id(monkeypatch):
+@pytest.mark.parametrize("unwinds_s", [0, 0.2], ids=["before_the_cap", "crossing_the_cap"])
+def test_a_client_disconnect_reads_as_cancelled_under_the_request_trace_id(
+    monkeypatch, search_settings, unwinds_s
+):
     """A disconnect unwinds the pipeline in the stream's producer task, whose copied context
-    still holds the id the response header carries."""
-    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _stalled_pipeline)
+    still holds the id the response header carries. One still unwinding when the hard cap
+    fires stays a disconnect, as `asyncio.timeout` decides."""
+    search_settings(request_timeout_s=0.05, finalise_grace_s=0.05)
+
+    async def _slowly_cut_pipeline(*_args: object, **_kwargs: object):
+        try:
+            await asyncio.sleep(5)
+        finally:
+            await asyncio.shield(asyncio.sleep(unwinds_s))
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _slowly_cut_pipeline)
     app = make_client().app
     body = json.dumps({"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}})
     started = asyncio.Event()

@@ -95,7 +95,7 @@ def test_non_infra_exception_under_degrade_sets_degraded_leg():
     assert out.degraded_leg is True
     assert out.regions[0].status == "no_data"
     assert out.regions[0].no_data_reason == "variable_not_resolved"
-    assert [region.leg_degraded for region in out.regions] == [True, False]
+    assert [region.degraded for region in out.regions] == [True, False]
 
 
 def test_clean_multi_variable_run_leaves_degraded_leg_false():
@@ -122,15 +122,13 @@ def test_clean_multi_variable_run_leaves_degraded_leg_false():
     assert out.timed_out is False
 
 
-@pytest.mark.parametrize("field", ["scope_unsettled", "degraded"])
-def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg(field: str):
-    """A leg read over a countries fallback that holds for this request only
-    (`RegionResult.scope_unsettled`), or one that swallowed a member walk's failed read
-    (`RegionResult.degraded`), is degraded, so the response is not cached."""
+def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg():
+    """A leg that swallowed a member walk's failed read (`RegionResult.degraded`) is degraded,
+    so the response is not cached."""
 
     async def _stub_resolve_variable(variable: str, **kwargs: object) -> RegionResult:
         region = _no_data_region(variable)
-        return dataclasses.replace(region, **{field: kwargs["variable_index"] == 1})
+        return dataclasses.replace(region, degraded=kwargs["variable_index"] == 1)
 
     async def _scenario() -> _FanOutResult:
         out = _FanOutResult()

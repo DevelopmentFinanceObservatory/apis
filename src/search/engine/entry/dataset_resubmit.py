@@ -57,7 +57,7 @@ posted one asking for the latest year reads the year its tables elect, as a comp
 (`scope.provider.elect_latest_window`).
 
 A part whose answer stands on less than a later request may read
-(`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
+(`RegionResult.degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
 
 Four task-creation sites register trailing handles with the request scope, whose
 `core.resolve_events` cleanup cancels and awaits unclaimed tasks on exit. Parsed
@@ -616,7 +616,7 @@ async def handle(
     trailing_deadline = max(
         [params.deadline, *(r.reads_deadline for r in regions if r.reads_deadline is not None)]
     )
-    degraded_leg = any(region.leg_degraded for region in regions)
+    degraded_leg = any(region.degraded for region in regions)
 
     # Candidate regions carry the posted ordering override for the combiner.
     echo = QueryEcho(
@@ -654,17 +654,20 @@ async def handle(
             yield event
         slot_options_warnings: list[Warning] = []
         late_departures: list[LateDepartures] = []
-        async for ev in _stream_slot_options(
-            [region],
-            deadline=trailing_deadline,
-            warnings_out=slot_options_warnings,
-            late_departures_out=late_departures,
-            # This door stores no response bundle, so its trailing losses need no report.
-            incomplete_out=[],
-            response=response,
-            answered=[region],
-        ):
-            yield ev
+        async with aclosing(
+            _stream_slot_options(
+                [region],
+                deadline=trailing_deadline,
+                warnings_out=slot_options_warnings,
+                late_departures_out=late_departures,
+                # This door stores no response bundle, so its trailing losses need no report.
+                incomplete_out=[],
+                response=response,
+                answered=[region],
+            )
+        ) as events:
+            async for ev in events:
+                yield ev
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=False,

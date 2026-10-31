@@ -2820,6 +2820,7 @@ def test_an_unevaluated_alternate_leaves_the_elected_answer_standing_and_stated(
     assert _states_unevaluated(answer, reason)
     assert reasons[0] == {1: reason}
     assert answer.alternates_left_out
+    assert answer.degraded
     assert _untraced(_without_unevaluated(scenarios._projection(answer))) == _untraced(
         scenarios._projection(scenarios._resolve(without_alternate))
     )

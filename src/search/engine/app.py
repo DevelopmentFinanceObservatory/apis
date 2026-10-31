@@ -27,7 +27,13 @@ import functools
 import logging
 import time
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager
+from contextlib import (
+    AbstractContextManager,
+    AsyncExitStack,
+    ExitStack,
+    asynccontextmanager,
+    contextmanager,
+)
 from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
@@ -86,7 +92,14 @@ from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.clients.sdmx_cache import CachingSdmxClient
 from search.engine.codes import CODE_CATALOG, SEARCH_CODE_CATALOGUE
 from search.engine.config import SEARCH_UNIMPLEMENTED_DOORS, settings
-from search.engine.core import ResolveHealth, request_budget, resolve_async, resolve_events
+from search.engine.core import (
+    ResolveHealth,
+    ResolveRecord,
+    request_budget,
+    resolve_async,
+    resolve_events,
+    resolve_line,
+)
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.deps import (
@@ -192,7 +205,7 @@ _SENTINEL = object()
 
 
 async def _event_source(
-    open_stream: Callable[..., AsyncIterator[Event]], *, hard_deadline: float
+    stream: AsyncIterator[Event], *, hard_deadline: float, line: AbstractContextManager[None]
 ) -> AsyncIterator[str]:
     """Merge events with 10-second heartbeat comments. Stop at the terminal event and cancel
     both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
@@ -200,16 +213,18 @@ async def _event_source(
     `hard_deadline`, an absolute `time.monotonic()` value, caps the stream. The producer
     cancels the pipeline then and ends the stream with the 504 `timeout` error event. It also
     bounds every read the pipeline makes (`request_deadline`). The cap wraps the producer's
-    loop, so it never fires inside a `yield` the consumer resumes. `open_stream` takes the
-    cap as `hard_cap`, so the pipeline can tell it from any other cancellation.
+    loop, so it never fires inside a `yield` the consumer resumes.
+
+    `line` writes the request's `resolve` log line (`resolve_line`). It wraps the cap, so it
+    sees what the stream ended with.
     """
     queue: asyncio.Queue[object] = asyncio.Queue()
 
     async def produce() -> None:
         try:
-            with request_deadline(hard_deadline):
-                async with asyncio.timeout(hard_deadline - time.monotonic()) as cap:
-                    async for ev in open_stream(hard_cap=cap):
+            with line, request_deadline(hard_deadline):
+                async with asyncio.timeout(hard_deadline - time.monotonic()):
+                    async for ev in stream:
                         await queue.put(ev)
         except Exception as exc:
             # This is the sole conversion of a pipeline failure into a terminal ErrorEvent.
@@ -363,7 +378,6 @@ class _PipelineDeps(TypedDict):
     response_cache: ResponseCache | None
     part_memo: PartMemo | None
     generation: GenerationProvider
-    caller: str | None
 
 
 async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
@@ -406,20 +420,22 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
         "response_cache": deps.response_cache,
         "part_memo": deps.part_memo,
         "generation": deps.generation,
-        "caller": request.headers.get("user-agent"),
     }
 
     # The soft deadline and the hard cap share this start.
     budget = request_budget(kind=body.input.kind)
+    record = ResolveRecord()
+    caller = request.headers.get("user-agent")
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
     if _accepts_sse(request):
         return StreamingResponse(
             _event_source(
-                functools.partial(
-                    resolve_events, body, stream_slot_options=True, budget=budget, **pipeline_deps
+                resolve_events(
+                    body, stream_slot_options=True, budget=budget, record=record, **pipeline_deps
                 ),
                 hard_deadline=budget.hard,
+                line=resolve_line(body, record, caller=caller, transport="sse"),
             ),
             media_type="text/event-stream",
             headers={
@@ -434,14 +450,17 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     # The soft deadline returns a partial response first. The hard cap, finalise_grace_s
     # later, ends a request whose unfinished work does not unwind in time.
     health = ResolveHealth()
-    with request_deadline(budget.hard):
-        async with asyncio.timeout(budget.hard - time.monotonic()) as cap:
+    with (
+        resolve_line(body, record, caller=caller, transport="buffered"),
+        request_deadline(budget.hard),
+    ):
+        async with asyncio.timeout(budget.hard - time.monotonic()):
             result: ResolveResponse = await resolve_async(
-                body, health=health, budget=budget, hard_cap=cap, **pipeline_deps
+                body, health=health, budget=budget, record=record, **pipeline_deps
             )
-    # The degraded-leg flag rides in a header so the body contract stays unchanged.
-    headers = {DEGRADED_LEG_HEADER: "1"} if health.degraded_leg else None
-    return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
+        # The degraded-leg flag rides in a header so the body contract stays unchanged.
+        headers = {DEGRADED_LEG_HEADER: "1"} if health.degraded_leg else None
+        return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
 async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:

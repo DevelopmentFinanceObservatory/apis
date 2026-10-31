@@ -42,7 +42,7 @@ from search.engine.extract import DateRequest
 from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
-from search.engine.region.codes import UN_SYSTEM_UNAVAILABLE
+from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -83,7 +83,6 @@ from search.engine.region.result import (
     RegionResult,
     every_member_phrases,
     with_composite_answer,
-    with_leg_health_of,
 )
 from search.engine.region.source_choice import (
     allows_un_system,
@@ -693,11 +692,12 @@ def _union(entries: Iterable[Entry]) -> list[Entry]:
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, stating `alternates_unevaluated` when the pass left an alternate
     unevaluated, on every path that reached admission, a capped alternate's refusal
-    included. The warning alone marks the result as leaving an alternate out
-    (`RegionResult.alternates_left_out`), which keeps it out of the response cache."""
+    included. The read is noted as lost, which keeps the part out of the response cache
+    whichever pass answers it."""
     if not state.unevaluated_alternates:
         return result
     assert state.alternates_presence_failure is not None
+    note_degraded_read("alternate presence")
     warning = alternates_unevaluated_warning(state.alternates_presence_failure)
     return dataclasses.replace(result, warnings=(*result.warnings, warning))
 
@@ -850,13 +850,16 @@ async def _fill_gap(
     other = result if chosen is second else second
     # The dropped answer's trailing reads serve a Spec the response never names.
     await _cancel_trailing_tasks([other])
-    return with_leg_health_of(
-        dataclasses.replace(
-            chosen,
-            timing_by_step=timing,
-            llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
-        ),
-        [other],
+    carried = (
+        ()
+        if chosen.alternates_left_out
+        else tuple(w for w in other.warnings if w.code == ALTERNATES_UNEVALUATED)
+    )
+    return dataclasses.replace(
+        chosen,
+        warnings=(*chosen.warnings, *carried),
+        timing_by_step=timing,
+        llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
     )
 
 
@@ -1029,6 +1032,8 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
                     log_would_refuse(state, result)
+                    if _scope_unsettled(state):
+                        note_degraded_read("default scope presence")
                     result = _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(
@@ -1037,7 +1042,6 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                             admitted_qualifier_phrases=admitted,
                             every_member_axes=frozenset(every_member.values()),
                             timing_by_step={**result.timing_by_step, **unbooked},
-                            scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
                             entity_refs=bound_entity_refs(state),
                             listed_axes=frozenset(state.whole_listed.values()),
@@ -1100,8 +1104,9 @@ def _refused_pinned_phrases(state: ResolveState, result: RegionResult) -> frozen
 
 
 def _scope_unsettled(state: ResolveState) -> bool:
-    """Whether the pass's default-scope presence read left a StatVar's scope unsettled
-    (`RegionResult.scope_unsettled`)."""
+    """Whether the pass's default-scope presence read left a StatVar's scope unsettled: its
+    countries fallback holds for this request only, and a later request may read it over
+    every place with data."""
     return state.default_presence is not None and bool(state.default_presence.unsettled)
 
 

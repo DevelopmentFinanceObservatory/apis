@@ -63,7 +63,7 @@ RATE_TABLE_REFUSALS = (
 )
 """Conversion-table failures that refuse the whole request on every door: an
 inadmissible table or base year (501 `capability_unavailable`) or a table version
-that moved mid-load (503, retryable). `classify_search_exception` maps them, and a
+that moved mid-load (503, retryable). `search_problem` maps them, and a
 degrading fan-out re-raises them as it does `EngineInfraError`."""
 
 UPSTREAM_READ_ERRORS = (
@@ -134,7 +134,7 @@ def search_problem(exc: BaseException) -> ProblemSpec | None:
                 )
         return problem
     if isinstance(exc, TimeoutError):
-        return ProblemSpec(status=504, code="timeout", retryable=True)
+        return refusal.render_timeout_refusal()
     return None
 
 
