@@ -75,7 +75,6 @@ from materialise.facets import (
     fetch_role_bindings,
     joint_dispatch_facet_ids,
     joint_matches,
-    overlaps_window,
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
@@ -1203,6 +1202,18 @@ def _probe_member(
         window=request.window,
         deadline=deadline,
     )
+
+
+def reads_absent_as_zero(
+    selections: Mapping[str, FacetSelection], absent_reads_zero: Callable[[str], bool] | None
+) -> bool:
+    """Whether a group's members holding no observation in the requested years go unreported:
+    `selections` dispatch one provenance and `absent_reads_zero` says it reads an absent
+    member as zero (`code_index.members.absent_member_reads_zero`). Without
+    `absent_reads_zero` every provenance reads unknown. The mint (`pipeline.materialise_group`)
+    and the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
+    served = dispatched_provenances(selections)
+    return absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
 
 
 def dispatched_provenances(selections: Mapping[str, FacetSelection]) -> list[str]:
@@ -2453,20 +2464,16 @@ def _plan_group_members(
         )
         for index in range(len(requests))
     ]
-    window = requests[0].window
-    # Each uncounted member's dcid, and whether a facet it matches holds a point in the window.
+    # Each member's dcid and how it is left out, `None` when it is counted or unpopulated.
     uncounted = [
-        (request.stat_var, any(overlaps_window(facet, window=window) for facet in matches))
-        for index, (request, probe) in enumerate(zip(requests, probes, strict=True))
-        if index not in election.members
-        and (matches := joint_matches(probe.candidates, selections))
+        (request.stat_var, kind) for request, kind in zip(requests, group.uncounted, strict=True)
     ]
     return _GroupPlan(
         selections=selections,
         plans=plans,
-        off_cadence_members=tuple(ref for ref, in_window in uncounted if in_window),
-        out_of_window_members=tuple(ref for ref, in_window in uncounted if not in_window),
-        unserved_members=tuple(requests[index].stat_var for index in group.unserved),
+        off_cadence_members=tuple(ref for ref, kind in uncounted if kind == "off_cadence"),
+        out_of_window_members=tuple(ref for ref, kind in uncounted if kind == "out_of_window"),
+        unserved_members=tuple(ref for ref, kind in uncounted if kind == "unserved"),
     )
 
 

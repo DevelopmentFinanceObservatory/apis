@@ -34,6 +34,7 @@ from dc_graph.errors import (
     GraphCapExceededError,
     GraphDeadlineExceededError,
     GraphNotAdvancingError,
+    GraphOmittedDcidsError,
     GraphReadError,
     ReadErrorFactory,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "GraphClient",
     "GraphDeadlineExceededError",
     "GraphNotAdvancingError",
+    "GraphOmittedDcidsError",
     "GraphReadError",
     "ProvenanceRefresh",
     "ReadErrorFactory",

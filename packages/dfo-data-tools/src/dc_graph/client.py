@@ -39,6 +39,7 @@ from dc_graph.errors import (
     GraphCapExceededError,
     GraphDeadlineExceededError,
     GraphNotAdvancingError,
+    GraphOmittedDcidsError,
     GraphReadError,
     ReadErrorFactory,
 )
@@ -1098,10 +1099,12 @@ class GraphClient:
             retry_data = self._post_node_arcs_batch(suspects, deadline=deadline)
             unanswered = [dcid for dcid in suspects if dcid not in retry_data]
             if unanswered:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph /v2/node omitted {unanswered!r} from both the initial batch "
-                    "and a single-dcid retry"
+                    "and a single-dcid retry",
+                    dcids=unanswered,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             read_alone = len(suspects) == 1
             for dcid in suspects:
                 arcs = (
@@ -1290,10 +1293,12 @@ class GraphClient:
             retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
             still_missing = [dcid for dcid in suspects if dcid not in retry_data]
             if still_missing:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph omitted {still_missing!r} from /v2/node data even after a "
-                    "re-request scoped to just those dcids"
+                    "re-request scoped to just those dcids",
+                    dcids=still_missing,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             still_empty: list[str] = []
             for dcid in suspects:
                 retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
@@ -1311,10 +1316,12 @@ class GraphClient:
             for dcid in to_probe:
                 probe_data = self._post_node_arcs([dcid], properties=properties, deadline=deadline)
                 if dcid not in probe_data:
-                    raise self._read_error_cls(
+                    omitted = GraphOmittedDcidsError(
                         f"graph omitted {dcid!r} from /v2/node data even after an "
-                        "individual re-request scoped to just that dcid"
+                        "individual re-request scoped to just that dcid",
+                        dcids=[dcid],
                     )
+                    raise self._read_error_cls(str(omitted)) from omitted
                 probe_arcs = (probe_data.get(dcid) or {}).get("arcs", {})
                 result[dcid] = (
                     parse_arcs(probe_arcs, properties, mark_unresolved=True) if probe_arcs else None
@@ -1381,17 +1388,23 @@ class GraphClient:
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging arcs for {list(dcids)!r} "
-                    "instead of making progress"
+                    "instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=payload["property"],
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return merged
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"reading arcs for {list(dcids)!r}"
+            f"reading arcs for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=_arc_spec(properties),
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def _acquire_node_arc_slot(self, deadline: float | None) -> None:
         """Acquire a `node_arcs_many` slot, with `deadline` and a bound request deadline
@@ -1492,17 +1505,23 @@ class GraphClient:
                         children.append(child_dcid)
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging child places for {parent!r} "
-                    f"via {child_type!r} instead of making progress"
+                    f"via {child_type!r} instead of making progress",
+                    dcid=parent,
+                    property=prop,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return children
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"paging child places for {parent!r} via {child_type!r}"
+            f"paging child places for {parent!r} via {child_type!r}",
+            dcid=parent,
+            property=prop,
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def node_subjects(
         self,
@@ -1563,10 +1582,13 @@ class GraphClient:
             if len(dcids) > max_results or token is None:
                 break
         else:
-            raise self._read_error_cls(
+            capped = GraphNotAdvancingError(
                 f"graph still reported a nextToken after {_NODE_SUBJECTS_MAX_PAGES} pages "
-                f"paging subjects for {dcid!r} via {property!r}"
+                f"paging subjects for {dcid!r} via {property!r}",
+                dcid=dcid,
+                property=property,
             )
+            raise self._read_error_cls(str(capped)) from capped
         if len(dcids) > max_results:
             return SubjectPage(dcids=tuple(dcids[:max_results]), truncated=True)
         return SubjectPage(dcids=tuple(dcids), truncated=token is not None)
@@ -1619,10 +1641,13 @@ class GraphClient:
                         break
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging subjects for {unique_dcids!r} "
-                    f"via {property!r} instead of making progress"
+                    f"via {property!r} instead of making progress",
+                    dcid=", ".join(unique_dcids),
+                    property=arc_spec,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None or len(capped) == len(unique_dcids):
                 return {
@@ -1685,10 +1710,12 @@ class GraphClient:
             retry_data = self._fetch_observation_property_chunks(absent, deadline=deadline)
             unanswered = [dcid for dcid in absent if dcid not in retry_data]
             if unanswered:
-                raise self._read_error_cls(
+                omitted = GraphOmittedDcidsError(
                     f"graph omitted {unanswered!r} from both the initial batch and "
-                    "a single-dcid retry"
+                    "a single-dcid retry",
+                    dcids=unanswered,
                 )
+                raise self._read_error_cls(str(omitted)) from omitted
             data = {**data, **retry_data}
         result: dict[str, tuple[str, ...]] = {}
         for dcid in dcids:
@@ -2179,16 +2206,22 @@ class GraphClient:
             if next_token is None:
                 return members
             if next_token in tokens_seen:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated a nextToken paging <-typeOf members for "
-                    f"{class_dcids!r} instead of making progress"
+                    f"{class_dcids!r} instead of making progress",
+                    dcid=", ".join(class_dcids),
+                    property="<-typeOf",
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             tokens_seen.add(next_token)
             token = next_token
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_ENUM_MEMBERS_TYPEOF_MAX_PAGES} pages "
-            f"reading <-typeOf members for {class_dcids!r}"
+            f"reading <-typeOf members for {class_dcids!r}",
+            dcid=", ".join(class_dcids),
+            property="<-typeOf",
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def currency_units(self, *, deadline: float | None = None) -> dict[str, str]:
         """Map currency unit dcids to ISO 4217 alpha-3 codes, from three sources in rising
@@ -2279,17 +2312,23 @@ class GraphClient:
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging {arc_spec!r} for "
-                    f"{list(dcids)!r} instead of making progress"
+                    f"{list(dcids)!r} instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=arc_spec,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return merged
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"reading {arc_spec!r} for {list(dcids)!r}"
+            f"reading {arc_spec!r} for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=arc_spec,
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def entities_with_data(
         self,

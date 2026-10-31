@@ -41,6 +41,16 @@ class YearRange(TypedDict):
     end: NotRequired[int]
 
 
+class MemberFields(TypedDict, total=False):
+    """The fields of a group's `coverage_below_scope` that name its members
+    (`MaterialisationWarning`)."""
+
+    member_count: int
+    off_cadence_members: CountedRefs
+    out_of_window_members: CountedRefs
+    unserved_members: CountedRefs
+
+
 class MaterialisationWarning(TypedDict):
     """One `{code, severity, message}` warning entry, as carried on
     `MaterialisationResult.warnings` (pipeline.py). `severity` is always one

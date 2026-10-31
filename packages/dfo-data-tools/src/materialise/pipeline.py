@@ -45,6 +45,7 @@ from materialise.generation import (
     _select_member_facets,
     bare_stat_var_ref,
     dispatched_provenances,
+    reads_absent_as_zero,
 )
 from materialise.graph import Facet, GraphReader
 from materialise.group_facets import group_breadth, group_variable_breadth, select_group_facets
@@ -400,9 +401,7 @@ def materialise_group(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
-        absent_reads_zero=(
-            absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
-        ),
+        absent_reads_zero=reads_absent_as_zero(outcome.selections, absent_reads_zero),
         dependencies=build_dependencies(
             requests,
             source_refs=served,

@@ -459,10 +459,14 @@ def to_materialisation_request(
     )
 
 
-def identity_requested_window(identity: Mapping[str, object]) -> RequestedWindow:
-    """The window a request reads for `identity`'s `requested_window` (`_requested_window`)."""
+def identity_requested_window(
+    identity: Mapping[str, object], *, clock_year: int | None = None
+) -> RequestedWindow:
+    """The window a request reads for `identity`'s `requested_window` (`_requested_window`),
+    an open end closed at `clock_year`, the current year when None."""
     return _requested_window(
-        cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"}))
+        cast("Mapping[str, object]", identity.get("requested_window", {"kind": "all"})),
+        clock_year=clock_year,
     )
 
 
@@ -595,18 +599,21 @@ def _require_currency_role(role: str, *, shape: StatVarShape) -> None:
         ) from exc
 
 
-def _requested_window(window: Mapping[str, object]) -> RequestedWindow:
+def _requested_window(
+    window: Mapping[str, object], *, clock_year: int | None = None
+) -> RequestedWindow:
     """The window a request reads for an identity's `requested_window`: a range with no end
-    year ends at the current year (`materialise.window.election_window`), the years a
-    Search answer for the same identity elects and reads under. The identity keeps its open
-    end."""
+    year ends at `clock_year`, the current year when None (`materialise.window.election_window`),
+    the years a Search answer for the same identity elects and reads under. The identity keeps
+    its open end."""
     kind = cast('Literal["all", "latest", "range"]', window.get("kind", "all"))
     return election_window(
         RequestedWindow(
             kind=kind,
             start_year=cast("int | None", window.get("start_year")),
             end_year=cast("int | None", window.get("end_year")),
-        )
+        ),
+        clock_year=clock_year,
     )
 
 
