@@ -308,8 +308,8 @@ def layer2_key(
     `exclusions` are the stretches of the query a part judges or discloses, each with the
     positions in `variables` of the parts it qualifies. The blanked text no longer holds
     them, and each moves the departures of the parts it qualifies, so the key states each
-    phrase with the words naming what it leaves out and those parts, and adds nothing when
-    there is none.
+    phrase with the words it judges, the words naming what it leaves out and those parts,
+    and adds nothing when there is none.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -346,7 +346,12 @@ def layer2_key(
     }
     if exclusions:
         document["exclusions"] = [
-            {"phrase": exclusion.phrase, "left_out": list(exclusion.things), "parts": list(parts)}
+            {
+                "phrase": exclusion.phrase,
+                "shown": exclusion.shown,
+                "left_out": list(exclusion.things),
+                "parts": list(parts),
+            }
             for exclusion, parts in exclusions
         ]
     if query_text_value_source is not None:

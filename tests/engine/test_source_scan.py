@@ -516,6 +516,27 @@ def test_the_raw_text_door_reads_a_series_code_the_query_writes(
             id="a-measure-the-query-does-not-write",
         ),
         pytest.param(
+            "health ODA to Kenya and ODA to Uganda excluding debt relief",
+            "excluding debt relief",
+            ["health ODA", "ODA"],
+            (1,),
+            id="a-measure-inside-another",
+        ),
+        pytest.param(
+            "ODA to Uganda and health ODA to Kenya excluding debt relief",
+            "excluding debt relief",
+            ["ODA", "health ODA"],
+            (1,),
+            id="a-measure-inside-another-later",
+        ),
+        pytest.param(
+            "ODA excluding debt relief and OOF to Kenya",
+            "excluding debt relief",
+            ["ODA", "OOF"],
+            (0,),
+            id="the-blank-parts-coordinated-measures",
+        ),
+        pytest.param(
             "excluding debt relief, ODA and OOF to Kenya",
             "excluding debt relief",
             ["ODA", "OOF"],
@@ -548,7 +569,7 @@ def test_a_stretch_the_query_does_not_write_qualifies_every_measure(dictionary: 
         measures=["ODA", "GDP"],
         entity_spans=["Kenya"],
         index=get_index(),
-        left_out=[LeftOut("excluding the CRS", ("CRS",), None)],
+        left_out=[LeftOut("excluding the CRS", ("CRS",), None, "excluding the CRS")],
     )
     assert (scan.stretch_targets, scan.per_measure, scan.source_stretches) == (
         ((0, 1),),

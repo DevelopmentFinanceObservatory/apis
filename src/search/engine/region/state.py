@@ -541,7 +541,9 @@ def exclusion_requirements(
     part names: one tuple per part, `per_part[i]` its stretches and `variables[i]` the measure
     it answers. Each phrase is read once, whatever parts it qualifies.
 
-    Each run of a phrase's words that names codes, read in every code system as
+    A stretch is judged on its own words alone (`LeftOut.shown`), the words its blank
+    removed, so an applied scope phrase it is quoted beside judges nothing. Each run of those
+    words that names codes, read in every code system as
     `match_qualifiers` and `match_qualifier_ties` read them (a tie giving each of its rows),
     gives one rule per property, `excluded` holding the run. A run whose words the part's
     variable also holds names what was asked for and gives none: "ODA" in "not net ODA"
@@ -580,16 +582,13 @@ def exclusion_requirements(
     def runs_of(exclusion: LeftOut) -> dict[str, list[QualifierMatch]] | None:
         """The runs of `exclusion` naming codes, by run, `None` when it is not judged."""
         if exclusion not in read:
-            matches, ties = read_qualifiers(exclusion.phrase, index, measure_index)
+            matches, ties = read_qualifiers(exclusion.shown, index, measure_index)
             runs: dict[str, list[QualifierMatch]] = {}
             for match in matches:
                 runs.setdefault(match.phrase, []).append(match)
             for tie in ties:
                 runs.setdefault(tie.phrase, []).extend(tie.rows)
             things = words(" ".join(exclusion.things)) - FUNCTION_WORDS
-            # A run holding none of the words it leaves out reads the phrase's other words,
-            # such as the provider scope a stretch runs from.
-            runs = {run: rows for run, rows in runs.items() if words(run) & things}
             judged = bool(things) and things <= set().union(*map(words, runs))
             read[exclusion] = runs if judged else None
         return read[exclusion]

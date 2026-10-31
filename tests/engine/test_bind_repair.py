@@ -25,7 +25,7 @@ from search.engine.bind_repair import (
     defaulted_slot_notes,
     defaulted_slots_named,
 )
-from search.engine.exclusion_read import LeftOut
+from search.engine.exclusion_read import Exclusion, ExclusionRead, LeftOut, admit_exclusions
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
@@ -253,7 +253,9 @@ def _imf_slot(**update: object) -> SlotBindingDraft:
     ).model_copy(update=update)
 
 
-_WITHOUT_IMF = LeftOut(phrase="without IMF credit", things=("IMF credit",), at=0)
+_WITHOUT_IMF = LeftOut(
+    phrase="without IMF credit", things=("IMF credit",), at=0, shown="without IMF credit"
+)
 
 
 class TestApplyNamedExclusions:
@@ -263,6 +265,23 @@ class TestApplyNamedExclusions:
         )
 
         assert [(b.kind, b.value_dcids) for b in repaired] == [("value", ["WithoutIMFCredit"])]
+        assert bound == (("without IMF credit", "includesIMFCredit", "WithoutIMFCredit"),)
+
+    def test_an_own_cue_after_the_provider_scope_binds_its_label(self):
+        reading = admit_exclusions(
+            "ODA to Kenya not including multilateral and without IMF credit",
+            ExclusionRead(
+                exclusions=[
+                    Exclusion(
+                        phrase="not including multilateral and without IMF credit",
+                        left_out=["multilateral", "IMF credit"],
+                    )
+                ]
+            ),
+        )
+
+        _, bound = apply_named_exclusions([_imf_slot()], _imf_shape(), exclusions=reading.left_out)
+
         assert bound == (("without IMF credit", "includesIMFCredit", "WithoutIMFCredit"),)
 
     @pytest.mark.parametrize(
@@ -282,16 +301,38 @@ class TestApplyNamedExclusions:
             pytest.param(
                 _imf_slot(),
                 _imf_shape(),
-                LeftOut(phrase="excluding IMF credit", things=("IMF credit",), at=0),
+                LeftOut(
+                    phrase="excluding IMF credit",
+                    things=("IMF credit",),
+                    at=0,
+                    shown="excluding IMF credit",
+                ),
                 (),
                 id="another-wording",
             ),
             pytest.param(
                 _imf_slot(),
                 _imf_shape(),
-                LeftOut(phrase="without IMF credit", things=("without IMF credit",), at=0),
+                LeftOut(
+                    phrase="without IMF credit",
+                    things=("without IMF credit",),
+                    at=0,
+                    shown="without IMF credit",
+                ),
                 (),
                 id="the-phrase-is-what-it-leaves-out",
+            ),
+            pytest.param(
+                _imf_slot(),
+                _imf_shape(),
+                LeftOut(
+                    phrase="without IMF credit",
+                    things=("without", "IMF", "credit"),
+                    at=0,
+                    shown="without IMF credit",
+                ),
+                (),
+                id="the-phrase-is-what-it-leaves-out-word-by-word",
             ),
         ],
     )

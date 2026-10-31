@@ -314,8 +314,11 @@ def judge(
     (`CodeRule`), and an answer that leaves it unmet names no term for it
     (`rule_departs_only`). A `MeasureRule` is met when the answer's
     shape or a value its bindings bind carries the measure value (`answer_reads_measure`),
-    else judged as its `CodeRule`; an `excluded` one is met when the answer does not carry it
-    and is not served under a unit request whose price basis reads as it. A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
+    else judged as its `CodeRule`. An `excluded` one is unmet when the answer carries it or
+    is served under a unit request whose price basis reads as it, met when the answer states
+    another value on the axis or is served under a unit request at other prices, and outside
+    an answer that states no value on the axis and is served under none, which sums over it
+    (`shape_reads_measure_axis`). A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
     also met by an answer served under a unit request whose price basis reads as one of its
     codes (`_serves_price_basis`). A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
@@ -375,10 +378,11 @@ def judge(
                 )
                 if rule.code.excluded is not None:
                     # A shape that states no value on the axis sums over it, so it leaves
-                    # nothing out.
+                    # nothing out, unless a unit request states its prices.
+                    priced = prices is not None and rule.code.property_dcid == PRICE_BASIS_AXIS
                     if reads:
                         answer.append("unmet")
-                    elif shape_reads_measure_axis(shape, rule.match.code_system):
+                    elif priced or shape_reads_measure_axis(shape, rule.match.code_system):
                         answer.append("met")
                     else:
                         answer.append("outside")

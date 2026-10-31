@@ -151,88 +151,179 @@ def test_a_stretch_the_query_does_not_write_is_disclosed_unblanked(query, phrase
     one it cannot place stays in the text and is disclosed."""
     reading = admit_exclusions(query, _read(phrase, left_out=("aid",)))
 
-    assert reading == QueryReading(text=query, left_out=(LeftOut(phrase, ("aid",), None),))
+    assert reading == QueryReading(text=query, left_out=(LeftOut(phrase, ("aid",), None, phrase),))
+
+
+_SCOPE = "not including multilateral"
 
 
 @pytest.mark.parametrize(
-    ("query", "phrase", "left_out", "text", "stretches"),
+    ("query", "left_out", "text", "stretches"),
     [
         pytest.param(
             "ODA to Kenya not including multilateral or humanitarian aid",
-            "not including multilateral or humanitarian aid",
             ("multilateral", "humanitarian aid"),
             "ODA to Kenya not including multilateral ;",
-            (LeftOut("not including multilateral or humanitarian aid", ("humanitarian aid",), 40),),
+            (LeftOut("or humanitarian aid", ("humanitarian aid",), 40, "humanitarian aid"),),
             id="a-list",
         ),
         pytest.param(
+            "ODA to Kenya not including multilateral or humanitarian aid",
+            ("humanitarian", "aid"),
+            "ODA to Kenya not including multilateral ;",
+            (LeftOut("or humanitarian aid", ("humanitarian", "aid"), 40, "humanitarian aid"),),
+            id="a-list-read-word-by-word",
+        ),
+        pytest.param(
+            "ODA to Kenya not including multilateral or humanitarian aid",
+            ("multilateral or humanitarian aid",),
+            "ODA to Kenya not including multilateral ;",
+            (LeftOut("or humanitarian aid", ("humanitarian", "aid"), 40, "humanitarian aid"),),
+            id="a-list-read-as-one-item",
+        ),
+        pytest.param(
             "ODA to Kenya, not including multilateral flows or humanitarian aid",
-            "not including multilateral flows or humanitarian aid",
             ("multilateral flows", "humanitarian aid"),
             "ODA to Kenya, not including multilateral flows ;",
-            (
-                LeftOut(
-                    "not including multilateral flows or humanitarian aid",
-                    ("humanitarian aid",),
-                    47,
-                ),
-            ),
+            (LeftOut("or humanitarian aid", ("humanitarian aid",), 47, "humanitarian aid"),),
             id="a-list-after-the-scope-noun",
         ),
         pytest.param(
             "ODA to Kenya not including multilateral and without IMF credit",
-            "not including multilateral and without IMF credit",
             ("multilateral", "IMF credit"),
             "ODA to Kenya not including multilateral ;",
-            (LeftOut("not including multilateral and without IMF credit", ("IMF credit",), 40),),
-            id="a-second-cue",
+            (LeftOut("without IMF credit", ("IMF credit",), 40, "without IMF credit"),),
+            id="an-own-cue",
+        ),
+        pytest.param(
+            "ODA to Kenya not including multilateral ODA or net ODA",
+            ("multilateral ODA", "net ODA"),
+            "ODA to Kenya not including multilateral ODA ;",
+            (LeftOut("or net ODA", ("net ODA",), 44, "net ODA"),),
+            id="a-list-after-the-scope-measure",
         ),
         pytest.param(
             "ODA to Kenya excluding debt relief and not including multilateral or loans",
-            "excluding debt relief and not including multilateral or loans",
             ("debt relief", "multilateral", "loans"),
-            "ODA to Kenya ; not including multilateral ;",
+            "ODA to Kenya ; and not including multilateral ;",
             (
-                LeftOut("excluding debt relief", ("debt relief",), 13),
-                LeftOut("not including multilateral or loans", ("loans",), 42),
+                LeftOut("excluding debt relief", ("debt relief",), 13, "excluding debt relief"),
+                LeftOut("or loans", ("loans",), 46, "loans"),
             ),
             id="two-spans",
         ),
     ],
 )
 def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
-    query, phrase, left_out, text, stretches
+    query, left_out, text, stretches
 ):
     """The scope phrase stays for its reader, so the part still reads the bilateral provider
-    scope. Each span that outlives it is a stretch of its own, written as the query writes it
-    from its negating cue, and leaves out only the words it blanks."""
-    reading = admit_exclusions(query, _read(phrase, left_out=left_out))
+    scope, and no stretch quotes it. A stretch after it is quoted from its own cue, else as
+    the words its blank removed, and leaves out only the items those words hold."""
+    reading = admit_exclusions(query, _read(query[13:].lstrip(", "), left_out=left_out))
 
     assert (reading.text, reading.left_out) == (text, stretches)
-    assert all(stretch.phrase in query for stretch in reading.left_out)
+    assert all(_SCOPE not in stretch.phrase for stretch in reading.left_out)
     # The scope reads the same words, wherever a blank before them moved them.
     (before, after) = (
-        [
-            (entry["option_id"], entry["origin"]["text"])
-            for entry in intake_key_document(intake)["entries"]
-        ]
+        [entry["option_id"] for entry in intake_key_document(intake)["entries"]]
         for (intake,) in (
             part_scope_intakes(message=text, part_texts=[text]) for text in (query, reading.text)
         )
     )
-    assert after == before == [("provider:bilateral", "not including multilateral")]
+    # Blanking "net ODA" takes its netting basis with it; the provider scope stays.
+    assert "provider:bilateral" in before
+    assert [entry for entry in before if entry in after] == after
 
 
-def test_a_stretch_after_the_provider_scope_binds_nothing_it_leaves_out():
+@pytest.mark.parametrize(
+    ("query", "left_out", "stretches"),
+    [
+        pytest.param(
+            "ODA to Kenya excluding debt relief and multilateral or loans",
+            ("debt relief", "multilateral", "loans"),
+            [("excluding debt relief and multilateral or loans", ";")],
+            id="one-cue",
+        ),
+        pytest.param(
+            "ODA from France except to Kenya and Uganda",
+            ("Kenya", "Uganda"),
+            [("except to Kenya and Uganda", ";")],
+            id="one-cue-two-places",
+        ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief and without IMF credit",
+            ("debt relief", "IMF credit"),
+            [("excluding debt relief", ";"), ("without IMF credit", ";")],
+            id="two-cues",
+        ),
+    ],
+)
+def test_items_under_one_cue_share_a_stretch(query, left_out, stretches):
+    """A read phrase splits where an item has a cue of its own, words before the first word
+    it leaves out; items under one cue are one stretch."""
+    reading = admit_exclusions(query, _read(query[query.index(" e") + 1 :], left_out=left_out))
+
+    assert [(s.phrase, reading.text[s.at]) for s in reading.left_out if s.at is not None] == (
+        stretches
+    )
+    assert all(stretch.phrase == stretch.shown for stretch in reading.left_out)
+
+
+@pytest.mark.parametrize(
+    ("query", "left_out", "runs"),
+    [
+        pytest.param(
+            "ODA to Kenya not including multilateral ODA or net ODA",
+            ("multilateral ODA", "net ODA"),
+            {("net", "nettingBasis")},
+            id="net-after-the-scope",
+        ),
+        pytest.param(
+            "ODA to Kenya not including multilateral flows or net flows",
+            ("multilateral flows", "net flows"),
+            set(),
+            id="a-word-no-code-names-after-the-scope",
+        ),
+        pytest.param(
+            "ODA to Kenya not including multilateral aid or humanitarian aid",
+            ("multilateral aid", "humanitarian aid"),
+            {("humanitarian aid", "crsPurpose")},
+            id="humanitarian-after-the-scope",
+        ),
+        pytest.param(
+            "ODA to Kenya not including multilateral grants or loans",
+            ("multilateral grants", "loans"),
+            set(),
+            id="loans-names-no-code",
+        ),
+    ],
+)
+def test_a_stretch_is_judged_on_the_words_its_blank_removed(query, left_out, runs):
+    """The applied scope a stretch is quoted beside judges nothing; its own words do."""
+    reading = admit_exclusions(query, _read(query[13:], left_out=left_out))
+    (requirements,) = exclusion_requirements([list(reading.left_out)], variables=["ODA"])
+
+    assert {
+        (excluded_run(r.rule), getattr(r.rule, "property_dcid", None) or r.rule.code.property_dcid)
+        for r in requirements
+    } == runs
+
+
+@pytest.mark.parametrize(
+    "left_out",
+    [
+        ("multilateral", "humanitarian aid"),
+        ("humanitarian", "aid"),
+        ("multilateral or humanitarian aid",),
+    ],
+)
+def test_a_stretch_after_the_provider_scope_binds_nothing_it_leaves_out(left_out):
     """ "humanitarian aid" names CRS purpose 700, which the stretch leaves out, so repair
-    binds nothing for it."""
+    binds nothing for it, however the read splits its items."""
     query = "ODA to Kenya not including multilateral or humanitarian aid"
     reading = admit_exclusions(
-        query,
-        _read(
-            "not including multilateral or humanitarian aid",
-            left_out=("multilateral", "humanitarian aid"),
-        ),
+        query, _read("not including multilateral or humanitarian aid", left_out=left_out)
     )
     shape = shape_draft_from(
         shape_id="crs",
@@ -387,7 +478,9 @@ def test_a_read_kept_unblanked_keeps_the_speculative_parse():
     read = _door_read(_HIT_QUERY, door)
 
     assert sorted(door.calls) == [("ExclusionRead", _HIT_QUERY), ("Extraction", _HIT_QUERY)]
-    assert read.reading.left_out == (LeftOut("excluding loans", ("loans",), None),)
+    assert read.reading.left_out == (
+        LeftOut("excluding loans", ("loans",), None, "excluding loans"),
+    )
 
 
 def test_a_miss_keeps_the_speculative_parse_and_starts_no_second_one():
@@ -717,7 +810,7 @@ def _bound(*values: str) -> list[SlotBindingDraft]:
 def test_a_measure_axis_exclusion_is_met_only_by_an_answer_that_leaves_it_out(shape, bindings, met):
     """ "gross ODA, not net" answers gross and says nothing more. An answer that leaves "net"
     unmet still answers: it names no trace term and no refusal, and the door discloses it."""
-    exclusion = LeftOut(phrase="not net", things=("net",), at=0)
+    exclusion = LeftOut(phrase="not net", things=("net",), at=0, shown="not net")
     (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
 
     judgement = judge(requirements, [(shape, bindings)])
@@ -746,17 +839,8 @@ def test_an_exclusion_an_answer_cannot_be_shown_to_meet_gives_no_requirement(
 ):
     """Binding one DAC2a aid type says nothing of another it counts, so the phrase stays
     disclosed whatever the answer binds."""
-    exclusion = LeftOut(phrase=phrase, things=things, at=0)
+    exclusion = LeftOut(phrase=phrase, things=things, at=0, shown=phrase)
     assert exclusion_requirements([[exclusion]], variables=[variable]) == [()]
-
-
-def test_a_stretch_is_judged_only_on_the_runs_naming_what_it_leaves_out():
-    """A stretch disclosed from a cue before the words it blanks holds words it does not leave
-    out: "net" names a netting basis, which "humanitarian aid" leaves in."""
-    exclusion = LeftOut("not net or humanitarian aid", ("humanitarian aid",), 0)
-    (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
-
-    assert {excluded_run(requirement.rule) for requirement in requirements} == {"humanitarian aid"}
 
 
 def _named_state(shape: ShapeDraft) -> ResolveState:
@@ -840,22 +924,29 @@ def _gdp_shape(qualifier: str | None) -> ShapeDraft:
 
 
 @pytest.mark.parametrize(
-    ("qualifier", "met"),
+    ("qualifier", "served", "met"),
     [
-        pytest.param("Nominal", True, id="current-prices"),
-        pytest.param("RealValue", False, id="constant-prices"),
-        pytest.param(None, False, id="states-no-price-basis"),
+        pytest.param("Nominal", None, True, id="current-prices"),
+        pytest.param("RealValue", None, False, id="constant-prices"),
+        pytest.param(None, None, False, id="states-no-price-basis"),
+        pytest.param(None, "current", True, id="served-at-current-prices"),
+        pytest.param(None, "constant", False, id="served-at-constant-prices"),
     ],
 )
-def test_a_shape_axis_exclusion_is_met_by_an_answer_that_does_not_read_it(qualifier, met):
+def test_a_shape_axis_exclusion_is_met_by_an_answer_that_does_not_read_it(qualifier, served, met):
     """ "GDP of Kenya not in constant prices" answered in current prices leaves the phrase out:
-    the shape carries the measure value, as a positive measure term reads it. A shape that
-    states no price basis sums over it, so it leaves nothing out and the part discloses the
-    phrase."""
-    exclusion = LeftOut(phrase="not in constant prices", things=("constant", "prices"), at=0)
+    the shape or the unit request it is served under states the price basis. A shape that
+    states none, served under no unit request, sums over it, so it leaves nothing out and the
+    part discloses the phrase."""
+    exclusion = LeftOut(
+        phrase="not in constant prices",
+        things=("constant", "prices"),
+        at=0,
+        shown="not in constant prices",
+    )
     (requirements,) = exclusion_requirements([[exclusion]], variables=["GDP"])
 
-    judgement = judge(requirements, [(_gdp_shape(qualifier), [])])
+    judgement = judge(requirements, [(_gdp_shape(qualifier), [])], served=[served])
 
     assert judgement.met_exclusions() == ({"not in constant prices"} if met else frozenset())
     assert met_measure_phrases(judgement) == judgement.met_exclusions()
@@ -920,7 +1011,12 @@ def _crs_bound(**values: str) -> list[SlotBindingDraft]:
 def test_a_run_naming_two_systems_is_left_out_only_on_every_property(shape, bindings, met):
     """ "budget support" is a modality and a purpose. An answer summing over the modality
     counts budget support there, so only one leaving it out on both leaves the phrase out."""
-    exclusion = LeftOut(phrase="excluding budget support", things=("budget support",), at=0)
+    exclusion = LeftOut(
+        phrase="excluding budget support",
+        things=("budget support",),
+        at=0,
+        shown="excluding budget support",
+    )
     (requirements,) = exclusion_requirements([[exclusion]], variables=["ODA"])
 
     judgement = judge(requirements, [(shape, bindings)])
@@ -938,7 +1034,9 @@ def test_a_run_naming_two_systems_is_left_out_only_on_every_property(shape, bind
 def test_a_stretch_warns_only_on_the_parts_it_qualifies(met, part, envelope):
     """ "ODA to Kenya and GDP of Kenya excluding humanitarian aid" qualifies GDP: the ODA part
     states nothing of it, and the GDP part warns unless its answer leaves it out."""
-    stretch = LeftOut("excluding humanitarian aid", ("humanitarian aid",), 30)
+    stretch = LeftOut(
+        "excluding humanitarian aid", ("humanitarian aid",), 30, "excluding humanitarian aid"
+    )
     prep = SimpleNamespace(
         exclusion_warnings=("w",), exclusions=(stretch,), exclusion_targets=((1,),)
     )

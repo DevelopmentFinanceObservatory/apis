@@ -310,39 +310,63 @@ def _attach(
     return tuple(range(len(spans)))
 
 
+def _measure_positions(
+    measures: Sequence[str], words: Sequence[_Word]
+) -> list[tuple[int, int] | None]:
+    """Each measure's span in the query, `None` where the query does not write it. Spans do
+    not overlap: a longer measure takes its first occurrence first, and each shorter one the
+    first occurrence left to right that no taken span covers, so in "health ODA to Kenya and
+    ODA to Uganda" "health ODA" takes the first and "ODA" the second."""
+    spans: list[tuple[int, int] | None] = [None] * len(measures)
+    for position in sorted(range(len(measures)), key=lambda p: -len(_folded(measures[p]))):
+        spans[position] = next(
+            (
+                (start, end)
+                for start, end in _occurrences(measures[position], words)
+                if not any(s < end and start < e for s, e in filter(None, spans))
+            ),
+            None,
+        )
+    return spans
+
+
 def _stretch_attach(
     key: tuple[str, ...],
     at: int,
-    words: Sequence[_Word],
-    measure_words: Sequence[tuple[str, ...]],
-    spans: Sequence[tuple[int, int] | None],
+    query: str,
+    measures: Sequence[str],
 ) -> tuple[int, ...]:
-    """The positions of the measures a stretch written as `key`, blanked at the query's
+    """The positions of the measures a stretch written as `key`, blanked at `query`'s
     character `at`, qualifies: those whose words hold it, else every measure but where the
-    blank lies in one clause of the query's measures. Measures the query writes joined only
-    by commas and coordinators ("ODA and OOF") share a clause, which runs from the first of
-    them to the next clause's first measure: "aid to Kenya and education aid to Kenya, not
-    from the OECD" leaves the OECD out of education aid alone, and "ODA and OOF to Kenya
-    excluding debt relief" judges both. A stretch before every measure, or in a query with
-    one clause or a measure it does not write, qualifies every measure."""
+    blank lies in one clause of the query's measures (`_measure_positions`). Measures the
+    query writes joined only by commas and coordinators ("ODA and OOF") share a clause, which
+    runs from the first of them to the next clause's first measure; a blank between two
+    measures parts them: "aid to Kenya and education aid to Kenya, not from the OECD" leaves
+    the OECD out of education aid alone, "ODA and OOF to Kenya excluding debt relief" judges
+    both, and "ODA excluding debt relief and OOF to Kenya" judges ODA alone. A stretch before
+    every measure, or in a query with one clause or a measure it does not write, qualifies
+    every measure."""
+    words = _words(query)
+    measure_words = [_folded(measure) for measure in measures]
     holding = tuple(position for position, held in enumerate(measure_words) if _holds(held, key))
     if holding:
         return holding
-    every = tuple(range(len(spans)))
-    if any(span is None for span in spans):
-        return every
+    every = tuple(range(len(measures)))
+    spans = _measure_positions(measures, words)
     located = sorted((span, position) for position, span in enumerate(spans) if span is not None)
+    if len(located) < len(measures):
+        return every
     clauses: list[tuple[int, list[int]]] = []
     previous_end: int | None = None
     for (start, end), position in located:
-        between = [
-            w.folded for w in words if previous_end is not None and previous_end <= w.start < start
-        ]
-        if clauses and all(word in _COORDINATORS for word in between):
+        joined = previous_end is not None and ";" not in query[previous_end:start]
+        if joined and all(
+            word.folded in _COORDINATORS for word in words if previous_end <= word.start < start
+        ):
             clauses[-1][1].append(position)
         else:
             clauses.append((start, [position]))
-        previous_end = max(end, previous_end or end)
+        previous_end = end if previous_end is None else max(end, previous_end)
     if len(clauses) < 2:
         return every
     held = [positions for start, positions in clauses if start <= at]
@@ -372,7 +396,7 @@ def left_out_sources(
 ) -> tuple[list[SourceHit], bool]:
     """The sources `stretch` leaves out, and whether it leaves out nothing else.
 
-    The stretch's words split into the items of its list, at commas and at "and", "or" and
+    The stretch's own words (`LeftOut.shown`) split into the items of its list, at commas and at "and", "or" and
     "nor". An item leaves out a source when each of its left-out words (`LeftOut.things`),
     less the words a phrase may carry beside a source's own (`_SOURCE_PHRASE_WORDS`: articles,
     "from", data words such as "data", "figures" and "database"), lies in a source the item
@@ -381,18 +405,18 @@ def left_out_sources(
     if stretch.at is None:
         return [], False
     named = find_source_hits(
-        stretch.phrase, dictionary=dictionary, entity_spans=(), measures=(), index=index
+        stretch.shown, dictionary=dictionary, entity_spans=(), measures=(), index=index
     )
     asked = {word for thing in stretch.things for word in _folded(thing)} - _SOURCE_PHRASE_WORDS
     if not asked:
         return [], False
     items: list[list[_Word]] = [[]]
     previous_end = 0
-    for word in _words(stretch.phrase):
+    for word in _words(stretch.shown):
         if word.folded in _COORDINATORS:
             items.append([])
         else:
-            if "," in stretch.phrase[previous_end : word.start]:
+            if "," in stretch.shown[previous_end : word.start]:
                 items.append([])
             items[-1].append(word)
         previous_end = word.end
@@ -424,22 +448,20 @@ def scan_sources(
     """The sources `find_source_hits` finds in `query`, the text with each of the `left_out`
     stretches blanked, and those each stretch leaves out (`left_out_sources`), attached to the
     measures they qualify, and the entity spans they cover. A stretch and its sources attach
-    to the measures of the clause its blank lies in (`_stretch_attach`). A measure keeps one mention per wording and polarity, at most
-    `_PARSED_MAX_PART_SOURCES`, and an entity span leaves the entities only when every
-    occurrence of it that lies inside no longer entity span's lies under a source."""
+    to the measures of the clause its blank lies in (`_stretch_attach`). A measure keeps one
+    mention per wording and polarity, at most `_PARSED_MAX_PART_SOURCES`, and an entity span
+    leaves the entities only when every occurrence of it that lies inside no longer entity
+    span's lies under a source."""
     hits = find_source_hits(
         query, dictionary=dictionary, entity_spans=entity_spans, measures=measures, index=index
     )
-    words = _words(query)
-    measure_words = [_folded(measure) for measure in measures]
-    measure_spans = [next(iter(_occurrences(measure, words)), None) for measure in measures]
     source_stretches: set[str] = set()
     stretch_targets: list[tuple[int, ...]] = []
     for stretch in left_out:
         if (at := stretch.at) is None:
             stretch_targets.append(tuple(range(len(measures))))
             continue
-        targets = _stretch_attach(_folded(stretch.phrase), at, words, measure_words, measure_spans)
+        targets = _stretch_attach(_folded(stretch.shown), at, query, measures)
         stretch_targets.append(targets)
         found, whole = left_out_sources(stretch, dictionary=dictionary, index=index)
         hits += [

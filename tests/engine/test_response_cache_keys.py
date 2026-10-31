@@ -687,11 +687,11 @@ def test_the_role_a_part_lists_member_by_member_changes_layer2_key() -> None:
 
 def test_what_a_query_leaves_out_changes_layer2_key() -> None:
     """Two queries that blank to one text key apart by the stretch each left out, by what it
-    leaves out, which decides how the legs judge it, and by the parts it qualifies; a query
-    leaving out nothing keys as one that omits the field."""
+    leaves out and the words it judges, which decide how the legs judge it, and by the parts
+    it qualifies; a query leaving out nothing keys as one that omits the field."""
 
-    def stretch(phrase: str, *things: str, parts: tuple[int, ...] = (0,)):
-        return LeftOut(phrase=phrase, things=things, at=0), parts
+    def stretch(phrase: str, *things: str, parts: tuple[int, ...] = (0,), shown: str | None = None):
+        return LeftOut(phrase=phrase, things=things, at=0, shown=shown or phrase), parts
 
     variables = ["ODA", "OOF"]
     keys = {
@@ -703,9 +703,10 @@ def test_what_a_query_leaves_out_changes_layer2_key() -> None:
             [stretch("excluding loans", "grants")],
             [stretch("excluding loans", "grants", parts=(1,))],
             [stretch("excluding loans", "grants", parts=(0, 1))],
+            [stretch("excluding loans", "grants", parts=(0, 1), shown="loans")],
         )
     }
-    assert len(keys) == 6
+    assert len(keys) == 7
     assert _layer2_key(exclusions=[]) == _layer2_key()
 
 

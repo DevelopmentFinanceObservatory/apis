@@ -24,7 +24,7 @@ from itertools import pairwise
 from pydantic import BaseModel, Field
 
 from code_index.shared import get_index, get_measure_index
-from code_index.tokens import word_tokens
+from code_index.tokens import Token, word_tokens
 from search.engine.clients.llm import LLM, SupportsLLM, for_stage, generate_structured_async
 from search.engine.extract import _extract_version
 from search.engine.extraction_store import extraction_key
@@ -74,13 +74,18 @@ EXCLUSION_READ_VERSION = _extract_version(EXCLUSION_READ_SYSTEM_PROMPT, Exclusio
 
 @dataclass(frozen=True, slots=True)
 class LeftOut:
-    """One stretch the query asks to leave out: `phrase` in the query's words, `things` the
-    words naming what it leaves out, and `at` the offset in `QueryReading.text` of the blank it
-    left, `None` for a stretch the query does not write as read, which is disclosed unblanked."""
+    """One stretch the query asks to leave out, each part derived once by `admit_exclusions`
+    and written as `normalise_query` writes the query: `phrase`, the span the answer quotes;
+    `things`, the items it leaves out; `at`, the offset in `QueryReading.text` of the blank it
+    left, `None` for a stretch the query does not write as read, which is disclosed unblanked;
+    and `shown`, the words the blank removed, which are all that is judged
+    (`state.exclusion_requirements`). `phrase` and `shown` are one span but for an item after
+    an applied scope phrase that has no negation cue of its own (`_pieces`)."""
 
     phrase: str
     things: tuple[str, ...]
     at: int | None
+    shown: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,62 +207,102 @@ def _occurrences(phrase: str, text: str) -> list[tuple[int, int]]:
 
 
 @dataclass(frozen=True, slots=True)
+class _Item:
+    """One item of a read phrase's list: its words, the coordinator before it, and whether an
+    applied scope phrase stands between it and the item before."""
+
+    words: list[Token]
+    lead: Token | None
+    after_scope: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Piece:
     """One stretch of a read phrase, as offsets in the phrase: the range it blanks, the range
-    it is disclosed as, a verbatim span starting at its negating cue, and the range of the
-    words it leaves out."""
+    it is disclosed as, and the range of its own words, which the blank removes and which
+    alone are judged."""
 
     blank: tuple[int, int]
     phrase: tuple[int, int]
     shown: tuple[int, int]
 
 
-def _pieces(phrase: str, intake: ScopeIntake | None) -> list[_Piece]:
-    """Each item of `phrase`'s list outside the phrases stating the part's provider scope
-    (`stated_scope.scope_phrase_spans`), each its own stretch. It blanks from its first word
-    to its last and shows its words less a coordinator at either end. The words a scope
-    phrase runs into before a comma or coordinator are its own noun, so "not including
-    multilateral flows" leaves nothing. An item after a scope phrase is disclosed from the
-    scope phrase's cue, which is its own: "not including multilateral or humanitarian aid"
-    blanks "or humanitarian aid" and is disclosed as written, and "excluding debt relief and
-    not including multilateral or loans" gives "excluding debt relief" and "not including
-    multilateral or loans"."""
+def _items(phrase: str, intake: ScopeIntake | None) -> list[_Item]:
+    """The items of `phrase`'s list, split at commas and coordinators, outside the phrases
+    stating the part's provider scope (`stated_scope.scope_phrase_spans`) and the noun each
+    runs into before a comma or coordinator: "not including multilateral flows" has none."""
+    scopes = scope_phrase_spans(phrase, intake)
+    items: list[_Item] = []
+    words: list[Token] = []
+    lead: Token | None = None
+    after_scope = in_scope_noun = False
+    previous_end = 0
+
+    def close() -> None:
+        nonlocal words, lead, after_scope
+        if words:
+            items.append(_Item(words, lead, after_scope))
+            words, lead, after_scope = [], None, False
+
+    for token in word_tokens(phrase):
+        comma = "," in phrase[previous_end : token.start]
+        previous_end = token.end
+        coordinator = token.text.casefold() in _COORDINATORS
+        if any(start <= token.start < end for start, end in scopes):
+            close()
+            after_scope = in_scope_noun = True
+            continue
+        if in_scope_noun and not (coordinator or comma):
+            continue
+        in_scope_noun = False
+        if coordinator:
+            close()
+            lead = token
+            continue
+        if comma:
+            close()
+        words.append(token)
+    close()
+    return items
+
+
+def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str]) -> list[_Piece]:
+    """The stretches of `phrase`: one per negation cue, the items under one cue sharing it.
+    An item opens a stretch when it starts the phrase, which starts at the read's cue, when
+    words of its own come before the first word it leaves out (`left_words`), its own cue, or
+    when an applied scope phrase stands before it (`_items`), which no stretch covers.
+
+    A stretch is disclosed from its cue. An item after a scope phrase with no cue of its own
+    is disclosed as the words its blank removes, its coordinator included, so it quotes no
+    applied scope: "not including multilateral or humanitarian aid" blanks and quotes "or
+    humanitarian aid", "not including multilateral and without IMF credit" quotes "without
+    IMF credit", and "excluding debt relief and not including multilateral or loans" gives
+    "excluding debt relief" and "or loans"."""
+
+    def own_cue(item: _Item) -> bool:
+        first = next(
+            (i for i, word in enumerate(item.words) if word.text.casefold() in left_words), 0
+        )
+        return first > 0
+
+    groups: list[list[_Item]] = []
+    for item in _items(phrase, intake):
+        if not groups or item.after_scope or own_cue(item):
+            groups.append([item])
+        else:
+            groups[-1].append(item)
     pieces: list[_Piece] = []
-    offset, cue = 0, 0
-    for start, end in [*scope_phrase_spans(phrase, intake), (len(phrase), len(phrase))]:
-        words = word_tokens(phrase[offset:start])
-        if offset:
-            # The words up to the first comma or coordinator belong to the scope phrase before.
-            cut = next(
-                (
-                    i
-                    for i, word in enumerate(words)
-                    if word.text.casefold() in _COORDINATORS
-                    or "," in phrase[offset : offset + word.start]
-                ),
-                len(words),
-            )
-            words = words[cut:]
-        shown = list(words)
-        while shown and shown[0].text.casefold() in _COORDINATORS:
-            shown = shown[1:]
-        while shown and shown[-1].text.casefold() in _COORDINATORS:
-            shown = shown[:-1]
-        if shown:
-            first = offset + shown[0].start
-            pieces.append(
-                _Piece(
-                    blank=(offset + words[0].start, offset + words[-1].end),
-                    phrase=(cue if offset else first, offset + shown[-1].end),
-                    shown=(first, offset + shown[-1].end),
-                )
-            )
-        offset, cue = end, start
+    for group in groups:
+        first = group[0]
+        shown = (first.words[0].start, group[-1].words[-1].end)
+        blank = (first.lead.start if first.lead is not None else shown[0], shown[1])
+        cued = own_cue(first) or not first.after_scope
+        pieces.append(_Piece(blank=blank, phrase=shown if cued else blank, shown=shown))
     return pieces
 
 
 def _left_out_words(left_out: list[str], shown: str, *, whole: bool) -> list[str]:
-    """The words of `left_out` a stretch showing `shown` leaves out: all of them for the
+    """The items of `left_out` a stretch showing `shown` leaves out: all of them for the
     whole phrase, else each item whose words all lie in `shown`, else its words that do."""
     if whole:
         return left_out
@@ -292,11 +337,10 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
        what outlives them is blanked, so "not including multilateral or humanitarian aid"
        leaves "not including multilateral ;", which still states the bilateral scope.
 
-    Each item that outlives a scope phrase is a stretch of its own, disclosed as a verbatim
-    span of the query from its negating cue (`_pieces`), and leaves out the read's words it
-    shows. A stretch the query does not write as read, even so normalised, is kept unblanked
-    with no `at`, so the answer discloses it. A query with no stretch blanked comes back as
-    it was written.
+    The phrase splits into one stretch per negation cue (`_pieces`), each leaving out the
+    read's items its own words hold. A stretch the query does not write as read, even so
+    normalised, is kept unblanked with no `at`, so the answer discloses it. A query with no
+    stretch blanked comes back as it was written.
     """
     if not read.exclusions:
         return QueryReading(text=query)
@@ -305,6 +349,7 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
     labels: tuple[tuple[int, int], ...] | None = None
     (intake,) = part_scope_intakes(message=normal, part_texts=[normal])
     things: dict[str, list[str]] = {}
+    shown: dict[str, str] = {}
     ranges: dict[str, list[tuple[int, int]]] = {}
     for exclusion in read.exclusions:
         phrase = base.fold(exclusion.phrase)
@@ -312,6 +357,7 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
             continue
         found = _occurrences(phrase, normal)
         if not found:
+            shown.setdefault(phrase, phrase)
             things.setdefault(phrase, []).extend(map(base.fold, exclusion.left_out))
             continue
         if labels is None:
@@ -319,21 +365,27 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
         if any(lo <= s and e <= hi for s, e in found for lo, hi in labels):
             continue
         left = [base.fold(thing) for thing in exclusion.left_out]
-        for piece in _pieces(phrase, intake):
+        left_words = frozenset(
+            token.text.casefold() for thing in left for token in word_tokens(thing)
+        )
+        for piece in _pieces(phrase, intake, left_words):
             stretch = phrase[slice(*piece.phrase)]
             ranges.setdefault(stretch, []).extend(
                 (s + piece.blank[0], s + piece.blank[1]) for s, _ in found
             )
-            shown = phrase[slice(*piece.shown)]
+            words = shown.setdefault(stretch, phrase[slice(*piece.shown)])
             things.setdefault(stretch, []).extend(
-                _left_out_words(left, shown, whole=shown == phrase)
+                _left_out_words(left, words, whole=piece.blank == (0, len(phrase)))
             )
     if not things:
         return QueryReading(text=query)
     if not ranges:
         return QueryReading(
             text=query,
-            left_out=tuple(LeftOut(phrase, tuple(words), None) for phrase, words in things.items()),
+            left_out=tuple(
+                LeftOut(phrase, tuple(words), None, shown[phrase])
+                for phrase, words in things.items()
+            ),
         )
 
     starts, ends, source = base.starts, base.ends, base.source
@@ -364,7 +416,7 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
     return QueryReading(
         text="".join(pieces_out),
         left_out=tuple(
-            LeftOut(phrase=phrase, things=tuple(words), at=blank_of(phrase))
+            LeftOut(phrase, tuple(words), blank_of(phrase), shown[phrase])
             for phrase, words in things.items()
         ),
     )

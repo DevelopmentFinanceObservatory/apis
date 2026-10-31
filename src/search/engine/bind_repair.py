@@ -295,8 +295,9 @@ def apply_named_exclusions(
     one of the `exclusions`: "without IMF credit" binds `WithoutIMFCredit` on
     `includesIMFCredit`. An open slot is as `_slot_open_to_default` reads it, and no pin of the
     elected dataset (`pinned_properties`) holds it. The label is the value's own, so the
-    answer leaves the phrase out by construction. A phrase that is word for word what it
-    leaves out (`LeftOut.things`) names the value it excludes, so it binds nothing.
+    answer leaves the phrase out by construction. A label whose every word lies in what the
+    stretch leaves out (`LeftOut.things`, taken together) names the value it excludes, so it
+    binds nothing.
 
     Returns the listified bindings, repaired, and each phrase they now bind with the property
     and value it binds.
@@ -308,8 +309,8 @@ def apply_named_exclusions(
     phrases = {
         words: exclusion.phrase
         for exclusion in exclusions
-        if (words := tuple(_folded_tokens(exclusion.phrase)))
-        not in {tuple(_folded_tokens(thing)) for thing in exclusion.things}
+        if not set(words := tuple(_folded_tokens(exclusion.phrase)))
+        <= {word for thing in exclusion.things for word in _folded_tokens(thing)}
     }
     bound: list[tuple[str, str, str]] = []
     for i, binding in enumerate(result):
