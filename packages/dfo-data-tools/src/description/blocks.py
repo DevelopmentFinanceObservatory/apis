@@ -492,25 +492,30 @@ def dataset_sources(record: DescriptionRecord, words: Words) -> list[Wire]:
     ]
 
 
-def drawn_sources(record: DescriptionRecord, selection: SelectionFacts, words: Words) -> list[Wire]:
+def drawn_sources(
+    record: DescriptionRecord,
+    selection: SelectionFacts,
+    words: Words,
+    *,
+    credited: Sequence[SourceEvidence] = (),
+) -> list[Wire]:
     """The sources of the series a card draws, each with how many it draws. A drawn series
     of a computed version that names no source of its own was computed from the version's
-    inputs, which follow (`input_source`)."""
-    counts: dict[str, int] = {}
+    inputs. The sources they credit (`credited`, from `input_evidence`) follow, then the
+    inputs (`computed_sources`), each source counting the series naming it and those naming
+    none."""
+    counts: dict[str | None, int] = {}
     for series in selection.series:
-        if series.source is not None:
-            counts[series.source] = counts.get(series.source, 0) + 1
+        counts[series.source] = counts.get(series.source, 0) + 1
+    computed = record.computed is not None and None in counts
+    shown = {source.ref for source in credited} if computed else set()
+    named = [ref for ref in counts if ref is not None and ref not in shown]
     sources = [
-        source_entry(source, series=count, words=words, path=f"sources.{n}")
-        for n, (source, count) in enumerate(
-            zip(recorded_sources(record, list(counts)), counts.values(), strict=True)
-        )
+        source_entry(source, series=counts[source.ref], words=words, path=f"sources.{n}")
+        for n, source in enumerate(recorded_sources(record, named))
     ]
-    if record.computed is not None and any(series.source is None for series in selection.series):
-        sources.extend(
-            input_source(version, words, path=f"sources.{n}")
-            for n, version in enumerate(record.computed.inputs, start=len(sources))
-        )
+    if computed:
+        sources.extend(computed_sources(record, credited, words, counts=counts, start=len(sources)))
     return sources
 
 
@@ -528,6 +533,63 @@ def input_source(version: InputVersion, words: Words, *, path: str) -> Wire:
     else:
         source["description"] = f"{version_link(version.id, version.content_version)}/description"
     return source
+
+
+def input_evidence(inputs: Sequence[DescriptionRecord]) -> list[SourceEvidence]:
+    """The sources the records of a computed version's inputs credit, each once by ref, in
+    input order and then each input's own order. An input that credits no source, such as a
+    computed version, adds none."""
+    credited: dict[str, SourceEvidence] = {}
+    for record in inputs:
+        for source in record.evidence.sources:
+            credited.setdefault(source.ref, source)
+    return list(credited.values())
+
+
+def computed_sources(
+    record: DescriptionRecord,
+    credited: Sequence[SourceEvidence],
+    words: Words,
+    *,
+    counts: Mapping[str | None, int] | None,
+    start: int = 0,
+) -> list[Wire]:
+    """A computed version's sources from path `sources.{start}` on. Each source its inputs
+    credit (`input_evidence`) comes first, then each input with the link to its own
+    description (`input_source`).
+
+    `counts` holds the described series by the source each names, `None` for those naming
+    none, which were computed from the inputs and so draw on every source they credit. A
+    credited source counts the series naming it and those naming none. With `counts` unknown
+    (`None`), its count is a gap. The credit reaches one level, since an input that is itself
+    a computed version credits no source of its own and adds none."""
+    computed = record.computed
+    assert computed is not None, "a computed version's record holds what it was computed from"
+    sources = [
+        source_entry(
+            source,
+            series=None if counts is None else counts.get(source.ref, 0) + counts.get(None, 0),
+            words=words,
+            path=f"sources.{n}",
+        )
+        for n, source in enumerate(credited, start=start)
+    ]
+    sources.extend(
+        input_source(version, words, path=f"sources.{n}")
+        for n, version in enumerate(computed.inputs, start=start + len(sources))
+    )
+    return sources
+
+
+def source_counts(series: SeriesFacts) -> dict[str | None, int] | None:
+    """A version's series by the source each names, `None` for those naming none, or `None`
+    where its counts by source are unknown."""
+    if series.by_source_unit is None:
+        return None
+    counts: dict[str | None, int] = {}
+    for count in series.by_source_unit:
+        counts[count.source] = counts.get(count.source, 0) + count.series
+    return counts
 
 
 def recorded_sources(record: DescriptionRecord, refs: Sequence[str]) -> list[SourceEvidence]:

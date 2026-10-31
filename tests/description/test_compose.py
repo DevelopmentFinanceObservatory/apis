@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from code_index import CodeIndex
-from description.compose import change_step
+from description.compose import change_step, describe_card, describe_version
 from description.facts import (
     CaveatFact,
     DescriptionRecord,
@@ -25,18 +25,20 @@ from description.facts import (
     RoleCount,
     SourceEvidence,
 )
-from description.steps import SimpleUnit, Step, StepRef, Summed
+from description.steps import SimpleUnit, Step, StepRef, Summed, VersionRef
 from description.stored import TEXT_MAX_LENGTH
-from description.vocabulary import Vocabulary, build_vocabulary
+from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from tests.description.test_accept_compose import (
     _BASIC_HEALTH,
     _EDUCATION,
     _FIXED,
+    _GNI,
     _GRANT,
     _HEALTH,
     _HEALTH_POLICY,
     _INDEX,
     _MEASURES,
+    _ODA,
     _SECTOR,
     _WORKED_DIMENSIONS,
     _checked,
@@ -661,7 +663,8 @@ def test_a_citation_line_credits_the_publishers_then_the_dfo(
 ) -> None:
     """The line credits the organisations that first published the data and the year, then
     names the DFO as the route: "via" where it passes their figures through, "processed by"
-    where it converted, summed or computed them. A computed version credits its inputs."""
+    where it converted, summed or computed them. A computed version given none of its inputs'
+    records credits its inputs."""
     served = _describe_version(record, _words_labelling({_WDI: "World Development Indicators"}))
 
     assert served["cite"]["text"] == text
@@ -690,6 +693,116 @@ def test_a_card_cites_its_own_steps(steps: list[Step], route: str) -> None:
     assert card["cite"]["text"] == (
         f"OECD Creditor Reporting System (CRS) (2026), {route} the Development Finance Observatory"
     )
+
+
+_WORLD_BANK = "dc/s/WorldBank"
+
+
+def _input_record(version: VersionRef, *refs: str) -> DescriptionRecord:
+    """The record of the dataset version `version` names, crediting the sources `refs` name
+    under a licence named for each."""
+    sources = [
+        SourceEvidence(
+            ref=ref, name=None, licence=f"{ref} licence", downloaded=None, pipeline_steps=None
+        )
+        for ref in refs
+    ]
+    return _dataset_record(
+        variables=_variables(_WORKED_DIMENSIONS),
+        id=version.id,
+        content_version=version.content_version,
+        evidence=_evidence(sources=sources),
+    )
+
+
+def _words_with_wdi() -> Vocabulary:
+    """Today's words, with World Development Indicators named and published by the World
+    Bank."""
+    words = _words()
+    return build_vocabulary(
+        index=_INDEX,
+        measure_index=_MEASURES,
+        labels={**words.labels, _WDI: "World Development Indicators", _WORLD_BANK: "World Bank"},
+        sources={
+            **words.sources,
+            _WDI: SourceDocumentFacts(
+                publisher=_WORLD_BANK, last_downloaded="2026-10-01", next_release=None
+            ),
+        },
+        currency_units=words.currency_units,
+        graph_generation="gen-1",
+        catalogue_build="ocb_20260927",
+    )
+
+
+@pytest.mark.parametrize(
+    ("gni_sources", "credited", "text"),
+    [
+        pytest.param(
+            [_WDI],
+            [
+                ("provenance/OECDCreditorReportingSystem", "OECD Creditor Reporting System (CRS)"),
+                (_WDI, "World Development Indicators"),
+            ],
+            "OECD Creditor Reporting System (CRS) and World Development Indicators (2026),"
+            " processed by the Development Finance Observatory",
+            id="two-publishers",
+        ),
+        pytest.param(
+            ["provenance/OECDCreditorReportingSystem"],
+            [("provenance/OECDCreditorReportingSystem", "OECD Creditor Reporting System (CRS)")],
+            "OECD Creditor Reporting System (CRS) (2026), processed by the Development Finance"
+            " Observatory",
+            id="one-shared-source",
+        ),
+    ],
+)
+@pytest.mark.parametrize(("kind", "series"), [("version", 38), ("card", 2)])
+def test_a_computed_version_credits_the_sources_of_its_inputs(
+    kind: str,
+    series: int,
+    gni_sources: list[str],
+    credited: list[tuple[str, str]],
+    text: str,
+) -> None:
+    """A quotient of two inputs, and a card drawing two of its series, which name no source,
+    list each source its inputs credit once, with its publisher, licence, series and
+    document, ahead of the inputs and their description links, and cite those sources."""
+    inputs = [
+        _input_record(_ODA, "provenance/OECDCreditorReportingSystem"),
+        _input_record(_GNI, *gni_sources),
+    ]
+    record = _quotient_record()
+    if kind == "version":
+        served = _checked(describe_version(record, _words_with_wdi(), inputs=inputs))
+    else:
+        drawn = [
+            _drawn(name, {"recipient": name}).model_copy(update={"source": None})
+            for name in ("country/NGA", "country/SSD")
+        ]
+        served = _checked(
+            describe_card(
+                record,
+                _selection(*drawn),
+                _words_with_wdi(),
+                component_id="cmp_Ab3dE5gH7k",
+                revision=2,
+                inputs=inputs,
+            )
+        )
+
+    *sources, oda, gni = served["sources"]
+    assert [(source["ref"], source["label"]) for source in sources] == credited
+    for source in sources:
+        assert source["publisher"] is not None
+        assert source["licence"] == f"{source['ref']} licence"
+        assert source["series"] == series
+        assert source["documentation"] == f"/api/graph/documentation/{source['ref']}"
+    assert [oda["ref"], gni["ref"]] == [_ODA.id, _GNI.id]
+    assert gni["description"] == f"/api/datasets/{_GNI.id}/{_GNI.content_version}/description"
+    assert served["cite"]["text"] == text
+    assert [item["id"] for item in served["cite"]["inputs"]] == [_ODA.id, _GNI.id]
+    assert not [gap for gap in served["gaps"] if gap.startswith("sources")]
 
 
 def test_a_citation_line_past_its_bound_is_clipped() -> None:

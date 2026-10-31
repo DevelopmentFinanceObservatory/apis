@@ -2085,9 +2085,47 @@ def test_a_card_over_a_computed_version_names_its_inputs_by_their_titles(
     description = _description(created.resolved_payload)
 
     assert description["title"] == title
-    assert [source["label"] for source in description["sources"]] == labels
+    inputs = [source for source in description["sources"] if "content_version" in source]
+    assert [source["label"] for source in inputs] == labels
     retrieved = [step for step in description["steps"] if step["op"] == "retrieve"]
     assert [step["input"].get("label") for step in retrieved] == step_labels
+
+
+@pytest.mark.parametrize("inputs_read", [True, False], ids=["inputs-read", "input-read-failed"])
+def test_a_card_over_a_computed_version_credits_the_sources_its_inputs_records_hold(
+    frame_store, revision_store, release_registry, inputs_read
+):
+    """A card over an `ops_` version whose frame holds its inputs' records lists the source
+    both inputs credit once, counting the series the card draws, ahead of the inputs, and
+    its citation line names it. Where the input read failed, it lists and cites the inputs."""
+    frame = _computed_frame()
+    frame_store.put(
+        resolved_frame=dataclasses.replace(
+            _described(frame, _quotient_record(frame)),
+            input_records=_input_records() if inputs_read else (),
+        )
+    )
+    created = _write(
+        _intent(frame, "line_chart", title="Malaria grants per dollar of GNI"),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    description = _description(created.resolved_payload)
+    malaria = malaria_ethiopia_frame_ref()
+
+    credited = [source for source in description["sources"] if "content_version" not in source]
+    inputs = [source["ref"] for source in description["sources"] if "content_version" in source]
+    assert inputs == [malaria.spec_id, _GNI.spec_id]
+    if inputs_read:
+        (source,) = credited
+        assert (source["ref"], source["label"]) == (_CRS, _CRS_NAME)
+        assert source["series"] == 1, "the one series the card draws names no source"
+        assert description["cite"]["text"].startswith(f"{_CRS_NAME} (")
+    else:
+        assert credited == []
+        assert not description["cite"]["text"].startswith(f"{_CRS_NAME} (")
 
 
 @pytest.mark.parametrize(

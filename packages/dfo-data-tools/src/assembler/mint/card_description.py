@@ -9,8 +9,9 @@ words; a stat card's change is the step after its selection. A source card takes
 A card with a description keeps lineage alone in provenance (`lineage_only`), and names each
 source by its dcid, a `description.sources[].ref` (`assembler.mint.source_refs`). A series of a
 computed version whose rows name no source was computed from the version's inputs: the card's
-description lists them as sources, and the series names the first input whose id the record
-knows. The version's caveats reach it through its record. The card adds caveats only for facts
+description lists the sources the inputs' records credit (`ResolvedFrame.input_records`) and
+then the inputs as sources, its citation line names those sources, and the series names the
+first input whose id the record knows. The version's caveats reach it through its record. The card adds caveats only for facts
 about its selection: the series a rolling card leaves out make `coverage_gap` caveats on its
 `select` step, at the period they hold no value at, one per set of entities they are about,
 naming those entities and the variables left out for them, which the composer words. A caveat
@@ -169,6 +170,7 @@ def with_card_description(
             caveats=_left_out_caveats(left_out, drawn_variables=drawn_variables)
             if left_out is not None
             else [],
+            inputs=resolved_frame.input_records,
         )
     else:
         return minted

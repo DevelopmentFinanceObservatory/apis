@@ -26,7 +26,13 @@ from code_index.labels import (
 from description import blocks
 from description.blocks import Wire, Words
 from description.citation import cite, join_names
-from description.facts import CaveatFact, DescriptionRecord, SelectionFacts, Span
+from description.facts import (
+    CaveatFact,
+    DescriptionRecord,
+    SelectionFacts,
+    SourceEvidence,
+    Span,
+)
 from description.steps import (
     MAX_CARD_STEPS,
     MAX_SERVED_STEPS,
@@ -66,12 +72,23 @@ SOURCE_STEP_POLICY = "source_pipeline_as_recorded"
 """The one policy of `SOURCE_STEP_OP` in the kit's operation list."""
 
 
-def describe_version(record: DescriptionRecord, vocabulary: Vocabulary) -> dict[str, Any]:
+def describe_version(
+    record: DescriptionRecord,
+    vocabulary: Vocabulary,
+    *,
+    inputs: Sequence[DescriptionRecord] = (),
+) -> dict[str, Any]:
     """The description of a dataset version (`spec_`) or a computed version (`ops_`).
+
+    A computed version credits the sources its inputs' records credit
+    (`blocks.input_evidence`). Its `sources` list each of them ahead of its inputs, and its
+    citation line names them. Without them, its citation line names its inputs.
 
     Args:
         record: the version's facts and evidence.
         vocabulary: today's words.
+        inputs: for a computed version, the records of the versions it was computed from
+            that are held; ignored for a dataset version.
 
     Returns:
         The description as JSON-ready wire data.
@@ -83,8 +100,10 @@ def describe_version(record: DescriptionRecord, vocabulary: Vocabulary) -> dict[
             "id": record.id,
             "content_version": record.content_version,
         }
-        about, sources, freshness = _computed_blocks(record, words)
+        credited = blocks.input_evidence(inputs)
+        about, sources, freshness = _computed_blocks(record, words, credited)
     else:
+        credited = None
         describes = {
             "kind": "dataset_version",
             "id": record.id,
@@ -102,7 +121,7 @@ def describe_version(record: DescriptionRecord, vocabulary: Vocabulary) -> dict[
         "freshness": freshness,
         "steps": steps,
         "caveats": _caveats(record, words, numbered),
-        "cite": cite(record, words, title=title, composed=composed),
+        "cite": cite(record, words, title=title, composed=composed, sources=credited),
         "gaps": words.gaps,
         "built_from": _built_from(record, vocabulary),
     }
@@ -118,8 +137,13 @@ def describe_card(
     frame: VersionRef | None = None,
     steps: Sequence[Step] | None = None,
     caveats: Sequence[CaveatFact] = (),
+    inputs: Sequence[DescriptionRecord] = (),
 ) -> dict[str, Any]:
     """The description of a card revision drawn from `record`'s version.
+
+    A card drawn from a computed version credits the sources its inputs' records credit, as
+    `describe_version` does. Its `sources` list them ahead of the inputs, and its citation
+    line names them.
 
     Args:
         record: the facts and evidence of the version the card draws from.
@@ -133,6 +157,8 @@ def describe_card(
             after its selection. At most `MAX_CARD_STEPS` less the selection.
         caveats: facts about the card's selection, such as the series a rolling card leaves
             out, worded as the version's caveats are and served ahead of them.
+        inputs: for a computed version, the records of the versions it was computed from
+            that are held; ignored for a dataset version.
 
     Returns:
         The description as JSON-ready wire data.
@@ -143,6 +169,7 @@ def describe_card(
     if 1 + len(steps or ()) > MAX_CARD_STEPS:
         raise ValueError(f"a card serves at most {MAX_CARD_STEPS} steps after its version's")
     words = Words.for_record(record, vocabulary)
+    credited = blocks.input_evidence(inputs) if record.computed is not None else None
     version_title, composed = _version_title(record, words)
     title = clipped(f"{version_title}, {_window(selection.window)}")
     selected = _selection_step(record, selection, label=version_title)
@@ -156,14 +183,21 @@ def describe_card(
             "drawn": blocks.drawn(record, selection, words),
             "unit": blocks.drawn_unit(selection, words),
         },
-        "sources": blocks.drawn_sources(record, selection, words),
+        "sources": blocks.drawn_sources(record, selection, words, credited=credited or ()),
         "freshness": blocks.drawn_freshness(selection, words),
         "steps": served,
         "caveats": _caveats(record, words, numbered, card=caveats, selection=selection),
         "cite": {
             "component_id": component_id,
             "revision": revision,
-            **cite(record, words, title=version_title, composed=composed, steps=numbered.card),
+            **cite(
+                record,
+                words,
+                title=version_title,
+                composed=composed,
+                sources=credited,
+                steps=numbered.card,
+            ),
         },
         "gaps": words.gaps,
         "built_from": _built_from(record, vocabulary),
@@ -276,7 +310,9 @@ def _card_measure(record: DescriptionRecord, words: Words) -> Wire:
     }
 
 
-def _computed_blocks(record: DescriptionRecord, words: Words) -> tuple[Wire, list[Wire], Wire]:
+def _computed_blocks(
+    record: DescriptionRecord, words: Words, credited: Sequence[SourceEvidence]
+) -> tuple[Wire, list[Wire], Wire]:
     computed = record.computed
     assert computed is not None, "a computed version's record holds what it was computed from"
     about: Wire = {
@@ -285,11 +321,13 @@ def _computed_blocks(record: DescriptionRecord, words: Words) -> tuple[Wire, lis
         "period": blocks.period(record.series, words),
         "unit": _computed_unit(record, words),
     }
-    sources = []
-    inputs = []
-    for n, version in enumerate(computed.inputs):
-        sources.append(blocks.input_source(version, words, path=f"sources.{n}"))
-        inputs.append(words.input_ref(version, f"freshness.inputs.{n}"))
+    sources = blocks.computed_sources(
+        record, credited, words, counts=blocks.source_counts(record.series)
+    )
+    inputs = [
+        words.input_ref(version, f"freshness.inputs.{n}")
+        for n, version in enumerate(computed.inputs)
+    ]
     freshness = {
         "computed": record.evidence.prepared.isoformat(),
         "inputs": inputs,

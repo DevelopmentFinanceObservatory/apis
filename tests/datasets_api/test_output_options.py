@@ -190,6 +190,34 @@ class TestEnrichments:
 
         assert document.enrichments == []
 
+    def test_in_long_layout_flags_names_and_party_fields_the_long_layout_writes(self):
+        """The long layout writes each role's `_label` and reads every party field into a party
+        role's `_kind`, so those tokens are flagged; a code is not."""
+        columns = (
+            _column("observationAbout", "role", droppable=False, distinct=2),
+            _column("financingProvider", "role", droppable=False, distinct=3),
+        )
+        coverage = tuple(
+            _coverage(column, field, entities=1, covered=1)
+            for column in ("observationAbout", "financingProvider")
+            for field in ("label", "iso3", "party_kind")
+        )
+        document = _derive(
+            _profile(columns=columns, enrichments=coverage),
+            identity=_NO_OPEN_ROLE,
+            capabilities=_capabilities(),
+        )
+
+        assert {e.token: e.in_long_layout for e in document.enrichments} == {
+            "observationAbout_label": True,
+            "observationAbout_iso3": False,
+            "financingProvider_label": True,
+            "financingProvider_iso3": False,
+            "financingProvider_party_kind": True,
+            "financingProvider_party_class": True,
+            "financingProvider_party_whole": True,
+        }
+
     def test_a_party_roles_kind_coverage_lists_every_party_field(self):
         """A stored profile counts `party_kind` alone; one code-index row gives a party all
         three cells, so the class and whole cells list the same counts."""

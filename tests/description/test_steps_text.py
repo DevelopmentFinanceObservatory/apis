@@ -729,6 +729,79 @@ def test_a_comparison_reads_in_the_order_it_subtracts(
     assert (served[-1]["text"], name_computed(steps, vocabulary)) == (text, name)
 
 
+def _narrowed(op: str, numerator: dict[str, str], denominator: dict[str, str]) -> Step:
+    """A share or quotient of one retrieved version against itself, each side narrowed by
+    its own `<role>_entity` binding."""
+    params = {
+        name: binding
+        for name, binding in (("numerator_entity", numerator), ("denominator_entity", denominator))
+        if binding
+    }
+    return _ratio(op, {"numerator": "s1", "denominator": "s1"}).model_copy(
+        update={"params": params}
+    )
+
+
+@pytest.mark.parametrize(
+    ("step", "text", "name"),
+    [
+        pytest.param(
+            _narrowed("share", _GBR, {}),
+            "Took gross ODA disbursements (United Kingdom) as a share of gross ODA "
+            "disbursements for each period both report.",
+            "gross ODA disbursements (United Kingdom) as a share of gross ODA disbursements",
+            id="share-numerator-narrowed",
+        ),
+        pytest.param(
+            _narrowed("share", _GBR, _FRA),
+            "Took gross ODA disbursements (United Kingdom) as a share of gross ODA "
+            "disbursements (France) for each period both report.",
+            "gross ODA disbursements (United Kingdom) as a share of gross ODA disbursements "
+            "(France)",
+            id="share-sides-narrowed-apart",
+        ),
+        pytest.param(
+            _narrowed("share", {**_GBR, "recipient": _KEN}, {"recipient": _KEN}),
+            "Took gross ODA disbursements (United Kingdom, Kenya) as a share of gross ODA "
+            "disbursements (Kenya) for each period both report.",
+            "gross ODA disbursements (United Kingdom, Kenya) as a share of gross ODA "
+            "disbursements (Kenya)",
+            id="share-two-columns-narrowed",
+        ),
+        pytest.param(
+            _narrowed("share", _GBR, _GBR),
+            "Took each entity's share of the total of gross ODA disbursements (United Kingdom) "
+            "for each period.",
+            "share of gross ODA disbursements (United Kingdom)",
+            id="share-sides-narrowed-alike-are-one-series",
+        ),
+        pytest.param(
+            _narrowed("quotient", _GBR, _FRA),
+            "Divided gross ODA disbursements (United Kingdom) by gross ODA disbursements "
+            "(France) for each period both report.",
+            "gross ODA disbursements (United Kingdom) per gross ODA disbursements (France)",
+            id="quotient-sides-narrowed-apart",
+        ),
+        pytest.param(
+            _narrowed("share", {"donor": "dcid:country/XYZ"}, {}),
+            "Took gross ODA disbursements as a share of gross ODA disbursements for each "
+            "period both report.",
+            "gross ODA disbursements as a share of gross ODA disbursements",
+            id="share-unlabelled-narrowing-names-no-entity",
+        ),
+    ],
+)
+def test_a_ratio_names_each_side_with_its_narrowing(step: Step, text: str, name: str) -> None:
+    """Two sides of one variable that the step narrows apart read apart, in the sentence and
+    in the name; sides narrowed alike are one series, a share within its own total."""
+    steps = [_retrieve("s1", _ODA), step]
+    vocabulary = _vocabulary(_COMPARED)
+    served = describe_steps(steps, vocabulary).served
+
+    assert served is not None
+    assert (served[-1]["text"], name_computed(steps, vocabulary)) == (text, name)
+
+
 def _composed(variable: str, relation: str, first: str, second: str) -> ComposedVariable:
     return ComposedVariable(variable=variable, relation=relation, first=[first], second=[second])
 
