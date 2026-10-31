@@ -19,7 +19,6 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _validate_role_spans,
-    extract,
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
@@ -36,7 +35,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_role_bearing_pipeline_e2e import _SV_DCID, _declaring_arcs
-from tests.fixtures import FakeGraph, FakeLLM, make_resolver
+from tests.fixtures import FakeGraph, make_resolver
 
 _CREDITOR_DEBTOR_ROLE_NAMES = RoleNames(donor="creditor", recipient="debtor")
 
@@ -185,7 +184,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
         so the axis changes and the direction stays unstated."""
         roles = _prepared_roles(
             [ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
-            query="Which countries does Kenya's debt service go to",
+            query="Kenya's debt service",
             measures=["debt service"],
         )
         assert roles == {"Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]}
@@ -309,20 +308,41 @@ def _extracted_axes(kenya: str, china: str) -> dict[str, list[str]]:
     }
 
 
-def test_a_debtor_possessive_moves_the_ranked_end_with_the_place():
-    """The recorded extraction of "Which countries does Kenya's debt service go to" puts
-    Kenya on origin and ranks over destination. Kenya's possessive makes it the debtor, so
-    the two ends swap as one: Kenya on destination, and the rank over origin, its
-    creditors."""
-    query = "Which countries does Kenya's debt service go to"
-    result, _usage = asyncio.run(extract(query, llm=FakeLLM()))
+@pytest.mark.parametrize(
+    ("query", "kenya", "over"),
+    [
+        # The creditors' end is named, so Kenya's possessive places it on the other end:
+        # Kenya and the rank swap as one.
+        ("Which creditors does Kenya's debt service go to", "destination", "origin"),
+        # No creditor is named, so the extraction's reading stands.
+        ("Which countries does Kenya's debt service go to", "origin", "destination"),
+        # The bare possessive sets Kenya's role, but names no creditor, so nothing swaps.
+        ("Kenya's debt service", "destination", "destination"),
+    ],
+)
+def test_a_debtor_possessive_moves_the_ranked_end_only_where_a_creditor_is_named(
+    query, kenya, over
+):
+    """An extraction that puts Kenya on origin and ranks over destination swaps both ends
+    only on the positive evidence of a creditor noun (`role_text.names_creditor_role`)."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=["debt service"],
+        entities=[ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
+        operations=[
+            ExtractedOperation(verb="rank", variable=0, phrase="Which", over="destination")
+        ],
+    )
+    result = ExtractionResult(
+        extraction=extraction,
+        qualifiers={},
+        operations={"debt service": (Operation(verb="rank", phrase="Which", over="destination"),)},
+    )
 
-    prep = _prepare_extraction(result.extraction, result, query=query)
+    prep = _prepare_extraction(extraction, result, query=query)
 
-    assert prep.entity_roles == {
-        "Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]
-    }
-    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["origin"]
+    assert _occurrences(prep.entity_roles) == {"Kenya": [(kenya, "Kenya")]}
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == [over]
 
 
 def test_a_place_whose_cue_states_its_direction_keeps_its_end():

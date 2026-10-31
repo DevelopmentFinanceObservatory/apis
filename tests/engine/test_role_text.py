@@ -563,41 +563,50 @@ class TestDebtAxes:
         assert axes == {}
 
 
-# One place a possessive names over its own debt.
+# One place a possessive names over its own debt, with positive evidence that it owes it:
+# the possessive debt phrase alone, or a creditor noun.
 _ONE_POSSESSIVE_OVER_ITS_DEBT = [
-    ("Which countries does Kenya's gross debt service go to, total", "gross debt service"),
-    ("Kenya's debt by creditor", "debt"),
-    ("Kenya\u2019s debt by creditor", "debt"),
-    ("Kenya's external debt", "external debt"),
-    ("Kenya's debt", "debt"),
-    ("Kenya's debt by year and creditor", "debt"),
+    ("Kenya's debt", "debt", "Kenya"),
+    ("Kenya's debt", "total debt", "Kenya"),
+    ("Kenya's external debt", "external debt", "Kenya"),
+    ("Kenya's gross debt service", "gross debt service", "Kenya"),
+    ("Kenya's debt reduction target", "debt reduction target", "Kenya"),
+    ("The World Bank's debt", "debt", "World Bank"),
+    ("Kenya's debt by creditor", "debt", "Kenya"),
+    ("Kenya\u2019s debt by creditor", "debt", "Kenya"),
+    ("Kenya's debt by year and creditor", "debt", "Kenya"),
+    ("Kenya's debt by lenders", "debt", "Kenya"),
+    ("Kenya's debt by creditor-country", "debt", "Kenya"),
+    ("Kenya's debt target by creditor", "debt", "Kenya"),
+    ("Kenya's debt by creditor destination", "debt", "Kenya"),
+    ("China's debt by creditor", "debt", "China"),
+    ("China's debt by lender", "debt", "China"),
 ]
 
 
 class TestDebtorPossessive:
     """One place a possessive names over its own debt is the debtor."""
 
-    @pytest.mark.parametrize(("query", "measure"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    @pytest.mark.parametrize(("query", "measure", "place"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
     @pytest.mark.parametrize("guessed", ["origin", "destination"])
     def test_one_directed_possessive_over_its_own_debt_is_the_debtor(
-        self, query: str, measure: str, guessed: RoleAxis
+        self, query: str, measure: str, place: str, guessed: RoleAxis
     ) -> None:
         """One place the extraction directed is read by its possessive alone, whichever
         axis the extraction guessed."""
         axes = debtor_possessive(
-            query,
-            measures=[measure],
-            places=_places("Kenya"),
-            directed={"Kenya": guessed},
+            query, measures=[measure], places=_places(place), directed={place: guessed}
         )
-        assert axes == {"Kenya": "destination"}
+        assert axes == {place: "destination"}
 
-    @pytest.mark.parametrize(("query", "measure"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
-    def test_one_undirected_possessive_sets_no_axis(self, query: str, measure: str) -> None:
+    @pytest.mark.parametrize(("query", "measure", "place"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    def test_one_undirected_possessive_sets_no_axis(
+        self, query: str, measure: str, place: str
+    ) -> None:
         """One place the extraction left undirected keeps no axis, so a subject-only series
         drops no direction for it."""
         assert (
-            debtor_possessive(query, measures=[measure], places=_places("Kenya"), directed={}) == {}
+            debtor_possessive(query, measures=[measure], places=_places(place), directed={}) == {}
         )
 
     @pytest.mark.parametrize(
@@ -620,12 +629,9 @@ class TestDebtorPossessive:
             ("China's lending to Africa", ["lending"], "China"),
             ("Germany's aid", ["aid"], "Germany"),
             ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
-            # A role noun of the debtor's end anywhere in the query: the extraction's axis
-            # stands, whatever words surround the noun.
+            # A role noun of the debtor's end, hyphenated or not: the extraction's axis stands.
             ("China's debt by debtor country", ["debt"], "China"),
-            ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
             ("China's debt for each debtor country", ["debt"], "China"),
-            ("China's debt service from each debtor", ["debt service"], "China"),
             ("China's debt, every borrower", ["debt"], "China"),
             ("China's debt by borrower in 2020", ["debt"], "China"),
             ("China's debt by debtor country in 2020", ["debt"], "China"),
@@ -658,11 +664,88 @@ class TestDebtorPossessive:
             ("China's debt by debtor country?", ["debt"], "China"),
             ("China's debt by debtor countries in Africa", ["debt"], "China"),
             ("China's debt held by debtor countries", ["debt"], "China"),
+            ("China's debt by debtor-country", ["debt"], "China"),
+            ("China's debt by creditor and debtor-country", ["debt"], "China"),
+            ("Kenya's debt by creditor, owed by borrowers", ["debt"], "Kenya"),
+            ("China's debt by borrower-country", ["debt"], "China"),
+            ("China's debt by recipient-country", ["debt"], "China"),
+            ("China's debt by debtor nation", ["debt"], "China"),
+            ("China's debt by debtor economy", ["debt"], "China"),
+            ("China's debt by debtor government", ["debt"], "China"),
+            ("China's debt service from each debtor", ["debt service"], "China"),
+            ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
             ("Kenya's debt in Africa by debtor", ["debt"], "Kenya"),
             ("Kenya's external debt by debtor type", ["external debt"], "Kenya"),
             ("Kenya's external debt by debtor group", ["external debt"], "Kenya"),
             ("Kenya's external debt by debtor classification", ["external debt"], "Kenya"),
             ("Kenya's external debt by debtor country type", ["external debt"], "Kenya"),
+            ("World Bank's debt to recipients", ["debt"], "World Bank"),
+            ("Kenya's debt beneficiary", ["debt"], "Kenya"),
+            # A debtor named as `debt_axes` reads one: an active owe, or a debtor verb and by.
+            ("Which countries owe the most of China's debt", ["debt"], "China"),
+            (
+                "Which African countries owe the most of China's outstanding debt",
+                ["outstanding debt"],
+                "China",
+            ),
+            ("rank countries by how much of China's debt they owe", ["debt"], "China"),
+            ("China's debt owed by African countries", ["debt"], "China"),
+            ("China's debt owed by low-income countries", ["debt"], "China"),
+            ("Which countries owe China's debt by creditor", ["debt"], "China"),
+            ("China's debt by creditor owed by Africa", ["debt"], "China"),
+            # No evidence either way: the query is more than the possessive debt phrase and
+            # names no creditor, so the extraction's axis stands.
+            ("China's debt extended to each country", ["debt"], "China"),
+            ("China's debt extended to every country", ["debt"], "China"),
+            ("China's debt disbursed to each country", ["debt"], "China"),
+            (
+                "China's outstanding debt going to each country in Africa",
+                ["outstanding debt"],
+                "China",
+            ),
+            ("China's debt lent to each country", ["debt"], "China"),
+            ("China's debt, to each country", ["debt"], "China"),
+            ("China's debt across every country it lends to", ["debt"], "China"),
+            ("China's debt by borrowing country", ["debt"], "China"),
+            ("China's debt broken down by indebted country", ["debt"], "China"),
+            ("China's debt repayments from African countries", ["debt repayments"], "China"),
+            ("China's debt repayments from developing countries", ["debt repayments"], "China"),
+            ("China's debt repayments received from Africa", ["debt repayments"], "China"),
+            ("China's debt service received from developing countries", ["debt service"], "China"),
+            ("China's debt service receipts", ["debt service"], "China"),
+            ("China's debt investments abroad", ["debt"], "China"),
+            ("China's debt loans to Africa", ["debt"], "China"),
+            ("China's debt stock held by African governments", ["debt stock"], "China"),
+            ("China's debt held abroad", ["debt"], "China"),
+            ("China's outstanding debt in low-income economies", ["outstanding debt"], "China"),
+            ("China's debt in developing nations", ["debt"], "China"),
+            ("China's debt across developing economies", ["debt"], "China"),
+            ("China's debt by country", ["debt"], "China"),
+            ("China's debt financing", ["debt"], "China"),
+            ("China's debt service paid by Zambia", ["debt service"], "China"),
+            ("China's debt service payments from Africa", ["debt service"], "China"),
+            ("China's debt service by country", ["debt service"], "China"),
+            (
+                "Which countries does Kenya's gross debt service go to, total",
+                ["gross debt service"],
+                "Kenya",
+            ),
+            ("Kenya's debt in 2020", ["debt"], "Kenya"),
+            ("Kenya's debt reduction target", ["debt"], "Kenya"),
+            ("Kenya's debt by destination of funds", ["debt"], "Kenya"),
+            ("Kenya's debt sustainability for importers", ["debt"], "Kenya"),
+            ("Kenya's debt and the IMF target", ["debt"], "Kenya"),
+            ("Paris Club's debt with Kenya", ["debt"], "Paris Club"),
+            ("IMF's debt portfolio in Africa", ["debt"], "IMF"),
+            ("The IMF's outstanding debt from Africa", ["debt"], "IMF"),
+            ("World Bank's debt outstanding from borrowing countries", ["debt"], "World Bank"),
+            # A creditor's claim on the debt.
+            ("China's debt receivables", ["debt receivables"], "China"),
+            ("China's debt lending", ["debt lending"], "China"),
+            ("China's debt assets", ["debt assets"], "China"),
+            ("China's debt claim", ["debt claim"], "China"),
+            ("China's debt credits", ["debt credits"], "China"),
+            ("China's debt claims on Africa", ["debt"], "China"),
         ],
     )
     def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:

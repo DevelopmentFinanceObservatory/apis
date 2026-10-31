@@ -123,17 +123,40 @@ _DEBT_ACTION_WORDS: frozenset[str] = frozenset(
     }
 )
 # After a debt noun these name a holder's claim on the debt, which the creditor holds:
-# "China's debt claims", "China's debt exposure", "China's debt portfolio".
-_DEBT_CLAIM_WORDS: frozenset[str] = frozenset({"claims", "exposure", "holdings", "portfolio"})
+# "China's debt claims", "China's debt receivables", "China's debt portfolio".
+_DEBT_CLAIM_WORDS: frozenset[str] = frozenset(
+    {
+        "claim",
+        "claims",
+        "asset",
+        "assets",
+        "receivable",
+        "receivables",
+        "credit",
+        "credits",
+        "lending",
+        "exposure",
+        "exposures",
+        "holding",
+        "holdings",
+        "portfolio",
+        "portfolios",
+    }
+)
+# The role nouns of each end of a debt: "by debtor country", "borrower-country", "lenders".
+_DEBTOR_ROLE_NOUNS: frozenset[str] = frozenset({"debtor", "borrower", "recipient", "beneficiary"})
+_CREDITOR_ROLE_NOUNS: frozenset[str] = frozenset({"creditor", "lender"})
 _NOT_DEBT_AFTER: frozenset[str] = _DEBT_ACTION_WORDS | _DEBT_CLAIM_WORDS
 # Active forms of "owe", whose subject is the debtor and whose object is the creditor:
 # "how much does China owe India". The past "owed" is left out, since "China owed by
 # Kenya" is passive and reverses the parties.
 _OWE_VERBS: frozenset[str] = frozenset({"owe", "owes"})
-# Words before a "by" that make the place after it the debtor: "owed by Kenya".
-_DEBTOR_BY_HEADS: frozenset[str] = frozenset(
-    {"owed", "repaid", "borrowed", "incurred", "debt", "debts"}
-)
+# Verbs before a "by" that make what follows the debtor: "owed by Kenya".
+_DEBTOR_BY_VERBS: frozenset[str] = frozenset({"owed", "repaid", "borrowed", "incurred"})
+# Words before a "by" that make the place after it the debtor: "owed by Kenya", "debt by
+# Kenya". The debt nouns name a debtor only before a place, since "debt by creditor" and
+# "debt by year" are breakdowns.
+_DEBTOR_BY_HEADS: frozenset[str] = _DEBTOR_BY_VERBS | {"debt", "debts"}
 # Words that close a debt phrase before "to": "debt service to", "debt payments to".
 _DEBT_PHRASE_TAILS: frozenset[str] = frozenset(
     {"service", "servicing", "payment", "payments", "stock", "stocks"}
@@ -363,18 +386,16 @@ def debtor_possessive(
 ) -> dict[str, RoleAxis]:
     """Return the debtor's axis for the one place a possessive names over its own debt.
 
-    The rule reads a single measure that names a debt and exactly one place, and only when
-    the extraction gave that place an axis (``directed``): ``Kenya's debt by creditor``,
-    ``which countries does Kenya's debt service go to``. A place the extraction left
-    undirected keeps no axis (``Kenya's external debt``), so a subject-only series drops no
-    direction for it. A possessive claim on another party's debt (``Kenya's share of
-    external debt``), a place with no possessive, and a creditor cue whose object is no
-    place (``Kenya's debt to GDP ratio``, a debt measured against a quantity) set nothing,
-    and a debt noun followed by a claim word (``China's debt exposure``) names no debt. A
-    query with any role noun of the debtor's end (`role_axis_for_text`: ``debtor``,
-    ``borrowers``, ``recipient``) may make its possessor the creditor, so it sets nothing
-    and the extraction's axis stands: ``China's debt by debtor country``, ``Kenya's
-    external debt by debtor type``.
+    The rule reads a single measure that names a debt and exactly one place the extraction
+    gave an axis (``directed``), and acts only on positive evidence that the possessor
+    owes the debt: the query is the possessive debt phrase alone (``Kenya's debt``,
+    ``Kenya's external debt``), or it names the creditors' end (`names_creditor_role`:
+    ``Kenya's debt by creditor``). Any other query sets nothing, and the extraction's axis
+    stands. So does a query that names the debtors' end (``by debtor country``,
+    ``borrower-country``) or a debtor the way `debt_axes` reads one (``owed by``, ``owe``),
+    a creditor cue whose object is no place (``Kenya's debt to GDP ratio``), and a
+    possessive claim on another party's debt (``Kenya's share of external debt``). A debt
+    noun followed by a claim word (``China's debt receivables``) names no debt.
 
     The possessive reads the measure, so the axis states no direction of its own
     (``FramePlace.direction_stated``).
@@ -382,15 +403,64 @@ def debtor_possessive(
     if len(measures) != 1 or len(places) != 1 or not _names_debt(_tokenize(measures[0])):
         return {}
     query_tokens = _tokenize(query.replace("\u2019", "'"))
-    if any(_follows_creditor_cue(query_tokens, start) for start in range(len(query_tokens))):
-        return {}
-    if any(
-        _noun_axis(token.removesuffix(_POSSESSIVE).removesuffix("'")) == "destination"
-        for token in query_tokens
+    if (
+        any(_follows_creditor_cue(query_tokens, start) for start in range(len(query_tokens)))
+        or any(_names_role(token, _DEBTOR_ROLE_NOUNS) for token in query_tokens)
+        or _states_debtor(query_tokens)
     ):
         return {}
     possessors = _debt_possessors(query_tokens, places) or set()
+    if not names_creditor_role(query):
+        possessors = {
+            name for name in possessors if _bare_possessive(query_tokens, places[name], measures[0])
+        }
     return {name: "destination" for name in possessors if name in directed}
+
+
+def names_creditor_role(query: str) -> bool:
+    """Whether the query names the creditors' end (`_CREDITOR_ROLE_NOUNS`: ``by creditor``,
+    ``lenders``, ``creditor-country``), the evidence that a possessed debt is owed by its
+    possessor."""
+    return any(
+        _names_role(token, _CREDITOR_ROLE_NOUNS)
+        for token in _tokenize(query.replace("\u2019", "'"))
+    )
+
+
+def _names_role(token: str, nouns: frozenset[str]) -> bool:
+    """Whether ``token`` holds one of ``nouns``, singular, plural or possessive, alone or in a
+    hyphenated compound ("debtor-country")."""
+    for part in token.removesuffix(_POSSESSIVE).removesuffix("'").split("-"):
+        singular = part[:-3] + "y" if part.endswith("ies") else part.removesuffix("s")
+        if part in nouns or singular in nouns:
+            return True
+    return False
+
+
+def _bare_possessive(query_tokens: list[str], spans: Sequence[str], measure: str) -> bool:
+    """Whether the query is one of ``spans``' possessive over the measure and nothing else,
+    after an optional ``the``: every word after the possessive is the measure's
+    (``Kenya's external debt`` over "external debt", ``Kenya's debt`` over "total debt")."""
+    measure_tokens = set(_tokenize(measure))
+    for tokens in (_tokenize(span) for span in spans):
+        if not tokens:
+            continue
+        possessive = [*tokens[:-1], tokens[-1].removesuffix(_POSSESSIVE) + _POSSESSIVE]
+        for start in _span_starts(query_tokens, possessive):
+            rest = query_tokens[start + len(possessive) :]
+            if query_tokens[:start] in ([], ["the"]) and rest and set(rest) <= measure_tokens:
+                return True
+    return False
+
+
+def _states_debtor(query_tokens: list[str]) -> bool:
+    """Whether the query names a debtor with the cue words `debt_axes` reads: an active "owe"
+    (`_OWE_VERBS`: "which countries owe") or a debtor verb before "by" (`_DEBTOR_BY_VERBS`:
+    "owed by African countries"), whatever follows it."""
+    return any(
+        token in _OWE_VERBS or (token in _DEBTOR_BY_VERBS and query_tokens[i + 1 : i + 2] == ["by"])
+        for i, token in enumerate(query_tokens)
+    )
 
 
 # Forms of "receive" that read the place beside them as the recipient: "received by

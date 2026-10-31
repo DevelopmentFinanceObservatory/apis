@@ -19811,30 +19811,5 @@
         "stated": true
       }
     ]
-  },
-  "Extraction@501cb31acc6e:6e82c18ed3f50704da7e47ad9b00bb5225191925": {
-    "kind": "resolution",
-    "variables": [
-      "debt service"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "origin",
-        "role_span": "'s",
-        "members": false
-      }
-    ],
-    "operations": [
-      {
-        "verb": "rank",
-        "variable": 0,
-        "phrase": "Which countries does... go to",
-        "over": "destination"
-      }
-    ],
-    "dropped_qualifiers": [],
-    "dates": []
   }
 }

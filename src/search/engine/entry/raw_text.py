@@ -105,6 +105,7 @@ from search.engine.role_text import (
     debt_axes,
     debtor_possessive,
     every_member_breakdown_axis,
+    names_creditor_role,
     receipt_axes,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
@@ -540,18 +541,24 @@ def _read_wording(
 
 def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: str) -> Ends:
     """The permutation of ends the query's wording makes of the extraction's reading
-    (`flow_ends.end_permutation`), from each directed place it moves. A directed place the
-    wording leaves alone whose validated cue states its direction (`_cue_states_direction`:
-    "from France", "funded by France", "France funds") keeps its end, so the wording then
-    moves only the places it names. A cue whose preposition names the other end ("from
+    (`flow_ends.end_permutation`), from each directed place it moves. A stated axis
+    (`_Wording.stated`) moves its place. A possessive debtor (`_Wording.read`) moves its
+    place only when the query names the creditors' end (`role_text.names_creditor_role`),
+    which places the possessor on the other end of every operation; a bare ``Kenya's debt``
+    sets Kenya's role and swaps nothing. A directed place the wording leaves alone whose
+    validated cue states its direction (`_cue_states_direction`: "from France", "funded by
+    France", "France funds") keeps its end, so the wording then moves only the places it
+    names. A cue whose preposition names the other end ("from
     France" on destination, `role_text.contradicts`) shows the extraction read the flow
     backwards, so it protects nothing. A verb cue names no end the code can check, so a
     place the extraction set against its own verb cue ("funded by France" on destination)
     still protects, and the wording then moves no place."""
+    swaps_read = names_creditor_role(query)
     moves = {
         name: (wording.extracted[name], axis)
         for name in wording.extracted
-        if (axis := wording.axis(name)) is not None
+        if (axis := wording.stated.get(name) or (wording.read.get(name) if swaps_read else None))
+        is not None
     }
     if any(
         (name := _entity_key(entity)) in wording.extracted

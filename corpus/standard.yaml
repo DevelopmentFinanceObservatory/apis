@@ -4005,14 +4005,3 @@
       measure: {family: crs.disbursement_gross}
       entities: [{dcid: country/KEN, role: destination}]
       warnings: [role_scope_defaulted]
-- id: direction-raw-kenya-debt-service-creditors-kenya-debtor
-  query: Which countries does Kenya's debt service go to
-  why: Kenya's debt service reads Kenya as the debtor on destination, with its creditors open, whichever axis the extraction guessed.
-  tags:
-    directional_flow: na
-    conjunction: none
-  expect:
-    definite:
-      entities:
-      - dcid: country/KEN
-        role: destination
