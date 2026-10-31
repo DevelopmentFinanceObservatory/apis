@@ -1193,7 +1193,7 @@ def test_a_retried_bare_create_replays_its_first_reply_without_resolving_again(
     assert newest_specs.asked == [BARE_SPEC_ID]
 
 
-def test_a_bare_create_whose_dataset_is_building_is_frame_unavailable_and_stores_nothing(
+def test_a_bare_create_whose_dataset_is_building_is_service_unavailable_and_stores_nothing(
     newest_client: TestClient, newest_specs: FakeNewestSpecs, revision_store: FakeRevisionStore
 ):
     newest_specs.answer = NewestPending(retry_after_s=2.0)
@@ -1201,7 +1201,7 @@ def test_a_bare_create_whose_dataset_is_building_is_frame_unavailable_and_stores
     resp = _create(newest_client, intent=_bare(_LINE_CHART_INTENT))
 
     assert resp.status_code == 503, resp.text
-    assert resp.json()["code"] == "frame_unavailable"
+    assert resp.json()["code"] == "service_unavailable"
     assert resp.json()["retryable"] is True
     assert revision_store._revisions == {}
 

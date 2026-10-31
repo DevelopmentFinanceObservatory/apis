@@ -76,6 +76,7 @@ from materialise.reshape import (
 from search.models import TimeWindow
 from search.role_kinds import RoleKindRefused
 from search.scope_window import WindowTooLong
+from spec_registry import SpecIdMismatch
 from statvar_members import FiveTuple, MemberReadDeadline
 
 MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
@@ -90,6 +91,8 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     QueryOptionsInvalid,
     SpecNotFound,
     MalformedSidecarIdentity,
+    # A sidecar whose identity hashes to another id (`kinds.spec_id.admit_sidecar`).
+    SpecIdMismatch,
     InvalidRoleRef,
     RoleIncompatible,
     CurrencyRoleUndeclared,
@@ -160,6 +163,7 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     QueryOptionsInvalid(pointer="/options/groupby/levels", detail="exemplar"),
     SpecNotFound(subject_id="spec_exemplar", pointer="/input/spec_id"),
     MalformedSidecarIdentity(detail="exemplar", pointer="/input/spec_id"),
+    SpecIdMismatch(supplied="spec_exemplar", computed="spec_exemplar_computed"),
     InvalidRoleRef(stat_var="dcid:exemplar", role="exemplar"),
     RoleIncompatible(stat_var="dcid:exemplar", role="exemplar"),
     CurrencyRoleUndeclared(stat_var="dcid:exemplar", role="exemplar", declared_roles=("exemplar",)),

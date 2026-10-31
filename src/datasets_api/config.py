@@ -10,6 +10,7 @@ startup when live clients are built. Tests can inject fakes without constructing
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Self
 
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,13 +37,41 @@ from statvar_members import DEFAULT_SUBJECT_CEILING
 # `DatasetsBuildSettings.operation_deadline_seconds`.
 DEFAULT_OPERATION_DEADLINE_SECONDS = 36_000
 DEFAULT_MATERIALISE_WAIT_SECONDS = 30
+# `DATASETS_GROUPBY_FOLD_MAX_ROWS` where the environment sets none, which also sizes the frame1
+# document a read decodes (`render.frame1_decode_max_bytes`).
+DEFAULT_GROUPBY_FOLD_MAX_ROWS = 2_000_000
 
 
 class DatasetsConfigError(Exception):
     """Invalid `DATASETS_*` settings and door dependency-injection conflicts."""
 
 
-class DatasetsBuildSettings(BaseSettings):
+class FoldCeilingSettings(BaseSettings):
+    """The fold ceiling, read once for both surfaces: `DatasetsBuildSettings` extends it, and
+    Presentation's frame store, which reads no other Datasets setting, reads it alone
+    (`presentation_api.config.PresentationSettings`), so the two bound a frame1 document alike.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="DATASETS_")
+
+    # Frame rows a groupby that sums a frame folds as Arrow. A larger frame refuses over_ceiling
+    # (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads (505 MiB over
+    # spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB. A frame1 document
+    # a read decodes is held to that memory too (`render.frame1_decode_max_bytes`).
+    groupby_fold_max_rows: int = Field(default=DEFAULT_GROUPBY_FOLD_MAX_ROWS, ge=1)
+
+    @classmethod
+    def from_env(cls) -> Self:
+        """Construct settings and translate validation failures to `DatasetsConfigError`."""
+        try:
+            return cls()
+        except ValidationError as exc:
+            raise DatasetsConfigError(
+                env_validation_error_message(exc, env_prefix="DATASETS_")
+            ) from exc
+
+
+class DatasetsBuildSettings(FoldCeilingSettings):
     """Settings with a safe default, resolved once at door-build time.
     See the module docstring for the two-tier split this is one half of.
     """
@@ -81,16 +110,6 @@ class DatasetsBuildSettings(BaseSettings):
 
     # Pivot cell limit. Format column caps bound width only, and CSV/Parquet have no width cap.
     pivot_max_output_cells: int = Field(default=5_000_000, ge=1)
-
-    # Frame rows a groupby that sums a canonical frame folds as Arrow. A larger frame refuses
-    # over_ceiling (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads
-    # (505 MiB over spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB.
-    groupby_fold_max_rows: int = Field(default=2_000_000, ge=1)
-
-    # Frame rows a groupby that sums a frame1 document folds row by row. That fold peaks at
-    # about 2.8 KiB a group (1.39 GiB over spec_09ff's 488,979 groups), and a frame can keep one
-    # group a row, so this ceiling holds it to the Arrow fold's 2 GiB.
-    groupby_row_fold_max_rows: int = Field(default=700_000, ge=1)
 
     # Groupby folds the process runs at once. Permits times the fold's 2 GiB at its ceiling must
     # fit the service's fold memory, so the 4 GiB service takes one. A further collapse waits.
@@ -243,16 +262,6 @@ class DatasetsBuildSettings(BaseSettings):
                 f"({self.head_max_age_seconds}), got {self.head_recheck_seconds}"
             )
         return self
-
-    @classmethod
-    def from_env(cls) -> DatasetsBuildSettings:
-        """Construct settings and translate validation failures to `DatasetsConfigError`."""
-        try:
-            return cls()
-        except ValidationError as exc:
-            raise DatasetsConfigError(
-                env_validation_error_message(exc, env_prefix="DATASETS_")
-            ) from exc
 
 
 class DatasetsSettings(BaseSettings):

@@ -8,7 +8,6 @@ an endpoint that maps no status of its own for it takes that one.
 from __future__ import annotations
 
 import pytest
-from dfo_spec_kit.registry import REGISTRY
 
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
@@ -17,6 +16,7 @@ from graph_api.doors.members import build_members_door
 from graph_api.doors.node import build_node_door
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.sources import build_sources_door
+from tests.code_registry import problem_statuses, registered_endpoints, unbound_routes
 
 from .conftest import FakeGraphNodeReader
 
@@ -34,32 +34,17 @@ def doors() -> tuple[DoorContribution, ...]:
 def _statuses(code: str, endpoint: str) -> set[int]:
     """The statuses the registry gives `code` on `endpoint`'s problem details, or on
     `platform.any`'s when `endpoint` maps none."""
-    entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
-    mappings = [
-        mapping
-        for mapping in (entry.mappings if entry is not None else ())
-        if mapping.channel == "problem_details" and mapping.http_status is not None
-    ]
-    on_endpoint = {mapping.http_status for mapping in mappings if mapping.endpoint == endpoint}
-    return on_endpoint or {
-        mapping.http_status for mapping in mappings if mapping.endpoint == "platform.any"
-    }
+    return problem_statuses(code, endpoint) or problem_statuses(code, "platform.any")
 
 
 def test_every_graph_route_binds_the_registry_endpoint_it_serves():
     """The surface binds every Graph endpoint the registry maps, each to a route it serves, and
     leaves only the routes in `_UNBOUND_PATHS` unbound."""
     surface = graph_surface(graph=FakeGraphNodeReader())
-    registered = {
-        mapping.endpoint
-        for entry in REGISTRY.entries
-        for mapping in entry.mappings
-        if mapping.endpoint.startswith("graph.")
-    }
-    routed = {getattr(route, "path", None) for route in surface.router.routes}
+    registered = registered_endpoints("graph.")
 
     assert set(surface.registry_endpoints.values()) == registered
-    assert routed - set(surface.registry_endpoints) == _UNBOUND_PATHS
+    assert {path for _, path in unbound_routes(surface)} == _UNBOUND_PATHS
 
 
 def test_every_graph_exemplar_goes_out_at_its_registered_status(doors):

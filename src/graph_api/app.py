@@ -415,7 +415,7 @@ def graph_surface(
         ),
         lifespan=lifespan,
         registry_endpoints={
-            path: endpoint for door in doors for path, endpoint in door.registry_endpoints.items()
+            key: endpoint for door in doors for key, endpoint in door.registry_endpoints.items()
         },
         request_scope=request_scope,
     )

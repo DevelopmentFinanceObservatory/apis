@@ -21,8 +21,6 @@ import pytest
 from artifact_store import LiveArtifactInventory, Tier
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration
 from dataset_store.snapshot import LiveSnapshotReader, Revocation
-from datasets_api import deps as deps_module
-from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import files as files_module
 from datasets_api.doors.files import build_files_door
@@ -44,8 +42,8 @@ from tests.engine._fake_coverage import FakeCoverageService, build_coverage_inde
 
 from . import test_serve_party_totals as party_totals
 from ._artifact_doubles import FakeArtifactStore
-from ._deps_doubles import fake_deps_cell
-from ._frame_doubles import canonical_frame_digest
+from ._deps_doubles import closable_permits, fake_deps_cell
+from ._frame_doubles import canonical_frame_digest, link_frame1_only
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import (
     _NOW,
@@ -95,18 +93,6 @@ class _RenderSpy:
             return real(**kwargs)
 
         monkeypatch.setattr(files_module, "render_version_from_frame", spy)
-
-
-class _ClosablePermits(MaterialisePermits):
-    """Materialise permits that grant none once `closed` is set, as a semaphore every frame
-    holds does."""
-
-    closed = False
-
-    def acquire(self, *, timeout: float, keep_waiting=None) -> bool:
-        if self.closed:
-            return False
-        return super().acquire(timeout=timeout, keep_waiting=keep_waiting)
 
 
 def _rig(**client_kwargs: Any):
@@ -336,13 +322,7 @@ def test_an_xlsx_over_the_sheet_limit_refuses_excel_limit():
 
 
 def test_a_full_materialise_semaphore_refuses_a_render_retryable_503(monkeypatch):
-    permits: list[_ClosablePermits] = []
-
-    def build(count: int) -> _ClosablePermits:
-        permits.append(_ClosablePermits(count))
-        return permits[-1]
-
-    monkeypatch.setattr(deps_module, "MaterialisePermits", build)
+    permits = closable_permits(monkeypatch)
     client, _, _ = _rig(
         settings=DatasetsBuildSettings.from_env().model_copy(
             update={"materialise_wait_seconds": 0.1}
@@ -358,6 +338,43 @@ def test_a_full_materialise_semaphore_refuses_a_render_retryable_503(monkeypatch
     assert resp.status_code == 503, resp.text
     assert resp.json()["code"] == "service_unavailable"
     assert resp.json()["retryable"] is True
+
+
+@pytest.mark.parametrize("aged", [False, True], ids=["servable-frame", "aged-frame"])
+def test_a_frame1_render_past_the_decode_bound_refuses_with_every_permit_held(monkeypatch, aged):
+    """A frame1 document recorded at 250 MB is past the 216,600,000 bytes a render that decodes
+    it alone takes. Its record decides that, so a selector render refuses `over_ceiling`
+    (`bytes`) with every materialise permit held, from a servable frame and from an aged one
+    before it renews, where waiting for a permit would refuse a retryable 503."""
+    permits = closable_permits(monkeypatch)
+    client, version_store, artifact_store = _rig(
+        settings=DatasetsBuildSettings.from_env().model_copy(
+            update={"materialise_wait_seconds": 0.1}
+        )
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    minted = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    digest = link_frame1_only(
+        version_store, artifact_store, subject_id=spec_id, content_version=minted["content_version"]
+    )
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (250_000_000, digest),
+        )
+        if aged:
+            tx.execute(
+                "UPDATE datasets.artifact_location SET stored_at = %s",
+                (datetime.now(UTC) - timedelta(days=31),),
+            )
+    for held in permits:
+        held.closed = True
+
+    resp = client.get(_selector(minted, _PARQUET), follow_redirects=False)
+
+    assert resp.status_code == 422, resp.text
+    assert (resp.json()["code"], resp.json()["ceiling_kind"]) == ("over_ceiling", "bytes")
+    assert artifact_store.renewals == []
 
 
 @pytest.mark.parametrize(

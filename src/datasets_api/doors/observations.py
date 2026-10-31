@@ -45,9 +45,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-from dfo_frame_grammar import STATUS_COLUMN
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -85,17 +82,19 @@ from datasets_api.manifest import (
 )
 from datasets_api.manifest_models import Manifest
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import rendition_token, servable_frame_location
+from datasets_api.render import (
+    refuse_frame1_past_decode_bound,
+    rendition_token,
+    servable_frame_location,
+)
+from datasets_api.store_errors import stored_frame_rows
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
+from materialise.errors import OverCeilingError
 from materialise.formats import (
-    FRAME1_MEDIA_TYPE,
-    canonical_frame_rows,
     frame_entity_columns,
-    read_canonical_frame_table,
-    read_frame1_table,
 )
 from materialise.graph import UNRESOLVED_NODE, ArcTarget, GraphReader, GraphReadError
 from materialise.series_conversion import SeriesConversion, SeriesKey
@@ -248,21 +247,6 @@ class _StoredPreview:
         )
 
 
-def _stored_frame_rows(
-    data: bytes, *, media_type: str
-) -> tuple[tuple[str, ...], Iterable[tuple[object, ...]]]:
-    """The columns and rows of a version's stored frame: its frame1 document, or its canonical
-    frame without the `status` column, whose rows are built a slice at a time."""
-    if media_type == FRAME1_MEDIA_TYPE:
-        table = read_frame1_table(data)
-        return table.columns, table.rows
-    columns = [
-        name for name in pq.read_schema(pa.BufferReader(data)).names if name != STATUS_COLUMN
-    ]
-    projected = read_canonical_frame_table(data, columns=columns)
-    return tuple(columns), canonical_frame_rows(projected)
-
-
 def _series_reads(
     columns: Sequence[str],
     rows: Iterable[tuple[object, ...]],
@@ -328,12 +312,15 @@ def _load_series_reads(
     content_version: str,
 ) -> dict[SeriesKey, SeriesRead]:
     """Read the stored frame at `frame`, decode it and group its rows (`_series_reads`). The
-    caller holds a materialise permit and binds neither the bytes nor the decoded rows, so
-    both are freed when this returns, before the permit is released."""
+    caller refused a frame1 document past the decode bound before it took the materialise
+    permit it holds, and binds neither the bytes nor the decoded rows, so both are freed when
+    this returns, before the permit is released."""
     with phase("frame_load"):
         data = deps.artifact_store.get(artifact_digest=frame.artifact_digest, tier=Tier(frame.tier))
     with phase("frame_decode"):
-        columns, rows = _stored_frame_rows(data, media_type=frame.media_type)
+        columns, rows = stored_frame_rows(
+            data, media_type=frame.media_type, digest=frame.artifact_digest
+        )
         return _series_reads(
             columns,
             rows,
@@ -434,6 +421,9 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 id=id, content_version=content_version, reason="holds no servable stored frame"
             )
         conversions = stored_series_conversions(facts)
+        # The recorded size decides it, so it refuses before the permit, which a refusal
+        # bound to come would otherwise wait on.
+        refuse_frame1_past_decode_bound(frame, fold_max_rows=deps.settings.groupby_fold_max_rows)
         try:
             with bounded_materialise_slot(
                 deps.materialise_semaphore, wait_seconds=deps.settings.materialise_wait_seconds
@@ -572,6 +562,8 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             ObservationsBackpressure,
             ObservationsGraphUnavailable,
             StoredFrameCorrupt,
+            # A stored frame1 document past the decode bound refuses before it is read.
+            OverCeilingError,
         ),
         exception_exemplars=(
             IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
@@ -583,5 +575,6 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             StoredFrameCorrupt(
                 id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
             ),
+            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
         ),
     )

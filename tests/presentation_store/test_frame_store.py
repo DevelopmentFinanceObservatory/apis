@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -15,10 +16,13 @@ from contextlib import ExitStack, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any, Never, cast
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
+from dfo_frame_grammar.grammar import FrameError, derive_columns
 
 from artifact_store import ArtifactLocation, CopyBounds
 from artifact_store.errors import (
@@ -92,7 +96,7 @@ from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
-from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_frame1
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import PROVENANCE_NAME_PROPERTIES, SourceDocumentNotFound
 from origin_catalogue import BASE
@@ -517,6 +521,34 @@ class _LegacyReferenceWriter:
 # -- Fixtures -----------------------------------------------------------
 
 
+def _frame1_with(**members: object) -> bytes:
+    """The malaria frame1 document with `members` replaced; a `None` member is left out."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    doc.update(members)
+    return json.dumps({key: value for key, value in doc.items() if value is not None}).encode()
+
+
+def _frame1_with_repeated_row() -> bytes:
+    """The malaria document with its first row stored twice."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    rows = cast("list[list[object]]", doc["rows"])
+    rows.insert(1, list(rows[0]))
+    return json.dumps(doc).encode()
+
+
+def _frame1_without(column: str) -> bytes:
+    """The malaria frame1 document without `column`."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    columns = cast("list[str]", doc["columns"])
+    index = columns.index(column)
+    doc["columns"] = [name for name in columns if name != column]
+    doc["rows"] = [
+        [cell for position, cell in enumerate(row) if position != index]
+        for row in cast("list[list[object]]", doc["rows"])
+    ]
+    return json.dumps(doc).encode()
+
+
 def _frame_bytes() -> bytes:
     doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
     return json.dumps(doc).encode("utf-8")
@@ -794,6 +826,427 @@ def test_load_refuses_a_canonical_frame_over_the_row_bound_before_fetching_it():
 
     assert excinfo.value.reason == "missing_rendering"
     assert [call for call in artifacts.calls if call[0] == "get"] == []
+
+
+@pytest.mark.parametrize(
+    ("size_bytes", "loads"),
+    [pytest.param(200_000_000, True, id="under"), pytest.param(250_000_000, False, id="past")],
+)
+def test_load_bounds_a_frame1_document_by_its_recorded_size_as_datasets_does(
+    size_bytes: int, loads: bool
+):
+    """A frame1 document recorded at 250 MB is past the 216,600,000 bytes a Datasets read that
+    decodes it alone takes (`render.frame1_decode_max_bytes` at the default fold ceiling), so it
+    refuses `missing_rendering` before its object is fetched, as the Datasets observations door
+    refuses it `over_ceiling` (`tests/datasets_api/test_observations_door.py`). One at 200 MB
+    loads."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    snapshots.locations[key] = [
+        replace(location, size_bytes=size_bytes) for location in snapshots.locations[key]
+    ]
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    if loads:
+        assert store.load(frame_ref=frame_ref)
+        return
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    assert [call for call in artifacts.calls if call[0] == "get"] == []
+
+
+def _parquet_bytes() -> bytes:
+    sink = io.BytesIO()
+    table = pa.table({"name": [f"row {index}" for index in range(5000)]})
+    pq.write_table(table, sink, compression="snappy")
+    return sink.getvalue()
+
+
+def _footer_zeroed(data: bytes) -> bytes:
+    footer = int.from_bytes(data[-8:-4], "little")
+    return data[: -8 - footer] + bytes(footer) + data[-8:]
+
+
+def _pages_flipped(data: bytes) -> bytes:
+    flipped = bytearray(data)
+    for index in range(40, 2000, 3):
+        flipped[index] ^= 0xFF
+    return bytes(flipped)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(lambda _: b"not a parquet file", id="not-parquet"),
+        pytest.param(lambda _: b"", id="empty"),
+        pytest.param(_footer_zeroed, id="footer-zeroed"),
+        pytest.param(_pages_flipped, id="pages-flipped"),
+        pytest.param(lambda data: data[: len(data) // 2], id="body-truncated"),
+        pytest.param(lambda data: data[:4] + data[len(data) // 2 :], id="tail-kept"),
+    ],
+)
+def test_load_refuses_a_canonical_frame_whose_bytes_do_not_decode(corrupt):
+    """Stored bytes that match their digest and do not decode as a frame never load, so the
+    load refuses `missing_rendering`."""
+    snapshots, artifacts, frame_ref = _canonical_frame_version(corrupt(_parquet_bytes()))
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def test_load_refuses_a_frame_of_another_schema():
+    """A Parquet file that is no canonical frame decodes, and the grammar refuses its schema."""
+    snapshots, artifacts, frame_ref = _canonical_frame_version(_parquet_bytes())
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def _frame_of_every_unit() -> Frame:
+    """The malaria rows, holding every form a `unit` cell stores in turn."""
+    units = (
+        None,
+        "USDollar",
+        {"currency": "USD", "prices": "current"},
+        {"currency": "EUR", "prices": "constant", "base_year": 2020},
+        {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+        {
+            "numerator": {"currency": "USD", "prices": "current"},
+            "denominator": {"currency": "EUR", "prices": "current"},
+        },
+    )
+    rows = (
+        {**row, "unit": units[index % len(units)]}
+        for index, row in enumerate(malaria_ethiopia_rows())
+    )
+    return Frame.build(role_keys=("recipient",), rows=rows)
+
+
+def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering():
+    """A stored frame's bytes can break anywhere, and each break is a permanent refusal."""
+    data = canonical_frame_parquet((_frame_of_every_unit(),))
+    rng = random.Random(7)
+    for _ in range(1000):
+        mutant = bytearray(data)
+        mutant[rng.randrange(len(mutant))] ^= 1 << rng.randrange(8)
+        snapshots, artifacts, frame_ref = _canonical_frame_version(bytes(mutant))
+        store = _store(snapshots=snapshots, artifacts=artifacts)
+        try:
+            store.load(frame_ref=frame_ref)
+        except FrameUnavailable as refused:
+            assert refused.reason == "missing_rendering"
+
+
+DECODE_FAILURES = [
+    pytest.param(FrameError("schema_violation", "exemplar"), id="frame-error"),
+    pytest.param(pa.ArrowInvalid("exemplar"), id="arrow-invalid"),
+    pytest.param(OSError("exemplar"), id="os-error"),
+    pytest.param(
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), id="unicode-decode-error"
+    ),
+]
+"""A failure of each kind a reader of stored frame bytes raises for bytes that do not decode,
+which Datasets refuses alike (`tests/datasets_api/test_stored_frame1.py`)."""
+
+
+@pytest.mark.parametrize("raised", DECODE_FAILURES)
+def test_a_stored_frame_that_does_not_decode_refuses_missing_rendering(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", _raises(raised))
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        pytest.param(MemoryError(), id="python-out-of-memory"),
+        pytest.param(pa.ArrowMemoryError("exemplar"), id="arrow-out-of-memory"),
+    ],
+)
+def test_load_refuses_io_when_decoding_runs_out_of_memory(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    def fail(_data: bytes, *, columns: object = None) -> Never:
+        raise raised
+
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", fail)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "io"
+    assert excinfo.value.retry_after_s == frame_store._DECODE_RETRY_AFTER_S
+
+
+def _raises(raised: Exception) -> Callable[..., Never]:
+    def fail(*_args: object, **_kwargs: object) -> Never:
+        raise raised
+
+    return fail
+
+
+def _logged_traceback_names(exc: BaseException, digest: str) -> bool:
+    """Whether the traceback the platform logs for `exc` names `digest`."""
+    return digest in logging.Formatter().formatException((type(exc), exc, exc.__traceback__))
+
+
+@pytest.mark.parametrize(
+    "site", ["read_canonical_frame_table", "canonical_frame_document", "compute_structural_view"]
+)
+@pytest.mark.parametrize(
+    "raised", [pytest.param(TypeError, id="type"), pytest.param(KeyError, id="key")]
+)
+def test_a_defect_reading_a_stored_frame_reaches_internal_error_naming_its_digest(
+    monkeypatch: pytest.MonkeyPatch, site: str, raised: type[Exception]
+):
+    """A refusal comes only from a check of the stored content, so a raised defect stays one
+    whatever its type."""
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, site, _raises(raised("exemplar")))
+
+    with pytest.raises(raised) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    ((location,),) = snapshots.locations.values()
+    assert _logged_traceback_names(excinfo.value, location.artifact_digest)
+
+
+def test_a_structural_view_out_of_memory_refuses_io(monkeypatch: pytest.MonkeyPatch):
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _raises(MemoryError()))
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "io"
+
+
+def _with_column(data: bytes, name: str, array: pa.Array) -> bytes:
+    """The canonical frame `data` with column `name` replaced, as a damaged artifact holds it."""
+    table = pq.read_table(pa.BufferReader(data))
+    sink = io.BytesIO()
+    pq.write_table(table.set_column(table.column_names.index(name), name, array), sink)
+    return sink.getvalue()
+
+
+def _stored_cell(data: bytes, name: str, cell: object) -> bytes:
+    """`data` with column `name` holding `cell` in every row."""
+    table = pq.read_table(pa.BufferReader(data))
+    return _with_column(
+        data, name, pa.array([cell] * table.num_rows, table.schema.field(name).type)
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "cell"),
+    [
+        pytest.param("unit", {"ref": None, "request": None, "composed": None}, id="no-variant"),
+        pytest.param("unit", {"ref": "USD", "composed": '{"a":1}'}, id="two-variants"),
+        pytest.param("unit", {"ref": ""}, id="empty-ref"),
+        pytest.param("unit", {"request": {"currency": None, "prices": None}}, id="empty-request"),
+        pytest.param(
+            "unit", {"request": {"currency": "USD", "prices": "constant"}}, id="no-base-year"
+        ),
+        pytest.param("unit", {"composed": "not json"}, id="composed-not-json"),
+        pytest.param("unit", {"composed": "[" * 100_000}, id="composed-past-the-parser"),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":' + "9" * 5000 + ',"denominator":"USD"}'},
+            id="composed-past-the-digit-limit",
+        ),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":"a","numerator":"b","denominator":"USD"}'},
+            id="composed-repeats-a-member",
+        ),
+        pytest.param("unit", {"composed": '"USD"'}, id="composed-a-ref"),
+        pytest.param("unit", {"composed": "null"}, id="composed-null"),
+        pytest.param("unit", {"composed": '{"numerator":"USD"}'}, id="composed-one-side"),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":"USD","denominator":{"stat_var":3}}'},
+            id="composed-bad-side",
+        ),
+        pytest.param("time_period", None, id="null-period"),
+        pytest.param("time_period", "20:0", id="unparseable-period"),
+        pytest.param("stat_var", None, id="null-stat-var"),
+        pytest.param("recipient", None, id="null-role"),
+        pytest.param("value", None, id="null-value"),
+    ],
+)
+def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(
+    caplog: pytest.LogCaptureFixture, name: str, cell: object
+):
+    data = canonical_frame_parquet((_frame_of_every_unit(),))
+    snapshots, artifacts, frame_ref = _canonical_frame_version(data)
+    assert _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    snapshots, artifacts, frame_ref = _canonical_frame_version(_stored_cell(data, name, cell))
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    ((location,),) = snapshots.locations.values()
+    (record,) = caplog.records
+    assert record.args[0] == location.artifact_digest
+    assert record.exc_info[0] is FrameError
+
+
+@pytest.mark.parametrize(
+    ("column", "cell"),
+    [
+        pytest.param("unit", ["USD"], id="unit-a-list"),
+        pytest.param("unit", {"currency": "USD"}, id="unit-no-prices"),
+        pytest.param("unit", {"numerator": "USD"}, id="unit-one-side"),
+        pytest.param("time_period", None, id="period-null"),
+        pytest.param("time_period", 2020, id="period-a-number"),
+        pytest.param("time_period", ["2020"], id="period-a-list"),
+        pytest.param("time_period", "20:0", id="period-unparseable"),
+        pytest.param("recipient", None, id="role-null"),
+        pytest.param("recipient", "country/\ud800", id="role-a-lone-surrogate"),
+        pytest.param("unit", "\ud800", id="unit-ref-a-lone-surrogate"),
+        pytest.param("value", None, id="value-null"),
+        pytest.param("value", "1.5", id="value-a-numeric-string"),
+        pytest.param("value", "abc", id="value-a-string"),
+        pytest.param("value", [1], id="value-a-list"),
+        pytest.param("value", 10**400, id="value-past-the-double-range"),
+        pytest.param("value", True, id="value-a-boolean"),
+    ],
+)
+def test_a_malformed_frame1_cell_refuses_missing_rendering(column: str, cell: object):
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    document = json.loads(artifacts.objects[(Tier.working, digest)])
+    index = document["columns"].index(column)
+    document["rows"][0][index] = cell
+    artifacts.objects[(Tier.working, digest)] = json.dumps(document).encode()
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
+    caplog: pytest.LogCaptureFixture,
+):
+    snapshots, artifacts, frame_ref = _canonical_frame_version(b"not a parquet file")
+
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    (record,) = caplog.records
+    (digest, cause, _) = record.args
+    ((location,),) = snapshots.locations.values()
+    assert digest == location.artifact_digest
+    assert cause == "ArrowInvalid"
+    assert record.exc_info[0] is pa.ArrowInvalid
+
+
+def _a_defect(**_: object) -> Never:
+    raise ValueError("a defect in the reading code")
+
+
+def test_a_value_error_in_the_structural_view_is_a_defect(monkeypatch: pytest.MonkeyPatch):
+    """A bare `ValueError` is a defect in the reading code, not malformed content
+    (`materialise.formats.STORED_FRAME_DECODE_ERRORS`). Raised in the structural view, it
+    propagates, so the door answers `internal_error` (500) and no share reads the frame as
+    gone."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _a_defect)
+
+    with pytest.raises(ValueError, match="a defect"):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"not json", id="not-json"),
+        pytest.param(b"\xff\xfe", id="not-utf8"),
+        pytest.param(b"[" * 100_000, id="nested-past-the-parser"),
+        pytest.param(b"null", id="null"),
+        pytest.param(b"[]", id="list"),
+        pytest.param(b"{}", id="no-columns"),
+        pytest.param(b'{"columns": 3, "rows": []}', id="columns-not-a-list"),
+        pytest.param(b'{"columns": ["a", "b"], "rows": [[1]]}', id="short-row"),
+        pytest.param(b"[" + b"9" * 5000 + b"]", id="integer-past-the-digit-limit"),
+        pytest.param(_frame1_with(frame_version="frame2"), id="another-version"),
+        pytest.param(_frame1_with(frame_version=None), id="no-version"),
+        pytest.param(_frame1_with(columns=["stat_var", 3], rows=[]), id="a-column-not-a-name"),
+        pytest.param(
+            json.dumps(
+                {"frame_version": "frame1", "columns": ["stat_var", "\ud800"], "rows": []}
+            ).encode(),
+            id="a-column-name-with-a-lone-surrogate",
+        ),
+        pytest.param(_frame1_with(rows=[["dcid:X"]]), id="a-short-row"),
+        pytest.param(_frame1_with_repeated_row(), id="a-repeated-grain"),
+        pytest.param(_frame1_without("provenance"), id="no-provenance-column"),
+        pytest.param(
+            _frame1_with(columns=["stat_var", "stat_var", "time_period", "value", "unit"], rows=[]),
+            id="a-repeated-column",
+        ),
+    ],
+)
+def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: bytes):
+    with pytest.raises(FrameUnavailable) as excinfo:
+        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=9)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def _frame1_with_value(value: int) -> bytes:
+    """The malaria document with `value` in its first row, as `write_frame1` writes a whole
+    number: a JSON integer."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    columns = cast("list[str]", doc["columns"])
+    cast("list[list[object]]", doc["rows"])[0][columns.index("value")] = value
+    return json.dumps(doc).encode()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(_frame1_with(), id="whole"),
+        pytest.param(_frame1_without("measurementMethod"), id="before-measurementMethod"),
+        pytest.param(_frame1_without("status"), id="before-status"),
+        pytest.param(_frame1_with_value(20_900_000_000_000_000), id="a-value-past-2-to-the-53"),
+    ],
+)
+def test_a_frame1_document_decodes_as_the_canonical_frame_of_its_rows(data: bytes):
+    """A frame1 document, of any age and past the row bound, decodes to the document of the
+    canonical frame of its rows, with its unit cells shared, and counts in the cache at that
+    frame's measure whatever its byte length. The malaria document holds 9 rows."""
+    doc, size = frame_store._decode_frame(
+        data, location=_location(digest="d", tier="working"), max_rows=1
+    )
+    canonical = canonical_frame_parquet((read_frame1(data),))
+    canonical_doc, canonical_size = frame_store._decode_frame(
+        canonical,
+        location=_location(digest="c", tier="working", media_type=CANONICAL_FRAME_MEDIA_TYPE),
+        max_rows=9,
+    )
+
+    rows, columns = cast("list[list[object]]", doc["rows"]), cast("list[str]", doc["columns"])
+    unit = columns.index("unit")
+    assert doc == canonical_doc
+    assert all(row[unit] is rows[0][unit] for row in rows)
+    assert size == canonical_size == frame_store._document_bytes(rows=9, columns=len(columns))
+    assert size != len(data)
 
 
 def test_load_decodes_a_canonical_frame_at_the_row_bound():
@@ -1767,9 +2220,18 @@ def test_load_labels_unit_refs_under_their_own_cap_after_the_dimension_refs(monk
     }
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "columns": list(derive_columns(["recipient"])),
         "rows": [
-            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            [
+                "dcid:MalariaGrantDisbursements",
+                "country/ETH",
+                period,
+                1.0,
+                unit,
+                None,
+                "src_oecd_dac",
+                None,
+            ]
             for period, unit in units.items()
         ],
     }
@@ -1860,9 +2322,18 @@ def test_load_labels_each_side_of_a_composed_unit(monkeypatch, caps, graph_refs,
     }
     doc = {
         "frame_version": "frame1",
-        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "columns": list(derive_columns(["recipient"])),
         "rows": [
-            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            [
+                "dcid:MalariaGrantDisbursements",
+                "country/ETH",
+                period,
+                1.0,
+                unit,
+                None,
+                "src_oecd_dac",
+                None,
+            ]
             for period, unit in units.items()
         ],
     }
@@ -1992,6 +2463,9 @@ class _RecordReader:
 
 _COMPUTED_COLUMNS = ["stat_var", "recipient", "time_period", "value", "unit", "provenance"]
 
+# The columns every frame holds, beside its role columns.
+_FRAME_COLUMNS = frozenset(derive_columns(()))
+
 
 def _computed_frame_store(
     *,
@@ -2011,10 +2485,14 @@ def _computed_frame_store(
     `continuations`, over a graph that also names `graph_labels` and stamps `generation`'s
     token, on `clock`."""
     frame_ref = FrameRef(spec_id="ops_" + "a" * 32, content_version="ocv_" + "b" * 32)
+    # The stored document holds the derived column order, each column `columns` leaves out null.
+    derived = derive_columns([column for column in columns if column not in _FRAME_COLUMNS])
     doc = {
         "frame_version": "frame1",
-        "columns": columns,
-        "rows": rows,
+        "columns": list(derived),
+        "rows": [
+            [dict(zip(columns, row, strict=True)).get(column) for column in derived] for row in rows
+        ],
     }
     artifacts = _FakeArtifactStore()
     digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
@@ -2473,6 +2951,40 @@ def test_a_cached_frame_regroups_once_its_stored_continuations_arrive(
 
 
 @pytest.mark.parametrize(
+    ("raised", "failure"),
+    [
+        pytest.param(MemoryError(), FrameUnavailable, id="out-of-memory"),
+        pytest.param(TypeError("exemplar"), TypeError, id="defect"),
+    ],
+)
+def test_a_cached_frame_regroups_under_the_read_of_its_stored_cells(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception, failure: type[Exception]
+) -> None:
+    clock = _Clock()
+    store, frame_ref, _reader = _zambia_growth_store(clock=clock, continuations=None)
+    snapshots = cast("_FakeSnapshotReader", store._snapshots)
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    store.load(frame_ref=frame_ref)
+    version = snapshots.versions[key]
+    assert isinstance(version.facts, FrameLineage)
+    snapshots.versions[key] = dataclasses.replace(
+        version,
+        facts=dataclasses.replace(version.facts, continuations=[_ZAMBIA_CONTINUATION.as_entry()]),
+    )
+    clock.pass_recheck()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _raises(raised))
+
+    with pytest.raises(failure) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    (location, *_) = snapshots.locations[key]
+    if failure is FrameUnavailable:
+        assert excinfo.value.reason == "io"
+    else:
+        assert _logged_traceback_names(excinfo.value, location.artifact_digest)
+
+
+@pytest.mark.parametrize(
     ("continuations", "series_count"),
     [
         pytest.param(None, 2, id="recorded-before-continuations"),
@@ -2546,7 +3058,7 @@ def test_load_names_each_variable_of_a_join_of_two_quotients_from_the_step_that_
 def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold():
     """A compare frame holds no entity column, so the label read takes the entities from the
     step's sides, and the variable reads in the order compare subtracts."""
-    rows: list[list[object]] = [["dcid:ops_difference", None, "2015", 1.0, None, "src_oecd_dac"]]
+    rows: list[list[object]] = [["dcid:ops_difference", "2015", 1.0, None, "src_oecd_dac"]]
     steps: list[dict[str, object]] = [
         _RETRIEVE_AID,
         {**_RETRIEVE_AID, "id": "s2"},
@@ -2563,6 +3075,7 @@ def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold(
     ]
     store, frame_ref, _, _ = _computed_frame_store(
         rows=rows,
+        columns=["stat_var", "time_period", "value", "unit", "provenance"],
         steps=steps,
         graph_labels={"country/GBR": "United Kingdom", "country/FRA": "France"},
     )

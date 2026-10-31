@@ -118,8 +118,10 @@ class StoredSelect:
 
     A binding no rule rebinds is kept, so `resolve_selectors` refuses it as it refuses any
     selection. `load_frame` returns the frame the revision was written on, or `None` when it
-    cannot be loaded, in which case rule 2 never applies. It is called only when a binding
-    misses a value."""
+    cannot be loaded: a `FrameUnavailable` whose reason is not transient
+    (`assembler.ports.TRANSIENT_FRAME_REASONS`), `expired`, `ops_unsupported` and
+    `recipe_pending` included. Then rule 2 never applies. A transient reason, `io` or `busy`,
+    is raised, keeping its wait. It is called only when a binding misses a value."""
 
     load_frame: Callable[[], ResolvedFrame | None]
 

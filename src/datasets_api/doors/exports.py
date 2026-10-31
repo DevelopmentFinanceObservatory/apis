@@ -83,7 +83,7 @@ from datasets_api.retention_admission import (
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, run_with_timings
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.timings import PhaseTimings
 from spec_registry import IdentityQuarantined
 from spec_registry.errors import IdentityCollision
@@ -236,7 +236,7 @@ def build_exports_door(
     exemplar_day = datetime(2026, 1, 1, tzinfo=UTC)
     return DoorContribution(
         router=router,
-        registry_endpoints={PREPARE_PATH: "datasets.exports"},
+        registry_endpoints=path_registry_endpoints(router, {PREPARE_PATH: "datasets.exports"}),
         classify=classify_files_exception,
         exception_types=(
             SpecNotFound,
@@ -339,7 +339,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
 
     return DoorContribution(
         router=router,
-        registry_endpoints={LINK_PATH: "datasets.export_link"},
+        registry_endpoints=path_registry_endpoints(router, {LINK_PATH: "datasets.export_link"}),
         classify=classify_files_exception,
         exception_types=(
             ExportNotFound,

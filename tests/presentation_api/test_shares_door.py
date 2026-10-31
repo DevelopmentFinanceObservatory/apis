@@ -1074,7 +1074,7 @@ def test_a_surface_over_test_doubles_without_a_share_store_mounts_no_share_route
         release_registry=release_registry,
     )
 
-    assert not surface.registry_endpoints
+    assert "presentation.shares" not in surface.registry_endpoints.values()
     assert not [r for r in surface.router.routes if isinstance(r, APIRoute) and "/shares" in r.path]
 
 

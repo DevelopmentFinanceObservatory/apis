@@ -47,6 +47,7 @@ from datasets_api.deps import Deps, DepsCell
 from datasets_api.derived import (
     DerivedFile,
     DerivedReads,
+    locate_derived_frame,
     manifest_body,
     read_derived_manifest,
     render_derived_file,
@@ -65,7 +66,8 @@ from datasets_api.publish_models import RecipeAnchor, RecipeDroppedSeries
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call, run_with_timings
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
+from materialise.errors import OverCeilingError
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 
 logger = logging.getLogger(__name__)
@@ -137,6 +139,7 @@ def derived_reads(current: Deps) -> DerivedReads:
         enrichment=current.enrichment,
         version_writer=current.version_writer,
         now=current.now,
+        fold_max_rows=current.settings.groupby_fold_max_rows,
     )
 
 
@@ -157,21 +160,19 @@ def derived_file[T](
     then: Callable[[DerivedFile], T],
 ) -> T:
     """What `then` makes of the derived frame's file in `options` (`derived.render_derived_file`),
-    rendered and handed over under one materialise permit, whose wait `deadline` bounds. Nothing
-    here binds the file, so the permit releases with its bytes freed once `then` keeps none."""
+    rendered and handed over under one materialise permit, whose wait `deadline` bounds. The
+    frame is located first (`derived.locate_derived_frame`), so the refusals its record decides
+    come before the permit. Nothing here binds the file, so the permit releases with its bytes
+    freed once `then` keeps none."""
+    reads = derived_reads(current)
+    source = locate_derived_frame(spec_id=id, content_version=content_version, reads=reads)
     with bounded_materialise_slot(
         current.materialise_semaphore,
         wait_seconds=current.settings.materialise_wait_seconds,
         deadline=deadline,
     ):
         return then(
-            render_derived_file(
-                spec_id=id,
-                content_version=content_version,
-                options=options,
-                reads=derived_reads(current),
-                site=current.settings.site,
-            )
+            render_derived_file(source, options=options, reads=reads, site=current.settings.site)
         )
 
 
@@ -240,7 +241,7 @@ def build_derived_door(*, deps: DepsCell) -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={MANIFEST_PATH: "datasets.snapshot"},
+        registry_endpoints=path_registry_endpoints(router, {MANIFEST_PATH: "datasets.snapshot"}),
         classify=classify_datasets_refusal,
         exception_types=(
             SnapshotNotFound,
@@ -259,10 +260,12 @@ def build_derived_door(*, deps: DepsCell) -> DoorContribution:
 
 _BINARY = {"type": "string", "format": "binary"}
 
+# `OverCeilingError` is a stored frame1 document past the decode bound.
 _FILE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     ExcelLimitError,
     ExcelIllegalCharacterError,
     ParquetSizeBoundError,
+    OverCeilingError,
 )
 
 
@@ -285,7 +288,7 @@ def build_derived_files_door(*, deps: DepsCell) -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={FILE_PATH: "datasets.files"},
+        registry_endpoints=path_registry_endpoints(router, {FILE_PATH: "datasets.files"}),
         classify=classify_files_exception,
         exception_types=(
             SnapshotNotFound,
@@ -302,6 +305,7 @@ def build_derived_files_door(*, deps: DepsCell) -> DoorContribution:
             ArtifactExpired(id="ops_exemplar", content_version="ocv_exemplar"),
             QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
             DerivedBackpressure(),
+            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
         ),
     )
 

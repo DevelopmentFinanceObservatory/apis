@@ -83,10 +83,11 @@ from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, 
 from datasets_api.config import DOWNLOAD_SIGNED_URL_TTL
 from datasets_api.current import (
     DefinitionDeps,
-    StoredFrame,
     StoredTraceMissingResolvedStatVars,
     head_rendering,
     plan_stored_render,
+    read_located_frame,
+    refuse_located_frame_past_decode_bound,
 )
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
@@ -112,6 +113,7 @@ from datasets_api.timings import door_call, phase, run_with_timings
 from datasets_api.version_store import current_rendering_keys, rendering_key
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
+from materialise.errors import OverCeilingError
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 from materialise.reshape import RollupNotSummableError
 from spec_registry import IdentityQuarantined
@@ -291,18 +293,15 @@ def _render_renewed(
     render: Callable[..., Manifest | None],
     deps: DefinitionDeps,
 ) -> Manifest | None:
-    """Renew `aged_frame`'s object (`_reupload`) and render from the renewed bytes with
-    `render`, on a coverage snapshot taken here, returning what `render` returns. Bytes that
-    are gone render nothing and return `None`. The caller holds a materialise permit and binds
-    no frame itself, so the bytes are freed when this returns, before the permit is
-    released."""
-    data = _reupload(aged_frame, deps=deps)
-    if data is None:
+    """Renew `aged_frame`'s object (`_reupload`) and render the frame its renewed bytes read as
+    (`current.read_located_frame`, which drops the bytes once decoded) with `render`, on a
+    coverage snapshot taken here, returning what `render` returns. Bytes that are gone render
+    nothing and return `None`. The caller holds a materialise permit and binds no frame
+    itself, so the frame is freed when this returns, before the permit is released."""
+    frame = read_located_frame(aged_frame, read=functools.partial(_reupload, aged_frame, deps=deps))
+    if frame is None:
         return None
-    return render(
-        coverage_snapshot=deps.coverage.snapshot(),
-        frame=StoredFrame(location=aged_frame, data=data),
-    )
+    return render(coverage_snapshot=deps.coverage.snapshot(), frame=frame)
 
 
 def _render_from_stored_frame(
@@ -323,9 +322,11 @@ def _render_from_stored_frame(
     render take the renewed bytes, reading the frame once. One materialise slot holds from
     before the read to the end of the render, and the coverage snapshot is taken inside it.
     Before an aged frame renews, `plan_stored_render` decides from the version's record the
-    refusals it alone decides, so each raises with no frame re-uploaded or rendered and no
-    slot taken. Whether the aged frame's bytes are still in the store is known only by
-    fetching them, so that refusal also answers a version whose frame bytes are gone."""
+    refusals it alone decides, and `refuse_located_frame_past_decode_bound` refuses a frame1
+    document past the decode bound on its recorded size, so each raises with no frame
+    re-uploaded or rendered and no slot taken. Whether the aged frame's bytes are still in the
+    store is known only by fetching them, so that refusal also answers a version whose frame
+    bytes are gone."""
     render = functools.partial(
         head_rendering,
         subject_id=source.version.subject_id,
@@ -353,6 +354,7 @@ def _render_from_stored_frame(
     )
     if plan.frame_mode is None:
         return None
+    refuse_located_frame_past_decode_bound(aged_frame, options=options, plan=plan, deps=deps)
     with bounded_materialise_slot(
         deps.materialise_semaphore,
         wait_seconds=deps.settings.materialise_wait_seconds,
@@ -455,7 +457,8 @@ SELECTOR_QUERY_KEYS = frozenset({"format", "bundle", "layout"})
 serves."""
 
 # The rendering refusals a render from the stored frame can raise for a format, a bundle, a
-# layout and a derived version's own minting options.
+# layout and a derived version's own minting options. `OverCeilingError` is a stored frame1
+# document past the decode bound or a fold past its row ceiling.
 SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     StoredTraceMissingResolvedStatVars,
     CapabilityUnavailable,
@@ -463,6 +466,7 @@ SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     ExcelIllegalCharacterError,
     ParquetSizeBoundError,
     RollupNotSummableError,
+    OverCeilingError,
 )
 
 

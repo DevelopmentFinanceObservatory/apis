@@ -13,7 +13,6 @@ under the public site origin, `DFO_PUBLIC_SITE_URL`, which the door reads in its
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
@@ -26,17 +25,15 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from datasets_api.artifact_delivery import artifact_content_disposition
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.codes import retryable_for
 from presentation_api.path_params import require_component_id
+from presentation_api.routes import COMPONENT_DATA_PATH
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
 
-logger = logging.getLogger(__name__)
-
-COMPONENT_DATA_PATH = "/api/presentation/components/{component_id}/revisions/{revision}/data"
 COMPONENT_DATA_MEDIA_TYPES = (
     "application/zip",
     "text/csv",
@@ -48,25 +45,22 @@ _CACHE_CONTROL = "private, max-age=3600"
 
 def classify_component_data_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, ComponentHoldsNoData):
-        return ProblemSpec(
-            status=404,
-            code="not_found",
+        return refused(
+            "not_found",
             detail=exc.detail,
             retryable=retryable_for("not_found"),
         )
     if isinstance(exc, ComponentExportMismatch):
-        logger.error("Component data export refused: %s", exc)
-        return ProblemSpec(
-            status=500,
-            code="internal_error",
+        return refused(
+            "internal_error",
+            log=f"Component data export refused: {exc}",
             detail="the frame rows behind this revision do not match the values it shows",
             retryable=retryable_for("internal_error"),
         )
     if isinstance(exc, ExcelIllegalCharacterError):
         # The writer's detail tells the caller to request csv or parquet instead.
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=exc.detail or str(exc),
             retryable=False,
         )

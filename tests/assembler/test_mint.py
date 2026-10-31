@@ -29,6 +29,7 @@ from assembler.testing import (
 )
 from datasets_api.manifest_models import CountedEntityYearsModel, CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
+from dfo_platform.codes import bound_registry_endpoint
 from presentation_api.refusals import binding_invalid_spec
 
 
@@ -634,7 +635,8 @@ def test_bar_chart_listing_values_refuses_when_two_bars_would_share_a_value(rele
             select={"stat_var": ["dcid:HealthAid", "dcid:EducationAid"]},
         )
 
-    spec = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        spec = binding_invalid_spec(excinfo.value)
     assert spec.pointer == "/select"
     assert excinfo.value.dimension == "recipient"
     assert [one.ref for one in spec.alternatives] == ["country/KEN", "country/UGA"]
@@ -736,7 +738,8 @@ def test_bar_chart_over_several_periods_refuses_naming_both_next_calls(release):
             select={"stat_var": "dcid:MalariaGrantDisbursements"},
         )
 
-    spec = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        spec = binding_invalid_spec(excinfo.value)
     assert spec.pointer == "/select"
     assert [(one.ref, one.label) for one in spec.alternatives] == list(_PROVIDERS.items())
     assert "2 periods (2021..2022)" in spec.detail
@@ -772,7 +775,8 @@ def test_bar_chart_refuses_the_default_when_a_value_lacks_the_one_period(
             window=window,
         )
 
-    spec = binding_invalid_spec(excinfo.value)
+    with bound_registry_endpoint("presentation.write"):
+        spec = binding_invalid_spec(excinfo.value)
     observed = [provider for provider in _PROVIDERS if provider not in gaps]
     assert spec.pointer == "/select"
     assert excinfo.value.dimension == "financingProvider"
