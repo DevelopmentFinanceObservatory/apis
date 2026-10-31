@@ -12,7 +12,9 @@ from code_index.shared import get_index
 from origin_catalogue import CatalogueSnapshot, bound_catalogue
 from origin_catalogue.artifact import load_catalogue
 from scripts.stage_origin_catalogue_fixture import stage_fixture
+from search.engine.conjoin import combine_regions
 from search.engine.entry import raw_text
+from search.engine.envelope import now_ms
 from search.engine.exclusion_read import (
     Exclusion,
     ExclusionRead,
@@ -25,6 +27,8 @@ from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scan import scan_sources, source_phrases
 from search.engine.source_scope import SourceDictionary, source_dictionary
 from search.models import SourceMention
+from tests.engine._builders import conjoin_spec
+from tests.engine._conjoin_fixtures import _ECON_SHAPE, _PERSON_SHAPE, _region
 
 _EVAL_FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "origin_catalogue_eval"
 
@@ -576,3 +580,41 @@ def test_a_stretch_the_query_does_not_write_qualifies_every_measure(dictionary: 
         [(), ()],
         frozenset(),
     )
+
+
+def test_a_stretch_departs_only_on_the_part_it_qualifies(catalogue: CatalogueSnapshot):
+    """ "excluding humanitarian aid" qualifies GDP alone: the envelope warns while the GDP
+    part does not leave it out, and only the GDP part says the search did not apply it."""
+    query = "ODA to Kenya and GDP of Kenya excluding humanitarian aid"
+    reading = _left_out(query, "excluding humanitarian aid")
+    extraction = Extraction(
+        kind="resolution",
+        variables=["ODA", "GDP"],
+        entities=[ExtractedEntity(text="Kenya", span="Kenya")],
+    )
+    with bound_catalogue(catalogue):
+        prep = raw_text._prepare_extraction(
+            extraction,
+            ExtractionResult(extraction=extraction, qualifiers={}),
+            query=reading.text,
+            left_out=reading.left_out,
+        )
+    regions = [
+        prep.onto(_region(conjoin_spec(shape, "x"), variable), i)
+        for i, (shape, variable) in enumerate(((_PERSON_SHAPE, "ODA"), (_ECON_SHAPE, "GDP")))
+    ]
+
+    response, _ = combine_regions(
+        regions,
+        extra_warnings=prep.surviving(regions),
+        start_ms=now_ms(),
+        engine_build="test",
+        max_candidates=10,
+    )
+
+    assert prep.exclusion_targets == ((1,),)
+    assert [
+        [d.asked for d in part.departures if d.code == "measure_not_applied"]
+        for part in response.parts
+    ] == [[], ["excluding humanitarian aid"]]
+    assert [w.code for w in response.diagnostics.warnings] == ["query_qualifier_dropped"]
