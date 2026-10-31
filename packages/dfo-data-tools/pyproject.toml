@@ -90,11 +90,11 @@ graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/spec-kit" }
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/descriptions" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "f5179b9576db242d55caf517c980d3305266e293", subdirectory = "python/spec-kit" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "f5179b9576db242d55caf517c980d3305266e293", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "f5179b9576db242d55caf517c980d3305266e293", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "f5179b9576db242d55caf517c980d3305266e293", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "f5179b9576db242d55caf517c980d3305266e293", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

@@ -1676,7 +1676,8 @@ def test_a_repeat_prepare_needs_no_caller_and_a_new_one_does(
 
     assert repeat.status_code == 200, repeat.text
     assert repeat.json() == body
-    assert fresh.status_code == 503, fresh.text
+    assert fresh.status_code == 500, fresh.text
+    assert (fresh.json()["code"], fresh.json()["retryable"]) == ("internal_error", False)
 
 
 def test_a_lasting_link_outlives_a_change_to_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:

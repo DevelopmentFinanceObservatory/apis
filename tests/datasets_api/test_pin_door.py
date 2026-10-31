@@ -1178,17 +1178,18 @@ def test_a_caller_without_the_pin_grant_pins_under_its_caller_key_and_allowance(
     }
 
 
-def test_an_open_pin_without_a_caller_key_configured_refuses_503_before_copying(
+def test_an_open_pin_without_a_caller_key_configured_refuses_500_before_copying(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """A deployment fault a retry does not clear answers `internal_error`, as on Presentation."""
     monkeypatch.delenv("DFO_CALLER_HMAC_KEY", raising=False)
     client, location = _build_client(artifact_store=_CopyForbiddenArtifactStore())
 
     resp = _pin(client, location)
 
-    assert resp.status_code == 503, resp.text
+    assert resp.status_code == 500, resp.text
     body = resp.json()
-    assert body["code"] == "service_unavailable"
+    assert body["code"] == "internal_error"
     assert body["retryable"] is False
 
 
