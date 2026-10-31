@@ -370,10 +370,14 @@ def test_from_canonical_data_defaults_a_key_dumped_before_the_field_existed():
     assert ProblemSpec.from_canonical_data(data) == _EVERY_FIELD_SPEC._replace(ceiling_kind=None)
 
 
-def test_from_canonical_data_refuses_a_key_to_canonical_data_never_writes():
-    data = {**_EVERY_FIELD_SPEC.to_canonical_data(), "severity": "high"}
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("severity", "high"), ("log", "exemplar"), ("log_level", 40)],
+)
+def test_from_canonical_data_refuses_a_key_to_canonical_data_never_writes(key, value):
+    data = {**_EVERY_FIELD_SPEC.to_canonical_data(), key: value}
 
-    with pytest.raises(ValidationError, match="severity"):
+    with pytest.raises(ValidationError):
         ProblemSpec.from_canonical_data(data)
 
 

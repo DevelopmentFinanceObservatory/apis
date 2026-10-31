@@ -820,6 +820,12 @@ def _registry_endpoint(surface: Surface, scope: Scope) -> str | None:
     return None
 
 
+def _log_refusal(surface: Surface, spec: ProblemSpec) -> None:
+    """Log the line a classifier or admission check named for this refusal, so both stay pure."""
+    if spec.log is not None:
+        logger.log(spec.log_level, "%s: %s", surface.name, spec.log)
+
+
 async def _admission_dispatch(
     request: Request, call_next: RequestResponseEndpoint, *, ctx: _AppContext
 ) -> Response:
@@ -837,6 +843,7 @@ async def _admission_dispatch(
             with codes.bound_registry_endpoint(endpoint):
                 spec = check(request)
             if spec is not None:
+                _log_refusal(surface, spec)
                 response = _envelope_for(request, ctx).render(spec)
                 trace_id = getattr(request.state, "trace_id", None)
                 response.headers[TRACE_ID_HEADER] = (
@@ -874,8 +881,7 @@ def _classify_and_envelope(
             )
             spec = None
         if spec is not None:
-            if spec.log is not None:
-                logger.log(spec.log_level, "%s: %s", surface.name, spec.log)
+            _log_refusal(surface, spec)
             if set(type(exc).__mro__).isdisjoint(surface.exception_types):
                 logger.warning(
                     "surface %r's classify() recognized %s, which is absent "

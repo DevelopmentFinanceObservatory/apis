@@ -10,9 +10,9 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from dfo_platform.codes import CodeCatalogue, registered_status
 from dfo_platform.trace import get_trace_id
@@ -220,8 +220,8 @@ class ProblemSpec(NamedTuple):
     count: int | None = None
     cap: int | None = None
     headers: Mapping[str, str] | None = None
-    # What the platform logs when it renders this refusal for a request, so a classifier stays
-    # pure. Neither reaches the wire or `to_canonical_data`.
+    # What `dfo_platform.app._log_refusal` logs for a refusal a surface's classifier or admission
+    # check returns, so both stay pure. Neither reaches the wire or `to_canonical_data`.
     log: str | None = None
     log_level: int = logging.ERROR
 
@@ -262,7 +262,16 @@ class ProblemSpec(NamedTuple):
         return _PROBLEM_SPEC_ADAPTER.validate_python(data)
 
 
-_PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(ProblemSpec)
+def _without_log_fields(data: object) -> object:
+    """`data`, refused if it names a field `to_canonical_data` does not write."""
+    if isinstance(data, Mapping) and data.keys() & {"log", "log_level"}:
+        raise ValueError("canonical problem data holds no log fields")
+    return data
+
+
+_PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(
+    Annotated[ProblemSpec, BeforeValidator(_without_log_fields)]
+)
 
 
 # The headers of a 503 that refuses a request because a pool or permit is full. A full pool

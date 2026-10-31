@@ -66,7 +66,12 @@ from datasets_api.doors.analysis import (
     analysis_permit,
     analysis_stores,
 )
-from datasets_api.doors.definition import definition_deps, inline_definition_deps
+from datasets_api.doors.definition import (
+    DefinitionBackpressure,
+    definition_deps,
+    inline_definition_deps,
+)
+from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
 from datasets_api.exports import resolve_endpoint
 from dfo_platform import ProblemSpec, refused
@@ -223,13 +228,17 @@ def newest_not_ready_spec(exc: NewestNotReady) -> ProblemSpec:
     )
 
 
+# The Datasets refusals that say the surface is at capacity, which no stored state explains.
+_CAPACITY_REFUSALS = (MintBackpressure, DefinitionBackpressure)
+
+
 def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
     """The frame a bare `spec_id` names (`NewestFrames.newest_of_spec`).
 
     Raises:
         NewestNotReady: While the version builds.
-        FrameUnavailable: `io` for a retryable Datasets refusal, keeping its `Retry-After`;
-            `quarantined` for a quarantined identity; `revoked` for a revoked
+        FrameUnavailable: `busy` for a Datasets surface at capacity and `io` for any other
+            retryable Datasets refusal, each keeping its `Retry-After`; `quarantined` for a quarantined identity; `revoked` for a revoked
             version; `unknown` (404) for any other refusal below status 500, the Datasets code
             and detail in its detail; and
             `unknown` when no Datasets surface is mounted beside this one, so no bare id
@@ -252,10 +261,17 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             problem = classify_datasets_exception(exc)
         if problem is None:
             raise
-        retry_after = (problem.headers or {}).get("Retry-After")
+        detail = (
+            f"the newest version of {spec_id} cannot be served: {problem.code}: {problem.detail}"
+        )
         if problem.retryable:
-            reason = "io"
-        elif problem.code == "identity_quarantined":
+            retry_after = (problem.headers or {}).get("Retry-After")
+            raise FrameUnavailable(
+                reason="busy" if isinstance(exc, _CAPACITY_REFUSALS) else "io",
+                detail=detail,
+                retry_after_s=None if retry_after is None else float(retry_after),
+            ) from exc
+        if problem.code == "identity_quarantined":
             reason = "quarantined"
         elif problem.code == "snapshot_revoked":
             reason = "revoked"
@@ -264,12 +280,7 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             raise
         else:
             reason = "unknown"
-        raise FrameUnavailable(
-            reason=reason,
-            detail=f"the newest version of {spec_id} cannot be served: {problem.code}: "
-            f"{problem.detail}",
-            retry_after_s=None if retry_after is None else float(retry_after),
-        ) from exc
+        raise FrameUnavailable(reason=reason, detail=detail) from exc
     if isinstance(resolved, NewestPending):
         raise NewestNotReady(
             f"the newest version of {spec_id} is building; retry in "

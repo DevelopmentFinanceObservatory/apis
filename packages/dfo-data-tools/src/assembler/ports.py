@@ -191,6 +191,7 @@ FrameUnavailableReason = Literal[
     "recipe_pending",
     "recipe_unreadable",
     "io",
+    "busy",
     "unknown",
 ]
 

@@ -34,7 +34,7 @@ def _two_statuses(monkeypatch: pytest.MonkeyPatch) -> None:
 def _admit(request: Request) -> ProblemSpec | None:
     if request.url.path != "/api/t/a/admitted":
         return None
-    return classify_refusal(_Unsupported())
+    return refused(_CODE, retryable=False, log="exemplar", log_level=logging.WARNING)
 
 
 def _client(**overrides: object) -> TestClient:
@@ -98,14 +98,18 @@ def test_a_refusal_renders_at_the_status_of_its_routes_endpoint(path: str, statu
     assert response.status_code == status, response.text
 
 
+@pytest.mark.parametrize(
+    "path",
+    [pytest.param("/api/t/a", id="classified"), pytest.param("/api/t/a/admitted", id="admission")],
+)
 def test_a_refused_log_line_is_logged_on_the_request_path(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, path: str
 ) -> None:
     def classify(exc: BaseException) -> ProblemSpec | None:
         return refused(_CODE, retryable=False, log="exemplar", log_level=logging.WARNING)
 
     with caplog.at_level(logging.WARNING):
-        _client(classify=classify).get("/api/t/a")
+        _client(classify=classify).get(path)
 
     (record,) = [record for record in caplog.records if record.name == "dfo_platform.app"]
     assert (record.levelno, record.args) == (logging.WARNING, ("t", "exemplar"))

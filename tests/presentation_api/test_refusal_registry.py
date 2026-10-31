@@ -123,6 +123,16 @@ def test_a_refusal_its_endpoint_leaves_unmapped_fails_at_startup():
             DoorContribution(
                 router=APIRouter(),
                 classify=classify_components_exception,
+                registry_endpoints={("GET", "/exemplar"): RENDER_ENDPOINT},
+                endpoint_exemplars={RENDER_ENDPOINT: ()},
+            ),
+            "declares no exemplars",
+            id="an-empty-exemplar-tuple",
+        ),
+        pytest.param(
+            DoorContribution(
+                router=APIRouter(),
+                classify=classify_components_exception,
                 exception_exemplars=(_write_refused(),),
             ),
             "keeps exception_exemplars",
@@ -189,6 +199,7 @@ def test_door_classifiers_leave_logging_to_the_platform(
         ("digest_mismatch", True),
         ("recipe_pending", False),
         ("expired", False),
+        ("busy", False),
     ],
 )
 def test_a_frame_refusal_that_names_a_server_fault_carries_a_log_line(

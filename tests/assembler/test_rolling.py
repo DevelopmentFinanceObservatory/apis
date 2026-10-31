@@ -14,7 +14,13 @@ from assembler.mint.provenance import _with_left_out_warning
 from assembler.mint.validate import component_registry
 from assembler.pipeline import render_component, write_component
 from assembler.pipeline.export_component import export_component_data
-from assembler.ports import FrameRef, LeftOutSeries, RollingAnchor
+from assembler.ports import (
+    FrameRef,
+    FrameUnavailable,
+    LeftOutSeries,
+    ResolvedFrame,
+    RollingAnchor,
+)
 from assembler.rolling import (
     ROLLING_ANCHOR_UNHELD,
     ROLLING_SPAN_FRAME,
@@ -730,19 +736,25 @@ def _left_out(*recipients: str) -> tuple[LeftOutSeries, ...]:
 
 
 @pytest.mark.parametrize(
-    ("target_holds", "stored_frame_loads", "bars"),
+    ("target_holds", "stored_refusal", "bars"),
     [
-        pytest.param(_FOUR[:2], True, ["Ethiopia", "Ghana"], id="two-of-four-stay"),
+        pytest.param(_FOUR[:2], None, ["Ethiopia", "Ghana"], id="two-of-four-stay"),
         pytest.param(
-            (*_FOUR[:2], "country/MLI"), True, ["Ethiopia", "Ghana", "Mali"], id="one-joins"
+            (*_FOUR[:2], "country/MLI"), None, ["Ethiopia", "Ghana", "Mali"], id="one-joins"
         ),
         pytest.param(
-            (*_FOUR[:2], "country/MLI"), False, ["Ethiopia", "Ghana"], id="stored-frame-gone"
+            (*_FOUR[:2], "country/MLI"), "io", ["Ethiopia", "Ghana"], id="stored-frame-gone"
+        ),
+        pytest.param(
+            (*_FOUR[:2], "country/MLI"),
+            "missing_rendering",
+            ["Ethiopia", "Ghana"],
+            id="stored-frame-malformed",
         ),
     ],
 )
 def test_a_select_of_every_value_follows_the_target_and_names_the_left_out_series(
-    write, render, frame_store, revision_store, target_holds, stored_frame_loads, bars
+    monkeypatch, write, render, frame_store, revision_store, target_holds, stored_refusal, bars
 ):
     """A bar chart on a growth frame, every row one span, selects all four recipients. On the
     refreshed frame the anchor moved to 2025 and two recipients hold no value there. When the
@@ -754,8 +766,15 @@ def test_a_select_of_every_value_follows_the_target_and_names_the_left_out_serie
         version="2",
         anchor=RollingAnchor(period="2025", rule="half1", left_out=_left_out(*_FOUR[2:])),
     )
-    if not stored_frame_loads:
-        del frame_store._frames[stored.frame_ref]
+    if stored_refusal is not None:
+        load = frame_store.load
+
+        def refuse_stored(*, frame_ref: FrameRef) -> ResolvedFrame:
+            if frame_ref == stored.frame_ref:
+                raise FrameUnavailable(reason=stored_refusal, detail="exemplar")
+            return load(frame_ref=frame_ref)
+
+        monkeypatch.setattr(frame_store, "load", refuse_stored)
 
     rendered = render(created, target)
 

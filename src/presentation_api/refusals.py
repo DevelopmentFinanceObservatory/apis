@@ -62,8 +62,9 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
 # The code and retryability each `FrameUnavailable` reason refuses with. `expired`,
 # `ops_unsupported` and `recipe_pending` can succeed once the frame is republished or its recipe
 # written. Revoked, missing, digest mismatch, quarantined, and unknown refs are permanent. A store
-# that fails to answer (`io`) is `service_unavailable`. A recipe the store cannot read (`recipe_unreadable`) is write-once, so no
-# retry clears it.
+# that fails to answer (`io`), and a Datasets surface at capacity (`busy`), is
+# `service_unavailable`. A recipe the store cannot read (`recipe_unreadable`) is write-once, so
+# no retry clears it.
 _FRAME_UNAVAILABLE_OUTCOME: dict[FrameUnavailableReason, tuple[str, bool]] = {
     "expired": ("frame_unavailable", True),
     "revoked": ("frame_unavailable", False),
@@ -74,6 +75,7 @@ _FRAME_UNAVAILABLE_OUTCOME: dict[FrameUnavailableReason, tuple[str, bool]] = {
     "recipe_pending": ("frame_unavailable", True),
     "unknown": ("frame_unavailable", False),
     "io": ("service_unavailable", True),
+    "busy": ("service_unavailable", True),
     "recipe_unreadable": ("internal_error", False),
 }
 
@@ -84,12 +86,16 @@ if set(_FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
         f"FrameUnavailableReason {sorted(get_args(FrameUnavailableReason))}"
     )
 
-# The reasons that name a fault to look into: every one that is no frame state, and a stored
-# artifact failing its digest. The frame store logs `missing_rendering` where bytes do not decode.
-_LOGGED_REASONS: frozenset[str] = frozenset(
-    reason
-    for reason, (code, _) in _FRAME_UNAVAILABLE_OUTCOME.items()
-    if code != "frame_unavailable"
+# The reasons that name a fault to look into: every one that is no frame state but `busy`, which
+# is ordinary load, and a stored artifact failing its digest. The frame store logs
+# `missing_rendering` where bytes do not decode.
+_LOGGED_REASONS: frozenset[str] = (
+    frozenset(
+        reason
+        for reason, (code, _) in _FRAME_UNAVAILABLE_OUTCOME.items()
+        if code != "frame_unavailable"
+    )
+    - {"busy"}
 ) | {"digest_mismatch"}
 
 # The code and retryability of a bare `spec_id` whose newest version is not ready.

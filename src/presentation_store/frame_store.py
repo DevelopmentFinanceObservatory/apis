@@ -163,13 +163,14 @@ from typing import Protocol, TypeGuard, cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN, Frame
-from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX, FrameError
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from assembler.bind import role_columns, series_label
+from assembler.errors import BindingInvalid
 from assembler.frame_view import (
     compute_structural_view,
     continuation_known,
@@ -180,11 +181,13 @@ from assembler.frame_view import (
 from assembler.limits import LABEL_MAX, joined_label
 from assembler.mint import warned_refs
 from assembler.ports import (
+    Continuation,
     FrameRef,
     FrameUnavailable,
     LeftOutSeries,
     ResolvedFrame,
     RollingAnchor,
+    StructuralView,
 )
 from code_index.labels import family_label
 from code_index.query import CodeIndex
@@ -402,6 +405,17 @@ def _io_failure(
     )
 
 
+# What the parsers raise for bytes they cannot parse, and `FrameError` for a cell that fails its
+# stored shape. `RecursionError` is `json.loads` on nesting past the parser.
+_MALFORMED_CONTENT = (
+    FrameError,
+    pa.ArrowException,
+    OSError,
+    json.JSONDecodeError,
+    UnicodeDecodeError,
+    RecursionError,
+)
+
 # How long a client waits before it retries a frame this instance had no memory to decode.
 _DECODE_RETRY_AFTER_S = 30
 
@@ -422,14 +436,15 @@ def _is_frame_document(doc: object) -> TypeGuard[Mapping[str, object]]:
 
 @contextmanager
 def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
-    """Refuse what the block raises while it decodes the bytes `location` names.
+    """Refuse what the block raises while it reads the content `location` names.
 
-    The bytes are in memory and passed their digest check, so no failure to decode them is a
-    failed read. The decoders' errors for malformed input refuse `missing_rendering`, logged with
-    the traceback, since a stored artifact that cannot decode is a server fault. Any other
-    exception is a defect, and reaches `internal_error`. `MemoryError`, which `pa.ArrowMemoryError`
-    subclasses, says nothing about the bytes, so it refuses the retryable `io` and names a wait
-    (`_DECODE_RETRY_AFTER_S`), since the next try needs memory this instance may not have."""
+    The bytes are in memory and passed their digest check, so no failure to read them is a failed
+    read. Malformed content refuses `missing_rendering`, logged with the traceback: the parsers'
+    errors for bytes they cannot parse, and `FrameError` from the sites that check each stored
+    cell. Any other exception is a defect, which reaches `internal_error` with a note naming the
+    digest. `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing about the bytes,
+    so it refuses the retryable `io` and names a wait (`_DECODE_RETRY_AFTER_S`), since the next
+    try needs memory this instance may not have."""
     try:
         yield
     except MemoryError as exc:
@@ -439,7 +454,7 @@ def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
             exc=exc,
             retry_after_s=_DECODE_RETRY_AFTER_S,
         ) from exc
-    except (ValueError, OSError, LookupError, RecursionError, pa.ArrowException) as exc:
+    except _MALFORMED_CONTENT as exc:
         logger.error(
             "artifact_digest %r did not decode as a frame: %s: %s",
             location.artifact_digest,
@@ -454,6 +469,22 @@ def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
                 f"{type(exc).__name__}"
             ),
         ) from exc
+    except (FrameUnavailable, BindingInvalid):
+        raise
+    except Exception as exc:
+        exc.add_note(f"while reading artifact_digest {location.artifact_digest!r}")
+        raise
+
+
+def _structural_view(
+    frame: Mapping[str, object],
+    *,
+    continuation: Continuation | None,
+    location: StoredArtifactLocation,
+) -> StructuralView:
+    """`compute_structural_view` of the frame `location` stores, a function of its stored cells."""
+    with _decoding(location):
+        return compute_structural_view(frame=frame, continuation=continuation)
 
 
 def _decode_frame(
@@ -467,7 +498,7 @@ def _decode_frame(
         if location.media_type == FRAME1_MEDIA_TYPE:
             parsed = json.loads(data)
             if not _is_frame_document(parsed):
-                raise ValueError("not a frame1 document")
+                raise FrameError("schema_violation", "not a frame1 document")
             return parsed, len(data)
         rows = pq.read_metadata(pa.BufferReader(data)).num_rows
         if rows > max_rows:
@@ -918,6 +949,8 @@ class LiveFrameStore:
             record, inputs, description_final = self._description_records(frame_ref)
             data = self._fetch_bytes(canonical)
             doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)
+            continuation = frame_continuation(manifest=document)
+            structural_view = _structural_view(doc, continuation=continuation, location=canonical)
             graph_generation, catalogue_build = self._read_under()
             labels, descriptions, labels_resolved = self._resolve_labels(
                 doc,
@@ -927,11 +960,10 @@ class LiveFrameStore:
                 warned=warned_refs(manifest=document),
                 deadline=deadline,
             )
-            continuation = frame_continuation(manifest=document)
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
-                structural_view=compute_structural_view(frame=doc, continuation=continuation),
+                structural_view=structural_view,
                 continuation=continuation,
                 manifest=document,
                 labels=labels,
@@ -972,8 +1004,8 @@ class LiveFrameStore:
                 # fills those of a version recorded before versions stored them.
                 frame = replace(
                     frame,
-                    structural_view=compute_structural_view(
-                        frame=frame.frame, continuation=continuation
+                    structural_view=_structural_view(
+                        frame.frame, continuation=continuation, location=canonical
                     ),
                     continuation=continuation,
                 )

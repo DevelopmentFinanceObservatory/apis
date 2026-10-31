@@ -159,6 +159,8 @@ def check_endpoint_exemplars(
             if not any(isinstance(exemplar, declared) for exemplar in exemplars):
                 raise LookupError(f"door {name} has no exemplar of {declared.__qualname__}")
         for endpoint, declared_exemplars in door.endpoint_exemplars.items():
+            if not declared_exemplars:
+                raise LookupError(f"door {name} declares no exemplars for {endpoint}")
             for exemplar in declared_exemplars:
                 with bound_registry_endpoint(endpoint):
                     spec = classify(exemplar)

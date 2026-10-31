@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import Never
 
 import pytest
@@ -19,7 +20,8 @@ from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionSto
 from assembler.ports import FrameRef, FrameUnavailable
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
 from dataset_store.snapshot import SnapshotRevoked
-from datasets_api.doors.definition import SpecNotFound
+from datasets_api.allowance import AllowanceExhausted
+from datasets_api.doors.definition import DefinitionBackpressure, SpecNotFound
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -509,9 +511,27 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             503,
             "service_unavailable",
             True,
-            "io",
+            "busy",
             True,
             id="mint-backpressure",
+        ),
+        pytest.param(
+            DefinitionBackpressure(),
+            503,
+            "service_unavailable",
+            True,
+            "busy",
+            True,
+            id="definition-backpressure",
+        ),
+        pytest.param(
+            AllowanceExhausted(kind="card", limit=1, now=datetime.now(UTC)),
+            404,
+            "frame_unavailable",
+            False,
+            "unknown",
+            False,
+            id="a-wait-on-no-retry",
         ),
         pytest.param(
             DatasetsStoreUnavailable("exemplar"),

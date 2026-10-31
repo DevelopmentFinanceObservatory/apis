@@ -110,7 +110,7 @@ alone.
 
 ### FrameUnavailable outcome by reason
 
-`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) names the code and retryability of each reason in `assembler.ports.FrameUnavailableReason`, and importing the module fails if the two differ, and a bare `spec_id` whose newest version is still building refuses `service_unavailable` with `Retry-After` and no `cause`. HTTP is the status the code registry gives the code on the bound endpoint: this table shows the write, read and share routes, and on a render route `frame_unavailable` answers 409. `cause.code` carries the reason on every code. `io` is a failure to obtain a frame's bytes or the memory to decode them, and it carries `Retry-After` when the memory ran out or the Datasets refusal behind it named a wait. Stored bytes that pass their digest and do not validate and build as a frame refuse `missing_rendering`, and the store logs an error naming the digest and the cause. Any other failure while decoding, and any failure computing a decoded frame's structural view, reaches `internal_error`. The platform logs each frame refusal whose code is not `frame_unavailable`, and `digest_mismatch`, as an error. `recipe_pending` and `recipe_unreadable` refuse a pin, so only the share routes raise them.
+`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) names the code and retryability of each reason in `assembler.ports.FrameUnavailableReason`, and importing the module fails if the two differ, and a bare `spec_id` whose newest version is still building refuses `service_unavailable` with `Retry-After` and no `cause`. HTTP is the status the code registry gives the code on the bound endpoint: this table shows the write, read and share routes, and on a render route `frame_unavailable` answers 409. `cause.code` carries the reason on every code. `io` is a failure to obtain a frame's bytes or the memory to read them, and it carries `Retry-After` when the memory ran out or the Datasets refusal behind it named a wait. `busy` is a bare `spec_id` refused because the Datasets surface is at capacity, with its `Retry-After`. Malformed stored content refuses `missing_rendering`, and the store logs an error naming the digest and the cause: bytes the parsers cannot parse, a table its buffers contradict, and a cell that fails its stored shape, including one that breaks the structural view, such as a `unit` struct with no variant or a null `time_period`. A raised defect while reading stored content is no refusal: it reaches `internal_error`, with a note naming the digest on its logged traceback. The platform logs each frame refusal whose code is not `frame_unavailable`, except `busy`, and `digest_mismatch`, as an error. `recipe_pending` and `recipe_unreadable` refuse a pin, so only the share routes raise them.
 
 | Reason            | Code                | HTTP | retryable |
 | ----------------- | ------------------- | ---- | --------- |
@@ -123,6 +123,7 @@ alone.
 | recipe_pending    | frame_unavailable   | 404  | true      |
 | unknown           | frame_unavailable   | 404  | false     |
 | io                | service_unavailable | 503  | true      |
+| busy              | service_unavailable | 503  | true      |
 | recipe_unreadable | internal_error      | 500  | false     |
 
 ## Registry binding

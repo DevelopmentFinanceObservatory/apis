@@ -809,13 +809,29 @@ def test_load_refuses_a_frame_of_another_schema():
     assert excinfo.value.reason == "missing_rendering"
 
 
-def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering():
-    """A stored frame's bytes can break anywhere. Bytes that do not decode are a permanent
-    refusal. Bytes that decode to a frame with an unreadable cell fail in
-    `compute_structural_view`, a defect that reaches `internal_error`."""
-    data = canonical_frame_parquet(
-        (Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows()),)
+def _frame_of_every_unit() -> Frame:
+    """The malaria rows, holding every form a `unit` cell stores in turn."""
+    units = (
+        None,
+        "USDollar",
+        {"currency": "USD", "prices": "current"},
+        {"currency": "EUR", "prices": "constant", "base_year": 2020},
+        {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+        {
+            "numerator": {"currency": "USD", "prices": "current"},
+            "denominator": {"currency": "EUR", "prices": "current"},
+        },
     )
+    rows = (
+        {**row, "unit": units[index % len(units)]}
+        for index, row in enumerate(malaria_ethiopia_rows())
+    )
+    return Frame.build(role_keys=("recipient",), rows=rows)
+
+
+def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering():
+    """A stored frame's bytes can break anywhere, and each break is a permanent refusal."""
+    data = canonical_frame_parquet((_frame_of_every_unit(),))
     rng = random.Random(7)
     for _ in range(1000):
         mutant = bytearray(data)
@@ -826,8 +842,6 @@ def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering(
             store.load(frame_ref=frame_ref)
         except FrameUnavailable as refused:
             assert refused.reason == "missing_rendering"
-        except (FrameError, TypeError):
-            pass
 
 
 @pytest.mark.parametrize(
@@ -853,29 +867,132 @@ def test_load_refuses_io_when_decoding_runs_out_of_memory(
     assert excinfo.value.retry_after_s == frame_store._DECODE_RETRY_AFTER_S
 
 
-def test_a_decode_defect_is_no_frame_refusal(monkeypatch: pytest.MonkeyPatch):
-    def fail(_data: bytes) -> Never:
-        raise TypeError("exemplar")
+def _raises(raised: Exception) -> Callable[..., Never]:
+    def fail(*_args: object, **_kwargs: object) -> Never:
+        raise raised
 
+    return fail
+
+
+def _logged_traceback_names(exc: BaseException, digest: str) -> bool:
+    """Whether the traceback the platform logs for `exc` names `digest`."""
+    return digest in logging.Formatter().formatException((type(exc), exc, exc.__traceback__))
+
+
+@pytest.mark.parametrize(
+    "site", ["read_canonical_frame_table", "canonical_frame_document", "compute_structural_view"]
+)
+@pytest.mark.parametrize(
+    "raised", [pytest.param(TypeError, id="type"), pytest.param(KeyError, id="key")]
+)
+def test_a_defect_reading_a_stored_frame_reaches_internal_error_naming_its_digest(
+    monkeypatch: pytest.MonkeyPatch, site: str, raised: type[Exception]
+):
+    """A refusal comes only from a check of the stored content, so a raised defect stays one
+    whatever its type."""
     snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
-    monkeypatch.setattr(frame_store, "read_canonical_frame_table", fail)
+    monkeypatch.setattr(frame_store, site, _raises(raised("exemplar")))
 
-    with pytest.raises(TypeError):
+    with pytest.raises(raised) as excinfo:
         _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
 
+    ((location,),) = snapshots.locations.values()
+    assert _logged_traceback_names(excinfo.value, location.artifact_digest)
 
-def test_a_structural_view_failure_is_no_frame_refusal(monkeypatch: pytest.MonkeyPatch):
-    """Only the decoders' failures name the bytes: a view that breaks on a decoded frame is a
-    defect."""
 
-    def fail(*, frame: object, continuation: object) -> Never:
-        raise ValueError("exemplar")
-
+def test_a_structural_view_out_of_memory_refuses_io(monkeypatch: pytest.MonkeyPatch):
     snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
-    monkeypatch.setattr(frame_store, "compute_structural_view", fail)
+    monkeypatch.setattr(frame_store, "compute_structural_view", _raises(MemoryError()))
 
-    with pytest.raises(ValueError, match="exemplar"):
+    with pytest.raises(FrameUnavailable) as excinfo:
         _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "io"
+
+
+def _with_column(data: bytes, name: str, array: pa.Array) -> bytes:
+    """The canonical frame `data` with column `name` replaced, as a damaged artifact holds it."""
+    table = pq.read_table(pa.BufferReader(data))
+    sink = io.BytesIO()
+    pq.write_table(table.set_column(table.column_names.index(name), name, array), sink)
+    return sink.getvalue()
+
+
+def _stored_cell(data: bytes, name: str, cell: object) -> bytes:
+    """`data` with column `name` holding `cell` in every row."""
+    table = pq.read_table(pa.BufferReader(data))
+    return _with_column(
+        data, name, pa.array([cell] * table.num_rows, table.schema.field(name).type)
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "cell"),
+    [
+        pytest.param("unit", {"ref": None, "request": None, "composed": None}, id="no-variant"),
+        pytest.param("unit", {"ref": "USD", "composed": '{"a":1}'}, id="two-variants"),
+        pytest.param("unit", {"ref": ""}, id="empty-ref"),
+        pytest.param("unit", {"request": {"currency": None, "prices": None}}, id="empty-request"),
+        pytest.param(
+            "unit", {"request": {"currency": "USD", "prices": "constant"}}, id="no-base-year"
+        ),
+        pytest.param("unit", {"composed": "not json"}, id="composed-not-json"),
+        pytest.param("unit", {"composed": "[" * 100_000}, id="composed-past-the-parser"),
+        pytest.param("unit", {"composed": '"USD"'}, id="composed-a-ref"),
+        pytest.param("unit", {"composed": "null"}, id="composed-null"),
+        pytest.param("unit", {"composed": '{"numerator":"USD"}'}, id="composed-one-side"),
+        pytest.param(
+            "unit",
+            {"composed": '{"numerator":"USD","denominator":{"stat_var":3}}'},
+            id="composed-bad-side",
+        ),
+        pytest.param("time_period", None, id="null-period"),
+        pytest.param("time_period", "20:0", id="unparseable-period"),
+    ],
+)
+def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(
+    caplog: pytest.LogCaptureFixture, name: str, cell: object
+):
+    data = canonical_frame_parquet((_frame_of_every_unit(),))
+    snapshots, artifacts, frame_ref = _canonical_frame_version(data)
+    assert _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    snapshots, artifacts, frame_ref = _canonical_frame_version(_stored_cell(data, name, cell))
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    ((location,),) = snapshots.locations.values()
+    (record,) = caplog.records
+    assert record.args[0] == location.artifact_digest
+    assert record.exc_info[0] is FrameError
+
+
+@pytest.mark.parametrize(
+    ("column", "cell"),
+    [
+        pytest.param("unit", ["USD"], id="unit-a-list"),
+        pytest.param("unit", {"currency": "USD"}, id="unit-no-prices"),
+        pytest.param("unit", {"numerator": "USD"}, id="unit-one-side"),
+        pytest.param("recipient", 3, id="dimension-a-number"),
+        pytest.param("recipient", ["country/ETH"], id="dimension-a-list"),
+        pytest.param("time_period", None, id="period-null"),
+        pytest.param("time_period", 2020, id="period-a-number"),
+        pytest.param("time_period", ["2020"], id="period-a-list"),
+        pytest.param("time_period", "20:0", id="period-unparseable"),
+    ],
+)
+def test_a_malformed_frame1_cell_refuses_missing_rendering(column: str, cell: object):
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    document = json.loads(artifacts.objects[(Tier.working, digest)])
+    index = document["columns"].index(column)
+    document["rows"][0][index] = cell
+    artifacts.objects[(Tier.working, digest)] = json.dumps(document).encode()
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
 
 
 def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
@@ -2387,6 +2504,40 @@ def test_a_cached_frame_regroups_once_its_stored_continuations_arrive(
     assert (first.continuation, first.structural_view.series_count) == (None, 2)
     assert after.continuation == Continuation(series=(_ZAMBIA_CONTINUATION,))
     assert after.structural_view.series_count == 1
+
+
+@pytest.mark.parametrize(
+    ("raised", "failure"),
+    [
+        pytest.param(MemoryError(), FrameUnavailable, id="out-of-memory"),
+        pytest.param(TypeError("exemplar"), TypeError, id="defect"),
+    ],
+)
+def test_a_cached_frame_regroups_under_the_read_of_its_stored_cells(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception, failure: type[Exception]
+) -> None:
+    clock = _Clock()
+    store, frame_ref, _reader = _zambia_growth_store(clock=clock, continuations=None)
+    snapshots = cast("_FakeSnapshotReader", store._snapshots)
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    store.load(frame_ref=frame_ref)
+    version = snapshots.versions[key]
+    assert isinstance(version.facts, FrameLineage)
+    snapshots.versions[key] = dataclasses.replace(
+        version,
+        facts=dataclasses.replace(version.facts, continuations=[_ZAMBIA_CONTINUATION.as_entry()]),
+    )
+    clock.pass_recheck()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _raises(raised))
+
+    with pytest.raises(failure) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    (location, *_) = snapshots.locations[key]
+    if failure is FrameUnavailable:
+        assert excinfo.value.reason == "io"
+    else:
+        assert _logged_traceback_names(excinfo.value, location.artifact_digest)
 
 
 @pytest.mark.parametrize(
