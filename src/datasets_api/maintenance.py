@@ -239,7 +239,7 @@ from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import (
     DatasetsStoreUnavailable,
     StoredFrameUnreadable,
-    read_stored_frame1,
+    read_stored_frame,
 )
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
@@ -254,7 +254,6 @@ from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
-    read_canonical_frame,
     write_frame1,
 )
 from materialise.reshape import RollupNotSummableError
@@ -496,14 +495,14 @@ def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
 
 
 def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
-    """The frame1 document `data`, at `digest`, as a grammar-valid frame (`read_stored_frame1`),
+    """The frame1 document `data`, at `digest`, as a grammar-valid frame (`read_stored_frame`),
     whose frame1 digest is `digest`, so a conversion never changes content.
 
     Raises:
         StoredFrameUnreadable: The document does not read as a grammar-valid frame.
         ValueError: The rebuilt frame's frame1 digest differs from `digest`.
     """
-    frame = read_stored_frame1(data, digest=digest)
+    frame = read_stored_frame(data, media_type=FRAME1_MEDIA_TYPE, digest=digest)
     rebuilt = write_frame1((frame,), sink=_DiscardSink()).digest
     if rebuilt != digest:
         raise ValueError(f"the frame rebuilt from {digest} writes frame1 digest {rebuilt}")
@@ -730,7 +729,7 @@ def _stored_frame(
         return None
     if location.media_type == FRAME1_MEDIA_TYPE:
         return _frame_of_frame1(data, digest=location.artifact_digest)
-    return read_canonical_frame(data)
+    return read_stored_frame(data, media_type=location.media_type, digest=location.artifact_digest)
 
 
 def run_backfill_continuations(*, store: DatasetStore, deadline: datetime, now: Clock) -> None:

@@ -790,15 +790,6 @@ def write_frame1(chunks: Iterable[Frame], *, sink: Sink) -> WrittenArtifact:
     )
 
 
-@dataclass(frozen=True)
-class Frame1Table:
-    """Stored frame1 `columns` and `rows` as tuples, satisfying the `Table` protocol for
-    reshaping and tabular writers without rebuilding a grammar `Frame`."""
-
-    columns: tuple[str, ...]
-    rows: tuple[tuple[object, ...], ...]
-
-
 def read_frame1(data: bytes) -> Frame:
     """The frame1 document `data` as a grammar-valid frame in row order, the one way a stored
     frame1 document is read. `read_frame1_document` checks the document's shape, each column's
@@ -830,26 +821,38 @@ def _frame1_array(column: str, cells: Sequence[object]) -> pa.Array:
     other column as strings.
 
     Raises:
-        FrameError: `schema_violation` for a cell of another column that is not a string or
-            null, and what `_frame1_values` and `_frame1_units` raise.
+        FrameError: What `_arrow_cells`, `_frame1_values` and `_frame1_units` raise.
     """
     if column == VALUE_COLUMN:
         return _frame1_values(cells)
     if column == UNIT_COLUMN:
         return _frame1_units(cells)
+    return _arrow_cells(column, cells, pa.string())
+
+
+def _arrow_cells(column: str, cells: Sequence[object], data_type: pa.DataType) -> pa.Array:
+    """`cells` of frame1 column `column` as an Arrow array of `data_type`, the one conversion
+    every frame1 column takes.
+
+    Raises:
+        FrameError: `lone_surrogate` for a string holding one, and `schema_violation` for a cell
+            `data_type` cannot hold.
+    """
     try:
-        return pa.array(cells, type=pa.string())
+        return pa.array(cells, type=data_type)
+    except UnicodeEncodeError as exc:
+        raise FrameError("lone_surrogate", f"a {column} cell holds a lone surrogate") from exc
     except (pa.ArrowInvalid, pa.ArrowTypeError) as exc:
-        raise FrameError("schema_violation", f"a {column} cell is not a string") from exc
+        raise FrameError("schema_violation", f"a {column} cell is not a {data_type}") from exc
 
 
 _JSON_NUMBER_TYPES = frozenset((int, float, type(None)))
 
 
 def _frame1_values(cells: Sequence[object]) -> pa.Array:
-    """The `value` cells, each a JSON number or null, as doubles: an integer past 2^53 rounds to
-    the nearest one, as `float` rounds it. The cells' types are read once, so a column of
-    doubles converts in Arrow alone.
+    """The `value` cells, each a JSON number, as doubles: an integer past 2^53 rounds to the
+    nearest one, as `float` rounds it. The cells' types are read once, so a column of doubles
+    converts in Arrow alone. A null cell reaches `build_frame_from_arrow`, which refuses it.
 
     Raises:
         FrameError: `schema_violation` for a cell that is not a JSON number or null, a boolean
@@ -859,15 +862,12 @@ def _frame1_values(cells: Sequence[object]) -> pa.Array:
     if not kinds <= _JSON_NUMBER_TYPES:
         names = sorted(kind.__name__ for kind in kinds - _JSON_NUMBER_TYPES)
         raise FrameError("schema_violation", f"a value cell is not a number: {names}")
-    if int not in kinds:
-        return pa.array(cells, type=pa.float64())
-    try:
-        return pa.array(
-            [float(cell) if cell.__class__ is int else cell for cell in cells],
-            type=pa.float64(),
-        )
-    except OverflowError as exc:
-        raise FrameError("schema_violation", "a value cell is past the double range") from exc
+    if int in kinds:
+        try:
+            cells = [float(cell) if cell.__class__ is int else cell for cell in cells]
+        except OverflowError as exc:
+            raise FrameError("schema_violation", "a value cell is past the double range") from exc
+    return _arrow_cells(VALUE_COLUMN, cells, pa.float64())
 
 
 _PLAIN_UNIT_TYPE = canonical_frame_schema(derive_columns(())).field(UNIT_COLUMN).type
@@ -885,10 +885,11 @@ def _frame1_units(cells: Sequence[object]) -> pa.Array:
     """
     if set(map(type, cells)) <= {str, type(None)}:
         # Refs alone: the grammar reads a text `unit` column as refs.
-        return pa.array(cells, type=pa.string())
+        return _arrow_cells(UNIT_COLUMN, cells, pa.string())
+    # `repr` escapes a lone surrogate, which `unit_cell_from_json` then refuses.
     keys = list(map(repr, cells))
     by_key = dict(zip(keys, cells, strict=True))
-    encoded = pa.array(keys, type=pa.string()).dictionary_encode()
+    encoded = _arrow_cells(UNIT_COLUMN, keys, pa.string()).dictionary_encode()
     arrays = [
         unit_cell_array(unit_cell_from_json(by_key[cast("str", key)]), 1)
         for key in encoded.dictionary.to_pylist()
@@ -964,7 +965,7 @@ def read_frame1_document(data: bytes) -> dict[str, object]:
 # Every column a frame holds beside its role columns, and those of them a frame1 document written
 # before the grammar named them may lack.
 _FRAME_COLUMNS = frozenset(derive_columns(()))
-_FRAME1_OPTIONAL_COLUMNS = frozenset({"measurementMethod", STATUS_COLUMN})
+_FRAME1_OPTIONAL_COLUMNS = frozenset({UNIT_COLUMN, "measurementMethod", STATUS_COLUMN})
 if not _FRAME1_OPTIONAL_COLUMNS <= _FRAME_COLUMNS:
     raise AssertionError("an optional frame1 column is no frame column")
 
@@ -1048,9 +1049,13 @@ def read_canonical_frame(data: bytes) -> Frame:
     return Frame.from_table(columns=tuple(table.column_names), table=table)
 
 
-def read_stored_frame(data: bytes, *, media_type: str) -> Table:
-    """A version's stored frame as a writer-ready `Table`: the frame1 document when `media_type`
-    is `FRAME1_MEDIA_TYPE`, the canonical frame otherwise."""
+def read_stored_frame(data: bytes, *, media_type: str) -> Frame:
+    """A version's stored frame as a `Frame`: the frame1 document (`read_frame1`) when
+    `media_type` is `FRAME1_MEDIA_TYPE`, the canonical frame otherwise.
+
+    Raises:
+        FrameError: What `read_frame1` or `read_canonical_frame` raises.
+    """
     if media_type == FRAME1_MEDIA_TYPE:
         return read_frame1(data)
     return read_canonical_frame(data)

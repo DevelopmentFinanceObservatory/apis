@@ -3483,8 +3483,8 @@ def stored_frame_location(
     locations: Sequence[StoredArtifactLocation],
 ) -> StoredArtifactLocation | None:
     """The version's stored frame among `locations`: its canonical frame, else its frame1
-    document, else `None`. Read the bytes with `materialise.formats.read_stored_frame` and the
-    location's media type."""
+    document, else `None`. Read the bytes with `datasets_api.store_errors.read_stored_frame`
+    and the location's media type."""
     canonical = next(
         (location for location in locations if is_canonical_frame_rendering(location.rendering)),
         None,
@@ -3504,7 +3504,7 @@ def stored_frame_sha256(
     locations: Sequence[StoredArtifactLocation] = (),
 ) -> str:
     """The frame hash (`dfo_frame_grammar.frame_sha256`) of the stored frame at `location`,
-    which `table` holds as `materialise.formats.read_stored_frame` read it: `recorded`, the
+    which `table` holds as `datasets_api.store_errors.read_stored_frame` read it: `recorded`, the
     hash on the version's record (`StoredVersion.frame_sha256`), when the record holds one.
     Otherwise a frame1 document is the frame's canonical bytes, so the digest of one at
     `location` or among `locations`, the version's links the caller holds, is that hash.

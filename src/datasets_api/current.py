@@ -134,6 +134,7 @@ from datasets_api.serve import (
     serve_definition,
     with_linked_artifacts,
 )
+from datasets_api.store_errors import read_stored_frame
 from datasets_api.timings import count, label, phase
 from datasets_api.version_descriptions import collapse_describer
 from datasets_api.versions import (
@@ -168,9 +169,7 @@ from materialise.dependencies import (
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.formats import (
-    Frame,
     frame_entity_columns,
-    read_stored_frame,
 )
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile
@@ -661,8 +660,8 @@ def _render_frame(
     unchanged is the base version, whatever frame grammar minted its token
     (`render_and_store`). Record its artifact, and every other one, under the base version
     and add it to the manifest. A party-totals cut
-    reads a canonical frame, so a version whose stored frame is a frame1 document returns
-    `None` and the caller rebuilds. Render errors propagate to the shared classifier.
+    is cut from the stored frame, a frame1 document's included. Render errors propagate to the
+    shared classifier.
 
     A bundle cites the stored citation with its empty fields filled by a live read
     (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
@@ -671,13 +670,11 @@ def _render_frame(
     """
     # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
     assert plan.frame_mode is not None
-    table = read_stored_frame(frame.data, media_type=frame.location.media_type)
-    if (
-        options.without_party_totals
-        and plan.frame_mode is FrameMode.RAW
-        and not isinstance(table, Frame)
-    ):
-        return None
+    table = read_stored_frame(
+        frame.data,
+        media_type=frame.location.media_type,
+        digest=frame.location.artifact_digest,
+    )
     # A collapse's kept code axes render as the decoded codes its mint wrote them as.
     entity_columns = entity_roles(frame_entity_columns(table.columns))
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
@@ -704,7 +701,7 @@ def _render_frame(
     )
     rendered = render_and_store(
         frame_chunks=lambda: iter((table,)),
-        frame_rows=table.table.num_rows if isinstance(table, Frame) else len(table.rows),
+        frame_rows=table.table.num_rows,
         options=options,
         spec=spec_dict,
         provenance_refs=provenance_refs,

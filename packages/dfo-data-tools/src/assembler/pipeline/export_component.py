@@ -87,7 +87,6 @@ from materialise.bundle_naming import (
 )
 from materialise.bundle_sources import source_provenance
 from materialise.formats import (
-    Frame1Table,
     Rendering,
     Sink,
     Table,
@@ -150,6 +149,15 @@ class ComponentExportMismatch(Exception):
         self.revision = revision
         self.detail = detail
         super().__init__(f"{component_id} revision {revision}: {detail}")
+
+
+@dataclass(frozen=True)
+class _ExportTable:
+    """The rows a component export writes, under `columns`, satisfying the `Table` protocol the
+    tabular writers read."""
+
+    columns: tuple[str, ...]
+    rows: tuple[tuple[object, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -531,7 +539,11 @@ def _export_table(
                 cast("str | None", matched[key][index[_PROVENANCE_COLUMN]]) for key in wanted
             )
         )
-    return Frame1Table(columns=tuple(out_columns), rows=tuple(out_rows)), provenance_refs, generated
+    return (
+        _ExportTable(columns=tuple(out_columns), rows=tuple(out_rows)),
+        provenance_refs,
+        generated,
+    )
 
 
 def _free_name(base: str, *, taken: set[str]) -> str:

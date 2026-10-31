@@ -896,7 +896,6 @@ def test_read_frame1_refuses_a_ragged_row():
 @pytest.mark.parametrize(
     "columns",
     [
-        pytest.param(["stat_var", "time_period", "value", "provenance"], id="no-unit"),
         pytest.param(["stat_var", "value", "unit", "provenance"], id="no-time-period"),
         pytest.param(
             ["stat_var", "time_period", "value", "unit", "unit", "provenance"], id="a-repeat"
@@ -936,6 +935,46 @@ def test_read_frame1_rounds_an_integer_value_past_2_to_the_53_to_the_nearest_dou
     frame = read_frame1(_frame1_with_value(2**53 + 1))
 
     assert frame.table.column("value")[0].as_py() == float(2**53 + 1)
+
+
+@pytest.mark.parametrize(
+    "column", ["stat_var", "time_period", "measurementMethod", "provenance", "unit"]
+)
+def test_read_frame1_refuses_a_string_cell_holding_a_lone_surrogate(column: str):
+    document = json.loads(write_frame1((_frame1_source_frame(),)).data)
+    document["rows"][0][document["columns"].index(column)] = "dcid:\ud800"
+
+    with pytest.raises(FrameError) as excinfo:
+        read_frame1(json.dumps(document).encode())
+
+    assert excinfo.value.category == "lone_surrogate"
+
+
+def test_read_frame1_reads_a_document_with_no_unit_column_as_null_units():
+    """A frame1 document written before the grammar named `unit` reads as the frame whose
+    every unit is null, and writes that frame's frame1 digest."""
+    frame = build_frame(
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": "dcid:Exemplar",
+                "recipient": "country/TGO",
+                "time_period": "2015",
+                "value": 1.0,
+            }
+        ],
+    )
+    written = write_frame1((frame,))
+    document = json.loads(written.data)
+    unit = document["columns"].index("unit")
+    document["columns"].pop(unit)
+    for row in document["rows"]:
+        row.pop(unit)
+
+    read = read_frame1(json.dumps(document).encode())
+
+    assert read == frame
+    assert write_frame1((read,)).digest == written.digest
 
 
 def test_frame_entity_columns_on_a_two_role_frame_matches_the_sorted_role_keys():

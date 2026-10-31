@@ -61,7 +61,7 @@ from datasets_api.analysis import (
     compute_analysis,
     recorded_dataset_root,
 )
-from datasets_api.analysis_roots import frame_from_frame_layout, frame_of_stored
+from datasets_api.analysis_roots import frame_from_frame_layout
 from datasets_api.derived import root_rendering
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_digest import minted_variable_names, output_digest
@@ -72,6 +72,7 @@ from datasets_api.render import (
     is_statistics_rendering,
     stored_frame_location,
 )
+from datasets_api.store_errors import read_stored_frame
 from dfo_analysis_engine.calls import derive_frame_content_version
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.recipe import derived_nodes
@@ -173,7 +174,7 @@ class StoredRootSource:
         )
         if located.frame_layout:
             return frame_from_frame_layout(data)
-        return frame_of_stored(
+        return read_stored_frame(
             data,
             media_type=located.location.media_type,
             digest=located.location.artifact_digest,
@@ -203,7 +204,7 @@ class StoredRootSource:
             data = self._bytes(location, spec_id=spec_id, content_version=content_version)
         except RootExpired:
             return None
-        return frame_of_stored(
+        return read_stored_frame(
             data, media_type=location.media_type, digest=location.artifact_digest
         )
 

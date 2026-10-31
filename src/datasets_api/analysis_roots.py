@@ -88,15 +88,11 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import is_statistics_rendering, stored_frame_location
-from datasets_api.store_errors import read_stored_frame1
+from datasets_api.store_errors import read_stored_frame
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
     enrichment_role,
-)
-from materialise.formats import (
-    FRAME1_MEDIA_TYPE,
-    read_canonical_frame,
 )
 from spec_registry.reader import StoredDefinition
 
@@ -245,14 +241,6 @@ def frame_from_frame_layout(data: bytes) -> Frame:
         table = table.drop_columns(STATUS_COLUMN)
     role_keys = [name for name in table.schema.names if name not in _RESERVED_COLUMNS]
     return build_frame_from_arrow(table, role_keys=role_keys)
-
-
-def frame_of_stored(data: bytes, *, media_type: str, digest: str) -> Frame:
-    """The frame a version's stored frame `data`, at `digest`, holds: its frame1 document when
-    `media_type` names one, else its canonical frame."""
-    if media_type == FRAME1_MEDIA_TYPE:
-        return read_stored_frame1(data, digest=digest)
-    return read_canonical_frame(data)
 
 
 class LiveRootSource:
@@ -415,7 +403,7 @@ class LiveRootSource:
             raise RootExpired(
                 spec_id=spec_id, content_version=content_version, reason="its stored frame is gone"
             ) from None
-        return frame_of_stored(
+        return read_stored_frame(
             data, media_type=location.media_type, digest=location.artifact_digest
         )
 
@@ -454,7 +442,6 @@ __all__ = [
     "KIND_COLUMNS",
     "LiveRootSource",
     "frame_from_frame_layout",
-    "frame_of_stored",
     "frame_ref_for",
     "mint_options",
     "newest_spec_version",

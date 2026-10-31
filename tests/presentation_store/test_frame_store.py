@@ -485,6 +485,14 @@ def _frame1_with(**members: object) -> bytes:
     return json.dumps({key: value for key, value in doc.items() if value is not None}).encode()
 
 
+def _frame1_with_repeated_row() -> bytes:
+    """The malaria document with its first row stored twice."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    rows = cast("list[list[object]]", doc["rows"])
+    rows.insert(1, list(rows[0]))
+    return json.dumps(doc).encode()
+
+
 def _frame1_without(column: str) -> bytes:
     """The malaria frame1 document without `column`."""
     doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
@@ -1009,6 +1017,8 @@ def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(
         pytest.param("time_period", ["2020"], id="period-a-list"),
         pytest.param("time_period", "20:0", id="period-unparseable"),
         pytest.param("recipient", None, id="role-null"),
+        pytest.param("recipient", "country/\ud800", id="role-a-lone-surrogate"),
+        pytest.param("unit", "\ud800", id="unit-ref-a-lone-surrogate"),
         pytest.param("value", None, id="value-null"),
         pytest.param("value", "1.5", id="value-a-numeric-string"),
         pytest.param("value", "abc", id="value-a-string"),
@@ -1068,7 +1078,7 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
             id="a-column-name-with-a-lone-surrogate",
         ),
         pytest.param(_frame1_with(rows=[["dcid:X"]]), id="a-short-row"),
-        pytest.param(_frame1_without("unit"), id="no-unit-column"),
+        pytest.param(_frame1_with_repeated_row(), id="a-repeated-grain"),
         pytest.param(_frame1_without("provenance"), id="no-provenance-column"),
         pytest.param(
             _frame1_with(columns=["stat_var", "stat_var", "time_period", "value", "unit"], rows=[]),

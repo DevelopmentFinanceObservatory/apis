@@ -66,7 +66,7 @@ from datasets_api.render import (
     stored_frame_location,
 )
 from datasets_api.retention import version_retention
-from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.store_errors import DatasetsStoreUnavailable, read_stored_frame
 from datasets_api.versions import VersionRecordWriter
 from dfo_platform.config import PublicSiteSettings
 from materialise import EnrichmentLookup
@@ -85,7 +85,6 @@ from materialise.formats import (
     Table,
     frame_entity_columns,
     iter_rows,
-    read_stored_frame,
     table_schema_for,
     write_csv,
     write_excel,
@@ -328,7 +327,9 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     # A store that drops the zone records UTC, as every write stamps it.
     stored_on = created if created.tzinfo is not None else created.replace(tzinfo=UTC)
     return _StoredFrame(
-        table=read_stored_frame(data, media_type=location.media_type),
+        table=read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        ),
         stored_on=stored_on,
         servable=stored.servable,
     )

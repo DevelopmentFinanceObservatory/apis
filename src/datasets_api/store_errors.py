@@ -18,7 +18,8 @@ from dfo_frame_grammar import FrameError
 
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
-from materialise.formats import Frame, read_frame1
+from materialise import formats
+from materialise.formats import Frame
 from spec_registry.errors import SpecRegistryStoreError
 
 logger = logging.getLogger(__name__)
@@ -40,23 +41,25 @@ class DatasetsStoreUnavailable(Exception):
 
 
 class StoredFrameUnreadable(Exception):
-    """A stored frame1 artifact does not read as a frame1 document, a stored-artifact fault. It is
-    classified by no door, so it answers `internal_error` as a stored canonical frame that does
-    not decode does, and its message names only the digest."""
+    """A stored frame artifact does not read as a frame (`read_stored_frame`), a stored-artifact
+    fault. It is classified by no door, so it answers `internal_error` as a stored canonical
+    frame that does not decode does, and its message names only the digest."""
 
     def __init__(self, *, digest: str) -> None:
         self.digest = digest
         super().__init__(f"stored frame artifact_digest {digest!r} does not read as a frame")
 
 
-def read_stored_frame1(data: bytes, *, digest: str) -> Frame:
-    """The stored frame1 artifact `data`, at `digest`, as a grammar-valid frame (`read_frame1`).
+def read_stored_frame(data: bytes, *, media_type: str, digest: str) -> Frame:
+    """A version's stored frame `data`, at `digest`, as a `Frame`: its frame1 document when
+    `media_type` names one, read by `read_frame1`, else its canonical frame. The one way a
+    Datasets reader reads a stored frame, so every door refuses the same artifact alike.
 
     Raises:
-        StoredFrameUnreadable: `read_frame1` raised `FrameError` for it.
+        StoredFrameUnreadable: `materialise.formats.read_stored_frame` raised `FrameError`.
     """
     try:
-        return read_frame1(data)
+        return formats.read_stored_frame(data, media_type=media_type)
     except FrameError as exc:
         raise StoredFrameUnreadable(digest=digest) from exc
 
