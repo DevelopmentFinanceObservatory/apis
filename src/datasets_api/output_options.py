@@ -6,6 +6,7 @@ joined at each read. Disabled enrichments and single-distinct pivot pairs are om
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Collection, Mapping, Sequence
 
 from code_index.types import PartyRow
@@ -24,7 +25,7 @@ from datasets_api.manifest_models import (
     VaryingColumnModel,
 )
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import party_kind_of
+from materialise.enrichment import PARTY_FIELDS, PARTY_KIND_FIELD
 from materialise.formats import FORMAT_COLUMN_CAPS
 from materialise.profile import EnrichmentCoverage, OutputProfile, PivotFeasibility
 from materialise.projection import long_layout_default_enrichments, totals_axes, totals_roles
@@ -74,7 +75,8 @@ def derive_output_options(
         bundle=_bundle_option(capabilities.bundle_active),
         enrichments=[
             option
-            for coverage in profile.enrichments
+            for stored in profile.enrichments
+            for coverage in _party_field_coverages(stored)
             if (option := _enrichment_option(coverage, capabilities=capabilities)) is not None
         ],
         long_layout_defaults=list(long_layout_default_enrichments(role_columns)),
@@ -98,24 +100,28 @@ def movable_totals_roles(
     document's `long_layout_totals` and the render's split (`render._TotalRows`) both read this
     function, so a render drops rows only on a role the options document names.
 
-    A role bound to several entities qualifies when one of them is a total (`party_kind_of`
-    over `parties`). An open role qualifies when `parties` lists a total on its axis that one of
-    `datasets` publishes (`PartyRow.axes`, `PartyRow.datasets`), or any total on its axis when
-    `datasets` is empty, as for a definition whose read selected no provenance. The index builds
-    those rows from the coverage that lists each provenance's parties, so a total an open role
-    can hold in a covered provenance is one this rule names."""
+    A role bound to several entities qualifies when one of them is a total in one of `datasets`
+    (`PartyRow.kinds_over` over `parties`). An open role qualifies when `parties` lists a party
+    on its axis that is a total in one of `datasets` that publishes it (`PartyRow.axes`,
+    `PartyRow.datasets`, `PartyRow.kind_in`), or any total on its axis when `datasets` is empty,
+    as for a definition whose read selected no provenance. The index builds those rows from the
+    coverage that lists each provenance's parties, so a total an open role can hold in a covered
+    provenance is one this rule names."""
     axes = totals_axes(identity)
     read = set(datasets)
+
+    def holds_total(party: PartyRow | None) -> bool:
+        return party is not None and "total" in party.kinds_over(read)
 
     def movable(role: str) -> bool:
         axis = role_key_axis(role)
         bound = axes[axis] if axis is not None else ()
         if bound:
-            return any(party_kind_of(entity, parties=parties) == "total" for entity in bound)
+            return any(holds_total(parties.get(entity)) for entity in bound)
         return any(
-            party.kind == "total"
-            and axis in party.axes
+            axis in party.axes
             and (not read or not read.isdisjoint(party.datasets))
+            and holds_total(party)
             for party in parties.values()
         )
 
@@ -132,6 +138,16 @@ def _bundle_option(bundle_active: bool) -> BundleOptionModel:
     if bundle_active:
         return BundleOptionModel(state="available")
     return BundleOptionModel(state="unavailable", reason=_CAPABILITY_UNAVAILABLE_REASON)
+
+
+def _party_field_coverages(coverage: EnrichmentCoverage) -> tuple[EnrichmentCoverage, ...]:
+    """`coverage`, and for a `party_kind` pair the same counts for every party field
+    (`PARTY_FIELDS`). One code-index row gives a party all three cells, so a party covered for
+    its kind is covered for its class and whole cell too. A profile stores the kind alone, so
+    the options of a version stored before the other fields existed list them as well."""
+    if coverage.field != PARTY_KIND_FIELD:
+        return (coverage,)
+    return tuple(dataclasses.replace(coverage, field=field) for field in PARTY_FIELDS)
 
 
 def _enrichment_option(

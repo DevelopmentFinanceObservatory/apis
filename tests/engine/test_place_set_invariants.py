@@ -1038,7 +1038,7 @@ _SSA_TEXTS = [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS]
         pytest.param(
             [pinned(EU, _THE_UNION), LABEL[EU]],
             [destination("Kenya")],
-            [LABEL[EU]],
+            None,
             id="pinned-node-and-name",
         ),
         pytest.param(
@@ -1049,7 +1049,7 @@ _SSA_TEXTS = [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS]
         ),
     ],
 )
-def test_a_direction_refusal_names_each_untold_set_once(
+def test_a_direction_refusal_names_every_text_of_each_untold_set(
     monkeypatch: pytest.MonkeyPatch,
     texts: list[str | ParsedEntity],
     others: list[str | ParsedEntity],
@@ -1058,17 +1058,16 @@ def test_a_direction_refusal_names_each_untold_set_once(
 ) -> None:
     """Aid needs each place's direction. With no aid flow in either direction, no reading of
     an unstated direction holds data, so the answer refuses. A set no text of which is
-    directed is named once, by a text the request posted for it. A pin's key is not used,
-    and a set one text directs is not named. With no `untold` given, the name is the first
-    text posted."""
+    directed is named by every text the request posted for it, in query order, a pin's key
+    included, and a set one text directs is not named. With no `untold` given, the names
+    are the set's texts as posted."""
     monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: ()})
     doors = Doors(monkeypatch)
     ordered = texts[::-1] if reverse else texts
 
     response = doors.first_answer(AID, *ordered, *others)
 
-    first = ordered[0]
-    expected = untold or [first if isinstance(first, str) else first.text]
+    expected = untold or [text if isinstance(text, str) else text.text for text in ordered]
     assert no_data_terms(response) == ("role_not_resolved", expected)
 
 

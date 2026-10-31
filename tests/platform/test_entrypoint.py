@@ -84,8 +84,10 @@ def test_deployed_app_honors_dfo_cors_origins_on_a_real_preflight(monkeypatch):
         headers={
             "Origin": "https://app.example.com",
             "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type, x-dfo-client",
         },
     )
+    assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == "https://app.example.com"
 
 

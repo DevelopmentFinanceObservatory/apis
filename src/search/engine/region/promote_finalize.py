@@ -7,7 +7,7 @@ from typing import cast
 from materialise.recipes import RateCoverageGapError, cause_from_recipe_error
 from search.engine.departures import window_gap_fact
 from search.engine.envelope import now_ms
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.convertibility import option_pins
 from search.engine.region.facet_probe import FacetProbe, facet_probe
 from search.engine.region.observations.bulk_scope import bulk_scope_for
@@ -18,6 +18,7 @@ from search.engine.region.option_coverage import (
     _maybe_build_facet_options,
     _maybe_enrich_slot_options,
 )
+from search.engine.region.phase_timing import timed_step
 from search.engine.region.promote_ground import unit_refusal_input_error
 from search.engine.region.promote_relaunch import PromoteRelaunch, bind_relaunches
 from search.engine.region.promote_results import _no_data_region
@@ -26,10 +27,12 @@ from search.engine.region.related_read import joined_related, stating_related
 from search.engine.region.result import RegionResult, answered_roles
 from search.engine.region.state import EngineOptions, _elected_stat_vars
 from search.engine.region.un_system import member_labels
+from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_window_gap, serves_nothing
 from search.engine.retrieval.retrieve import Materialised
+from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
@@ -110,7 +113,9 @@ def _bound_unit_refusal(
     currency names adds `currency_unmapped_omitted` to the state's warnings, as a fresh
     request does."""
     gate_plan = state.unit_gate_plan if state.unit_gate_plan is not None else state.narrowed_plan
-    reason = bound_unit_gate_reason(gate_plan, state.obs_entities, mat_result.sv_dcids)
+    reason = bound_unit_gate_reason(
+        gate_plan, state.obs_entities, unit_served(state.elected_unit, mat_result.sv_dcids)
+    )
     if reason is not None:
         return _no_data_region(
             state.variable_text,
@@ -120,7 +125,9 @@ def _bound_unit_refusal(
         )
     coverage = state.unit_coverage
     if coverage.refusal is None:
-        if (omitted := coverage.omitted_warning()) is not None:
+        if (
+            omitted := coverage.omitted_warning(catalogue=current_conversion_catalogue())
+        ) is not None:
             state.warnings.append(omitted)
         return None
     exc = coverage.refusal[1]
@@ -298,7 +305,8 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         (refusal := _bound_unit_refusal(state, mat_result)) is not None
     ):
         return refusal
-    _fetch = _fetch_finalize_observations(state, mat_result, unit_request=_unit_request)
+    with timed_step(state, "finalize_preview"):
+        _fetch = _fetch_finalize_observations(state, mat_result, unit_request=_unit_request)
     # A requested preview's warning joins the answer, stamped with its Spec.
     resubmit_warnings = state.definite_warnings(spec.spec_id)
     _fetched_obs = None
@@ -314,8 +322,16 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
     spec, resubmit_warnings = _attach_finalize_observations(
         state, spec, _fetched_obs, resubmit_warnings
     )
-    spec = stating_related(spec, joined_related(state.related_read))
+    with timed_step(state, "finalize_related"):
+        spec = stating_related(spec, joined_related(state.related_read))
+    with timed_step(state, "finalize_wholes"):
+        resubmit_warnings = (
+            *resubmit_warnings,
+            *whole_total_warnings(spec, coverage=state.coverage.index),
+        )
 
+    relaunch_t0 = now_ms()
+    relaunch = _promote_relaunch(state, mat_result, spec, _unit_request)
     region = RegionResult(
         variable_text=state.variable_text,
         status="definite",
@@ -324,7 +340,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         warnings=resubmit_warnings,
         timing_by_step=dict(state.timing),
         facet_probe=_promote_facet_probe(state, mat_result),
-        promote_relaunch=_promote_relaunch(state, mat_result, spec, _unit_request),
+        promote_relaunch=relaunch,
         observation_entities=state.obs_entities,
         facet_filter=state.facet_filter,
         measure_partition=state.measure_partition,
@@ -338,7 +354,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),
     )
-    return bind_relaunches(
+    bound = bind_relaunches(
         region,
         graph=state.graph,
         sdmx=state.sdmx,
@@ -356,3 +372,5 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
             deadline=state.deadline,
         ),
     )
+    state.timing["finalize_relaunch"] = now_ms() - relaunch_t0
+    return bound

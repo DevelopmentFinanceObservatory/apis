@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import presentation_api.app as presentation_app
 import presentation_api.doors.components as components_door
 from assembler.catalogue import CatalogueRelease
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
@@ -24,8 +25,10 @@ from assembler.testing import (
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
+from presentation_api.newest_frames import NewestPending
 from presentation_store import GeneratedIdCollision, PresentationStoreUnavailable
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
+from tests.presentation_api.conftest import BARE_SPEC_ID, FakeNewestSpecs
 from tests.presentation_store.test_frame_store import _FakeSpecReader, _store
 
 
@@ -524,6 +527,8 @@ def test_a_revise_carrying_composition_id_is_binding_invalid(client: TestClient)
     body = resp.json()
     assert body["code"] == "binding_invalid"
     assert body["type"] == "/codes/binding_invalid"
+    # The intent must change before the write can succeed, so a client must not resend it.
+    assert body["retryable"] is False
 
 
 def test_a_missing_type_on_create_is_schema_invalid_and_names_the_legal_types(client: TestClient):
@@ -534,8 +539,9 @@ def test_a_missing_type_on_create_is_schema_invalid_and_names_the_legal_types(cl
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "schema_invalid"
-    # The missing type returns the legal union members as `minimal_intent`.
-    assert body["retryable"] is True
+    # The missing type returns the legal union members as `minimal_intent`. The request must
+    # change before the write can succeed, so a client must not resend it.
+    assert body["retryable"] is False
     assert "minimal legal intent" in body["detail"]
 
 
@@ -547,7 +553,7 @@ def test_a_create_missing_select_is_schema_invalid_with_the_minimal_intent(clien
     assert resp.status_code == 400
     body = resp.json()
     assert body["code"] == "schema_invalid"
-    assert body["retryable"] is True
+    assert body["retryable"] is False
     assert "minimal legal intent" in body["detail"]
 
 
@@ -806,21 +812,17 @@ def test_an_unpublished_ops_frame_ref_is_frame_unavailable_and_retryable(
         ("quarantined", 404, "frame_unavailable", False),
     ],
 )
-@pytest.mark.parametrize("stage", ["load", "pin"])
 def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
-    stage: str,
     fault: str,
     status: int,
     code: str,
     retryable: bool,
-    frame_store: FakeFrameStore,
     revision_store: FakeRevisionStore,
     release_registry: FakeReleaseRegistry,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     """A real frame store reads the registry to scope a frame ref's revocation check when it
-    loads and when it pins. Each fault that read can raise at either stage answers a declared
-    refusal through the create route, never 500, and writes no component."""
+    loads. Each fault that read can raise answers a declared refusal through the create route,
+    never 500, and writes no component. A create pins nothing, so the load is the only read."""
     spec_reader = _FakeSpecReader()
     if fault == "quarantined":
         spec_reader.quarantined = frozenset({malaria_ethiopia_frame_ref().spec_id})
@@ -831,11 +833,8 @@ def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
             else SpecRegistryStoreError("spec registry read failed")
         )
     live_store = _store(spec_reader=spec_reader)
-    if stage == "pin":
-        # The fake loads the frame, so the create reaches the real store's pin.
-        monkeypatch.setattr(frame_store, "pin", live_store.pin)
     surface = presentation_surface(
-        frame_store=frame_store if stage == "pin" else live_store,
+        frame_store=live_store,
         revision_store=revision_store,
         release_registry=release_registry,
     )
@@ -1156,3 +1155,105 @@ def test_the_components_door_refuses_to_start_without_the_public_site_url(
 
     with pytest.raises(ValueError, match="DFO_PUBLIC_SITE_URL"), TestClient(app):
         pass
+
+
+# -- a create naming its frame by dataset id alone ---------------------------
+
+
+def _bare(intent: dict) -> dict:
+    return {**intent, "frame_ref": {"spec_id": BARE_SPEC_ID}}
+
+
+def test_a_create_naming_a_dataset_id_alone_stores_the_pair_it_resolved(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, frame_ref: FrameRef
+):
+    resp = _create(newest_client, intent=_bare(_LINE_CHART_INTENT))
+
+    assert resp.status_code == 201, resp.text
+    pair = {"spec_id": frame_ref.spec_id, "content_version": frame_ref.content_version}
+    assert resp.json()["resolved_payload"]["provenance"]["inputs"] == [pair]
+    read = newest_client.get(f"/api/presentation/components/{resp.json()['component_id']}")
+    assert read.json()["stored_intent"]["frame_ref"] == pair
+    assert newest_specs.asked == [BARE_SPEC_ID]
+
+
+def test_a_retried_bare_create_replays_its_first_reply_without_resolving_again(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs
+):
+    """The request hash covers the intent as sent, so newer data arriving between the two
+    calls cannot turn the retry into a different request."""
+    body = {"intent": _bare(_LINE_CHART_INTENT), "write_token": "cmw_" + "r" * 22}
+
+    first = newest_client.post("/api/presentation/components", json=body)
+    newest_specs.answer = FrameRef(spec_id="spec_" + "e" * 32, content_version="cv_" + "f" * 32)
+    again = newest_client.post("/api/presentation/components", json=body)
+
+    assert first.status_code == 201, first.text
+    assert again.json() == first.json()
+    assert newest_specs.asked == [BARE_SPEC_ID]
+
+
+def test_a_bare_create_whose_dataset_is_building_is_service_unavailable_and_stores_nothing(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, revision_store: FakeRevisionStore
+):
+    newest_specs.answer = NewestPending(retry_after_s=2.0)
+
+    resp = _create(newest_client, intent=_bare(_LINE_CHART_INTENT))
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["code"] == "service_unavailable"
+    assert resp.json()["retryable"] is True
+    assert revision_store._revisions == {}
+
+
+def test_bare_creates_at_their_limit_refuse_and_leave_component_routes_their_permits(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    frame_ref: FrameRef,
+):
+    """A rebuild holds a bare resolve's permit for seconds, so component reads run beside it."""
+    monkeypatch.setattr(components_door, "PRESENTATION_COMPONENTS_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(presentation_app, "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY", 1)
+    rebuilding = threading.Event()
+    finish_rebuild = threading.Event()
+
+    class Rebuilding(FakeNewestSpecs):
+        def newest_of_spec(self, spec_id: str) -> FrameRef:
+            rebuilding.set()
+            finish_rebuild.wait(timeout=5.0)
+            return frame_ref
+
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        newest_frames=Rebuilding(),
+    )
+    with (
+        TestClient(create_app([surface]), raise_server_exceptions=False) as client,
+        ThreadPoolExecutor(max_workers=1) as caller,
+    ):
+        first = caller.submit(_create, client, intent=_bare(_LINE_CHART_INTENT))
+        try:
+            assert rebuilding.wait(timeout=5.0)
+            concurrent = _create(client, intent=_bare(_LINE_CHART_INTENT))
+            bare_read = client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
+            read = client.get("/api/presentation/components/cmp_" + "0" * 32)
+        finally:
+            finish_rebuild.set()
+        first_resp = first.result(timeout=5.0)
+
+    assert concurrent.status_code == 503, concurrent.text
+    assert concurrent.json()["code"] == "service_unavailable"
+    assert bare_read.status_code == 503, bare_read.text
+    assert read.status_code == 404, read.text
+    assert first_resp.status_code == 201, first_resp.text
+
+
+def test_a_bare_create_without_a_datasets_surface_is_frame_unavailable(client: TestClient):
+    resp = _create(client, intent=_bare(_LINE_CHART_INTENT))
+
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["code"] == "frame_unavailable"

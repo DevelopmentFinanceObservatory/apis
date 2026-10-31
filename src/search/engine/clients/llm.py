@@ -193,12 +193,14 @@ def _temperature_for_model(model: str) -> float | None:
 # into the lazily-imported enum without a second mapping at each call site.
 _THINKING_LEVEL_NAMES = {"minimal": "MINIMAL", "low": "LOW", "medium": "MEDIUM", "high": "HIGH"}
 
-# Extract keeps the instance's resolved level. Bind and the quantity read default to minimal.
-# An instance-level or config override takes precedence in for_stage().
+# Extract keeps the instance's resolved level. Bind, the quantity read and the stated-words
+# read default to minimal. An instance-level or config override takes precedence in
+# for_stage().
 _STAGE_THINKING_LEVELS: dict[str, str | None] = {
     "extract": None,
     "bind": "minimal",
     "quantity": "minimal",
+    "stated_words": "minimal",
 }
 
 
@@ -214,7 +216,9 @@ def _validate_stage_thinking_levels() -> None:
 _validate_stage_thinking_levels()
 
 
-def for_stage(llm: SupportsLLM, stage: Literal["extract", "bind", "quantity"]) -> SupportsLLM:
+def for_stage(
+    llm: SupportsLLM, stage: Literal["extract", "bind", "quantity", "stated_words"]
+) -> SupportsLLM:
     """Return ``llm`` or a shallow copy with the stage's thinking level.
 
     The original object wins when the stage has no override, the LLM is a
@@ -520,9 +524,38 @@ def _forget_leader(task: asyncio.Task) -> None:
         logger.info("LLM memo leader call failed with no awaiter left: %s", exc)
 
 
-def warm() -> None:
-    """Build the singleton at startup. Missing keys or dependencies raise ``LLMInfraError``."""
-    _get_client()
+# The startup key check's whole models.get, connect to last byte. HttpOptions.timeout bounds
+# each phase of a request alone, so the bound is set around the call.
+_WARM_TIMEOUT_S = 10.0
+
+# The client errors that reject the key or the model outright: 400 INVALID_ARGUMENT for an
+# invalid key, 401 and 403 for credentials Gemini refuses, 404 for an unknown model.
+_WARM_REJECTION_CODES = frozenset({400, 401, 403, 404})
+
+
+async def warm() -> None:
+    """Build the singleton at startup and check the key with one models.get on the engine
+    model, which spends no tokens.
+
+    A missing key or dependency, and a client error in ``_WARM_REJECTION_CODES``, raise
+    ``LLMInfraError``, so the instance never serves. Any other failure, a 5xx, a 408 or 429,
+    a transport error, an answer the SDK cannot read or ``_WARM_TIMEOUT_S`` passing, logs a
+    WARNING and returns: the instance serves, and searches answer 503 until Gemini answers.
+    """
+    client = _get_client()
+    from google.genai import errors
+
+    model = config.settings().engine_model
+    try:
+        async with asyncio.timeout(_WARM_TIMEOUT_S):
+            await client.aio.models.get(model=model)
+    except Exception as exc:
+        if isinstance(exc, errors.ClientError) and exc.code in _WARM_REJECTION_CODES:
+            raise LLMInfraError(f"Gemini rejected the startup key check: {exc}") from exc
+        # Searches report any other failure, request by request, as they did before the check.
+        logger.warning("Gemini key check failed; serving without it: %r", exc)
+    else:
+        logger.info("Gemini key check passed (model=%s)", model)
 
 
 # LLMMemo stores the model's text as bytes by `_memo_key`. ResponseCache supplies the

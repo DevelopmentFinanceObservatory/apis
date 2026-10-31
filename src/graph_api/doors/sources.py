@@ -308,7 +308,7 @@ def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def sources_endpoint(dcid: str, deps: GraphDepsDep, request: Request) -> Response:
+async def get_documentation(dcid: str, deps: GraphDepsDep, request: Request) -> Response:
     if len(dcid) > routing.DCID_MAX_LENGTH:
         raise DcidTooLong(len(dcid))
     documentation, transient_gap = await asyncio.wait_for(
@@ -420,7 +420,7 @@ def _frozen_source_catalogue(build_id: str) -> FrozenJSON:
     return freeze_public_json(document.model_dump(mode="json"), max_age=300)
 
 
-async def sources_catalogue_endpoint(request: Request) -> Response:
+async def list_sources(request: Request) -> Response:
     # This literal route makes no graph reads.
     return _frozen_source_catalogue(current_catalogue().build_id).respond(request)
 
@@ -432,13 +432,13 @@ def build_sources_door() -> DoorContribution:
     # `response_model` documents the response body in OpenAPI.
     router.add_api_route(
         "/api/graph/documentation/{dcid:dcid}",
-        sources_endpoint,
+        get_documentation,
         methods=["GET"],
         response_model=SourceDocumentation,
     )
     router.add_api_route(
         "/api/graph/sources",
-        sources_catalogue_endpoint,
+        list_sources,
         methods=["GET"],
         response_model=SourceCatalogue,
     )

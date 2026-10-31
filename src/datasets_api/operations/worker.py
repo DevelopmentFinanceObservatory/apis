@@ -28,7 +28,7 @@ resubmit can reset the row. Errors from parsing the stored request or `raw_fetch
 same failure path.
 
 A row completes only when a snapshot read of its version narrowed to the request's rendering
-key (`artifact_rendering_key` under `settings.site`) lists an artifact other than statistics
+keys (`artifact_rendering_keys` under `settings.site`) lists an artifact other than statistics
 (`rendering_servable`), the read the operations poll answers with. A render that links its
 bundle as incomplete, after a failed graph label or documentation read, takes the transient
 path. The completed row records the `trace.confirmed_at` the run served, the instant it
@@ -41,11 +41,13 @@ import dataclasses
 import logging
 import threading
 
+from datasets_api.adapter import identity_composite
 from datasets_api.admission import (
     refuse_async_over_ceiling,
     sync_estimate,
 )
 from datasets_api.current import DefinitionDeps, serve_current, trace_confirmed_at
+from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.doors.definition import _resolve_spec_requests, classify_definition_exception
 from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.manifest_models import Manifest
@@ -57,7 +59,7 @@ from datasets_api.operations.submit import (
     request_identity_member_dcids,
     request_identity_subject_id,
 )
-from datasets_api.render import artifact_rendering_key
+from datasets_api.render import artifact_rendering_keys
 from datasets_api.timings import collecting, door_call
 from datasets_api.versions import HeadFence, HeadFenceLost
 from dfo_platform.codes import bound_registry_endpoint
@@ -195,6 +197,7 @@ def run_operation(
                 requests,
                 index=coverage_snapshot.index,
                 member_concurrency=deps.member_concurrency,
+                composite=identity_composite(stored.identity, code_index=deps.code_index),
             )
             recorded = operation_store.record_estimate(
                 operation.id, attempt=operation.attempt_count, estimate=estimate
@@ -222,11 +225,16 @@ def run_operation(
 
         manifest = _run(deps.coverage.snapshot())
         completed_subject_id = manifest.definition.spec_id
-        key = artifact_rendering_key(options, site=deps.settings.site)
+        if options.enrichment is not None:
+            # The serve resolved the default enrichment against the version it built.
+            options = resolve_enrichment(options, coverage=manifest.coverage)
+        keys = artifact_rendering_keys(
+            options, site=deps.settings.site, enrichment_digest=deps.code_index.enrichment_digest
+        )
         if not rendering_servable(
             subject_id=completed_subject_id,
             content_version=manifest.content_version,
-            rendering_key=key,
+            rendering_keys=keys,
             snapshot_reader=deps.snapshot_reader,
             now=deps.now,
             settings=deps.settings,
@@ -234,7 +242,7 @@ def run_operation(
             raise _RenderingNotServable(
                 f"subject_id={completed_subject_id!r} content_version="
                 f"{manifest.content_version!r} has no servable artifact under rendering "
-                f"key {key!r}"
+                f"keys {keys!r}"
             )
     except (MaterialisationCancelled, HeadFenceLost) as exc:
         logger.warning(

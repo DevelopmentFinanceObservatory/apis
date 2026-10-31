@@ -330,7 +330,7 @@ covering more of the bound places leads one holding more points at fewer
 of them. Member selection and group selection return the period with the
 selections (`materialise.facets.FacetElection`), and the mint, a preview
 and Search's served facets
-(`materialise.facets.served_facets`) all read it.
+(`materialise.group_facets.group_served`) all read it.
 
 Each member judges the cadence of every facet id it holds
 (`materialise.facets.cadences_by_member`). A stated period is the id's own
@@ -362,7 +362,14 @@ by facet id and each facet's series count across the members
 (`materialise.group_facets.group_breadth`), and then the one the earliest
 member holds. Every member dispatches only its facets at that period. A
 member holding observations at another period alone dispatches nothing,
-and the result carries a `coverage_below_scope` warning naming it. A group
+and the result carries a `coverage_below_scope` warning naming it by ref
+in a structured field. The warning counts such members apart from those whose
+observations all fall outside a range window. The first report the
+requested years at another frequency, so the frame leaves their figures
+out. The second report nothing in those years, and raise no warning when
+the served dataset reads an absent member as zero
+(`code_index.members.absent_member_reads_zero`), since they add nothing to
+a sum over the requested years. A group
 chunk fetches the union of its members' dispatch sets, and each member
 serves only rows from its own (`materialise.columnar.dispatched_rows`).
 
@@ -385,8 +392,11 @@ cadence.
 
 A stored dataset head holding two cadences rebuilds at its next source
 refresh, which its dependency fingerprint compares past the recheck interval
-(`DATASETS_HEAD_RECHECK_SECONDS`, default 900), or at the maximum-age
-rebuild (`DATASETS_HEAD_MAX_AGE_SECONDS`, default 86,400). Presentation
+(`DATASETS_HEAD_RECHECK_SECONDS`, default 900), at the next import for a
+head keyed on one, or at the maximum-age rebuild
+(`DATASETS_HEAD_MAX_AGE_SECONDS`, default 86,400, or
+`DATASETS_HEAD_IMPORTED_DATA_MAX_AGE_SECONDS`, default 604,800, for a head
+keyed on an import). Presentation
 frames recompute their structural view on load, so the assembler refuses a
 stored mixed frame on its next read.
 

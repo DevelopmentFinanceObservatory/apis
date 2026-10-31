@@ -7,8 +7,10 @@ import string
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from code_index.composites import provenance_datasets
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.shared import get_index
+from dfo_platform.roles import RoleWording
 from search.heading.measure_noun import MeasureNoun as AuthoredNoun
 from search.heading.measure_noun import denominator_noun, measure_noun
 from search.models import ResolvedFacet, Slot
@@ -20,7 +22,7 @@ from .labels import (
     _already_named_in,
     _binding_labels,
     _humanize,
-    _join_labels,
+    join_labels,
 )
 
 if TYPE_CHECKING:
@@ -112,6 +114,12 @@ def _lower_first_word(text: str) -> str:
     return f"{first.lower()} {rest}" if rest else first.lower()
 
 
+def breakdown_phrase(slot_labels: Sequence[str]) -> str:
+    """The slots an answer breaks a series down by, as a phrase inside a sentence: each
+    label's first word lowered (`_lower_first_word`), joined ("sex and age")."""
+    return join_labels([_lower_first_word(label) for label in slot_labels])
+
+
 def _label_head(text: str) -> str:
     """Return the label head without a trailing parenthetical."""
     match = _TRAILING_PARENTHETICAL.search(text)
@@ -190,7 +198,7 @@ def _names_every_adjectival_how_value(sv_text: str, slots: list[Slot]) -> bool:
         if slot.key.axis != "how" or not _is_adjectival(slot):
             continue
         labels = _binding_labels(slot.binding)
-        if labels and not _already_named_in(_join_labels(labels), sv_text):
+        if labels and not _already_named_in(join_labels(labels), sv_text):
             return False
     return True
 
@@ -379,6 +387,8 @@ def _unit_heading_phrase(
     shape: ShapeLike,
     facets: Mapping[str, ResolvedFacet] | None,
     graph_heading_text: str | None,
+    *,
+    wording: RoleWording,
 ) -> UnitPhrase:
     """Return the unit phrase a heading states, empty when the unit leaves it alone.
 
@@ -394,6 +404,9 @@ def _unit_heading_phrase(
     noun never names a unit, so it is not inspected. Before facets resolve (``facets``
     None) only the per-head reading applies, since the shape alone fixes it. A unit whose
     series disagree (``per_series``) has no class, though its denominator still reads.
+    A ratio whose dataset declares whose total it divides by (`_ratio_base_owner`) names
+    that party in ``wording``'s noun: DAC2a's "as a share of the recipient's GNI", DAC1's
+    "as a share of the provider's GNI".
 
     The phrase names the unit (`UnitPhrase.names_unit`) when it states a percent ("in
     percent", "as a share of ...") or a purchasing-power unit. "per capita" and "relative
@@ -417,6 +430,8 @@ def _unit_heading_phrase(
         base = denominator_noun(denominator.ref) or _recase_words(
             _normalize_what_label(_humanize(denominator))
         )
+        if (owner := _ratio_base_owner(facets, wording)) is not None:
+            base = f"the {owner}'s {base}"
         is_percent = unit_class.kind == "percent"
         phrases.append(f"{'as a share of' if is_percent else 'relative to'} {base}")
         names_unit = is_percent
@@ -428,3 +443,18 @@ def _unit_heading_phrase(
         phrases.append(f"in {_PURCHASING_POWER_PHRASES.get(unit_class.unit or '', unit_text)}")
         names_unit = True
     return UnitPhrase(" ".join(phrases), names_unit=names_unit)
+
+
+def _ratio_base_owner(facets: Mapping[str, ResolvedFacet], wording: RoleWording) -> str | None:
+    """The noun of the party whose own total the answer's ratio divides by, as the one
+    dataset it serves from declares it (`DatasetDeclaration.ratio_base_axis`), else `None`:
+    for a dataset that declares none, and for series of several datasets, as a composite's
+    are when its components read several (`code_index.composites.provenance_datasets`)."""
+    provenance = facets.get("provenance")
+    if provenance is None or provenance.ref is None:
+        return None
+    datasets = provenance_datasets(provenance.ref)
+    dataset = get_index().datasets.get(datasets[0]) if len(datasets) == 1 else None
+    if dataset is None or dataset.ratio_base_axis is None:
+        return None
+    return wording.noun(dataset.ratio_base_axis).singular

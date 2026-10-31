@@ -1,5 +1,5 @@
 """End-to-end tests for operations on the raw-text and parsed doors, and for the
-data_query and slot token an entity_ambiguous part carries.
+options and slot token an entity_ambiguous part carries.
 
 An operation rides on the part of the variable extract assigned it, and its phrase
 reaches that variable's bind the way a dropped qualifier's does, with no
@@ -114,6 +114,9 @@ def _measures_not_applied(part) -> list[str | None]:
     return [d.asked for d in part.departures if d.code == "measure_not_applied"]
 
 
+# The fixture's member measures grant equivalents, which count ODA as CRS flows 10 and 60
+# (`code_index.scope_conventions.BASIS_MEASURES`), so the ODA default binds both.
+_GE_ODA_FLOWS = ["CRSTypeOfFlow10", "CRSTypeOfFlow60"]
 _ODA_DEFAULT_NOTE = (
     "No flow was named, so the answer covers official development assistance, the default flow."
 )
@@ -158,9 +161,9 @@ def test_a_rank_operation_rides_on_its_part_with_the_donor_axis_open_and_no_warn
 
 
 def test_the_recorded_top_5_donors_reading_carries_its_rank_with_no_warning():
-    """The recorded model output for the design's headline query lists the whole query
-    as a dropped qualifier beside the rank; the rank and the variable account for every
-    word of it, so the answer carries the rank and no unapplied-qualifier warning."""
+    """The recorded model output for the design's headline query reads "Top 5" as a rank
+    over origin on "education aid"; the rank and the variable account for every word of
+    it, so the answer carries the rank and no unapplied-qualifier warning."""
     response = offline_resolve(make_request("Top 5 donors for education aid"))
 
     assert [p.operations for p in response.parts] == [
@@ -210,8 +213,8 @@ def test_a_rank_over_sectors_of_aid_keeps_the_oda_default_and_the_sector_slot_op
     assert part.status == "definite"
     assert part.operations == [Operation(verb="rank", phrase=phrase, over="category")]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert flow_filter.binding_kind == "value"
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert flow_filter.binding_kind == "set"
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     sector_filter = _filter_for(part.spec, "crsPurpose")
     assert sector_filter.binding_kind == "unbound"
@@ -297,7 +300,7 @@ def test_a_rank_whose_phrase_opens_no_flow_slot_states_the_oda_default(
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     assert _filter_for(part.spec, "crsPurpose").binding_kind == "unbound"
     assert _slot_defaulted_warnings(response) == [_ODA_DEFAULT_NOTE]
@@ -371,7 +374,7 @@ def test_a_flow_default_warns_only_where_the_query_names_flows(query, extraction
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     assert _slot_defaulted_warnings(response) == slot_warnings
     assert _query_qualifier_warnings(response) == []
@@ -407,7 +410,7 @@ def test_a_flow_breakdown_keeps_its_warning_beside_the_default(dropped, departs)
 
     part = response.parts[0]
     flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert [ref.ref for ref in flow_filter.refs] == ["CRSTypeOfFlow10"]
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
     note = f'The requested qualifier "{dropped}" was not applied.'
     assert _slot_defaulted_warnings(response) == [_ODA_DEFAULT_NOTE]
@@ -613,11 +616,16 @@ def test_an_operation_over_the_category_its_phrase_names_opens_that_slot_with_no
 
 def test_an_operation_over_another_category_leaves_the_flow_default_in_place():
     """'top 5 sectors' names the sector slot, so standard grants still default the
-    flow slot to ODA."""
+    flow slot to ODA. The reply leaves the cooperation modality out, so it reads open and
+    the family serves the member stating none, which the fixture holds no data for at
+    Kenya: the part flags that read."""
     part = _rank_over_category("top 5 sectors", _UnclaimedOpenBindLLM).parts[0]
 
-    flow_filter = _filter_for(part.spec, "crsTypeOfFlow")
-    assert flow_filter.binding_kind == "value"
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.flagged_match is not None
+    flow_filter = _filter_for(part.no_data.flagged_match, "crsTypeOfFlow")
+    assert flow_filter.binding_kind == "set"
+    assert [ref.ref for ref in flow_filter.refs] == _GE_ODA_FLOWS
     assert flow_filter.provenance == "declared_default"
 
 
@@ -819,7 +827,7 @@ def test_an_invalid_role_span_leaves_its_qualifier_unapplied_with_a_departure():
 
 
 # ---------------------------------------------------------------------------
-# entity_ambiguous: data_query and the ambiguous wording's slot token
+# entity_ambiguous: options and the ambiguous wording's slot token
 # ---------------------------------------------------------------------------
 
 _CONGO_NODES = {
@@ -864,9 +872,9 @@ def _ambiguous_request() -> ResolveRequest:
     )
 
 
-def test_an_ambiguous_part_carries_a_data_query_that_resolves_once_the_pick_is_pinned():
-    """The data_query pins Kenya, leaves Congo unpinned, and keeps the operation;
-    posting it back as a dataset_resubmit parsed entry with Congo pinned resolves."""
+def test_an_ambiguous_part_carries_an_option_per_candidate_that_resolves_when_posted():
+    """Each option pins Kenya, pins Congo to its candidate, and keeps the operation;
+    posting the DRC option's part as a dataset_resubmit parsed entry resolves."""
     graph = _congo_graph()
     response = offline_resolve(
         _ambiguous_request(), graph=graph, llm=_ambiguous_congo_llm(), sdmx=_EMPTY_SDMX
@@ -875,29 +883,26 @@ def test_an_ambiguous_part_carries_a_data_query_that_resolves_once_the_pick_is_p
     part = response.parts[0]
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "entity_ambiguous"
-    data_query = part.no_data.data_query
-    assert data_query is not None
-    (query_part,) = data_query.parts
+    candidates = part.no_data.ambiguous_entities[0].candidates
+    options = part.no_data.options
+    assert [(o.mentions, o.label) for o in options] == [(["Congo"], c.label) for c in candidates]
     rank = Operation(verb="rank", phrase="top 5 donors", over="origin")
-    assert query_part.variable_text == _QUERY
-    assert query_part.operations == [rank]
-    assert [(e.text, e.role_text, e.dcid) for e in query_part.entities or ()] == [
-        ("Kenya", None, _E2E_KEN_DCID),
-        ("Congo", "to", None),
-    ]
-    candidates = {c.ref for c in part.no_data.ambiguous_entities[0].candidates}
-    assert "country/COD" in candidates
+    for option, candidate in zip(options, candidates, strict=True):
+        (query_part,) = option.data_query.parts
+        assert query_part.variable_text == _QUERY
+        assert query_part.operations == [rank]
+        assert [(e.text, e.role_text, e.dcid) for e in query_part.entities or ()] == [
+            ("Kenya", None, _E2E_KEN_DCID),
+            ("Congo", "to", candidate.ref),
+        ]
 
-    picked = query_part.model_copy(
-        update={
-            "entities": [
-                e.model_copy(update={"dcid": "country/COD"}) if e.text == "Congo" else e
-                for e in query_part.entities or ()
-            ]
-        }
-    )
+    (picked,) = [o for o in options if o.data_query.parts[0].entities[1].dcid == "country/COD"]
     resubmitted = offline_resolve(
-        ResolveRequest(input=DatasetResubmitInput(entries=[ResubmitParsedEntry(part=picked)])),
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[ResubmitParsedEntry(part=picked.data_query.parts[0])]
+            )
+        ),
         graph=graph,
         llm=_ambiguous_congo_llm(),
         sdmx=_EMPTY_SDMX,
@@ -910,8 +915,8 @@ def test_an_ambiguous_part_carries_a_data_query_that_resolves_once_the_pick_is_p
 
 
 def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
-    """The data_query echoes a resolver group by its text alone: pinning it to one
-    member's dcid would resubmit that member for the group."""
+    """Each option echoes a resolver group by its text alone: pinning it to one member's
+    dcid would resubmit that member for the group."""
     g7 = ("CAN", "DEU", "FRA", "GBR", "ITA", "JPN", "USA")
     graph = FakeGraph(
         nodes={
@@ -939,11 +944,10 @@ def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
 
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "entity_ambiguous"
-    assert part.no_data.data_query is not None
-    (query_part,) = part.no_data.data_query.parts
-    assert [(e.text, e.dcid) for e in query_part.entities or ()] == [
-        ("G7", None),
-        ("Congo", None),
+    options = part.no_data.options
+    assert [o.data_query.parts[0].entities for o in options] == [
+        [ParsedEntity(text="G7"), ParsedEntity(text="Congo", role_text="to", dcid=dcid)]
+        for dcid in ("country/COD", "country/COG")
     ]
 
 
@@ -968,10 +972,10 @@ def test_an_ambiguous_wording_is_its_own_slot_token_in_the_sentence():
     assert response.rendered_sentence.startswith('"Congo" matches more than one entity')
 
 
-def test_an_ambiguous_part_without_a_restatement_still_carries_a_data_query():
+def test_an_ambiguous_part_without_a_restatement_still_carries_options():
     """Congo named on both axes leaves the direction unnameable, so the part withholds
-    its restatement; its data_query still lists Congo once per axis, unpinned, beside
-    Kenya pinned, and keeps the operation."""
+    its restatement. Each option still lists Congo once per axis, pinned to its candidate,
+    beside Kenya pinned, and keeps the operation."""
     llm = _ScriptedLLM(
         _extraction(
             entities=[
@@ -1000,16 +1004,18 @@ def test_an_ambiguous_part_without_a_restatement_still_carries_a_data_query():
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "entity_ambiguous"
     assert part.restatement is None
-    data_query = part.no_data.data_query
-    assert data_query is not None
-    (query_part,) = data_query.parts
-    assert query_part.variable_text == _QUERY
-    assert query_part.operations == [Operation(verb="rank", phrase="top 5 donors", over="origin")]
-    assert [(e.text, e.role_text, e.dcid) for e in query_part.entities or ()] == [
-        ("Kenya", None, _E2E_KEN_DCID),
-        ("Congo", "from", None),
-        ("Congo", "to", None),
-    ]
+    assert len(part.no_data.options) == 2
+    for option, dcid in zip(part.no_data.options, ("country/COD", "country/COG"), strict=True):
+        (query_part,) = option.data_query.parts
+        assert query_part.variable_text == _QUERY
+        assert query_part.operations == [
+            Operation(verb="rank", phrase="top 5 donors", over="origin")
+        ]
+        assert [(e.text, e.role_text, e.dcid) for e in query_part.entities or ()] == [
+            ("Kenya", None, _E2E_KEN_DCID),
+            ("Congo", "from", dcid),
+            ("Congo", "to", dcid),
+        ]
 
 
 # ---------------------------------------------------------------------------

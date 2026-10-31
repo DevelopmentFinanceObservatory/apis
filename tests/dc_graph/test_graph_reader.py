@@ -148,6 +148,48 @@ def test_observation_facets_batch_request_shape_and_parsing():
     }
 
 
+@pytest.mark.parametrize("needs_dates", [False, True])
+def test_variable_facets_batch_reads_dates_only_when_asked(needs_dates: bool):
+    """The batched facet read sends the request `observation_facets_batch` sends for the same
+    `needs_dates`, and parses the reply as it does."""
+    body = json.dumps(
+        {
+            "byVariable": {
+                "GDP": {
+                    "byEntity": {
+                        "country/KEN": {
+                            "orderedFacets": [
+                                {
+                                    "facetId": "facet1",
+                                    "obsCount": 2,
+                                    "earliestDate": "1991",
+                                    "latestDate": "2024",
+                                    "observations": [
+                                        {"date": "1991", "value": 1.0},
+                                        {"date": "2024", "value": 2.0},
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "facets": {"facet1": {"provenanceId": "WorldBank"}},
+        }
+    )
+    transport, requests = _replay(body)
+    reader = _reader(transport)
+
+    facets = reader.variable_facets_batch(
+        stat_var="GDP", entities=["country/KEN"], needs_dates=needs_dates
+    )
+    single = reader.observation_facets_batch(["GDP"], ["country/KEN"], needs_dates)
+
+    batched_payload, single_payload = (json.loads(request.content) for request in requests)
+    assert batched_payload == single_payload
+    assert facets == single["GDP"]
+
+
 def test_observation_facets_batch_captures_scaling_factor():
     body = read_fixture_text("observation_facets_scaling_factor.json")
     transport, _ = _replay(body)

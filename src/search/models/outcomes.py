@@ -78,7 +78,8 @@ class AmbiguousEntityCandidate(StrictModel):
     an AmbiguousEntityGroup's own `candidates`. Mirrors engine.region.result.
     AmbiguousEntityCandidate field-for-field, with `label` in place of that
     dataclass's `name` (this contract's own vocabulary for a display
-    string, matching ResolvedEntity.label)."""
+    string, matching ResolvedEntity.label), except that it omits `group_node`
+    and `group_name`, which only NoData.options read."""
 
     ref: str = Field(description="the candidate's own dcid")
     label: str = Field(description="the candidate's display name")
@@ -155,6 +156,48 @@ class UnitAlternative(StrictModel):
         )
     )
     label: str = Field(description="the currency's display name, or the role's reader-facing noun")
+
+
+class NoDataOption(StrictModel):
+    """One answer to the choice a no_data refusal asks for: the words it settles, a label
+    for people, and the request that settles them. It is one entry of NoData.options."""
+
+    mentions: list[str] = Field(
+        description=(
+            "the request's own words this option settles, in query order: the ambiguous "
+            "entity wording, the ambiguous source wording, the part's source_code, the "
+            "part's unit_text, or for role_not_resolved every name whose direction the "
+            "option states"
+        )
+    )
+    label: str = Field(
+        description=(
+            "the choice in words for a menu: the candidate's display name, prefixed "
+            "'Excluding' for a source the part excludes; for role_not_resolved the "
+            "direction the option reads, such as 'France to Germany' or 'To Kenya and "
+            "Uganda'; for a role currency the role's currency, such as \"recipient's "
+            'currency". Clients must not parse it'
+        )
+    )
+    data_query: ParsedInput = Field(
+        description=(
+            "a one-part parsed input settling this choice only. Post it unchanged as the "
+            "input of /api/search/resolve; its one part is a dataset_resubmit parsed "
+            "entry's part. A second ambiguous wording refuses again. Whether data exists "
+            "for it is not checked"
+        )
+    )
+    entity_choice: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "for an entity_ambiguous option, the index into NoData.ambiguous_entities of "
+            "the group this option settles; null on every other option. Two groups can "
+            "share one wording ('aid from Congo to Congo' asks 'Congo' for each end), so "
+            "a client groups an entity menu by this index, never by mentions, and joins it "
+            "to the sentence slot token with the same entity_choice"
+        ),
+    )
 
 
 class NoDataDenominator(StrictModel):
@@ -237,7 +280,10 @@ class NoData(StrictModel):
             '"qualifier_not_bound" means the variable resolved to a '
             "series family, but a narrowing term the request's text named "
             "bound no constraint slot: no code system in the packaged index "
-            "carries it, or its registered rows landed in no binding"
+            "carries it, or its registered rows landed in no binding; "
+            '"timed_out" means the request reached its time limit before this part was '
+            "answered (diagnostics.timed_out is true); the question may hold data, so "
+            "asking it again, alone or narrower, can answer it"
         )
     )
     cause: Cause | None = Field(
@@ -255,8 +301,8 @@ class NoData(StrictModel):
             '"entity_not_resolved", "entity_ambiguous", "entity_set_too_large", '
             '"entity_role_not_admitted", "variable_not_resolved", "role_not_resolved", '
             '"source_not_resolved", "source_ambiguous", "source_code_not_held", '
-            '"source_code_ambiguous", "source_code_shares_variable", and '
-            '"unit_not_resolved" are '
+            '"source_code_ambiguous", "source_code_shares_variable", '
+            '"unit_not_resolved", and "timed_out" are '
             '"unresolved" (the request could not be read into the graph); every other '
             'code is "absent" (the read request names a place holding nothing)'
         ),
@@ -352,11 +398,14 @@ class NoData(StrictModel):
     entity_terms: list[str] = Field(
         default_factory=list,
         description=(
-            "the query entity text responsible for an entity-resolution outcome, in "
-            "query order: every entity the engine could not resolve for "
-            "entity_not_resolved, every ambiguous wording for entity_ambiguous, or "
-            "every resolved-but-unadmitted entity for entity_role_not_admitted. Empty "
-            "for every other no_data reason. This structured list is the client-facing "
+            "the query entity text responsible for the outcome, in query order: every "
+            "entity the engine could not resolve for entity_not_resolved, every "
+            "ambiguous wording for entity_ambiguous, every resolved-but-unadmitted "
+            "entity for entity_role_not_admitted, every name whose flow direction the "
+            "query leaves untold for role_not_resolved, and every whole population the "
+            "query directs to the other side of the flow for role_incompatible, which is "
+            "empty when the refusal has another cause. Empty for every other no_data "
+            "reason. This structured list is the client-facing "
             "source of those terms; rendered_sentence may quote the same wording for "
             "people, but clients must not parse it."
         ),
@@ -391,9 +440,8 @@ class NoData(StrictModel):
             "every ambiguous source wording responsible for a source_ambiguous outcome, in "
             "query order, each paired with the admitted sources it could name, and for "
             "source_code_ambiguous the part's source_code paired with the provenances "
-            "holding it. Empty for every other no_data reason. A client posts the chosen "
-            "candidate's ref on that mention of data_query, or for a source code as a new "
-            "mention in its sources, and posts the part back."
+            "holding it. Empty for every other no_data reason. A client posts the matching "
+            "entry of options."
         ),
     )
     unit_alternatives: list[UnitAlternative] | None = Field(
@@ -434,24 +482,30 @@ class NoData(StrictModel):
             "denominator asked and divide them"
         ),
     )
-    data_query: ParsedInput | None = Field(
-        default=None,
+    options: list[NoDataOption] = Field(
+        default_factory=list,
         description=(
-            "the parsed form of this part, one part long, set when reason is "
-            "entity_ambiguous, source_ambiguous or source_code_ambiguous: its variable "
-            "text, entities with "
-            "role_text, time, unit, sources, and operations. On entity_ambiguous every "
-            "entity that resolved to one graph node is pinned to its dcid and each "
-            "ambiguous wording left unpinned. A named group stays unpinned too, so it "
-            "resolves to the same members again. On source_ambiguous every source "
-            "mention that resolved carries its ref and each ambiguous wording carries "
-            "none. On source_code_ambiguous it carries the code and the part's mentions. "
-            "A client pins the candidate the user picks from ambiguous_entities or "
-            "ambiguous_sources and posts the part back, through the parsed door "
-            "or as a dataset_resubmit parsed entry. It is set when the part has no "
-            "restatement too: an entity whose direction the question leaves unnamed "
-            "carries no role_text. Null for every other no_data reason, and when the "
-            "part's inputs exceed the ParsedPart bounds"
+            "one ready request per choice of an entity_ambiguous, source_ambiguous, "
+            "source_code_ambiguous, role_not_resolved or unit_not_resolved refusal, in "
+            "query then candidate order. An entity option pins the candidate on every row "
+            "with the ambiguous wording and every entity that resolved to one node; named "
+            "groups, sets read as members and other ambiguous wordings stay unpinned, so a "
+            "second ambiguity refuses again with the first pick kept. A candidate that is a "
+            "group's own node, asked for its members, posts the group's registry name with "
+            "no dcid, and has no option when no registry name resolves to the group alone. "
+            "A source option sets the candidate's ref on the ambiguous mention; a "
+            "source-code option names the holding provenance as the part's only included "
+            "source. A role option states a direction for every name the question left "
+            "unstated, so that every axis the shape declares a role on and the part does "
+            "not ask open holds a place, offered while that gives at most six readings. A "
+            "unit option names one of unit_alternatives in place of the ambiguous currency "
+            "words. An option whose part breaks the ParsedPart bounds, or states a "
+            "direction its own wording contradicts, is left out. Empty for other reasons; "
+            "when the part's inputs exceed the ParsedPart bounds; on a role_not_resolved "
+            "refusal with more than six readings, with no reading that leaves a place on "
+            "every such axis, whose readings were all read with none holding data, or that "
+            "the shape refused before placing names; and on a unit_not_resolved refusal "
+            "without unit_alternatives"
         ),
     )
 

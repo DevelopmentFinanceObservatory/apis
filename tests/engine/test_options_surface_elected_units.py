@@ -246,7 +246,7 @@ def test_a_method_set_pin_decides_the_unit_for_each_method_in_the_set():
 
 def test_request_form_unit_with_no_recipe_refuses_with_the_doors_own_code_and_cause():
     """{EUR, current} against the same native-USD-only stat_var, under a
-    provenance lacking a conversionRecipe: decide_part_unit raises
+    provenance lacking a conversionRecipe: decide_spec_unit raises
     RecipeNotDeclaredError, and the options surface raises the identical
     EngineInputError shape region/promote_ground.py's _phase_ground_build
     raises for it (code, cause.code, pointer)."""
@@ -283,10 +283,10 @@ def test_deadline_is_threaded_into_the_request_form_unit_decision():
     deadlines: list[float | None] = []
     original_variable_facets_batch = materialise_graph.variable_facets_batch
 
-    def _capturing_variable_facets_batch(*, stat_var, entities, deadline=None):
+    def _capturing_variable_facets_batch(*, stat_var, entities, needs_dates=False, deadline=None):
         deadlines.append(deadline)
         return original_variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     materialise_graph.variable_facets_batch = _capturing_variable_facets_batch

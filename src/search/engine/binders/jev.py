@@ -6,10 +6,13 @@ shapes' denominators. The bind call sends `jev_request.bind_request` over the me
 when its answers call for one (`jev_assemble.span_round`), a second request asking which
 words name each contending value, and assembles both rounds' answers with
 `jev_assemble.bind_result`, which runs the request's house-policy step once on an answer
-that elects a shape. Every failure of a Jev request, in either round, leaves as one
-`JevFailure`, raised before any answer is assembled, and so does a span rule that passes
-its search budget, raised before the house policies run, so a binder that falls back on it
-runs the house policies at most once per call.
+that elects a shape. The words the bind rated as unread on the elected shape are asked
+again in a request of their own when the final bindings restrict the shape to a value or
+the answer serves series other than its label (`JevBinder.restated`). Every failure of a
+Jev request, in either round, leaves as one `JevFailure`, raised before any answer is
+assembled, and so does a span rule that passes its search budget, raised before the house
+policies run, so a binder that falls back on it runs the house policies at most once per
+call.
 """
 
 from __future__ import annotations
@@ -23,7 +26,12 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from typesafe_sdk import JSONContent
 
 from code_index.shared import get_index
-from search.engine.binders.base import BindRequest, BindResult, QuantityRequest
+from search.engine.binders.base import (
+    BindRequest,
+    BindResult,
+    QuantityRequest,
+    StatedWordsRequest,
+)
 from search.engine.binders.jev_assemble import (
     JevAnswers,
     Population,
@@ -35,9 +43,15 @@ from search.engine.binders.jev_assemble import (
 )
 from search.engine.binders.jev_client import JevError, JevQuestion, JevResponse, ask
 from search.engine.binders.jev_menu import jev_menu
-from search.engine.binders.jev_request import bind_request, quantity_request
+from search.engine.binders.jev_request import (
+    bind_request,
+    quantity_request,
+    restated_request,
+    unread_id,
+)
 from search.engine.binders.jev_split import RequestTooLarge
 from search.engine.config import settings
+from search.engine.errors import LLMInfraError
 from search.engine.retrieval.bound_values import (
     held_family_arcs,
     held_family_exact,
@@ -46,6 +60,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import implied_values, restricting, serves_beyond_label
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -175,6 +190,93 @@ class JevBinder:
     ) -> tuple[BindResult, dict | None]:
         result, call = await self.elect(request)
         return result, call.usage
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The ratings `restated` gives the elected shape's words, and the usage of its
+        request, None when it sent none.
+
+        Raises:
+            LLMInfraError: The request gave no answer.
+        """
+        try:
+            ratings, call = await self.restated(request)
+        except JevFailure as exc:
+            raise LLMInfraError(f"jev stated words read: {exc.kind}") from exc
+        return ratings, None if call is None else call.usage
+
+    async def restated(
+        self, request: StatedWordsRequest
+    ) -> tuple[dict[str, float], JevCall | None]:
+        """Each word of `request` the bind's answers rate on the elected shape
+        (`stated_words`), with some rated again in one request
+        (`jev_request.restated_request`), and the request, None when none was sent. The
+        request covers the words rated below `SearchSettings.stated_word_bar` when the final
+        bindings restrict the shape to a value (`stated_words_read.restricting`), and every
+        rated word when they override a value the measure's definition fixes
+        (`stated_words_read.implied_values`) or the answer serves series other than the
+        shape's label (`stated_words_read.serves_beyond_label`), the only name the bind
+        quoted.
+
+        The bind asked before any value was bound, so it quoted the shape as parts
+        selectable by its slots, and its answer is evidence only about the series as a
+        whole: a completion rate rates "girls" as unread until Sex=Female is bound. It also
+        quoted the definition's values, so a rating at the bar can rest on one the final
+        bindings replace: "birth" on life expectancy at Age=years 0, with age bound to 60.
+        The request's answer replaces the bind's, and a word the request leaves unanswered
+        is unrated. Any other word keeps the bind's rating, and a shape whose bindings
+        override and restrict nothing, on an answer serving its label alone, sends no
+        request. A shape off the bind's menu (`StatedWordsRequest.on_bind_menu`), on which the
+        bind rated no word, has every word of `request` rated in the request.
+
+        Raises:
+            JevFailure: The request gave no answer.
+        """
+        ratings = self.stated_words(request)
+        decision, index = request.decision, request.shape_index
+        if decision is None or index is None:
+            return ratings, None
+        bar = settings().stated_word_bar
+        overrides = implied_values(request.shape, request.bindings) != implied_values(
+            request.shape, ()
+        )
+        if not request.on_bind_menu:
+            again = request.words
+        elif overrides or serves_beyond_label(request.shape, request.served):
+            again = tuple(word for word in request.words if word in ratings)
+        elif restricting(request.bindings):
+            again = tuple(word for word in request.words if ratings.get(word, bar) < bar)
+        else:
+            again = ()
+        if not again:
+            return ratings, None
+        state, questions = restated_request(
+            request.variable,
+            request.shape,
+            index,
+            again,
+            bindings=request.bindings,
+            served=request.served,
+        )
+        answers, call = await self._request(state, questions)
+        for k, word in enumerate(again):
+            ratings.pop(word, None)
+            if (qid := unread_id(index, k)) in answers.nouls:
+                ratings[word] = float(answers.nouls[qid])
+        return ratings, call
+
+    def stated_words(self, request: StatedWordsRequest) -> dict[str, float]:
+        """Each word of `request` the bind's answers rate on the elected shape
+        (`BindResult.stated_words`); none on a shape outside the menu."""
+        decision, index = request.decision, request.shape_index
+        if decision is None or index is None:
+            return {}
+        return {
+            word: decision.stated_words[(index, word)]
+            for word in request.words
+            if (index, word) in decision.stated_words
+        }
 
     async def quantity(self, request: QuantityRequest) -> tuple[QuantityOutput, JevCall]:
         """The quantity read and the Jev request it took.

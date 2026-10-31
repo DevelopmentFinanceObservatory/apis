@@ -11,6 +11,7 @@ without importing Search-only dependencies.
 from __future__ import annotations
 
 from dc_sdmx.client import (
+    DATA_HEDGE_AFTER_SECONDS,
     DEFAULT_PLANNING_LANES,
     ContainedIn,
     EntityFilter,
@@ -53,6 +54,7 @@ from dc_sdmx.results import (
 
 __all__ = [
     "ATTRIBUTE_COLUMNS",
+    "DATA_HEDGE_AFTER_SECONDS",
     "DEFAULT_PLANNING_LANES",
     "DIMENSION_COLUMNS",
     "VALUE_COLUMN",

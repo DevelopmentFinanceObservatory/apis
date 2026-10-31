@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 
-from materialise.facets import role_bearing_facet_candidates
+from materialise.facets import role_bearing_facet_candidates_of
 from materialise.roles import axis_noun
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
@@ -74,34 +74,30 @@ def _raise_candidate_facet_refusal(state: _PromoteState, draft: NoDataDraft) -> 
     else:
         no_years = False
     bounds = (years.start_year, years.end_year) if isinstance(years, TimeWindow) else None
-    candidates_by_sv: dict[str, list[Facet]] = {}
-    lifetime_candidates_by_sv: dict[str, list[Facet]] = {}
-    for sv in draft.sv_dcids:
-        lifetime = role_bearing_facet_candidates(
-            stat_var=sv,
+    lifetime_candidates_by_sv = {
+        sv: published(datasets, sv, lifetime)
+        for sv, lifetime in role_bearing_facet_candidates_of(
+            stat_vars=list(draft.sv_dcids),
             role_bindings=state.place.roles.resolved_entities,
             coverage=state.coverage.index,
+        ).items()
+    }
+    candidates_by_sv: dict[str, list[Facet]]
+    if no_years:
+        candidates_by_sv = {sv: [] for sv in lifetime_candidates_by_sv}
+    elif bounds is None:
+        candidates_by_sv = dict(lifetime_candidates_by_sv)
+    else:
+        in_years = role_bearing_facet_candidates_of(
+            stat_vars=list(lifetime_candidates_by_sv),
+            role_bindings=state.place.roles.resolved_entities,
+            coverage=state.coverage.index,
+            first_year=bounds[0],
+            last_year=bounds[1],
         )
-        if lifetime is None:
-            continue
-        lifetime_candidates_by_sv[sv] = published(datasets, sv, lifetime)
-        if no_years:
-            candidates_by_sv[sv] = []
-        elif bounds is None:
-            candidates_by_sv[sv] = lifetime_candidates_by_sv[sv]
-        else:
-            candidates_by_sv[sv] = published(
-                datasets,
-                sv,
-                role_bearing_facet_candidates(
-                    stat_var=sv,
-                    role_bindings=state.place.roles.resolved_entities,
-                    coverage=state.coverage.index,
-                    first_year=bounds[0],
-                    last_year=bounds[1],
-                )
-                or [],
-            )
+        candidates_by_sv = {
+            sv: published(datasets, sv, in_years[sv]) for sv in lifetime_candidates_by_sv
+        }
     refusal = candidate_facet_refusal(
         state.graph,
         candidates_by_sv,
@@ -260,6 +256,8 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
         warnings=state.warnings,
+        # A resubmit holds no words of the request, so it names no whole population.
+        unnamed_wholes=(),
     )
     # A discovered scope's own bounds refuse the read
     # (retrieval/role_scope.py's discover_role_scope). Terminal here, ahead

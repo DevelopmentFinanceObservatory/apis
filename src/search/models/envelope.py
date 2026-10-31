@@ -35,8 +35,9 @@ def _is_none(value: object) -> bool:
 class Warning(StrictModel):
     """A run-health signal. Note: this name shadows the Python builtin Warning.
 
-    Only `observations_series_truncated`, `elected_shape_no_data` and `un_system_unavailable`
-    set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+    Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`,
+    `whole_total_available`, `currency_unmapped_omitted` and `deflator_missing_omitted` set
+    `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
     exactly `{code, severity, message}` plus `spec_id` where one applies.
     """
 
@@ -70,7 +71,18 @@ class Warning(StrictModel):
             "failed, each empty when none, and each variable's graph name, in variables "
             "order, '' where the graph holds none; a warning without params says the UN "
             "search itself was "
-            "unavailable. Omitted for every other code"
+            "unavailable. whole_total_available: {total, total_label, whole_of}, the dcid "
+            "and label of the total the source publishes for the side the answer lists "
+            "member by member, and the classes of party it covers, comma-joined (official, "
+            "private, residual). currency_unmapped_omitted: {count, entities, entity_labels}, "
+            "how many entities the conversion left out, the dcids of the first ten, sorted, "
+            "and each one's name, in entities order, '' where the conversion tables hold "
+            "none, which is usual here, since an entity no currency names, such as a "
+            "regional aggregate, is rarely in those tables; its dcid stays in entities. "
+            "deflator_missing_omitted: the same with entity_years, the years each "
+            "entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), "
+            "in entities order; a warning without params says the loaded tables cannot tell "
+            "which entities. Omitted for every other code"
         ),
     )
 

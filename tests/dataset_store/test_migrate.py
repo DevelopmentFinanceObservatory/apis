@@ -396,6 +396,14 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0034_description_record.sql",
         "0035_strip_backfilled_documentation.sql",
         "0036_version_record_continuations.sql",
+        "0037_version_record_recency.sql",
+        "0038_version_record_frame_summed.sql",
+        "0039_caller_allowance.sql",
+        "0040_caller_allowance_budgets.sql",
+        "0041_analysis_answer.sql",
+        "0042_caller_allowance_card.sql",
+        "0043_frame_recipe_superseded.sql",
+        "0044_export.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
@@ -408,6 +416,9 @@ def test_apply_pending_applies_every_real_migration_in_order():
     assert any("CREATE TABLE datasets.description_record" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_revocation" in sql for sql in statements)
     assert any("CREATE TABLE datasets.artifact_reference" in sql for sql in statements)
+    assert any("CREATE TABLE datasets.caller_allowance" in sql for sql in statements)
+    assert any("CREATE TABLE IF NOT EXISTS datasets.analysis_answer" in sql for sql in statements)
+    assert any("CREATE TABLE IF NOT EXISTS datasets.export" in sql for sql in statements)
     assert any(
         "CREATE INDEX artifact_location_tier_idx ON datasets.artifact_location" in sql
         for sql in statements
@@ -486,6 +497,8 @@ def _statement_kinds(name: str) -> list[str]:
         ),
         ("0031_version_record_facts_backfill.sql", ["UPDATE datasets.version_record", "DO $$"]),
         ("0034_description_record.sql", ["SET LOCAL", "CREATE TABLE"]),
+        ("0037_version_record_recency.sql", ["SET LOCAL", "CREATE INDEX"]),
+        ("0038_version_record_frame_summed.sql", ["SET LOCAL", "ALTER TABLE"]),
         (
             "0033_output_profile_party_kind.sql",
             [

@@ -33,6 +33,7 @@ from search.engine.region import (
 )
 from search.engine.region.codes import MEMBERSHIP_UNVERIFIED
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import CoverageExact, TimeWindow
 from search.render.plan import render_sentence_plan
 from search.render.tokens import sentence_from_plan
@@ -41,8 +42,12 @@ from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs, member_walk_reader
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._harness import (
+    materialise_double_from_obs,
+    member_walk_reader,
+    with_member_arcs,
+)
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -59,7 +64,7 @@ _NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Population"}]},
+            "name": {"nodes": [{"value": "Test place scope population"}]},
             "populationType": {"nodes": [{"dcid": "Person"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -77,6 +82,26 @@ class _FixedBindLLM:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(0, also_plausible=None), None
+
+
+class _OpenSlotsBindLLM:
+    """Elects the sole candidate shape and drafts each slot of `properties` unbound, as a
+    reply that names no value of them does."""
+
+    def __init__(self, *properties: str) -> None:
+        self.properties = properties
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
+        assert schema.__name__ == "_UniversalBindOutput"
+        drafts = [
+            SlotBindingDraft(axis="how", property_dcid=prop, kind="unbound")
+            for prop in self.properties
+        ]
+        return elected_reply(0, bindings=drafts, also_plausible=None), None
 
 
 class _CountingFakeGraph(FakeGraph):
@@ -360,7 +385,7 @@ _CANDIDATES_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Household Population"}]},
+            "name": {"nodes": [{"value": "Test place scope household population"}]},
             "populationType": {"nodes": [{"dcid": "Household"}]},
             "measuredProperty": {"nodes": [{"dcid": "count"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -479,7 +504,7 @@ _BOUND_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": "Test Bare Incidence"}]},
+            "name": {"nodes": [{"value": "Test place scope bare incidence"}]},
             "populationType": {"nodes": [{"dcid": "TestIncidenceEvent"}]},
             "measuredProperty": {"nodes": [{"dcid": "testIncidence"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -527,7 +552,7 @@ def _bound_family_catalogue() -> FakeCatalogue:
         arcs=build_arc_tables(
             dfo={},
             base={
-                _BOUND_SV: arcs("Test Bare Incidence"),
+                _BOUND_SV: arcs("Test place scope bare incidence"),
                 _BOUND_FEMALE_SV: arcs(
                     "Test Female Incidence", asserts=("testSex", "Female", "TestSexEnum")
                 ),
@@ -570,6 +595,8 @@ class _BindFemaleOldLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         from search.engine.bind import SlotBindingDraft
 
@@ -879,9 +906,15 @@ def test_a_placeless_relaxation_is_suggested_over_the_default_scope_of_its_own_m
     a resubmit of it is, so both are suggested: the first as a worldwide total."""
     graph = FakeGraph(
         nodes={
-            _RELAX_BOTH: _relax_sv("Female adults", "Female", "Years15Onwards"),
-            _RELAX_SEX: _relax_sv("Male adults", "Male", "Years15Onwards"),
-            _RELAX_AGE: _relax_sv("Female seniors", "Female", "Years65Onwards"),
+            _RELAX_BOTH: _relax_sv(
+                "Test place scope population: female adults", "Female", "Years15Onwards"
+            ),
+            _RELAX_SEX: _relax_sv(
+                "Test place scope population: male adults", "Male", "Years15Onwards"
+            ),
+            _RELAX_AGE: _relax_sv(
+                "Test place scope population: female seniors", "Female", "Years65Onwards"
+            ),
             "Female": {"label": "Female"},
             "Male": {"label": "Male"},
             "Years15Onwards": {"label": "15 years or over"},
@@ -953,7 +986,7 @@ _TOTAL_AND_PART_NODES: dict = {
         "type": "StatisticalVariable",
         "arcs": {
             **_NODES[_SV]["arcs"],
-            "name": {"nodes": [{"value": "Test Population, female"}]},
+            "name": {"nodes": [{"value": "Test place scope population, female"}]},
             "constraintProperties": {"nodes": [{"dcid": "gender"}]},
             "gender": {"nodes": [{"dcid": "Female"}]},
         },
@@ -990,10 +1023,18 @@ def test_a_shape_with_a_total_and_its_part_is_scoped_over_the_total_its_mint_ser
     assert _scope_messages(result) == {None: _EVERY_PLACE_MESSAGE}
 
 
-def test_a_recalled_part_answers_as_the_total_its_mint_serves():
+@pytest.mark.parametrize(
+    "llm",
+    [_FixedBindLLM(), _OpenSlotsBindLLM("gender")],
+    ids=["slot-left-out", "slot-drafted-unbound"],
+)
+def test_a_recalled_part_answers_as_the_total_its_mint_serves(llm):
     """Recall holds the female part alone and `gender` stays unbound. The mint resolves the
     emitted identity by its walk to the total and its part, and serves the total, so the
-    answer lists the total and is scoped over the total's own country."""
+    answer lists the total and is scoped over the total's own country. A reply drafting
+    `gender` unbound leaves a slot whose sampled taxonomy holds `Female` alone, so the
+    engine claims it from the sample, and the walk, which reads the family with the claim
+    open, refutes it on the total."""
     graph = FakeGraph(
         nodes=_TOTAL_AND_PART_NODES,
         detect={_DETECT_QUERY: {"svs": [_SV_FEMALE], "cosine_scores": [0.9]}},
@@ -1006,7 +1047,7 @@ def test_a_recalled_part_answers_as_the_total_its_mint_serves():
     )
     member_graph = member_walk_reader(graph)
 
-    result = _run(graph=graph, sdmx=_scope_sdmx(graph), materialise_graph=member_graph)
+    result = _run(graph=graph, llm=llm, sdmx=_scope_sdmx(graph), materialise_graph=member_graph)
 
     assert result.status == "definite", result.no_data_reason
     (spec,) = result.specs
@@ -1059,14 +1100,23 @@ class _ProbeLogGraph(FakeGraph):
         return super().observation_facets_batch(stat_vars, entities, needs_dates=needs_dates)
 
 
-@pytest.mark.parametrize("answer", ["elected", "alternate", "lone_alternate"])
+@pytest.mark.parametrize(
+    "answer", ["elected", "elected_slots_drafted", "alternate", "lone_alternate"]
+)
 def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatch):
     """The shape serves two members neither of which dominates the other: `_U_FEMALE` holds
     data in A1 and `_U_OVER65` in A2. The shape answers as the elected one, as an alternate
     beside the elected Household shape, or as the lone alternate of an elected shape with no
-    data. One batch reads both members at the union of their scopes, and the answer shows
-    `_U_FEMALE`, counts its own country alone, and a definite answer previews its series
-    there."""
+    data. One batch reads both members at the union of their scopes. Elected, the shape
+    leaves both open and serves both, each counted at its own country; an alternate binds
+    `_U_FEMALE`'s constraint, so it shows that member, counts its own country alone, and the
+    lone alternate previews its series there. The elected answer's two places preview
+    through a scope-wide SDMX read, which this test's SDMX double holds no rows for. A reply
+    drafting `gender` and `age` unbound, or leaving both out, leaves each a slot whose
+    sampled taxonomy holds one value, so the engine claims both from the sample, and the
+    walk over the members' arcs, which reads the family with both claims open, refutes each
+    on the member that asserts the other."""
+    elected = answer in ("elected", "elected_slots_drafted")
 
     def facet(year: str) -> list[dict]:
         return [
@@ -1081,7 +1131,7 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
 
     obs = {f"{_U_FEMALE}|country/A1": facet("2020"), f"{_U_OVER65}|country/A2": facet("2021")}
     svs, scores = [_U_FEMALE, _U_OVER65], [0.9, 0.89]
-    if answer != "elected":
+    if not elected:
         svs, scores = [_SV_B, *svs], [0.95, *scores]
     if answer == "alternate":
         obs[f"{_SV_B}|country/A3"] = facet("2021")
@@ -1095,8 +1145,10 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
     graph = _ProbeLogGraph(
         nodes={
             _SV_B: _CANDIDATES_NODES[_SV_B],
-            _U_FEMALE: _member_node("Test Population, female", "gender", "Female"),
-            _U_OVER65: _member_node("Test Population, 65 and over", "age", "Years65Onwards"),
+            _U_FEMALE: _member_node("Test place scope population, female", "gender", "Female"),
+            _U_OVER65: _member_node(
+                "Test place scope population, 65 and over", "age", "Years65Onwards"
+            ),
         },
         detect={_DETECT_QUERY: {"svs": svs, "cosine_scores": scores}},
         resolve={},
@@ -1104,27 +1156,38 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
         children=_EARTH_CHILDREN,
     )
     materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
+    if elected:
+        materialise_graph = with_member_arcs(materialise_graph, graph)
 
     result = _run(
         graph=graph,
-        llm=_FixedBindLLM() if answer == "elected" else _CandidatesBindLLM(),
+        llm={
+            "elected": _FixedBindLLM(),
+            "elected_slots_drafted": _OpenSlotsBindLLM("gender", "age"),
+        }.get(answer, _CandidatesBindLLM()),
         sdmx=_scope_sdmx(graph),
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
         include_observations=True,
     )
 
-    definite = answer != "alternate"
-    assert result.status == ("definite" if definite else "candidates"), result.no_data_reason
+    assert result.status == ("candidates" if answer == "alternate" else "definite"), (
+        result.no_data_reason
+    )
     spec = next(spec for spec in result.specs if spec.resolved.members[0].ref.ref == _U_FEMALE)
-    assert [sv.ref.ref for sv in spec.resolved.members] == [_U_FEMALE]
+    members, places = (
+        ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"])
+        if elected
+        else ([_U_FEMALE], ["country/A1"])
+    )
+    assert [sv.ref.ref for sv in spec.resolved.members] == members
     coverage = spec.resolved.coverage
     assert isinstance(coverage, CoverageExact)
-    assert coverage.observation_count == 1
+    assert coverage.observation_count == len(members)
     assert spec.resolved.scope is not None
-    assert [entity.ref for entity in spec.resolved.scope.members] == ["country/A1"]
+    assert [entity.ref for entity in spec.resolved.scope.members] == places
     assert ([_U_FEMALE, _U_OVER65], ["country/A1", "country/A2"]) in graph.probes
-    if definite:
+    if answer == "lone_alternate":
         observations = spec.resolved.observations
         assert observations is not None and observations.series
         assert {entity.ref for series in observations.series for entity in series.entities} == {

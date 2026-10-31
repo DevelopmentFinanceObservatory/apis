@@ -57,6 +57,8 @@ def _render(chunks: tuple[Table, ...]) -> tuple:
         enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )
@@ -79,7 +81,7 @@ def test_enrichment_warnings_merge_across_chunks_to_the_whole_table_answer():
         ("recipient_iso3", 2),
         ("stat_var_label", 4),
         ("recipient_label", 4),
-        ("recipient_party_kind", 4),
+        ("recipient_kind", 4),
     ]
     assert two_chunk_enrichment == one_chunk_enrichment
 
@@ -132,6 +134,8 @@ def _render_two_columns(chunks: tuple[Table, ...]) -> tuple:
         enrichment=EnrichmentLookup(_TWO_COLUMN_GRAPH, parties=lambda: {}),
         resolved_stat_var_refs=(),
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=2_000_000,
+        groupby_row_fold_max_rows=700_000,
         prepared_at=PREPARED_AT,
         site=SITE,
     )
@@ -160,6 +164,6 @@ def test_streamed_warning_order_matches_whole_table_order_across_two_columns():
         "recipient_iso3",
         "stat_var_label",
         "recipient_label",
-        "recipient_party_kind",
+        "recipient_kind",
     ]
     assert streamed_enrichment == whole_table_enrichment

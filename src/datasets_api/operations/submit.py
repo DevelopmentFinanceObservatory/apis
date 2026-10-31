@@ -16,10 +16,13 @@ when they differ from `member_dcids`, so a row never records one member set and 
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from typing import cast
 
 from datasets_api.admission import refuse_async_over_ceiling
+from datasets_api.background_admission import admission_headroom
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import Operation, OperationStore
 from datasets_api.operations.dispatch import dispatch_if_due
@@ -29,13 +32,17 @@ from datasets_api.schema import OperationEnvelope, OperationResource
 from datasets_api.timings import phase
 from series_coverage.index import Estimate
 
-# Shared 202 response retry interval for mint and definition doors.
+# The shortest poll interval an operation advertises, and the refresh door's fixed retry interval.
 OPERATION_SUBMIT_RETRY_AFTER_MS = 1_500
+
+# The longest poll interval an operation advertises.
+OPERATION_POLL_MAX_MS = 8_000
 
 
 class OperationSubmitted(Exception):
     """Signals a successful 202 submission after recording the operation and creating its task
-    when the submission records no dispatch.
+    when the submission records no dispatch. `operation` is the row as recorded, before the
+    task create.
 
     Mint and definition doors render the envelope outside RFC 9457 error handling.
     """
@@ -61,12 +68,17 @@ def submit_over_budget(
     """Returns when the caller's sync-budget decision allows inline work.
 
     `members` are the StatVar refs a door resolved, `dcid:`-prefixed or bare. The operation
-    stores them as `member_dcids`.
+    stores them as `member_dcids`. A done operation restarts (`OperationStore.create_or_get`),
+    so the row the submission records reads pending or running, or failed for a deterministic
+    failure. `OperationSubmitted` carries that row. The task create can run the operation to
+    completion before it returns, so the row `dispatch_if_due` returns may read done, and the
+    202 never reads it.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
-    `OperationBacklogFull` also propagates. The function records or reuses the operation,
-    creates its task when the submission records no dispatch, and raises `OperationSubmitted`
-    for a 202 response.
+    `OperationBacklogFull` also propagates, and for a background mint
+    (`datasets_api.background_admission`) a new operation must leave one backlog place free. The
+    function records or reuses the operation, creates its task when the submission records no
+    dispatch, and raises `OperationSubmitted` for a 202 response.
 
     The create follows the committed store transaction. A create that fails or times out leaves
     the dispatch unrecorded, and the operations poll creates the task again under the same name
@@ -78,18 +90,17 @@ def submit_over_budget(
         estimate, async_max_rows=async_max_rows, async_max_requests=async_max_requests
     )
     with phase("operation"):
-        operation = operation_store.create_or_get(
+        accepted = operation_store.create_or_get(
             request_identity=_request_identity(subject_id, members),
             options=options.model_dump(mode="json"),
             coverage_stamp=coverage_stamp,
             origin_catalogue_build_id=catalogue_build_id(),
             estimate=estimate,
+            headroom=admission_headroom(),
         )
     with phase("dispatch"):
-        operation = dispatch_if_due(
-            operation, operation_store=operation_store, task_client=task_client
-        )
-    raise OperationSubmitted(operation=operation)
+        dispatch_if_due(accepted, operation_store=operation_store, task_client=task_client)
+    raise OperationSubmitted(operation=accepted)
 
 
 _STAT_VAR_REF_PREFIX = "dcid:"
@@ -123,9 +134,34 @@ def request_identity_member_dcids(request_identity: Mapping[str, object]) -> tup
     return tuple(str(dcid) for dcid in cast("Sequence[object]", member_dcids))
 
 
-def operation_submitted_resource(submitted: OperationSubmitted) -> OperationResource:
-    """Builds the 202 resource from the returned operation state, which may already be running or
-    terminal. Progress stays unset in the submit response and appears on polls.
+def poll_interval_ms(operation: Operation, *, now: datetime) -> int:
+    """The milliseconds a caller waits before polling `operation` again. That is a quarter of the
+    time since its current submission (`submitted_at`), held between
+    `OPERATION_SUBMIT_RETRY_AFTER_MS` and `OPERATION_POLL_MAX_MS`. A repeat submission that
+    joins a long build gets the slow value, a resubmission that restarts a failed build starts
+    at the floor, and a waiting browser backs off as the build runs. A failed operation
+    answers its next poll at once, so it gets the shortest interval.
+    """
+    if operation.state == "failed":
+        return OPERATION_SUBMIT_RETRY_AFTER_MS
+    age_ms = (now - operation.submitted_at) // timedelta(milliseconds=1)
+    return min(OPERATION_POLL_MAX_MS, max(OPERATION_SUBMIT_RETRY_AFTER_MS, age_ms // 4))
+
+
+def retry_after_headers(envelope: OperationEnvelope) -> dict[str, str]:
+    """The `Retry-After` header for `envelope`: its `retry_after_ms` in whole seconds, rounded
+    up. A done envelope carries no `retry_after_ms` and gets no header."""
+    if envelope.retry_after_ms is None:
+        return {}
+    return {"Retry-After": str(math.ceil(envelope.retry_after_ms / 1000))}
+
+
+def operation_submitted_resource(
+    submitted: OperationSubmitted, *, now: datetime
+) -> OperationResource:
+    """Builds the 202 resource from the operation state the submission recorded, which may be a
+    running or failed row it joined. Progress stays unset in the submit response and appears on
+    polls.
     """
     operation = submitted.operation
     return OperationResource(
@@ -133,17 +169,20 @@ def operation_submitted_resource(submitted: OperationSubmitted) -> OperationReso
             operation_id=operation.id,
             status=operation.state,
             poll=f"/api/datasets/operations/{operation.id}",
-            retry_after_ms=OPERATION_SUBMIT_RETRY_AFTER_MS,
+            retry_after_ms=poll_interval_ms(operation, now=now),
         )
     )
 
 
 __all__ = [
+    "OPERATION_POLL_MAX_MS",
     "OPERATION_SUBMIT_RETRY_AFTER_MS",
     "OperationSubmitted",
     "member_dcids",
     "operation_submitted_resource",
+    "poll_interval_ms",
     "request_identity_member_dcids",
     "request_identity_subject_id",
+    "retry_after_headers",
     "submit_over_budget",
 ]

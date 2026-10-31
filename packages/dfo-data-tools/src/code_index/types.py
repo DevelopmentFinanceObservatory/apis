@@ -6,7 +6,7 @@ This module has no graph or file-I/O imports.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, get_args
 
@@ -170,6 +170,29 @@ class ShapeSlotDefault:
     population_type: str
     property_dcid: str
     value_dcid: str
+
+
+@dataclass(frozen=True, slots=True)
+class BroadReading:
+    """A constraint value a question's words read as a broader value of the same property,
+    unless the question also names a value on another property.
+
+    A binding holding `value_dcid` on `property_dcid` holds `reads_as` in its place unless a
+    binding on `unless_bound` holds `held_with`. Every series holding `value_dcid` holds
+    `unless_bound=held_with`, which the export checks, so a question names the narrow value
+    exactly when it names that value on `unless_bound`. The World Bank's "publicly
+    guaranteed" debt is private-sector debt under a public guarantee, and the words alone
+    read as public and publicly guaranteed debt.
+
+    `note` is the sentence an answer states whenever the reading fires.
+    """
+
+    property_dcid: str
+    value_dcid: str
+    reads_as: str
+    unless_bound: str
+    held_with: str
+    note: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +401,11 @@ class DatasetDeclaration:
     by house convention when several datasets' shapes measure the phrase: the CRS for a
     sector, DAC2a for a recipient total, DAC1 for a donor total. The loader refuses an
     index where two datasets claim one kind (`code_index.loader._check_datasets`).
+
+    `ratio_base_axis` names the flow axis whose party's own total a ratio of the table
+    divides by: DAC1 states ODA as a share of the donor's GNI (`origin`), DAC2a as a share
+    of the recipient's GNI (`destination`). `None` declares nothing, as in a
+    release exported without the field.
     """
 
     provenance: str
@@ -391,6 +419,86 @@ class DatasetDeclaration:
     stated_words: tuple[StatedWord, ...] = ()
     party_words: tuple[PartyWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
+    ratio_base_axis: RoleAxis | None = None
+
+
+ComponentRole = Literal["bilateral", "imputed", "headline_net", "headline_ge"]
+"""What one component of a composite holds: the bilateral or imputed multilateral part of a
+provider-inclusive total, or the net or grant-equivalent years of the OECD headline basis."""
+
+CompositeKind = Literal["stacked", "spliced"]
+"""How a composite's components make one frame. `stacked` components cover the same years
+and their rows sum to the total. `spliced` components each serve their own declared years,
+which neither overlap nor leave a year out."""
+
+
+@dataclass(frozen=True, slots=True)
+class YearPeriod:
+    """A closed span of years. `first` or `last` is `None` for an open end."""
+
+    first: int | None
+    last: int | None
+
+    def holds(self, year: int) -> bool:
+        """Whether `year` lies in the span."""
+        return (self.first is None or year >= self.first) and (
+            self.last is None or year <= self.last
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentRecipe:
+    """How one component's identity derives from its composite's identity.
+
+    `dataset` is the provenance of the table the component reads, and `provenance` the
+    provenance its identity binds, `dataset` itself for a table a question answers from only
+    when it names it (the imputed table) and `None` where the component's shape elects the
+    table as an unpinned identity does (the CRS, DAC1). `periods` limits the component to its own
+    years, `None` for every year of the composite.
+
+    `measured_property` replaces the shape's measured property and leaves every slot as it
+    is. `basis` sets a declared measure basis instead (`code_index.measure_basis.edit_basis`):
+    its measured property and netting basis, `None` for a measure that carries none, with the
+    population and flow-type slots the basis declares. A recipe sets one of the two at most.
+    `bind` binds each named slot to its code. `drop_unbound` names the slots the component's
+    rows do not declare. An unbound slot on them is removed, and a bound one makes the
+    composite unservable (`code_index.composites.CompositeNotServable`).
+
+    `zero_absent` says the component's absence in a covered cell is a zero. The composite
+    writes a zero row for each of its members holding no row in a cell another component
+    fills, inside the composite's years. A component without it contributes nothing where it
+    holds no row. Only a stacked composite's component sets it: a spliced one's zeros would
+    fill years it does not cover, and the loader refuses it."""
+
+    role: ComponentRole
+    dataset: str
+    provenance: str | None = None
+    periods: YearPeriod | None = None
+    measured_property: str | None = None
+    basis: tuple[str, str | None] | None = None
+    bind: Mapping[str, str] = field(default_factory=dict)
+    drop_unbound: frozenset[str] = frozenset()
+    zero_absent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeDeclaration:
+    """A provenance declared as the composite of its components.
+
+    An identity whose `facets.provenance` binds `provenance` as a value is served as one frame
+    composed from one materialisation per component (`code_index.composites`), every row
+    carrying `provenance`. The graph holds no node for it: every graph or catalogue read uses
+    the component provenances. `label` names the composite for a reader. `measure_noun` is
+    the words a sentence names its measure by. It follows the measure label of a stacked
+    composite, whose components share the measure, and replaces it for a spliced one, whose
+    measure changes between its periods. Each component table gives a provider's account of
+    a flow, and so does the composite."""
+
+    provenance: str
+    label: str
+    measure_noun: str
+    kind: CompositeKind
+    components: tuple[ComponentRecipe, ...]
 
 
 PartyKind = Literal["party", "total", "residual"]
@@ -404,6 +512,40 @@ country", `DACAfricaUnallocated`).
 """
 
 PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
+
+PartyClass = Literal["official", "private", "residual"]
+"""Whose money a party's figures count (`PartyRow.party_class`). A `private` party is a
+private provider of development finance, such as a foundation, an `official` party is any
+other party, and a `residual` holds figures no other party does. A whole total covers
+classes (`WholeMarker.covers`)."""
+
+PARTY_CLASSES: frozenset[str] = frozenset(get_args(PartyClass))
+
+POPULATION_CLASS: PartyClass = "official"
+"""The class every whole population covers: a side read whole holds its official parties, so a
+total whose markers cover it stands for a population (`CodeIndex.population_totals_by_axis`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class WholeMarker:
+    """What a total holds in one dataset: every party of the classes in `covers` on its axis.
+
+    `dataset` is a provenance among `PartyRow.datasets`, and `covers` a non-empty, sorted
+    subset of `PartyClass`. `years` is the first and last year, inclusive, in which the total
+    holds that population in `dataset`, or `None` for every year the dataset publishes it.
+    "All Recipients, Total" (`DACAllRecipients`) covers every `official` and `residual`
+    recipient in DAC2A from the year its composition check starts, and in DAC2B it holds
+    nothing of the kind, so it has no marker there.
+    """
+
+    dataset: str
+    covers: tuple[PartyClass, ...]
+    years: tuple[int, int] | None = None
+
+
+def covered_class(covers: Collection[PartyClass]) -> PartyClass | None:
+    """The one class in `covers`, or `None` when they name more than one."""
+    return next(iter(covers)) if len(set(covers)) == 1 else None
 
 
 def party_kind(
@@ -444,16 +586,101 @@ class PartyRow:
     `datasets` are the provenances of the declared and listed datasets that publish the
     party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
     recipient), each sorted.
+
+    `party_class` is `private` for a party the export's `PRIVATE_PROVIDERS` lists and
+    `official` for every other party, on every axis, and `residual` for a residual. A total
+    takes the one class its whole markers cover (`covered_class`), `None` when they cover more
+    than one or it has no marker.
+
+    `whole` is empty for every row but a whole total: a `total` that holds the whole
+    population of some classes on its one axis in the datasets it carries a marker for
+    (`WholeMarker`), sorted by dataset, one per dataset. "Official Donors, Total"
+    (`DACOfficialDonors`) covers every `official` donor in DAC2A and DAC2B. A dataset with no
+    marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
+    `kind == "total"` stays correct.
+
+    `kind` is the party's kind in every dataset `dataset_kinds` does not name, and
+    `dataset_kinds` the `(dataset, kind)` pairs, sorted by dataset, where it takes another
+    kind. IMF Concessional Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS,
+    which publishes it and never the IMF, and a `total` in DAC2A, which publishes it beside
+    the IMF it equals. A reader serving one dataset reads `kind_in`, and one serving several or
+    none reads `kinds_over` or `kind_over`. `party_class` is the class of `kind`; where the
+    party takes another kind it takes that kind's class (`class_of`).
     """
 
     dcid: str
     kind: PartyKind
+    party_class: PartyClass | None = None
     totals: str | None = None
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
     label: str | None = None
     datasets: tuple[str, ...] = ()
     axes: tuple[RoleAxis, ...] = ()
+    whole: tuple[WholeMarker, ...] = ()
+    dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
+
+    def marker(self, dataset: str) -> WholeMarker | None:
+        """The marker for `dataset`, or `None` where the party is an ordinary total."""
+        return next((marker for marker in self.whole if marker.dataset == dataset), None)
+
+    def kind_in(self, dataset: str) -> PartyKind:
+        """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
+        return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
+
+    def kinds_over(self, datasets: Collection[str] = ()) -> frozenset[PartyKind]:
+        """The kinds the party takes in those of `datasets` that publish it, or in every
+        dataset that publishes it when none of `datasets` does, as for an empty `datasets`.
+        A row without `dataset_kinds` takes `kind` alone."""
+        if not self.dataset_kinds:
+            return frozenset((self.kind,))
+        named = [dataset for dataset in self.datasets if dataset in datasets] or self.datasets
+        return frozenset(self.kind_in(dataset) for dataset in named)
+
+    def kind_over(self, datasets: Collection[str] = ()) -> PartyKind | None:
+        """The one kind of `kinds_over(datasets)`, or `None` when the party takes different
+        kinds there, so a reader that needs one kind refuses rather than guesses."""
+        kinds = self.kinds_over(datasets)
+        return next(iter(kinds)) if len(kinds) == 1 else None
+
+    def class_of(self, kind: PartyKind) -> PartyClass | None:
+        """The party's class where it takes `kind` (`kind_in`, `kind_over`): `party_class` for
+        its own `kind`, and for another kind the class that kind gives a row with no whole
+        marker (`KIND_CLASSES`)."""
+        return self.party_class if kind == self.kind else KIND_CLASSES[kind]
+
+
+KIND_CLASSES: Mapping[PartyKind, PartyClass | None] = {
+    "party": "official",
+    "residual": "residual",
+    "total": None,
+}
+"""The class each kind gives a party that is not private and carries no whole marker: the
+export's class for a party (`code_index.export.export_parties`) and the class of a dataset kind
+(`PartyRow.class_of`). A private provider takes no dataset kind, so a `party` there is
+`official`."""
+
+
+def marked_datasets(parties: Iterable[PartyRow]) -> frozenset[str]:
+    """The datasets in which every one of `parties` carries a whole marker. Empty for no party."""
+    sets = [frozenset(marker.dataset for marker in party.whole) for party in parties]
+    return frozenset.intersection(*sets) if sets else frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class WholeTotalSet:
+    """Whole totals read as one population under a phrase.
+
+    `phrase` is the words that name the union ("all donors including private"), `axis` the
+    flow axis it stands on, and `members` the dcids of the whole totals it joins, which
+    are each marked in at least one dataset where all are marked
+    (`marked_datasets`), and cover disjoint classes there, so their sum counts no
+    party twice (`code_index.loader._check_whole_totals`).
+    """
+
+    phrase: str
+    axis: RoleAxis
+    members: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

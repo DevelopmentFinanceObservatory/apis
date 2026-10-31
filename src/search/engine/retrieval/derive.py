@@ -541,16 +541,19 @@ def _fetch_constraint_labels(
     labels_raw = graph.node_labels_batch(
         [*all_constraint_props, *all_constraint_values, *population_types]
     )
-    prop_labels_raw = labels_raw
+    return labels_raw, value_labels_of(all_constraint_values, labels_raw)
 
+
+def value_labels_of(values: Iterable[str], labels: Mapping[str, str]) -> dict[str, str]:
+    """A shape's value labels (`ShapeDraft.value_labels`): the graph `labels` of one batched
+    read, with each of `values` the code index holds labelled by its code row instead."""
     code_index = get_index()
-    value_labels = dict(labels_raw)
-    for value_dcid in all_constraint_values:
+    value_labels = dict(labels)
+    for value_dcid in values:
         row = code_index.code_by_dcid(value_dcid)
         if row is not None:
             value_labels[value_dcid] = row.label
-
-    return prop_labels_raw, value_labels
+    return value_labels
 
 
 def _shape_draft_for_group(
@@ -778,10 +781,20 @@ def _build_group_shape(
     constraint_props = list(prop_observed_values.keys())
     prop_labels: dict[str, str] = {p: prop_labels_raw.get(p, p) for p in constraint_props}
 
-    # `group_svs` is score-descending. Use its first scored member for rank and
-    # its highest-scoring recalled member for the label, falling back to that representative.
+    # `group_svs` is score-descending. Use its first scored member for rank and its
+    # highest-scoring recalled member for the label, falling back to that representative.
+    # A role-bearing group whose members declare more than one role set takes its
+    # least-constrained recalled member instead, the highest-scoring of a tie. The mint
+    # keeps this label for a family the catalogue holds, so it is the answer's name; any
+    # other such shape the mint renames within the role set the bound roles elect
+    # (`bound_values._recalled_role_class_shape`), which gives this name when the query
+    # binds only the recipient side. "Publicly guaranteed debt" recalls the bondholders'
+    # share of IDS debt stocks above the PPG total, and the stock reads as the total.
     rep_sv_dcid = next((sv for sv in group_svs if sv in sv_scores), group_svs[0])
-    label_sv_dcid = next((sv for sv in group_svs if sv in recall_svs), rep_sv_dcid)
+    named = [sv for sv in group_svs if sv in recall_svs]
+    if roles.optional and family is None:
+        named.sort(key=lambda sv: len(sv_facts[sv]["constraints"]))
+    label_sv_dcid = next(iter(named), rep_sv_dcid)
     pop_type_name = prop_labels_raw.get(five_tuple.pop_type_dcid, five_tuple.pop_type_dcid)
     # An index family reads as what all its rows share. Any other group reads as its family
     # does (`walked_family_label`), its recalled member's name first among its own.
@@ -941,6 +954,7 @@ def derive_shapes(
     sv_scores: dict[str, float] | None = None,
     sv_types: dict[str, str | None] | None = None,
     rival_svs: frozenset[str] = frozenset(),
+    basis_of: Mapping[str, frozenset[str]] | None = None,
     place_dcids: list[str] | None = None,
     full_facets_max_candidates: int | None = None,
     deadline: float | None = None,
@@ -965,7 +979,9 @@ def derive_shapes(
 
     `rival_svs` are the rows recall added past its cut (`clients.graph.with_rival_families`).
     They are confirmed with the other candidates, and a shape whose members are all rivals
-    is marked `ShapeDraft.rival`.
+    is marked `ShapeDraft.rival`. `basis_of` maps those of them that measure another
+    convention basis of recalled families to those families, and a shape whose members are
+    all among them takes them as `ShapeDraft.basis_of`.
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
@@ -1117,7 +1133,14 @@ def derive_shapes(
             if key in held_families:
                 shape = dataclasses.replace(shape, held_family=FamilyKey(*five_tuple, role_bearing))
             if rival_svs.issuperset(group_svs):
-                shape = dataclasses.replace(shape, rival=True)
+                sources = basis_of or {}
+                shape = dataclasses.replace(
+                    shape,
+                    rival=True,
+                    basis_of=frozenset().union(*(sources[sv] for sv in group_svs))
+                    if all(sv in sources for sv in group_svs)
+                    else frozenset(),
+                )
             shapes.append(shape)
 
     viable_groups = len(groups) - zero_member_groups

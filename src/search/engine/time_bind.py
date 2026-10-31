@@ -336,11 +336,9 @@ TIME_WINDOW_DEFAULTED = "time_window_defaulted"
 
 
 def time_window_defaulted_warning() -> Warning:
-    """The time_window_defaulted warning for a part with no time_text at
-    all, mirroring region/grounding.py's role_scope_defaulted_message
-    wording for an undirected entity axis."""
+    """The time_window_defaulted warning for a part with no time_text at all."""
     return Warning(
         code=TIME_WINDOW_DEFAULTED,
         severity=_WARN_SEVERITY,
-        message="no time_text was given; the answer was resolved across every period with data.",
+        message="No years were given, so the answer covers every year with data.",
     )

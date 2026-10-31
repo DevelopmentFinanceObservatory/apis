@@ -467,7 +467,7 @@ def _decide_raising(monkeypatch, exc: Exception, memo: dict):
     def _raise(*args, **kwargs):
         raise exc
 
-    monkeypatch.setattr(candidate_unit_election_module, "decide_part_unit", _raise)
+    monkeypatch.setattr(candidate_unit_election_module, "decide_spec_unit", _raise)
     return _decide_one(
         materialise_graph=_materialise_graph_no_facets(),
         sv=_SV_A,
@@ -500,7 +500,7 @@ def test_definite_unit_refusal_omits_the_candidate_statvar(monkeypatch):
 def test_unestablished_unit_election_raises_rather_than_omitting(monkeypatch, exc):
     """An election that fails for an infrastructure or ceiling reason leaves the StatVar unknown.
     Omitting it would let the candidate gate count it inside a complete negative, so it raises,
-    as the elected shape's `decide_part_unit` does, and memoises nothing."""
+    as the elected shape's `decide_spec_unit` does, and memoises nothing."""
     memo: dict = {}
     with pytest.raises(type(exc)):
         _decide_raising(monkeypatch, exc, memo)
@@ -534,7 +534,7 @@ def test_the_elected_shapes_dataset_disagreement_still_fails_the_request(monkeyp
 
 def _refuse_by_statvar(monkeypatch, refusals: dict[str, Exception]) -> None:
     """Make each named StatVar's candidate election raise its refusal; others elect normally."""
-    real = candidate_unit_election_module.decide_part_unit
+    real = candidate_unit_election_module.decide_spec_unit
 
     def _decide(sv_dcids, **kwargs):
         # The candidate election decides one StatVar per call.
@@ -544,7 +544,7 @@ def _refuse_by_statvar(monkeypatch, refusals: dict[str, Exception]) -> None:
             raise exc
         return real(sv_dcids, **kwargs)
 
-    monkeypatch.setattr(candidate_unit_election_module, "decide_part_unit", _decide)
+    monkeypatch.setattr(candidate_unit_election_module, "decide_spec_unit", _decide)
 
 
 def _recipe_refusal() -> RecipeNotDeclaredError:
@@ -626,7 +626,7 @@ def test_conversion_refusal_outranks_a_missing_facet(monkeypatch, refusal, statu
         "request": {"currency": "USD", "prices": "current"},
     }
 
-    # The single-shape door elects through `decide_part_unit`. Refuse there as the candidate
+    # The single-shape door elects through `decide_spec_unit`. Refuse there as the candidate
     # election did: the elected StatVar lacks a facet, the refusing StatVar cannot convert.
     decided: list[list[str]] = []
 
@@ -634,7 +634,7 @@ def test_conversion_refusal_outranks_a_missing_facet(monkeypatch, refusal, statu
         decided.append(list(sv_dcids))
         raise refusal if _SV_B in sv_dcids else FacetNotAvailableError("no facet")
 
-    monkeypatch.setattr(promote_ground_module, "decide_part_unit", _decide_part)
+    monkeypatch.setattr(promote_ground_module, "decide_spec_unit", _decide_part)
     _spec_id, minted = mint_identity(identity)
     with pytest.raises(EngineInputError) as exc_info:
         resolve_spec_resubmit(

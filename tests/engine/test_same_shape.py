@@ -122,7 +122,11 @@ def test_a_merged_answer_unions_each_members_own_known_origin_population(options
     merged = effective[0]
 
     facts = merged.spec.resolved.role_axis_facts
-    assert facts == [RoleAxisFact(role="origin", member_count=3, members_available=True)]
+    assert facts == [
+        RoleAxisFact(
+            role="origin", member_count=3, members_available=True, holds_multilaterals=False
+        )
+    ]
     assert merged.role_axis_facts == (
         RoleAxisFactInput(
             role="origin", member_dcids=frozenset({"country/FRA", "country/DEU", "country/JPN"})
@@ -156,7 +160,13 @@ def test_a_merged_answer_refuses_to_claim_a_population_when_a_member_is_unknown(
     merged = effective[0]
 
     facts = merged.spec.resolved.role_axis_facts
-    assert facts == [RoleAxisFact(role="origin", member_count=None, members_available=False)]
+    # The fixture's StatVars belong to no dataset the code index lists, so no served dataset
+    # publishes a multilateral donor either.
+    assert facts == [
+        RoleAxisFact(
+            role="origin", member_count=None, members_available=False, holds_multilaterals=False
+        )
+    ]
 
     entity_opts = merged.spec.resolved.entity_options
     assert len(entity_opts) == 1

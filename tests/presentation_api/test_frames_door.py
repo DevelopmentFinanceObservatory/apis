@@ -11,18 +11,30 @@ import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+import presentation_api.app as presentation_app
 import presentation_api.doors.frames as frames_door
 import presentation_store.frame_store as frame_store_module
 from assembler.catalogue import CatalogueRelease
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, FrameUnavailable
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
+from dataset_store.snapshot import SnapshotRevoked
+from datasets_api.doors.definition import SpecNotFound
+from datasets_api.doors.mint_errors import MintBackpressure
+from datasets_api.doors.refresh import RefreshRebuildFailed
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
+from materialise.reshape import ColumnUnknownError
 from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_FRAMES_TIMEOUT_SECONDS
 from presentation_api.doors.frames import classify_frames_exception
-from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
+from presentation_api.newest_frames import NewestPending
+from spec_registry.errors import (
+    IdentityQuarantined,
+    SpecRegistryStoreError,
+    SpecRegistryUnavailable,
+)
+from tests.presentation_api.conftest import BARE_SPEC_ID, FakeNewestSpecs
 from tests.presentation_store.test_frame_store import _posted_frame_fixture, _store
 
 
@@ -186,6 +198,48 @@ def test_an_unpublished_ops_prefixed_spec_id_maps_the_typed_refusal_to_not_found
     assert body["code"] == "frame_unavailable"
     # Publishing the frame pair makes this retryable 404 succeed.
     assert body["retryable"] is True
+
+
+class _RefusingFrameStore(FakeFrameStore):
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    def load(self, *, frame_ref: FrameRef) -> Never:
+        raise FrameUnavailable(reason=self.reason, detail="exemplar")
+
+
+@pytest.mark.parametrize(
+    ("reason", "status", "retryable"),
+    [
+        pytest.param("unknown", 404, False, id="lost-never-stored"),
+        pytest.param("expired", 404, True, id="lost-aged-out"),
+        pytest.param("revoked", 404, False, id="permanent-taken-down"),
+        pytest.param("quarantined", 404, False, id="permanent-quarantined"),
+    ],
+)
+def test_a_frame_that_does_not_load_names_its_reason_as_the_cause(
+    release: CatalogueRelease, reason: str, status: int, retryable: bool
+):
+    app = create_app(
+        [
+            presentation_surface(
+                frame_store=_RefusingFrameStore(reason),
+                revision_store=FakeRevisionStore(),
+                release_registry=FakeReleaseRegistry(release=release),
+            )
+        ]
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get(
+            "/api/presentation/frames/spec_00000000000000000000000000000000/"
+            "cv_00000000000000000000000000000000",
+        )
+
+    assert resp.status_code == status, resp.text
+    body = resp.json()
+    assert (body["code"], body["retryable"]) == ("frame_unavailable", retryable)
+    assert body["cause"]["code"] == reason
 
 
 def test_an_ocv_prefixed_content_version_reaches_the_frame_store(
@@ -374,3 +428,188 @@ def test_a_live_frame_load_whose_registry_read_fails_answers_a_declared_refusal(
         code,
         retryable,
     ), resp.text
+
+
+# -- a frame named by its dataset id alone -----------------------------------
+
+
+def test_a_bare_spec_id_reads_the_frame_it_resolves_and_names_its_pair(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, frame_ref: FrameRef
+):
+    """The pair route's body, with the served id and version the dataset id resolved to."""
+    pair = _get_frame(newest_client, frame_ref).json()
+
+    resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        **pair,
+        "spec_id": frame_ref.spec_id,
+        "content_version": frame_ref.content_version,
+    }
+    assert newest_specs.asked == [BARE_SPEC_ID]
+
+
+@pytest.mark.parametrize(
+    ("params", "key"), [({"dimension": "recipient"}, "values"), ({"query": "eth"}, "dimensions")]
+)
+def test_a_bare_spec_id_takes_the_pair_route_s_dimension_and_query(
+    newest_client: TestClient, frame_ref: FrameRef, params: dict[str, str], key: str
+):
+    pair = newest_client.get(_frame_url(frame_ref), params=params).json()
+
+    resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}", params=params)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()[key] == pair[key]
+    assert resp.json()["content_version"] == frame_ref.content_version
+
+
+@pytest.mark.parametrize(
+    "spec_id",
+    [
+        pytest.param("ops_" + "c" * 32, id="derived"),
+        pytest.param("spec_" + "C" * 32, id="upper-hex"),
+        pytest.param("spec_" + "c" * 31, id="short"),
+    ],
+)
+def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, spec_id: str
+):
+    resp = newest_client.get(f"/api/presentation/frames/{spec_id}")
+
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "request_invalid"
+    assert newest_specs.asked == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "status", "code", "retryable", "cause"),
+    [
+        pytest.param(
+            NewestPending(retry_after_s=2.0),
+            503,
+            "service_unavailable",
+            True,
+            None,
+            id="building",
+        ),
+        pytest.param(
+            SpecNotFound(id=BARE_SPEC_ID),
+            404,
+            "frame_unavailable",
+            False,
+            "unknown",
+            id="not-registered",
+        ),
+        pytest.param(
+            MintBackpressure(), 503, "service_unavailable", True, None, id="mint-backpressure"
+        ),
+        pytest.param(
+            IdentityQuarantined(subject_id=BARE_SPEC_ID, id_kind="spec"),
+            404,
+            "frame_unavailable",
+            False,
+            "quarantined",
+            id="quarantined",
+        ),
+        pytest.param(
+            SnapshotRevoked(id=BARE_SPEC_ID, content_version="cv", reason=None),
+            404,
+            "frame_unavailable",
+            False,
+            "revoked",
+            id="revoked",
+        ),
+        pytest.param(
+            ColumnUnknownError("no such column", column="x"),
+            404,
+            "frame_unavailable",
+            False,
+            "unknown",
+            id="code-analysis-does-not-map",
+        ),
+    ],
+)
+def test_a_bare_spec_id_that_cannot_be_served_answers_by_cause(
+    newest_client: TestClient,
+    newest_specs: FakeNewestSpecs,
+    answer: object,
+    status: int,
+    code: str,
+    retryable: bool,
+    cause: str | None,
+):
+    newest_specs.answer = answer  # ty: ignore[invalid-assignment]
+
+    resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
+
+    assert resp.status_code == status, resp.text
+    body = resp.json()
+    assert (body["code"], body["retryable"]) == (code, retryable)
+    assert (body.get("cause") or {}).get("code") == cause
+
+
+def test_bare_reads_at_their_limit_refuse_and_leave_pair_reads_their_permits(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    frame_ref: FrameRef,
+):
+    """A rebuild holds a bare read's permit for seconds, so pair reads run beside it."""
+    monkeypatch.setattr(frames_door, "PRESENTATION_FRAMES_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(presentation_app, "PRESENTATION_FRAMES_BARE_MAX_CONCURRENCY", 1)
+    rebuilding = threading.Event()
+    finish_rebuild = threading.Event()
+
+    class Rebuilding(FakeNewestSpecs):
+        def newest_of_spec(self, spec_id: str) -> FrameRef:
+            rebuilding.set()
+            finish_rebuild.wait(timeout=5.0)
+            return frame_ref
+
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        newest_frames=Rebuilding(),
+    )
+    url = f"/api/presentation/frames/{BARE_SPEC_ID}"
+    with (
+        TestClient(create_app([surface]), raise_server_exceptions=False) as client,
+        ThreadPoolExecutor(max_workers=1) as caller,
+    ):
+        first = caller.submit(client.get, url)
+        try:
+            assert rebuilding.wait(timeout=5.0)
+            concurrent = client.get(url)
+            pair = _get_frame(client, frame_ref)
+        finally:
+            finish_rebuild.set()
+        first_resp = first.result(timeout=5.0)
+
+    assert concurrent.status_code == 503, concurrent.text
+    assert concurrent.json()["code"] == "service_unavailable"
+    assert pair.status_code == 200, pair.text
+    assert first_resp.status_code == 200, first_resp.text
+
+
+def test_a_bare_spec_id_without_a_datasets_surface_is_frame_unavailable(client: TestClient):
+    resp = client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
+
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "frame_unavailable"
+
+
+def test_a_bare_spec_id_whose_rebuild_failed_for_good_is_internal_error(
+    newest_client: TestClient, newest_specs: FakeNewestSpecs
+):
+    """A server fault answers 500, as the analysis route answers it."""
+    newest_specs.answer = RefreshRebuildFailed(operation_id="op_1", refusal_code="over_ceiling")
+
+    resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
+
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["code"] == "internal_error"
+    assert resp.json()["retryable"] is False

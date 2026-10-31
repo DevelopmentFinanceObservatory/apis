@@ -167,6 +167,11 @@ _gemini-key:
 # an alternate endpoint (e.g., a local development mirror):
 #   just SEARCH_GRAPH_BASE=http://127.0.0.1:8080 dev
 #
+# The default graph is a Cloud Run service that needs an ID token, which user
+# credentials cannot mint. Impersonate a service account, which mints and
+# refreshes tokens:
+#   gcloud auth application-default login --impersonate-service-account=<sa>
+#
 # Hot-reload the Search API on the host (uvicorn --reload)
 dev:
     #!/usr/bin/env bash
@@ -370,6 +375,13 @@ migrate-presentation:
 dataset-store-smoke:
     uv run --env-file {{ENV_FILE}} {{SYNC_ARGS}} python -m dataset_store.smoke
 
+# Postgres 18, fake-gcs-server and dfo-apis serving Datasets and Presentation on
+# 127.0.0.1:58083, with no GCP (scripts/local-stack/README.md).
+#
+# Run the local stack: CMD is up, seed, smoke, down or status
+local-stack CMD:
+    scripts/local-stack/stack.sh {{CMD}}
+
 # ── Eval cases & evals ──────────────────────────────
 
 # Validate corpus/*.yaml and corpus/families/*.yaml, and list the cases that cannot gate
@@ -391,6 +403,8 @@ sentence-panel *ARGS:
     uv run {{SYNC_ARGS}} python scripts/sentence_panel/run.py {{ARGS}}
 
 # Pass --nightly URL [--summary FILE] to also run the nightly experiment on the app at URL; it exits 0, 1 or 3.
+# A corpus holding a dataset_resubmit case, and the nightly, also open GRAPH_RELEASE_URI's release,
+# with Google credentials for a gs:// URI. A release that does not open exits 3, an unset URI 2.
 #
 # Mirror corpus/*.yaml to the Langfuse datasets. Live; reads credentials from the env file
 eval-sync *ARGS: _check-env

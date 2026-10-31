@@ -13,6 +13,7 @@ and used for exact windowed counts.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -20,6 +21,16 @@ from typing import Final
 import pyarrow as pa
 
 from artifact_publication.jobs import Ingestion
+
+# A whole number of years (`P1Y`, `P5Y`); any other stated period is shorter than a year.
+_YEARLY_PERIOD = re.compile(r"P\d+Y")
+
+
+def is_sub_annual(period: str | None) -> bool:
+    """Whether `period`, a facet's stated observation period, is shorter than a year. A
+    facet stating none is not: the index dates its rows by year."""
+    return period is not None and _YEARLY_PERIOD.fullmatch(period) is None
+
 
 MASK_WORD_BITS: Final[int] = 64
 
@@ -38,6 +49,12 @@ ABSENT_ENTITY: Final[str] = ""
 """The `donor` or `recipient` value of a row whose variable declares no role
 for that column. No graph dcid is empty, so the value never collides with a
 real entity."""
+
+
+def widen_span(spans: dict[str, tuple[int, int]], provenance: str, first: int, last: int) -> None:
+    """Widen `spans[provenance]` to cover the years `first` through `last`, inclusive."""
+    low, high = spans.get(provenance, (first, last))
+    spans[provenance] = (min(low, first), max(high, last))
 
 
 def year_mask_column(word: int) -> str:

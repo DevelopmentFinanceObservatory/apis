@@ -76,7 +76,10 @@ from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
     OBSERVATIONS_TIMED_OUT,
 )
-from search.engine.region.observations.bulk_conversion import BulkConversion
+from search.engine.region.observations.bulk_conversion import (
+    BulkConversion,
+    any_combination_converts,
+)
 from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
 from search.engine.region.result import FacetAxisFilter
@@ -142,21 +145,6 @@ def _role_bearing_pairs(
     ]
 
 
-_NATIVE_CURRENCY_SELECTION_REASON = "native_currency_preferred"
-"""`FacetSelection.selection_reason`'s own literal on the unit axis
-(`materialise.facets._preferred_native_unit_selection`) when a request-form
-unit binding's elected facet already carries the requested `{currency,
-prices: "current"}` natively -- the same condition `materialise.
-member_conversion.decide_member_conversion` calls `natively_satisfied` and
-runs no recipe/table/arithmetic for. `_preferred_native_unit_selection` is
-tried first, over the same narrowed candidate pool `decide_member_conversion`
-later re-checks: it finds a candidate carrying this reason if and only if
-that pool holds one whose own unit ref already equals the requested native
-currency, which is exactly `natively_satisfied`'s own test -- so this
-selection_reason is read directly here rather than re-deriving the currency
-comparison a second time."""
-
-
 def _elected_requires_conversion(
     sv_dcids: Sequence[str],
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None,
@@ -165,18 +153,12 @@ def _elected_requires_conversion(
     its points (`bulk_conversion`).
 
     Missing elections conservatively require conversion. StatVars absent from `elected` add
-    no series. Any non-native unit selection among the remaining combinations requires it.
+    no series. A member with any combination converting by arithmetic
+    (`bulk_conversion.any_combination_converts`) requires it.
     """
     if elected is None:
         return True
-    for sv in sv_dcids:
-        for combo in elected.get(sv, ()):
-            unit_selection = combo.get("unit")
-            if unit_selection is None:
-                continue
-            if unit_selection.selection_reason != _NATIVE_CURRENCY_SELECTION_REASON:
-                return True
-    return False
+    return any(any_combination_converts(elected.get(sv, ())) for sv in sv_dcids)
 
 
 def _native_unit_refs(
@@ -486,8 +468,6 @@ def _role_bearing_bulk_dispatch(
 _RoleTuple = tuple[tuple[str, str], ...]
 _SeriesKey = tuple[str, _RoleTuple]
 
-_NULL_PROVENANCE = {"provenance": FacetBinding(state="bound", ref=None)}
-
 
 @dataclass(frozen=True)
 class _Dispatch:
@@ -517,18 +497,11 @@ class _Dispatch:
         return tuple(role for role, _dcid in self.series[0].role_tuple if role not in bound)
 
     def bindings(self, unit_request: UnitRequest | None) -> Mapping[str, FacetBinding]:
-        """The bindings that dispatch the planned group. Unbound, `select_facet` refuses a
-        top facet declaring no provenance, so such a group binds the provenance axis to the
-        null ref, which selects it and dispatches it by facet id
-        (`materialise.facets.served_facets`). A unit request binds the unit axis in
-        `state="request"`, which converts the group's rows."""
-        group = next(s.group for s in self.series if s.group)
-        bindings: dict[str, FacetBinding] = (
-            dict(_NULL_PROVENANCE) if group[0].provenance_id is None else {}
-        )
-        if unit_request is not None:
-            bindings["unit"] = FacetBinding(state="request", request=unit_request)
-        return bindings
+        """The bindings that dispatch the planned group: none, or under a unit request the
+        unit axis in `state="request"`, which converts the group's rows."""
+        if unit_request is None:
+            return {}
+        return {"unit": FacetBinding(state="request", request=unit_request)}
 
 
 def _dispatches(
@@ -758,6 +731,8 @@ def _preview_one(
         facet_bindings=dispatch.bindings(unit_request),
         window=plan_window(dispatch.years),
         candidate_filter=lambda facet: facet.facet_id in group_ids,
+        # An answer may state that its facet names no source.
+        requires_provenance=False,
     )
     if not _OBS_PREVIEW_TOTAL_SEMAPHORE.acquire(timeout=settings().graph_timeout_s):
         raise UpstreamResponseError(
@@ -844,9 +819,9 @@ def _collect_pair_results(
     other reads, and a failed read counts each series it would have served.
 
     - `FacetNotAvailableError` is a facet rejection with a filter or a unit request.
-      Otherwise it is an unfiltered empty read. A bound `DefaultFacetUndefinedError` is a
-      rejection. Without bound axes, it is a hard failure because no declared default
-      exists. Materialise prefers it when both errors arise.
+      Otherwise it is an unfiltered empty read. `DefaultFacetUndefinedError` means no
+      candidate is viable: a rejection under a unit request, which can empty the pool, and
+      otherwise a hard failure. Materialise prefers it when both errors arise.
     - `RecipeNotDeclaredError`, `RateCoverageGapError`, and `NonCurrencyUnitError` are
       conversion rejections. Report recipe causes or the unsupported unit. The aggregate
       warning keeps the last rejection cause. `RateTableInvalidError` and
@@ -909,7 +884,7 @@ def _collect_pair_results(
                 unfiltered_empty_pairs += count
             continue
         except DefaultFacetUndefinedError:
-            if dispatch.bindings(unit_request):
+            if unit_request is not None:
                 facet_rejected_pairs += count
             else:
                 logger.warning(

@@ -32,7 +32,7 @@ def _build_response(index: SkillsIndex, skill_id: str) -> SkillBody:
     return skill_body(skill_id, entry, skill_warnings.get(skill_id, []))
 
 
-async def fetch_endpoint(skill_id: str, request: Request, deps: SkillsDepsDep) -> object:
+async def get_skill(skill_id: str, request: Request, deps: SkillsDepsDep) -> object:
     if len(skill_id) > SKILL_ID_MAX_LENGTH:
         raise SkillIdTooLong(len(skill_id))
 
@@ -55,7 +55,7 @@ def build_fetch_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
         "/api/skills/{skill_id:dfo_skill_id}",
-        fetch_endpoint,
+        get_skill,
         methods=["GET"],
         response_model=SkillBody,
     )

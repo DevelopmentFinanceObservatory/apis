@@ -379,8 +379,9 @@ class SentenceToken(StrictModel):
     latest-year label when one applies, the plain unit with its price basis
     ("current US dollars", "constant 2022 US dollars") as a slot token with
     axis "unit", the source, and, when the identity binds measurementMethod, the
-    method as a slot token with axis "method". Departures come last and sit only on a part's or
-    the envelope's sentence, so ``spec.resolved.sentence_plan`` carries none.
+    method as a slot token with axis "method". Departures come next, then the
+    assumptions clause, and both sit only on a part's or the envelope's sentence, so
+    ``spec.resolved.sentence_plan`` carries neither.
     """
 
     kind: Literal["text", "slot"] = Field(
@@ -417,11 +418,15 @@ class SentenceToken(StrictModel):
     segment: SentenceSegment = Field(
         default="heading",
         description=(
-            "the part of the sentence this token belongs to: 'heading' (what the "
+            "the part of the sentence this token belongs to: 'coverage' (the "
+            "'Answered N of M parts.' a mixed envelope sentence opens with, never on a "
+            "part's or a Spec's own plan), 'heading' (what the "
             "answer is), 'byline' (latest-year label, unit, source, and a bound "
-            "method), or "
+            "method), "
             "'departure' (the text of one Departure on the same part, never on a "
-            "Spec's own plan). A client styles each segment as a block; the plain "
+            "Spec's own plan), or 'assumption' (the closing clause naming what the "
+            "answer assumed, from the parts' assumptions, never on a Spec's own plan). "
+            "A client styles each segment as a block; the plain "
             "join of every token's text still equals rendered_sentence"
         ),
     )
@@ -450,8 +455,19 @@ class SentenceToken(StrictModel):
             "an entity_ambiguous no_data plan, which has no Spec: the ambiguous wording, "
             "with the role the request gave it (null when it gave none), no entity_refs "
             "and no binding_ref, and text equal to one NoData.ambiguous_entities[i].text "
-            "on the same part. The client titles that wording's candidate menu by this "
-            "role and pins the pick into NoData.data_query."
+            "on the same part, the i its entity_choice names. The client titles that "
+            "wording's candidate menu by this role and posts the pick's entry of "
+            "NoData.options."
+        ),
+    )
+    entity_choice: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "on the slot token an entity_ambiguous no_data plan marks for an ambiguous "
+            "wording, the index into NoData.ambiguous_entities of the group it asks, on "
+            "the part its part_index names in an envelope plan. The NoData.options with "
+            "the same entity_choice form that slot's menu. Null on every other token"
         ),
     )
     binding_ref: str | None = Field(
@@ -531,19 +547,23 @@ class SentenceToken(StrictModel):
             "token belongs to exactly one part's own contribution -- a variable phrase "
             "token, or a qualifier attached to it because it did not agree across every "
             "part, or a token of a part composed as its own sentence. Null carries "
-            "three distinct readings a client must not conflate: on "
+            "four distinct readings a client must not conflate: on "
             "a part's own plan (DefinitePart.spec.resolved.sentence_plan, or the "
             "candidates/no_data/unsupported sentence_plan on _PartBase) the field has "
-            "no meaning at all and is never set; on a composer-minted connective, it "
+            "no meaning at all and is never set; on a composer-minted token, it "
             "means the token belongs to the sentence as a whole rather than to any "
             "one part (the Oxford-joined ' and '/', ', the plan's own terminal '.', "
-            "and the shared ' ' the per-part fallback puts between two sentences are "
-            "all such tokens); and on a token every contributing part states alike and "
+            "the shared ' ' the per-part fallback puts between two sentences, the "
+            "'coverage' opener, and an assumptions clause's lead, separators and '.' "
+            "when no one part carries every item it names are all such tokens); on a "
+            "token every contributing part states alike and "
             "the join states once (a hoisted qualifier on the where, when, or source "
             "axis, each a wire value of axis, or the origin role, identified by "
             "role=='origin' instead since SentenceAxis has no 'origin' member; a "
             "shared possessive lead; the shared byline; or a heading or byline token "
             "of a part a later part folded into, binding_folded, which both parts "
-            "state) it means the token no longer describes a single variable."
+            "state) it means the token no longer describes a single variable; and on "
+            "an 'assumption' item it means more than one part assumed it, and each "
+            "part's own assumptions list says which."
         ),
     )

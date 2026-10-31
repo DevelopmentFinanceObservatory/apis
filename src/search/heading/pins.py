@@ -9,16 +9,19 @@ family apart.
 
 from __future__ import annotations
 
+from code_index.composites import table_identity
 from code_index.members import elected_pins, identity_family_query
 from code_index.shared import get_index
 from search.models import BaseIdentity, IdentityShapeSchema
 
 
 def identity_pinned_properties(identity: BaseIdentity) -> frozenset[str]:
-    """The properties the dataset elected for `identity`'s family pins. Empty for an
-    identity that names its one StatVar."""
+    """The properties the dataset elected for `identity`'s family pins, or for a composite
+    those of the identity its option was set on (`code_index.composites.table_identity`).
+    Empty for an identity that names its one StatVar."""
     if not isinstance(identity.shape, IdentityShapeSchema):
         return frozenset()
     index = get_index()
-    query = identity_family_query(index, identity.model_dump(mode="json", exclude_none=True))
+    document = table_identity(index, identity.model_dump(mode="json", exclude_none=True))
+    query = identity_family_query(index, document)
     return frozenset(elected_pins(index, query))

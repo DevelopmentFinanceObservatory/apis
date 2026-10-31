@@ -130,6 +130,7 @@ def _assemble(
             entity=_entity_ref(resolution.entity),
             matched=_matched(resolution),
             reading=resolution.reading,
+            near_matches=[_entity_ref(e) for e in resolution.near_matches] or None,
         )
         relation = _held_relation(resolution.entity, policy)
         if relation is None:
@@ -156,6 +157,7 @@ def _assemble(
             input=text,
             status="ambiguous",
             candidates=[_entity_ref(e) for e in resolution.candidates],
+            near_matches=[_entity_ref(e) for e in resolution.near_matches] or None,
         )
     if isinstance(resolution, NotHeld):
         return ResolveResult(
@@ -184,7 +186,11 @@ async def _run_resolve(
 
     deadline = time.monotonic() + GRAPH_RESOLVE_TIMEOUT_SECONDS
     resolutions = await deps.resolver.resolve(
-        body.texts, kinds=body.kinds, code_system=body.code_system, deadline=deadline
+        body.texts,
+        kinds=body.kinds,
+        code_system=body.code_system,
+        near_matches=True,
+        deadline=deadline,
     )
     expand = "members" in body.expand
     return ResolveResponse(
@@ -217,9 +223,7 @@ def classify_resolve_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-async def resolve_endpoint(
-    body: ResolveRequest, deps: GraphDepsDep, request: Request
-) -> JSONResponse:
+async def resolve(body: ResolveRequest, deps: GraphDepsDep, request: Request) -> JSONResponse:
     response = await asyncio.wait_for(
         _run_resolve(deps, body, policy=published_membership(request)),
         timeout=GRAPH_RESOLVE_TIMEOUT_SECONDS,
@@ -232,7 +236,7 @@ def build_resolve_door() -> DoorContribution:
     # `response_model` documents the results list. JSONResponse passes it through unchanged.
     router.add_api_route(
         "/api/graph/resolve",
-        resolve_endpoint,
+        resolve,
         methods=["POST"],
         response_model=ResolveResponse,
     )

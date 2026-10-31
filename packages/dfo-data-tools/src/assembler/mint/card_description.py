@@ -19,6 +19,10 @@ facet values alone, such as a unit the frame holds no row in, is named by those 
 
 A card over a version with no record, a card naming a source with no dcid and no input to
 name in its place, a source card listing no source and a note narration carry no description.
+Nor does a card whose series name no source where the record knows no input id, as on an
+`ops_` version published without steps, or where another series names the source the frame
+cites first, which provenance names those series by (`assembler.mint.provenance`); its
+provenance lists every source the frame cites.
 A source card lists the sources of the frame's rows, so one over a computed version whose rows
 name none carries no description.
 
@@ -107,8 +111,15 @@ def with_card_description(
     assert resolved_frame is not None  # a record comes from the frame
     names = source_dcids(minted.provenance)
     unattributed = minted.source_ids.get(None)
-    computed_from = _computed_from(record) if member != "source_card" else None
-    if unattributed is not None and computed_from is not None:
+    if unattributed is not None:
+        # A row naming no source shares the id of the first source its frame cites
+        # (`assembler.mint.provenance`), and the description names it by the first input.
+        computed_from = _computed_from(record) if member != "source_card" else None
+        if computed_from is None or any(
+            bound.source_ref is not None and minted.source_ids[bound.source_ref] == unattributed
+            for bound in bound_series
+        ):
+            return minted
         names[unattributed] = computed_from
     if any(ref not in names for _, ref in source_refs(minted.component)):
         return minted

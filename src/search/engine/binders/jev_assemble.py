@@ -3,8 +3,8 @@
 Jev writes no text and no dcid: every decision here is a threshold (`Thresholds`) on a
 probability Jev returned for a question of `jev_request`, or a comparison of the words its
 span answers name, so the functions are pure and a threshold change replays from stored
-answers. A noul Jev did not answer reads as a probability of 0.0, and a span question it
-did not answer as no words.
+answers. A noul Jev did not answer reads as a probability of 0.0, an ``unread|`` noul it
+did not answer as no rating, and a span question it did not answer as no words.
 
 `assemble` elects a shape, binds its listed slots and lists its alternates; `bind_result`
 applies the rules the engine applies to every binder's drafts (`bind.ground_bind_output`).
@@ -38,11 +38,13 @@ from search.engine.bind import (
     validate_requested_all_bindings,
 )
 from search.engine.binders.base import BindResult
-from search.engine.binders.gemini import (
-    RATED_POOL_FRACTION,
+from search.engine.binders.election import (
     holds_drafted_values,
     holds_requested_slots,
     mentioned_drafts,
+)
+from search.engine.binders.gemini import (
+    RATED_POOL_FRACTION,
     near_best,
     nominated_near_best,
 )
@@ -68,6 +70,7 @@ from search.engine.binders.jev_request import (
     span_id,
     span_occurrences,
     span_questions,
+    unread_id,
     word_positions,
 )
 from search.engine.frame import Frame
@@ -286,7 +289,7 @@ def span_round(
     """The second round of a bind over `menu`, from the first round's `answers`.
 
     The pool is the one the election leaves before the house policies run (`_pool`). Each
-    pool shape whose slots draft values the phrase names (`gemini.mentioned_drafts`) on two
+    pool shape whose slots draft values the phrase names (`election.mentioned_drafts`) on two
     or more properties is contended, and the round asks which words name each such value,
     keyed by slot and value so the ids do not depend on the shape (`jev_request.span_id`),
     and which name the measure of the pool's pick. A bind with no contended shape, and one
@@ -372,7 +375,8 @@ def bind_result(
     (`bind.ground_bind_output`), and each shape's measure and election scores and the
     ``none`` share of ``electq`` as the result's scores. The result is `none_first` when
     it elects a shape though ``electq`` gives ``none`` more than any shape (`_none_first`),
-    which the decline rule lets through when a shape measures the phrase above `decline`."""
+    which the decline rule lets through when a shape measures the phrase above `decline`.
+    Its `stated_words` are the ``unread|`` answers (`stated_words`)."""
     output, conf = assemble(
         menu, answers, stated_form=stated_form, thresholds=thresholds, populations=populations
     )
@@ -388,8 +392,22 @@ def bind_result(
             "none": round(float(answers.choices.get("electq", {}).get(NONE, 0.0)), 3),
         },
         none_first=output.ask is None and _none_first(answers),
+        stated_words=stated_words(menu, answers),
     )
     return result, conf
+
+
+def stated_words(menu: JevMenu, answers: JevAnswers) -> dict[tuple[int, str], float]:
+    """Jev's probability, by menu index and nominated word (`BindRequest.nominated_words`),
+    that the shape's series states what the word names. A word whose ``unread|`` noul Jev
+    did not answer is left out, so it stays unrated, where `JevAnswers.noul` would read it
+    as 0.0 and unread."""
+    return {
+        (i, word): float(answers.nouls[qid])
+        for i, words in enumerate(menu.request.nominated_words)
+        for k, word in enumerate(words)
+        if (qid := unread_id(i, k)) in answers.nouls
+    }
 
 
 def _scores(menu: JevMenu, answers: JevAnswers, t: Thresholds) -> Confidence:
@@ -517,8 +535,9 @@ def _elect(
         measuring=(pick, *(i for i in pool if i != pick)),
         election=dict(conf.election),
     )
-    holds = _holds(menu, answers, pick, conf.pool.measuring, t, populations)
-    choice = menu.request.apply_policies(conf.pool, holds=holds)
+    on_pick = _shape_drafts(menu, answers, pick, Confidence(), t, populations.get(pick))
+    holds = _holds(menu, answers, pick, on_pick, conf.pool.measuring, t, populations)
+    choice = menu.request.apply_policies(conf.pool, holds=holds, drafts=on_pick)
     conf.choice = choice
     conf.rules += [f"house: {p}" for p in choice.fired]
     return choice.survivor
@@ -541,10 +560,11 @@ def _pool(
 
     The election says which readings are plausible (`conf.plausible`) and which one it
     leads with, and so fixes the denominator, since the measure questions ignore form and
-    base. The pool the house policies see holds the shapes stating that denominator that
-    the election puts near its lead, and each variant of the lead on values a house policy
-    chooses between that measures the phrase near the best, so the policies settle a
-    convention the phrase leaves open."""
+    base. A phrase that states no form keeps only the plausible shapes without a
+    denominator when there are any. The pool the house policies see holds the shapes
+    stating that denominator that the election puts near its lead, and each variant of the
+    lead on values a house policy chooses between that measures the phrase near the best,
+    so the policies settle a convention the phrase leaves open."""
     shapes = menu.request.shapes
     best = max(conf.measures.values(), default=0.0)
     if best <= t.ask:
@@ -564,10 +584,13 @@ def _pool(
     else:
         conf.plausible = [i for i in electable if conf.measures[i] >= best - t.near]
         lead = max(conf.plausible, key=conf.measures.__getitem__)
-    # A phrase that states no form asks for the plain measure, not a share of a base.
-    if form is None and stated_reading(shapes[lead]).denominator is not None:
+    # A phrase that states no form asks for the plain measure, not a share of a base, so
+    # neither the lead nor an alternate (`_alternates`) divides by one.
+    if form is None:
         plain = [i for i in conf.plausible if stated_reading(shapes[i]).denominator is None]
         if plain:
+            conf.plausible = plain
+        if plain and lead not in plain:
             conf.rules.append("form: phrase states none, shapes with a denominator set aside")
             lead = max(plain, key=lambda i: (conf.election.get(i, 0.0), conf.measures[i]))
     denominator = stated_reading(shapes[lead]).denominator
@@ -632,30 +655,30 @@ def _holds(
     menu: JevMenu,
     answers: JevAnswers,
     pick: int,
+    on_pick: Sequence[SlotBindingDraft],
     pool: Sequence[int],
     t: Thresholds,
     populations: Mapping[int, Population],
 ) -> dict[int, bool]:
     """Whether each `pool` shape holds the constraints Jev recognised on `pick`, as
     `pick`'s slots bind them at the thresholds once the span rule has run
-    (`_shape_drafts`), the drafts `assemble` binds: the value and set drafts the phrase
-    names (`gemini.mentioned_drafts`), and the slots it validly asks for in full.
+    (`_shape_drafts`, given as `on_pick`), the drafts `assemble` binds: the value and set drafts the phrase
+    names (`election.mentioned_drafts`), and the slots it validly asks for in full.
 
     A shape holds a named value when it holds it on its own slot as `pick` does
-    (`gemini.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
+    (`election.holds_drafted_values`), or in exchange for a value Jev recognises on a slot of
     that shape that `pick` lacks: one dataset's taxonomy then states the constraint
     another's states on `pick`, as DAC2a's type of finance states the CRS's loans. Each
     such value stands for one constraint of `pick`, so a shape holds the named values only
     when it states at least as many of them in its own taxonomy as it lacks on `pick`'s
     slots, and "health loans" keeps the CRS sector DAC2a has no slot for. A slot asked for
-    in full it holds as the Gemini binder reads one (`gemini.holds_requested_slots`), so
+    in full it holds as the Gemini binder reads one (`election.holds_requested_slots`), so
     "across all sectors" keeps every sector."""
     shapes = menu.request.shapes
 
     def drafts(s: int) -> list[SlotBindingDraft]:
         return _shape_drafts(menu, answers, s, Confidence(), t, populations.get(s))
 
-    on_pick = drafts(pick)
     named = mentioned_drafts(on_pick)
     pick_slots = {slot.property_dcid for slot in shapes[pick].slot_keys}
 
@@ -676,7 +699,9 @@ def _alternates(
     bar Gemini's rated pool uses (`gemini.near_best`), that measure the phrase above
     `alt_floor`, by measure score, highest first: readings the words do not choose between.
     A shape a house policy set aside offers a reading it settled, and where the phrase
-    states a form, a shape dividing by another base than `e` offers another quantity."""
+    states a form, a shape dividing by another base than `e` offers another quantity. A
+    phrase stating no form leaves no shape with a denominator plausible beside a plain one
+    (`_pool`), so it is offered no ratio reading."""
     denominator = stated_reading(shapes[e]).denominator
     out = [
         k
@@ -737,9 +762,8 @@ def _shape_drafts(
     span rule over them (`_span_owned`), with each ``requested_all`` claim validated on `s`
     (`bind.validate_requested_all_bindings`), so a "total" that names no slot claims none."""
     drafts = _span_owned(menu, answers, _slot_drafts(menu, answers, s, conf, t), conf, population)
-    slots = {slot.property_dcid for slot in menu.request.shapes[s].slot_keys}
     validated, _applied = validate_requested_all_bindings(
-        drafts, menu.request.dropped_qualifier_phrases, slot_properties=slots
+        drafts, menu.request.dropped_qualifier_phrases, slot_keys=menu.request.shapes[s].slot_keys
     )
     return validated
 
@@ -788,21 +812,30 @@ class _Search:
             raise SpanSearchExhausted(f"span search passed {self.budget} nodes")
 
 
+def _clash(a: int, o: frozenset[int], b: int, q: frozenset[int]) -> bool:
+    """Whether occurrence `o` of a claim on slot `a` and occurrence `q` of a claim on slot
+    `b` cannot both be chosen: on two slots when they share a word, on one slot when one
+    strictly contains the other. Two values of one slot on the same words coexist, since
+    ``several|`` already read them together."""
+    return bool(o & q) if a != b else o < q or q < o
+
+
 def _fits(claims: Sequence[_Claim], reserved: frozenset[int], search: _Search) -> bool:
     """Whether `claims` are word-consistent: one occurrence of each claim's words can be
-    chosen, clear of `reserved` and of the other claims' chosen words, two values of one
-    slot excepted. Each test and each placement it tries is a node of `search`."""
+    chosen, clear of `reserved`, with no two chosen occurrences clashing (`_clash`). Each
+    test and each placement it tries is a node of `search`."""
     search.visit()
     placing = [
         (c.slot, [o for o in c.occurrences if not o & reserved]) for c in claims if c.occurrences
     ]
     if any(not usable for _slot, usable in placing):
         return False
-    # Words written once leave nothing to choose: the claims fit when no two of different
-    # slots share a word.
+    # Words written once leave nothing to choose: the claims fit when no two clash.
     if all(len(usable) == 1 for _slot, usable in placing):
         return not any(
-            a != b and o[0] & q[0] for i, (a, o) in enumerate(placing) for b, q in placing[i + 1 :]
+            _clash(a, o[0], b, q[0])
+            for i, (a, o) in enumerate(placing)
+            for b, q in placing[i + 1 :]
         )
     placed: list[tuple[int, frozenset[int]]] = []
 
@@ -812,7 +845,7 @@ def _fits(claims: Sequence[_Claim], reserved: frozenset[int], search: _Search) -
             return True
         slot, usable = placing[k]
         for o in usable:
-            if any(other != slot and o & q for other, q in placed):
+            if any(_clash(slot, o, other, q) for other, q in placed):
                 continue
             placed.append((slot, o))
             if place(k + 1):
@@ -872,24 +905,24 @@ def _owners(worded: Sequence[_Claim], reserved: frozenset[int], search: _Search)
     """Step 1 of the span rule (`_span_owned`): the maximal word-consistent subset of
     `worded` with the largest sum of w, ties to the first sorted (property, value) list.
 
-    Two claims of different slots contend when an occurrence of one's words shares a word
-    with an occurrence of the other's, neither touching `reserved`. A claim that contends
-    with none on one of its occurrences fits beside any subset, so it is in every maximal
-    one. The rest split into groups that contend only within themselves, and fit,
-    maximality and the sum of w each hold group by group, so each group is searched alone
-    (`_fitting_subsets`). The tie-break composes too: of two maximal subsets of a group
-    neither holds the other, since a subset of claims that fit fits, so the one whose
-    sorted list sorts first still does with any other group's claims merged into both."""
+    Two claims contend when an occurrence of one's words clashes with an occurrence of the
+    other's (`_clash`), neither touching `reserved`. A claim that contends with none on
+    one of its occurrences fits beside any subset, so it is in every maximal one. The rest
+    split into groups that contend only within themselves, and fit, maximality and the sum
+    of w each hold group by group, so each group is searched alone (`_fitting_subsets`).
+    The tie-break composes too: of two maximal subsets of a group neither holds the other,
+    since a subset of claims that fit fits, so the one whose sorted list sorts first still
+    does with any other group's claims merged into both."""
 
     def usable(c: _Claim) -> list[frozenset[int]]:
         return [o for o in c.occurrences or () if not o & reserved]
 
     def contend(a: _Claim, b: _Claim) -> bool:
-        return a.slot != b.slot and any(o & q for o in usable(a) for q in usable(b))
+        return any(_clash(a.slot, o, b.slot, q) for o in usable(a) for q in usable(b))
 
     def free(c: _Claim) -> bool:
         return c.occurrences == () or any(
-            not any(x.slot != c.slot and o & q for x in worded for q in usable(x))
+            not any(_clash(c.slot, o, x.slot, q) for x in worded if x is not c for q in usable(x))
             for o in usable(c)
         )
 
@@ -915,7 +948,7 @@ def _span_owned(
 ) -> list[SlotBindingDraft]:
     """The drafts of `slots` with each stretch of the phrase paying for one value.
 
-    The values the phrase names (`gemini.mentioned_drafts`) on two or more properties
+    The values the phrase names (`election.mentioned_drafts`) on two or more properties
     contend; with fewer the drafts stand as drafted. ``sole_option`` drafts take no part:
     the phrase names none of their values, and the engine unbinds one the members do not
     all share before any requirement is judged.
@@ -931,8 +964,10 @@ def _span_owned(
     words equal or contain the measure's is worded: the user chose those words.
 
     A set of claims is word-consistent when one occurrence of each claim's words can be
-    chosen, clear of every anchor's words and of the other claims' chosen words, two values
-    of one slot excepted (``several|`` already read them together). The test is joint, so
+    chosen, clear of every anchor's words and of the other claims' chosen words. Two values
+    of one slot may share words exactly (``several|`` already read them together), but one
+    whose words strictly contain the other's contends with it, so "publicly guaranteed"
+    within "public or publicly guaranteed" names no second status. The test is joint, so
     three claims on a word written twice do not fit, and every ambiguity of a repeated word
     resolves toward keeping. The rule, in order:
 

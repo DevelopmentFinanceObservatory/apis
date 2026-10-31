@@ -177,9 +177,9 @@ def compute_output_profile_from_chunks(
 ) -> OutputProfile:
     """Compute the exact profile from a fresh chunk iterator on each pass.
     Pass one gathers distinct counts, functional dependencies, and duplicate
-    keys; only duplicate keys trigger pass two, which finds columns that vary
-    within those groups. A column stops being tracked for a dependency once a
-    chunk shows it varying.
+    keys (`OutputProfileFold.add`); only duplicate keys trigger pass two, which
+    finds columns that vary within those groups (`OutputProfileFold.finish`).
+    A column stops being tracked for a dependency once a chunk shows it varying.
 
     State is bounded by distinct column values, per-chunk group summaries,
     and the distinct pivot keys of a multi-chunk frame. Cells compare by Python equality, as `Frame.rows` and
@@ -189,149 +189,196 @@ def compute_output_profile_from_chunks(
     its column order. The iterator must yield at least one chunk, including
     for an empty result; pivot pairs follow that shared column order.
     """
-    chunks = frame_chunks()
-    try:
-        first_chunk = next(chunks)
-    except StopIteration:
-        raise MaterialisationUsageError(
-            "compute_output_profile_from_chunks() requires frame_chunks() to yield at "
-            "least one chunk"
-        ) from None
+    fold = OutputProfileFold(role_columns=role_columns, enrichment=enrichment)
+    for chunk in frame_chunks():
+        fold.add(chunk)
+    return fold.finish(frame_chunks)
 
-    columns = first_chunk.columns
-    unknown_roles = [name for name in role_columns if name not in columns]
-    if unknown_roles:
-        raise MaterialisationUsageError(
-            "compute_output_profile() requires every role_columns entry to be present "
-            f"on the frame; frame columns are {columns!r}, got unknown "
-            f"role column(s) {unknown_roles!r}"
+
+class OutputProfileFold:
+    """The first pass of `compute_output_profile_from_chunks`, fed one chunk at a time
+    (`add`), so a caller already passing over the chunks folds the profile in that pass.
+    `finish` runs the second pass, when one is needed, over `frame_chunks`, which yields the
+    chunks `add` was given in the same order."""
+
+    def __init__(self, *, role_columns: Sequence[str], enrichment: EnrichmentLookup) -> None:
+        self._role_columns = tuple(role_columns)
+        self._enrichment = enrichment
+        self._columns: tuple[str, ...] | None = None
+        self._total_rows = 0
+
+    def _start(self, first_chunk: TableLike) -> None:
+        role_columns = self._role_columns
+        columns = first_chunk.columns
+        unknown_roles = [name for name in role_columns if name not in columns]
+        if unknown_roles:
+            raise MaterialisationUsageError(
+                "compute_output_profile() requires every role_columns entry to be present "
+                f"on the frame; frame columns are {columns!r}, got unknown "
+                f"role column(s) {unknown_roles!r}"
+            )
+
+        self._columns = tuple(columns)
+        self._classification = classify_columns(columns)
+        self._role_column_set = frozenset(role_columns)
+        self._distinct_columns = tuple(
+            name for name in columns if name not in (_VALUE_COLUMN, _STATUS_COLUMN)
         )
+        self._books: dict[str, dict[object, int]] = {name: {} for name in self._distinct_columns}
+        # Coded tables name columns by position, so aggregate outputs cannot clash.
+        self._alias = {name: f"c{i}" for i, name in enumerate(self._distinct_columns)}
 
-    classification = classify_columns(columns)
-    role_column_set = frozenset(role_columns)
-
-    distinct_columns = tuple(
-        name for name in columns if name not in (_VALUE_COLUMN, _STATUS_COLUMN)
-    )
-    books: dict[str, dict[object, int]] = {name: {} for name in distinct_columns}
-    # Coded tables name columns by position, so aggregate outputs cannot clash.
-    alias = {name: f"c{i}" for i, name in enumerate(distinct_columns)}
-
-    # Candidate sources come from column kinds before distinct counts are known;
-    # pivot output uses candidates with multiple distinct values.
-    candidate_sources = tuple(
-        name
-        for name in columns
-        if _column_kind(name, role_columns=role_column_set, classification=classification)
-        in ("grain", "role")
-    )
-    dependency_trackers = {
-        a: _ConstantWithinGroups(
-            keys=(alias[a],), targets=tuple(alias[c] for c in distinct_columns if c != a)
+        # Candidate sources come from column kinds before distinct counts are known;
+        # pivot output uses candidates with multiple distinct values.
+        self._candidate_sources = tuple(
+            name
+            for name in columns
+            if _column_kind(
+                name, role_columns=self._role_column_set, classification=self._classification
+            )
+            in ("grain", "role")
         )
-        for a in candidate_sources
-    }
-    pair_names: tuple[tuple[str, str], ...] = tuple(
-        (a, b) for i, a in enumerate(candidate_sources) for b in candidate_sources[i + 1 :]
-    )
-    repeat_trackers = {(a, b): _KeyRepeats(keys=(alias[a], alias[b])) for a, b in pair_names}
+        alias = self._alias
+        self._dependency_trackers = {
+            a: _ConstantWithinGroups(
+                keys=(alias[a],),
+                targets=tuple(alias[c] for c in self._distinct_columns if c != a),
+            )
+            for a in self._candidate_sources
+        }
+        candidate_sources = self._candidate_sources
+        pair_names: tuple[tuple[str, str], ...] = tuple(
+            (a, b) for i, a in enumerate(candidate_sources) for b in candidate_sources[i + 1 :]
+        )
+        self._repeat_trackers = {
+            (a, b): _KeyRepeats(keys=(alias[a], alias[b])) for a, b in pair_names
+        }
 
-    total_rows = 0
-    for chunk in _chain_first(first_chunk, chunks):
-        coded = _coded_chunk(chunk, names=distinct_columns, books=books, alias=alias)
-        total_rows += coded.num_rows
-        for tracker in dependency_trackers.values():
+    def add(self, chunk: TableLike) -> None:
+        """Fold one chunk into the first pass. The first chunk sets the columns."""
+        if self._columns is None:
+            self._start(chunk)
+        coded = _coded_chunk(
+            chunk, names=self._distinct_columns, books=self._books, alias=self._alias
+        )
+        self._total_rows += coded.num_rows
+        for tracker in self._dependency_trackers.values():
             tracker.add(coded)
-        for repeats in repeat_trackers.values():
+        for repeats in self._repeat_trackers.values():
             repeats.add(coded)
 
-    dependencies: dict[tuple[str, str], bool] = {}
-    for a, tracker in dependency_trackers.items():
-        varied = tracker.finish()
-        for c in distinct_columns:
-            if c != a:
-                dependencies[(a, c)] = alias[c] not in varied
-    dup_found = {pair: repeats.finish() for pair, repeats in repeat_trackers.items()}
-
-    column_profiles = tuple(
-        ColumnProfile(
-            name=name,
-            kind=_column_kind(name, role_columns=role_column_set, classification=classification),
-            droppable=name not in classification.non_droppable_columns,
-            distinct=None if name in (_VALUE_COLUMN, _STATUS_COLUMN) else len(books[name]),
-        )
-        for name in columns
-    )
-
-    grain_columns = tuple(name for name in candidate_sources if len(books[name]) > 1)
-
-    def _canonical_dup_pair(index: str, other: str) -> tuple[str, str]:
-        return (index, other) if (index, other) in dup_found else (other, index)
-
-    # The candidate set is symmetric in the pair, so one scan serves both orders.
-    varying_candidates_by_pair: dict[tuple[str, str], tuple[str, ...]] = {}
-    for index in grain_columns:
-        for other in grain_columns:
-            pair = _canonical_dup_pair(index, other)
-            if other == index or pair in varying_candidates_by_pair or not dup_found[pair]:
-                continue
-            candidates = tuple(
-                c
-                for c in columns
-                if c not in (index, other, _VALUE_COLUMN, _STATUS_COLUMN)
-                and len(books[c]) > 1
-                and not dependencies[(index, c)]
-                and not dependencies[(other, c)]
+    def finish(self, frame_chunks: Callable[[], Iterator[TableLike]]) -> OutputProfile:
+        """The profile of the chunks `add` was given. Raises `MaterialisationUsageError` when
+        it was given none."""
+        if self._columns is None:
+            raise MaterialisationUsageError(
+                "compute_output_profile_from_chunks() requires frame_chunks() to yield at "
+                "least one chunk"
             )
-            if candidates:
-                varying_candidates_by_pair[pair] = candidates
+        columns = self._columns
+        role_columns = self._role_columns
+        classification = self._classification
+        role_column_set = self._role_column_set
+        distinct_columns = self._distinct_columns
+        books = self._books
+        alias = self._alias
+        candidate_sources = self._candidate_sources
+        enrichment = self._enrichment
+        total_rows = self._total_rows
 
-    varying_by_pair = (
-        _second_pass_varying(
-            frame_chunks, books=books, alias=alias, candidates_by_pair=varying_candidates_by_pair
+        dependencies: dict[tuple[str, str], bool] = {}
+        for a, tracker in self._dependency_trackers.items():
+            varied = tracker.finish()
+            for c in distinct_columns:
+                if c != a:
+                    dependencies[(a, c)] = alias[c] not in varied
+        dup_found = {pair: repeats.finish() for pair, repeats in self._repeat_trackers.items()}
+
+        column_profiles = tuple(
+            ColumnProfile(
+                name=name,
+                kind=_column_kind(
+                    name, role_columns=role_column_set, classification=classification
+                ),
+                droppable=name not in classification.non_droppable_columns,
+                distinct=None if name in (_VALUE_COLUMN, _STATUS_COLUMN) else len(books[name]),
+            )
+            for name in columns
         )
-        if varying_candidates_by_pair
-        else {}
-    )
 
-    pivots = tuple(
-        _pivot_feasibility(
-            index=a,
-            columns=b,
-            distinct_by_column=books,
-            dependencies=dependencies,
-            non_droppable_columns=classification.non_droppable_columns,
-            duplicate_keys=dup_found[_canonical_dup_pair(a, b)],
-            varying_columns=varying_by_pair.get(_canonical_dup_pair(a, b), frozenset()),
+        grain_columns = tuple(name for name in candidate_sources if len(books[name]) > 1)
+
+        def _canonical_dup_pair(index: str, other: str) -> tuple[str, str]:
+            return (index, other) if (index, other) in dup_found else (other, index)
+
+        # The candidate set is symmetric in the pair, so one scan serves both orders.
+        varying_candidates_by_pair: dict[tuple[str, str], tuple[str, ...]] = {}
+        for index in grain_columns:
+            for other in grain_columns:
+                pair = _canonical_dup_pair(index, other)
+                if other == index or pair in varying_candidates_by_pair or not dup_found[pair]:
+                    continue
+                candidates = tuple(
+                    c
+                    for c in columns
+                    if c not in (index, other, _VALUE_COLUMN, _STATUS_COLUMN)
+                    and len(books[c]) > 1
+                    and not dependencies[(index, c)]
+                    and not dependencies[(other, c)]
+                )
+                if candidates:
+                    varying_candidates_by_pair[pair] = candidates
+
+        varying_by_pair = (
+            _second_pass_varying(
+                frame_chunks,
+                books=books,
+                alias=alias,
+                candidates_by_pair=varying_candidates_by_pair,
+            )
+            if varying_candidates_by_pair
+            else {}
         )
-        for a in grain_columns
-        for b in grain_columns
-        if a != b
-    )
 
-    role_refs = sorted(
-        {ref for role_column in role_columns for ref in books[role_column] if isinstance(ref, str)}
-    )
-    resolved = enrichment.lookup(role_refs) if role_refs else {}
-    enrichments = tuple(
-        coverage
-        for role_column in role_columns
-        for coverage in _enrichment_coverage_for_column(role_column, books[role_column], resolved)
-    )
+        pivots = tuple(
+            _pivot_feasibility(
+                index=a,
+                columns=b,
+                distinct_by_column=books,
+                dependencies=dependencies,
+                non_droppable_columns=classification.non_droppable_columns,
+                duplicate_keys=dup_found[_canonical_dup_pair(a, b)],
+                varying_columns=varying_by_pair.get(_canonical_dup_pair(a, b), frozenset()),
+            )
+            for a in grain_columns
+            for b in grain_columns
+            if a != b
+        )
 
-    return OutputProfile(
-        schema_version=_SCHEMA_VERSION,
-        rows=total_rows,
-        columns=column_profiles,
-        pivots=pivots,
-        enrichments=enrichments,
-    )
+        role_refs = sorted(
+            {
+                ref
+                for role_column in role_columns
+                for ref in books[role_column]
+                if isinstance(ref, str)
+            }
+        )
+        resolved = enrichment.lookup(role_refs) if role_refs else {}
+        enrichments = tuple(
+            coverage
+            for role_column in role_columns
+            for coverage in _enrichment_coverage_for_column(
+                role_column, books[role_column], resolved
+            )
+        )
 
-
-def _chain_first(first: TableLike, rest: Iterator[TableLike]) -> Iterator[TableLike]:
-    """Yield the peeked first chunk, then the rest in order."""
-    yield first
-    yield from rest
+        return OutputProfile(
+            schema_version=_SCHEMA_VERSION,
+            rows=total_rows,
+            columns=column_profiles,
+            pivots=pivots,
+            enrichments=enrichments,
+        )
 
 
 def _column_kind(

@@ -7,6 +7,9 @@ series coordinates. `unit` comes from the rows: a unit dcid becomes its label,
 a converted unit passes through, and a composed unit binds side by side, a
 StatVar side becoming `{stat_var, label}`. Labels use `ResolvedFrame.labels`
 with the raw ref as fallback, and a unit label is cut to 200 characters.
+
+A table over a frame that keeps a selection in each period lists only the points that
+selection kept (`without_unselected_points`).
 """
 
 from __future__ import annotations
@@ -14,8 +17,8 @@ from __future__ import annotations
 import calendar
 import datetime
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import cast
+from dataclasses import dataclass, replace
+from typing import Final, cast
 
 from dfo_frame_grammar import (
     FACET_IDENTITY_COLUMNS,
@@ -27,10 +30,12 @@ from dfo_frame_grammar import (
     parse_time_period,
 )
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
+from pydantic.experimental.missing_sentinel import MISSING
 
 from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
+from description.steps import Step
 from materialise.unit_cells import composed_unit_sides
 
 __all__ = [
@@ -38,14 +43,21 @@ __all__ = [
     "bind_all",
     "bind_series",
     "count_periods",
+    "count_selected_points",
     "frame_periods",
     "role_columns",
+    "selects_per_period",
+    "without_unselected_points",
 ]
 
 _PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS names this axis
 _RESERVED_COLUMNS = frozenset(
     {STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN}
 )
+# The suffixes of the columns that describe the place or party another column names: its type,
+# and a party's kind, class and whole cell (`dfo_analysis_engine.place_type.enrichment_role`).
+# A derived frame keeps them beside the role they describe.
+_ENRICHMENT_SUFFIXES = ("_type", "_party_kind", "_party_class", "_party_whole")
 
 
 @dataclass(frozen=True)
@@ -71,15 +83,7 @@ def bind_series(
 ) -> BoundSeries:
     coordinates = dict(series.coordinates)
     rows_by_period = {row[TIME_PERIOD_COLUMN]: row for row in series.rows}
-    grain = resolved_frame.structural_view.period_grain
-    observed = frame_periods(resolved_frame=resolved_frame) if grain == "day" else frozenset()
-    periods = _period_sequence(
-        start=str(window["start"]),
-        end=str(window["end"]),
-        grain=grain,
-        observed=observed,
-        span=resolved_frame.structural_view.span,
-    )
+    periods = _window_periods(resolved_frame=resolved_frame, window=window)
 
     points: list[Mapping[str, object]] = []
     for period in periods:
@@ -99,6 +103,126 @@ def bind_series(
         unit=_unit(resolved_frame=resolved_frame, rows=series.rows),
         source_ref=coordinates.get(_PROVENANCE_COLUMN),
         points=tuple(points),
+    )
+
+
+# The input roles a step reading several inputs takes its output's rows from: a share or
+# quotient writes one row per numerator key, over the periods its denominator shares, and an
+# inner join one row per key both sides hold. A sum or comparison writes series of its own,
+# so it has none. A share or quotient whose `denominator_by` pairs each numerator key with a
+# denominator group also keeps a key only in its group's periods (`_keyed_denominator`).
+_ROW_SOURCE_ROLES: Final[Mapping[str, tuple[str, ...]]] = {
+    "share": ("numerator",),
+    "quotient": ("numerator",),
+    "join": ("left", "right"),
+}
+_KEYED_DENOMINATOR_OPS: Final = frozenset({"share", "quotient"})
+
+
+def selects_per_period(*, resolved_frame: ResolvedFrame) -> bool:
+    """Whether the frame keeps a selection of entities in each period: walking back from its
+    record's last step through the inputs its rows come from, a `rank` over each period on its
+    own (`per_period`) with a `limit` is reached, which keeps each period's top or bottom
+    entities. A step's one `input` supplies its rows, and of several `inputs` the roles
+    `_ROW_SOURCE_ROLES` names, with a keyed denominator (`_keyed_denominator`). A `rank`
+    without a `limit` keeps every entity, and one over the whole window writes a single
+    period. A frame without a description record, or whose
+    record holds no steps, keeps none."""
+    record = resolved_frame.description_record
+    known = record.known_steps if record is not None else []
+    if not known:
+        return False
+    by_id = {step.id: step for step in known}
+    pending = [known[-1].id]
+    seen: set[str] = set()
+    while pending:
+        step = by_id.get(pending.pop())
+        if step is None or step.id in seen:
+            continue
+        seen.add(step.id)
+        if (
+            step.op == "rank"
+            and step.params is not MISSING
+            and step.params.get("per_period") is True
+            and "limit" in step.params
+        ):
+            return True
+        pending.extend(_row_sources(step))
+    return False
+
+
+def _row_sources(step: Step) -> list[str]:
+    """The ids of the earlier steps `step` takes its output's rows from."""
+    if isinstance(step.input, str):
+        return [step.input]
+    if step.inputs is MISSING:
+        return []
+    roles = _ROW_SOURCE_ROLES.get(step.op, ())
+    if _keyed_denominator(step):
+        roles = (*roles, "denominator")
+    return [one for role, one in step.inputs.items() if role in roles and isinstance(one, str)]
+
+
+def _keyed_denominator(step: Step) -> bool:
+    """Whether `step` is a share or quotient whose `denominator_by` pairs each numerator key
+    with a denominator group, so a key holds a row only in the periods its group holds."""
+    return (
+        step.op in _KEYED_DENOMINATOR_OPS
+        and step.params is not MISSING
+        and bool(step.params.get("denominator_by"))
+    )
+
+
+def count_selected_points(
+    *, resolved_frame: ResolvedFrame, series: Sequence[ResolvedSeries], window: Mapping[str, object]
+) -> int:
+    """Counts the points `without_unselected_points` keeps of `series` bound over `window`:
+    each series' periods in the window that it holds a row in or that the frame holds no row
+    in."""
+    periods = frozenset(_window_periods(resolved_frame=resolved_frame, window=window))
+    gaps = len(periods - frame_periods(resolved_frame=resolved_frame))
+    return sum(
+        len(periods.intersection(row[TIME_PERIOD_COLUMN] for row in one.rows)) + gaps
+        for one in series
+    )
+
+
+def without_unselected_points(
+    *,
+    resolved_frame: ResolvedFrame,
+    series: Sequence[ResolvedSeries],
+    bound_series: Sequence[BoundSeries],
+) -> tuple[tuple[ResolvedSeries, ...], tuple[BoundSeries, ...]]:
+    """`series` and `bound_series` without the missing points a per-period selection left
+    out, and without each series that keeps no point.
+
+    A frame that keeps a selection in each period (`selects_per_period`) holds no row for a
+    series in a period where it holds a row for another, because the series was not chosen
+    there, so that point is dropped. A period where the frame holds no row at all is a gap
+    in the data, and its missing point stays."""
+    held = frame_periods(resolved_frame=resolved_frame)
+    kept: list[tuple[ResolvedSeries, BoundSeries]] = []
+    for one, bound in zip(series, bound_series, strict=True):
+        own = {row[TIME_PERIOD_COLUMN] for row in one.rows}
+        points = tuple(
+            point for point in bound.points if point["period"] in own or point["period"] not in held
+        )
+        if points:
+            kept.append((one, replace(bound, points=points)))
+    return tuple(one for one, _ in kept), tuple(bound for _, bound in kept)
+
+
+def _window_periods(
+    *, resolved_frame: ResolvedFrame, window: Mapping[str, object]
+) -> tuple[str, ...]:
+    """The periods a series binds over `window` at the frame's grain (`_period_sequence`)."""
+    grain = resolved_frame.structural_view.period_grain
+    return _period_sequence(
+        start=str(window["start"]),
+        end=str(window["end"]),
+        grain=grain,
+        observed=frame_periods(resolved_frame=resolved_frame) if grain == "day" else frozenset(),
+        span=resolved_frame.structural_view.span,
     )
 
 
@@ -179,13 +303,26 @@ def series_label_parts(
 
 
 def role_columns(*, columns: Sequence[str]) -> tuple[str, ...]:
-    """Entity-role columns in frame order, excluding reserved and facet-identity columns.
+    """Entity-role columns in frame order, excluding reserved and facet-identity columns and
+    the enrichment columns that describe another of `columns` (`_describes_a_role`).
 
     Used for series labels and table-row dimensions."""
+    present = frozenset(columns)
     return tuple(
         column
         for column in columns
-        if column not in _RESERVED_COLUMNS and column not in FACET_IDENTITY_COLUMNS
+        if column not in _RESERVED_COLUMNS
+        and column not in FACET_IDENTITY_COLUMNS
+        and not _describes_a_role(column, columns=present)
+    )
+
+
+def _describes_a_role(column: str, *, columns: frozenset[str]) -> bool:
+    """Whether `column` is the type, party kind, class or whole column of another of
+    `columns`, which is a function of that column's entity, so it splits no series."""
+    return any(
+        column.endswith(suffix) and column.removesuffix(suffix) in columns
+        for suffix in _ENRICHMENT_SUFFIXES
     )
 
 

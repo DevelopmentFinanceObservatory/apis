@@ -21,12 +21,16 @@ from search.engine.departures import (
     surviving_facts,
     warning_key,
     window_gap_fact,
+    without_request_words,
 )
 from search.engine.entry.raw_text import _dropped_phrase_fact
 from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standard, served_dates
+from search.engine.spec_build import with_members_left_out
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
+    BindingSet,
+    BindingValue,
     DateRange,
     EntityGroup,
     GraphRef,
@@ -42,7 +46,9 @@ from search.models import (
     SeriesEntityRef,
     SeriesFacetRef,
     SeriesStatVarRef,
+    Slot,
     SlotKey,
+    SlotValue,
     Spec,
     SpecObservations,
     TimeWindow,
@@ -391,12 +397,60 @@ def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, en
     ] == [("group_read_as_members", binding_ref, asked, "European Union", "EuropeanUnion")]
 
 
+@pytest.mark.parametrize(
+    ("fact", "stated"),
+    [
+        pytest.param(
+            DepartureFact(code="group_read_as_members", binding_ref="where:", asked="Africa"),
+            DepartureFact(code="group_read_as_members", binding_ref="where:"),
+            id="request-words-dropped",
+        ),
+        pytest.param(
+            DepartureFact(code="measure_not_applied", binding_ref="how:x", asked="loans"),
+            DepartureFact(code="measure_not_applied", binding_ref="how:x", values=("loans",)),
+            id="measure-value-moves-to-values",
+        ),
+        pytest.param(
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            id="spec-members-stand",
+        ),
+    ],
+)
+def test_a_door_without_request_words_asks_only_for_what_the_spec_names(
+    fact: DepartureFact, stated: DepartureFact
+):
+    """A resubmit holds no words of the request, so its part states no `asked` the words
+    gave. `member_unavailable` asks for the Spec's own members, which no request words name,
+    so it keeps them."""
+    assert without_request_words(fact) == stated
+
+
 _AFRICA_GROUP = EntityGroup(ref="africa", label="Africa", entity_type="Continent")
 
 
 def _served_from(spec: Spec, provenance: str) -> Spec:
     facets = {"provenance": ResolvedFacet(basis="fallback", ref=provenance, label=provenance)}
     return spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"facets": facets})})
+
+
+def _stated_left_out(spec: Spec, role: str) -> dict[str, object]:
+    """`left_out` and `sum_differs` as the wire states the group `spec` reads on `role` once
+    they are derived (`spec_build.with_members_left_out`), each absent when it is."""
+    groups = with_members_left_out(spec).resolved.entity_groups
+    assert groups is not None
+    stated = groups[role].model_dump(mode="json")
+    return {key: stated[key] for key in ("left_out", "sum_differs") if key in stated}
 
 
 @pytest.mark.parametrize(
@@ -431,7 +485,8 @@ def _served_from(spec: Spec, provenance: str) -> Spec:
 )
 def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, provenance, excluded):
     """Africa read as its members leaves out the regional amounts DAC's Africa total counts,
-    and names those the served dataset publishes on the role the group fills."""
+    and names those the served dataset publishes on the role the group fills. The Spec's
+    group states the same labels (`EntityGroup.left_out`), absent where it leaves none out."""
     spec = _served_from(_spec(groups={role: _AFRICA_GROUP}), provenance)
 
     (fact,) = spec_departure_facts(spec, operations=())
@@ -440,6 +495,58 @@ def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, prov
         "group_read_as_members",
         excluded,
         False,
+    )
+    assert _stated_left_out(spec, role) == ({"left_out": list(excluded)} if excluded else {})
+
+
+def test_a_summed_group_counts_its_members_alone_and_names_the_residuals_it_binds():
+    """Africa summed binds two of its residual buckets beside Ghana and Kenya. The group's
+    size counts the two members, the bound residuals are named as counted, the rest of its
+    total's residuals as left out, and an unserved residual departs as no member."""
+    entities = [
+        ResolvedEntity(ref="country/GHA", label="Ghana", role="destination"),
+        ResolvedEntity(ref="country/KEN", label="Kenya", role="destination"),
+        ResolvedEntity(
+            ref="DACAfricaUnallocated",
+            label="Africa, unallocated by country (DAC)",
+            role="destination",
+        ),
+        ResolvedEntity(
+            ref="DACEasternAfricaUnallocated",
+            label="Eastern Africa, unallocated by country (DAC)",
+            role="destination",
+        ),
+    ]
+    spec = _served_from(
+        _spec(groups={"destination": _AFRICA_GROUP}), "provenance/OECDCreditorReportingSystem"
+    )
+    resolved = spec.resolved.model_copy(update={"entities": entities}).stating_unserved(
+        (("destination", "DACAfricaUnallocated"), ("destination", "country/KEN"))
+    )
+
+    unavailable, members = spec_departure_facts(
+        spec.model_copy(update={"resolved": resolved}), operations=()
+    )
+
+    assert (unavailable.code, unavailable.entities, unavailable.group_size) == (
+        "entity_unavailable",
+        ("Kenya",),
+        2,
+    )
+    assert (members.code, members.group_size, members.included, members.excluded) == (
+        "group_read_as_members",
+        2,
+        (
+            "Africa, unallocated by country (DAC)",
+            "Eastern Africa, unallocated by country (DAC)",
+        ),
+        (
+            "Middle Africa, unallocated by country (DAC)",
+            "North of Sahara, unallocated by country (DAC)",
+            "South of Sahara, unallocated by country (DAC)",
+            "Southern Africa, unallocated by country (DAC)",
+            "Western Africa, unallocated by country (DAC)",
+        ),
     )
 
 
@@ -503,6 +610,7 @@ def test_a_group_whose_published_total_claims_no_sum_says_the_members_can_differ
         (),
         sum_differs,
     )
+    assert _stated_left_out(spec, role) == ({"sum_differs": True} if sum_differs else {})
 
 
 def test_a_group_read_as_its_total_departs_nothing():
@@ -510,6 +618,103 @@ def test_a_group_read_as_its_total_departs_nothing():
     spec = _served_from(_spec(groups={"destination": group}), "provenance/OECDDAC2A")
 
     assert spec_departure_facts(spec, operations=()) == []
+    assert with_members_left_out(spec) is spec
+
+
+_SOURCE_SLOT = Slot(
+    key=SlotKey(axis="source", label="source"),
+    binding=BindingValue(
+        value=SlotValue(ref=GraphRef(ref="dc/base/SrcA", label="Source A"), value_kind="source")
+    ),
+)
+_SET_SLOT = Slot(
+    key=SlotKey(
+        axis="how",
+        property=GraphRef(ref="financingSource", label="financing source"),
+        label="source",
+    ),
+    binding=BindingSet(
+        values=[
+            SlotValue(ref=GraphRef(ref=ref, label=ref), value_kind="enum_value")
+            for ref in ("SourceA", "SourceB")
+        ]
+    ),
+)
+_FLOW_B = GraphRef(ref="Flow_B", label="Aid flow B")
+
+
+_USD = ResolvedFacet(basis="fallback", ref="CurrencyUSD", label="US Dollar", currency="USD")
+_PERCENT = ResolvedFacet(basis="fallback", ref="Percent", label="Percent")
+_SOURCE_A = ResolvedFacet(basis="fallback", ref="dc/base/SrcA", label="Source A")
+
+
+@pytest.mark.parametrize(
+    ("slots", "unserved", "facets", "fact"),
+    [
+        pytest.param(
+            [_SOURCE_SLOT, _SET_SLOT],
+            (_FLOW_B,),
+            {"provenance": _SOURCE_A, "unit": _USD},
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="source:",
+                asked="Aid flow B",
+                shown="Source A",
+                members=("Aid flow B",),
+                unit="US dollars",
+            ),
+            id="bound-source-currency-unit",
+        ),
+        pytest.param(
+            [_SET_SLOT],
+            (_FLOW_B, GraphRef(ref="Flow_C", label="")),
+            {"unit": _PERCENT},
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref="how:financingSource",
+                asked="Aid flow B, Flow_C",
+                members=("Aid flow B", "Flow_C"),
+                unit="Percent",
+            ),
+            id="set-binding-unit-by-label",
+        ),
+        pytest.param(
+            [],
+            (_FLOW_B,),
+            {},
+            DepartureFact(
+                code="member_unavailable",
+                binding_ref=None,
+                asked="Aid flow B",
+                members=("Aid flow B",),
+            ),
+            id="no-slot-no-facets",
+        ),
+        pytest.param([_SET_SLOT], (), {"unit": _USD}, None, id="every-member-served"),
+    ],
+)
+def test_member_unavailable_names_the_members_the_group_leaves_out(
+    slots: list[Slot],
+    unserved: tuple[GraphRef, ...],
+    facets: dict[str, ResolvedFacet],
+    fact: DepartureFact | None,
+):
+    """The members holding data that the answer's one group leaves out, by label, else by
+    dcid, on the source slot where the answer binds one, else on the set binding naming
+    them, with the source and the unit the answer's served series carry: a currency by its
+    plural noun, another unit by label. A group serving every member departs nothing."""
+    spec = _spec()
+    spec = spec.model_copy(
+        update={
+            "resolved": spec.resolved.model_copy(
+                update={"slots": slots, "facets": facets}
+            ).stating_unserved_members(unserved),
+        }
+    )
+
+    facts = [f for f in spec_departure_facts(spec, operations=()) if f.code == "member_unavailable"]
+
+    assert facts == ([fact] if fact is not None else [])
 
 
 def test_entity_unavailable_names_each_role_s_unserved_entities_on_its_token():

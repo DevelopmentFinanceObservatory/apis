@@ -363,7 +363,8 @@ def _dataset_title(record: DescriptionRecord, words: Words) -> str | None:
     population"). A party follows its role's preposition ("to Nigeria") and the place a
     variable is about follows "in"; a code follows its property's connective, by its short
     name where the code index gives one ("for health", "as standard grants"); a code whose
-    property modifies the noun directly goes before the measure."""
+    property modifies the noun directly goes before the measure. The codes of a set join as a
+    list ("for health and education")."""
     variables = record.variables
     if variables is None:
         return None
@@ -376,31 +377,38 @@ def _dataset_title(record: DescriptionRecord, words: Words) -> str | None:
         return None
     wording = vocabulary.roles(variables.family)
     codes = [
-        (fixed.property, fixed.value) for fixed in variables.fixed if fixed.property not in stated
+        (fixed.property, [fixed.value]) for fixed in variables.fixed if fixed.property not in stated
     ] + [
-        (dimension.property, dimension.within)
+        (dimension.property, dimension.narrowed_to)
         for dimension in variables.dimensions or []
-        if dimension.within is not None
+        if dimension.narrowed_to
     ]
     modifiers: list[str] = []
     phrases = [lead]
-    for prop, code in codes:
-        if (label := words.name(code)) is None:
+    for prop, refs in codes:
+        labels = [label for code in refs if (label := words.name(code)) is not None]
+        if len(labels) < len(refs):
             return None
+        named = join_names(labels)
         if (axis := axis_for_role(prop)) is not None:
-            phrases.append(f"{wording.noun(axis).preposition} {label}")
+            phrases.append(f"{wording.noun(axis).preposition} {named}")
         elif prop == _PLACE_PROPERTY:
-            phrases.append(f"in {label}")
+            phrases.append(f"in {named}")
         elif HOW_CONNECTIVES.get(prop) == "":
-            modifiers.append(label)
+            modifiers.append(named)
         else:
             text = role_class_text(
-                how_value_text(
-                    code,
-                    label,
-                    prop=prop,
-                    property_label=vocabulary.label(prop),
-                    index=vocabulary.index,
+                join_names(
+                    [
+                        how_value_text(
+                            code,
+                            label,
+                            prop=prop,
+                            property_label=vocabulary.label(prop),
+                            index=vocabulary.index,
+                        )
+                        for code, label in zip(refs, labels, strict=True)
+                    ]
                 ),
                 prop,
                 wording,

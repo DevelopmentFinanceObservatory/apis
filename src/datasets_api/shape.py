@@ -19,8 +19,9 @@ caller's dcid, and those operations re-read the graph when they run.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from code_index.composites import ComponentIdentity
 from datasets_api.codes_materialise import MemberNotResolvable
 from materialise.facets import ElectedDataset
 from materialise.graph import GraphReader
@@ -45,6 +46,10 @@ class StatVarShape:
     `dataset` is the dataset elected for a family the code index resolved, and `None` for a
     shape read from the graph. `family` is the whole population the identity the shape was
     resolved for admits, and `None` when member resolution could not state it.
+    `stub_candidates` holds the `dcid:` refs the graph walk left out of that family because
+    their complete read carries no definition arc (`MemberGroup.stub_candidates`).
+    `component` is the component of a composite identity the shape was resolved for
+    (`code_index.composites.component_identities`), and `None` for a plain identity's shape.
     """
 
     stat_var: str
@@ -54,6 +59,8 @@ class StatVarShape:
     population_type: str | None
     dataset: ElectedDataset | None = None
     family: MemberFamily | None = None
+    stub_candidates: tuple[str, ...] = ()
+    component: ComponentIdentity | None = field(default=None, compare=False)
 
 
 def resolve_shape(stat_var: str, *, graph: GraphReader) -> StatVarShape:

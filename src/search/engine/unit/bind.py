@@ -101,6 +101,7 @@ __all__ = [
     "bind_unit_text",
     "names_price_basis",
     "names_unit_request",
+    "unit_text_naming",
     "with_unit_lexicon_version",
 ]
 
@@ -221,8 +222,9 @@ def _normalise(text: str, *, casefold: bool = True) -> str:
     if casefold:
         normalised = normalised.casefold()
     normalised = normalised.replace(".", "")
-    # Apostrophe removal makes possessives match the lexicon's plain role phrases.
-    normalised = normalised.replace("'", "").replace("’", "")
+    # Apostrophe removal makes possessives match the lexicon's plain role phrases, and the
+    # okina (U+02BB) of the Tongan "pa'anga" display name match its plain spelling.
+    normalised = normalised.replace("'", "").replace("’", "").replace("\u02bb", "")
     normalised = normalised.replace("-", " ").replace("_", " ")
     return normalised
 
@@ -240,6 +242,12 @@ _SEPARATOR_RE = re.compile(f"[{re.escape(_SEPARATOR_CHARACTERS)}]+")
 
 def _tokenise(normalised: str) -> list[str]:
     return _TOKEN_RE.findall(normalised)
+
+
+# Each refusal alternative's display name, as the binder reads it, names that currency.
+_DISPLAY_NAME_CURRENCIES: dict[str, str] = {
+    " ".join(_tokenise(_normalise(name))): code for code, name in CURRENCY_DISPLAY_NAMES.items()
+}
 
 
 def _split_erasure(text: str) -> list[str]:
@@ -275,6 +283,9 @@ class _ClassifyOutcome:
     prices_token: bool = False
     # "beside" or fixed role per match. _assemble resolves "beside" against bound roles.
     role_currency_mentions: tuple[str, ...] = ()
+    # The (start, length) in tokens of the first ambiguous currency mention, else of the
+    # first "beside" role currency mention: the words a refusal's alternatives replace.
+    choice_span: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -290,6 +301,8 @@ def _phrase_lookup(phrase: str) -> _LookupHit | None:
         return _LookupHit("unsupported", UNSUPPORTED_PHRASES[phrase])
     if phrase in CURRENCY_ALIASES:
         return _LookupHit("currency", CURRENCY_ALIASES[phrase])
+    if phrase in _DISPLAY_NAME_CURRENCIES:
+        return _LookupHit("currency", _DISPLAY_NAME_CURRENCIES[phrase])
     if phrase in AMBIGUOUS_CURRENCY_NAMES:
         return _LookupHit("ambiguous_currency", alternatives=AMBIGUOUS_CURRENCY_NAMES[phrase])
     if phrase in PRICE_BASIS_PHRASES:
@@ -331,6 +344,8 @@ def _classify(tokens: list[str]) -> _ClassifyOutcome:
     base_year_cue = False
     prices_token = False
     role_currency_mentions: list[str] = []
+    ambiguous_span: tuple[int, int] | None = None
+    beside_span: tuple[int, int] | None = None
 
     i = 0
     n = len(tokens)
@@ -357,8 +372,11 @@ def _classify(tokens: list[str]) -> _ClassifyOutcome:
                 # Report alternatives for the first ambiguous mention only.
                 if not ambiguous_alternatives:
                     ambiguous_alternatives = hit.alternatives
+                    ambiguous_span = (i, matched_len)
             elif hit.kind == "role_currency":
                 role_currency_mentions.append(hit.value)
+                if hit.value == "beside" and beside_span is None:
+                    beside_span = (i, matched_len)
             i += matched_len
             continue
 
@@ -393,6 +411,7 @@ def _classify(tokens: list[str]) -> _ClassifyOutcome:
         base_year_cue=base_year_cue,
         prices_token=prices_token,
         role_currency_mentions=tuple(role_currency_mentions),
+        choice_span=ambiguous_span or beside_span,
     )
 
 
@@ -638,6 +657,37 @@ def bind_unit_text(
     if not isinstance(assembled, _Assembled):
         return assembled
     return _complete(assembled, policy=policy)
+
+
+def _phrases_naming(currency: IdentityCurrency) -> list[str]:
+    """The lexicon's words that name `currency` alone: an ISO code that collides with no
+    English word, then the code's curated aliases, then its display name; for a role
+    shape, its fixed-role phrases."""
+    if isinstance(currency, str):
+        code = [] if currency in AMBIGUOUS_ISO_CODES else [currency]
+        aliases = [alias for alias, named in CURRENCY_ALIASES.items() if named == currency]
+        names = [name for name, named in _DISPLAY_NAME_CURRENCIES.items() if named == currency]
+        return [*code, *aliases, *names]
+    return [phrase for phrase, role in ROLE_CURRENCY_PHRASES.items() if role == currency.role]
+
+
+def unit_text_naming(text: str, currency: IdentityCurrency) -> str | None:
+    """`text` with the words its `unit_not_resolved` alternatives stand for (the first
+    ambiguous currency name, else a role-relative currency phrase) replaced by words that
+    name `currency` alone, such as "constant 2015 XOF" for "constant 2015 francs". The
+    result is read back through the binder, with no role bound, and kept only when it binds
+    `currency`. `None` when `text` has no such words or no replacement binds."""
+    tokens = _tokenise(_normalise(text))
+    span = _classify(tokens).choice_span
+    if span is None:
+        return None
+    start, length = span
+    for words in _phrases_naming(currency):
+        named = " ".join([*tokens[:start], words, *tokens[start + length :]])
+        parsed = _parse(named, bound_roles=frozenset())
+        if isinstance(parsed, _Assembled) and parsed.currency == currency:
+            return named
+    return None
 
 
 def names_price_basis(text: str) -> bool:

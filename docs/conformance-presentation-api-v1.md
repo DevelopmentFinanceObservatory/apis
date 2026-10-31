@@ -25,10 +25,10 @@ verified against `src/presentation_api` and the shared platform envelope it rend
 | C3     | POST /api/presentation/components creates a component from a submitted intent                | implemented |     |
 | C4     | PATCH /api/presentation/components/{component_id} revises an existing component               | implemented |     |
 | C5     | GET /api/presentation/components/{component_id} reads a component's stored intent, fact summary and resolved payload back, at the head or at `?revision=N` | implemented |     |
-| C6     | GET /api/presentation/frames/{spec_id}/{content_version} describes a frame (structural view, one dimension's values, or a query-filtered view) | implemented |     |
+| C6     | GET /api/presentation/frames/{spec_id}/{content_version} describes a frame (structural view, one dimension's values, or a query-filtered view); GET /api/presentation/frames/{spec_id} describes the canonical frame of a dataset's newest version the same way and names the pair it read | implemented |     |
 | C7     | GET /api/presentation/release returns the pinned catalogue release's identity, retry-mode table, envelope JSON Schema, and its per-member-type component schemas | implemented |     |
 | C7a    | GET /api/presentation/components/{component_id}/revisions/{revision}/data serves the frame rows behind every value that revision shows, as `format=csv`, `xlsx`, or `parquet` (default `csv`), in a zip bundle by default or as the bare file with `bundle=false`. It sends `Content-Disposition: attachment; filename="dfo_{card-title-slug}_{YYYY-MM-DD}_{format}_r{revision}.zip"` for a bundle and `filename="dfo_{card-title-slug}_{YYYY-MM-DD}_r{revision}.{csv\|xlsx\|parquet}"` for the bare file, and `Cache-Control: private, max-age=3600`. The slug is the card's title in lowercase ASCII words joined by hyphens (the component id when the card has no title), and the date is the UTC date the revision was stored, so one revision keeps one name | implemented |     |
-| C7b    | POST /api/presentation/components/{component_id}/revisions/{revision}/render takes `{"frame": {spec_id, content_version}}` and answers what a component read answers for that revision, built from its stored intent on the named frame, with `resolved_payload.provenance.inputs` naming that frame and `provenance.refreshed_from` set to the revision. It appends no revision and pins the frame for the component. It admits only the caller holding `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header, checked before the path or body is validated | implemented |     |
+| C7b    | POST /api/presentation/components/{component_id}/revisions/{revision}/render takes `{"frame": {spec_id, content_version}}` and answers what a component read answers for that revision, built from its stored intent on the named frame, with `resolved_payload.provenance.inputs` naming that frame and `provenance.refreshed_from` set to the revision. It appends no revision and pins nothing, so the named frame keeps its retention. It admits only the caller holding `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header, checked before the path or body is validated | implemented |     |
 | C7c    | GET /api/presentation/components/{component_id}/revisions/{revision}/render/data?spec_id=&content_version= serves the C7a export of that revision rendered on the named frame, with the same `format` and `bundle` options, under the caller rule of C7b. It pins nothing | implemented |     |
 | C7d    | C7b and C7c accept the frame the revision is stored on, a dataset frame of the same `spec_id` and rendering, or a derived frame whose recipe has the stored frame's `normal_form_hash`. Any other frame refuses `render_target_mismatch`, 409 | implemented |     |
 | C7e    | On C7b and C7c every refusal answers the status the code registry maps for its code on `presentation.render`: `binding_invalid` and `constraint_violation` answer 422, and `frame_unavailable`, `release_mismatch`, and `resource_exhausted` answer 409. A component with no current revision refuses `edit_conflict`, 409. "Refusal code detail" below gives the statuses create and revise serve | implemented |     |
@@ -39,7 +39,7 @@ verified against `src/presentation_api` and the shared platform envelope it rend
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --- |
 | C8     | A `cmp_` component id grants read: anyone holding it reads that component at any revision, with no header. Each id is a ULID with 80 random bits (`os.urandom`). An id that names no draft refuses `not_found`, 404, `retryable` false | implemented |     |
 | C8a    | A write token grants write. A create returns a `cmw_` token as top-level `write_token`, and a create with `composition_id: "new"` also returns a `cpw_` token as `composition_write_token`, each `secrets.token_urlsafe(16)` behind its prefix. The store keeps the unsalted SHA-256 digest. No read, revise reply, stored intent, or resolved payload carries a token | implemented |     |
-| C8b    | A revise needs the component's token in `x-dfo-write-token`; a composition member needs only its own. A create into an existing composition needs that composition's token in the same header. A missing or wrong token, or a draft with no stored digest, refuses `write_refused`, 403, `retryable` false, before any frame is pinned, with a fix telling the caller to create a new component | implemented |     |
+| C8b    | A revise needs the component's token in `x-dfo-write-token`; a composition member needs only its own. A create into an existing composition needs that composition's token in the same header. A missing or wrong token, or a draft with no stored digest, refuses `write_refused`, 403, `retryable` false, before any frame is read, with a fix telling the caller to create a new component | implemented |     |
 | C9     | No door reads a session header. A request that sends `x-dfo-session`, with any value, an empty value, or the header repeated, is served exactly as one without it | implemented |     |
 | C10    | `component_id`, `spec_id`, and `content_version` path parameters are format-checked before reaching a store lookup; a malformed value refuses `request_invalid`, 400, `retryable` false | implemented |     |
 | C11    | The create/revise request body (`ComponentBody`) is closed (`extra="forbid"`): `intent` plus an optional `composition_id`; any other top-level field refuses through pydantic validation | implemented |     |
@@ -51,7 +51,7 @@ verified against `src/presentation_api` and the shared platform envelope it rend
 | ------ | ----------- | ------ | --- |
 | C17    | The create (201), revise (200) and read (200) bodies carry `resolved_payload`, the revision's stored envelope (`presentation.component_revision.resolved_payload`), verbatim. The three bodies are equal as parsed JSON. The create and revise doors serve it in mint key order. The read door serves it in the key order Postgres returns from JSONB storage, and a number can come back reformatted. A no-op revise carries the head's stored envelope, and a `?revision=N` read carries revision N's. | implemented |     |
 | C18    | `resolved_payload` validates against the `envelope_schema` of the catalogue release its `catalog_version` names, the same `CatalogueRelease.envelope_schema` `assembler.mint.stamp_envelope` validates a minted envelope against, with `envelope_schema`'s `component` field's `$ref`s resolving against that release's `component_schemas` by `$id`. GET /api/presentation/release serves only the pinned release's schemas, so a payload validates against that response only when its `catalog_version` is the pinned release. A read serves every stored revision with the `catalog_version` it was minted under and formats its fact summary with the formatter profile stored on it (`assembler.pipeline.get_component`). A write whose head carries a newer `catalog_version` than the pinned release refuses `release_mismatch` (`assembler.pipeline.write._require_release_not_behind`) | implemented |     |
-| C19    | A minted component's `component` and `provenance` subtrees are measured in compact UTF-8 JSON against `MAX_ENVELOPE_BYTES` (2 MiB) before any store write; a candidate over the cap refuses `resource_exhausted`, `limit_name=MAX_ENVELOPE_BYTES`, with nothing pinned or stored | implemented |     |
+| C19    | A minted component's `component` and `provenance` subtrees are measured in compact UTF-8 JSON against `MAX_ENVELOPE_BYTES` (2 MiB) before any store write; a candidate over the cap refuses `resource_exhausted`, `limit_name=MAX_ENVELOPE_BYTES`, with nothing stored | implemented |     |
 | C20    | A revise whose resolved payload is otherwise unchanged but whose `catalog_version` differs from the pinned release's mints a new revision carrying the pinned release, rather than returning the head as a no-op (`assembler.pipeline.write._structurally_equal`) | implemented |     |
 | C20a   | A chart's series and a table's rows follow the order `select` lists the values: by position in each list-valued dimension's list, dimensions taken in `select` key order (`assembler.resolve.resolve_selectors`). Series the lists leave unordered, such as those an unbound dimension expands into, keep frame row order. So `{"financingProvider": ["country/USA", "GlobalFund"]}` draws USA first even when the frame stores Global Fund's rows first. The fact summary's `series` and the data export's rows take the payload's order | implemented |     |
 
@@ -110,7 +110,7 @@ alone.
 
 ### FrameUnavailable outcome by reason
 
-A frame store that fails to answer (`io`) refuses `service_unavailable`. A reason outside this table fails classification, and the platform default answers `internal_error`.
+`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) reads each status from the code registry on `presentation.write`. A `frame_unavailable` problem body's `cause.code` carries the reason. A reason outside this table fails classification, and the platform default answers `internal_error`.
 
 | Reason            | Code                | HTTP | retryable |
 | ----------------- | ------------------- | ---- | --------- |
@@ -121,6 +121,8 @@ A frame store that fails to answer (`io`) refuses `service_unavailable`. A reaso
 | digest_mismatch   | frame_unavailable   | 404  | false     |
 | quarantined       | frame_unavailable   | 404  | false     |
 | io                | service_unavailable | 503  | true      |
+| recipe_pending    | service_unavailable | 503  | true      |
+| recipe_unreadable | service_unavailable | 503  | true      |
 | unknown           | frame_unavailable   | 404  | false     |
 
 ## Registry binding
@@ -138,10 +140,12 @@ that comparison: it has no `CODE_RETRY_MODE` entry, since that table mirrors the
 manifest's `retry_modes` byte for byte, so `CODE_RETRY_MODE`'s own key set alone would leave the
 code out of the served set on both sides.
 
-The surface binds `presentation.write` to create and revise, and `presentation.render` to C7b
-and C7c (`Surface.registry_endpoints`). The component read shares revise's path, so it is bound
-with it. The frames, component data, release, and meta routes map no registry endpoint and serve
-the write routes' statuses. `tests/presentation_api/test_refusal_registry.py` asserts that every
-`presentation.*` endpoint is bound and that every exemplar goes out at the status the registry
-gives its code: a render door exemplar on `presentation.render`, every other on
+The surface binds `presentation.write` to create and revise, `presentation.render` to C7b and
+C7c, and `presentation.shares` to every shares door route (`Surface.registry_endpoints`). The
+component read shares revise's path, so it is bound with it. The frames, component data, release,
+and meta routes map no registry endpoint and serve the write routes' statuses.
+`tests/presentation_api/test_refusal_registry.py` enumerates the composed surface's routes and
+asserts that every route but those is bound, that every `presentation.*` endpoint is bound, and
+that every exemplar goes out at the status the registry gives its code: a render door exemplar on
+`presentation.render`, a shares door exemplar on `presentation.shares`, and every other on
 `presentation.write`.

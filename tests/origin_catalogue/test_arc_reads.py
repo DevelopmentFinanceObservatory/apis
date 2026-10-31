@@ -287,10 +287,10 @@ def _labelled_nodes() -> dict[str, Any]:
 
 @pytest.mark.parametrize("hazard", ["omitting", "emptying"])
 def test_each_node_an_arc_names_takes_the_label_node_label_gives_it(hazard: str) -> None:
-    """The label is the last `->name` value, or none, and the arc keeps the name `->*`
-    gives. A node a `->name` read naming several leaves out or answers with no name is
-    read again alone, as the `->*` and `->typeOf` reads read it, so `Years0`, which has no
-    name, is read alone before it is held nameless."""
+    """The label is the `label_or_self_name` of the `->name` values, or none, and the arc
+    keeps the name `->*` gives. A node a `->name` read naming several leaves out or answers
+    with no name is read again alone, as the `->*` and `->typeOf` reads read it, so
+    `Years0`, which has no name, is read alone before it is held nameless."""
     un = FakeUn(_labelled_nodes())
     setattr(un, hazard, {"Alcohol": 1})
 

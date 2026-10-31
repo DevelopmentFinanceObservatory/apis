@@ -82,6 +82,11 @@ class ManifestTrace:
     family: MemberFamily | None = None
     # The population the definition's identity admits, from the request. `None` when the
     # resolver could not state the whole of it, and on a trace that describes no one family.
+    stub_candidates: tuple[str, ...] = ()
+    # The `dcid:` refs the member walk left out of the family under a confirmed root because
+    # its reader holds their arcs complete and they carry no definition arc
+    # (`MemberGroup.stub_candidates`).
+    # Omitted from `to_dict()` when empty.
     coverage_gaps: tuple[dict[str, object], ...] = ()
     # The places a national-currency unit binding serves no row at, one entry per role and
     # reason (`national_currency.CoverageGap.as_trace_entry`): `role`, `reason` and the
@@ -104,8 +109,12 @@ class ManifestTrace:
     party_totals_left_out: tuple[dict[str, object], ...] = ()
     # The group totals `options.without_party_totals` left out of a version's frame, attached by
     # `datasets_api.serve` (`datasets_api.party_totals.PartyTotalsCut.trace_entries`): one
-    # `role` and its `entities` in dcid order per open party role that lost rows. Omitted from
-    # `to_dict()` when empty.
+    # `role`, `provenance` (null for rows with none) and its `entities` in dcid order per open
+    # party role and provenance that lost rows. Omitted from `to_dict()` when empty.
+    components: tuple[dict[str, object], ...] = ()
+    # Each component a composite's frame was composed from
+    # (`materialise.composite.ComponentSummary.as_trace_entry`), in declaration order. Empty
+    # for a plain definition, and omitted from `to_dict()` then.
 
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.
@@ -126,6 +135,8 @@ class ManifestTrace:
         result["resolved_stat_vars"] = list(self.resolved_stat_vars)
         result["family_member_digest"] = self.family.digest if self.family is not None else None
         result["family_member_count"] = self.family.count if self.family is not None else None
+        if self.stub_candidates:
+            result["stub_candidates"] = list(self.stub_candidates)
         result["facets"] = list(self.facets)
         result["normalisations"] = list(self.normalisations)
         if self.conversion is not None:
@@ -140,6 +151,8 @@ class ManifestTrace:
             result["origin_gaps"] = list(self.origin_gaps)
         if self.party_totals_left_out:
             result["party_totals_left_out"] = list(self.party_totals_left_out)
+        if self.components:
+            result["components"] = list(self.components)
         result["frame_grammar_version"] = self.frame_grammar_version
         result["materialiser_build"] = self.materialiser_build
         result["capability_version"] = self.capability_version

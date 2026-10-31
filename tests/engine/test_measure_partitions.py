@@ -11,6 +11,7 @@ from dataclasses import replace
 import pytest
 
 from code_index import CodeIndex, IndexStamp, StatVarRow
+from code_index.scope_conventions import BASIS_MEASURES
 from code_index.types import MeasureAxis, MeasurePartitionLabel
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.retrieval.bound_values import (
@@ -695,21 +696,66 @@ def _measure_match(
     )
 
 
-def test_named_constraint_value_steers_the_collapse_across_a_shape_axis():
+_COMMITMENTS = ("financialObligationType", "Commitment", "commitments")
+_CONSTANT = ("measurementQualifier", "RealValue", "constant")
+_DISBURSEMENT = ("financialFlowType", "Disbursement", "disbursements")
+
+
+@pytest.mark.parametrize(
+    ("group", "named", "elected"),
+    [
+        (("t1", "t2", "t3", "t4"), (_COMMITMENTS,), "t3"),
+        # "ODA commitments in constant 2022 dollars" on the nominal CRS shapes: no shape
+        # carries "constant", which the unit layer converts to anyway.
+        (("t1", "t3"), (_COMMITMENTS, _CONSTANT), "t3"),
+        # Each value is carried by another shape. The unit layer converts the FinancialObligation
+        # shape to constant prices, but it cannot turn a disbursement into a commitment.
+        (("t1", "t2", "t3"), (_COMMITMENTS, _CONSTANT), "t3"),
+        # Two values the unit layer cannot convert to, each carried by another shape, tie,
+        # and the declared default elects between them.
+        (("t1", "t3"), (_COMMITMENTS, ("nettingBasis", "Net", "net")), "t1"),
+    ],
+)
+def test_named_constraint_value_steers_the_collapse_across_a_shape_axis(group, named, elected):
     # The `commitments` filter selects FinancialObligation through `financialObligationType`,
     # which is absent from `_family_key` (#743).
     shapes = _worked_example_shapes()
     index = _index(_WORKED_EXAMPLE)
-    named = (_measure_match("financialObligationType", "Commitment", "commitments"),)
 
     collapsed = collapse_measure_families(
-        [shapes["t1"], shapes["t2"], shapes["t3"], shapes["t4"]],
+        [shapes[key] for key in group],
         index,
         _MEASURE_AXES,
-        named=named,
+        named=tuple(_measure_match(*match) for match in named),
     )
 
-    assert collapsed == (shapes["t3"],)
+    assert collapsed == (shapes[elected],)
+
+
+@pytest.mark.parametrize(
+    ("group", "named", "elected"),
+    [
+        # A follow-up asking for "ODA" with commitments carried names no measure value.
+        (("t1", "t3"), (), "t3"),
+        # The carried basis and the words' price basis steer together.
+        (("t1", "t2", "t3", "t4"), (_CONSTANT,), "t4"),
+        # The question's own measure words outvote a carried basis.
+        (("t1", "t3"), (_DISBURSEMENT,), "t1"),
+    ],
+)
+def test_a_stated_or_carried_basis_steers_the_collapse_as_its_words_would(group, named, elected):
+    shapes = _worked_example_shapes()
+    commitments = next(row for row in BASIS_MEASURES if row.basis == "commitments")
+
+    collapsed = collapse_measure_families(
+        [shapes[key] for key in group],
+        _index(_WORKED_EXAMPLE),
+        _MEASURE_AXES,
+        named=tuple(_measure_match(*match) for match in named),
+        basis=commitments,
+    )
+
+    assert collapsed == (shapes[elected],)
 
 
 def test_named_shape_axis_value_steers_the_collapse_to_the_matching_qualifier():

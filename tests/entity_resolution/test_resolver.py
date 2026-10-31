@@ -11,6 +11,8 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterable
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from cachetools import TLRUCache
@@ -20,6 +22,7 @@ from resolvekit.core.model.result import CandidateSummary
 from code_index.shared import get_index
 from entity_resolution import (
     ADMITTED_TYPES,
+    DEFAULT_KINDS,
     Ambiguous,
     EntityResolver,
     Group,
@@ -28,6 +31,7 @@ from entity_resolution import (
     Resolved,
     pack,
 )
+from entity_resolution.membership import UnknownMembership
 from entity_resolution.regions import identity_to_dcid
 from entity_resolution.resolver import (
     _QUERY_ALIASES,
@@ -38,6 +42,7 @@ from entity_resolution.resolver import (
     _ttu,
     _without_article_and_punctuation,
 )
+from entity_resolution.shared import SharedResolver
 from entity_resolution.types import KindIndex
 from graph_generation import FakeGeneration
 from graph_generation.config import (
@@ -342,6 +347,9 @@ class _IndexWithoutParties:
     def code_by_dcid(self, dcid: str) -> object | None:
         return self._index.code_by_dcid(dcid)
 
+    def system_of_code(self, dcid: str) -> str | None:
+        return self._index.system_of_code(dcid)
+
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> str | None:
         return None
 
@@ -455,6 +463,9 @@ def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
         ("multilateral institutions", "DACMultilaterals", "multilaterals (DAC)"),
         ("multilateral donors", "DACMultilaterals", "multilaterals (DAC)"),
         ("private donors", "DACPrivateDonors", "private donors (DAC)"),
+        ("All Donors, Total", "DACOfficialDonors", "official donors (DAC)"),
+        ("all official donors", "DACOfficialDonors", "official donors (DAC)"),
+        ("all recipients", "DACAllRecipients", "all recipients (DAC)"),
         (
             "regional development banks",
             "DACRegionalDevelopmentBanks",
@@ -759,15 +770,69 @@ def test_group_node_dcids_are_the_nodes_a_group_resolves_to(shared_resolver):
 
     async def resolve_and_look_up():
         (union,) = await resolver.resolve(["European Union"])
-        return union, await resolver.group_node_dcids()
+        return union, await resolver.group_node_dcids(), await resolver.group_node_names()
 
-    union, group_nodes = _run(resolve_and_look_up())
+    union, group_nodes, names = _run(resolve_and_look_up())
 
     assert isinstance(union, Group) and union.entity is not None
     assert union.entity.dcid in group_nodes
+    assert set(names) == group_nodes
+    (again,) = _run(resolver.resolve([names[union.entity.dcid]]))
+    assert isinstance(again, Group) and again.entity == union.entity
     assert not group_nodes & {*(member.dcid for member in union.members), "africa"}
     # The one graph read is the resolve's confirmation: the lookup reads the packs alone.
     assert len(graph.node_arcs_many_calls) == 1
+
+
+_GROUP_G = "dfo_graph/GroupG"
+
+
+class _GroupGRegistry:
+    """A registry holding the one group `GroupG`, with no members."""
+
+    def by_entity_id(self, entity_id: str) -> SimpleNamespace:
+        if entity_id != _GROUP_G:
+            raise UnknownMembership(entity_id)
+        return SimpleNamespace(ref="GroupG", label="Group G", members=lambda: (), member_labels={})
+
+
+@pytest.mark.parametrize(
+    ("known_groups", "expected"),
+    [
+        (("Shared name", "Group G"), {"GroupG": "Group G"}),
+        (("Shared name",), {}),
+    ],
+    ids=["a-later-name-resolves-to-the-group-alone", "no-name-resolves-to-the-group-alone"],
+)
+def test_a_group_node_takes_only_a_name_that_resolves_to_the_group_alone(
+    monkeypatch, known_groups, expected
+):
+    """ "Shared name" tops on a group the registry does not hold, beside `GroupG` as an
+    organisation, so `resolve` reads it as an ordinary hit, ambiguous between the two.
+    "Group G" tops on the registry's group, which `resolve` answers alone. `GroupG` stays a
+    group node either way, so a pin on it still cannot ask for its members."""
+    import entity_resolution.resolver as resolver_module
+
+    groups_x = CandidateSummary(entity_id="groups/X", entity_type="geo.organization")
+    group_g_as_org = CandidateSummary(entity_id=_GROUP_G, entity_type="org.organisation")
+    group_g = CandidateSummary(entity_id=_GROUP_G, entity_type="geo.organization")
+    survivors = {"Shared name": (groups_x, group_g_as_org), "Group G": (group_g,)}
+
+    def scripted_survivors(shared, text, context):
+        listed = tuple((candidate, None) for candidate in survivors[text])
+        return listed, survivors[text], "entity"
+
+    monkeypatch.setattr(resolver_module, "_resolve_text_survivors", scripted_survivors)
+    shared = SimpleNamespace(
+        resolver=SimpleNamespace(known_groups=lambda: known_groups),
+        groups=_GroupGRegistry(),
+        policy=SimpleNamespace(holds_region=lambda dcid: False),
+    )
+
+    lookup = resolver_module._group_nodes_job(cast(SharedResolver, shared))
+
+    assert lookup.names == expected
+    assert lookup.dcids == {"groups/X", "GroupG"}
 
 
 @pytest.mark.parametrize(
@@ -913,7 +978,11 @@ def test_ambiguous_candidates_ordered_by_dcid_not_entity_id(shared_resolver, mon
     assert [c.dcid for c in result.candidates] == ["ZZZOrg", "country/AAA"]
 
 
-def test_batch_of_five_hits_makes_one_confirmation_call_and_no_fallback_calls(shared_resolver):
+def test_batch_of_five_hits_makes_one_shared_name_read_and_one_confirmation_call(
+    shared_resolver,
+):
+    """Asked for near matches, five hits whose names nothing else lists cost one last-rung
+    read for all five, no name read, and one confirmation read; unasked, no last-rung read."""
     graph = FakeGraphLookup(
         nodes={
             "country/KEN": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
@@ -928,11 +997,19 @@ def test_batch_of_five_hits_makes_one_confirmation_call_and_no_fallback_calls(sh
     )
     resolver = EntityResolver(graph=graph, shared=shared_resolver)
 
-    results = _run(resolver.resolve(["Kenya", "France", "Africa", "AfDB", "IDA"]))
+    texts = ["Kenya", "France", "Africa", "AfDB", "IDA"]
+    unasked_graph = FakeGraphLookup(nodes=graph.nodes)
 
-    assert all(isinstance(r, Resolved) for r in results)
+    results = _run(resolver.resolve(texts, near_matches=True))
+    _run(EntityResolver(graph=unasked_graph, shared=shared_resolver).resolve(texts))
+
+    assert unasked_graph.resolve_by_arc_calls == []
+    assert all(isinstance(r, Resolved) and r.near_matches == () for r in results)
     assert len(graph.node_arcs_many_calls) == 1
-    assert graph.resolve_by_arc_calls == []
+    assert graph.resolve_by_arc_calls == [
+        (("Kenya", "France", "Africa", "AfDB", "IDA"), "<-description->dcid")
+    ]
+    assert graph.node_names_many_calls == []
 
 
 def test_batch_with_two_misses_makes_at_most_four_fallback_calls(shared_resolver):
@@ -943,6 +1020,115 @@ def test_batch_with_two_misses_makes_at_most_four_fallback_calls(shared_resolver
 
     assert all(isinstance(r, NotFound) for r in results)
     assert len(graph.resolve_by_arc_calls) <= 4
+
+
+@pytest.mark.parametrize(
+    ("kinds", "near"),
+    [
+        (DEFAULT_KINDS, ("geoId/13", "wikidataId/Q1", "wikidataId/Q3")),
+        (None, ("geoId/13", "wikidataId/Q1", "GeorgiaEnum")),
+    ],
+)
+def test_a_hit_carries_the_other_nodes_listing_its_name_as_near_matches(
+    shared_resolver, kinds, near
+):
+    """Resolvekit's packs hold no US state, so "Georgia" resolves to the country and the last
+    rung's other confirmed nodes listing the name follow as near matches, in the graph's order,
+    by the requested kinds, at most three. A node whose names do not list the text is left
+    out. The batch
+    costs one last-rung read and one name read beside the one confirmation read."""
+    graph = FakeGraphLookup(
+        nodes={
+            "country/GEO": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
+            "geoId/13": {"typeOf": ("State",), "name": ("Georgia",)},
+            "wikidataId/Q1": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q2": {"typeOf": ("City",), "name": ("Georgetown",)},
+            "GeorgiaEnum": {"typeOf": ("SomeEnum",), "name": ("Georgia",)},
+            "wikidataId/Q3": {"typeOf": ("City",), "name": ("Georgia",)},
+        },
+        arcs={
+            ("<-description->dcid", "Georgia"): [
+                "country/GEO",
+                "geoId/13",
+                "wikidataId/Q2",
+                "wikidataId/Q1",
+                "GeorgiaEnum",
+                "wikidataId/Q3",
+            ]
+        },
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["Georgia"], kinds=kinds, near_matches=True))
+
+    assert isinstance(result, Resolved)
+    assert result.entity.dcid == "country/GEO"
+    assert tuple(e.dcid for e in result.near_matches) == near
+    assert result.near_matches[0].kind == "place_other"
+    assert [arc for _, arc in graph.resolve_by_arc_calls] == ["<-description->dcid"]
+    assert graph.node_names_many_calls == [
+        ("geoId/13", "wikidataId/Q2", "wikidataId/Q1", "GeorgiaEnum", "wikidataId/Q3")
+    ]
+    assert len(graph.node_arcs_many_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("last_rung", "asked", "expected"),
+    [
+        (["country/GEO", "geoId/13"], True, ("resolved", ("geoId/13",))),
+        (["geoId/13", "wikidataId/Q1"], True, ("ambiguous", ("geoId/13", "wikidataId/Q1"))),
+        (
+            ["wikidataId/Q4", "geoId/13", "wikidataId/Q3", "wikidataId/Q1", "wikidataId/Q2"],
+            True,
+            (
+                "ambiguous",
+                ("geoId/13", "wikidataId/Q1", "wikidataId/Q2", "wikidataId/Q3", "wikidataId/Q4"),
+            ),
+        ),
+        (["country/GEO", "geoId/13"], False, ("not_found", ())),
+    ],
+)
+def test_a_kinds_filter_that_removes_the_hit_answers_with_the_nodes_sharing_its_name(
+    shared_resolver, last_rung, asked, expected
+):
+    """Asked for near matches, "Georgia" under `kinds=["place_other"]` answers with the
+    confirmed place_other nodes listing the name: one resolves, several are ambiguous with
+    every one as a candidate, and either keeps the removed country as a near match. The call costs the same one last-rung
+    read, one name read and one confirmation read. Unasked, it stays `NotFound` with no
+    last-rung read."""
+    graph = FakeGraphLookup(
+        nodes={
+            "country/GEO": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
+            "geoId/13": {"typeOf": ("State",), "name": ("Georgia",)},
+            "wikidataId/Q1": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q2": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q3": {"typeOf": ("City",), "name": ("Georgia",)},
+            "wikidataId/Q4": {"typeOf": ("City",), "name": ("Georgia",)},
+        },
+        arcs={("<-description->dcid", "Georgia"): last_rung},
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["Georgia"], kinds={"place_other"}, near_matches=asked))
+
+    status, refs = expected
+    if status == "not_found":
+        assert isinstance(result, NotFound)
+        assert [e.dcid for e in result.removed] == ["country/GEO"]
+        assert graph.resolve_by_arc_calls == []
+        return
+    if status == "resolved":
+        assert isinstance(result, Resolved)
+        assert (result.entity.dcid,) == refs
+        assert result.entity.kind == "place_other"
+        assert result.matched is not None and result.matched.matched_as == "name"
+    else:
+        assert isinstance(result, Ambiguous)
+        assert tuple(c.dcid for c in result.candidates) == refs
+    assert [(e.dcid, e.kind) for e in result.near_matches] == [("country/GEO", "country")]
+    assert [arc for _, arc in graph.resolve_by_arc_calls] == ["<-description->dcid"]
+    assert len(graph.node_names_many_calls) == 1
+    assert len(graph.node_arcs_many_calls) == 1
 
 
 def test_fallback_ambiguous_when_the_answering_arc_names_two_held_dcids(shared_resolver):

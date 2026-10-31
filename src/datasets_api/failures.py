@@ -45,6 +45,11 @@ _WRITE_FAILED = "writing an artifact to storage failed; retry"
 _LOOKUP_FAILED = "reading the artifact inventory failed; retry"
 
 
+class FoldPermitWaitExpired(TimeoutError):
+    """A render's deadline passed while its groupby waited for a fold permit
+    (`datasets_api.render`)."""
+
+
 class _Failure(NamedTuple):
     classes: tuple[type[BaseException], ...]
     code: str
@@ -74,6 +79,8 @@ _FAILURES = (
         "{exc}; the member count past it is unknown, not zero; retry",
         retryable=True,
     ),
+    # The fold the collapse waited for may finish within a retry's deadline.
+    _Failure((FoldPermitWaitExpired,), "timeout", "{exc}; retry", retryable=True),
     _Failure(
         (GraphReadError,),
         "upstream_error",

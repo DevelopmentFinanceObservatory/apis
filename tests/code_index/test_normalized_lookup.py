@@ -127,6 +127,10 @@ def test_committed_index_reads_reproductive_health_as_sector_130(text: str, dcid
         ("Côte d'Ivoire", [("Côte", "word", 0), ("d'Ivoire", "word", 5)]),
         # A typographic apostrophe joins as a straight one does, and the word writes it so.
         ("Côte d\u2019Ivoire", [("Côte", "word", 0), ("d'Ivoire", "word", 5)]),
+        # A decimal point between two digits stays in the number, and a currency sign is
+        # a separator.
+        ("$2.15", [("$", "sep", 0), ("2.15", "word", 1)]),
+        ("in 2015.", [("in", "word", 0), ("2015", "word", 3), (".", "sep", 7)]),
         (
             "(I.5)",
             [("(", "sep", 0), ("I", "word", 1), (".", "sep", 2), ("5", "word", 3), (")", "sep", 4)],

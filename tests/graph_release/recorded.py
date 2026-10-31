@@ -96,10 +96,14 @@ SLICE_DECLARATIONS = dataclasses.replace(
     listed_datasets=(),
     party_kind_overrides={},
     total_groups={},
+    private_providers={},
+    whole_totals={},
+    whole_total_sets=(),
     measure_axes=(),
     measure_partition_labels=(),
     measure_nouns=(),
     shape_slot_defaults=(),
+    broad_readings=(),
     partly_stated_values=(),
 )
 
@@ -117,10 +121,10 @@ UNHELD_PARTY: Final[str] = "country/TJK"
 """A country with no `Node` row, which therefore no kept edge names."""
 
 MIXER_PARTIES: Final[Mapping[str, dict[str, tuple[str, ...]]]] = {
-    "country/KGZ": {"typeOf": ("Country",), "name": ("Kyrgyzstan",)},
-    "country/TJK": {"typeOf": ("Country",), "name": ("Tajikistan",)},
+    "country/KGZ": {"typeOf": ("Country",), "name": ("Kyrgyzstan",), "dacCode": ()},
+    "country/TJK": {"typeOf": ("Country",), "name": ("Tajikistan",), "dacCode": ()},
     **{
-        f"country/{iso3}": {"typeOf": ("Country",), "name": (name,)}
+        f"country/{iso3}": {"typeOf": ("Country",), "name": (name,), "dacCode": ()}
         for iso3, name in (
             ("ARE", "United Arab Emirates"),
             ("CIV", "Côte d'Ivoire"),

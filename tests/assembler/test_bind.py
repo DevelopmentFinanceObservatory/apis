@@ -236,11 +236,28 @@ def test_composed_unit_binds_each_side_as_a_catalogue_unit_part(part, labels, ex
     assert bound.unit == {"numerator": expected, "denominator": expected}
 
 
-def test_label_prefers_the_labels_map():
+_RECIPIENT_ENRICHMENT = {
+    "recipient_party_kind": "party",
+    "recipient_party_class": "official",
+    "recipient_party_whole": "false",
+    "recipient_type": "Country",
+}
+
+
+@pytest.mark.parametrize(
+    "enrichment",
+    [
+        pytest.param({}, id="role-alone"),
+        pytest.param(_RECIPIENT_ENRICHMENT, id="enrichment-columns-describe-the-role"),
+    ],
+)
+def test_label_prefers_the_labels_map(enrichment):
+    """A role's type, kind, class and whole columns, which a derived frame keeps beside it,
+    describe its entity and add nothing to the label."""
     rf = build_resolved_frame(
         frame_ref=_FRAME_REF,
-        role_keys=("recipient",),
-        rows=[_row(period="2020")],
+        role_keys=("recipient", *enrichment),
+        rows=[{**_row(period="2020"), **enrichment}],
         labels={"country/ETH": "Ethiopia"},
     )
     (series,) = resolve_selectors(

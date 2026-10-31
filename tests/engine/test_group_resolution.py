@@ -13,6 +13,7 @@ import pytest
 from dfo_spec_kit.identity import spec_id_from_value
 
 from entity_resolution import Ambiguous, Entity, Group, Resolved
+from entity_resolution.shared import shared_membership_policy
 from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.core import resolve_async
@@ -69,6 +70,14 @@ _SOURCE = "dc/base/PlaceFixture"
 
 def _country(dcid: str, name: str) -> Entity:
     return Entity(dcid=dcid, name=name, kind="country", graph_type="Country")
+
+
+def _registry_members(group: str) -> list[str]:
+    """The members the membership registry lists for `group` under its default projection,
+    sorted: what a group whose role binds the group's total serves (`EntityGroup.members`)."""
+    held = shared_membership_policy().members(group).members
+    assert isinstance(held, tuple) and held, group
+    return sorted(held)
 
 
 class _FixedBindLLM:
@@ -408,11 +417,22 @@ class TestGroupRoleBearingExpansion:
         (spec,) = result.specs
         assert sorted(e.ref for e in spec.resolved.entities if e.role == "origin") == origins
         assert spec.resolved.entity_groups == {
-            "origin": EntityGroup(label=name, total=total, group_id=group)
+            "origin": EntityGroup(
+                label=name,
+                total=total,
+                group_id=group,
+                members=None if total is None else _registry_members(group),
+                # The registry lists countries alone for the G7 and the DAC.
+                holds_multilaterals=None if total is None else False,
+            )
         }
         assert spec.resolved.group_totals == ({"origin": party} if members else {})
         codes = [fact.code for fact in spec_departure_facts(spec, operations=())]
         assert ("group_read_as_members" in codes) is members
+        # The group's text states what it bound: the total, or the members it reads as led
+        # by the group's own ref, the total, by which a client matches the set it named.
+        bound = (party, "country/T1", "country/T2") if members else (party,)
+        assert result.entity_refs == {name: bound, "Kenya": ("country/KEN",)}
 
     @pytest.mark.parametrize(
         ("published", "destinations", "total", "kept"),
@@ -465,7 +485,10 @@ class TestGroupRoleBearingExpansion:
         assert bound == destinations
         assert spec.resolved.entity_groups == {
             "destination": EntityGroup(
-                label="Asia (DAC)", total=total, group_id="groups/OECD.DAC.Region.Asia"
+                label="Asia (DAC)",
+                total=total,
+                group_id="groups/OECD.DAC.Region.Asia",
+                members=None if total is None else _registry_members("groups/OECD.DAC.Region.Asia"),
             )
         }
         assert spec.resolved.group_totals == kept

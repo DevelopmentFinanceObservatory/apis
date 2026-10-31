@@ -93,7 +93,7 @@ def _build_response(index: SkillsIndex, skill_id: str, path: str) -> SkillResour
     )
 
 
-async def resource_endpoint(
+async def get_resource(
     skill_id: str,
     path: str,
     request: Request,
@@ -122,7 +122,7 @@ def build_resource_door() -> DoorContribution:
     router = APIRouter()
     router.add_api_route(
         "/api/skills/{skill_id:dfo_skill_id}/resources/{path:path}",
-        resource_endpoint,
+        get_resource,
         methods=["GET"],
         response_model=SkillResourceContent,
     )

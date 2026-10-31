@@ -44,6 +44,14 @@ def test_presentation_store_migrations_apply_in_order_and_are_idempotent():
         "0008_idempotent_create.sql",
         "0009_drop_draft_lease.sql",
         "0010_revision_formatter_profile.sql",
+        "0011_revision_frame_rendering.sql",
+        "0012_share.sql",
+        "0013_share_slot_check.sql",
+        "0014_share_slot_next_check.sql",
+        "0015_share_create_token.sql",
+        "0016_share_slot_check_claim.sql",
+        "0017_served_frame_timeline.sql",
+        "0018_served_frame_share_newest.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert statements[0] == "CREATE SCHEMA IF NOT EXISTS presentation"
@@ -51,6 +59,12 @@ def test_presentation_store_migrations_apply_in_order_and_are_idempotent():
     assert any("CREATE TABLE presentation.composition_revision (" in sql for sql in statements)
     assert any("CREATE TABLE presentation.component (" in sql for sql in statements)
     assert any("CREATE TABLE presentation.component_revision (" in sql for sql in statements)
+    for table in ("share", "share_revision", "share_slot", "served_frame", "share_slot_check"):
+        assert any(f"CREATE TABLE presentation.{table} (" in sql for sql in statements), table
+    assert any(
+        "ALTER TABLE presentation.share_slot_check ADD COLUMN next_check_at timestamptz" in sql
+        for sql in statements
+    )
     assert any("CREATE TABLE presentation.draft_lease (" in sql for sql in statements)
     assert any(
         "CREATE INDEX draft_lease_expires_at_idx ON presentation.draft_lease" in sql

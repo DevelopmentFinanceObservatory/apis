@@ -42,7 +42,7 @@ _URBANISATION = "undataUrbanisation"
 def _node(dcid: str, *, population_type: str, urbanisation: str | None = None) -> dict:
     arcs = {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "name": {"nodes": [{"value": dcid}]},
+        "name": {"nodes": [{"value": f"Access to electricity ({dcid})"}]},
         "populationType": {"nodes": [{"dcid": population_type}]},
         "measuredProperty": {"nodes": [{"dcid": "value"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},

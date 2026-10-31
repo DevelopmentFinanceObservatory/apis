@@ -302,12 +302,12 @@
 
 - id: dq-ext-032
   query: refugees in Western Sahara
-  why: The SDG refugee series counts refugees by origin only, not by asylum country, and the UN front door refuses Western Sahara, so the answer is no_data.
+  why: No refugee series holds Western Sahara by asylum country, so the answer is no_data; its total population states no refugee.
   tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [waf_blocked]}
   expect:
     no_data:
       entities: [{dcid: country/ESH, role: observationAbout}]
-      reason: [variable_not_resolved, no_observations]
+      reason: [variable_not_resolved, no_observations, qualifier_not_bound]
 
 - id: dq-ext-033
   query: under-five mortality in Kenya in 2024

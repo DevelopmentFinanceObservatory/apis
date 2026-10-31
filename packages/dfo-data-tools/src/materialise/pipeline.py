@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from code_index.types import ComponentRole
 from dc_sdmx import EntityFilter, SdmxClient
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.codes import MaterialisationWarning
@@ -23,7 +24,7 @@ from materialise.facets import (
     ElectedDataset,
     FacetBinding,
     FacetSelection,
-    VariableBreadth,
+    MemberProbe,
     admitted_candidates,
     probe_facets,
 )
@@ -46,6 +47,7 @@ from materialise.generation import (
     dispatched_provenances,
 )
 from materialise.graph import Facet, GraphReader
+from materialise.group_facets import group_breadth, group_variable_breadth, select_group_facets
 from materialise.member_conversion import decide_member_conversion, refuse_if_every_row_omitted
 from materialise.profile import OutputProfile
 from materialise.progress import RowProgress
@@ -61,8 +63,12 @@ if TYPE_CHECKING:
     # Keep the optional coverage index lazy because it imports NumPy, absent from pure installs.
     from series_coverage.index import CoverageIndex
 
-# Deployment code supplies its configured bound; this is the package fallback.
-DEFAULT_MEMBER_CONCURRENCY = 4
+# Deployment code supplies its configured bound; this is the package fallback. The mixer
+# answers a `/data` request in about 0.09 s whatever its size, so a mint's fetch is bound by
+# round trips: 16 workers cut the total-ODA composite's 248 requests from 15.7 s to about 7 s
+# against 4, with no slower server time. Each worker's look-ahead holds about 32 member tables
+# (`generation._DISPATCH_CHUNK_TARGET_MEMBERS`).
+DEFAULT_MEMBER_CONCURRENCY = 16
 
 
 @dataclass(frozen=True)
@@ -93,10 +99,24 @@ class MaterialisationRequest:
     # The whole population the definition's identity admits, shared by every request of the
     # definition and stated in the trace. `None` when the resolver could not state it.
     family: MemberFamily | None = None
+    # The `dcid:` refs member resolution left out of that family as stubs, nodes whose complete
+    # read carries no definition arc, shared by every request of the definition and stated in
+    # the trace.
+    stub_candidates: tuple[str, ...] = ()
     # A caller's facet filter over each probed candidate's provenance, method and unit. The
     # member elects only among the candidates it admits (`facets.admitted_candidates`), so
     # a filtered request serves its best admitted facet. None admits every candidate.
     candidate_filter: Callable[[Facet], bool] | None = None
+    # A read whose product must cite a source. With it, an unbound provenance axis refuses a
+    # winning facet that carries none (`DefaultFacetUndefinedError`); without it the axis
+    # resolves to the null ref as `measurementMethod` and `unit` do, and the answer states
+    # no source.
+    requires_provenance: bool = True
+    # The component of a composite definition the request reads
+    # (`code_index.composites.component_identities`), or None for a plain definition. The
+    # requests of one component materialise together, and a composite's components compose
+    # into one frame (`materialise.composite.compose_components`).
+    component: ComponentRole | None = None
 
     def __post_init__(self) -> None:
         for axis, binding in self.facet_bindings.items():
@@ -132,6 +152,11 @@ class MaterialisationResult:
     `read_series` maps each request's `stat_var` to the series its read holds under any
     window (`window.ReadSeries`): the facets it dispatched and the rows a conversion left
     out. No dependency fingerprint holds it outside a `latest` window's `latest_years`.
+    `countries_fallback` is true when a request binding no place was served the countries
+    with data in place of every place (`place_scope.DefaultPlaceScope`) and rows were served.
+    `unserved_members` are the `stat_var`s of a group's requests that hold no facet of the
+    one group the election chose (`group_facets.GroupElection.unserved`): they dispatch no
+    rows. Every one is listed, where `coverage_below_scope` names only the first five.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -152,6 +177,8 @@ class MaterialisationResult:
     probe_empty: bool = False
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
+    countries_fallback: bool = False
+    unserved_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -251,6 +278,7 @@ def materialise_group(
     coverage: CoverageIndex | None = None,
     deadline: float | None = None,
     progress: RowProgress | None = None,
+    absent_reads_zero: Callable[[str], bool] | None = None,
 ) -> MaterialisationResult:
     """Generate and finish a group. Returns one frame, trace and content version covering every
     member.
@@ -297,6 +325,12 @@ def materialise_group(
     rows whose deflator the table lacks; when no row of the group survives and some were
     omitted, the call refuses `currency_unmapped` naming the unnamed entities, else
     `deflator_missing` naming each entity and year (`refuse_if_every_row_omitted`).
+
+    `absent_reads_zero` says whether a provenance reads an absent member as zero
+    (`code_index.members.absent_member_reads_zero`), the rule a sum over the frame reads. A
+    group served from one provenance it holds true for raises no warning for its members
+    holding no observation in the requested years (`finish._build_warnings`). Without it
+    every provenance reads unknown.
     """
     if not requests:
         raise MaterialisationUsageError("materialise_group requires at least one member")
@@ -338,6 +372,8 @@ def materialise_group(
                 provenance_refresh=outcome.provenance_refresh,
                 conversion_records=(outcome.conversion_record,),
                 latest_years=outcome.latest_years,
+                candidate_provenances=outcome.candidate_provenances,
+                scope_settled=outcome.default_scope.settled,
             ),
         )
 
@@ -356,6 +392,7 @@ def materialise_group(
     refuse_if_every_row_omitted(
         served_rows=outcome.coverage.rows, records=outcome.member_conversion_records.values()
     )
+    served = dispatched_provenances(outcome.selections)
     return _finish_group(
         requests,
         outcome,
@@ -363,12 +400,17 @@ def materialise_group(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        absent_reads_zero=(
+            absent_reads_zero is not None and len(served) == 1 and absent_reads_zero(served[0])
+        ),
         dependencies=build_dependencies(
             requests,
-            source_refs=dispatched_provenances(outcome.selections),
+            source_refs=served,
             provenance_refresh=outcome.provenance_refresh,
             conversion_records=outcome.member_conversion_records.values(),
             latest_years=outcome.latest_years,
+            candidate_provenances=outcome.candidate_provenances,
+            scope_settled=outcome.default_scope.settled,
         ),
     )
 
@@ -416,26 +458,57 @@ def decide_member_unit(
     sdmx: SdmxClient,
     coverage: CoverageIndex,
     settle: bool,
-    precomputed: Sequence[Facet] | None = None,
-    breadth: Mapping[str, int] | None = None,
-    variable_breadth: VariableBreadth = None,
     deadline: float | None = None,
 ) -> Mapping[str, FacetSelection]:
-    """Return the facets and conversion decision a mint would use. The function reads facet
-    candidates but stops before observations and rate-table loading. `precomputed` skips the
-    probe and ranks with `breadth`, each facet's series count under the request's window, and
-    `variable_breadth`, each facet's places across the whole variable, as the probe's own
-    counts rank a probed decision (`facets.MemberProbe.breadth_in`,
-    `facets.MemberProbe.variable_breadth`). `settle`
-    goes to the probe (`facets.probe_facets`), and Search passes `False`.
+    """The single-member form of `decide_group_unit`: the facets and conversion decision a
+    mint of `request` alone would use, over its own probe. One member always serves."""
+    (selections,) = decide_group_unit(
+        [request],
+        [None],
+        graph=graph,
+        sdmx=sdmx,
+        coverage=coverage,
+        settle=settle,
+        deadline=deadline,
+    )
+    assert selections is not None  # A member's own election serves it or refuses.
+    return selections
 
-    Role-bearing requests require `coverage` or raise `MaterialisationUsageError` before probing.
-    Selection can raise `DefaultFacetUndefinedError` or `FacetNotAvailableError`. Request-form
-    units can raise `RateCoverageGapError`, `NonCurrencyUnitError` or `RecipeNotDeclaredError`.
-    Ref and unbound bindings return selected facets only.
+
+def decide_group_unit(
+    requests: Sequence[MaterialisationRequest],
+    probes: Sequence[MemberProbe | None],
+    *,
+    graph: GraphReader,
+    sdmx: SdmxClient,
+    coverage: CoverageIndex,
+    settle: bool,
+    deadline: float | None = None,
+) -> tuple[Mapping[str, FacetSelection] | None, ...]:
+    """Return the facets each member of `requests` dispatches under, in request order, and
+    check each served member's conversion, as a mint of the group would decide them
+    (`materialise_group`). A member the group leaves out (`GroupElection.unserved`) holds
+    None: it dispatches no rows, so it has no conversion to decide. The function reads facet
+    candidates but stops before observations and rate-table loading.
+
+    `probes` holds each request's election input in request order, its candidates and
+    their series counts (`facets.MemberProbe`), or None for a member the call probes itself
+    (`facets.probe_facets`, with `settle`; Search passes `False`). One request elects as a
+    mint's member path does (`generation._select_member_facets`), and several elect one group
+    across every member (`group_facets.select_group_facets`), led by their summed series
+    counts (`group_breadth`) with a tie broken on their whole variables
+    (`group_variable_breadth`), as `generation._plan_group_members` elects it. Each served
+    member's conversion is then decided under the one selection (`decide_member_conversion`).
+
+    Role-bearing requests require `coverage` or raise `MaterialisationUsageError` before
+    probing. Selection can raise `DefaultFacetUndefinedError` or `FacetNotAvailableError`.
+    Request-form units can raise `RateCoverageGapError`, `NonCurrencyUnitError` or
+    `RecipeNotDeclaredError`. Ref and unbound bindings return selected facets only.
     """
-    if precomputed is None:
-        probe = probe_facets(
+    probed = [
+        probe
+        if probe is not None
+        else probe_facets(
             stat_var=bare_stat_var_ref(request.stat_var),
             bound_entities=_flatten_bound_entities(request.role_bindings),
             graph=graph,
@@ -444,19 +517,41 @@ def decide_member_unit(
             declared_roles=request.declared_roles,
             role_bindings=request.role_bindings,
             coverage=coverage,
+            window=request.window,
             deadline=deadline,
         )
-        probed, breadth = probe.candidates, probe.breadth_in(request.window)
-        variable_breadth = probe.variable_breadth
+        for request, probe in zip(requests, probes, strict=True)
+    ]
+    # A decision fetches no rows, so its candidates need no place admission.
+    candidates = [
+        admitted_candidates(probe.candidates, request.candidate_filter)
+        for request, probe in zip(requests, probed, strict=True)
+    ]
+    window = requests[0].window
+    if len(requests) == 1:
+        served: tuple[int, ...] = (0,)
+        selections = _select_member_facets(
+            requests[0],
+            candidates[0],
+            graph=graph,
+            breadth=probed[0].breadth_in(window),
+            variable_breadth=probed[0].variable_breadth,
+        ).selections
     else:
-        # A decision fetches no rows, so precomputed candidates need no admission.
-        probed = precomputed
-    candidates = admitted_candidates(probed, request.candidate_filter)
-    selections = _select_member_facets(
-        request, candidates, graph=graph, breadth=breadth, variable_breadth=variable_breadth
-    ).selections
-    decide_member_conversion(request=request, selections=selections, graph=graph, deadline=deadline)
-    return selections
+        group = select_group_facets(
+            requests,
+            candidates,
+            graph=graph,
+            breadth=group_breadth(probed, window=window),
+            variable_breadth=group_variable_breadth(probed),
+        )
+        selections = group.election.selections
+        served = tuple(index for index in range(len(requests)) if index not in group.unserved)
+    for index in served:
+        decide_member_conversion(
+            request=requests[index], selections=selections, graph=graph, deadline=deadline
+        )
+    return tuple(selections if index in served else None for index in range(len(requests)))
 
 
 def prepare_materialise_preview(

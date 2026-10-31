@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
+from code_index.types import PartyClass, PartyKind, PartyRow, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.projection import (
     NativeCurrency,
@@ -46,7 +49,22 @@ _NAMES = {
     "p1": "Source one",
 }
 
-_PARTY_KINDS = {"country/USA": "party", "country/KEN": "party"}
+
+_CLASS_OF_KIND: Mapping[PartyKind, PartyClass | None] = {
+    "party": "official",
+    "total": None,
+    "residual": "residual",
+}
+
+
+def _parties(kinds: Mapping[str, PartyKind]) -> dict[str, PartyRow]:
+    return {
+        ref: PartyRow(dcid=ref, kind=kind, party_class=_CLASS_OF_KIND[kind])
+        for ref, kind in kinds.items()
+    }
+
+
+_PARTY_KINDS = _parties({"country/USA": "party", "country/KEN": "party"})
 
 # Reshape's own order: frame columns, then decoded axes, then enrichments.
 _SOURCE = Table(
@@ -101,7 +119,7 @@ def _project(
     source: Table = _SOURCE,
     *,
     names=_NAMES,
-    party_kinds=_PARTY_KINDS,
+    parties=_PARTY_KINDS,
     axis_codes=_AXIS_CODES,
     entity_columns=("financingProvider", "financingRecipient"),
 ):
@@ -111,7 +129,7 @@ def _project(
         axis_codes=axis_codes,
         unit_naming=_UNIT_NAMING,
         grain=period_grain(_periods(source)),
-    ).apply(source, names=names, party_kinds=party_kinds)
+    ).apply(source, names=names, parties=parties)
 
 
 def _periods(source: Table) -> tuple[object, ...]:
@@ -132,10 +150,10 @@ def test_a_long_table_takes_the_canonical_column_order_and_drops_status():
         "stat_var",
         "financingProvider",
         "financingProvider_label",
-        "financingProvider_party_kind",
+        "financingProvider_kind",
         "financingRecipient",
         "financingRecipient_label",
-        "financingRecipient_party_kind",
+        "financingRecipient_kind",
         "financingRecipient_iso3",
         "crsPurpose",
         "crsPurpose_label",
@@ -157,10 +175,10 @@ def test_a_long_table_takes_the_canonical_column_order_and_drops_status():
         "dcid:SV_A",
         "country/USA",
         "United States",
-        "party",
+        "official",
         "country/KEN",
         "Kenya",
-        "party",
+        "country or organisation",
         "KEN",
         "dcid:CRSPurposeCode122",
         "Basic health care",
@@ -214,66 +232,51 @@ def test_a_label_two_codes_share_leaves_the_code_cell_empty_and_counts_a_miss():
 def test_a_value_without_a_name_or_kind_leaves_its_cell_empty_and_counts_a_miss():
     projected = _project(
         names={"country/USA": "United States", "p1": "Source one"},
-        party_kinds={"country/USA": "total"},
+        parties=_parties({"country/USA": "total"}),
     )
 
     assert [
-        (row["financingRecipient_label"], row["financingRecipient_party_kind"])
+        (row["financingRecipient_label"], row["financingRecipient_kind"])
         for row in (_row(projected.table, i) for i in (0, 1))
     ] == [(None, None), (None, None)]
-    assert _row(projected.table, 0)["financingProvider_party_kind"] == "total"
+    assert _row(projected.table, 0)["financingProvider_kind"] == "total"
     # `m1` has no name either, and an unnamed method is not a miss.
     assert projected.unavailable == {
         "financingRecipient_label": 2,
-        "financingRecipient_party_kind": 2,
+        "financingRecipient_kind": 2,
     }
 
 
-def test_a_party_kind_column_the_table_carries_takes_the_default_columns_place_once():
-    # An explicit `party_kind` token enriches every entity column, the subject's included, so
-    # the table carries the kind columns before the layout plans; a subject role gets none by
-    # default.
+def test_a_party_role_gets_one_kind_column_in_words_and_a_subject_role_none():
+    # The long layout reads the party cells itself; the render drops every party-field token
+    # before reshape, so no machine party column reaches a long table.
     source = Table(
-        columns=(
-            "observationAbout",
-            "financingRecipient",
-            "value",
-            "observationAbout_party_kind",
-            "financingRecipient_party_kind",
-        ),
-        rows=(("country/USA", "country/KEN", 1.0, "party", "residual"),),
+        columns=("observationAbout", "financingRecipient", "value"),
+        rows=(("country/USA", "country/KEN", 1.0),),
     )
 
     projected = _project(
         source,
         entity_columns=("observationAbout", "financingRecipient"),
-        party_kinds={"country/KEN": "party"},
+        parties=_parties({"country/KEN": "party"}),
     )
 
     assert projected.table.columns == (
         "observationAbout",
         "observationAbout_label",
-        "observationAbout_party_kind",
         "financingRecipient",
         "financingRecipient_label",
-        "financingRecipient_party_kind",
+        "financingRecipient_kind",
         "value",
     )
     assert projected.table.rows == (
-        ("country/USA", "United States", "party", "country/KEN", "Kenya", "residual", 1.0),
+        ("country/USA", "United States", "country/KEN", "Kenya", "country or organisation", 1.0),
     )
-    without_token = _project(
-        Table(columns=source.columns[:3], rows=(source.rows[0][:3],)),
-        entity_columns=("observationAbout", "financingRecipient"),
-    )
-    assert without_token.table.columns == (
-        "observationAbout",
-        "observationAbout_label",
-        "financingRecipient",
-        "financingRecipient_label",
-        "financingRecipient_party_kind",
-        "value",
-    )
+    assert not {
+        f"{role}_{field}"
+        for role in ("observationAbout", "financingRecipient")
+        for field in ("party_kind", "party_class", "party_whole")
+    } & set(projected.table.columns)
 
 
 def test_stat_var_label_follows_stat_var_only_when_no_axis_is_decoded():
@@ -368,9 +371,9 @@ def test_the_default_enrichments_are_every_roles_name_and_each_party_roles_kind(
     ) == (
         "observationAbout_label",
         "financingProvider_label",
-        "financingProvider_party_kind",
+        "financingProvider_kind",
         "creditor_label",
-        "creditor_party_kind",
+        "creditor_kind",
     )
 
 
@@ -384,7 +387,7 @@ def test_a_layout_refuses_a_table_with_other_columns():
     )
 
     with pytest.raises(MaterialisationUsageError):
-        projection.apply(Table(columns=("value", "stat_var"), rows=()), names={}, party_kinds={})
+        projection.apply(Table(columns=("value", "stat_var"), rows=()), names={}, parties={})
 
 
 @pytest.mark.parametrize(
@@ -464,19 +467,228 @@ def test_totals_come_from_roles_the_identity_leaves_open_or_binds_to_several(ide
 
 
 def test_a_row_is_a_total_when_a_split_role_holds_a_total_and_residuals_stay():
-    columns = ("financingProvider_party_kind", "financingRecipient_party_kind", "value")
+    columns = ("financingProvider_kind", "financingRecipient_kind", "value")
     table = Table(
         columns=columns,
         rows=(
-            ("party", "party", 1.0),
-            ("party", "residual", 2.0),
-            ("party", "total", 3.0),
-            ("total", "party", 4.0),
+            ("official", "country or organisation", 1.0),
+            ("official", "unallocated", 2.0),
+            ("official", "total", 3.0),
+            ("total", "country or organisation", 4.0),
+            ("private", "country or organisation", 5.0),
+            ("official", "whole total", 6.0),
+            ("whole total", "country or organisation", 7.0),
         ),
     )
 
     parties, totals = split_totals(table, roles=("financingRecipient", "observationAbout"))
 
     assert (parties.columns, totals.columns) == (columns, columns)
-    assert [row[2] for row in parties.rows] == [1.0, 2.0, 4.0]
-    assert [row[2] for row in totals.rows] == [3.0]
+    assert [row[2] for row in parties.rows] == [1.0, 2.0, 4.0, 5.0, 7.0]
+    assert [row[2] for row in totals.rows] == [3.0, 6.0]
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
+_WHOLE_PARTIES = {
+    "DACAllRecipients": PartyRow(
+        dcid="DACAllRecipients",
+        kind="total",
+        datasets=(_DAC2A, _DAC2B),
+        axes=("destination",),
+        whole=(WholeMarker(dataset=_DAC2A, covers=("official", "residual"), years=(1984, 2024)),),
+    ),
+    "DACOfficialDonors": PartyRow(
+        dcid="DACOfficialDonors",
+        kind="total",
+        party_class="official",
+        datasets=(_DAC2A, _DAC2B),
+        axes=("origin",),
+        whole=(
+            WholeMarker(dataset=_DAC2A, covers=("official",)),
+            WholeMarker(dataset=_DAC2B, covers=("official",)),
+        ),
+    ),
+}
+
+
+def _kinds(
+    columns: tuple[str, ...], rows: tuple[tuple[object, ...], ...], *, role: str
+) -> list[object]:
+    table = Table(columns=columns, rows=rows)
+    projected = plan_long_projection(
+        table.columns,
+        entity_columns=(role,),
+        axis_codes={},
+        unit_naming=_UNIT_NAMING,
+        grain=None,
+    ).apply(table, names={}, parties=_WHOLE_PARTIES)
+    return [_row(projected.table, i)[f"{role}_kind"] for i in range(len(rows))]
+
+
+_RECIPIENT_COLUMNS = ("stat_var", "financingRecipient", "time_period", "provenance", "value")
+
+
+def test_one_frame_reads_an_all_recipients_total_by_dataset_and_year():
+    """DAC2A holds the total from 1984; DAC2B carries no marker, so every DAC2B row reads
+    `total`."""
+    rows = (
+        ("dcid:SV_A", "DACAllRecipients", "2021", _DAC2A, 1.0),
+        ("dcid:SV_A", "DACAllRecipients", "1984", _DAC2A, 2.0),
+        ("dcid:SV_A", "DACAllRecipients", "1983", _DAC2A, 3.0),
+        ("dcid:SV_A", "DACAllRecipients", "2021", _DAC2B, 4.0),
+        ("dcid:SV_A", "DACAllRecipients", "1990", _DAC2B, 5.0),
+    )
+
+    assert _kinds(_RECIPIENT_COLUMNS, rows, role="financingRecipient") == [
+        "whole total",
+        "whole total",
+        "total",
+        "total",
+        "total",
+    ]
+
+
+def test_official_donors_read_whole_total_in_both_datasets():
+    columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")
+    rows = (
+        ("dcid:SV_A", "DACOfficialDonors", "2021", _DAC2A, 1.0),
+        ("dcid:SV_A", "DACOfficialDonors", "2021", _DAC2B, 2.0),
+    )
+
+    assert _kinds(columns, rows, role="financingProvider") == ["whole total", "whole total"]
+
+
+@pytest.mark.parametrize(
+    ("columns", "rows"),
+    [
+        pytest.param(
+            ("stat_var", "financingRecipient", "provenance", "value"),
+            (("dcid:SV_A", "DACAllRecipients", _DAC2A, 1.0),),
+            id="no-period-column",
+        ),
+        pytest.param(
+            ("stat_var", "financingRecipient", "time_period", "value"),
+            (("dcid:SV_A", "DACAllRecipients", "2021", 1.0),),
+            id="no-provenance-column",
+        ),
+        pytest.param(
+            _RECIPIENT_COLUMNS,
+            (("dcid:SV_A", "DACAllRecipients", "2021", None, 1.0),),
+            id="empty-provenance-cell",
+        ),
+        pytest.param(
+            _RECIPIENT_COLUMNS,
+            (("dcid:SV_A", "DACAllRecipients", "2021/2022", _DAC2A, 1.0),),
+            id="period-across-years",
+        ),
+    ],
+)
+def test_a_row_without_a_readable_dataset_or_year_reads_total(columns, rows):
+    assert _kinds(columns, rows, role="financingRecipient") == ["total"]
+
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+
+_SIDE_PARTIES = {
+    "country/FRA": PartyRow(dcid="country/FRA", kind="party", party_class="official"),
+    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
+    "DACAfricaUnallocated": PartyRow(
+        dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
+    ),
+    **_WHOLE_PARTIES,
+}
+
+
+@pytest.mark.parametrize(
+    ("role", "ref", "provenance", "expected"),
+    [
+        pytest.param(
+            "financingProvider", "country/FRA", _DAC2A, "official", id="official-provider"
+        ),
+        pytest.param(
+            "financingProvider", "GatesFoundation", _DAC2A, "private", id="private-provider"
+        ),
+        pytest.param("creditor", "country/FRA", _DAC2A, "official", id="official-creditor"),
+        pytest.param(
+            "financingRecipient",
+            "country/FRA",
+            _DAC2A,
+            "country or organisation",
+            id="official-recipient",
+        ),
+        pytest.param(
+            "debtor", "country/FRA", _DAC2A, "country or organisation", id="official-debtor"
+        ),
+        pytest.param(
+            "financingRecipient", "GatesFoundation", _DAC2A, "private", id="private-recipient"
+        ),
+        pytest.param(
+            "financingRecipient",
+            "DACAfricaUnallocated",
+            _DAC2A,
+            "unallocated",
+            id="residual",
+        ),
+        pytest.param(
+            "financingProvider", "DACOfficialDonors", _DAC2A, "whole total", id="whole-total"
+        ),
+        pytest.param(
+            "financingRecipient", "DACAllRecipients", _DAC2B, "total", id="total-not-whole-here"
+        ),
+        pytest.param("financingRecipient", "country/NOWHERE", _DAC2A, None, id="not-listed"),
+    ],
+)
+def test_a_long_kind_cell_reads_the_partys_kind_in_words_for_its_side(
+    role, ref, provenance, expected
+):
+    columns = ("stat_var", role, "time_period", "provenance", "value")
+
+    projected = plan_long_projection(
+        columns, entity_columns=(role,), axis_codes={}, unit_naming=_UNIT_NAMING, grain=None
+    ).apply(
+        Table(columns=columns, rows=(("dcid:SV_A", ref, "2021", provenance, 1.0),)),
+        names={},
+        parties=_SIDE_PARTIES,
+    )
+
+    assert _row(projected.table, 0)[f"{role}_kind"] == expected
+    assert not any("_party_" in column for column in projected.table.columns)
+
+
+@pytest.mark.parametrize(
+    ("provenance", "expected", "unavailable"),
+    [
+        pytest.param(_DAC2A, "total", 0, id="total-in-dac2a"),
+        pytest.param(_CRS, "official", 0, id="party-in-the-crs"),
+        pytest.param(None, None, 1, id="no-dataset"),
+    ],
+)
+def test_a_party_whose_kind_differs_between_datasets_reads_none_on_a_row_naming_no_dataset(
+    provenance, expected, unavailable
+):
+    """The IMF trust funds are a total in DAC2A and a party in the CRS."""
+    trust_funds = PartyRow(
+        dcid="IMFConcessionalTrustFunds",
+        kind="party",
+        party_class="official",
+        datasets=(_CRS, _DAC2A),
+        axes=("origin",),
+        dataset_kinds=((_DAC2A, "total"),),
+    )
+    columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")
+
+    projected = plan_long_projection(
+        columns,
+        entity_columns=("financingProvider",),
+        axis_codes={},
+        unit_naming=_UNIT_NAMING,
+        grain=None,
+    ).apply(
+        Table(columns=columns, rows=(("dcid:SV_A", trust_funds.dcid, "2021", provenance, 1.0),)),
+        names={},
+        parties={trust_funds.dcid: trust_funds},
+    )
+
+    assert _row(projected.table, 0)["financingProvider_kind"] == expected
+    assert projected.unavailable.get("financingProvider_kind", 0) == unavailable

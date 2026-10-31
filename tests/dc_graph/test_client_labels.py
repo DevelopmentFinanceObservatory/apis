@@ -217,6 +217,28 @@ def test_node_labels_batch_skips_valueless_name_node_beside_valued(monkeypatch) 
     assert result == {"country/BBB": "B"}
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["United States", "United States of America", "country/USA"],
+        ["country/USA", "United States of America", "United States"],
+    ],
+)
+def test_a_node_of_several_names_takes_one_label_whatever_their_order(monkeypatch, names) -> None:
+    """The graph keys names on provenance and fixes no order among them, so the label is the
+    `display_name`, and a name equal to the dcid is none."""
+
+    def fake_post(self, path, payload, *, deadline=None):
+        nodes = [{"value": name} for name in names]
+        return {"data": {"country/USA": {"arcs": {"name": {"nodes": nodes}}}}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api")
+
+    assert client.node_label("country/USA") == "United States of America"
+    assert client.node_labels_batch(["country/USA"]) == {"country/USA": "United States of America"}
+
+
 def test_node_labels_batch_error_before_cache_write(monkeypatch) -> None:
     """A GraphReadError from post propagates without any cache write."""
 

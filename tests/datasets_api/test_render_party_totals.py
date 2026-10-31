@@ -3,10 +3,15 @@ alone and under a groupby, and the rendering it is recorded as."""
 
 from __future__ import annotations
 
+import threading
+import time
+
+import pytest
 from dfo_frame_grammar import Frame
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import PartyRow, StatVarRow
+from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import (
     RenderedDefinition,
@@ -16,6 +21,7 @@ from datasets_api.render import (
 )
 from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
+from materialise.errors import OverCeilingError
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -123,7 +129,14 @@ _WITH_TOTAL = _frame((_KENYA, _GHANA, _DEVELOPING))
 _MEMBERS = _frame((_KENYA, _GHANA))
 
 
-def _render(frame: Frame, options: MintOptions) -> tuple[RenderedDefinition, str]:
+def _render(
+    frame: Frame,
+    options: MintOptions,
+    *,
+    groupby_fold_max_rows: int = 2_000_000,
+    frame_rows: int | None = None,
+    deadline: float | None = None,
+) -> tuple[RenderedDefinition, str]:
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
         frame_chunks=lambda: iter((frame,)),
@@ -139,6 +152,10 @@ def _render(frame: Frame, options: MintOptions) -> tuple[RenderedDefinition, str
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED,
         pivot_max_output_cells=5_000_000,
+        groupby_fold_max_rows=groupby_fold_max_rows,
+        groupby_row_fold_max_rows=700_000,
+        frame_rows=frame_rows,
+        deadline=deadline,
         prepared_at=PREPARED_AT,
         site=SITE,
     )
@@ -157,7 +174,9 @@ def test_a_cut_that_leaves_totals_out_renders_a_version_minted_from_the_kept_row
     assert derived.content_version == mint_version(_MEMBERS) != mint_version(_WITH_TOTAL)
     assert derived.rows == _MEMBERS.num_rows
     assert not derived.summed
-    assert derived.party_totals_left_out == ({"role": "recipient", "entities": [_DEVELOPING]},)
+    assert derived.party_totals_left_out == (
+        {"role": "recipient", "provenance": "p1", "entities": [_DEVELOPING]},
+    )
     assert [chunk.table for chunk in derived.frame_chunks()] == [_MEMBERS.table]
     assert _DEVELOPING not in body
     assert _KENYA in body
@@ -189,9 +208,32 @@ def test_a_groupby_with_a_cut_sums_the_kept_members_under_one_version():
     assert derived.summed
     assert derived.content_version == summed_members.derived.content_version
     assert derived.content_version != summed_with_total.derived.content_version
-    assert derived.party_totals_left_out == ({"role": "recipient", "entities": [_DEVELOPING]},)
+    assert derived.party_totals_left_out == (
+        {"role": "recipient", "provenance": "p1", "entities": [_DEVELOPING]},
+    )
     assert _DEVELOPING not in body
     assert "15.0" in body
+
+
+def test_a_cut_frame_past_the_fold_ceiling_refuses_before_waiting_for_a_fold(monkeypatch):
+    """A groupby of a cut frame counts the rows the cut keeps before it waits for a fold
+    permit, so a kept frame past the ceiling refuses over_ceiling, with its own count, even
+    while another render holds the permit."""
+    permits = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(render, "_fold_permits", lambda: permits)
+    assert permits.acquire(blocking=False)
+    kept = _MEMBERS.num_rows
+
+    with pytest.raises(OverCeilingError) as refused:
+        _render(
+            _WITH_TOTAL,
+            MintOptions(format="csv", bundle=False, groupby=_SUMMED, without_party_totals=True),
+            groupby_fold_max_rows=kept - 1,
+            frame_rows=_WITH_TOTAL.num_rows,
+            deadline=time.monotonic() + 0.05,
+        )
+
+    assert (refused.value.count, refused.value.cap) == (kept, kept - 1)
 
 
 def test_a_rendering_records_the_option_only_when_it_is_set():

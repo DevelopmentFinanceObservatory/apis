@@ -5,10 +5,12 @@ The published mint schema and runtime validation use these same model definition
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -21,6 +23,7 @@ from pydantic import (
 
 from datasets_api.models import CanonicalDefinition, _require_schema_version_int
 from dfo_platform.named import cut, named_capped
+from dfo_platform.validation import refusal_with_alternatives
 
 FACET_AXES: tuple[str, ...] = ("provenance", "measurementMethod", "unit")
 NULL_REF_FACET_AXES: tuple[str, ...] = ("measurementMethod", "unit")
@@ -162,25 +165,61 @@ FacetBinding = Annotated[
 ]
 
 
+def _known_facet_axis(axis: str) -> str:
+    """`axis` when it is one of `FACET_AXES`, else a refusal listing them.
+
+    The nearest axis leads the alternatives and the message when the posted name is close to
+    it, as `units` is to `unit`."""
+    if axis in FACET_AXES:
+        return axis
+    nearest = difflib.get_close_matches(axis, FACET_AXES, n=1)
+    alternatives = nearest + [known for known in FACET_AXES if known not in nearest]
+    hint = f" Did you mean {nearest[0]!r}?" if nearest else ""
+    raise refusal_with_alternatives(
+        "facet_axis_unknown",
+        f"unknown facet axis {cut(axis)!r}.{hint} The facet axes are {', '.join(FACET_AXES)}.",
+        alternatives=alternatives,
+        axis=cut(axis),
+    )
+
+
+FacetAxis = Annotated[str, AfterValidator(_known_facet_axis)]
+"""A `scope.facets` key. An unknown one is refused at its own key, listing `FACET_AXES`."""
+
+
 class Scope(BaseModel):
-    """The `scope` block a mint request may carry: an omitted member means
-    unbound (everything). `window` narrows the result to `all`, `latest`,
-    or a `start_year`/`end_year` range. `entities` binds role names to
-    non-empty lists of dcids (a role's values must each be non-empty and
-    must not contain `+` or `,`). `facets` binds a known axis
-    (`provenance`, `measurementMethod`, `unit`) to a specific ref, or
-    `measurementMethod` or `unit` to a null ref. The `unit` axis alone may
-    instead carry a conversion request (`FacetUnitRequestBinding`) or ask for
-    each entity's own currency (`FacetNationalCurrencyBinding`).
+    """The `scope` block a mint request may carry. On a `spec_id` input each
+    supplied member replaces the stored spec's value for that member whole,
+    and an omitted member keeps the spec's value. On a `statvar_set` input,
+    which has no stored spec, an omitted member is unbound (everything).
+    `window` narrows the result to `all`, `latest`, or a
+    `start_year`/`end_year` range. `entities` binds role names to non-empty
+    lists of dcids (a role's values must each be non-empty and must not
+    contain `+` or `,`). `facets` binds a known axis (`provenance`,
+    `measurementMethod`, `unit`) to a specific ref, or `measurementMethod`
+    or `unit` to a null ref. The `unit` axis alone may instead carry a
+    conversion request (`FacetUnitRequestBinding`) or ask for each entity's
+    own currency (`FacetNationalCurrencyBinding`).
     """
 
     # Validate roles and values against the SDMX client's filter rules before resolution. Empty
     # dcids are rejected here because the client allows them through to HTTP and no dcid grammar
     # accepts them. Identity-core `entities` allows only dcid arrays, so containment bindings fail.
     model_config = ConfigDict(extra="forbid")
-    window: WindowScope | None = None
-    entities: dict[str, list[str]] | None = None
-    facets: dict[str, FacetBinding] | None = None
+    window: WindowScope | None = Field(
+        default=None, description="the years to serve. Replaces the spec's window whole"
+    )
+    entities: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "role name to dcids. Replaces the spec's whole entity binding. A role this map "
+            "omits is unbound, so a client narrowing one role repeats the spec's other roles, "
+            "and {} unbinds every bound role. An open role the map binds is no longer open"
+        ),
+    )
+    facets: dict[FacetAxis, FacetBinding] | None = Field(
+        default=None, description="axis to binding. Replaces the spec's whole facet binding"
+    )
 
     @model_validator(mode="after")
     def _entities_are_valid(self) -> Scope:
@@ -199,14 +238,6 @@ class Scope(BaseModel):
                         raise ValueError(
                             f"entity role {cut(role)!r} has a value containing {char!r}: {cut(ref)!r}"
                         )
-        return self
-
-    @model_validator(mode="after")
-    def _facets_axes_known(self) -> Scope:
-        if self.facets is not None:
-            unknown = set(self.facets) - set(FACET_AXES)
-            if unknown:
-                raise ValueError(f"unknown facet axis/axes: {named_capped(sorted(unknown))}")
         return self
 
     @model_validator(mode="after")
@@ -346,6 +377,11 @@ class MintOptions(BaseModel):
     as it does for pivot output. It refuses with `bundle: true`, a `pivot`,
     or a format other than parquet.
 
+    `enrichment: "default"` asks for the version's default enrichment columns
+    (`datasets_api.default_enrichment`), resolved once the version is built: they join `columns`,
+    or are `columns` when it names none, and the option is dropped before the rendering is keyed,
+    rendered or recorded, so the answer is that of a request naming the resolved columns.
+
     `without_party_totals: true` leaves out the rows whose party, on a flow party role the
     served identity binds no entity on, the code index declares a group total
     (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
@@ -363,6 +399,16 @@ class MintOptions(BaseModel):
         default=None, json_schema_extra={"uniqueItems": True}
     )
     without_party_totals: bool = False
+    # Left out of every dump while unset, so only options that ask for it key on it.
+    enrichment: Literal["default"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description='"default" adds the version\'s default enrichment columns, chosen once it is '
+        "built from the roles its frame holds: each of observationAbout, financingProvider and "
+        "financingRecipient it holds takes its _type column, and a flow party role adds "
+        "party_kind, party_class and party_whole. They join `columns`, or are the columns when "
+        "it names none, so the result is the request that names them",
+    )
 
     @field_validator("columns")
     @classmethod

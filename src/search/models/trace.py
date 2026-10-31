@@ -19,7 +19,8 @@ class ResolvedFilter(StrictModel):
         default="binder",
         description=(
             "whether the bind call's own election produced this value, a code "
-            "row recognised in the query's own text forced it, or the "
+            "row recognised in the query's own text forced it, a sector concept "
+            "the text named bound its declared grouping of codes, or the "
             "measure-family election forced it on an axis the binder left open"
         ),
     )
@@ -32,17 +33,22 @@ class ResolvedQualifier(StrictModel):
     `query_text`, or from an admitted qualifier tie (see
     `_resolve_query_qualifiers`). `text` is the verbatim span of whichever
     source named it. `named` is every code row -- any system -- that span
-    names in the packaged index;
-    empty when the text names no code at all (a `no_vocabulary` term). `slot`
+    names in the packaged index, and every measure value it names that the
+    answer does not carry (a dcid of the index's measure values, such as
+    `amountMobilised`);
+    empty when the text names neither (a `no_vocabulary` term). `slot`
     is the constraint property dcid of the `slot_filters` entry whose
     binding consumed the term, or, on an `"unbound"` value the answer's shape
     has a slot for but leaves unmet, that slot's property; `None` otherwise.
     `disposition` is
     `"bound"` when some final binding on a named row's code system covers
-    it (that row or a descendant), `"unbound"` when a row was named but no
-    binding covers it, and `"no_vocabulary"` when the term names no code at
-    all -- an LLM-reported phrase (`bind`'s own `unplaced` output) that no
-    taxonomy in this deployment's index can express.
+    it (that row or a descendant), `"unbound"` when a code row was named but
+    no binding covers it or a measure value was named that the answer does not
+    carry, and `"no_vocabulary"` when the term names neither: an LLM-reported
+    phrase (`bind`'s own `unplaced` output) that no taxonomy in this
+    deployment's index can express, an exclusion or comparison phrase
+    (`"unsupported"`), or words beside no code the binder rated as not stated
+    on the elected shape (`"uncovered"`).
 
     `start` and `end` locate the term in the part's variable phrase. `evidence` says what
     read it, and `None` means a code's label or synonym matched the term as the query
@@ -53,9 +59,16 @@ class ResolvedQualifier(StrictModel):
     - `"model"` marks a phrase the bind model read through a code it chose from the
       phrase's candidate menu, a lexical hit of the menu or a descendant of one
       (`phase_rank_bind._model_records`); `named` holds the chosen codes.
-    - `"uncovered"` marks words no reader covers beside a recognised code
-      (`phase_rank_bind._coverage_records`), recorded `"unbound"` with that code's rows as
-      `named`.
+    - `"uncovered"` marks words no reader covers on the elected shape
+      (`phase_rank_bind._coverage_records`). Beside a recognised code they are recorded
+      `"unbound"` with that code's rows as `named`. On a shape the measure index describes,
+      a word that every name of a measure value's reading holds names that value when no
+      span names it and the answer does not carry it, and its record adds the value to
+      `named`. Beside no code such a word is recorded `"unbound"` naming the value, whatever
+      the binder rates it; "mobilised" names `amountMobilised` on an amount series. Other
+      words beside no code are recorded `"no_vocabulary"` with `named` empty when the
+      binder rates them below `SearchSettings.stated_word_bar` as not stated by the shape's
+      series; a word it rates at the bar or above, or leaves unrated, reads as stated.
     - `"unavailable"` marks a code term the elected shape cannot apply: one naming only
       codes no shape can bind, or, on a part naming a dataset, one no row of that dataset
       holds (`phase_rank_bind._unavailable_qualifiers`), recorded `"unbound"`.
@@ -76,7 +89,8 @@ class ResolvedQualifier(StrictModel):
     named: list[GraphRef] = Field(
         description=(
             "every code row the span names in the packaged index, any code "
-            "system; empty when none did"
+            "system, and every measure value it names that the answer does not "
+            "carry; empty when none did"
         )
     )
     slot: str | None = Field(
@@ -90,9 +104,9 @@ class ResolvedQualifier(StrictModel):
     disposition: Literal["bound", "unbound", "no_vocabulary"] = Field(
         description=(
             '"bound" when a final binding covers a named row (or a '
-            'descendant of one); "unbound" when a row was named but no '
-            'binding covers it; "no_vocabulary" when the term names no code '
-            "at all"
+            'descendant of one); "unbound" when a code row was named but no '
+            "binding covers it, or a measure value was named that the answer "
+            'does not carry; "no_vocabulary" when the term names neither'
         )
     )
     start: int | None = Field(
@@ -109,8 +123,11 @@ class ResolvedQualifier(StrictModel):
         default=None,
         description=(
             'what read the term: a code label or synonym, the bind model, "uncovered" '
-            'for words no reader covers beside a recognised code, "unavailable" for a '
-            'code no table holds, "unsupported" for a distinction no binding expresses'
+            "for words no reader covers on the elected shape, unbound beside a recognised "
+            "code or naming a measure value the answer does not carry, and no_vocabulary "
+            "beside none when the binder rated them as not stated by its series, "
+            '"unavailable" for a code no table holds, "unsupported" for a '
+            "distinction no binding expresses"
         ),
     )
     operation: Literal["union", "refinement"] | None = Field(

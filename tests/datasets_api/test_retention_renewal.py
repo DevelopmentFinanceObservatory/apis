@@ -28,6 +28,7 @@ from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from tests.artifact_store.conftest import FakeGCSClient
 
+from ._app_factories import offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._snapshot_doubles import FakeSpecReader, _version, make_client_for_door
@@ -98,6 +99,7 @@ def _pin_client(version_store: FakeVersionRecordDatasetStore, *, artifact_store,
             snapshot_reader=LiveSnapshotReader(store=version_store),
             artifact_store=artifact_store,
             reference_writer=LiveArtifactReferenceWriter(store=version_store),
+            allowances=offline_allowances(),
             now=now,
         ),
         settings=DatasetsBuildSettings.from_env(),

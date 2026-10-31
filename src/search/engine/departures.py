@@ -36,24 +36,32 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
+from code_index.composites import provenance_datasets
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
+    SOURCE_REF,
     UNIT_REF,
     WHERE_REF,
     BindingProvenance,
+    EntityGroup,
     GraphRef,
     IdentityWindowRange,
     ObservationSeries,
     Operation,
     OperationVerb,
+    ProviderBinding,
     RoleAxis,
+    Slot,
+    SlotBinding,
     Spec,
     Warning,
     role_ref,
 )
+from search.scope.region import is_residual
+from unit_words.currency_nouns import currency_noun
 
 if TYPE_CHECKING:
     from code_index.types import PartyRow
@@ -231,14 +239,20 @@ def spec_departure_facts(
     *,
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
+    members_in_words: bool = False,
 ) -> list[DepartureFact]:
     """The departures read off `spec` and the `operations` its part carries: operations
-    not run, entities the data holds no values for, years outside the served span,
-    modelled values, and groups read as members. On a flow role such a group names the
-    residuals its total counts that the members leave out and the served dataset publishes on
-    that role.
-    A group read as its total departs nothing.
-    With no `spec`, only the operations not run.
+    not run, entities the data holds no values for, members the one group the answer reads
+    leaves out (`member_unavailable_fact`), years outside the served span,
+    modelled values, groups read as members, and sides read as their whole population. On a
+    flow role a group read as members names the residuals the role binds beside them, and
+    those its total counts that the role leaves out and the served dataset publishes on
+    that role. Its size counts the members alone. A group read as its total
+    departs nothing. A side read whole (`EntityGroup.whole_of`) departs as
+    `whole_total_read`, which names the population and the way back to its members, in the
+    question's words where the part's door asks for members in them (`members_in_words`). An
+    `aggregate` over that side still departs as not run: it may filter its members, which
+    the total does not answer. With no `spec`, only the operations not run.
 
     A forecast to a target year that a `year_unavailable` fact states departs as that
     fact alone; any other forecast departs as `operation_not_applied`. A group, read as
@@ -262,34 +276,123 @@ def spec_departure_facts(
         return facts
     words = entity_words if entity_words is not None else NO_ENTITY_WORDS
     facts.extend(_unavailable_entity_facts(spec, entity_words=words))
+    if left_out := member_unavailable_fact(spec):
+        facts.append(left_out)
     facts.extend(year_facts)
+    facts.extend(_scope_window_facts(spec))
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
     for role, group in (spec.resolved.entity_groups or {}).items():
+        if group.whole_of:
+            facts.append(
+                _whole_total_fact(
+                    spec,
+                    role,
+                    group,
+                    words=words,
+                    request_words=entity_words is not None,
+                    members_in_words=members_in_words,
+                )
+            )
+            continue
         if group.total is not None:
             continue
-        excluded, sum_differs = _members_left_out(spec, role, group.ref)
+        excluded, sum_differs = members_left_out(spec, role, group.ref)
         facts.append(
             DepartureFact(
                 code="group_read_as_members",
                 binding_ref=role_ref(role),
                 asked=words.get(group.label, group.label),
                 group=group.label,
-                group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
+                group_size=len(_role_members(spec, role)),
                 group_dcid=group.ref,
                 excluded=excluded,
+                included=_residuals_bound(spec, role),
                 sum_differs=sum_differs,
             )
         )
     return facts
 
 
-def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
+def _whole_total_fact(
+    spec: Spec,
+    role: str,
+    group: EntityGroup,
+    *,
+    words: Mapping[str, str],
+    request_words: bool,
+    members_in_words: bool,
+) -> DepartureFact:
+    """`whole_total_read` for `role`, which reads `group`'s whole population. The request's
+    words for it (`words`, keyed by the group's label) are `asked`; with none on a door that
+    holds the request's words (`request_words`), the request named nothing on the side, so
+    the fact is `inferred`. A union of totals (`EntityGroup.total` `None`) names each by its
+    code index label, as the group names a single total. `side_classes` is the group's
+    (`spec_build.with_side_classes`). `members_in_words` is whether the door asks for the
+    side's members in the question's words."""
+    asked = words.get(group.label)
+    parties = get_index().parties
+    axis = role_key_axis(role)
+    totals = [entity.ref for entity in spec.resolved.entities if entity.role == role]
+    return DepartureFact(
+        code="whole_total_read",
+        binding_ref=role_ref(role),
+        asked=asked,
+        over=axis,
+        group=group.label,
+        entities=()
+        if group.total is not None
+        else tuple(
+            row.label if (row := parties.get(dcid)) is not None and row.label else dcid
+            for dcid in totals
+        ),
+        whole_of=tuple(group.whole_of or ()),
+        side_classes=tuple(group.side_classes or ()),
+        inferred=asked is None and request_words,
+        members_in_words=members_in_words,
+    )
+
+
+def _role_members(spec: Spec, role: str) -> list[str]:
+    """The entities `spec` binds on `role`, less the residual buckets a summed region binds
+    beside its members (`scope.region.is_residual`), which no member count holds."""
+    index = get_index()
+    return [
+        entity.ref
+        for entity in spec.resolved.entities
+        if entity.role == role and not is_residual(entity.ref, index)
+    ]
+
+
+def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
+    """The labels of the residual buckets `spec` binds on `role` beside a group's members
+    (`scope.region.is_residual`), each by the code index's label, as `members_left_out`
+    names them, else its dcid."""
+    index = get_index()
+    return tuple(
+        index.parties[entity.ref].label or entity.ref
+        for entity in spec.resolved.entities
+        if entity.role == role and is_residual(entity.ref, index)
+    )
+
+
+def served_datasets(spec: Spec) -> frozenset[str]:
+    """The datasets `spec` is served from: the provenance its facets bind, the tables of its
+    components for a composite (`code_index.composites`), else every source its trace
+    resolved."""
+    provenance = spec.resolved.facets.get("provenance")
+    if provenance is not None and provenance.ref is not None:
+        return frozenset(provenance_datasets(provenance.ref))
+    return frozenset(source.ref for source in spec.resolved.trace.resolved_sources)
+
+
+def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:
     """What the members of `group`, read on `role`, leave out of the group's total, by the
     code index: the labels of the residuals the total counts beside them
-    (`PartyRow.residuals`), and whether the total is a figure that can differ from their sum
-    (`PartyRow.sums_members` false). Each counts only where a dataset `spec` serves publishes
-    the party (`PartyRow.datasets`) on the flow axis of `role` (`PartyRow.axes`).
+    (`PartyRow.residuals`) that the role does not bind beside them, and whether the total is
+    a figure that can differ from their sum (`PartyRow.sums_members` false). Each counts only
+    where a dataset `spec` serves publishes the party (`PartyRow.datasets`) on the flow axis
+    of `role` (`PartyRow.axes`).
 
     The total is the one the role keeps for the group it reads as members
     (`ResolvedSpec.group_totals`), which a group with no node of its own, such as a resolver
@@ -304,17 +407,13 @@ def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[s
     axis = role_key_axis(role)
     if total is None or axis is None:
         return (), False
-    provenance = spec.resolved.facets.get("provenance")
-    served = (
-        {provenance.ref}
-        if provenance is not None and provenance.ref is not None
-        else {source.ref for source in spec.resolved.trace.resolved_sources}
-    )
+    served = served_datasets(spec)
+    bound = {entity.ref for entity in spec.resolved.entities if entity.role == role}
 
     def published(party: PartyRow) -> bool:
         return axis in party.axes and bool(served.intersection(party.datasets))
 
-    residuals = (index.parties.get(dcid) for dcid in total.residuals)
+    residuals = (index.parties.get(dcid) for dcid in total.residuals if dcid not in bound)
     excluded = tuple(
         party.label or party.dcid for party in residuals if party is not None and published(party)
     )
@@ -324,8 +423,9 @@ def _members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[s
 def without_request_words(fact: DepartureFact) -> DepartureFact:
     """`fact` as a part states it on a door that holds no words of the request (a resubmit):
     `asked` is `None`, and a measure value it names (`measure_not_applied`) moves to
-    `values`, so its text still names what the answer left out."""
-    if fact.asked is None:
+    `values`, so its text still names what the answer left out. `member_unavailable` asks
+    for the Spec's own members, which no request words name, and stands."""
+    if fact.asked is None or fact.code == "member_unavailable":
         return fact
     values = (fact.asked,) if fact.code == "measure_not_applied" else fact.values
     return dataclasses.replace(fact, asked=None, values=values)
@@ -389,6 +489,62 @@ def scope_limited_fact(spec: Spec) -> DepartureFact | None:
     )
 
 
+def member_unavailable_fact(spec: Spec) -> DepartureFact | None:
+    """`member_unavailable` for the members holding data that the one group `spec`'s answer
+    reads leaves out (`ResolvedSpec.unserved_members`), by label, else by dcid, or `None`
+    when the group serves every member holding data. A group is one source, unit and
+    method, so the fact states the source the answer reads as `shown` and its unit as
+    `unit`, each from the facets its served series carry (`ResolvedSpec.facets`), and
+    nothing of why the group won. Editing the source slot clears it where the answer binds
+    one, else editing the set binding a how slot holds, whose values name the members."""
+    left_out = spec.resolved.unserved_members
+    if not left_out:
+        return None
+    labels = tuple(ref.label or ref.ref for ref in left_out)
+    return DepartureFact(
+        code="member_unavailable",
+        binding_ref=_member_binding_ref(spec.resolved.slots),
+        asked=", ".join(labels),
+        shown=_served_source(spec),
+        members=labels,
+        unit=_served_unit(spec),
+    )
+
+
+def _served_source(spec: Spec) -> str | None:
+    """The one provenance `spec`'s served series carry, by label, else by dcid, or `None`
+    when they carry several or none."""
+    provenance = spec.resolved.facets.get("provenance")
+    if provenance is None or provenance.ref is None:
+        return None
+    return provenance.label or provenance.ref
+
+
+def _member_binding_ref(slots: Sequence[Slot]) -> str | None:
+    """The ref of the slot whose edit serves a member the answer leaves out: the source
+    slot where the answer binds one, else the first how slot holding a set binding, else
+    `None`."""
+    for slot in slots:
+        if slot.key.axis == "source" and slot.binding.kind != "unbound":
+            return SOURCE_REF
+    for slot in slots:
+        if slot.key.axis == "how" and slot.binding.kind == "set" and slot.key.property:
+            return f"how:{slot.key.property.ref}"
+    return None
+
+
+def _served_unit(spec: Spec) -> str | None:
+    """The name of the one unit `spec`'s served series carry: a currency by its plural noun
+    (`currency_noun`), any other unit by label, else by dcid, or `None` when they carry
+    several or none."""
+    unit = spec.resolved.facets.get("unit")
+    if unit is None or unit.ref is None:
+        return None
+    if unit.currency is not None:
+        return currency_noun(unit.currency, label=unit.label)
+    return unit.label or unit.ref
+
+
 def _unavailable_entity_facts(
     spec: Spec, *, entity_words: Mapping[str, str]
 ) -> list[DepartureFact]:
@@ -418,8 +574,10 @@ def unavailable_entity_facts(
     member of a set the request named (`ResolvedSpec.named_sets`) counts that set's members
     under the set (`DepartureFact.sets`) and names only the places the request named one by
     one, a member the request named alone on this role (`ResolvedSpec.named_alone`)
-    included. A role whose group holds such a member is read the same way. On a `latest`
-    request each names the latest period the answer serves."""
+    included. A role whose group holds such a member is read the same way. A residual
+    bucket a role read as a group binds beside its members (`scope.region.is_residual`) is
+    no member, so it neither counts toward the group nor departs. On a `latest` request each
+    names the latest period the answer serves."""
     window = spec.resolved.coverage.window
     latest_years = (
         (window.start_year, window.end_year)
@@ -431,9 +589,14 @@ def unavailable_entity_facts(
     )
     groups = spec.resolved.entity_groups or {}
     alone = spec.resolved.named_alone
+    index = get_index()
     names_by_role: dict[str, dict[str, str]] = {}
     size_by_role: dict[str, int] = {}
     for entity in spec.resolved.entities:
+        # A residual bucket a summed region binds beside its members is no member, so it
+        # neither counts toward the group's size nor departs as a member without values.
+        if entity.role in groups and is_residual(entity.ref, index):
+            continue
         size_by_role[entity.role] = size_by_role.get(entity.role, 0) + 1
         if (entity.role, entity.ref) in unserved:
             names_by_role.setdefault(entity.role, {})[entity.ref] = entity.label or entity.ref
@@ -621,6 +784,55 @@ def _year_facts(spec: Spec, *, operations: Sequence[Operation]) -> list[Departur
         for start, end in requested
         if _outside(start, end, first=data_years[0], last=data_years[1])
     ]
+
+
+_SCOPE_LIMITS: Mapping[str, Literal["imputed_multilateral", "published_total"]] = MappingProxyType(
+    {"imputed_coverage": "imputed_multilateral", "option_not_covered": "published_total"}
+)
+"""What leaves out the years a partial scope option does not cover, by its reason."""
+
+
+def _scope_window_facts(spec: Spec) -> list[DepartureFact]:
+    """`year_unavailable` for each scope choice whose active option the request's own words
+    asked for (an explicit entry with a text origin) and that covers fewer years than the
+    part asks for (`OptionAvailability.status` partial), so the answer serves the latest
+    run of them, the window its binding sets (`scope.build._compiles_over_window`). A
+    switch to such an option states its years in its label, so it departs nothing.
+    `asked` is the range the part asked for, None for every year."""
+    scope = spec.resolved.scope_choices
+    if scope is None:
+        return []
+    stated = {
+        (entry.axis, entry.option_id)
+        for entry in scope.entries
+        if entry.provenance == "explicit" and entry.origin.kind == "text"
+    }
+    window = scope.base.identity.requested_window
+    requested = (
+        (window.start_year, window.end_year) if isinstance(window, IdentityWindowRange) else None
+    )
+    facts = []
+    for choice in scope.choices:
+        if (choice.axis, choice.active) not in stated:
+            continue
+        option = next(o for o in choice.options if o.option_id == choice.active)
+        binding = option.binding
+        served = binding.window if isinstance(binding, SlotBinding | ProviderBinding) else None
+        availability = option.availability
+        if availability.status != "partial" or not availability.years or served is None:
+            continue
+        facts.append(
+            DepartureFact(
+                code="year_unavailable",
+                binding_ref=WHEN_REF,
+                asked=_range_text(*requested) if requested is not None else None,
+                shown=_span_text(served),
+                requested_years=requested,
+                covered_years=tuple(availability.years),
+                limited_by=_SCOPE_LIMITS.get(availability.code or ""),
+            )
+        )
+    return facts
 
 
 def window_gap_fact(gap: WindowGap | None) -> DepartureFact | None:

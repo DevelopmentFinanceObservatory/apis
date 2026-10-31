@@ -238,6 +238,7 @@ _ETHIOPIA_REQUEST = {
 }
 
 _ETHIOPIA_RENDERED_SENTENCE = (
+    "Answered 1 of 2 parts. "
     "Ethiopia's total population, 1960 to 2024. World Development Indicators. "
     "Birth rate has 2 readings. Ethiopia's crude birth rate per capita. 1960 to 2023. "
     "Ethiopia's female fertility rate. World Development Indicators \u00b7 1960 to 2023."
@@ -269,13 +270,21 @@ def test_ethiopia_population_and_birth_rate_composed_sentence_buffered():
     assert when_slot["text"] == "1960 to 2024"
     assert when_slot["part_index"] == 0
 
-    # Every token belongs to exactly one sentence -- connectives and the
-    # terminal "." included -- joined by exactly one shared, unindexed " ".
+    # The mixed answer opens with two unindexed tokens, the opener and its space. After
+    # them every token belongs to exactly one sentence (connectives and the terminal "."
+    # included), joined by exactly one shared, unindexed " ".
+    opener, body_plan = plan[:2], plan[2:]
+    assert [(t["text"], t.get("part_index")) for t in opener] == [
+        ("Answered 1 of 2 parts.", None),
+        (" ", None),
+    ]
     separators = [
-        t for t in plan if t["kind"] == "text" and t["text"] == " " and t.get("part_index") is None
+        t
+        for t in body_plan
+        if t["kind"] == "text" and t["text"] == " " and t.get("part_index") is None
     ]
     assert len(separators) == 1
-    assert {t.get("part_index") for t in plan if t is not separators[0]} == {0, 1}
+    assert {t.get("part_index") for t in body_plan if t is not separators[0]} == {0, 1}
 
 
 def test_ethiopia_population_and_birth_rate_composed_sentence_sse():

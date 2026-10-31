@@ -157,7 +157,7 @@ def read_related(
         held = member_arcs.get(dcid)
         if held is None or (key := _identity_key(held)) is None or key == elected_key:
             continue
-        by_key.setdefault(key, {})[dcid] = read_name(held) or dcid
+        by_key.setdefault(key, {})[dcid] = read_name(held, dcid) or dcid
 
     elected_spans = _spans(facets.get(stat_var, {}), places)
     elected_span = _hull(elected_spans) if elected_spans is not None else None
@@ -182,7 +182,7 @@ def read_related(
     if not ranked:
         return NO_RELATED
     ranked.sort(key=lambda item: (-item[0], item[1].dcids))
-    group_label = read_name(member_arcs.get(group) or {}) or group
+    group_label = read_name(member_arcs.get(group) or {}, group) or group
     return Related(
         group=GraphRef(ref=group, label=group_label),
         members=tuple(member for _, member in ranked[:RELATED_MEASURES_MAX]),

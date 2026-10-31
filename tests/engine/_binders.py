@@ -1,8 +1,9 @@
 """Binder doubles: a scripted elected bind reply that rates its pick, the Gemini binder
 with its menus recorded, one that elects without a model call, one that answers with the
-reply its model double scripts, one under a chosen name and model, a house-policy step that
-keeps the binder's pick, a recorded-fixture LLM whose bind call answers with a fixed reply,
-and Jev's `ask` answering without the network."""
+reply its model double scripts, one under a chosen name and model, any binder rating the
+words the coverage rule leaves unread as a test scripts, a house-policy step that keeps the
+binder's pick, a recorded-fixture LLM whose bind call answers with a fixed reply, and Jev's
+`ask` answering without the network."""
 
 from __future__ import annotations
 
@@ -10,9 +11,17 @@ import asyncio
 from collections.abc import Collection, Mapping, Sequence
 
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput, bind_universal
-from search.engine.binders import BindRequest, BindResult, GeminiBinder
+from search.engine.binders import (
+    Binder,
+    BindRequest,
+    BindResult,
+    GeminiBinder,
+    QuantityRequest,
+    StatedWordsRequest,
+)
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev_client import JevResponse, JevUsage
+from search.engine.binders.jev_request import UNREAD_PREFIX
 from tests.fixtures import FakeLLM
 
 # The rating a scripted reply gives each shape it nominates: the lowest a nomination stands
@@ -62,6 +71,7 @@ def keep_the_pick(
     *,
     ratings: Mapping[int, float] | None = None,
     holds: Mapping[int, bool] | None = None,
+    drafts: Sequence[SlotBindingDraft] | None = None,
 ) -> PolicyChoice:
     """A house-policy step that elects the binder's pick, the pool's first index."""
     return PolicyChoice(survivor=pool.measuring[0], fired=(), dropped=frozenset(), facts=())
@@ -213,9 +223,48 @@ class KeyedBinder(GeminiBinder):
         return self._reads_query_text
 
 
+class RatingBinder:
+    """`binder` for every call but the rating of the words the coverage rule leaves unread
+    (`Binder.rate_words_stated`), which answers each word `stated` holds with its
+    probability, so a word below `SearchSettings.stated_word_bar` is unread, and rates
+    every other word 1.0, stated. Each rating request is kept."""
+
+    def __init__(self, binder: Binder, stated: Mapping[str, float] | None = None) -> None:
+        self.binder = binder
+        self.stated = stated or {}
+        self.requests: list[StatedWordsRequest] = []
+
+    @property
+    def name(self) -> str:
+        return self.binder.name
+
+    @property
+    def model(self) -> str:
+        return self.binder.model
+
+    @property
+    def reads_query_text(self) -> bool:
+        return self.binder.reads_query_text
+
+    async def read_quantity(self, request: QuantityRequest, *, llm):
+        return await self.binder.read_quantity(request, llm=llm)
+
+    async def bind(self, request: BindRequest, *, llm) -> tuple[BindResult, dict | None]:
+        return await self.binder.bind(request, llm=llm)
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm
+    ) -> tuple[Mapping[str, float], dict | None]:
+        self.requests.append(request)
+        return {word: self.stated.get(word, 1.0) for word in request.words}, None
+
+
 class FakeAsk:
     """`jev_client.ask` answering from `answers` (`answer_all` when None), or raising
-    `fail`, and recording each request. A `gate` holds every answer until it is set."""
+    `fail`, and recording each request. A `gate` holds every answer until it is set. A
+    noul asking whether a menu shape's series states a nominated word (``unread|i|k``)
+    answers `stated`'s probability for the word its question quotes where `stated` holds
+    one, else as `answers` do: yes at 0.9 under `answer_all`, stated."""
 
     def __init__(
         self,
@@ -223,10 +272,12 @@ class FakeAsk:
         *,
         fail: Exception | None = None,
         gate: asyncio.Event | None = None,
+        stated: Mapping[str, float] | None = None,
     ) -> None:
         self.answers = answers
         self.fail = fail
         self.gate = gate
+        self.stated = stated or {}
         self.requests: list[tuple[object, dict]] = []
 
     async def __call__(self, state, questions, *, settings) -> JevResponse:
@@ -237,6 +288,11 @@ class FakeAsk:
             raise self.fail
         stored = self.answers if self.answers is not None else answer_all(questions)
         asked = {qid: stored[qid] for qid in questions if qid in stored}
+        for qid, question in questions.items():
+            if qid.startswith(UNREAD_PREFIX):
+                for word, probability in self.stated.items():
+                    if f"'{word}'" in question["instructions"]:
+                        asked[qid] = {"type": "noul", "noul": probability}
         return JevResponse(
             nouls={k: float(v["noul"]) for k, v in asked.items() if v["type"] == "noul"},
             choices={

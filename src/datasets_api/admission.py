@@ -17,6 +17,11 @@ hold permits. It cannot start again on the served release, since its doors resol
 read heads and capture the code index before they wait, and a restart would mix those with the
 new release's coverage. A retry binds the served release at entry.
 
+A background mint (`datasets_api.background_admission`) takes a permit only without waiting and only
+while `admission_headroom` permits stay free after it, and never waits for a permit or for
+another caller's rebuild. Where a foreground caller would wait or be refused, it is refused
+with `MintBackgroundDeclined`.
+
 A permit covers a frame for as long as its work runs. An error's traceback can keep the frame
 until the door has answered the error, after the permit is released.
 
@@ -51,8 +56,9 @@ import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 
-from code_index.types import PartyRow
-from datasets_api.doors.mint_errors import MintBackpressure
+from code_index.types import CompositeDeclaration, PartyRow
+from datasets_api.background_admission import HeadroomSemaphore, admission_headroom
+from datasets_api.doors.mint_errors import MintBackgroundDeclined, MintBackpressure
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.timings import count, phase
@@ -118,7 +124,7 @@ class MaterialisePermits:
 
     def __init__(self, permits: int) -> None:
         self.permits = permits
-        self._semaphore = threading.BoundedSemaphore(permits)
+        self._semaphore = HeadroomSemaphore(permits)
         self._gate = threading.Condition()
         self._draining = 0
         self._drain_lock = threading.Lock()
@@ -143,6 +149,15 @@ class MaterialisePermits:
             ends=ends,
             keep_waiting=keep_waiting,
         )
+
+    def acquire_leaving(self, headroom: int) -> bool:
+        """Take one permit without waiting if no drain holds the gate and more than `headroom`
+        permits are free (`HeadroomSemaphore.acquire_leaving`). Returns whether one was taken.
+        """
+        with self._gate:
+            if self._draining:
+                return False
+        return self._semaphore.acquire_leaving(headroom)
 
     def release(self) -> None:
         self._semaphore.release()
@@ -198,6 +213,11 @@ def bounded_materialise_slot(
     when no swap can run, and a false answer there releases the permit and raises the same.
     Every check runs inside the `materialise_wait` phase.
 
+    A background mint (`admission_headroom` above zero) makes one attempt with no wait, which
+    succeeds only while that many permits stay free after it (`MaterialisePermits.
+    acquire_leaving`). It raises `MintBackgroundDeclined` where a foreground caller would wait
+    or raise `MintBackpressure`, a replaced release included.
+
     The permit covers a frame for as long as the work inside the slot runs. The function that
     enters the slot binds no frame in its own locals, so a slot that ends without an error
     releases its permit with the frame freed. An error's traceback can keep the frame until
@@ -207,20 +227,25 @@ def bounded_materialise_slot(
         yield
         return
     served = _bound_release_served()
+    headroom = admission_headroom()
     _wait_seconds = float(wait_seconds)
     if deadline is not None:
         _wait_seconds = max(0.0, min(_wait_seconds, deadline - time.monotonic()))
+    refusal = MintBackgroundDeclined if headroom else MintBackpressure
     started = time.perf_counter()
     with phase("materialise_wait"):
-        acquired = materialise_semaphore.acquire(timeout=_wait_seconds, keep_waiting=served)
+        if headroom:
+            acquired = served() and materialise_semaphore.acquire_leaving(headroom)
+        else:
+            acquired = materialise_semaphore.acquire(timeout=_wait_seconds, keep_waiting=served)
     count("permit_wait_ms", round((time.perf_counter() - started) * 1000))
     if not acquired:
-        raise MintBackpressure()
+        raise refusal()
     try:
         with phase("materialise_wait"):
             still_served = served()
         if not still_served:
-            raise MintBackpressure()
+            raise refusal()
         yield
     finally:
         materialise_semaphore.release()
@@ -276,11 +301,17 @@ class RebuildFlights:
         `STALE_CHECK_SECONDS` of the wait (`_sliced_wait`), and a wait that ended on a false
         answer raises the same `MintBackpressure`, so a waiting caller drops a replaced release
         within one such slice while the rebuild it waits on still runs.
+
+        A background mint (`admission_headroom` above zero) waits for no rebuild: one arriving
+        while a rebuild of the subject runs raises `MintBackgroundDeclined` at once, since that
+        rebuild already warms the subject.
         """
         served = _bound_release_served()
         finished = threading.Event()
         running = self._claim(subject_id, finished)
         waited = running is not None
+        if running is not None and admission_headroom():
+            raise MintBackgroundDeclined()
         if running is not None:
             ends = time.monotonic() + (
                 float(wait_seconds) if deadline is None else max(0.0, deadline - time.monotonic())
@@ -359,6 +390,7 @@ def sync_estimate(
     *,
     index: CoverageIndex,
     member_concurrency: int,
+    composite: CompositeDeclaration | None = None,
 ) -> Estimate:
     """Estimate covered rows and SDMX requests, plus uncovered members, before network access.
 
@@ -367,24 +399,35 @@ def sync_estimate(
     before covered costs are computed. `index` must come from the caller's
     coverage snapshot so its estimate and any coverage stamp share one artifact.
 
-    Group by dispatch key and window years, then use the same lanes and
-    StatVar chunks as materialisation. Estimate each chunk with `lanes=1`,
-    using the first member's roles and window. The `latest` window keeps
+    Group by component, dispatch key and window years, then use the same lanes and
+    StatVar chunks as materialisation. A composite's components materialise apart
+    (`serve.prewrite_definition`), so each component's requests are priced as reads of their
+    own, under their own windows and lanes, and the estimate is their sum. Only members with
+    a coverage row under their bound roles in any year (`CoverageIndex.variables_with_rows`)
+    are chunked and counted toward the lanes, in dcid order, since materialisation fetches no
+    member without a dispatch facet (`generation._plan_collection_chunks`). Estimate each
+    chunk with `lanes=1`, using the first member's roles and window. The `latest` window keeps
     `LATEST` in request-size estimates while coverage prices all years, and
     adds the requests of one read alone at one year of each member that can
     make it (`_members_read_twice`): a member with a series ending after the
     year it elects is read again at that year.
+
+    `composite` is the declaration `requests` compose under, or `None`. Its composed frame
+    adds a zero row for each member of a zero-filling component (`ComponentRecipe.zero_absent`)
+    in each covered cell that member holds no row in (`materialise.composite`), so the rows
+    count each such member once per cell any of `requests` can hold
+    (`CoverageIndex.cell_count`), a bound no composed frame exceeds.
     """
-    lanes = dispatch_lanes(member_concurrency, len(requests))
     groups: dict[
-        tuple[tuple[object, ...], int | None, int | None], list[MaterialisationRequest]
+        tuple[str | None, tuple[object, ...], int | None, int | None],
+        list[MaterialisationRequest],
     ] = {}
     uncovered_requests = 0
     for request in requests:
         if index.role_names.get(_bare_dcid(request.stat_var)) is None:
             uncovered_requests += 1
         first_year, last_year = _window_years(request)
-        key = (request_batch_key(request), first_year, last_year)
+        key = (request.component, request_batch_key(request), first_year, last_year)
         groups.setdefault(key, []).append(request)
     if uncovered_requests > UNCOVERED_MEMBER_CAP:
         raise OverCeilingError(
@@ -398,11 +441,22 @@ def sync_estimate(
             count=uncovered_requests,
             cap=UNCOVERED_MEMBER_CAP,
         )
+    fetched: dict[tuple[str | None, tuple[object, ...], int | None, int | None], list[str]] = {}
+    fetching_members: dict[str | None, int] = {}
+    for key, members in groups.items():
+        variables = sorted(_bare_dcid(member.stat_var) for member in members)
+        with_rows = index.variables_with_rows(
+            variables=variables, bound=bound_roles(members[0], index=index)
+        )
+        fetched[key] = [variable for variable in variables if variable in with_rows]
+        fetching_members[key[0]] = fetching_members.get(key[0], 0) + len(fetched[key])
     total_rows = 0
     total_requests = 0
-    for (_batch_key, first_year, last_year), members in groups.items():
+    for key, members in groups.items():
+        component, _batch_key, first_year, last_year = key
         bound = bound_roles(members[0], index=index)
-        variables = [_bare_dcid(member.stat_var) for member in members]
+        variables = fetched[key]
+        lanes = dispatch_lanes(member_concurrency, fetching_members[component])
         time_period = _time_period_for_window(members[0].window)
         # Every year is asked for by four digits, so any year prices the read of one.
         elected_period = _time_period_for_window(members[0].window, year=index.horizon.max_year)
@@ -430,7 +484,32 @@ def sync_estimate(
                 for variable in chunk_variables
                 if variable in read_twice
             )
+    if composite is not None and requests:
+        total_rows += _zero_row_bound(requests, composite=composite, index=index)
     return Estimate(rows=total_rows, requests=total_requests, uncovered_requests=uncovered_requests)
+
+
+def _zero_row_bound(
+    requests: Sequence[MaterialisationRequest],
+    *,
+    composite: CompositeDeclaration,
+    index: CoverageIndex,
+) -> int:
+    """The most zero rows `composite`'s composed frame of `requests` can hold: each member of a
+    zero-filling component times the cells any request's series holds in the window
+    (`sync_estimate`)."""
+    zero_filling = {recipe.role for recipe in composite.components if recipe.zero_absent}
+    members = sum(1 for request in requests if request.component in zero_filling)
+    if not members:
+        return 0
+    first_year, last_year = _window_years(requests[0])
+    cells = index.cell_count(
+        variables=list(dict.fromkeys(_bare_dcid(request.stat_var) for request in requests)),
+        bound=bound_roles(requests[0], index=index),
+        first_year=first_year,
+        last_year=last_year,
+    )
+    return members * cells
 
 
 def within_sync_budget(

@@ -53,6 +53,7 @@ from search.engine.region.grounding import (
     _place_confidence,
     build_identity_entities,
     carrier_flag_warnings,
+    check_breakdown_settled,
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
@@ -87,10 +88,9 @@ from search.engine.retrieval.bound_values import (
     OpenAxisFact,
     apply_declaration_version,
     apply_slot_expansions,
-    bound_values_from_bindings,
     entity_role_keys,
     observed_measure_family,
-    open_constraint_axes,
+    served_open_axes,
     shape_query,
     slot_expansions,
 )
@@ -105,6 +105,7 @@ from search.engine.spec_build import (
     build_spec,
     build_stat_vars,
 )
+from search.engine.unit.conversion import bound_prices
 from search.engine.unit.refs import unit_currency
 from search.models import (
     Coverage,
@@ -346,7 +347,7 @@ def _candidate_conversions(
     """Each candidate's conversion (`_CandidateConversion`), in input order.
 
     A conversion runs only where the collapse's bound-unit filter reads it: for a candidate
-    with data at the place whose plan serves every StatVar under its elected unit
+    with data at the place whose plan serves a StatVar the unit decision serves under its elected unit
     (`convertibility.unit_gate`). Any other candidate keeps its answer and an empty coverage,
     so a candidate the filter drops or passes unchecked makes no conversion read. Candidates
     read nothing another writes, so several run side by side."""
@@ -633,6 +634,7 @@ def _finish_candidate(
     measure_family_cache: dict[MeasureFamilyCacheKey, tuple[MeasurePartition, ...]],
     *,
     text_recognized_properties: frozenset[str],
+    grouped_properties: frozenset[str],
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
     rivalled: bool,
@@ -649,9 +651,10 @@ def _finish_candidate(
     # ``available_at_place=False``. Place-less coverage uses ``None``.
     cand_is_elected = cand_index == 0 and state.elected_has_data
     # A reading the status rule offers on a structural or nominated basis is a rival, and
-    # so are the elected reading and its other directions beside one (`rivalled`).
+    # so are the elected reading and its other directions and breakdowns beside one
+    # (`rivalled`).
     cand_has_rival = cand.basis in ("structural", "nominated") or (
-        rivalled and (cand_is_elected or cand.basis == "direction")
+        rivalled and (cand_is_elected or cand.basis in ("direction", "breakdown"))
     )
     cand_available_at_place, cand_confidence = _place_confidence(
         destination_dcid=state.destination_dcid,
@@ -676,7 +679,6 @@ def _finish_candidate(
     )
     # Served member facts determine each candidate's measure partition. A missing StatVar
     # entry violates the materialisation contract. Share the partition cache across candidates.
-    cand_measure_bound_values = bound_values_from_bindings(cand_bindings)
     cand_served_member_facts = cand_mat.member_facts or {}
     cand_served_members = [cand_served_member_facts[dcid] for dcid in cand_mat.sv_dcids]
     cand_role_keys = entity_role_keys(
@@ -695,13 +697,28 @@ def _finish_candidate(
         cand_served_members,
         cache=measure_family_cache,
     )
-    cand_open_axis_facts = open_constraint_axes(
-        cand_measure_bound_values,
-        dict(zip(cand_mat.sv_dcids, cand_served_members, strict=True)),
+    cand_open_axis_facts = served_open_axes(
+        cand_bindings,
+        cand_mat.sv_dcids,
+        cand_served_member_facts,
+        value_labels=cand_shape.value_labels or {},
     )
     # Reuse materialised role facts without extra SDMX reads. Labelled entity options are
     # built only for a surviving definite answer.
-    cand_role_axis_facts = role_axis_facts_for_materialised(cand_mat, shape=cand_shape)
+    cand_role_axis_facts = role_axis_facts_for_materialised(
+        cand_mat, shape=cand_shape, plan=groundwork.plan
+    )
+    cand_facet_bindings = (
+        # A bound outcome guarantees a unit request. The type checker cannot carry that
+        # attribute invariant through this access.
+        {"unit": IdentityFacetValueRequest(request=cast(IdentityUnitRequest, state.unit_request))}
+        if state.bound_unit_outcome is not None
+        else (
+            {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
+            if prep.twin_unit_filters[cand_index] is not None
+            else None
+        )
+    )
     cand_spec = build_spec(
         shape=groundwork.shape_model,
         slots=groundwork.slots,
@@ -733,25 +750,20 @@ def _finish_candidate(
         measure_siblings=cand_measure_siblings,
         open_axis_facts=cand_open_axis_facts,
         role_axis_facts=cand_role_axis_facts,
-        facet_bindings=(
-            # A bound outcome guarantees a unit request. The type checker cannot carry that
-            # attribute invariant through this access.
-            {
-                "unit": IdentityFacetValueRequest(
-                    request=cast(IdentityUnitRequest, state.unit_request)
-                )
-            }
-            if state.bound_unit_outcome is not None
-            else (
-                {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
-                if prep.twin_unit_filters[cand_index] is not None
-                else None
-            )
-        ),
+        facet_bindings=cand_facet_bindings,
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
-        query_qualifiers=answer_terms(state, cand_shape, cand_bindings),
+        grouped_properties=(grouped_properties if cand_bindings is state.bindings else frozenset()),
+        # Judged under the unit request this candidate is served under, as the definite
+        # answer's trace is.
+        query_qualifiers=answer_terms(
+            state,
+            cand_shape,
+            cand_bindings,
+            served=bound_prices(cand_facet_bindings),
+            uncovered=cand.uncovered,
+        ),
         measure_elected_properties=(
             measure_elected_properties if cand_bindings is state.bindings else frozenset()
         ),
@@ -761,12 +773,15 @@ def _finish_candidate(
         named_groups=request_named_groups(state, cand.place.roles),
         measure_served_rows=measure_served_counter(groundwork.served_filter),
     )
+    check_breakdown_settled(cand_shape, cand.walked, cand_spec)
     cand_spec = apply_declaration_version(cand_spec, cand_bindings)
     cand_role_declaration_unverified = (
         False if cand_is_elected else cand_mat.role_declaration_unverified
     )
     cand_open_origin_defaulted = (
-        False if cand_is_elected else cand_mat.open_origin_dcids is not None
+        not cand_is_elected
+        and cand_mat.open_origin_dcids is not None
+        and "origin" not in cand.place.roles.unnamed_wholes
     )
 
     cand_places = cand.place.roles
@@ -917,6 +932,7 @@ def restate_scope_warning(
         members=own if own is not None else on_axis[0],
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
+        unnamed_wholes=state.place.roles.unnamed_wholes,
         state_count=len(distinct) <= 1,
     )
 
@@ -945,6 +961,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     # These forced qualifier, measure, and default bindings belong only to candidates that
     # reuse the elected ``state.bindings`` list.
     text_recognized_properties = state.text_recognized_properties
+    grouped_properties = state.grouped_properties
     measure_elected_properties = state.measure_elected_properties
     defaulted_properties = state.defaulted_properties
     rivalled = any(
@@ -995,6 +1012,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             prep,
             measure_family_cache,
             text_recognized_properties=text_recognized_properties,
+            grouped_properties=grouped_properties,
             measure_elected_properties=measure_elected_properties,
             defaulted_properties=defaulted_properties,
             rivalled=rivalled,

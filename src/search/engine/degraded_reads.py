@@ -10,7 +10,9 @@ extent notes what it lost with `note_degraded_read`, and the resolution marks it
 resolution starts with `asyncio.to_thread` or `submit_with_context` note into it. A record
 bound inside another passes what it holds to the outer one when it closes, unless it is
 detached: the UN leg's reads (`phase_intake._un_shapes`) bear on the answer only when the UN
-pass runs, so `pipeline._fill_gap` notes them then.
+pass runs, so `pipeline._fill_gap` notes them then, and a place-options scope's reads
+(`place_options.build_place_options_events`) mark only its options, which the response bundle
+does not hold.
 
 Only a read that was made and lost is noted. A fact left unknown because no read was made for
 it is not: a one-shape bind menu skips the availability read over a named set's places

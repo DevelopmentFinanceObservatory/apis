@@ -56,6 +56,7 @@ from materialise.recipes import (
     CONVERSION_NODE_PROPERTIES,
     ConversionRecipe,
     EntityCurrencies,
+    RecipeNotDeclaredError,
     SpecRole,
     check_nominal_natively_satisfied,
     currency_unmapped_error,
@@ -218,7 +219,6 @@ def _decide(
     # `select_facet` raises `NonCurrencyUnitError` for any other unit request result.
     assert native_unit_ref is not None and native_iso is not None
     provenance_id = selections["provenance"].ref
-    assert provenance_id is not None  # `select_facet` never resolves provenance to a null ref.
     bare_stat_var = stat_var.removeprefix(_STAT_VAR_REF_PREFIX)
     # Name the native currency by its ISO code: the unit ref `USDollar` is a base Data
     # Commons node, and its rates key on `CurrencyUSD`.
@@ -230,6 +230,13 @@ def _decide(
     # A natively satisfied request needs only the StatVar's qualifier and the native currency.
     nodes = [bare_stat_var, native_node]
     if not satisfied:
+        # A provenance declares the `conversionRecipe`; a facet carrying none has no recipe.
+        if provenance_id is None:
+            raise RecipeNotDeclaredError(
+                f"the facet serving {bare_stat_var!r} carries no provenance, so no "
+                "conversionRecipe is declared for it",
+                cause="recipe_undeclared",
+            )
         nodes += [provenance_id, *([target_node] if target_node else [])]
     arcs = graph.node_arcs_many(
         list(dict.fromkeys(nodes)), properties=CONVERSION_NODE_PROPERTIES, deadline=deadline
@@ -254,6 +261,7 @@ def _decide(
             deflator_role=None,
         )
 
+    assert provenance_id is not None  # A conversion without one is refused above.
     # A current- or constant-price conversion resolves the recipe (bundling
     # the nominal and population-type checks).
     recipe = resolve_convertible_recipe(

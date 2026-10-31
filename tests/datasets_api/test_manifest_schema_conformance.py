@@ -70,6 +70,7 @@ def _fully_populated_artifacts() -> list[manifest_models.ArtifactEntryModel]:
             created_at="2026-01-01T00:00:00+00:00",
             tier="working",
             url="/api/datasets/spec_a/cv1/files/sha256:aaa",
+            enrichment_stamp="3f5e0c1a" * 8,
         )
     ]
 
@@ -100,7 +101,7 @@ def _fully_populated_output_options() -> manifest_models.OutputOptionsModel:
                 truncated=False,
             )
         ],
-        long_layout_defaults=["recipient_label", "recipient_party_kind"],
+        long_layout_defaults=["recipient_label", "recipient_kind"],
         long_layout_totals=["recipient"],
         pivots=[
             manifest_models.PivotOptionModel(
@@ -132,6 +133,7 @@ def test_published_manifest_admits_every_field_a_fully_populated_definition_mani
         series_count=1,
         output_options=_fully_populated_output_options(),
         series_coverage_stamp="ff2ac3045785c9df092841c4ef3f166b",
+        retention=manifest_models.RetentionModel(pinned=False, held_until=_PREPARED_AT),
     )
 
     published_schema.Manifest.model_validate(runtime_manifest.model_dump(mode="json"))

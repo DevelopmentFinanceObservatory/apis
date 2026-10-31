@@ -12,9 +12,11 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
+from resolvekit.core.model.result import CandidateSummary
 
 import entity_resolution.resolver as resolver_module
 import entity_resolution.shared as shared_module
+from code_index.shared import get_index
 from dc_graph.errors import GraphDeadlineExceededError
 from entity_resolution import (
     Ambiguous,
@@ -421,7 +423,9 @@ def test_the_code_kind_alone_confirms_codes_in_one_read_and_runs_no_resolvekit_j
     monkeypatch.setattr(resolver_module, "_resolve_batch_job", lambda *a: batch_jobs.append(a))
     codes = _FakeCodes({"basic health care": [_CODE_HIT]})
     graph = FakeGraphLookup(nodes={_CODE.dcid: _node("CRSPurposeCodeEnum")})
-    resolver = EntityResolver(graph=graph, shared=shared_resolver, codes=codes)
+    resolver = EntityResolver(
+        graph=graph, shared=shared_resolver, codes=codes, code_index=get_index
+    )
 
     (hit,) = _run(resolver.resolve(["basic health care"], kinds=["code"]))
     (narrowed,) = _run(
@@ -460,12 +464,64 @@ def test_a_code_and_an_entity_listing_one_text_are_ambiguous_after_one_read(shar
     assert len(graph.node_arcs_many_calls) == 1
 
 
+_AID_CODE = "DAC1AidType2102"
+
+
+@pytest.mark.parametrize("path", ["shared_name", "resolvekit_hit", "fallback"])
+@pytest.mark.parametrize(
+    ("code_system", "admitted"),
+    [("CRSPurposeCodeEnum", False), ("DAC1AidTypeEnum", True), (None, True)],
+)
+def test_a_code_system_narrows_the_codes_every_path_finds(
+    shared_resolver, monkeypatch, path, code_system, admitted
+):
+    """A code a path other than the code index finds is admitted under `code_system` only
+    when the code index places it in that system, as a code-index hit is: a graph node
+    sharing a hit's text ("European Union" beside the EU), a resolvekit survivor, and a
+    node the miss ladder's last rung answers."""
+    text = {"shared_name": "European Union", "resolvekit_hit": "Kenya", "fallback": "Qqqaid"}[path]
+    if path == "resolvekit_hit":
+        survivor = CandidateSummary(
+            entity_id=f"dfo_graph/{_AID_CODE}",
+            confidence=0.9,
+            canonical_name="Multilateral contribution to EU institutions",
+            pack_id="org",
+        )
+        monkeypatch.setattr(
+            resolver_module,
+            "_resolve_batch_job",
+            lambda *_: [resolver_module._GateOutcome(survivors=(survivor,), near_matches=())],
+        )
+    graph = FakeGraphLookup(
+        nodes={**_NODES, _AID_CODE: _node("DAC1AidTypeEnum", text)},
+        arcs={(_LAST_RUNG_ARC, text): ["EuropeanUnion", _AID_CODE]},
+    )
+    resolver = EntityResolver(
+        graph=graph, shared=shared_resolver, codes=_FakeCodes({}), code_index=get_index
+    )
+
+    (result,) = _run(
+        resolver.resolve(
+            [text], kinds=["country", "code"], code_system=code_system, near_matches=True
+        )
+    )
+
+    if admitted:
+        assert isinstance(result, Resolved), result
+        assert result.entity.dcid == _AID_CODE
+    else:
+        assert isinstance(result, NotFound), result
+
+
 @pytest.mark.parametrize(
     ("kinds", "code_system", "codes"),
     [
         pytest.param(["country"], "CRSPurposeCodeEnum", _FakeCodes({}), id="system-without-code"),
         pytest.param(None, "CRSPurposeCodeEnum", _FakeCodes({}), id="system-unfiltered"),
         pytest.param(["code"], None, None, id="code-without-lookup"),
+        pytest.param(
+            ["code"], "CRSPurposeCodeEnum", _FakeCodes({}), id="system-without-code-index"
+        ),
     ],
 )
 def test_a_code_request_the_resolver_cannot_answer_is_refused(

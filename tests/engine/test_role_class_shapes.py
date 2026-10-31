@@ -29,7 +29,7 @@ from entity_resolution import Admission
 from origin_catalogue import BASE
 from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import GeminiBinder
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.departures import warning_key
 from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
@@ -59,6 +59,7 @@ from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     MembershipAuthority,
     MembershipResolution,
+    PartNotServed,
     RoleClassWalks,
     RoleKeys,
     bind_shared_values,
@@ -85,6 +86,7 @@ from search.engine.shape import (
     ShapeDraft,
     required_role_names,
 )
+from search.engine.stated_words_read import StatedWordsOutput, restricting
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     BaseIdentity,
@@ -107,7 +109,7 @@ from series_coverage.shared import CoverageSnapshot
 from statvar_members import MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import elected_reply
+from tests.engine._binders import RatingBinder, elected_reply
 from tests.engine._builders import bound_place_context, flow_place_roles
 from tests.engine._fake_coverage import (
     FIXTURE_PROVENANCE,
@@ -117,7 +119,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_bind_slot_reserve import _state as _prune_state
 from tests.engine.test_two_ended_menu import _index_row_node
 from tests.fixtures import FakeGraph, make_resolver
@@ -255,6 +257,8 @@ def test_a_question_naming_no_place_offers_a_one_role_shape_to_the_election():
 
     class _RecordingLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             offered.append(
@@ -703,7 +707,9 @@ def test_a_resubmit_of_a_recipient_only_identity_answers_the_mints_family():
     assert [sv.ref.ref for sv in region.specs[0].resolved.members] == [_TOTAL]
 
 
-def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
+def _guaranteed_debt_of_kenya(
+    nodes: dict, *, obs: dict | None = None, binder: Binder | None = None
+):
     """Resolve "guaranteed debt of Kenya" with the by-creditor members recalled and the
     mint's walk reading `nodes`."""
     query = "guaranteed debt of Kenya"
@@ -730,6 +736,7 @@ def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=_one_role_coverage(nodes, obs),
             options=EngineOptions(materialise_graph=_walk_reader(nodes)),
+            binder=binder,
         )
     )
 
@@ -741,12 +748,23 @@ def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal(nodes
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
 
 
-def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_answers_the_total():
-    result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_Arrears|country/KEN": _OBS})
+def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_elects_the_total():
+    """The walk settles the shape on the arrears total, the recipient-only total of another
+    constraint value. That total does not state "guaranteed", as the binder rates it, so
+    the part refuses on it, flagging the total under `destination: KEN`."""
+    result = _guaranteed_debt_of_kenya(
+        _NESTED_NODES,
+        obs={"Tie_Total_Arrears|country/KEN": _OBS},
+        binder=RatingBinder(GeminiBinder(), {"guaranteed": 0.0}),
+    )
 
-    assert result.status == "definite"
-    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == ["Tie_Total_Arrears"]
-    assert result.specs[0].definition.identity.entities == {"destination": ["country/KEN"]}
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert [(q.text, q.disposition, q.evidence) for q in result.unbound_qualifiers] == [
+        ("guaranteed", "no_vocabulary", "uncovered")
+    ]
+    (flagged,) = result.flagged_match or ()
+    assert [sv.ref.ref for sv in flagged.resolved.members] == ["Tie_Total_Arrears"]
+    assert flagged.definition.identity.entities == {"destination": ["country/KEN"]}
 
 
 # ---------------------------------------------------------------------------
@@ -886,6 +904,69 @@ def test_a_recalled_index_row_does_not_take_the_debt_shapes_family():
     } == {"financialFlowType": "ServicingPayment"}
 
 
+_IDS_SERVICE = "Amount_FinancialFlow_ServicingPayment_Nominal"
+_IDS_INTEREST = "Amount_FinancialFlow_InterestPayment_Nominal"
+
+
+def _ids_flow(label: str, flow_type: str) -> dict:
+    return _node(label, _RECIPIENT, population_type="FinancialFlow", financialFlowType=flow_type)
+
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="financialFlowType",
+            kind="value",
+            value_dcids=["ServicingPayment"],
+            evidence="sole_option",
+        ),
+        SlotBindingDraft(axis="how", property_dcid="financialFlowType", kind="unbound"),
+    ],
+    ids=["claimed-by-the-reply", "claimed-at-settle"],
+)
+def test_debt_service_keeps_the_flow_type_its_family_is_told_apart_by(draft):
+    """ "Total debt service of Kenya", as dq-ids-001 asks of Ghana, recalls the IDS debt service total
+    alone, and the reply binds its one flow type as the slot's sole option, or leaves the
+    slot unbound and settle claims it. The recalled sample is not the whole family, so the
+    claim rests on it. The family shares its five-tuple with the CRS rows the index
+    exports, and the flow type is what tells it apart from them (`bind_shared_values`), so
+    the walk reads the flow type bound. Read open, the walk lists the IDS interest payments
+    total beside it, refutes the claim and answers every flow to Kenya."""
+    recalled = {_IDS_SERVICE: _ids_flow("Debt service on external debt", "ServicingPayment")}
+    interest = {_IDS_INTEREST: _ids_flow("Interest payments on external debt", "InterestPayment")}
+    walked = {**recalled, **interest}
+    obs = {f"{dcid}|country/KEN": _OBS for dcid in walked}
+
+    class _DraftLLM:
+        async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
+            if schema is QuantityOutput:
+                return NO_QUANTITY
+            return elected_reply(0, bindings=[draft], also_plausible=None), None
+
+    result = _run(
+        entities=["Kenya"],
+        obs=obs,
+        query="total debt service of Kenya",
+        nodes=recalled,
+        value_nodes=interest,
+        llm=_DraftLLM(),
+        options=EngineOptions(materialise_graph=_walk_reader(walked)),
+        coverage=_one_role_coverage(walked, obs),
+    )
+
+    assert result.status == "definite"
+    (spec,) = result.specs
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_IDS_SERVICE]
+    assert {
+        slot.property: getattr(slot.binding, "ref", None) for slot in spec.definition.identity.slots
+    } == {"financialFlowType": "ServicingPayment"}
+    assert "membership_unverified" not in {w.code for w in result.warnings}
+
+
 def test_an_unindexed_shape_on_a_five_tuple_the_index_carries_keeps_its_own_slot_keys():
     """By-creditor debt members declare the roles CRS rows declare. The index holds none of
     them, so the shape is the debt family and reads no index row."""
@@ -947,6 +1028,8 @@ _OBS = [{"earliestDate": "2015", "latestDate": "2022", "obsCount": 8}]
 
 class _BindLLM:
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -957,6 +1040,8 @@ class _AskNearestLLM:
     """Declines the empty menu and names the first not-electable reading as nearest."""
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -977,6 +1062,7 @@ def _run(
     nodes: dict = _DEBT_NODES,
     options: EngineOptions | None = None,
     value_nodes: dict | None = None,
+    binder: Binder | None = None,
 ):
     members = list(nodes)
     graph = FakeGraph(
@@ -1002,6 +1088,7 @@ def _run(
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=coverage or _one_role_coverage(nodes, obs),
             options=options,
+            binder=binder,
         )
     )
 
@@ -1051,7 +1138,9 @@ def _run_leg(
     recalled: list[str] | None = None,
 ):
     """Resolve one fan-out leg over Kenya, as a door hands it its operations and its own
-    open roles. Recall finds `recalled`, every member of `nodes` by default."""
+    open roles. Recall finds `recalled`, every member of `nodes` by default. The default
+    `query` is the raw-text door's for a rank over creditors (`_RANK_CREDITORS`); a leg
+    without that rank passes the text its door sends."""
     recalled = list(nodes) if recalled is None else recalled
     graph = FakeGraph(
         nodes={**_PLACES, **nodes},
@@ -1093,6 +1182,10 @@ def _run_leg(
 
 _RECIPIENT_ONLY_NODES = {dcid: _DEBT_NODES[dcid] for dcid in (_TOTAL, _TOTAL_GUARANTEED)}
 
+# The variable a parsed part asking a role open sends (`ParsedPart.open_roles`): its
+# variable text, with the open role and no operation.
+_PARSED_VARIABLE = "external debt stocks"
+
 
 def test_a_rank_over_creditors_on_a_twin_family_keeps_the_operation_and_the_open_creditor():
     """The rank runs over creditors, so the leg leaves the creditor open. The by-creditor
@@ -1117,7 +1210,12 @@ def test_a_parsed_part_asking_every_creditor_answers_as_a_rank_over_creditors_do
     )
     open_axes = _open_axes_for_part(part, pointer_prefix="/input/parts/0")
 
-    opened = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), open_axes=open_axes)
+    opened = _run_leg(
+        nodes=_DEBT_NODES,
+        coverage=_twin_coverage(),
+        open_axes=open_axes,
+        query=part.variable_text,
+    )
     ranked = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
 
     assert open_axes == {"origin"}
@@ -1222,6 +1320,7 @@ def test_an_open_creditor_on_an_index_family_with_no_twin_answers_the_total_and_
         nodes=_DEBT_NODES,
         coverage=coverage,
         open_axes=frozenset({"origin"}),
+        query=_PARSED_VARIABLE,
         recalled=[_TOTAL],
     )
 
@@ -1300,7 +1399,7 @@ def _resubmit_entry(
 def _recipient_only_identity() -> tuple[BaseIdentity, str, CoverageSnapshot]:
     """The recipient-only total's identity at Kenya, its spec_id, and its coverage."""
     coverage = _one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS})
-    first = _run_leg(nodes=_RECIPIENT_ONLY_NODES, coverage=coverage)
+    first = _run_leg(nodes=_RECIPIENT_ONLY_NODES, coverage=coverage, query=_QUERY)
     return first.specs[0].definition.identity, first.specs[0].spec_id, coverage
 
 
@@ -1410,10 +1509,16 @@ def test_a_candidate_whose_open_creditor_its_twin_serves_keeps_its_spec_id(monke
         monkeypatch=monkeypatch,
     )
 
+    # The two posted candidates rebuild to one spec_id, so the part is that reading's
+    # definite answer, and its warning says both resolved.
     (part,) = result.parts
-    assert part.status == "candidates"
-    assert [s.spec_id for s in part.candidates.specs] == [spec.spec_id, spec.spec_id]
-    assert [s.definition.identity.open_roles for s in part.candidates.specs] == [["origin"]] * 2
+    assert part.status == "definite"
+    assert part.spec.spec_id == spec.spec_id
+    assert part.spec.definition.identity.open_roles == ["origin"]
+    (warning,) = (w for w in part.warnings if w.code == "candidates_collapsed_definite")
+    assert warning.message.startswith(
+        "2 candidates were posted; 2 still resolve and rebuild to 1 reading"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1544,7 +1649,10 @@ def test_an_open_role_a_named_place_binds_drops_and_warns():
     """Kenya, named without a direction, binds the recipient, so the open recipient the
     part asks for drops. The bound role wins and the part says so."""
     region = _run_leg(
-        nodes=_DEBT_NODES, coverage=_twin_coverage(), open_axes=frozenset({"destination"})
+        nodes=_DEBT_NODES,
+        coverage=_twin_coverage(),
+        open_axes=frozenset({"destination"}),
+        query=_PARSED_VARIABLE,
     )
 
     assert region.status == "definite"
@@ -1772,6 +1880,8 @@ def test_a_candidate_of_another_role_class_binds_its_place_in_its_own_role():
 
     class _TwoReadingsLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return elected_reply(1, also_plausible=[0]), None
@@ -1879,6 +1989,7 @@ def test_an_open_creditor_on_a_recipient_only_answer_warns_once():
         nodes=_RECIPIENT_ONLY_NODES,
         coverage=_one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS}),
         open_axes=frozenset({"origin"}),
+        query=_PARSED_VARIABLE,
     )
 
     assert stamped.status == "definite"
@@ -1956,6 +2067,8 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
 
     class _SubjectFirstLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return elected_reply(0, also_plausible=[1]), None
@@ -2346,12 +2459,18 @@ def test_the_unknown_score_floor_exempts_only_a_role_bearing_shape_the_index_car
 # ---------------------------------------------------------------------------
 
 _RECEIVED = "Debt_Received_Total"
-_LOANS_BY_CREDITOR = "Loans_ByCreditor"
-_GRANTS_BY_CREDITOR = "Grants_ByCreditor"
+_DISBURSED_BY_CREDITOR = "Disbursed_ByCreditor"
+_REPAID_BY_CREDITOR = "Repaid_ByCreditor"
+# Two by-creditor families of external debt on different five-tuples, each named for the
+# debt it measures.
 _ANSWER_NODES = {
     _RECEIVED: _node("External debt received", _RECIPIENT, positionType="AmountOutstanding"),
-    _LOANS_BY_CREDITOR: _node("Loans, by creditor", _PAIR, population_type="LoanFlow"),
-    _GRANTS_BY_CREDITOR: _node("Grants, by creditor", _PAIR, population_type="GrantFlow"),
+    _DISBURSED_BY_CREDITOR: _node(
+        "External debt disbursements, by creditor", _PAIR, population_type="DisbursementFlow"
+    ),
+    _REPAID_BY_CREDITOR: _node(
+        "External debt repayments, by creditor", _PAIR, population_type="RepaymentFlow"
+    ),
 }
 
 
@@ -2362,6 +2481,8 @@ class _ElectFirstLLM:
         self._also_plausible = also_plausible
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         return elected_reply(0, also_plausible=self._also_plausible), None
@@ -2379,8 +2500,8 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
     coverage = FakeCoverageService(
         build_coverage_index(
             [
-                (_LOANS_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
-                (_GRANTS_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
+                (_DISBURSED_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
+                (_REPAID_BY_CREDITOR, "f1", "country/CHN", "country/KEN", [2020]),
                 *(
                     (_RECEIVED, "f_received", ABSENT_ENTITY, "country/KEN", [2020])
                     for key in obs
@@ -2388,8 +2509,8 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
                 ),
             ],
             role_names={
-                _LOANS_BY_CREDITOR: pair_roles,
-                _GRANTS_BY_CREDITOR: pair_roles,
+                _DISBURSED_BY_CREDITOR: pair_roles,
+                _REPAID_BY_CREDITOR: pair_roles,
                 _RECEIVED: RoleNames(donor=None, recipient="financingRecipient"),
             },
         )
@@ -2422,8 +2543,8 @@ def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
 
     assert result.status == "candidates"
     assert {spec.resolved.members[0].ref.ref for spec in result.specs} == {
-        _LOANS_BY_CREDITOR,
-        _GRANTS_BY_CREDITOR,
+        _DISBURSED_BY_CREDITOR,
+        _REPAID_BY_CREDITOR,
     }
     assert result.answered_roles == tuple(_PAIR)
     stamped = with_runnable_operations(result, (_RANK_CREDITORS,))
@@ -2446,7 +2567,7 @@ def test_a_definite_answer_from_an_alternate_answers_under_the_alternates_roles(
     result = _run_beside_by_creditor(obs={f"{_RECEIVED}|country/KEN": _OBS}, also_plausible=[1])
 
     assert result.status == "definite"
-    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_GRANTS_BY_CREDITOR]
+    assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_REPAID_BY_CREDITOR]
     assert result.answered_roles == tuple(_PAIR)
     stamped = with_runnable_operations(result, (_RANK_CREDITORS,))
     assert stamped.operations == (_RANK_CREDITORS,)
@@ -2524,6 +2645,8 @@ def _relax_llm(**drafts: tuple[str, str]):
 
     class _DraftLLM:
         async def generate_structured(self, *, prompt, system, schema):
+            if schema is StatedWordsOutput:
+                return NO_RATING
             if schema is QuantityOutput:
                 return NO_QUANTITY
             return elected_reply(
@@ -2650,12 +2773,13 @@ def test_a_named_value_gives_way_only_after_every_sole_option_draft_and_is_discl
         llm=_relax_llm(instrument=("Bond", "mentioned"), guarantee=("Public", "mentioned")),
     )
 
-    assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], {"instrument": "Bond"}, [])
+    bonds = {"instrument": "Bond", "positionType": "AmountOutstanding"}
+    assert _relax_outcome(drafted) == ("definite", None, [_RELAX_BONDS], bonds, [])
     assert _relax_outcome(named) == (
         "definite",
         None,
         [_RELAX_BONDS],
-        {"instrument": "Bond"},
+        bonds,
         ["measure_not_applied"],
     )
     assert [fact.binding_ref for fact in named.departure_facts.values()] == ["how:guarantee"]
@@ -2872,20 +2996,61 @@ def test_a_standard_part_is_not_relaxed_where_its_walk_finds_no_member(walked):
         entities=["Kenya"],
         obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
         nodes=nodes,
+        query="female people in Kenya",
         options=EngineOptions(materialise_graph=_walk_reader(nodes) if walked else None),
         llm=_relax_llm(gender=("Female", "mentioned")),
     )
 
-    assert _relax_outcome(result) == ("no_data", "no_observations", ["Pop_Total"], {}, [])
+    assert _relax_outcome(result) == (
+        "no_data",
+        "no_observations",
+        ["Pop_Total"],
+        {"positionType": "Stock"},
+        [],
+    )
     assert not result.unbound_qualifiers
 
 
-def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(monkeypatch):
+@pytest.mark.parametrize(
+    ("query", "rated", "outcome"),
+    [
+        (
+            "aged X in Kenya",
+            [],
+            ("definite", None, ["Pop_B"], {"age": "X", "positionType": "Stock"}, []),
+        ),
+        (
+            "female aged X in Kenya",
+            [(("female",), {"age": ("X",), "positionType": ("Stock",)})],
+            (
+                "no_data",
+                "qualifier_not_bound",
+                ["Pop_B"],
+                {"age": "X", "positionType": "Stock"},
+                [],
+            ),
+        ),
+        (
+            "refugee aged X in Kenya",
+            [(("refugee",), {"age": ("X",), "positionType": ("Stock",)})],
+            ("definite", None, ["Pop_B"], {"age": "X", "positionType": "Stock"}, []),
+        ),
+    ],
+    ids=["unnamed", "named", "unread-before-and-after"],
+)
+def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(
+    monkeypatch, query, rated, outcome
+):
     """Female is drafted as the gender slot's sole option and age X is named. No member
     holds both: A is female at age Y, B male at age X. The sole-option claim gives way
     silently and B answers, where unbinding the named age would refuse on it. Validation
     of the claim against the population (`_validate_sole_option_bindings`) would drop it
-    first here, so it is held off to reach the read."""
+    first here, so it is held off to reach the read. A query naming "female" leaves the
+    word on no bound code once Female is unbound, so the binder rates it on B under the
+    bindings left, and the part refuses on its rating, as it would had the bind never
+    drafted Female. A word no member's name states is rated once, on the bindings the
+    unbinding leaves and the member the read then serves, though the bind left it unread
+    too."""
     nodes = {
         "Pop_A": _node("Females aged Y", [], positionType="Stock", gender="Female", age="Y"),
         "Pop_B": _node("Males aged X", [], positionType="Stock", gender="Male", age="X"),
@@ -2893,16 +3058,65 @@ def test_a_standard_part_unbinds_a_sole_option_value_before_a_named_one(monkeypa
     monkeypatch.setattr(
         phase_election, "_validate_sole_option_bindings", lambda bindings, shape: bindings
     )
+    binder = RatingBinder(GeminiBinder(), {"female": 0.0})
 
     result = _run(
         entities=["Kenya"],
         obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+        query=query,
         nodes=nodes,
         llm=_relax_llm(gender=("Female", "sole_option"), age=("X", "mentioned")),
+        binder=binder,
     )
 
-    assert _relax_outcome(result) == ("definite", None, ["Pop_B"], {"age": "X"}, [])
-    assert not result.unbound_qualifiers
+    assert [(request.words, restricting(request.bindings)) for request in binder.requests] == rated
+    assert _relax_outcome(result) == outcome
+    assert bool(result.unbound_qualifiers) == (outcome[1] == "qualifier_not_bound")
+
+
+def test_a_part_no_table_serves_after_an_unbinding_names_the_word_it_leaves_unread(
+    monkeypatch,
+):
+    """The unbinding of the sole-option Female leaves "female" on no bound code, and no
+    table serves the part under the bindings left (`phase_election._served`). Coverage is
+    judged before that refusal, on the shape's named members since no read served one, so
+    the binder rates "female" and the refusal names it."""
+    nodes = {
+        "Pop_A": _node("Females aged Y", [], positionType="Stock", gender="Female", age="Y"),
+        "Pop_B": _node("Males aged X", [], positionType="Stock", gender="Male", age="X"),
+    }
+    monkeypatch.setattr(
+        phase_election, "_validate_sole_option_bindings", lambda bindings, shape: bindings
+    )
+    unbound = []
+
+    def unbind(state, unrealisable):
+        unbind_unrealisable(state, unrealisable)
+        unbound.append(state)
+
+    served = phase_election._served
+
+    def not_served(state, shape, bindings, role_keys):
+        if unbound:
+            raise PartNotServed
+        return served(state, shape, bindings, role_keys)
+
+    monkeypatch.setattr(phase_place_materialise, "unbind_unrealisable", unbind)
+    monkeypatch.setattr(phase_election, "_served", not_served)
+    binder = RatingBinder(GeminiBinder(), {"female": 0.0})
+
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+        query="female aged X in Kenya",
+        nodes=nodes,
+        llm=_relax_llm(gender=("Female", "sole_option"), age=("X", "mentioned")),
+        binder=binder,
+    )
+
+    assert [request.words for request in binder.requests] == [("female",)]
+    assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
+    assert "female" in [record.text for record in result.unbound_qualifiers]
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walked", "no-walk"])
@@ -2911,8 +3125,11 @@ def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypat
     declares a creditor where the others declare the debtor alone. Every member conflicts
     on a sole-option draft, so all three go, and the members left under the named value
     declare role sets the election cannot order: the part refuses
-    `role_signature_incompatible`, as the mint refuses the identity, with no draft still
-    bound and no value refused on."""
+    `role_signature_incompatible`, as the mint refuses the identity, and no value is refused
+    on. The recalled sample does not refute the drafts, so each stands as a sampled claim.
+    The walk reads every sampled claim open, meets those role sets at once and refuses
+    with nothing unbound. With no walk the read unbinds all three drafts, leaving no draft
+    bound."""
     nodes = {
         _RELAX_BONDS: _node(
             "External debt stocks, bonds",
@@ -2947,12 +3164,14 @@ def test_a_family_with_no_total_refuses_once_its_sole_option_drafts_go(monkeypat
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
     assert result.flagged_match is None
     assert not result.unbound_qualifiers
-    (state,) = states
-    assert {
-        b.property_dcid: b.value_dcids
-        for b in state.bindings
-        if b.kind == "value" and b.property_dcid is not None
-    } == {"positionType": ["AmountOutstanding"]}
+    assert [
+        {
+            b.property_dcid: b.value_dcids
+            for b in state.bindings
+            if b.kind == "value" and b.property_dcid is not None
+        }
+        for state in states
+    ] == ([] if walked else [{"positionType": ["AmountOutstanding"]}])
 
 
 @pytest.mark.parametrize("walked", [True, False], ids=["walk-point", "read"])
@@ -2964,7 +3183,7 @@ def test_the_served_dataset_is_settled_again_under_the_bindings_an_unbinding_lea
     answers with that refusal."""
     settled = []
 
-    def settle(state, role_keys):
+    async def settle(state, role_keys):
         settled.append(
             {b.property_dcid for b in state.bindings if b.kind == "value" and b.property_dcid}
         )

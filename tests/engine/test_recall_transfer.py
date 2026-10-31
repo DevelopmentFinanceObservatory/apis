@@ -56,13 +56,23 @@ _TOPIC_BASE = "dc/topic/sdg_4.6"
 _FACET = {"earliestDate": "2020", "latestDate": "2022", "obsCount": 3}
 
 
+# The graph's names of the literacy series, which the coverage rule reads the variable by.
+_NAMES = {
+    _SDG: "Literacy rate, by sex",
+    _WHO: "Literacy rate",
+    _SDG_FEMALE: "Literacy rate, female",
+    _BASE: "Literacy rate, by sex",
+    _BASE_VARIANT: "Literacy rate, female",
+}
+
+
 def _sv_node(dcid: str, *, population_type: str, meas_prop: str) -> dict:
     return {
         "label": dcid,
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": dcid}]},
+            "name": {"nodes": [{"value": _NAMES.get(dcid, dcid)}]},
             "populationType": {"nodes": [{"dcid": population_type}]},
             "measuredProperty": {"nodes": [{"dcid": meas_prop}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -119,9 +129,9 @@ def _catalogue(*, un_system_enabled: bool = True, transfer: bool = True) -> Cata
         successors={_BASE: _SDG, _BASE_VARIANT: _SDG, _BASE_ALONE: None} if transfer else {},
         un_mirror=un_mirror(
             {
-                _SDG: un_variable(_SDG_SERIES, name=_SDG),
-                _SDG_FEMALE: un_variable(_SDG_SERIES, name=_SDG_FEMALE),
-                _WHO: un_variable(_WHO_SERIES, name=_WHO),
+                _SDG: un_variable(_SDG_SERIES, name=_NAMES[_SDG]),
+                _SDG_FEMALE: un_variable(_SDG_SERIES, name=_NAMES[_SDG_FEMALE]),
+                _WHO: un_variable(_WHO_SERIES, name=_NAMES[_WHO]),
             }
         ),
         un_system_enabled=un_system_enabled,

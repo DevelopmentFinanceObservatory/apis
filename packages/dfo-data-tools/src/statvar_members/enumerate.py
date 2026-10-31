@@ -25,6 +25,7 @@ from statvar_members.types import (
     EMPTY_READINGS,
     UNRESOLVED_NODE,
     AbsentReading,
+    CompleteArcReads,
     FiveTuple,
     MemberArcReader,
     SubjectPage,
@@ -138,12 +139,15 @@ at a time: 8 arc reads beyond the reconciliation passes. Under an unresolved-den
 a twin naming a denominator target `_ProvisionalDenominatorReader` has not seen adds one
 batched `typeOf` read, and each target that reads empty in a batch of several adds one
 single-target re-read. The pass therefore costs at most 8 arc reads, 8 `typeOf` reads, and
-one re-read per target that reads empty in a batch. Live families share one target
-(`PerCapita`), which the root's read has seen, so they add none. Twins past the budget stay
-in `undismissed_candidates`. Root-shaped suspects take the reconciliation
-budgets first, so few reach this pass: dev walks of GDP per capita in Guatemala,
+one re-read per target that reads empty in a batch. A twin whose complete read carries no
+definition arc is settled without a read and spends none of the budget
+(`MemberGroup.stub_candidates`).
+Live families share one target (`PerCapita`), which the root's read has seen, so they add
+none. Twins past the budget stay in `undismissed_candidates`. Root-shaped suspects take the
+reconciliation budgets first, so few reach this pass: dev walks of GDP per capita in Guatemala,
 internet users in India, CO2 emissions in China, households in Kenya, and the
-4,000-candidate `Count_Person` family left none."""
+4,000-candidate `Count_Person` family left none beyond the stubs
+`MemberGroup.stub_candidates` describes."""
 
 _ROLE_PROBE_BUDGET = 16
 """`_settle_role_absence` reads at most 16 members one dcid at a time: those whose place in
@@ -278,14 +282,33 @@ class MemberGroup:
     the graph's own read path, distinct from a candidate that simply does
     not match `slots`. Under `root_confirmed`, a possible root twin that
     `_read_root_twins` settles leaves this list."""
+    stub_candidates: tuple[str, ...] = ()
+    """The possible root twins `_read_root_twins` settled as non-members because the reader
+    holds their arcs complete (`CompleteArcReads.arcs_complete`) and their read carries none
+    of `_FIVE_TUPLE_PROPERTIES`, though the reverse query named them under the five-tuple.
+    No read of such a node confirms it, since every read answers the same body. The dev
+    graph's `Count_Person` marital-status splits from `dc/base/Mongolia_Demographics` are
+    such nodes: their forward body is a single `memberOf` arc while their reverse arcs place
+    them under Person/count/measuredValue. Settled only under `root_confirmed`: such a twin is a
+    non-member, a member the root dominates, or a same-keyset duplicate of the root, so
+    leaving it out narrows `members` and keeps them correct, the limit `proven_complete`
+    states for a duplicate past the window. Without a confirmed root a stub could stand for
+    the root itself, so it stays in `undismissed_candidates`. The mint trace names these
+    (`trace.stub_candidates`)."""
     undismissed_candidates: tuple[str, ...] = ()
     """The `inconsistent_candidates` that could change `members` or their role agreement.
     Without `root_confirmed`, that is all of them, and role agreement is checked only when
     there are none. With it, `_possible_root_twins` keeps those whose reads name no
     constraint outside the `value`-bound slot keys, since each may be a same-keyset
     duplicate of the root whose roles disagree, and `_read_root_twins` drops each one its
-    single-dcid read settles. Role agreement among `members` is then checked regardless,
-    so a disagreement among confirmed members raises before any caller reads this."""
+    single-dcid read settles and each one `stub_candidates` names. Role agreement among
+    `members` is then checked regardless, so a disagreement among confirmed members raises
+    before any caller reads this."""
+    undismissed_rereadable: bool = False
+    """`True` when a later walk can dismiss one of `undismissed_candidates`: one whose reads
+    the walk's reader does not hold complete (`CompleteArcReads`), so a dropped arc may have
+    left it unsettled. `False` when the walk read every one of them in full, so a later walk
+    reads the same arcs and leaves them undismissed again."""
     full_read: bool = False
     """`True` when the walk read the whole filtered reverse set under a `subject_ceiling`,
     because the first page truncated without proof."""
@@ -533,6 +556,11 @@ class _Window:
     considered: int = 0
 
 
+def _arcs_unproven(dcid: str) -> bool:
+    """`arcs_complete` for a reader that is not `CompleteArcReads`: no read is known whole."""
+    return False
+
+
 def _enumerate_resolved(
     five_tuple: FiveTuple,
     *,
@@ -554,9 +582,12 @@ def _enumerate_resolved(
     empty truncated result leaves matching members beyond the page unaccounted for. An
     unresolved-denominator ask reads through `_ProvisionalDenominatorReader`, above the
     `_DeadlineReader` that bounds every read by the window's deadline: `deadline` for
-    the first page, then `full_read_deadline`, which defaults to `deadline`."""
+    the first page, then `full_read_deadline`, which defaults to `deadline`. A candidate
+    `graph` reads in full (`CompleteArcReads`) and rejects for an absent arc is a non-member
+    without a re-read."""
     if full_read_deadline is None:
         full_read_deadline = deadline
+    arcs_complete = graph.arcs_complete if isinstance(graph, CompleteArcReads) else _arcs_unproven
     window = _Window(cap=candidate_cap, deadline=deadline)
     if deadline is not None or full_read_deadline is not None:
         graph = _DeadlineReader(graph, window)
@@ -578,6 +609,7 @@ def _enumerate_resolved(
                 extra_candidates=extra_candidates,
                 role_keys=frozenset(role_keys),
                 open_role_keys=frozenset(open_role_keys),
+                arcs_complete=arcs_complete,
             )
         return _read_whole_set(
             five_tuple,
@@ -593,6 +625,7 @@ def _enumerate_resolved(
             role_keys=frozenset(role_keys),
             open_role_keys=frozenset(open_role_keys),
             candidate_cap=candidate_cap,
+            arcs_complete=arcs_complete,
         )
     except _DeadlineCrossed as exc:
         raise MemberReadDeadline(
@@ -617,6 +650,7 @@ def _read_whole_set(
     role_keys: frozenset[str],
     open_role_keys: frozenset[str],
     candidate_cap: int,
+    arcs_complete: Callable[[str], bool],
 ) -> MemberGroup:
     """Settle a truncated first page, read at `candidate_cap`. Confirm it when it may hold a root that proves it
     complete, and otherwise read the whole filtered set up to `subject_ceiling` and
@@ -648,6 +682,7 @@ def _read_whole_set(
                 role_keys=role_keys,
                 open_role_keys=open_role_keys,
                 prior_arcs=page_arcs,
+                arcs_complete=arcs_complete,
             )
             if group.proven_complete:
                 return group
@@ -679,6 +714,7 @@ def _read_whole_set(
         role_keys=role_keys,
         open_role_keys=open_role_keys,
         prior_arcs=page_arcs,
+        arcs_complete=arcs_complete,
     )
     return replace(group, full_read=True)
 
@@ -989,6 +1025,7 @@ def _confirm_group(
     role_keys: frozenset[str] = frozenset(),
     prior_arcs: Mapping[str, dict[str, tuple[str, ...]] | None] = _EMPTY_ARCS,
     open_role_keys: frozenset[str] = frozenset(),
+    arcs_complete: Callable[[str], bool],
 ) -> MemberGroup:
     """Confirm walked and caller-supplied candidates, reduce survivors, and enforce
     `member_cap` on the antichain result. The reverse-query page is capped at
@@ -997,6 +1034,10 @@ def _confirm_group(
     `truncated` and `candidate_cap` pass through unchanged. Completeness is computed
     from the final antichain. Drop candidates with a present, non-StatVar `typeOf`.
     Missing `typeOf` is inconclusive, so winners receive a trusted re-read.
+    A candidate rejected for an absent arc is re-read (`_reconcile_absence_rejected`)
+    unless `arcs_complete` says its read holds every arc, which makes it a non-member.
+    Under a confirmed root, a possible root twin whose complete read carries no definition
+    arc is settled out (`MemberGroup.stub_candidates`).
 
     Extras are deduplicated and receive the same membership and reduction checks,
     and skip filter reconciliation, which applies only to candidates the reverse
@@ -1052,7 +1093,7 @@ def _confirm_group(
         confirmation = _confirm_member(dcid, arcs, five_tuple=five_tuple, slots=slots)
         if confirmation.member is not None:
             consistent.append(confirmation.member)
-        elif confirmation.absence_rejected:
+        elif confirmation.absence_rejected and not arcs_complete(dcid):
             absence_suspects.append(dcid)
     recovered, unresolved_suspects = _reconcile_absence_rejected(
         _root_shaped_first(absence_suspects, arcs_by_dcid=arcs_by_dcid, slots=slots),
@@ -1101,13 +1142,16 @@ def _confirm_group(
         members, slots=slots, readings=readings, role_keys=election.role_keys
     ) and _root_covers_bound_keys(confirmed, slots=slots, role_keys=role_keys)
     undismissed = unresolved
+    stubs: tuple[str, ...] = ()
     if root_confirmed:
         twins = _possible_root_twins(
             unresolved, arcs_by_dcid=arcs_by_dcid, consistent=consistent, slots=slots
         )
-        read_twins, undismissed = _read_root_twins(
+        read_twins, undismissed, stubs = _read_root_twins(
             twins,
             walked=frozenset(candidate_dcids),
+            arcs_by_dcid=arcs_by_dcid,
+            arcs_complete=arcs_complete,
             five_tuple=five_tuple,
             slots=slots,
             graph=graph,
@@ -1142,7 +1186,9 @@ def _confirm_group(
         ),
         root_confirmed=root_confirmed,
         inconsistent_candidates=unresolved,
+        stub_candidates=stubs,
         undismissed_candidates=undismissed,
+        undismissed_rereadable=not all(map(arcs_complete, undismissed)),
         elected_open_role_keys=election.role_keys - role_keys,
     )
 
@@ -1280,24 +1326,37 @@ def _read_root_twins(
     twins: Sequence[str],
     *,
     walked: frozenset[str],
+    arcs_by_dcid: Mapping[str, Mapping[str, tuple[str, ...]] | None],
+    arcs_complete: Callable[[str], bool],
     five_tuple: FiveTuple,
     slots: Mapping[str, SlotBinding],
     graph: MemberArcReader,
     properties: Sequence[str],
-) -> tuple[tuple[Member, ...], tuple[str, ...]]:
-    """Read the first `_TWIN_PROBE_BUDGET` possible root twins one dcid at a time.
+) -> tuple[tuple[Member, ...], tuple[str, ...], tuple[str, ...]]:
+    """Settle the twins whose complete read carries no definition arc, then read the first
+    `_TWIN_PROBE_BUDGET` of the rest one dcid at a time.
 
+    A twin whose read in `arcs_by_dcid` carries none of `_FIVE_TUPLE_PROPERTIES` and whose
+    reader holds its arcs complete (`arcs_complete`) is settled as a non-member without a
+    read, since every read answers the same: the limit `MemberGroup.stub_candidates` states.
+    A batch read of a live reader can drop every arc, so a bare read it does not hold
+    complete settles nothing.
     A single-dcid read is trusted, so a read settles its twin: a confirmed member
     joins the group (a root twin survives beside the root, any other the root dominates),
     and a non-match is dismissed. A twin in `walked` is the exception when its read lacks
     a filter-covered arc: the reverse query proved that arc, so the read contradicts the
     index and settles nothing, as in `_reconcile_filter_covered`. Returns the confirmed
-    members and the twins still unsettled: those whose read came back empty or
-    contradicted the index, and those past the budget."""
+    members, the twins still unsettled (those whose read came back empty or contradicted
+    the index, and those past the budget), and the twins settled as stubs."""
+    stubs = tuple(
+        dcid for dcid in twins if _is_stub(arcs_by_dcid.get(dcid)) and arcs_complete(dcid)
+    )
+    settled = frozenset(stubs)
+    to_read = [dcid for dcid in twins if dcid not in settled]
     scalar_expected, slot_expected = _filter_covered_expectations(five_tuple, slots)
     confirmed: list[Member] = []
     unsettled: list[str] = []
-    for dcid in twins[:_TWIN_PROBE_BUDGET]:
+    for dcid in to_read[:_TWIN_PROBE_BUDGET]:
         arcs = graph.node_arcs_many([dcid], properties=properties).get(dcid)
         if arcs is None:
             unsettled.append(dcid)
@@ -1312,7 +1371,14 @@ def _read_root_twins(
         ).member
         if member is not None:
             confirmed.append(member)
-    return tuple(confirmed), (*unsettled, *twins[_TWIN_PROBE_BUDGET:])
+    return tuple(confirmed), (*unsettled, *to_read[_TWIN_PROBE_BUDGET:]), stubs
+
+
+def _is_stub(arcs: Mapping[str, tuple[str, ...]] | None) -> bool:
+    """Whether a read carries none of `_FIVE_TUPLE_PROPERTIES`: no `typeOf`, no
+    `populationType`, `measuredProperty` or `statType`, and no other definition arc. An
+    absent node's `None` read carries none either."""
+    return not any((arcs or {}).get(name) for name in _FIVE_TUPLE_PROPERTIES)
 
 
 def _root_shaped_first(

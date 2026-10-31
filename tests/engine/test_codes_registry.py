@@ -56,6 +56,9 @@ _REFUSAL_KNOWN_PASSTHROUGHS: frozenset[tuple[str, str]] = frozenset(
         # Rewrites a caught EngineInputError's pointer onto the nested
         # identity contract; the code travels unchanged.
         ("engine/region/resubmit.py", "exc.code"),
+        # Raises the code `scope.compile` fixed on the refusal, one of the two
+        # `RefusalCode` literals, both registered in `engine.codes`.
+        ("scope/build.py", "refusal.code"),
     }
 )
 

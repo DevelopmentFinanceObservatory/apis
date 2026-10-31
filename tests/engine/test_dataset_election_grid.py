@@ -89,7 +89,6 @@ from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
 from search.engine.region import related_read as related_read_module
-from search.engine.region import unrealisable as unrealisable_module
 from search.engine.region.alternate_guard import AlternateJudge, inadmissible_reason, query_pins
 from search.engine.region.candidates import walk_alternate
 from search.engine.region.grounding import _ground_answer
@@ -98,7 +97,12 @@ from search.engine.region.option_coverage import (
     _maybe_enrich_slot_options,
     option_axis_facts,
 )
-from search.engine.region.phase_election import _phase_settle, _repair_bindings, _vet_election
+from search.engine.region.phase_election import (
+    _phase_settle,
+    _repair_bindings,
+    _vet_election,
+    judge_coverage,
+)
 from search.engine.region.phase_rank_bind import (
     _dataset_candidates,
     _out_of_scope_records,
@@ -1477,7 +1481,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_once_bound(
         ]
     else:
         assert vetted is None
-        assert _repair_bindings(state) is None
+        assert asyncio.run(_repair_bindings(state)) is None
         assert [b.value_dcids for b in state.bindings if b.property_dcid == "sector"] == [[sector]]
 
 
@@ -1676,8 +1680,8 @@ def _repair(
         disposed.append(list(state.bindings))
         return []
 
-    monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", _dispositions)
-    assert _repair_bindings(state) is None
+    monkeypatch.setattr(phase_election_module, "_query_records", _dispositions)
+    assert asyncio.run(_repair_bindings(state)) is None
     (bindings,) = disposed
     assert bindings == state.bindings
     return bindings
@@ -1778,7 +1782,6 @@ def test_unbinding_a_default_and_the_measure_partition_takes_back_what_they_stat
     assert [w.code for w in state.warnings] == ["slot_defaulted"]
     assert state.slot_default_phrases == {"sector"}
     assert state.measure_elected_partition is not None
-    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
     unbind_unrealisable(
         state,
@@ -1829,7 +1832,6 @@ def test_only_a_sole_option_claim_of_the_bind_reply_is_refuted_by_a_conflict(
     state.text_recognized_properties = frozenset({"sector"})
     state.variable = "sector A aid"
     state.graph = cast(EngineGraphClient, FakeGraph(nodes={}, obs={}, detect={}, resolve={}))
-    monkeypatch.setattr(unrealisable_module, "_resolve_query_qualifiers", lambda state: [])
 
     unbind_unrealisable(
         state,
@@ -3378,6 +3380,7 @@ def _settle(monkeypatch: pytest.MonkeyPatch, state: ResolveState) -> RegionResul
         "get_measure_index",
         lambda: MeasureIndex(axes=(), values=(), partition_labels=()),
     )
+    monkeypatch.setattr(phase_election_module, "_query_records", lambda _state: [])
     monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", lambda _state: [])
     return asyncio.run(_phase_settle(state))
 
@@ -3676,6 +3679,8 @@ def _settled_ledger_state(monkeypatch: pytest.MonkeyPatch) -> ResolveState:
     state = _part_state(shape, "donor-recipient", {"sector": "D", "channel": "K1"}, scope=scope)
     _record_stray_female(state)
     assert _settle(monkeypatch, state) is None
+    # The pass judges coverage before it judges a refusal (`judge_coverage`).
+    asyncio.run(judge_coverage(state))
     # The flagged match a refusal giving way to `qualifier_not_bound` carries reads labels.
     state.graph = cast(EngineGraphClient, FakeGraph())
     for code in ("D", "C"):
@@ -3768,7 +3773,7 @@ def test_a_refusal_raised_for_a_candidate_is_judged_on_that_candidate(monkeypatc
     )
     refusal = dataclasses.replace(
         state.no_data("rate_coverage_gap"),
-        refused_answer=(state.shape_draft, candidate_bindings),
+        refused_answer=(state.shape_draft, candidate_bindings, None),
     )
 
     result = asyncio.run(settle_unjudged_refusal(state, refusal))

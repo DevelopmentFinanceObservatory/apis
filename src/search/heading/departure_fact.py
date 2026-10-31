@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
-from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, RoleAxis
+from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, PartyClass, RoleAxis
 
 
 @dataclass(frozen=True)
@@ -43,11 +43,13 @@ class DepartureFact:
     on every other code:
 
     - `verb` (`operation_not_applied`): the operation the request named.
-    - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`): the
-      flow axis the request broke the answer down by, named the place on, or the axis the
-      answer reads a place named without a direction on.
-    - `entities` (`entity_unavailable`): the names of the entities the data holds no
-      values for, in the answer's entity order.
+    - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`,
+      `whole_total_read`): the flow axis the request broke the answer down by, named the
+      place on, the axis the answer reads a place named without a direction on, or the side
+      the answer reads as its whole population.
+    - `entities` (`entity_unavailable`, `whole_total_read`): the names of the entities the
+      data holds no values for, in the answer's entity order; or, for a whole population
+      read as a union of totals, the names of those totals.
     - `sets` (`entity_unavailable`): on a role that binds the members of sets the request
       named beside other places, each set with the members the data holds no values for.
       `entities` then names only the places the request named one by one.
@@ -56,12 +58,36 @@ class DepartureFact:
       (`EntityGroup.ref`) of the group the request named for the role, when
       it named one; `asked` is then the request's own words for the group, `None` on a
       door that holds none.
+    - `group` (`whole_total_read`): the label of the whole population the side reads
+      (`EntityGroup.label`); `asked` is the request's own words for it, `None` when the
+      request named nothing on the side or its door holds no words.
+    - `whole_of` (`whole_total_read`): the classes of party the population covers
+      (`EntityGroup.whole_of`).
+    - `side_classes` (`whole_total_read`): the classes of party, totals aside, the answer's
+      dataset holds on the side (`EntityGroup.side_classes`).
+    - `inferred` (`whole_total_read`): the request named nothing on the side, so the answer
+      read it whole. False on a door that holds no words of the request (a resubmit).
+    - `members_in_words` (`whole_total_read`): the part's door asks for a side's members in
+      the question's words ("for each donor"), as the raw-text door does, where the other doors
+      post `open_roles`.
+    - `shown`, `over` and `whole_of` (`whole_total_unpublished`): the name of the dataset
+      that publishes no total of the whole population the request named, the side it
+      leaves unnamed, and the classes of party the dataset holds there; `asked` is the
+      request's words for the population.
     - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
       group counts beside its members ("Africa, unallocated by country (DAC)"), which the
       members leave out, in the code index's order. Empty for a group no total holds.
+    - `included` (`group_read_as_members`): the labels of the residuals the role binds
+      beside the members, where the part sums the group with them (`scope.region`), in the
+      answer's entity order.
     - `sum_differs` (`group_read_as_members`): a dataset the answer serves publishes, on the
       role's flow axis, its own figure for the group, which can differ from one built from its
       members (`PartyRow.sums_members` false).
+    - `members` (`member_unavailable`): the labels of the variables the answer's one group
+      leaves out, in member order; `asked` joins them and `shown` names the source the
+      answer reads.
+    - `unit` (`member_unavailable`): the name of the unit the answer reads, as its served
+      series carry it, when they carry one.
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -76,6 +102,12 @@ class DepartureFact:
       converts over fewer years than the data holds, the first and last years the
       conversion covers, and the table that leaves the rest out (exchange rates or
       deflators). `data_years` is then the years the data serves before the conversion.
+    - `covered_years` and `limited_by` (`year_unavailable`): on an answer a scope option
+      the request's words asked for serves over fewer years than asked
+      (`OptionAvailability.status` partial), the runs of years the option covers, and what
+      leaves the rest out: the imputed multilateral line of the inclusive provider scope,
+      or the published total a provider option reads; None when the option's reason names
+      neither. `shown` is the run the answer serves.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.
@@ -99,18 +131,28 @@ class DepartureFact:
     over: RoleAxis | None = None
     entities: tuple[str, ...] = ()
     sets: tuple[UnservedMembers, ...] = ()
+    members: tuple[str, ...] = ()
+    unit: str | None = None
     group: str | None = None
     group_size: int | None = None
     group_dcid: str | None = None
     excluded: tuple[str, ...] = ()
+    included: tuple[str, ...] = ()
     sum_differs: bool = False
+    whole_of: tuple[PartyClass, ...] = ()
+    side_classes: tuple[PartyClass, ...] = ()
+    inferred: bool = False
+    members_in_words: bool = False
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None
     readings: bool = False
     requested_years: tuple[int | None, int | None] | None = None
     data_years: tuple[int, int] | None = None
     converted_years: tuple[int, int] | None = None
-    limited_by: Literal["exchange_rates", "deflators"] | None = None
+    limited_by: (
+        Literal["exchange_rates", "deflators", "imputed_multilateral", "published_total"] | None
+    ) = None
+    covered_years: tuple[tuple[int, int], ...] = ()
     omitted_years: tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...] = ()
     omitted_unnamed: int = 0
     omission_undecided: bool = False

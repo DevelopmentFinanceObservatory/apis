@@ -6,20 +6,34 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from unittest.mock import patch
 
 import pytest
 
-from materialise.facets import ElectedDataset, FacetSelection
+from materialise import MaterialisationRequest
+from materialise.facets import (
+    ElectedDataset,
+    FacetBinding,
+    FacetSelection,
+    UnitRequest,
+    probe_facets,
+)
 from materialise.graph import SubjectPage
+from materialise.group_facets import group_breadth, select_group_facets
 from materialise.rate_tables import RateTableCache
 from materialise.recipes import CONVERSION_NODE_PROPERTIES
 from search.engine.errors import EngineInfraError, EngineInputError
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_spec_resubmit, resolve_variable
-from search.engine.region.convertibility import decide_part_unit, elected_unit_refs
+from search.engine.region.convertibility import (
+    decide_option_units,
+    decide_spec_unit,
+    elected_unit_refs,
+)
 from search.engine.region.state import EngineOptions
+from search.engine.retrieval.read_plan import plan_window
+from search.engine.unit.base_year import TABLE_PROVENANCES
 from search.models import (
     IdentityBindingSet,
     IdentityFacetValueRequest,
@@ -59,7 +73,7 @@ _PROVENANCE = "dc/base/ConvertSrc"
 _OTHER_PROVENANCE = "dc/base/ConvertSrcOther"
 _RECIPE = "ConversionRecipeDAC"
 _QUERY = "convertibility test variable in Kenya"
-# Every direct decide_part_unit() call in this file declares
+# Every direct decide_spec_unit() call in this file declares
 # ("observationAbout",), subject-only, so `coverage` is never read on that
 # path (materialise.facets.probe_facets' role-bearing branch alone reads
 # it) -- an empty index, never consulted, satisfies the required argument.
@@ -82,6 +96,17 @@ _SV_ARCS: dict = {
 _NODES: dict = {
     _ENTITY: {"label": "Kenya", "type": "Country"},
     _SV: {"label": "Convert expenditure", "type": "StatisticalVariable", "arcs": _SV_ARCS},
+    # A constant-price phrase naming no year completes from the tables' base year.
+    **{
+        provenance: {
+            "label": "Conversion tables",
+            "arcs": {
+                "lastDataRefreshDate": {"nodes": [{"value": "2026-10-01"}]},
+                "deflatorBaseYear": {"nodes": [{"value": "2023"}]},
+            },
+        }
+        for provenance in TABLE_PROVENANCES
+    },
 }
 
 _CURRENCY_ARCS = {
@@ -163,9 +188,15 @@ def _run_text(
     qualifier: str | None = None,
     unit_text_best_effort: bool = False,
 ):
+    """A `qualifier` other than `Nominal` is the StatVar's on the search graph too, so its
+    shape carries it."""
     obs = {f"{_SV}|{_ENTITY}": obs_facets}
+    nodes = _NODES
+    if qualifier is not None and not nominal:
+        arcs = {**_SV_ARCS, "measurementQualifier": {"nodes": [{"dcid": qualifier}]}}
+        nodes = {**_NODES, _SV: {**_NODES[_SV], "arcs": arcs}}
     graph = FakeGraph(
-        nodes=_NODES,
+        nodes=nodes,
         detect={_QUERY: {"svs": [_SV], "cosine_scores": [0.95]}},
         resolve={"Kenya": _ENTITY},
         obs=obs,
@@ -280,18 +311,18 @@ def test_declared_non_nominal_qualifier_refuses_unsupported_with_cause():
     assert result.unsupported.cause.code == "nominal_undeclared"
 
 
-def test_provenance_default_undefined_refuses_facet_not_available():
-    """Missing provenance and default policy raises `facet_not_available` before conversion checks.
-    The fixture also has no nominal qualifier, confirming the earlier refusal.
-    """
+def test_a_native_request_answers_over_a_top_facet_carrying_no_provenance():
+    """A search read does not require provenance, so a native USD request over a facet
+    carrying none answers from it, with no source named. The StatVar declares no
+    measurement qualifier, which a natively satisfied request accepts."""
     result = _run_text(
         unit_text="USD",
         obs_facets=[_obs_facet(unit="CurrencyUSD", provenance_id=None)],
         nominal=False,
         provenance_declares_recipe={},
     )
-    assert result.status == "no_data", f"expected no_data, got {result.status!r}"
-    assert result.no_data_reason == "facet_not_available"
+    assert result.status == "definite", f"expected definite, got {result.status!r}"
+    assert result.no_data_reason is None
 
 
 def test_no_unit_at_all_refuses_facet_binding_unsupported():
@@ -309,22 +340,66 @@ def test_no_unit_at_all_refuses_facet_binding_unsupported():
     assert result.unsupported.code == "facet_binding_unsupported"
 
 
-def test_a_typed_unit_phrase_the_data_cannot_convert_to_answers_without_it():
+@pytest.mark.parametrize(
+    ("unit_text", "unit", "qualifier", "departed"),
+    [
+        pytest.param("in US dollars", None, None, [("measure_not_applied", None)], id="no-unit"),
+        # A constant-price series refuses conversion (`nominal_undeclared`); its own basis
+        # and currency are what the phrase asks.
+        pytest.param("in constant US dollars", "CurrencyUSD", "RealValue", [], id="real-usd"),
+        # The UN System Data Commons' US-dollar unit is no currency node
+        # (`NonCurrencyUnitError`), and is denominated in US dollars all the same.
+        pytest.param(
+            "in constant US dollars",
+            "undata/UNIT_MEASURE-CR_USD_K",
+            "RealValue",
+            [],
+            id="real-un-usd",
+        ),
+        pytest.param(
+            "in constant euros",
+            "CurrencyUSD",
+            "RealValue",
+            [("measure_not_applied", "unit:")],
+            id="real-usd-asked-in-euros",
+        ),
+        pytest.param(
+            "in constant 2010 US dollars",
+            "CurrencyUSD",
+            "RealValue",
+            [("measure_not_applied", "unit:")],
+            id="real-usd-asked-a-base-year",
+        ),
+        pytest.param(
+            "in constant US dollars",
+            "CurrencyUSD",
+            "PurchasingPowerParity",
+            [("measure_not_applied", "unit:")],
+            id="ppp-usd-asked-constant",
+        ),
+    ],
+)
+def test_a_typed_unit_phrase_the_data_cannot_convert_to_answers_without_it(
+    unit_text: str, unit: str | None, qualifier: str | None, departed: list[tuple[str, str | None]]
+):
     """The raw-text door's typed unit phrase is best effort. Where the explicit request above
-    refuses, the leg answers unconverted, binds no unit, and departs `measure_not_applied`
-    for the phrase. Data in no currency has no unit token, so no one slot clears it."""
+    refuses, the leg answers unconverted, binds no unit, and departs for the phrase: data in
+    no currency departs `measure_not_applied`, which no unit token clears. An answer whose
+    shape carries the price basis the phrase names, in the currency it names, already is
+    what it asks, so it departs nothing; a currency, base year or basis it lacks departs."""
     result = _run_text(
-        unit_text="in US dollars",
-        obs_facets=[_obs_facet(unit=None)],
-        nominal=True,
+        unit_text=unit_text,
+        obs_facets=[_obs_facet(unit=unit)],
+        nominal=qualifier is None,
+        qualifier=qualifier,
         provenance_declares_recipe={_PROVENANCE: False},
         unit_text_best_effort=True,
     )
     assert result.status == "definite", result.no_data_reason
     assert result.specs[0].definition.identity.facets is None
-    assert [(f.code, f.binding_ref, f.asked) for f in result.departure_facts.values()] == [
-        ("measure_not_applied", None, "in US dollars")
-    ]
+    assert [(f.code, f.binding_ref) for f in result.departure_facts.values()] == departed
+    assert all(f.asked == unit_text for f in result.departure_facts.values())
+    assert ("query_qualifier_dropped" in [w.code for w in result.warnings]) is bool(departed)
 
 
 def test_missing_materialise_graph_raises_infra_error():
@@ -372,8 +447,8 @@ def test_ref_form_unit_is_unaffected():
         nominal=False, provenance_declares_recipe={_PROVENANCE: False}
     )
     with patch(
-        "search.engine.region.phase_answer.decide_part_unit",
-        side_effect=AssertionError("decide_part_unit must not be called with no unit request"),
+        "search.engine.region.phase_answer.decide_spec_unit",
+        side_effect=AssertionError("decide_spec_unit must not be called with no unit request"),
     ) as spy:
         result = asyncio.run(
             resolve_variable(
@@ -480,9 +555,9 @@ def test_discovered_scope_role_bearing_resolve_runs_the_decision(monkeypatch):
 
     from search.engine.region import convertibility as convertibility_module
 
-    real_decide_part_unit = convertibility_module.decide_part_unit
+    real_decide_spec_unit = convertibility_module.decide_spec_unit
     with patch(
-        "search.engine.region.phase_answer.decide_part_unit", side_effect=real_decide_part_unit
+        "search.engine.region.phase_answer.decide_spec_unit", side_effect=real_decide_spec_unit
     ) as spy:
         result = asyncio.run(
             resolve_variable(
@@ -635,8 +710,8 @@ def test_resubmit_native_currency_is_definite():
 def test_resubmit_no_unit_request_makes_no_decision_call():
     """No unit binding at all (a plain resubmit) makes no decision call."""
     with patch(
-        "search.engine.region.promote_ground.decide_part_unit",
-        side_effect=AssertionError("decide_part_unit must not be called with no unit request"),
+        "search.engine.region.promote_ground.decide_spec_unit",
+        side_effect=AssertionError("decide_spec_unit must not be called with no unit request"),
     ) as spy:
         region = _resubmit(
             request=None,
@@ -664,21 +739,31 @@ def test_resubmit_missing_materialise_graph_raises_infra_error():
         )
 
 
-def test_resubmit_provenance_default_undefined_raises_facet_not_available_422():
-    """Promote-door mirror: undeclared-provenance-default raises
-    DefaultFacetUndefinedError, mapped to EngineInputError(facet_not_available, 422)."""
-    request = IdentityUnitRequest(currency="USD", prices="current")
-    with pytest.raises(EngineInputError) as exc_info:
-        _resubmit(
-            request=request,
-            obs_facets=[_obs_facet(unit="CurrencyUSD", provenance_id=None)],
-            nominal=False,
-            provenance_declares_recipe={},
-        )
-    assert exc_info.value.code == "facet_not_available"
-    assert exc_info.value.status == 422
-    assert exc_info.value.pointer == "/input/identity/facets/unit"
-    assert exc_info.value.cause is None
+def test_resubmit_decides_a_native_request_over_a_facet_carrying_no_provenance(monkeypatch):
+    """Promote-door mirror: the unit decision resolves the unbound provenance axis of a facet
+    carrying none to the null ref (`absent_on_selected_facet`), and the resubmit answers.
+    The spy wraps the real decision to read its selections."""
+    from search.engine.region import promote_ground
+
+    decided: list[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]] = []
+
+    def spy(*args, **kwargs):
+        elected = decide_spec_unit(*args, **kwargs)
+        decided.append(elected)
+        return elected
+
+    monkeypatch.setattr(promote_ground, "decide_spec_unit", spy)
+    result = _resubmit(
+        request=IdentityUnitRequest(currency="USD", prices="current"),
+        obs_facets=[_obs_facet(unit="CurrencyUSD", provenance_id=None)],
+        nominal=False,
+        provenance_declares_recipe={},
+    )
+    assert result.status == "definite"
+    ((selections,),) = [elected[_SV] for elected in decided]
+    assert selections["provenance"].ref is None
+    assert selections["provenance"].selection_reason == "absent_on_selected_facet"
+    assert selections["unit"].ref == "CurrencyUSD"
 
 
 def test_resubmit_no_unit_at_all_raises_facet_binding_unsupported_422():
@@ -700,7 +785,7 @@ def test_resubmit_no_unit_at_all_raises_facet_binding_unsupported_422():
     assert exc_info.value.pointer == "/input/identity/facets/unit"
 
 
-def test_decide_part_unit_native_currency_returns_native_ref():
+def test_decide_spec_unit_native_currency_returns_native_ref():
     """A single-ref binding, natively satisfied (`{USD,current}` on a
     native `CurrencyUSD` facet, no conversion): the returned mapping
     carries one decided combination, whose `"unit"` selection is that
@@ -711,7 +796,7 @@ def test_decide_part_unit_native_currency_returns_native_ref():
     materialise_graph._arcs = _materialise_arcs(
         nominal=True, provenance_declares_recipe={_PROVENANCE: False}
     )
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_SV],
         unit_request=IdentityUnitRequest(currency="USD", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},
@@ -732,7 +817,7 @@ def test_decide_part_unit_native_currency_returns_native_ref():
     [(_PROVENANCE, _PROVENANCE), (None, _OTHER_PROVENANCE)],
     ids=["elected_dataset", "no_election"],
 )
-def test_decide_part_unit_probes_within_the_members_elected_dataset(elected, decided):
+def test_decide_spec_unit_probes_within_the_members_elected_dataset(elected, decided):
     """With no plan probe the decision probes for itself. The other dataset's facet holds
     more points and wins a plain ranking; a member whose family elected `_PROVENANCE`
     decides on that dataset's facet, as a mint of it does."""
@@ -758,7 +843,7 @@ def test_decide_part_unit_probes_within_the_members_elected_dataset(elected, dec
         else {}
     )
 
-    decision = decide_part_unit(
+    decision = decide_spec_unit(
         [_SV],
         unit_request=IdentityUnitRequest(currency="USD", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},
@@ -774,7 +859,7 @@ def test_decide_part_unit_probes_within_the_members_elected_dataset(elected, dec
     assert selections["provenance"].ref == decided
 
 
-def test_decide_part_unit_converting_facet_returns_its_native_ref():
+def test_decide_spec_unit_converting_facet_returns_its_native_ref():
     """A single-ref binding that converts (`{EUR,current}` on a native
     `CurrencyUSD` facet whose provenance declares a recipe): the decided
     combination's `"unit"` selection still carries the elected facet's own
@@ -785,7 +870,7 @@ def test_decide_part_unit_converting_facet_returns_its_native_ref():
     materialise_graph._arcs = _materialise_arcs(
         nominal=True, provenance_declares_recipe={_PROVENANCE: True}
     )
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_SV],
         unit_request=IdentityUnitRequest(currency="EUR", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},
@@ -801,7 +886,7 @@ def test_decide_part_unit_converting_facet_returns_its_native_ref():
     assert elected_unit_refs(elected) == {_SV: frozenset({"CurrencyUSD"})}
 
 
-def test_decide_part_unit_withdrawn_native_currency_passes_the_decision():
+def test_decide_spec_unit_withdrawn_native_currency_passes_the_decision():
     """A native `CurrencyFRF` that no rate table serves still resolves as a `CurrencyUnit`.
     The decision converts it and elects its own native ref. The missing rate
     surfaces only when the tables are applied.
@@ -811,7 +896,7 @@ def test_decide_part_unit_withdrawn_native_currency_passes_the_decision():
     materialise_graph._arcs = _materialise_arcs(
         nominal=True, provenance_declares_recipe={_PROVENANCE: True}
     )
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_SV],
         unit_request=IdentityUnitRequest(currency="USD", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},
@@ -825,7 +910,7 @@ def test_decide_part_unit_withdrawn_native_currency_passes_the_decision():
     assert elected_unit_refs(elected) == {_SV: frozenset({"CurrencyFRF"})}
 
 
-def test_decide_part_unit_null_method_ref_elects_the_facet_without_a_method():
+def test_decide_spec_unit_null_method_ref_elects_the_facet_without_a_method():
     """A null measurementMethod ref is one combination that binds the facet declaring no
     method. The Estimated facet has more observations, so an unbound method would elect it."""
     obs = {
@@ -845,7 +930,7 @@ def test_decide_part_unit_null_method_ref_elects_the_facet_without_a_method():
     )
 
     def decide(bound_facets):
-        return decide_part_unit(
+        return decide_spec_unit(
             [_SV],
             unit_request=IdentityUnitRequest(currency="USD", prices="current"),
             role_bindings={"observationAbout": [_ENTITY]},
@@ -865,7 +950,7 @@ def test_decide_part_unit_null_method_ref_elects_the_facet_without_a_method():
     assert unpinned["unit"].dispatch_facet_id == "f-estimated"
 
 
-def test_decide_part_unit_set_second_member_refusal_raises_after_first_converts():
+def test_decide_spec_unit_set_second_member_refusal_raises_after_first_converts():
     """A second Set member's `RecipeNotDeclaredError` propagates after the first converts."""
     from materialise.recipes import RecipeNotDeclaredError
 
@@ -881,7 +966,7 @@ def test_decide_part_unit_set_second_member_refusal_raises_after_first_converts(
         provenance_declares_recipe={_PROVENANCE: True, _OTHER_PROVENANCE: False},
     )
     with pytest.raises(RecipeNotDeclaredError):
-        decide_part_unit(
+        decide_spec_unit(
             [_SV],
             unit_request=IdentityUnitRequest(currency="EUR", prices="current"),
             role_bindings={"observationAbout": [_ENTITY]},
@@ -918,8 +1003,8 @@ def test_resubmit_provenance_set_both_members_lack_recipe_raises_recipe_not_decl
     assert exc_info.value.status == 422
 
 
-def test_decide_part_unit_provenance_set_one_member_has_no_candidate_succeeds():
-    """Tests `decide_part_unit`'s per-member fallback directly.
+def test_decide_spec_unit_provenance_set_one_member_has_no_candidate_succeeds():
+    """Tests `decide_spec_unit`'s per-member fallback directly.
     Only `_OTHER_PROVENANCE` has a facet; the empty first result raises `DefaultFacetUndefinedError`.
     The USD match returns the second member's unit ref. A full promote request still fails because
     `facet_refusals` requires a candidate for every posted set member.
@@ -929,7 +1014,7 @@ def test_decide_part_unit_provenance_set_one_member_has_no_candidate_succeeds():
     materialise_graph._arcs = _materialise_arcs(
         nominal=True, provenance_declares_recipe={_OTHER_PROVENANCE: False}
     )
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_SV],
         unit_request=IdentityUnitRequest(currency="USD", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},
@@ -945,7 +1030,7 @@ def test_decide_part_unit_provenance_set_one_member_has_no_candidate_succeeds():
     assert elected_unit_refs(elected) == {_SV: frozenset({"CurrencyUSD"})}
 
 
-def test_decide_part_unit_two_member_set_returns_each_combinations_own_provenance_ref():
+def test_decide_spec_unit_two_member_set_returns_each_combinations_own_provenance_ref():
     """Each set member keeps its own provenance ref in `bound_facets` order."""
     obs = {
         f"{_SV}|{_ENTITY}": [
@@ -958,7 +1043,7 @@ def test_decide_part_unit_two_member_set_returns_each_combinations_own_provenanc
         nominal=True,
         provenance_declares_recipe={_PROVENANCE: False, _OTHER_PROVENANCE: False},
     )
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         [_SV],
         unit_request=IdentityUnitRequest(currency="USD", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},
@@ -973,6 +1058,120 @@ def test_decide_part_unit_two_member_set_returns_each_combinations_own_provenanc
         _PROVENANCE,
         _OTHER_PROVENANCE,
     ]
+
+
+_SV_B = "Test_Convert_Expenditure_B"
+
+
+@pytest.mark.parametrize("planned", [False, True], ids=["probed", "plan_probes"])
+@pytest.mark.parametrize(
+    ("currency", "served", "unserved", "facet_id"),
+    [
+        pytest.param("USD", _SV, _SV_B, "f-usd", id="usd-serves-the-dollar-member"),
+        pytest.param("EUR", _SV_B, _SV, "f-eur", id="eur-serves-the-euro-member"),
+    ],
+)
+def test_decide_spec_unit_elects_one_group_across_the_members(
+    planned: bool, currency: str, served: str, unserved: str, facet_id: str
+):
+    """`_SV` holds a USD facet and `_SV_B` a EUR one, each under its own facet id, so each
+    key serves one member. The requested currency decides the group: native data first, as
+    a mint of their Spec elects (`select_group_facets` over the same probes). A USD request
+    serves `_SV`, a EUR request `_SV_B`, and the other member is unserved: it has no
+    selections, so no unit of it is elected and none of its facets admitted."""
+    obs = {
+        f"{_SV}|{_ENTITY}": [_obs_facet(unit="CurrencyUSD", facet_id="f-usd")],
+        f"{_SV_B}|{_ENTITY}": [_obs_facet(unit="CurrencyEUR", facet_id="f-eur")],
+    }
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
+    arcs = _materialise_arcs(nominal=True, provenance_declares_recipe={_PROVENANCE: True})
+    materialise_graph._arcs = {**arcs, _SV_B: arcs[_SV]}
+    probes = {
+        sv: probe_facets(
+            stat_var=sv,
+            bound_entities=[_ENTITY],
+            graph=materialise_graph,
+            availability=materialise_sdmx,
+            settle=False,
+            declared_roles=("observationAbout",),
+            role_bindings={"observationAbout": [_ENTITY]},
+            coverage=_SUBJECT_ONLY_COVERAGE,
+        )
+        for sv in (_SV, _SV_B)
+    }
+
+    elected = decide_spec_unit(
+        [_SV, _SV_B],
+        unit_request=IdentityUnitRequest(currency=currency, prices="current"),
+        role_bindings={"observationAbout": [_ENTITY]},
+        declared_roles=("observationAbout",),
+        years=None,
+        graph=materialise_graph,
+        sdmx=materialise_sdmx,
+        coverage=_SUBJECT_ONLY_COVERAGE,
+        probes=probes if planned else None,
+    )
+    requests = [
+        MaterialisationRequest(
+            stat_var=f"dcid:{sv}",
+            role_bindings={"observationAbout": [_ENTITY]},
+            declared_roles=("observationAbout",),
+            facet_bindings={
+                "unit": FacetBinding(
+                    state="request", request=UnitRequest(currency=currency, prices="current")
+                )
+            },
+            window=plan_window(None),
+            requires_provenance=False,
+        )
+        for sv in (_SV, _SV_B)
+    ]
+    minted = select_group_facets(
+        requests,
+        [probe.candidates for probe in probes.values()],
+        graph=materialise_graph,
+        breadth=group_breadth(list(probes.values()), window=None),
+    )
+
+    assert set(elected) == {served}
+    assert minted.unserved == ((_SV, _SV_B).index(unserved),)
+    (selections,) = elected[served]
+    assert selections == minted.election.selections
+    assert (selections["unit"].ref, selections["unit"].dispatch_facet_id) == (
+        f"Currency{currency}",
+        facet_id,
+    )
+    assert elected_unit_refs(elected) == {served: frozenset({f"Currency{currency}"})}
+
+
+def test_decide_option_units_decides_each_stat_var_alone():
+    """The options door's StatVars are alternatives, so each decides its own unit: a USD
+    request serves `_SV`'s native dollars and `_SV_B`'s euros, which the recipe converts,
+    where one group across them would serve `_SV` alone
+    (`test_decide_spec_unit_elects_one_group_across_the_members`)."""
+    obs = {
+        f"{_SV}|{_ENTITY}": [_obs_facet(unit="CurrencyUSD", facet_id="f-usd")],
+        f"{_SV_B}|{_ENTITY}": [_obs_facet(unit="CurrencyEUR", facet_id="f-eur")],
+    }
+    materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
+    arcs = _materialise_arcs(nominal=True, provenance_declares_recipe={_PROVENANCE: True})
+    materialise_graph._arcs = {**arcs, _SV_B: arcs[_SV]}
+
+    elected = decide_option_units(
+        [_SV, _SV_B],
+        unit_request=IdentityUnitRequest(currency="USD", prices="current"),
+        role_bindings={"observationAbout": [_ENTITY]},
+        declared_roles=("observationAbout",),
+        years=None,
+        graph=materialise_graph,
+        sdmx=materialise_sdmx,
+        coverage=_SUBJECT_ONLY_COVERAGE,
+    )
+
+    assert {
+        sv: [(selections["unit"].ref, selections["unit"].dispatch_facet_id) for selections in by_sv]
+        for sv, by_sv in elected.items()
+    } == {_SV: [("CurrencyUSD", "f-usd")], _SV_B: [("CurrencyEUR", "f-eur")]}
 
 
 def test_elected_unit_refs_skips_a_selection_with_a_none_unit_ref():
@@ -1093,7 +1292,7 @@ def test_role_shaped_currency_naming_undeclared_axis_raises_request_invalid():
     assert exc_info.value.cause is None
 
 
-def test_decide_part_unit_reads_one_recipe_per_provenance_however_many_members_share_it():
+def test_decide_spec_unit_reads_one_recipe_per_provenance_however_many_members_share_it():
     """Fifty StatVars under one provenance, converting `{EUR, current}` from native
     `CurrencyUSD`. Each member's decision reads its StatVar, the provenance and both
     currencies in one `node_arcs_many` read, so fifty members make fifty reads when each
@@ -1109,7 +1308,7 @@ def test_decide_part_unit_reads_one_recipe_per_provenance_however_many_members_s
         _PROVENANCE: {"conversionRecipe": (_RECIPE,)},
     }
 
-    elected = decide_part_unit(
+    elected = decide_spec_unit(
         stat_vars,
         unit_request=IdentityUnitRequest(currency="EUR", prices="current"),
         role_bindings={"observationAbout": [_ENTITY]},

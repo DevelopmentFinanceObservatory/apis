@@ -289,6 +289,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -380,39 +381,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "activitySource",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -481,7 +473,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -498,7 +490,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "activity source",
@@ -508,7 +500,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -551,7 +548,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_6a4356b54b34264126b491209d992ab7"
+     "spec_id": "spec_9908b00f9cc2780390087fe7f0efab67"
     }
    ],
    "status": "definite",
@@ -1017,6 +1014,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -1145,27 +1143,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -1195,13 +1174,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -1261,7 +1250,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1278,7 +1267,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -1288,7 +1277,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -1326,7 +1320,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_5a1365a754c319f0fc575ee190c0ed7c"
+     "spec_id": "spec_372f483c9e478fe2a30ad20b0a0422b7"
     },
     {
      "identity_entities": {
@@ -1338,6 +1332,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -1430,11 +1425,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -1519,7 +1516,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1603,7 +1600,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 2 recipients with data from Norway.",
+     "No recipient was named, so the answer covers both recipients with data from Norway.",
      null
     ],
     [
@@ -1887,7 +1884,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Norway's gross national income (current US$), by creditor to 2 recipients, 2020 to 2022."
+    "rendered_sentence": "Norway's gross national income (current US$), by creditor to 2 recipients, 2020 to 2022. Assumed: every recipient."
    },
    "specs": [
     {
@@ -1900,6 +1897,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -2036,27 +2034,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -2086,13 +2065,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -2152,7 +2141,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2169,7 +2158,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -2179,7 +2168,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -2217,7 +2211,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_5a1365a754c319f0fc575ee190c0ed7c"
+     "spec_id": "spec_372f483c9e478fe2a30ad20b0a0422b7"
     }
    ],
    "status": "definite",
@@ -2226,7 +2220,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 2 recipients with data from Norway.",
+     "No recipient was named, so the answer covers both recipients with data from Norway.",
      null
     ]
    ]
@@ -2257,6 +2251,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -2291,39 +2286,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -2389,7 +2375,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2410,7 +2396,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -2420,7 +2406,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -2463,7 +2454,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_4db3c998e29cbdaa6056a82d08b3e189"
+     "spec_id": "spec_6a7b840dfa2afc8a01c8fbf756284b24"
     }
    ],
    "nearest_real": [],
@@ -2807,6 +2798,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -2841,39 +2833,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -2939,7 +2922,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2960,7 +2943,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -2970,7 +2953,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -3013,7 +3001,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_4db3c998e29cbdaa6056a82d08b3e189"
+     "spec_id": "spec_6a7b840dfa2afc8a01c8fbf756284b24"
     }
    ],
    "nearest_real": [],
@@ -3431,6 +3419,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -3458,39 +3447,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -3556,7 +3536,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -3573,7 +3553,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -3583,7 +3563,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -3626,7 +3611,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_123a81ead4f5764e3334074618963f5d"
+     "spec_id": "spec_7c3e35a805375f66d577caf558ef518b"
     }
    ],
    "nearest_real": [],
@@ -4364,6 +4349,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -4490,39 +4476,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -4591,7 +4568,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4608,7 +4585,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -4618,7 +4595,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -4661,7 +4643,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_123a81ead4f5764e3334074618963f5d"
+     "spec_id": "spec_7c3e35a805375f66d577caf558ef518b"
     },
     {
      "identity_entities": {
@@ -4673,6 +4655,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "dimensions": [
@@ -4765,11 +4748,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -4854,7 +4839,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5384,6 +5369,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -5521,39 +5507,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -5622,7 +5599,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5643,7 +5620,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -5653,7 +5630,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -5696,7 +5678,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_4db3c998e29cbdaa6056a82d08b3e189"
+     "spec_id": "spec_6a7b840dfa2afc8a01c8fbf756284b24"
     },
     {
      "identity_entities": {
@@ -5709,6 +5691,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -5808,11 +5791,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -5909,7 +5894,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6425,6 +6410,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -6516,39 +6502,30 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "activitySource",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -6617,7 +6594,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6634,7 +6611,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "activity source",
@@ -6644,7 +6621,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "value",
@@ -6687,7 +6669,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_7a7b3bf2587c8522ac3e9b78750fe374"
+     "spec_id": "spec_b9ebae41ea4d3a8948a537079a8264c6"
     },
     {
      "identity_entities": {
@@ -6699,6 +6681,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "dimensions": [
@@ -6826,11 +6809,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -6915,7 +6900,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7264,6 +7249,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -7356,11 +7342,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -7421,7 +7409,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7866,6 +7854,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -7958,11 +7947,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -8023,7 +8014,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8530,6 +8521,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -8622,11 +8614,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -8687,7 +8681,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8756,6 +8750,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -8848,11 +8843,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -8913,7 +8910,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -9000,6 +8997,7 @@
       "alternative_measures": null,
       "available_at_place": false,
       "basis": null,
+      "concept_label": null,
       "confidence": "low",
       "coverage": {
        "has_data": false,
@@ -9028,11 +9026,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -9090,7 +9090,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -9924,6 +9924,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -10016,11 +10017,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -10081,7 +10084,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10525,6 +10528,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -10632,11 +10636,13 @@
        "truncated": false
       },
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -10697,7 +10703,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11293,6 +11299,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -11385,11 +11392,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -11450,7 +11459,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11519,6 +11528,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -11611,11 +11621,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -11676,7 +11688,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12094,6 +12106,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -12208,11 +12221,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -12294,7 +12309,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12734,6 +12749,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -12847,11 +12863,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -12942,7 +12960,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -13527,6 +13545,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -13641,11 +13660,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -13727,7 +13748,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14089,6 +14110,7 @@
       "alternative_measures": null,
       "available_at_place": true,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -14188,11 +14210,13 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": [],
       "rendered_sentence": null,
       "role_axis_facts": null,
       "scope": null,
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -14265,7 +14289,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14576,7 +14600,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count, 2015 to 2022."
+    "rendered_sentence": "Mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -14585,6 +14609,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -14669,6 +14694,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -14685,6 +14711,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -14736,7 +14763,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15111,7 +15138,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count, 2015 to 2022."
+    "rendered_sentence": "Mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -15120,6 +15147,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -15204,6 +15232,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -15220,6 +15249,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -15271,7 +15301,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15576,7 +15606,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count across 2 places, 2015 to 2022."
+    "rendered_sentence": "Mortality event count across 2 places, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -15585,6 +15615,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -15669,6 +15700,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -15692,6 +15724,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -15743,7 +15776,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16042,7 +16075,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count worldwide, 2015 to 2022."
+    "rendered_sentence": "Mortality event count worldwide, 2015 to 2022. Assumed: the world as a whole."
    },
    "specs": [
     {
@@ -16051,6 +16084,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -16135,6 +16169,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -16151,6 +16186,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -16202,7 +16238,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16507,7 +16543,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count across 2 places, 2015 to 2022."
+    "rendered_sentence": "Mortality event count across 2 places, 2015 to 2022. Assumed: every place."
    },
    "specs": [
     {
@@ -16516,6 +16552,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -16600,6 +16637,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -16623,6 +16661,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -16674,7 +16713,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16997,7 +17036,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count across 2 places, 2015 to 2022."
+    "rendered_sentence": "Mortality event count across 2 places, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -17006,6 +17045,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -17105,6 +17145,7 @@
        "truncated": false
       },
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -17128,6 +17169,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -17179,7 +17221,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17478,7 +17520,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count, 2015 to 2022."
+    "rendered_sentence": "Mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -17487,6 +17529,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -17571,6 +17614,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -17587,6 +17631,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -17638,7 +17683,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17713,6 +17758,7 @@
      "alternative_measures": null,
      "available_at_place": null,
      "basis": null,
+     "concept_label": null,
      "confidence": "high",
      "coverage": {
       "dimensions": [
@@ -17771,6 +17817,7 @@
      "measure_label_axes": [],
      "observations": null,
      "open_axis_facts": null,
+     "published_tables": null,
      "related_group": null,
      "related_measures": null,
      "rendered_sentence": null,
@@ -17787,6 +17834,7 @@
        }
       ]
      },
+     "scope_choices": null,
      "sentence_plan": null,
      "skills": null,
      "slot_options": [],
@@ -17838,7 +17886,7 @@
       "served_count": 1
      },
      "trace": {
-      "capability_version": "cap_3f35867df5a65761",
+      "capability_version": "cap_ae1c69fd89331e26",
       "conversion": null,
       "default_reading": {
        "applied": true,
@@ -18625,7 +18673,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Mortality event count. 2015 to 2022. Mortality count of an unrelated topic. 2015 to 2022."
+    "rendered_sentence": "2 readings. Mortality event count. 2015 to 2022. Mortality count of an unrelated topic. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -18634,6 +18682,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -18718,6 +18767,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -18734,6 +18784,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -18785,7 +18836,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -18840,6 +18891,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -18924,6 +18976,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -18940,6 +18993,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -18991,7 +19045,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19455,7 +19509,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Mortality event count. 2015 to 2022. Mortality count of an unrelated topic. 2015 to 2022."
+    "rendered_sentence": "2 readings. Mortality event count. 2015 to 2022. Mortality count of an unrelated topic. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -19464,6 +19518,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -19548,6 +19603,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -19564,6 +19620,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -19615,7 +19672,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19670,6 +19727,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -19754,6 +19812,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -19770,6 +19829,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -19821,7 +19881,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20197,7 +20257,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count, 2015 to 2022."
+    "rendered_sentence": "Mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -20206,6 +20266,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -20290,6 +20351,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -20306,6 +20368,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -20357,7 +20420,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20658,7 +20721,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count, 2015 to 2022."
+    "rendered_sentence": "Mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -20667,6 +20730,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -20751,6 +20815,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -20767,6 +20832,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -20818,7 +20884,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21119,7 +21185,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Mortality event count, 2015 to 2022."
+    "rendered_sentence": "Mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -21128,6 +21194,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -21212,6 +21279,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -21228,6 +21296,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -21279,7 +21348,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21359,6 +21428,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -21379,6 +21449,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -21387,6 +21458,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -21435,7 +21507,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22016,7 +22088,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Estimated mortality event count across 2 places, 2015 to 2022."
+    "rendered_sentence": "Estimated mortality event count across 2 places, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -22025,6 +22097,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -22109,6 +22182,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -22132,6 +22206,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -22183,7 +22258,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22598,7 +22673,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Estimated mortality event count worldwide, 2015 to 2022."
+    "rendered_sentence": "Estimated mortality event count worldwide, 2015 to 2022. Assumed: the world as a whole."
    },
    "specs": [
     {
@@ -22607,6 +22682,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -22691,6 +22767,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -22707,6 +22784,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -22758,7 +22836,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23198,7 +23276,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Estimated mortality event count across 2 places, 2015 to 2022."
+    "rendered_sentence": "Estimated mortality event count across 2 places, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -23207,6 +23285,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -23306,6 +23385,7 @@
        "truncated": false
       },
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -23329,6 +23409,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -23380,7 +23461,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23969,6 +24050,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -24053,6 +24135,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -24069,6 +24152,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -24120,7 +24204,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24175,6 +24259,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -24259,6 +24344,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -24275,6 +24361,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -24326,7 +24413,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24919,7 +25006,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Mortality count of an unrelated topic. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Mortality count of an unrelated topic. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -24928,6 +25015,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -25012,6 +25100,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -25035,6 +25124,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -25086,7 +25176,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25141,6 +25231,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -25225,6 +25316,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -25241,6 +25333,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -25292,7 +25385,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25791,7 +25884,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Estimated mortality event count across 2 places, 2015 to 2022."
+    "rendered_sentence": "Estimated mortality event count across 2 places, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -25800,6 +25893,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -25884,6 +25978,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -25907,6 +26002,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -25958,7 +26054,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26549,7 +26645,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Mortality count of an unrelated topic across 2 places. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Mortality count of an unrelated topic across 2 places. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -26558,6 +26654,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -26642,6 +26739,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -26665,6 +26763,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -26716,7 +26815,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26771,6 +26870,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -26855,6 +26955,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -26878,6 +26979,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -26929,7 +27031,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27015,6 +27117,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -27035,6 +27138,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -27043,6 +27147,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -27091,7 +27196,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27909,7 +28014,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count. 2015 to 2022. Projected mortality event count. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count. 2015 to 2022. Projected mortality event count. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -27918,6 +28023,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -28002,6 +28108,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -28018,6 +28125,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -28069,7 +28177,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28124,6 +28232,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -28208,6 +28317,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -28224,6 +28334,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -28275,7 +28386,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28918,7 +29029,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count. 2015 to 2022. Projected mortality event count. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count. 2015 to 2022. Projected mortality event count. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -28927,6 +29038,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -29011,6 +29123,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -29027,6 +29140,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -29078,7 +29192,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29133,6 +29247,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -29217,6 +29332,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -29233,6 +29349,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -29284,7 +29401,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29370,6 +29487,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -29390,6 +29508,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -29398,6 +29517,7 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -29446,7 +29566,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30214,7 +30334,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Estimated mortality event count, 2015 to 2022."
+    "rendered_sentence": "Estimated mortality event count, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -30223,6 +30343,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -30307,6 +30428,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -30323,6 +30445,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -30374,7 +30497,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30460,6 +30583,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": null,
       "coverage": {
        "has_data": false,
@@ -30479,27 +30603,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "activitySource",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -30508,13 +30613,23 @@
        "axis": "observationAbout",
        "members": []
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -30571,7 +30686,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30583,7 +30698,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "activity source",
@@ -30593,7 +30708,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -30631,7 +30751,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_d3562640a8f50cae07a7852e969e232b"
+     "spec_id": "spec_72378179d935908697aeb094a3c44c0b"
     }
    ],
    "nearest_real": [],
@@ -31363,6 +31483,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -31447,6 +31568,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -31463,6 +31585,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -31538,7 +31661,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31611,6 +31734,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -31728,6 +31852,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -31750,6 +31875,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -31825,7 +31951,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32393,6 +32519,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -32477,6 +32604,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -32493,6 +32621,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -32568,7 +32697,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32641,6 +32770,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -32758,6 +32888,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -32780,6 +32911,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -32855,7 +32987,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33388,7 +33520,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Gross national income based on purchasing power parity across 2 places, 2015 to 2022."
+    "rendered_sentence": "Gross national income based on purchasing power parity across 2 places, 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -33397,6 +33529,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -33481,6 +33614,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -33504,6 +33638,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -33579,7 +33714,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34184,7 +34319,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Projected mortality event count. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Projected mortality event count. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -34193,6 +34328,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -34277,6 +34413,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -34300,6 +34437,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -34351,7 +34489,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34406,6 +34544,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -34490,6 +34629,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -34506,6 +34646,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -34557,7 +34698,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35144,7 +35285,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Projected mortality event count. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count across 2 places. 2015 to 2022. Projected mortality event count. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -35153,6 +35294,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -35237,6 +35379,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -35260,6 +35403,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -35311,7 +35455,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35366,6 +35510,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -35450,6 +35595,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -35466,6 +35612,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -35517,7 +35664,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36083,7 +36230,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "2 readings. Estimated mortality event count. 2015 to 2022. Projected mortality event count. 2015 to 2022."
+    "rendered_sentence": "2 readings. Estimated mortality event count. 2015 to 2022. Projected mortality event count. 2015 to 2022. Assumed: every country."
    },
    "specs": [
     {
@@ -36092,6 +36239,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -36176,6 +36324,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -36192,6 +36341,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -36243,7 +36393,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36298,6 +36448,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -36382,6 +36533,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -36398,6 +36550,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -36449,7 +36602,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36690,7 +36843,7 @@
    ],
    "sentence": {
     "departures": [],
-    "rendered_sentence": "Gross national income (current US$) to United States, 2020 to 2022."
+    "rendered_sentence": "Gross national income (current US$) to United States, 2020 to 2022. Assumed: every recipient."
    },
    "specs": [
     {
@@ -36699,6 +36852,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -36823,27 +36977,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -36866,13 +37001,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -36932,7 +37077,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36944,7 +37089,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -36954,7 +37099,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -36992,7 +37142,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_14481b8c443a769f129d92892deb4973"
+     "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     }
    ],
    "status": "definite",
@@ -37001,7 +37151,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ]
    ]
@@ -37389,6 +37539,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -37505,27 +37656,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -37548,13 +37680,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -37614,7 +37756,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37626,7 +37768,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -37636,7 +37778,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -37674,7 +37821,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_14481b8c443a769f129d92892deb4973"
+     "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     },
     {
      "identity_entities": {},
@@ -37682,6 +37829,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -37766,6 +37914,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -37782,6 +37931,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -37857,7 +38007,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37931,7 +38081,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ],
     [
@@ -38323,6 +38473,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -38439,27 +38590,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -38482,13 +38614,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -38548,7 +38690,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38560,7 +38702,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -38570,7 +38712,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -38608,7 +38755,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_14481b8c443a769f129d92892deb4973"
+     "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     },
     {
      "identity_entities": {},
@@ -38616,6 +38763,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -38700,6 +38848,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -38716,6 +38865,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -38791,7 +38941,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38865,7 +39015,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ],
     [
@@ -39681,6 +39831,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -39797,27 +39948,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "economicActivityType",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -39840,13 +39972,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -39906,7 +40048,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -39918,7 +40060,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "economic activity type",
@@ -39928,7 +40070,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -39966,7 +40113,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_14481b8c443a769f129d92892deb4973"
+     "spec_id": "spec_872c5a168017b37962c1d6fb6f1ee9be"
     },
     {
      "identity_entities": {},
@@ -39974,6 +40121,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -40058,6 +40206,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -40074,6 +40223,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -40149,7 +40299,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40223,7 +40373,7 @@
     [
      "role_scope_defaulted",
      "warn",
-     "no recipient was named; the answer was resolved across the 1 recipient with data.",
+     "No recipient was named, so the answer covers the one recipient with data.",
      null
     ],
     [
@@ -40605,6 +40755,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -40688,27 +40839,8 @@
       "measure_label": null,
       "measure_label_axes": [],
       "observations": null,
-      "open_axis_facts": [
-       {
-        "distinct_count": 1,
-        "property": "activitySource",
-        "undeclared_count": 0,
-        "value": {
-         "label": "GrossNationalIncome",
-         "ref": "GrossNationalIncome"
-        },
-        "values": [
-         {
-          "count": 1,
-          "value": {
-           "label": "GrossNationalIncome",
-           "ref": "GrossNationalIncome"
-          }
-         }
-        ],
-        "varies": false
-       }
-      ],
+      "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -40725,13 +40857,23 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
       "slots": [
        {
         "binding": {
-         "kind": "unbound"
+         "kind": "value",
+         "value": {
+          "literal": null,
+          "ref": {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          },
+          "time_window": null,
+          "value_kind": "enum_value"
+         }
         },
         "expansion": null,
         "key": {
@@ -40791,7 +40933,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40803,7 +40945,7 @@
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "unbound",
+         "binding_kind": "value",
          "key": {
           "axis": "how",
           "label": "activity source",
@@ -40813,7 +40955,12 @@
           }
          },
          "provenance": "binder",
-         "refs": []
+         "refs": [
+          {
+           "label": "GrossNationalIncome",
+           "ref": "GrossNationalIncome"
+          }
+         ]
         },
         {
          "binding_kind": "unbound",
@@ -40851,7 +40998,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_f4797c6edeaae326ca5137a61c9bbf7e"
+     "spec_id": "spec_f7da42575cb3df38c5ab8099ce214f8f"
     },
     {
      "identity_entities": {},
@@ -40859,6 +41006,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "structural",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -40976,6 +41124,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -40998,6 +41147,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -41073,7 +41223,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41564,6 +41714,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": null,
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -41648,6 +41799,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -41664,6 +41816,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -41715,7 +41868,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41770,6 +41923,7 @@
       "alternative_measures": null,
       "available_at_place": null,
       "basis": "nominated",
+      "concept_label": null,
       "confidence": "high",
       "coverage": {
        "dimensions": [
@@ -41854,6 +42008,7 @@
       "measure_label_axes": [],
       "observations": null,
       "open_axis_facts": null,
+      "published_tables": null,
       "related_group": null,
       "related_measures": null,
       "rendered_sentence": null,
@@ -41870,6 +42025,7 @@
         }
        ]
       },
+      "scope_choices": null,
       "sentence_plan": null,
       "skills": null,
       "slot_options": [],
@@ -41921,7 +42077,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_3f35867df5a65761",
+       "capability_version": "cap_ae1c69fd89331e26",
        "conversion": null,
        "default_reading": {
         "applied": true,

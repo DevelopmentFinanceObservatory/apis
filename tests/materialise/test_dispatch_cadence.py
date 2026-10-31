@@ -10,7 +10,7 @@ dates and values below are the UN graph's for `country/KEN`, recorded 2026-10-07
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 
 import httpx
@@ -20,13 +20,13 @@ from assembler.bind import count_periods
 from assembler.frame_view import compute_structural_view
 from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup, MaterialisationRequest, generation, materialise_group
+from materialise.codes import MaterialisationWarning
 from materialise.errors import MixedGrainError
 from materialise.facets import (
     Cadence,
     FacetBinding,
     PlaceAdmission,
     joint_dispatch_facet_ids,
-    served_facets,
     subject_probe,
 )
 from materialise.generation import (
@@ -40,6 +40,7 @@ from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.group_facets import select_group_facets
 from materialise.window import RequestedWindow
 
+from ._group_support import served_alone
 from .conftest import FakeGraphReader, only_chunk
 
 _RATE = "UnemploymentRate_ILO"
@@ -125,11 +126,12 @@ def _materialise(
     requests: Sequence[MaterialisationRequest],
     graph: FakeGraphReader,
     sdmx: SdmxClient,
-    warnings: dict[str, str] | None = None,
+    warnings: dict[str, MaterialisationWarning] | None = None,
     witnesses: set[str] | None = None,
+    absent_reads_zero: Callable[[str], bool] | None = None,
 ) -> dict[str, list[str]]:
     """Each StatVar's served periods, after a default-window bind check over the frame. The
-    result's warnings go to `warnings`, message by code, and the trace's per-axis
+    result's warnings go to `warnings`, by code, and the trace's per-axis
     `dispatch_facet_id`s to `witnesses`, when given."""
     result = materialise_group(
         list(requests),
@@ -139,9 +141,10 @@ def _materialise(
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
+        absent_reads_zero=absent_reads_zero,
     )
     if warnings is not None:
-        warnings.update((warning["code"], warning["message"]) for warning in result.warnings)
+        warnings.update((warning["code"], warning) for warning in result.warnings)
     if witnesses is not None:
         witnesses.update(str(entry["dispatch_facet_id"]) for entry in result.trace.facets)
     frame = only_chunk(result)
@@ -298,7 +301,7 @@ def test_a_fully_bound_group_serves_the_groups_one_cadence_for_every_member():
         fetched,
     )
 
-    warnings: dict[str, str] = {}
+    warnings: dict[str, MaterialisationWarning] = {}
 
     periods = _materialise(
         [_request(_RATE, **_ALL_BOUND), _request(_YOUTH, **_ALL_BOUND)], graph, sdmx, warnings
@@ -333,7 +336,7 @@ def test_a_group_elects_the_cadence_serving_the_most_members():
         },
         fetched,
     )
-    warnings: dict[str, str] = {}
+    warnings: dict[str, MaterialisationWarning] = {}
 
     periods = _materialise(requests, graph, sdmx, warnings)
 
@@ -382,13 +385,16 @@ def test_a_group_serves_a_shared_unstated_facet_only_to_members_dating_it_alike(
     )
     fetched: list[set[str]] = []
     sdmx = _sdmx({(_RATE, _UNSTATED_ID): rate, (_YOUTH, _UNSTATED_ID): youth}, fetched)
-    warnings: dict[str, str] = {}
+    warnings: dict[str, MaterialisationWarning] = {}
 
     periods = _materialise([_request(_RATE), _request(_YOUTH)], graph, sdmx, warnings)
 
     assert fetched == [{_UNSTATED_ID}]
     assert periods == {f"dcid:{_RATE}": sorted(rate)}
-    assert f"dcid:{_YOUTH}" in warnings["coverage_below_scope"]
+    assert warnings["coverage_below_scope"].get("off_cadence_members") == {
+        "count": 1,
+        "refs": [f"dcid:{_YOUTH}"],
+    }
 
 
 def test_a_chunk_serves_nothing_for_a_member_whose_populated_probe_dispatches_no_facet():
@@ -399,7 +405,7 @@ def test_a_chunk_serves_nothing_for_a_member_whose_populated_probe_dispatches_no
     quarterly = _facet(_QUARTERLY_ID, _QUARTERLY)
     selections = select_group_facets(
         [rate, youth], [[quarterly], [quarterly]], graph=FakeGraphReader()
-    ).selections
+    ).election.selections
     admission = PlaceAdmission(places_by_facet={_QUARTERLY_ID: frozenset({_KENYA})})
     fetched: list[set[str]] = []
     sdmx = _sdmx(
@@ -557,7 +563,7 @@ def test_a_group_judges_an_unstated_facet_id_by_each_members_own_copies(members,
     ]
     election = select_group_facets(
         [_request(stat_var) for stat_var in stat_vars], candidates, graph=FakeGraphReader()
-    )
+    ).election
 
     assert [
         joint_dispatch_facet_ids(member, election, member=index)
@@ -701,7 +707,7 @@ def test_a_groups_cadence_ranks_over_its_members_matching_facets(declares, candi
     }
     graph = FakeGraphReader(policies=declared if declares else {})
 
-    election = select_group_facets(requests, candidates, graph=graph)
+    election = select_group_facets(requests, candidates, graph=graph).election
 
     assert [
         joint_dispatch_facet_ids(member, election, member=index)
@@ -712,19 +718,40 @@ def test_a_groups_cadence_ranks_over_its_members_matching_facets(declares, candi
 _EARLY_WINDOW = RequestedWindow(kind="range", start_year=2012, end_year=2015)
 
 
-def test_a_member_holding_the_groups_period_only_before_the_window_is_reported():
+_MEMBER_FIELDS = ("member_count", "off_cadence_members", "out_of_window_members")
+
+
+@pytest.mark.parametrize(
+    ("youth_in_window", "reads_zero", "fields"),
+    [
+        # Its quarters fall in the window, so the figures leave out what it holds there.
+        pytest.param(True, False, {"off_cadence_members"}, id="other-frequency"),
+        pytest.param(True, True, {"off_cadence_members"}, id="other-frequency-reads-zero"),
+        # It holds nothing in the window, a gap the dataset may read as zero.
+        pytest.param(False, False, {"out_of_window_members"}, id="out-of-window"),
+        pytest.param(False, True, None, id="out-of-window-reads-zero"),
+    ],
+)
+def test_a_member_holding_the_groups_period_only_before_the_window_is_reported(
+    youth_in_window, reads_zero, fields
+):
     # Two members hold the annual facet in the window. The youth rate holds it only before
-    # the window and holds quarters in it, so the group serves years and the youth rate,
-    # though it dispatches the annual facet, serves nothing and is named.
+    # the window, so the group serves years and the youth rate, though it dispatches the
+    # annual facet, serves nothing. Holding quarters in the window, it reports there at
+    # another frequency; holding none, it reports nothing there, and a dataset reading an
+    # absent member as zero raises no warning for it.
     in_window = {str(year): 1.0 for year in range(2012, 2016)}
     early = {str(year): 1.0 for year in range(2000, 2006)}
     quarters = {f"{year}-{month:02d}": 1.0 for year in range(2012, 2016) for month in (1, 4, 7, 10)}
+    youth = [_facet(_ANNUAL_ID, early)]
+    if youth_in_window:
+        youth.insert(0, _facet(_QUARTERLY_ID, quarters))
     adult = f"{_RATE}_Adult"
     graph = FakeGraphReader(
         facets={
             (_RATE, _KENYA): [_facet(_ANNUAL_ID, in_window)],
             (adult, _KENYA): [_facet(_ANNUAL_ID, in_window)],
-            (_YOUTH, _KENYA): [_facet(_QUARTERLY_ID, quarters), _facet(_ANNUAL_ID, early)],
+            (_YOUTH, _KENYA): youth,
         }
     )
     sdmx = _sdmx(
@@ -736,15 +763,30 @@ def test_a_member_holding_the_groups_period_only_before_the_window_is_reported()
         },
         [],
     )
-    warnings: dict[str, str] = {}
     requests = [
         replace(_request(stat_var), window=_EARLY_WINDOW) for stat_var in (_RATE, _YOUTH, adult)
     ]
+    warnings: dict[str, MaterialisationWarning] = {}
+    read: list[str] = []
 
-    periods = _materialise(requests, graph, sdmx, warnings)
+    def absent_reads_zero(provenance: str) -> bool:
+        read.append(provenance)
+        return reads_zero
+
+    periods = _materialise(requests, graph, sdmx, warnings, absent_reads_zero=absent_reads_zero)
 
     assert periods == {f"dcid:{_RATE}": sorted(in_window), f"dcid:{adult}": sorted(in_window)}
-    assert f"dcid:{_YOUTH}" in warnings["coverage_below_scope"]
+    # The rule is the served provenance's.
+    assert read == ["undata/p/ILO"]
+    if fields is None:
+        assert "coverage_below_scope" not in warnings
+    else:
+        warning = warnings["coverage_below_scope"]
+        unserved = {"count": 1, "refs": [f"dcid:{_YOUTH}"]}
+        assert {field: warning[field] for field in _MEMBER_FIELDS if field in warning} == {
+            "member_count": 3,
+            **dict.fromkeys(fields, unserved),
+        }
 
 
 @pytest.mark.parametrize("month_first", [True, False])
@@ -771,7 +813,7 @@ def test_a_tie_goes_to_the_period_of_the_best_ranked_facet_a_counted_member_hold
     expected = [("X",), ()] if month_first else [(), ("X",)]
     requests = [replace(_request(stat_var), window=_EARLY_WINDOW) for stat_var in (_RATE, _YOUTH)]
 
-    election = select_group_facets(requests, candidates, graph=FakeGraphReader())
+    election = select_group_facets(requests, candidates, graph=FakeGraphReader()).election
 
     assert election.cadence == Cadence(facet_id="X")
     assert [
@@ -782,8 +824,8 @@ def test_a_tie_goes_to_the_period_of_the_best_ranked_facet_a_counted_member_hold
 
 @pytest.mark.parametrize("annual_first", [True, False])
 def test_a_null_provenance_read_cites_only_facets_its_served_group_holds(annual_first):
-    # Search binds the provenance axis to the null ref when the top facet carries none
-    # (`served_facets`), and refuses a pair whose selection witnesses fall outside the
+    # A search read does not require provenance, so an unsourced top facet is selected
+    # (`group_served`), and search refuses a pair whose selection witnesses fall outside the
     # served group. The annual facet carries no provenance either and comes first in graph
     # order, but the quarterly one is elected and served, so every witness must name it.
     def unsourced(facet_id: str, period: str, obs_count: int, latest: str) -> Facet:
@@ -798,10 +840,10 @@ def test_a_null_provenance_read_cites_only_facets_its_served_group_holds(annual_
 
     facets = [unsourced("fA", "P1Y", 3, "2022"), unsourced("fQ", "P3M", 12, "2022-10")]
     candidates = facets if annual_first else facets[::-1]
-    request = _request(_RATE, provenance=FacetBinding(state="bound", ref=None))
+    request = replace(_request(_RATE), requires_provenance=False)
 
     election = _select_member_facets(request, candidates, graph=FakeGraphReader())
-    group = served_facets(candidates, stat_vars=[request.stat_var], window=request.window)
+    group = served_alone(candidates, stat_var=request.stat_var, window=request.window)
 
     assert joint_dispatch_facet_ids(candidates, election, member=0) == ("fQ",)
     assert [facet.facet_id for facet in group] == ["fQ"]

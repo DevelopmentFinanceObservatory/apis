@@ -562,6 +562,60 @@ class TestPlaceExpansionEndToEnd:
         assert resolution.entity.dcid == dcid
         assert resolution.entity.kind == "aggregate"
 
+    def test_a_country_name_a_us_state_shares_resolves_to_the_country(self):
+        """Search binds the country for "Georgia" and asks for no near matches, while the same
+        resolver, asked as the Graph API's resolve route asks, names the US state the graph
+        also calls Georgia."""
+        graph = FakeGraph(
+            nodes={
+                _GDP_SV: _GDP_NODE,
+                "country/GEO": {"label": "Georgia", "type": "Country"},
+                "geoId/13": {"label": "Georgia", "type": "State"},
+            },
+            obs={
+                f"{_GDP_SV}|country/GEO": [
+                    {
+                        "earliestDate": "2020",
+                        "latestDate": "2020",
+                        "obsCount": 1,
+                        "provenanceId": _SOURCE,
+                    }
+                ]
+            },
+            detect={"gdp": {"svs": [_GDP_SV], "cosine_scores": [0.95]}},
+            resolve={},
+            places={},
+            resolve_any={"Georgia": "geoId/13"},
+        )
+
+        resolver = make_resolver(graph)
+        (asked,) = asyncio.run(resolver.resolve(["Georgia"], near_matches=True))
+        (resolution,) = asyncio.run(resolver.resolve(["Georgia"]))
+        result: RegionResult = asyncio.run(
+            resolve_variable(
+                "gdp",
+                entities=["Georgia"],
+                date_request=None,
+                detect_query="gdp",
+                role_query="gdp Georgia",
+                pac=True,
+                graph=graph,
+                resolver=make_resolver(graph),
+                sdmx=FakeSdmxClient(observations={}, availability={}),
+                llm=_FixedBindLLM(),
+                base_timing={},
+                coverage=empty_coverage_snapshot(),
+            )
+        )
+
+        assert isinstance(asked, Resolved), asked
+        assert [e.dcid for e in asked.near_matches] == ["geoId/13"]
+        assert isinstance(resolution, Resolved), resolution
+        assert resolution.entity.dcid == "country/GEO"
+        assert resolution.near_matches == ()
+        assert result.status == "definite", result
+        assert [e.ref for e in result.specs[0].resolved.entities] == ["country/GEO"]
+
     def test_least_developed_countries_resolve_from_the_registry_with_no_member_held(self):
         """The membership registry, not the graph, confirms a group and its members, so a
         graph holding none of the Least Developed Countries still resolves the group."""

@@ -5,6 +5,8 @@ constructs one of these from a code index document.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
@@ -14,11 +16,14 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    POPULATION_CLASS,
     AbsentObservation,
     Bound,
     BoundSet,
+    BroadReading,
     CodeRow,
     CodeSystemDeclaration,
+    CompositeDeclaration,
     ConstraintQuery,
     DatasetDeclaration,
     HouseDefaultCase,
@@ -27,14 +32,17 @@ from code_index.types import (
     LevelOption,
     MeasureClassDeclaration,
     PartlyStatedValue,
+    PartyClass,
     PartyKind,
     PartyRow,
     ShapeSlotDefault,
     SourceCodeRow,
     StatTypeWordDeclaration,
     StatVarRow,
+    WholeTotalSet,
     party_kind,
 )
+from dfo_platform.roles import RoleAxis
 from statvar_members import FiveTuple
 
 _NO_IMPLIED: Mapping[str, str] = MappingProxyType({})
@@ -244,6 +252,27 @@ def _dataset_pins(
     return pins
 
 
+def _enrichment_digest(parties: Iterable[PartyRow]) -> str:
+    """The hex SHA-256 of `parties`' `(dcid, kind, party_class, whole markers, dataset kinds)`
+    rows, sorted by dcid, each marker as `(dataset, covers, years)` and each dataset kind as
+    `(dataset, kind)`. Neither row order nor a label, group or dataset-list change moves it.
+    The markers are in it, windows included, because a whole total's frame cell depends on the
+    row's dataset and on whether its year falls inside the window, and the dataset kinds
+    because a party's kind and class cells depend on the row's dataset. A row without dataset
+    kinds hashes as it did before they existed."""
+    rows = sorted(
+        (
+            party.dcid,
+            party.kind,
+            party.party_class,
+            [(marker.dataset, sorted(marker.covers), marker.years) for marker in party.whole],
+            *([list(party.dataset_kinds)] if party.dataset_kinds else []),
+        )
+        for party in parties
+    )
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
+
+
 def _check_consistent_parents(codes_by_dcid: dict[str, CodeRow]) -> None:
     """Raises `CrossSystemParent` for a parent in another code system.
 
@@ -327,7 +356,7 @@ class CandidateCodes:
     codes: tuple[str, ...]
 
 
-def _fold(word: str) -> str:
+def fold_word(word: str) -> str:
     """`word` casefolded, less one trailing "s" when it is longer than two letters.
     Candidate retrieval applies this one plural allowance to query words and code text
     alike."""
@@ -366,18 +395,22 @@ class CodeIndex:
         "_codes_by_text",
         "_codes_by_tokens",
         "_codes_by_word",
+        "_composites",
         "_implied_by_measure",
         "_members_by_source_code",
         "_partly_stated_by_five_tuple",
         "_source_codes_by_dcid",
         "_statvars_by_dcid",
+        "_whole_sets_by_phrase",
         "_words_by_code",
+        "broad_readings",
         "codes",
         "codes_by_system",
         "dataset_pins",
         "datasets",
         "datasets_by_five_tuple",
         "declarations",
+        "enrichment_digest",
         "families_by_five_tuple",
         "family_by_dcid",
         "implied_values",
@@ -387,7 +420,10 @@ class CodeIndex:
         "parties",
         "partly_stated_values",
         "party_types",
+        "population_totals_by_axis",
         "shape_slot_defaults",
+        "side_classes",
+        "slot_plain_names",
         "source_code_provenances",
         "source_codes",
         "stamp",
@@ -397,6 +433,7 @@ class CodeIndex:
         "value_parents",
         "variable_aliases",
         "variables_by_provenance",
+        "whole_total_sets",
     )
 
     def __init__(
@@ -411,18 +448,26 @@ class CodeIndex:
         parties: Iterable[PartyRow] = (),
         listed_statvars: Iterable[StatVarRow] = (),
         shape_slot_defaults: Iterable[ShapeSlotDefault] = (),
+        broad_readings: Iterable[BroadReading] = (),
         partly_stated_values: Iterable[PartlyStatedValue] = (),
         implied_values: Iterable[ImpliedValue] = (),
         measure_classes: Iterable[MeasureClassDeclaration] = (),
         variable_aliases: Mapping[str, str] | None = None,
+        slot_plain_names: Mapping[str, str] | None = None,
         stat_type_words: Iterable[StatTypeWordDeclaration] = (),
         source_codes: Iterable[SourceCodeRow] = (),
         value_parents: Mapping[str, str] | None = None,
+        whole_total_sets: Iterable[WholeTotalSet] = (),
+        composites: Iterable[CompositeDeclaration] = (),
     ) -> None:
         self.stamp = stamp
+        self._composites = {composite.provenance: composite for composite in composites}
         self.shape_slot_defaults = tuple(shape_slot_defaults)
         """The open-slot defaults declared per `populationType` for properties outside the
         code systems, in declaration order."""
+        self.broad_readings = tuple(broad_readings)
+        """The constraint values a question's words read as a broader value unless it names
+        a value on another property (`BroadReading`), in declaration order."""
         self.partly_stated_values = tuple(partly_stated_values)
         """The constraint values a dataset states on only some of its series
         (`PartlyStatedValue`), in declaration order."""
@@ -442,6 +487,9 @@ class CodeIndex:
         self.variable_aliases: dict[str, str] = dict(variable_aliases or {})
         """Lowercase words recall reads as the full term each stands for, applied to the
         variable query alone."""
+        self.slot_plain_names: dict[str, str] = dict(slot_plain_names or {})
+        """The noun naming each constraint property no code system declares, as a question
+        names its slot (`code_index.declarations.SLOT_PLAIN_NAMES`)."""
         self.stat_type_words = tuple(stat_type_words)
         """The patterns naming a statType other than `measuredValue`, in declaration order;
         the frame reads the first that matches (`search.engine.frame`)."""
@@ -487,6 +535,40 @@ class CodeIndex:
                 if party.totals in self.totals_by_group:
                     raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
                 self.totals_by_group[party.totals] = party
+        side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
+        population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
+        for party in self.parties.values():
+            for dataset in party.datasets:
+                kind = party.kind_in(dataset)
+                party_class = party.class_of(kind)
+                if kind != "total" and party_class is not None:
+                    for axis in party.axes:
+                        side_classes[axis, dataset].add(party_class)
+            if any(POPULATION_CLASS in marker.covers for marker in party.whole):
+                population_totals_by_axis[party.axes[0]].append(party.dcid)
+        self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
+            side: frozenset(classes) for side, classes in side_classes.items()
+        }
+        """The classes of party, totals aside, each dataset publishes on each
+        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
+        party published on both axes counts on each in every dataset that publishes it."""
+        self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
+            axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
+        }
+        """The totals some dataset marks as covering the `official` class (`PartyRow.whole`),
+        by the one axis each stands on, sorted by dcid."""
+        self.enrichment_digest = _enrichment_digest(self.parties.values())
+        """SHA-256 over the sorted `(dcid, kind, party_class, whole markers)` rows of `parties`,
+        the part of the index the `{role}_party_kind`, `{role}_party_class` and
+        `{role}_party_whole` cells are read from. A file holding such cells is linked under a key salted with it
+        (`datasets_api.version_store.enriched_rendering_key`), so an export that changes no
+        kind, class or whole marker leaves every link in place."""
+        self.whole_total_sets = tuple(whole_total_sets)
+        """The unions of whole totals read as one population (`WholeTotalSet`), in declaration
+        order. The loader refuses two that share a phrase (`loader._check_whole_totals`)."""
+        self._whole_sets_by_phrase = {
+            fold_text(whole_set.phrase): whole_set for whole_set in self.whole_total_sets
+        }
 
         codes_by_dcid: dict[str, CodeRow] = {}
         codes_by_system_code: dict[tuple[str, str], CodeRow] = {}
@@ -591,8 +673,8 @@ class CodeIndex:
         for row in self.codes:
             for text in (row.label, *row.synonyms):
                 for word in word_tokens(text):
-                    codes_by_word[_fold(word.text)][row.dcid] = None
-                    words_by_code[row.dcid].add(_fold(word.text))
+                    codes_by_word[fold_word(word.text)][row.dcid] = None
+                    words_by_code[row.dcid].add(fold_word(word.text))
         self._codes_by_word = {word: tuple(dcids) for word, dcids in codes_by_word.items()}
         self._words_by_code = {dcid: frozenset(words) for dcid, words in words_by_code.items()}
 
@@ -664,16 +746,41 @@ class CodeIndex:
         """Whether `dcid` is a code system's graph id (`CodeSystemDeclaration.enum_dcid`)."""
         return any(d.enum_dcid == dcid for d in self.declarations.values())
 
+    def system_of_code(self, dcid: str) -> str | None:
+        """The graph id of the system the code `dcid` belongs to (its declaration's
+        `enum_dcid`), or `None` when this index holds no such code or its system declares no
+        graph id."""
+        row = self._codes_by_dcid.get(dcid)
+        declaration = self.declarations.get(row.code_system) if row is not None else None
+        return declaration.enum_dcid if declaration is not None else None
+
     def party_kind_of(self, dcid: str, types: Iterable[str]) -> PartyKind | None:
-        """The kind of the party `dcid` whose graph types are `types`: its row's kind when
-        `parties` lists it, else the kind its types give (`code_index.types.party_kind`)."""
+        """The kind of the party `dcid` whose graph types are `types`, read for no dataset: its
+        row's kind in every dataset that publishes it when `parties` lists it
+        (`PartyRow.kind_over`), `None` when that kind differs between datasets, else the kind
+        its types give (`code_index.types.party_kind`). A reader with a dataset in hand reads
+        `PartyRow.kind_in` instead."""
         party = self.parties.get(dcid)
-        return party.kind if party is not None else party_kind(types, self.party_types)
+        return party.kind_over() if party is not None else party_kind(types, self.party_types)
+
+    def whole_set(self, phrase: str) -> WholeTotalSet | None:
+        """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""
+        return self._whole_sets_by_phrase.get(fold_text(phrase))
 
     def statvar_by_dcid(self, dcid: str) -> StatVarRow | None:
         """The StatVar row for `dcid`, from `statvars` or `listed_statvars`, or `None` if
         this index holds no such row."""
         return self._statvars_by_dcid.get(dcid)
+
+    def statvar_provenances(self, dcids: Iterable[str]) -> frozenset[str]:
+        """The provenances that publish the StatVars `dcids` (`StatVarRow.provenances`), the
+        datasets a reader of them serves. A StatVar this index does not list adds none."""
+        return frozenset(
+            provenance
+            for dcid in dcids
+            if (row := self.statvar_by_dcid(dcid)) is not None
+            for provenance in row.provenances
+        )
 
     def code_by_code(self, code_system: str, code: str) -> CodeRow | None:
         """Returns the row for `code` in `code_system`. Code strings may recur across systems,
@@ -719,9 +826,9 @@ class CodeIndex:
         shares no CRS purpose's text, while "contraceptive" shares 13030's synonym
         "contraceptive delivery".
         """
-        asked = {_fold(word) for word in words}
+        asked = {fold_word(word) for word in words}
         shared: dict[str, set[str]] = defaultdict(set)
-        for word in asked | {_fold(word) for word in context}:
+        for word in asked | {fold_word(word) for word in context}:
             for dcid in self._codes_by_word.get(word, ()):
                 if self._codes_by_dcid[dcid].code_system in code_systems:
                     shared[dcid].add(word)
@@ -749,12 +856,18 @@ class CodeIndex:
                 menu.setdefault(child)
         return CandidateCodes(hits=tuple(hits), codes=tuple(menu)[:CANDIDATE_LIMIT])
 
+    def names_word(self, word: str) -> bool:
+        """Whether the label or a synonym of some code holds `word`, compared as
+        `candidate_codes` compares it (`fold_word`). "malaria" is such a word
+        (CRS 12262, "Malaria control")."""
+        return fold_word(word) in self._codes_by_word
+
     def words_shared(self, dcid: str, words: Iterable[str]) -> frozenset[str]:
         """The words of `words` the label or a synonym of the code `dcid` holds, compared
         as `candidate_codes` compares them: casefolded, less one trailing "s" on a word
         longer than two letters, and returned in that form. Empty for an unknown code."""
         held = self._words_by_code.get(dcid, frozenset())
-        return frozenset(folded for word in words if (folded := _fold(word)) in held)
+        return frozenset(folded for word in words if (folded := fold_word(word)) in held)
 
     # --- Source codes ---
 
@@ -803,9 +916,20 @@ class CodeIndex:
 
     def absent_observation(self, provenance: str) -> AbsentObservation:
         """Returns the dataset's declared absent-observation rule, or `unknown` when no dataset
-        declares `provenance`."""
+        declares `provenance`. A composite (`composite`) reads `zero` when every one of its
+        component tables does, as a sum over its frame then reads each component's absent
+        member, and `unknown` otherwise."""
+        composite = self._composites.get(provenance)
+        if composite is not None:
+            readings = {self.absent_observation(recipe.dataset) for recipe in composite.components}
+            return "zero" if readings == {"zero"} else "unknown"
         dataset = self.datasets.get(provenance)
         return dataset.absent_observation if dataset is not None else "unknown"
+
+    def composite(self, provenance: str) -> CompositeDeclaration | None:
+        """The composite `provenance` declares when the index serves every one of its
+        component tables (`code_index.loader.parse_index`), else `None`."""
+        return self._composites.get(provenance)
 
     def house_case_systems(self) -> dict[str, HouseDefaultCase]:
         """Each code system that declares a kind of question (`CodeSystemDeclaration.house_case`)

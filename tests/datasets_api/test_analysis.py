@@ -1,0 +1,1084 @@
+"""The analysis runner over a double root source and live store SQL: a two-sided tree, latest
+and exact roots on one path, a stored rerun, derived roots, rolling periods, pending roots, and
+the bounds."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import logging
+from datetime import timedelta
+from importlib.resources import files
+
+import jsonschema
+import pytest
+import rfc8785
+from dfo_frame_grammar import Frame
+
+from dataset_store.snapshot import SnapshotRevoked
+from datasets_api import analysis, publish_models
+from datasets_api.analysis import (
+    AnalysisBounds,
+    AnalysisPending,
+    AnalysisRequest,
+    AnalysisStoreDiverges,
+    AnalysisTooLarge,
+    AnchorRequest,
+    DatasetRoot,
+    RootRecipeMissing,
+    SeveralMembers,
+    column_for,
+    prepare_analysis,
+    run_analysis,
+    run_anchor,
+    run_prepared,
+    stored_answer,
+)
+from datasets_api.doors.analysis import classify_analysis_exception
+from datasets_api.output_digest import output_digest
+from datasets_api.recipe_store import ReplayedFrame
+from dfo_analysis_engine import execution_identity
+from dfo_analysis_engine.evaluate import RootFrame, evaluate
+from dfo_analysis_engine.frame_ref import FrameRef
+from dfo_analysis_engine.recipe import derived_nodes, pair
+from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode
+from materialise.frame_build import build_frame
+
+from ._analysis_doubles import (
+    AID,
+    AID_V1,
+    AID_V2,
+    POPULATION,
+    POPULATION_V1,
+    Stores,
+    aid_frame,
+    dataset,
+    population_frame,
+    ref_of,
+    source,
+    step,
+)
+from ._description_doubles import read_record
+
+_REF_SCHEMA = json.loads(
+    (files("dfo_client_contract") / "dataset-ref.schema.json").read_text(encoding="utf-8")
+)
+
+
+def _run(stores: Stores, tree: dict, *, latest: bool = False, **kwargs: object):
+    request = AnalysisRequest.model_validate({"tree": tree, "latest": latest})
+    return run_analysis(
+        request,
+        source=kwargs.pop("root_source", None) or source(stores),  # ty: ignore[invalid-argument-type]
+        stores=stores.analysis(),
+        **kwargs,  # ty: ignore[invalid-argument-type]
+    )
+
+
+_PER_PERSON = step(
+    "quotient_of",
+    dataset(AID, AID_V1),
+    dataset(POPULATION, POPULATION_V1),
+    on={"destination": "place"},
+)
+
+
+def test_a_two_sided_tree_pairs_roles_by_column_and_stores_its_frame() -> None:
+    stores = Stores()
+
+    result = _run(stores, _PER_PERSON)
+
+    expected = evaluate(
+        {
+            "op_spec": {
+                "verb": "quotient_of",
+                "parameters": {
+                    "numerator_by": ["financingRecipient"],
+                    "denominator_by": {"financingRecipient": "observationAbout"},
+                },
+            },
+            "inputs": {"frame_ref": {"root": 0}, "denominator_frame_ref": {"root": 1}},
+        },
+        {
+            0: RootFrame(ref=FrameRef(spec_id=AID, content_version=AID_V1), frame=aid_frame()),
+            1: RootFrame(
+                ref=FrameRef(spec_id=POPULATION, content_version=POPULATION_V1),
+                frame=population_frame(),
+            ),
+        },
+    )
+    assert result.evaluation.ref == expected.ref
+    named = {expected.ref.spec_id: "mv_d355e59c50ff8cf07e86a4da12b64297"}
+    assert result.output_digest == output_digest(expected.frame, named)
+    assert result.created
+    jsonschema.validate(result.ref(), _REF_SCHEMA)
+    member = result.ref()["members"][0]
+    assert member["spec"]["spec_id"] == expected.ref.spec_id
+    assert member["content_version"] == expected.ref.content_version
+    assert member["output_digest"] == result.output_digest
+    assert [root["spec_id"] for root in member["roots"]] == [AID, POPULATION]
+    assert member["resolved_periods"] == []
+    stored = stores.recipe_store.read_recipe(
+        spec_id=expected.ref.spec_id, content_version=expected.ref.content_version
+    )
+    assert stored is not None
+    assert stored.normal_form_hash == member["spec"]["recipe"]["normal_form_hash"]
+    assert stored.replay_key == member["spec"]["recipe"]["replay_key"]
+    assert result.body()["summary"]["verb"] == "quotient_of"
+
+
+def test_a_derived_record_names_each_step_and_the_inputs_its_roots_retrieve() -> None:
+    """The record of a computed frame holds a step per operation, its inputs naming earlier
+    steps, and a `retrieve` step per root, so its inputs are named versions."""
+    stores = Stores()
+    summed = step(
+        "aggregate",
+        dataset(AID, AID_V1),
+        aggregation="sum",
+        group_by=["destination", "time_period"],
+    )
+    tree = step(
+        "quotient_of",
+        summed,
+        dataset(POPULATION, POPULATION_V1),
+        on={"destination": "place"},
+    )
+
+    result = _run(stores, tree)
+
+    record = read_record(
+        stores.store,
+        subject_id=result.evaluation.ref.spec_id,
+        content_version=result.evaluation.ref.content_version,
+    )
+    assert record is not None and record.steps is not None and record.computed is not None
+    steps = [
+        step.model_dump(mode="json", include={"id", "op", "input", "inputs"})
+        for step in record.steps
+    ]
+    assert steps == [
+        {"id": "s1", "op": "retrieve", "input": {"id": AID, "content_version": AID_V1}},
+        {"id": "s2", "op": "aggregate", "input": "s1"},
+        {
+            "id": "s3",
+            "op": "retrieve",
+            "input": {"id": POPULATION, "content_version": POPULATION_V1},
+        },
+        {"id": "s4", "op": "quotient", "inputs": {"numerator": "s2", "denominator": "s3"}},
+    ]
+    assert record.steps[-1].stat_var == result.evaluation.ref.spec_id
+    assert [(one.id, one.content_version) for one in record.computed.inputs] == [
+        (AID, AID_V1),
+        (POPULATION, POPULATION_V1),
+    ]
+
+
+def _stored_steps(stores: Stores, result) -> list[dict] | None:
+    record = read_record(
+        stores.store,
+        subject_id=result.evaluation.ref.spec_id,
+        content_version=result.evaluation.ref.content_version,
+    )
+    assert record is not None
+    if record.steps is None:
+        return None
+    return [step.model_dump(mode="json", exclude_unset=True) for step in record.steps]
+
+
+def test_a_step_list_over_the_byte_bound_publishes_with_its_coverage_shed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    whole_stores = Stores()
+    whole = _stored_steps(whole_stores, _run(whole_stores, _PER_PERSON))
+    assert whole is not None and "period_coverage" in whole[-1]
+    bound = len(rfc8785.dumps(whole)) - 1
+    monkeypatch.setattr(analysis, "MAX_STEPS_BYTES", bound)
+    stores = Stores()
+
+    steps = _stored_steps(stores, _run(stores, _PER_PERSON))
+
+    shed = {name: value for name, value in whole[-1].items() if name != "period_coverage"}
+    assert steps == [*whole[:-1], shed]
+    assert len(rfc8785.dumps(steps)) <= bound
+
+
+def test_compare_gives_data_minus_other() -> None:
+    stores = Stores()
+
+    result = _run(
+        stores,
+        step(
+            "compare",
+            dataset(AID, AID_V2),
+            dataset(AID, AID_V1),
+            on=["destination", "origin"],
+        ),
+    )
+
+    values = sorted(result.evaluation.frame.table.column("value").to_pylist())
+    assert values == [10.0, 12.0, 20.0, 30.0]
+    assert result.evaluation.summary["sides"] == {"data": "right", "other": "left"}
+
+
+def test_latest_and_exact_roots_run_one_path() -> None:
+    stores = Stores()
+    tree = step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    newest = step("aggregate", dataset(AID, AID_V2), aggregation="sum", group_by=["destination"])
+    roots = source(stores)
+
+    latest = _run(stores, tree, latest=True, root_source=roots)
+    exact = _run(stores, newest)
+    older = _run(stores, tree)
+
+    assert roots.resolved == [(AID, AID_V1, True)]
+    assert latest.evaluation.ref == exact.evaluation.ref
+    assert latest.ref()["members"][0]["roots"][0]["content_version"] == AID_V2
+    assert older.evaluation.ref != exact.evaluation.ref
+
+
+def test_a_rerun_stores_nothing_new() -> None:
+    stores = Stores()
+    first = _run(stores, _PER_PERSON)
+    versions = stores.version_count()
+
+    again = _run(stores, _PER_PERSON)
+
+    assert not again.created
+    assert again.evaluation.ref == first.evaluation.ref
+    assert again.artifact_digest == first.artifact_digest
+    assert again.ref() == first.ref()
+    assert stores.version_count() == versions
+
+
+def test_a_stored_answer_stands_while_its_frame_file_is_served_and_is_recomputed_after() -> None:
+    stores = Stores()
+    roots = source(stores)
+    request = AnalysisRequest.model_validate({"tree": _PER_PERSON})
+    first = run_analysis(request, source=roots, stores=stores.analysis())
+    reads = roots.reads
+
+    prepared = prepare_analysis(request, source=roots)
+
+    assert stored_answer(prepared, stores=stores.analysis()) == first.body()
+    assert roots.reads == reads
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s", ("2020-01-01T00:00:00+00:00",)
+        )
+    assert stored_answer(prepared, stores=stores.analysis()) is None
+    again = run_prepared(prepared, source=roots, stores=stores.analysis())
+    assert roots.reads > reads
+    assert stored_answer(prepared, stores=stores.analysis()) == again.body()
+
+
+def test_an_answer_stored_before_rolling_counted_both_sides_is_not_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engine 0.9.0 sized a rolling tree's population from one side of a pairing, so a request
+    key under it names an answer the same request no longer computes."""
+    stores = Stores()
+    roots = source(stores)
+    request = AnalysisRequest.model_validate({"tree": _PER_PERSON})
+    with monkeypatch.context() as engine:
+        engine.setattr(execution_identity, "ENGINE_VERSION", "0.9.0")
+        run_analysis(request, source=roots, stores=stores.analysis())
+
+    prepared = prepare_analysis(request, source=roots)
+
+    assert stored_answer(prepared, stores=stores.analysis()) is None
+
+
+def test_a_revoked_output_refuses_its_stored_answer_and_a_run_that_reuses_it() -> None:
+    stores = Stores()
+    roots = source(stores)
+    request = AnalysisRequest.model_validate({"tree": _PER_PERSON})
+    first = run_analysis(request, source=roots, stores=stores.analysis())
+    ref = first.evaluation.ref
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_revocation (subject_id, content_version, revoked_at) "
+            "VALUES (%s, %s, %s)",
+            (ref.spec_id, ref.content_version, stores.now.isoformat()),
+        )
+    prepared = prepare_analysis(request, source=roots)
+
+    with pytest.raises(SnapshotRevoked) as cached:
+        stored_answer(prepared, stores=stores.analysis())
+    with pytest.raises(SnapshotRevoked) as recomputed:
+        run_prepared(prepared, source=roots, stores=stores.analysis())
+
+    for refused in (cached.value, recomputed.value):
+        spec = classify_analysis_exception(refused)
+        assert spec is not None
+        assert (spec.code, spec.status) == ("snapshot_revoked", 410)
+
+
+def test_columns_listed_in_another_order_name_the_same_frame_and_recipe() -> None:
+    """The frame pair sorts a root's columns, so its record and normal form must as well, or the
+    second run's recipe diverges from the one stored under the same pair."""
+    stores = Stores()
+
+    def summed(columns: list[str]) -> dict:
+        root = {**dataset(AID, AID_V1), "rendering": {"columns": columns}}
+        return step("aggregate", root, aggregation="sum", group_by=["destination"])
+
+    first = _run(stores, summed(["party_kind", "financingRecipient_type", "party_kind"]))
+    again = _run(stores, summed(["financingRecipient_type", "party_kind"]))
+
+    assert not again.created
+    assert again.ref() == first.ref()
+    (root,) = first.ref()["members"][0]["roots"]
+    assert root["rendering"]["columns"] == ["financingRecipient_type", "party_kind"]
+
+
+_MOVED_FRAME_CV = "cv_" + "f" * 32
+
+
+def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
+    """Make every later run compute `ref`, as one does whose root pairs a later derivation of
+    `analysis_roots.frame_ref_for` names apart from the stored run's. Its summary names `ref`
+    and `_MOVED_FRAME_CV`, as the engine's does for a minting step, whose rows name its pair."""
+    evaluated = analysis._evaluated
+
+    def elsewhere(*args, **kwargs):
+        computed = evaluated(*args, **kwargs)
+        moved = dataclasses.replace(
+            computed.evaluation,
+            ref=ref,
+            tree={**computed.evaluation.tree, "frame": pair(ref)},
+            summary={
+                **computed.evaluation.summary,
+                **pair(ref),
+                "frame_content_version": _MOVED_FRAME_CV,
+            },
+        )
+        return dataclasses.replace(computed, evaluation=moved)
+
+    monkeypatch.setattr(analysis, "_evaluated", elsewhere)
+
+
+_ELSEWHERE = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
+
+
+def test_a_run_of_a_stored_replay_key_answers_the_stored_frame_in_every_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    first = _run(stores, _PER_PERSON)
+    stored = first.evaluation.ref
+    _computed_under(monkeypatch, _ELSEWHERE)
+
+    again = _run(stores, _PER_PERSON)
+
+    assert not again.created
+    assert again.evaluation.ref == stored
+    assert again.evaluation.tree["frame"] == pair(stored)
+    body = again.body()
+    assert body["ref"] == first.ref()
+    assert body["frame_content_version"] == first.frame_content_version != _MOVED_FRAME_CV
+    assert body["summary"] == first.body()["summary"]
+    prepared = prepare_analysis(
+        AnalysisRequest.model_validate({"tree": _PER_PERSON}), source=source(stores)
+    )
+    answer = stores.analysis().recipe_store.read_answer(request_key=prepared.key)
+    assert answer is not None
+    assert (answer.spec_id, answer.content_version, answer.body) == (
+        stored.spec_id,
+        stored.content_version,
+        body,
+    )
+
+
+def test_a_run_whose_replayed_frame_file_aged_out_publishes_its_own_pair_and_takes_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored frame's bytes can differ from the run's, so the run publishes under its own
+    pair, and the stored recipe gives up its replay key to it."""
+    stores = Stores()
+    first = _run(stores, _PER_PERSON)
+    stored = first.evaluation.ref
+    replay_key = first.ref()["members"][0]["spec"]["recipe"]["replay_key"]
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s", ("2020-01-01T00:00:00+00:00",)
+        )
+    _computed_under(monkeypatch, _ELSEWHERE)
+
+    moved = _run(stores, _PER_PERSON)
+    again = _run(stores, _PER_PERSON)
+
+    recipes = stores.analysis().recipe_store
+    assert moved.created
+    assert moved.evaluation.ref == again.evaluation.ref == _ELSEWHERE
+    assert not again.created
+    assert recipes.read_replay(replay_key=replay_key) == ReplayedFrame(**pair(_ELSEWHERE))
+    kept = recipes.read_recipe(spec_id=stored.spec_id, content_version=stored.content_version)
+    assert kept is not None
+    assert kept.replay_key == replay_key
+
+
+@pytest.mark.parametrize("computed", [None, _ELSEWHERE], ids=["own_pair", "replayed_pair"])
+def test_a_pair_holding_another_recipe_answers_500_logged_with_both_identities(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, computed: FrameRef | None
+) -> None:
+    """A run diverging at the pair its replay key names is logged under that pair."""
+    stores = Stores()
+    ref = _run(stores, _PER_PERSON).evaluation.ref
+    if computed is not None:
+        _computed_under(monkeypatch, computed)
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.frame_recipe SET normal_form_hash = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            ("rnf_" + "0" * 32, ref.spec_id, ref.content_version),
+        )
+
+    with caplog.at_level(logging.ERROR), pytest.raises(AnalysisStoreDiverges) as raised:
+        _run(stores, _PER_PERSON)
+
+    spec = classify_analysis_exception(raised.value)
+    assert spec is not None
+    assert (spec.status, spec.code) == (500, "internal_error")
+    (record,) = [r for r in caplog.records if r.name == "datasets_api.analysis"]
+    assert (raised.value.spec_id, raised.value.content_version) == (
+        ref.spec_id,
+        ref.content_version,
+    )
+    assert f"spec_id={ref.spec_id} content_version={ref.content_version} " in record.getMessage()
+    assert "stored_normal_form_hash=rnf_" + "0" * 32 in record.getMessage()
+    assert "run_normal_form_hash=rnf_" in record.getMessage()
+
+
+def test_the_artifact_digest_does_not_depend_on_the_time_of_publish() -> None:
+    """The frame file holds no publish time, so one tree published on another day names the
+    same file."""
+    first = _run(Stores(), _PER_PERSON)
+    later = Stores()
+    later.now = later.now + timedelta(days=400)
+
+    again = _run(later, _PER_PERSON)
+
+    assert again.artifact_digest == first.artifact_digest
+
+
+@pytest.mark.parametrize(
+    "rendering",
+    [{}, {"columns": ["financingRecipient_party_kind"], "without_party_totals": True}],
+    ids=["default", "columns"],
+)
+def test_a_derived_root_runs_as_the_chain_it_was_computed_by(rendering: dict) -> None:
+    """A derived root expands into its recipe's roots read in their recorded rendering, so it
+    answers the ref of the chain it was computed by."""
+    stores = Stores()
+    root = {**dataset(AID, AID_V1), "rendering": rendering}
+    summed = step("aggregate", root, aggregation="sum", group_by=["destination"])
+    stored = _run(stores, summed).evaluation.ref
+
+    chained = _run(stores, step("rank", summed, rank_by=["destination"], limit=1))
+    from_derived = _run(stores, step("rank", stored.model_dump(), rank_by=["destination"], limit=1))
+
+    assert from_derived.evaluation.ref == chained.evaluation.ref
+    assert from_derived.ref() == chained.ref()
+
+
+def test_a_derived_root_without_a_stored_recipe_refuses() -> None:
+    stores = Stores()
+    missing = {"spec_id": "ops_" + "c" * 32, "content_version": "ocv_" + "d" * 32}
+
+    with pytest.raises(RootRecipeMissing) as raised:
+        _run(stores, step("rank", missing, rank_by=["destination"]))
+    assert raised.value.fix["latest"] is True
+
+
+def test_rolling_window_bounds_take_the_latest_period_and_their_populations() -> None:
+    stores = Stores()
+    tree = step(
+        "growth",
+        dataset(AID, AID_V1),
+        entity_by=["destination"],
+        window_start={"anchor": "latest", "offset": -1},
+        window_end={"anchor": "latest", "offset": 0},
+    )
+
+    result = _run(stores, tree)
+
+    parameters = result.evaluation.tree["op_spec"]["parameters"]
+    assert (parameters["window_start"], parameters["window_end"]) == ("2021", "2022")
+    assert parameters["rolling"]["population"] == [{"spec_id": AID, "bindings": {}}]
+    assert result.resolved_periods == (
+        {"anchor": "latest", "offset": -1, "rule": "half1", "period": "2021"},
+        {"anchor": "latest", "offset": 0, "rule": "half1", "period": "2022"},
+    )
+    assert result.ref()["members"][0]["resolved_periods"] == list(result.resolved_periods)
+    jsonschema.validate(result.ref(), _REF_SCHEMA)
+
+
+def test_anchor_roots_take_the_latest_period_over_roots_the_tree_does_not_read() -> None:
+    """A rank over the aid data whose period the anchor route took over aid and population
+    answers from the year both hold, 2021, and a replay of its stored recipe takes the period
+    over the same roots. Without the anchor roots the tree reads no population root."""
+    stores = Stores()
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): aid_frame(),
+            (POPULATION, POPULATION_V1): population_frame(years=("2021",)),
+        },
+    )
+    latest = {"anchor": "latest", "offset": 0}
+    tree = step(
+        "rank",
+        dataset(AID, AID_V1),
+        rank_by=["destination"],
+        window_start=latest,
+        window_end=latest,
+        rolling={
+            "population": [
+                {"spec_id": AID, "bindings": {}},
+                {"spec_id": POPULATION, "bindings": {}},
+            ]
+        },
+    )
+    anchor_roots = [dataset(AID, AID_V1), dataset(POPULATION, POPULATION_V1)]
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, tree, root_source=roots)
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": tree, "anchor_roots": anchor_roots}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+    replayed = _run(stores, result.evaluation.ref.model_dump(), root_source=roots)
+
+    assert raised.value.code is RefusalCode.ROLLING_ANCHOR_UNRESOLVED
+    assert raised.value.refusal.fix["detail"] == "population_without_root"
+    parameters = result.evaluation.tree["op_spec"]["parameters"]
+    assert (parameters["window_start"], parameters["window_end"]) == ("2021", "2021")
+    assert [root["spec_id"] for root in result.ref()["members"][0]["roots"]] == [AID, POPULATION]
+    assert replayed.evaluation.ref == result.evaluation.ref
+    assert replayed.ref() == result.ref()
+
+
+def test_rolling_steps_over_different_populations_refuse_before_any_verb() -> None:
+    stores = Stores()
+    first = {"spec_id": AID, "bindings": {}}
+    second = {"spec_id": AID, "bindings": {"origin": ["country/DEU"]}}
+    inner = step(
+        "growth",
+        dataset(AID, AID_V1),
+        entity_by=["destination"],
+        window_start="2021",
+        window_end="2022",
+        rolling={
+            "window_end": {"anchor": "latest", "offset": 0, "rule": "half1"},
+            "population": [first],
+        },
+    )
+    tree = step(
+        "rank",
+        inner,
+        rank_by=["destination"],
+        window_start="2021/2022",
+        window_end="2021/2022",
+        rolling={
+            "window_end": {"anchor": "latest", "offset": 0, "rule": "half1"},
+            "population": [second],
+        },
+    )
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, tree)
+    assert raised.value.code is RefusalCode.ROLLING_POPULATIONS_DIFFER
+
+
+_LATEST_YEAR = {"anchor": "latest", "offset": 0}
+
+
+def _rolling_rank(root: dict, by: str) -> dict:
+    return step("rank", root, rank_by=[by], window_start=_LATEST_YEAR, window_end=_LATEST_YEAR)
+
+
+def _rolling_pair(stores: Stores):
+    """The aid data, latest 2022, and the population data, latest 2021, each ranked over its own
+    latest year and stored, and a join of the two stored frames."""
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): aid_frame(),
+            (POPULATION, POPULATION_V1): population_frame(years=("2021",)),
+        },
+    )
+    aid = _run(stores, _rolling_rank(dataset(AID, AID_V1), "destination"), root_source=roots)
+    people = _run(
+        stores, _rolling_rank(dataset(POPULATION, POPULATION_V1), "place"), root_source=roots
+    )
+    joined = step(
+        "join",
+        aid.evaluation.ref.model_dump(),
+        people.evaluation.ref.model_dump(),
+        on={"destination": "place"},
+    )
+    return roots, (aid, people), joined
+
+
+def test_derived_rolling_inputs_of_different_latest_years_follow_the_tree_under_rolling_tree() -> (
+    None
+):
+    stores = Stores()
+    roots, (aid, people), joined = _rolling_pair(stores)
+
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": joined, "rolling": "tree"}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+
+    ref = result.evaluation.ref
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    assert recipe is not None
+    ranks = [
+        node["op_spec"]["parameters"]
+        for node in derived_nodes(recipe.body["tree"])
+        if node["op_spec"]["verb"] == "rank"
+    ]
+    own = [r.evaluation.tree["op_spec"]["parameters"]["window_end"] for r in (aid, people)]
+    assert own == ["2022", "2021"]
+    assert [(rank["window_start"], rank["window_end"]) for rank in ranks] == [("2021", "2021")] * 2
+    # The tree pairs the two sides by recipient, so its one population is that pairing.
+    assert [rank["rolling"]["population"] for rank in ranks] == [
+        [
+            {
+                "pair": [
+                    [{"spec_id": AID, "bindings": {}}],
+                    [{"spec_id": POPULATION, "bindings": {}}],
+                ],
+                "keys": {"financingRecipient": "observationAbout"},
+            }
+        ]
+    ] * 2
+    assert result.resolved_periods == (
+        {"anchor": "latest", "offset": 0, "rule": "half1", "period": "2021"},
+    )
+
+
+def test_rolling_tree_counts_both_sides_of_a_join_that_leaves_its_keys_to_the_engine() -> None:
+    """The right side's latest year holds the period back, as a left-only count would not."""
+    stores = Stores()
+    other = aid_frame(stat_var="dcid:Other", years=("2021",))
+    roots = source(stores, frames={(AID, AID_V1): aid_frame(), (POPULATION, POPULATION_V1): other})
+    tree = step(
+        "join",
+        _rolling_rank(dataset(AID, AID_V1), "financingRecipient"),
+        _rolling_rank(dataset(POPULATION, POPULATION_V1), "financingRecipient"),
+    )
+
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": tree, "rolling": "tree"}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+
+    ref = result.evaluation.ref
+    recipe = stores.recipe_store.read_recipe(
+        spec_id=ref.spec_id, content_version=ref.content_version
+    )
+    assert recipe is not None
+    ranks = [
+        node["op_spec"]["parameters"]
+        for node in derived_nodes(recipe.body["tree"])
+        if node["op_spec"]["verb"] == "rank"
+    ]
+    assert [rank["rolling"]["population"] for rank in ranks] == [
+        [{"spec_id": spec_id, "bindings": {}} for spec_id in sorted((AID, POPULATION))]
+    ] * 2
+    assert [period["period"] for period in result.resolved_periods] == ["2021"]
+
+
+def _recipient_frame(stat_var: str, series: dict[str, tuple[str, ...]]) -> Frame:
+    rows = [
+        {
+            "stat_var": stat_var,
+            "financingRecipient": recipient,
+            "origin": "country/DEU",
+            "time_period": year,
+            "value": 1.0,
+            "unit": "USDollar",
+        }
+        for recipient, years in series.items()
+        for year in years
+    ]
+    return build_frame(role_keys=["financingRecipient", "origin"], rows=rows)
+
+
+def test_a_filter_above_a_join_that_leaves_its_keys_to_the_engine_narrows_both_sides() -> None:
+    """Three recipients of the right side stop at 2021, but the filter keeps Kenya alone, so
+    they cannot hold the period back."""
+    stores = Stores()
+    both_years = ("2021", "2022")
+    right = {
+        "country/KEN": both_years,
+        "country/NGA": ("2021",),
+        "country/TZA": ("2021",),
+        "country/UGA": ("2021",),
+    }
+    roots = source(
+        stores,
+        frames={
+            (AID, AID_V1): _recipient_frame("dcid:Aid", {"country/KEN": both_years}),
+            (POPULATION, POPULATION_V1): _recipient_frame("dcid:Other", right),
+        },
+    )
+    tree = step(
+        "filter",
+        step("join", dataset(AID, AID_V1), dataset(POPULATION, POPULATION_V1)),
+        predicates=[
+            {"kind": "category_match", "column": "financingRecipient", "values": ["country/KEN"]},
+            {
+                "kind": "ordered_threshold",
+                "column": "time_period",
+                "op": "gte",
+                "value": _LATEST_YEAR,
+            },
+        ],
+    )
+
+    result = run_analysis(
+        AnalysisRequest.model_validate({"tree": tree, "rolling": "tree"}),
+        source=roots,
+        stores=stores.analysis(),
+    )
+
+    assert [period["period"] for period in result.resolved_periods] == ["2022"]
+
+
+def test_derived_rolling_inputs_of_different_populations_refuse_without_rolling_tree() -> None:
+    stores = Stores()
+    roots, _, joined = _rolling_pair(stores)
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, joined, root_source=roots)
+    assert raised.value.code is RefusalCode.ROLLING_POPULATIONS_DIFFER
+
+
+def test_rolling_tree_leaves_a_tree_without_rolling_as_it_is() -> None:
+    stores = Stores()
+    summed = _run(
+        stores, step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    )
+    tree = step("rank", summed.evaluation.ref.model_dump(), rank_by=["destination"], limit=1)
+    roots = source(stores)
+
+    def prepared(**fields: object):
+        request = AnalysisRequest.model_validate({"tree": tree, **fields})
+        return prepare_analysis(request, source=roots)
+
+    plain, flagged = prepared(), prepared(rolling="tree")
+    assert flagged.working == plain.working
+    assert flagged.key == plain.key
+    first = run_prepared(plain, source=roots, stores=stores.analysis())
+    second = run_prepared(flagged, source=roots, stores=stores.analysis())
+    assert second.body() == first.body()
+
+
+def test_an_input_holding_several_readings_refuses_naming_the_call_that_takes_one() -> None:
+    stores = Stores()
+    tree = step(
+        "quotient_of",
+        {"ref": ref_of((AID, AID_V1), (POPULATION, POPULATION_V1))},
+        dataset(POPULATION, POPULATION_V1),
+    )
+
+    with pytest.raises(SeveralMembers) as raised:
+        _run(stores, tree)
+    assert raised.value.fix == {
+        "parameter": "data",
+        "call": "fetch",
+        "spec_ids": [AID, POPULATION],
+    }
+
+
+def test_a_ref_of_one_member_reads_as_that_member() -> None:
+    stores = Stores()
+    from_ref = _run(
+        stores,
+        step(
+            "aggregate", {"ref": ref_of((AID, AID_V1))}, aggregation="sum", group_by=["destination"]
+        ),
+    )
+    direct = _run(
+        stores, step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    )
+
+    assert from_ref.evaluation.ref == direct.evaluation.ref
+
+
+def test_every_pending_root_answers_at_once_before_any_frame_is_read() -> None:
+    stores = Stores()
+    roots = source(stores, pending={AID: "op_aid", POPULATION: "op_population"})
+    tree = step(
+        "quotient_of",
+        {"spec_id": AID},
+        {"spec_id": POPULATION},
+        on={"destination": "place"},
+    )
+
+    with pytest.raises(AnalysisPending) as raised:
+        _run(stores, tree, root_source=roots)
+    assert raised.value.operations == ("op_aid", "op_population")
+    assert roots.reads == 0
+    assert stores.version_count() == 0
+
+
+@pytest.mark.parametrize(
+    ("bounds", "ceiling_kind"),
+    [
+        pytest.param(AnalysisBounds(max_nodes=2), "analysis_nodes", id="nodes"),
+        pytest.param(AnalysisBounds(max_root_rows=7), "analysis_root_rows", id="root-rows"),
+    ],
+)
+def test_a_tree_past_a_bound_refuses_before_it_computes(
+    bounds: AnalysisBounds, ceiling_kind: str
+) -> None:
+    stores = Stores()
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON, bounds=bounds)
+    assert raised.value.ceiling_kind == ceiling_kind
+    assert stores.version_count() == 0
+
+
+@pytest.mark.parametrize(
+    ("recorded", "cap", "reads"),
+    [
+        pytest.param(True, 7, 0, id="recorded-counts-refuse-before-any-read"),
+        pytest.param(False, 3, 1, id="unrecorded-counts-stop-at-the-first-frame-past"),
+    ],
+)
+def test_root_rows_past_the_bound_refuse_before_reading_past_it(
+    recorded: bool, cap: int, reads: int
+) -> None:
+    """Each root holds 4 rows."""
+    stores = Stores()
+    roots = source(stores, recorded_rows=recorded)
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON, root_source=roots, bounds=AnalysisBounds(max_root_rows=cap))
+
+    assert raised.value.ceiling_kind == "analysis_root_rows"
+    assert roots.reads == reads
+
+
+def test_a_frame_past_the_publish_rows_refuses_before_it_is_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    monkeypatch.setattr(analysis, "PUBLISH_MAX_ROWS", 1)
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON)
+
+    assert (raised.value.ceiling_kind, raised.value.cap) == ("analysis_output_rows", 1)
+    assert stores.version_count() == 0
+
+
+def test_a_join_past_its_row_bound_refuses() -> None:
+    stores = Stores()
+    tree = step(
+        "join",
+        dataset(AID, AID_V1),
+        dataset(POPULATION, POPULATION_V1),
+        on={"destination": "place"},
+    )
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, tree, bounds=AnalysisBounds(max_join_rows=1))
+    assert raised.value.code is RefusalCode.FRAME_TOO_LARGE
+
+
+@pytest.mark.parametrize(
+    ("word", "columns", "column"),
+    [
+        pytest.param("place", ["financingRecipient"], "observationAbout", id="place"),
+        pytest.param(
+            "destination", ["financingRecipient", "origin"], "financingRecipient", id="flow-axis"
+        ),
+        pytest.param("origin", ["financingRecipient", "origin"], "origin", id="column-itself"),
+        pytest.param("sector", ["financingRecipient"], "sector", id="other-words-pass"),
+    ],
+)
+def test_a_role_word_names_its_column(word: str, columns: list[str], column: str) -> None:
+    assert column_for(word, columns, parameter="group_by") == column
+
+
+def test_a_role_two_columns_fill_refuses_role_ambiguous() -> None:
+    with pytest.raises(AnalysisRefused) as raised:
+        column_for("destination", ["financingRecipient", "recipient"], parameter="group_by")
+    assert raised.value.code is RefusalCode.ROLE_AMBIGUOUS
+
+
+def test_a_tree_past_its_node_bound_refuses_at_the_first_node_over_it() -> None:
+    """Nodes are counted as the plan walks, so the refusal names the first node past the bound
+    and no derived root after it has its recipe read."""
+    stores = Stores()
+    summed = step("aggregate", dataset(AID, AID_V1), aggregation="sum", group_by=["destination"])
+    derived = _run(stores, summed).evaluation.ref.model_dump()
+    roots = source(stores)
+    read: list[dict] = []
+    held = roots.recipe
+
+    def recipe(**pair: str):
+        read.append(pair)
+        return held(**pair)
+
+    roots.recipe = recipe  # ty: ignore[invalid-assignment]
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(
+            stores,
+            step("quotient_of", derived, derived, on={"destination": "destination"}),
+            root_source=roots,
+            bounds=AnalysisBounds(max_nodes=2),
+        )
+
+    assert (raised.value.count, raised.value.cap) == (3, 2)
+    assert len(read) == 1
+
+
+def test_the_anchor_reads_its_roots_under_the_root_row_bound() -> None:
+    """Each root holds 4 rows, so 7 refuses before either is read."""
+    stores = Stores()
+    roots = source(stores)
+    request = AnchorRequest(
+        roots=[
+            DatasetRoot(spec_id=AID, content_version=AID_V1),
+            DatasetRoot(spec_id=POPULATION, content_version=POPULATION_V1),
+        ],
+        populations=[{"spec_id": AID, "bindings": {}}],
+    )
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        run_anchor(request, source=roots, bounds=AnalysisBounds(max_root_rows=7))
+
+    assert raised.value.ceiling_kind == "analysis_root_rows"
+    assert roots.reads == 0
+
+
+_LATEST = {"anchor": "latest", "offset": 0}
+_A_YEAR_BACK = {"anchor": "latest", "offset": -1}
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param({"window_start": None, "window_end": _LATEST}, id="one-sided-window"),
+        pytest.param(
+            {"window_start": {"anchor": "latest", "offset": "one"}, "window_end": _LATEST},
+            id="offset-not-an-integer",
+        ),
+        pytest.param(
+            {"rolling": [], "window_start": _A_YEAR_BACK, "window_end": _LATEST},
+            id="rolling-not-an-object",
+        ),
+        pytest.param(
+            {"window_start": _A_YEAR_BACK, "window_end": _LATEST, "predicates": ["gte"]},
+            id="predicate-not-an-object",
+        ),
+    ],
+)
+def test_a_rolling_argument_of_the_wrong_shape_refuses_op_spec_invalid(arguments: dict) -> None:
+    stores = Stores()
+    tree = step("growth", dataset(AID, AID_V1), entity_by=["destination"], **arguments)
+
+    with pytest.raises(AnalysisRefused) as raised:
+        _run(stores, tree)
+
+    assert raised.value.code is RefusalCode.OP_SPEC_INVALID
+
+
+def test_a_null_rolling_overlay_reads_as_none_given() -> None:
+    stores = Stores()
+    bounds = {"window_start": _A_YEAR_BACK, "window_end": _LATEST}
+    tree = step("growth", dataset(AID, AID_V1), entity_by=["destination"], **bounds)
+
+    with_null = _run(stores, {**tree, "arguments": {**tree["arguments"], "rolling": None}})
+
+    assert with_null.ref() == _run(stores, tree).ref()
+
+
+_SHORT_POPULATION = {
+    (AID, AID_V1): aid_frame(),
+    (POPULATION, POPULATION_V1): population_frame(years=("2021",)),
+}
+
+
+def _left_out(stores: Stores, result) -> dict:
+    stored = stores.recipe_store.read_recipe(
+        spec_id=result.evaluation.ref.spec_id,
+        content_version=result.evaluation.ref.content_version,
+    )
+    assert stored is not None
+    return stored.body["left_out"]
+
+
+def test_a_left_out_list_past_the_recipe_bytes_is_cut_to_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The population holds no 2022, so the quotient drops two series. One byte less room than
+    the whole recipe keeps the first series and marks the list incomplete."""
+    whole_stores = Stores()
+    whole = _run(
+        whole_stores, _PER_PERSON, root_source=source(whole_stores, frames=_SHORT_POPULATION)
+    )
+    whole_left_out = _left_out(whole_stores, whole)
+    assert len(whole_left_out["series"]) == 2 and whole_left_out["complete"]
+    stored = whole_stores.recipe_store.read_recipe(
+        spec_id=whole.evaluation.ref.spec_id,
+        content_version=whole.evaluation.ref.content_version,
+    )
+    assert stored is not None
+    size = len(json.dumps(stored.body, separators=(",", ":"), ensure_ascii=False).encode())
+    for module in (analysis, publish_models):
+        monkeypatch.setattr(module, "MAX_RECIPE_BYTES", size - 1)
+    stores = Stores()
+
+    result = _run(stores, _PER_PERSON, root_source=source(stores, frames=_SHORT_POPULATION))
+
+    assert _left_out(stores, result) == {
+        "series": whole_left_out["series"][:1],
+        "complete": False,
+    }
+
+
+def test_a_recipe_past_its_bytes_with_no_series_listed_refuses_over_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for module in (analysis, publish_models):
+        monkeypatch.setattr(module, "MAX_RECIPE_BYTES", 100)
+    stores = Stores()
+
+    with pytest.raises(AnalysisTooLarge) as raised:
+        _run(stores, _PER_PERSON)
+
+    assert (raised.value.ceiling_kind, raised.value.cap) == ("analysis_recipe_bytes", 100)
+    assert stores.version_count() == 0
+
+
+def test_a_step_the_engine_could_not_build_publishes_the_frame_without_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built = analysis.evaluate
+
+    def without_steps(*args, **kwargs):
+        evaluation = built(*args, **kwargs)
+        steps = tuple(dataclasses.replace(one, step=None) for one in evaluation.steps)
+        return dataclasses.replace(evaluation, steps=steps)
+
+    monkeypatch.setattr(analysis, "evaluate", without_steps)
+    stores = Stores()
+
+    result = _run(stores, _PER_PERSON)
+
+    assert _stored_steps(stores, result) is None
+    jsonschema.validate(result.ref(), _REF_SCHEMA)

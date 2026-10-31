@@ -87,10 +87,41 @@ class ServedFacet(Protocol):
     def unit(self) -> str | None: ...
 
 
+NATIVE_CURRENCY_SELECTION_REASON = "native_currency_preferred"
+"""`FacetSelection.selection_reason`'s own literal on the unit axis
+(`materialise.facets._preferred_native_unit_selection`) when a request-form
+unit binding's elected facet already carries the requested `{currency,
+prices: "current"}` natively -- the same condition `materialise.
+member_conversion.decide_member_conversion` calls `natively_satisfied` and
+runs no recipe/table/arithmetic for. `_preferred_native_unit_selection` is
+tried first, over the same narrowed candidate pool `decide_member_conversion`
+later re-checks: it finds a candidate carrying this reason if and only if
+that pool holds one whose own unit ref already equals the requested native
+currency, which is exactly `natively_satisfied`'s own test -- so this
+selection_reason is read directly here rather than re-deriving the currency
+comparison a second time."""
+
+
+def combination_converts(selections: Mapping[str, FacetSelection]) -> bool:
+    """Whether a member converted under `selections`, one elected combination, converts its
+    points by arithmetic: its unit selection names a unit other than the native currency the
+    request named (`NATIVE_CURRENCY_SELECTION_REASON`). Under a native selection, or none on
+    the unit axis, the member is natively satisfied
+    (`materialise.member_conversion.MemberConversionPlan.natively_satisfied`)."""
+    unit = selections.get("unit")
+    return unit is not None and unit.selection_reason != NATIVE_CURRENCY_SELECTION_REASON
+
+
+def any_combination_converts(combinations: Iterable[Mapping[str, FacetSelection]]) -> bool:
+    """Whether some combination a member's unit decision elected converts by arithmetic
+    (`combination_converts`), so a read serving the member under it needs a conversion."""
+    return any(combination_converts(selections) for selections in combinations)
+
+
 @dataclass(frozen=True)
 class BulkConversion:
     """A unit request a bulk read converts its points to: the request in materialise's
-    form, each StatVar's elected selections (`convertibility.decide_part_unit`), and the
+    form, each StatVar's elected selections (`convertibility.decide_spec_unit`), and the
     clients and rate cache the conversion reads through, under `deadline`."""
 
     unit_request: UnitRequest
@@ -99,6 +130,21 @@ class BulkConversion:
     sdmx: MaterialiseSdmxClient
     rate_cache: RateTableCache
     deadline: float | None = None
+
+    def converts_under(self, stat_var: str, facet: ServedFacet) -> bool:
+        """Whether `stat_var` converts its points by arithmetic (`combination_converts`)
+        under the one combination its points read from `facet` convert under
+        (`convertibility.facet_selections`, as `convert_pairs` picks it). A mint decides the
+        member's conversion from that combination, and ranks its facets within each series
+        when it converts (`generation._convert_by_series`). False when no combination is
+        elected for `facet`'s unit, which leaves the member out."""
+        # Deferred to avoid the import cycle with `convertibility`.
+        from search.engine.region.convertibility import facet_selections
+
+        selections = facet_selections(
+            self.elected.get(stat_var, ()), (facet.unit, facet.provenance_id)
+        )
+        return selections is not None and combination_converts(selections)
 
     @property
     def target_unit_ref(self) -> str | None:

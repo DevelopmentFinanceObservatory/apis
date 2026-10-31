@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from code_index.scope_conventions import PartShape
 from code_index.shared import get_index
 from code_index.types import HouseDefaultCase
 from search.engine.binders.house_policy import (
@@ -27,6 +28,7 @@ from search.engine.qualifier_match import QualifierMatch
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import TimeWindow
+from search.scope.basis import elect_basis
 
 _AUDIT_CASES = Path(__file__).parents[1] / "fixtures" / "house_policy" / "policy_audit_cases.json"
 
@@ -35,6 +37,14 @@ _WANTED: Mapping[HouseDefaultCase, str] = {
     "sector": "provenance/Sector",
     "recipient": "provenance/Recipient",
     "donor": "provenance/Donor",
+}
+
+
+# The dataset each kind of question's measure basis convention reads.
+_CONVENTION_DATASETS: Mapping[HouseDefaultCase, str] = {
+    "sector": "provenance/OECDCreditorReportingSystem",
+    "recipient": "provenance/OECDDAC2A",
+    "donor": "provenance/OECDDAC1",
 }
 
 
@@ -470,38 +480,106 @@ def test_the_window_is_pre_grant_equivalent_when_it_starts_before_2018(
     frame: Frame, expected: bool
 ):
     assert (
-        context_of(frame, [], [0], wanted_datasets=_WANTED, case_systems=_CASE_SYSTEMS).pre_ge
+        context_of(
+            frame, [], [0], wanted_datasets=_WANTED, case_systems=_CASE_SYSTEMS, pool_datasets=()
+        ).pre_ge
         is expected
     )
 
 
 @pytest.mark.parametrize(
-    ("places", "qualifiers", "expected"),
+    ("places", "qualifiers", "expected", "wanted"),
     [
-        pytest.param({"Kenya": ()}, [[], [_purpose("purposeCode")]], "sector", id="sector-named"),
-        pytest.param({"Kenya": ()}, [[], [_purpose("flowCode")]], "recipient", id="undirected"),
-        pytest.param({"Kenya": ("destination",)}, [], "recipient", id="recipient"),
-        pytest.param({"Kenya": ("origin", "destination")}, [], "recipient", id="both-axes"),
-        pytest.param({"Japan": ("origin",), "Kenya": ()}, [], "recipient", id="donor-and-place"),
-        pytest.param({"Japan": ("origin",)}, [], "donor", id="donor-only"),
-        pytest.param({}, [], None, id="no-place"),
+        pytest.param(
+            {"Kenya": ()},
+            [[], [_purpose("purposeCode")]],
+            "sector",
+            _CONVENTION_DATASETS["sector"],
+            id="sector-named",
+        ),
+        pytest.param(
+            {"Kenya": ()},
+            [[], [_purpose("flowCode")]],
+            "recipient",
+            _WANTED["recipient"],
+            id="undirected",
+        ),
+        pytest.param({"Germany": ()}, [], "recipient", _WANTED["recipient"], id="undirected-donor"),
+        pytest.param(
+            {"Kenya": ("destination",)},
+            [],
+            "recipient",
+            _CONVENTION_DATASETS["recipient"],
+            id="recipient",
+        ),
+        pytest.param(
+            {"Kenya": ("origin", "destination")},
+            [],
+            "recipient",
+            _CONVENTION_DATASETS["recipient"],
+            id="both-axes",
+        ),
+        pytest.param(
+            {"Japan": ("origin",), "Kenya": ()},
+            [],
+            "recipient",
+            _WANTED["recipient"],
+            id="donor-and-place",
+        ),
+        pytest.param(
+            {"Japan": ("origin",)}, [], "donor", _CONVENTION_DATASETS["donor"], id="donor-only"
+        ),
+        pytest.param({}, [], None, None, id="no-place"),
     ],
 )
 def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     places: Mapping[str, tuple[str, ...]],
     qualifiers: list[list[QualifierMatch]],
     expected: HouseDefaultCase | None,
+    wanted: str | None,
 ):
+    """A part's convention dataset is the one its basis convention reads. A place named
+    without a direction gives a part outside a sector no convention until the direction
+    settles, so the kind's house default stands."""
     context = context_of(
         _frame(places=places),
         qualifiers,
         [0, 1],
         wanted_datasets=_WANTED,
         case_systems=_CASE_SYSTEMS,
+        pool_datasets=tuple(_CONVENTION_DATASETS.values()),
     )
 
     assert context.dataset_case == expected
-    assert context.wanted_dataset == (_WANTED[expected] if expected else None)
+    assert context.wanted_dataset == wanted
+    assert (context.basis is not None) == (wanted in _CONVENTION_DATASETS.values())
+
+
+@pytest.mark.parametrize(
+    ("datasets", "basis"),
+    [
+        pytest.param(("provenance/OECDDAC2A",), "net", id="a-convention-dataset"),
+        pytest.param(
+            ("provenance/OECDCreditorReportingSystem",), "gross", id="another-rows-dataset"
+        ),
+        pytest.param(("provenance/WorldBankWDI",), None, id="no-convention-dataset"),
+    ],
+)
+def test_a_pool_no_convention_dataset_publishes_elects_no_basis(datasets, basis):
+    """The policies elect a basis only for a pool a dataset the conventions read publishes,
+    as the part's basis record does, so a pool served elsewhere keeps the house default. A
+    recipient's pool the CRS alone publishes takes the CRS's own gross convention, since
+    the recipient's net convention is DAC2a's."""
+    context = context_of(
+        _frame(places={"Kenya": ("destination",)}),
+        [],
+        [0],
+        wanted_datasets=_WANTED,
+        case_systems=_CASE_SYSTEMS,
+        pool_datasets=datasets,
+    )
+
+    assert (context.basis.basis if context.basis is not None else None) == basis
 
 
 def test_a_packaged_purpose_code_makes_a_sector_question():
@@ -512,6 +590,7 @@ def test_a_packaged_purpose_code_makes_a_sector_question():
         [0],
         wanted_datasets=index.house_defaults(),
         case_systems=index.house_case_systems(),
+        pool_datasets=("provenance/OECDCreditorReportingSystem",),
     )
 
     assert (context.dataset_case, context.wanted_dataset) == (
@@ -527,9 +606,17 @@ def test_a_sector_admitted_outside_the_pool_names_no_sector():
         [0],
         wanted_datasets=_WANTED,
         case_systems=_CASE_SYSTEMS,
+        pool_datasets=(),
     )
 
     assert context.dataset_case is None
+
+
+_SHAPE_OF_CASE: Mapping[HouseDefaultCase, PartShape] = {
+    "sector": "sector_or_restriction",
+    "recipient": "recipient_all_sectors",
+    "donor": "donor_only",
+}
 
 
 def _audit_cases() -> list[dict]:
@@ -541,14 +628,27 @@ def _audit_cases() -> list[dict]:
 )
 def test_each_policy_keeps_the_shapes_the_label_audit_kept(case: dict):
     """Policy steps the label audit recorded on dev, corpus, planner and synthetic items, each
-    with the facts of the shapes it saw and the shapes it kept. `data_at_places` keeps every
-    shape with data at the named places, as the engine's policy does."""
-    wanted = get_index().house_defaults()
+    with the facts of the shapes it saw and the shapes it kept, replayed under the measure
+    basis the conventions give the item's kind of question and window. A window the audit
+    recorded as starting before 2018 is replayed as lying before it, which elects the basis
+    a window crossing 2018 does on every shape. `data_at_places` keeps every shape with data
+    at the named places, as the engine's policy does."""
     dataset_case = case["context"]["dataset_case"]
+    pre_ge = case["context"]["pre_ge"]
+    basis = (
+        elect_basis(
+            shape=_SHAPE_OF_CASE[dataset_case],
+            window="before_2018" if pre_ge else "from_2018",
+            entries=(),
+        )
+        if dataset_case
+        else None
+    )
     context = Context(
-        pre_ge=case["context"]["pre_ge"],
+        pre_ge=pre_ge,
         dataset_case=dataset_case,
-        wanted_dataset=wanted[dataset_case] if dataset_case else None,
+        wanted_dataset=basis.convention.dataset if basis is not None else None,
+        basis=basis,
     )
     facts = [
         ShapeFacts(

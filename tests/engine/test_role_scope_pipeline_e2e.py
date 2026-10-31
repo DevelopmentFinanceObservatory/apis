@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 
 import pytest
@@ -11,14 +12,18 @@ from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
-from search.engine.extract import DateRequest
+from search.engine.conjoin import assemble_region
+from search.engine.extract import DateRequest, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import materialise_step as materialise_step_module
 from search.engine.region import observations as _observations_pkg  # noqa: F401
 from search.engine.region import resolve_spec_resubmit
+from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
+from search.engine.region.result import every_member_phrases
 from search.engine.region.state import EngineOptions
 from search.models import CoverageBreadth, DateRange, ResubmitIdentityPayload, TimeWindow
+from search.render.plan import render_sentence
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import (
@@ -28,7 +33,12 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import door_roles_for_test_query, walk_options
+from tests.engine._harness import (
+    door_roles_for_test_query,
+    make_request,
+    offline_resolve,
+    walk_options,
+)
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -40,6 +50,7 @@ _FRA = "country/FRA"
 _DEU = "country/DEU"
 _CAN = "country/CAN"
 _JPN = "country/JPN"
+_UGA = "country/UGA"
 
 
 def _facet(*, obs_count: int = 3, facet_id: str = "f1", latest_date: str = "2020") -> Facet:
@@ -159,6 +170,7 @@ def _run(
     coverage_rows: list[CoverageRow] | None = None,
     coverage_role_names: dict[str, RoleNames] | None = None,
     coverage_facet_metadata: dict[str, FacetMetadata] | None = None,
+    dropped_qualifier_phrases: list[str] | None = None,
 ):
     coverage_snapshot = empty_coverage_snapshot()
     if coverage_rows is not None:
@@ -194,6 +206,7 @@ def _run(
             sdmx=sdmx,
             base_timing={},
             unit_text=unit_text,
+            dropped_qualifier_phrases=dropped_qualifier_phrases,
             coverage=coverage_snapshot,
             options=EngineOptions(include_observations=include_observations),
         )
@@ -300,13 +313,8 @@ def test_no_entity_named_discovers_the_recipient_scope(monkeypatch):
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert len(role_scope_warnings) == 2
     messages = {w.message for w in role_scope_warnings}
-    assert (
-        "no recipient was named; the answer was resolved across the 2 recipients with data."
-        in messages
-    )
-    assert "no provider was named; the answer was resolved across every provider with data." in (
-        messages
-    )
+    assert "No recipient was named, so the answer covers both recipients with data." in messages
+    assert "No provider was named, so the answer covers every provider with data." in (messages)
     # The plan serves each pair's 2020 point, so the StatVar is dated 2020 to 2020.
     assert spec.resolved.members[0].data_date_range == DateRange(start="2020", end="2020")
 
@@ -351,7 +359,7 @@ def test_origin_bound_and_recipient_open_discovers_the_recipient_scope(monkeypat
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert len(role_scope_warnings) == 1
     assert (
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         "from France." in role_scope_warnings[0].message
     )
 
@@ -514,7 +522,7 @@ def test_several_bound_origins_are_all_named_in_the_role_scope_warning(
     assert [e.ref for e in result.specs[0].resolved.entities] == sorted(dcid for _, dcid in origins)
     role_scope_warnings = [w for w in result.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in role_scope_warnings] == [
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         f"from {expected_named}."
     ]
 
@@ -578,7 +586,7 @@ def test_resubmit_names_every_bound_origin_in_the_role_scope_warning(
     assert region.status == "definite", region
     role_scope_warnings = [w for w in region.warnings if w.code == "role_scope_defaulted"]
     assert [w.message for w in role_scope_warnings] == [
-        "no recipient was named; the answer was resolved across the 1 recipient with data "
+        "No recipient was named, so the answer covers the one recipient with data "
         f"from {expected_named}."
     ]
 
@@ -593,12 +601,12 @@ def _record_footnote_label_lookups(monkeypatch: pytest.MonkeyPatch) -> list[list
     lookups: list[list[str]] = []
 
     def spying(build):
-        def wrapper(mat, *, boundary_roles, label_of):
+        def wrapper(mat, *, boundary_roles, label_of, **kwargs):
             def recording(dcids):
                 lookups.append(list(dcids))
                 return label_of(dcids)
 
-            return build(mat, boundary_roles=boundary_roles, label_of=recording)
+            return build(mat, boundary_roles=boundary_roles, label_of=recording, **kwargs)
 
         return wrapper
 
@@ -711,6 +719,228 @@ def test_origin_only_signature_discovers_the_provider_scope(monkeypatch):
     assert spec.resolved.scope is not None
     assert spec.resolved.scope.axis == "origin"
     assert sorted(m.ref for m in spec.resolved.scope.members) == [_DEU, _FRA]
+
+
+@pytest.mark.parametrize(
+    ("role_query", "phrase", "observation_properties", "admitted", "assumed"),
+    [
+        pytest.param(
+            "aid from France to all recipients",
+            "to all recipients",
+            ["creditor", "debtor"],
+            True,
+            False,
+            id="open-axis-the-answer-serves-member-by-member",
+        ),
+        pytest.param(
+            "aid from France to all recipients",
+            "to all recipients",
+            ["creditor"],
+            True,
+            False,
+            id="axis-the-answer-totals-over",
+        ),
+        pytest.param(
+            "aid from France to every recipient",
+            "to every recipient",
+            ["creditor", "debtor"],
+            True,
+            False,
+            id="breakdown-over-an-axis-the-answer-declares",
+        ),
+        pytest.param(
+            "aid from France to each recipient",
+            "to each recipient",
+            ["creditor"],
+            False,
+            False,
+            id="breakdown-over-an-axis-the-answer-totals-over",
+        ),
+        pytest.param(
+            "aid from France and all donors",
+            "all donors",
+            ["creditor", "debtor"],
+            False,
+            True,
+            id="axis-a-named-place-binds",
+        ),
+        pytest.param(
+            "aid from France in all sectors",
+            "in all sectors",
+            ["creditor", "debtor"],
+            False,
+            True,
+            id="all-names-no-role",
+        ),
+    ],
+)
+def test_a_dropped_phrase_asking_for_every_member_of_a_role_is_met_by_an_answer_leaving_it_unbound(
+    monkeypatch, role_query, phrase, observation_properties, admitted, assumed
+):
+    """The phrase is admitted, so its `query_qualifier_dropped` warning and departure go,
+    when the role-bearing answer binds no place on the axis the phrase names. An admitted
+    phrase asks for its axis, so the part assumes no open role there. The recipients the
+    scope default fills are assumed while no phrase asks for them."""
+    sv_dcid = _SV_DCID if "debtor" in observation_properties else _ORIGIN_ONLY_SV_DCID
+    if "debtor" in observation_properties:
+        rows, role_names = _coverage_seed_for(
+            "debtor", [_KEN], [sv_dcid], filters={"creditor": [_FRA]}
+        )
+        observations = {sv_dcid: {(("creditor", _FRA), ("debtor", _KEN)): [_facet()]}}
+    else:
+        rows, role_names = _coverage_seed_for("creditor", [_FRA], [sv_dcid])
+        observations = {sv_dcid: {(("creditor", _FRA),): [_facet()]}}
+
+    result = _run(
+        entities=["France"],
+        sv_dcid=sv_dcid,
+        sv_arcs=_declaring_arcs(observation_properties=observation_properties),
+        resolve={"France": _FRA},
+        sv_score=0.9,
+        role_query=role_query,
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        monkeypatch=monkeypatch,
+        coverage_rows=rows,
+        coverage_role_names=role_names,
+        dropped_qualifier_phrases=[phrase],
+    )
+
+    assert result.status == "definite", result
+    assert result.specs[0].definition.identity.entities.get("origin") == [_FRA]
+    assert (phrase in result.admitted_qualifier_phrases) is admitted
+    (part,) = assemble_region(
+        result, extra_warnings=[], start_ms=0, engine_build="test", max_candidates=5
+    ).parts
+    open_roles = [item.binding_ref for item in part.assumptions if item.kind == "open_role"]
+    assert open_roles == (["where:"] if assumed else [])
+
+
+@pytest.mark.parametrize(
+    ("rival_roles", "admitted"),
+    [
+        pytest.param(("creditor", "debtor"), True, id="every-candidate-declares-the-axis"),
+        pytest.param(("creditor",), False, id="a-candidate-totals-over-the-axis"),
+        pytest.param(("observationAbout",), False, id="a-candidate-is-subject-only"),
+    ],
+)
+def test_a_candidate_set_meets_an_every_member_phrase_only_when_every_candidate_does(
+    monkeypatch, rival_roles, admitted
+):
+    """A role-bearing first candidate does not speak for a rival that would not meet the
+    phrase on its own (`RegionResult.candidate_answered_roles`)."""
+    rows, role_names = _coverage_seed_for(
+        "debtor", [_KEN], [_SV_DCID], filters={"creditor": [_FRA]}
+    )
+    role_query = "aid from France to every recipient"
+    result = _run(
+        entities=["France"],
+        sv_dcid=_SV_DCID,
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        resolve={"France": _FRA},
+        sv_score=0.9,
+        role_query=role_query,
+        sdmx=FakeSdmxClient(
+            observations={_SV_DCID: {(("creditor", _FRA), ("debtor", _KEN)): [_facet()]}},
+            availability={},
+        ),
+        monkeypatch=monkeypatch,
+        coverage_rows=rows,
+        coverage_role_names=role_names,
+    )
+    assert result.status == "definite", result
+    assert result.answered_roles is not None
+    candidates = dataclasses.replace(
+        result, candidate_answered_roles=(result.answered_roles, rival_roles)
+    )
+
+    met = every_member_phrases(candidates, ["to every recipient"], query=role_query)
+
+    assert ("to every recipient" in met) is admitted
+
+
+_TWO_PART_GDP_SV = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+
+
+class _TwoPartExtractLLM:
+    """Extracts a role-bearing "aid" and a subject-only "GDP" variable, both at Kenya, with
+    "from all donors" dropped, and elects the first shape with no bindings."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema.__name__ == "Extraction":
+            return Extraction(
+                kind="resolution",
+                variables=["aid", "GDP"],
+                entities=[ExtractedEntity(text="Kenya")],
+                dates=[],
+                dropped_qualifiers=["from all donors"],
+            ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return elected_reply(0), None
+
+
+def test_an_every_member_phrase_one_part_meets_still_departs_on_a_subject_only_sibling(
+    monkeypatch,
+):
+    """The role-bearing aid part leaves the origin unbound and so meets "from all donors";
+    the subject-only GDP part has no donors to meet it with. The request-wide warning goes,
+    as any part's admission clears it, but each part's `measure_not_applied` departure reads
+    its own region's admission (`RegionResult.unapplied_qualifier_warnings`)."""
+    rows, role_names = _coverage_seed_for("debtor", [_KEN], [_SV_DCID])
+    patch_coverage(monkeypatch, rows, role_names=role_names)
+    graph = FakeGraph(
+        nodes={
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _SV_DCID: {
+                "label": "Test flow",
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+            _TWO_PART_GDP_SV: {
+                "label": "Gross domestic product",
+                "type": "StatisticalVariable",
+                "arcs": {
+                    "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+                    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+                    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+                    "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
+                    "constraintProperties": {"nodes": [{"dcid": "economicActivityType"}]},
+                    "economicActivityType": {"nodes": [{"dcid": "GrossDomesticProduction"}]},
+                },
+            },
+        },
+        detect={
+            "aid": {"svs": [_SV_DCID], "cosine_scores": [0.9]},
+            "GDP": {"svs": [_TWO_PART_GDP_SV], "cosine_scores": [0.9]},
+        },
+        resolve={"Kenya": _KEN},
+        obs={
+            f"{_TWO_PART_GDP_SV}|{_KEN}": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+            ]
+        },
+    )
+
+    response = offline_resolve(
+        make_request("aid to Kenya and GDP of Kenya from all donors"),
+        graph=graph,
+        llm=_TwoPartExtractLLM(),
+        sdmx=FakeSdmxClient(
+            observations={_SV_DCID: {(("debtor", _KEN),): [_facet()]}}, availability={}
+        ),
+    )
+
+    assert [
+        w.code for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED
+    ] == []
+    assert [(p.variable_text, p.status) for p in response.parts] == [
+        ("aid", "definite"),
+        ("GDP", "definite"),
+    ]
+    assert [
+        [d.asked for d in part.departures if d.code == "measure_not_applied"]
+        for part in response.parts
+    ] == [[], ["from all donors"]]
 
 
 # ---------------------------------------------------------------------------
@@ -1274,3 +1504,51 @@ def test_candidates_path_buffered_discovered_scope_single_survivor_reuses_the_in
     assert len(spec.resolved.observations.series) == 2
     for series in spec.resolved.observations.series:
         assert [p.date for p in series.points] == ["2020"]
+
+
+def test_a_discovered_recipient_scope_counts_its_parties_alike_everywhere(monkeypatch):
+    """DAC Africa is a group total, so the heading, the warning, the breadth dimension and the
+    role fact count two recipients, while the scope still lists all three."""
+    filters = {"creditor": [_FRA]}
+    rows, role_names = _coverage_seed_for(
+        "debtor", [_KEN, _UGA, "DACAfrica"], [_SV_DCID], filters=filters
+    )
+    observations = {
+        _SV_DCID: {
+            (("creditor", _FRA), ("debtor", member)): [_facet()]
+            for member in (_KEN, _UGA, "DACAfrica")
+        }
+    }
+
+    result = _run(
+        entities=["France"],
+        sv_dcid=_SV_DCID,
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        resolve={"France": _FRA},
+        sv_score=0.9,
+        role_query="aid from France",
+        sdmx=FakeSdmxClient(observations=observations, availability={}),
+        monkeypatch=monkeypatch,
+        coverage_rows=rows,
+        coverage_role_names=role_names,
+    )
+
+    assert result.status == "definite", result
+    spec = result.specs[0]
+    assert spec.resolved.scope is not None
+    assert [m.ref for m in spec.resolved.scope.members] == ["DACAfrica", _KEN, _UGA]
+    assert isinstance(spec.resolved.coverage, CoverageBreadth)
+    dims = {d.label: d.count for d in spec.resolved.coverage.dimensions}
+    assert spec.resolved.role_axis_facts is not None
+    (warning,) = [w for w in result.warnings if w.code == "role_scope_defaulted"]
+    assert (
+        render_sentence(spec),
+        dims["recipients"],
+        [fact.member_count for fact in spec.resolved.role_axis_facts],
+        warning.message,
+    ) == (
+        "France's test flow to 2 recipients in 2020.",
+        2,
+        [2],
+        "No recipient was named, so the answer covers both recipients with data from France.",
+    )

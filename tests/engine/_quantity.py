@@ -1,13 +1,18 @@
-"""The quantity read's answer for LLM doubles that script only the bind call, and a double
-for tests that stop before bind."""
+"""The quantity read's and the stated-words read's answers for LLM doubles that script only
+the bind call, and a double for tests that stop before bind."""
 
 from __future__ import annotations
 
 from search.engine.quantity_read import QuantityOutput
+from search.engine.stated_words_read import StatedWordsOutput
 
 # A quantity read that finds no form and no denominator, with no usage: what a double
 # returns for `QuantityOutput` when its test reads no quantity.
 NO_QUANTITY: tuple[QuantityOutput, None] = (QuantityOutput(), None)
+
+# A stated-words read that rates no word, with no usage: what a double returns for
+# `StatedWordsOutput` when its test reads every word as stated.
+NO_RATING: tuple[StatedWordsOutput, None] = (StatedWordsOutput(words=[]), None)
 
 
 class QuantityReadOnlyLLM:

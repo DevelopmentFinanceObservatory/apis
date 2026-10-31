@@ -131,7 +131,13 @@ class TestParsedInputParts:
                 {
                     "variable_text": "health ODA grants",
                     "entities": [
-                        {"text": "USA", "role_text": "from", "dcid": None, "members": None}
+                        {
+                            "text": "USA",
+                            "name": "United States",
+                            "role_text": "from",
+                            "dcid": None,
+                            "members": None,
+                        }
                     ],
                     "time_text": "2015 to 2024",
                     "unit_text": "constant 2023 USD",
@@ -155,6 +161,8 @@ class TestParsedInputParts:
                 }
             ],
             "raw_query": "health ODA grants from USA since 2015",
+            "user_message": None,
+            "carried_entries": None,
         }
         req = ParsedInput.model_validate(payload)
         assert req.model_dump(mode="json") == payload
@@ -314,6 +322,38 @@ class TestParsedEntityFields:
             "members": True,
         }
         assert ParsedEntity.model_validate(entity.model_dump(mode="json")) == entity
+
+    @pytest.mark.parametrize("name", ["", "x" * (SEARCH_MAX_ENTITY_TEXT_CHARS + 1)])
+    def test_out_of_bounds_name_refuses(self, name):
+        with pytest.raises(ValidationError):
+            ParsedEntity.model_validate({"text": "Congo", "name": name})
+
+    @pytest.mark.parametrize(
+        ("posted", "name", "identity"),
+        [
+            ({"text": "Congo"}, None, "Congo"),
+            ({"text": "Congo", "name": "Congo"}, None, "Congo"),
+            (
+                {"text": "Congo", "name": "Republic of the Congo"},
+                "Republic of the Congo",
+                "Republic of the Congo",
+            ),
+            ({"text": "Congo", "dcid": "country/COG"}, None, "country/COG"),
+            ({"text": "Congo", "name": "Congo", "dcid": "country/COG"}, None, "country/COG"),
+        ],
+    )
+    def test_a_name_other_than_the_text_is_the_identity(self, posted, name, identity):
+        """A name equal to the text is the field left out, so the part's dedupe and cache
+        key read one row, and a pinned row's identity is its dcid."""
+        entity = ParsedEntity.model_validate(posted)
+        assert (entity.name, entity.identity) == (name, identity)
+
+    def test_a_name_beside_a_dcid_refuses(self):
+        """A pinned row's identity is its dcid, so a name beside it is a second identity."""
+        with pytest.raises(ValidationError):
+            ParsedEntity.model_validate(
+                {"text": "Congo", "name": "Republic of the Congo", "dcid": "country/COG"}
+            )
 
     def test_empty_dcid_refuses(self):
         with pytest.raises(ValidationError):

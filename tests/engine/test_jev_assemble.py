@@ -1111,7 +1111,7 @@ def test_the_house_policies_weigh_the_drafts_the_span_rule_leaves():
     shape without a debtor slot holds every value the bind keeps."""
     seen: list[Mapping[int, bool] | None] = []
 
-    def recording(pool, *, ratings=None, holds=None):
+    def recording(pool, *, ratings=None, holds=None, drafts=None):
         seen.append(holds)
         return PolicyChoice(survivor=pool.measuring[0], fired=(), dropped=frozenset(), facts=())
 
@@ -1271,14 +1271,19 @@ def test_a_set_keeps_the_value_no_other_claim_contests():
 
 def _owners_by_enumeration(worded: Sequence[_Claim], reserved: frozenset[int]) -> set[_Claim]:
     """Step 1 of the span rule over every subset of `worded`: the maximal word-consistent
-    subset with the largest sum of w, ties to the first sorted (property, value) list."""
+    subset with the largest sum of w, ties to the first sorted (property, value) list.
+    Occurrences of two slots clash on a shared word, of one slot when one strictly
+    contains the other."""
+
+    def clash(a: _Claim, o: frozenset[int], b: _Claim, q: frozenset[int]) -> bool:
+        return bool(o & q) if a.slot != b.slot else o < q or q < o
 
     def fits(claims: Sequence[_Claim]) -> bool:
         placing = [c for c in claims if c.occurrences]
         choices = [[o for o in c.occurrences or () if not o & reserved] for c in placing]
         return any(
             not any(
-                a.slot != b.slot and o & q
+                clash(a, o, b, q)
                 for (a, o), (b, q) in combinations(zip(placing, chosen, strict=True), 2)
             )
             for chosen in product(*choices)
@@ -1322,6 +1327,33 @@ def test_the_word_owners_are_the_heaviest_maximal_subset_of_every_subset(seed: i
     owners = _owners(claims, reserved, _Search(SPAN_SEARCH_BUDGET))
 
     assert set(owners) == _owners_by_enumeration(claims, reserved)
+
+
+@pytest.mark.parametrize(
+    ("spans", "kept"),
+    [
+        ({"A": "public or publicly guaranteed", "B": "publicly guaranteed"}, ["A"]),
+        ({"A": "public", "B": "public"}, ["A", "B"]),
+    ],
+    ids=["contained", "equal"],
+)
+def test_a_value_whose_words_contain_another_s_of_its_slot_takes_them(
+    spans: dict[str, str], kept: list[str]
+):
+    """Two values of one slot on the same words coexist as a set, but a value whose words
+    lie strictly within another's names no second value: the heavier keeps the words."""
+    shape = _shape(0, slots=[("how", "p", ["A", "B"]), ("how", "q", ["C"])])
+    request = _request([shape], variable="public or publicly guaranteed debt")
+    answers = _span_answers(
+        request,
+        {("how:p", "A"): 0.9, ("how:p", "B"): 0.85, ("how:q", "C"): 0.9},
+        {**spans, "C": "debt", "measure": "none"},
+        **{"several|how:p": 0.8},
+    )
+
+    output, _conf = assemble(jev_menu(request), answers, stated_form=None)
+
+    assert _bound(output) == {"p": kept, "q": ["C"]}
 
 
 def test_tied_word_owners_fall_to_the_first_sorted_list_across_groups():
@@ -1615,10 +1647,12 @@ def test_the_part_asks_when_electq_puts_none_above_every_shape(none: float, asks
     assert ("ask: none of the shapes gives what the query asks for" in conf.rules) is asks
 
 
-@pytest.mark.parametrize(("form", "elected", "also"), [(None, 0, [1]), ("per_person", 1, None)])
-def test_a_reading_of_another_base_is_an_alternate_only_when_the_phrase_states_no_form(
+@pytest.mark.parametrize(("form", "elected", "also"), [(None, 0, None), ("per_person", 1, None)])
+def test_a_reading_of_another_base_is_no_alternate(
     form: str | None, elected: int, also: list[int] | None
 ):
+    """A phrase stating a form elects the shape dividing by its base and offers no other
+    base. A phrase stating none elects the plain measure and offers no ratio."""
     answers = _answers({"m|0": 0.9, "m|1": 0.9}, elect={0: 0.45, 1: 0.55})
 
     output, _conf = _assemble(_request(_PLAIN_AND_DIVIDED), answers, form=form)

@@ -62,7 +62,8 @@ class _Rig:
         return {"spec_id": published["spec_id"], "content_version": published["content_version"]}
 
     def create(self, intent: dict[str, object]) -> str:
-        resp = self.client.post(_COMPONENTS, json={"intent": intent})
+        # As `ai` writes cards: under its publish principal, which spends no card allowance.
+        resp = self.client.post(_COMPONENTS, json={"intent": intent}, headers=PUBLISH)
         assert resp.status_code == 201, resp.text
         return resp.json()["component_id"]
 
@@ -163,11 +164,13 @@ def _expected(
     }
 
 
-def _coverage_gaps(payload: dict) -> list[str]:
+def _coverage_gaps(payload: dict) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """The entities and periods of each series a described card leaves out, from its
+    description's `coverage_gap` caveats."""
     return [
-        warning["detail"]
-        for warning in payload["provenance"]["warnings"]
-        if warning["kind"] == "coverage_gap"
+        (tuple(entity["ref"] for entity in caveat["entities"]), tuple(caveat["periods"]))
+        for caveat in payload["description"]["caveats"]
+        if caveat["kind"] == "coverage_gap"
     ]
 
 
@@ -198,10 +201,8 @@ def test_a_dataset_card_is_redrawn_when_its_data_moves_and_only_then(rig: _Rig):
     assert head["stored_intent"]["frame_ref"] == stored
     assert _points(head["resolved_payload"]) == _expected([_KENYA, _GHANA], [2022, 2023, 2024])
     assert _refusal(rig.read(card, revision=2)) == (404, "not_found")
-    # The render pinned the target frame for the component.
-    pin = (f"presentation:{card}", DATASET, target["content_version"])
-    assert pin not in pinned_before
-    assert pin in rig.composed.pins()
+    # The render left the target frame in the working tier.
+    assert rig.composed.pins() == pinned_before
     # The export holds the rows the payload draws.
     assert _exported_points(rig.export(card, target)) == _points(payload)
 
@@ -254,6 +255,8 @@ def test_a_card_on_a_groupby_sum_is_redrawn_on_the_sum_of_the_new_data(rig: _Rig
         "base_content_version": new_head,
         "rendering": "groupby",
         "groupby": GROUPBY,
+        # The sum keeps the recipient role, so its kind file carries the serving stamp.
+        "enrichment_stamp": versions["enrichment_stamp"],
     }
     payload = rig.redrawn(card, target)
     assert _points(payload) == _expected(
@@ -436,7 +439,7 @@ def test_a_derived_card_is_redrawn_on_the_replay_of_its_recipe(rig: _Rig):
     )
     created = rig.read(card).json()["resolved_payload"]
     assert created["component"]["x_axis"]["window"] == {"start": "2023", "end": "2024"}
-    assert _coverage_gaps(created) == ["1 series has no 2024 value: Uganda"]
+    assert _coverage_gaps(created) == [((_UGANDA,), ("2024",))]
     assert _refusal(rig.refresh(stored)) == (422, "frame_not_refreshable")
 
     rig.composed.move(add_year=2025, recipients=drawn)
@@ -471,9 +474,8 @@ def test_a_derived_card_is_redrawn_on_the_replay_of_its_recipe(rig: _Rig):
         _NAMES[recipient]: {year: growth[(recipient, year)] for year in ("2024", "2025")}
         for recipient in drawn
     }
-    assert _coverage_gaps(payload) == ["1 series has no 2025 value: Uganda"]
-    assert payload["provenance"]["warnings"][0]["kind"] == "coverage_gap"
-    assert (f"presentation:{card}", replay["spec_id"], replay["content_version"]) in (
+    assert _coverage_gaps(payload) == [((_UGANDA,), ("2025",))]
+    assert (f"presentation:{card}", replay["spec_id"], replay["content_version"]) not in (
         rig.composed.pins()
     )
     assert _exported_points(rig.export(card, replay)) == _points(payload)
@@ -529,10 +531,7 @@ def test_a_rolling_window_on_a_dataset_frame_moves_when_half_the_series_hold_the
         "Tanzania": {"2024": 320.0, "2025": None},
         "Uganda": {"2024": 420.0, "2025": None},
     }
-    assert payload["provenance"]["warnings"][0] == {
-        "kind": "coverage_gap",
-        "detail": "2 series have no 2025 value: Tanzania, Uganda",
-    }
+    assert _coverage_gaps(payload) == [((_TANZANIA, _UGANDA), ("2025",))]
     moved = rig.redrawn(stat, half)["component"]
     assert (moved["period"], moved["value"]) == ("2024", 220.0)
     assert moved["change"]["basis"] == ["2023", "2024"]

@@ -24,6 +24,18 @@ class ArtifactStoreError(Exception):
     """Base for every artifact_store exception."""
 
 
+class StorageEmulatorRefused(ArtifactStoreError):
+    """`STORAGE_EMULATOR_HOST` is set outside the local stack, where it would hand out unsigned
+    links. The local stack sets `DFO_LOCAL_STACK=1` beside it."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "STORAGE_EMULATOR_HOST is set but DFO_LOCAL_STACK is not 1: an emulator serves "
+            "unsigned links, so only the local stack (scripts/local-stack/local.env) may set it; "
+            "unset STORAGE_EMULATOR_HOST to sign links through IAM"
+        )
+
+
 class ArtifactWriteError(ArtifactStoreError):
     """A `put()` failure other than an if-generation-match deduplication race."""
 

@@ -4,7 +4,7 @@ construction. Contested keys keep the rows from the highest-ranked facet."""
 from __future__ import annotations
 
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 import pyarrow as pa
@@ -22,7 +22,7 @@ from materialise.window import (
 _FACET_ID_COLUMN = "facetId"
 
 
-class _CollapseCell(NamedTuple):
+class CollapseCell(NamedTuple):
     """Fields used to key and rank one row. `role_values` follows the caller's sorted role
     order."""
 
@@ -65,6 +65,30 @@ def collapse_duplicate_identity_facets_table(
     return table.filter(pa.array(keep, type=pa.bool_()))
 
 
+def keep_mask(
+    cells: Sequence[CollapseCell],
+    *,
+    rank_within_series: bool,
+    ranks: Mapping[str | None, FacetRank] | None = None,
+) -> tuple[bool, ...]:
+    """The cells of `cells` that `collapse_duplicate_identity_facets_table` keeps of a table
+    holding them, in input order, under the same `rank_within_series`: on a grain key two
+    facets contest (one date at one set of role values under the same unit, method and
+    provenance), those of the best-ranked facet; every other cell. Cells under different
+    methods hold different grain keys, so both stay.
+
+    A facet ranks by `facet_rank` over its cells, or over its cells in each series under
+    `rank_within_series`. A caller holding only part of a member's table, such as Search's
+    bulk role read, which reads a subset of pairs, passes each facet's rank over the whole
+    table in `ranks`, built from the same `FacetRankStats`, so the winner does not depend on
+    the cells it holds. `ranks` holds a rank for every facet of `cells` and applies only
+    without `rank_within_series`."""
+    if ranks is not None and rank_within_series:
+        raise ValueError("ranks are a whole table's; a within-series rank reads the cells")
+    keep = _duplicate_facet_keep_mask(cells, rank_within_series=rank_within_series, ranks=ranks)
+    return keep if keep is not None else (True,) * len(cells)
+
+
 def _non_null_variable(value: str | None) -> str:
     """Asserts `variableMeasured` is non-null, as guaranteed by `observation_schema`."""
     assert value is not None
@@ -74,7 +98,7 @@ def _non_null_variable(value: str | None) -> str:
 def _cells_from_table(
     table: pa.Table,
     sorted_declared_roles: Sequence[str],
-) -> tuple[_CollapseCell, ...]:
+) -> tuple[CollapseCell, ...]:
     """Builds one cell per row, pulling only grain-key and ranking columns into Python lists."""
     variable_column = table["variableMeasured"].to_pylist()
     role_columns = [table[role].to_pylist() for role in sorted_declared_roles]
@@ -86,7 +110,7 @@ def _cells_from_table(
     facet_id_column = table[_FACET_ID_COLUMN].to_pylist()
 
     return tuple(
-        _CollapseCell(
+        CollapseCell(
             variable=_non_null_variable(variable_column[index]),
             role_values=tuple(column[index] for column in role_columns),
             time_period=time_period_column[index],
@@ -101,16 +125,20 @@ def _cells_from_table(
 
 
 def _duplicate_facet_keep_mask(
-    cells: Sequence[_CollapseCell], *, rank_within_series: bool
+    cells: Sequence[CollapseCell],
+    *,
+    rank_within_series: bool,
+    ranks: Mapping[str | None, FacetRank] | None = None,
 ) -> tuple[bool, ...] | None:
     """Ranks each facet over all its cells, or over its cells in each series under
-    `rank_within_series`, then marks rows from the best facet for every contested grain key.
-    Returns `None` for at most one facet. Otherwise returns a parallel boolean keep-mask."""
+    `rank_within_series`, or by `ranks` where given, then marks rows from the best facet for
+    every contested grain key. Returns `None` for at most one facet. Otherwise returns a
+    parallel boolean keep-mask."""
 
-    def series(cell: _CollapseCell) -> tuple[str | None, ...]:
+    def series(cell: CollapseCell) -> tuple[str | None, ...]:
         return cell.role_values if rank_within_series else ()
 
-    cells_by_group: dict[tuple[tuple[str | None, ...], str | None], list[_CollapseCell]] = {}
+    cells_by_group: dict[tuple[tuple[str | None, ...], str | None], list[CollapseCell]] = {}
     for cell in cells:
         cells_by_group.setdefault((series(cell), cell.facet_id), []).append(cell)
 
@@ -118,7 +146,8 @@ def _duplicate_facet_keep_mask(
         return None
 
     rank_by_group = {
-        group: _facet_selection_rank(group_cells) for group, group_cells in cells_by_group.items()
+        group: ranks[group[1]] if ranks is not None else _facet_selection_rank(group_cells)
+        for group, group_cells in cells_by_group.items()
     }
 
     type SeriesGrainKey = tuple[tuple[str | None, ...], tuple[object, ...]]
@@ -141,7 +170,7 @@ def _duplicate_facet_keep_mask(
     )
 
 
-def _grain_key(cell: _CollapseCell) -> tuple[object, ...]:
+def _grain_key(cell: CollapseCell) -> tuple[object, ...]:
     """`Frame.build` grain key uses canonical variable, role values, period, unit, method, and
     provenance. Strings are NFC-normalised."""
     return (
@@ -161,22 +190,45 @@ def _nfc(value: str | None) -> str | None:
     return unicodedata.normalize("NFC", value)
 
 
-def _facet_selection_rank(
-    facet_cells: Sequence[_CollapseCell],
-) -> tuple[int, int, int, int, tuple[int, int, str] | tuple[int, str]]:
-    """Sort key for competing facets. The smallest wins. Ranks each facet's full cell set."""
-    facet_id = facet_cells[0].facet_id
-    has_period = any(cell.observation_period is not None for cell in facet_cells)
+class FacetRankStats(NamedTuple):
+    """What a facet's collapse rank reads (`facet_rank`): its id, whether it states an
+    observation period, the rows it holds, and the years between its first and last row,
+    -1 for none."""
+
+    facet_id: str | None
+    has_period: bool
+    rows: int
+    span_years: int
+
+
+type FacetRank = tuple[int, int, int, int, tuple[int, int, str] | tuple[int, str]]
+
+
+def facet_rank(stats: FacetRankStats) -> FacetRank:
+    """Sort key for competing facets. The smallest wins: a facet with an id, then one
+    stating an observation period, then the most rows, then the widest span, then the id
+    (`_facet_id_sort_key`)."""
+    return (
+        0 if stats.facet_id is not None else 1,
+        0 if stats.has_period else 1,
+        -stats.rows,
+        -stats.span_years,
+        _facet_id_sort_key(stats.facet_id),
+    )
+
+
+def _facet_selection_rank(facet_cells: Sequence[CollapseCell]) -> FacetRank:
+    """`facet_rank` over a facet's full cell set."""
     served_years = [
         year for cell in facet_cells if (year := _leading_year(cell.time_period)) is not None
     ]
-    span_years = (max(served_years) - min(served_years)) if served_years else -1
-    return (
-        0 if facet_id is not None else 1,
-        0 if has_period else 1,
-        -len(facet_cells),
-        -span_years,
-        _facet_id_sort_key(facet_id),
+    return facet_rank(
+        FacetRankStats(
+            facet_id=facet_cells[0].facet_id,
+            has_period=any(cell.observation_period is not None for cell in facet_cells),
+            rows=len(facet_cells),
+            span_years=(max(served_years) - min(served_years)) if served_years else -1,
+        )
     )
 
 

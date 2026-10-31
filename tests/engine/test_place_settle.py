@@ -15,11 +15,15 @@ from typing import Any, cast
 
 import pytest
 
+from code_index.scope_conventions import REGION_READINGS
+from code_index.shared import get_index
 from entity_resolution import Entity
+from entity_resolution.shared import shared_membership_policy
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.interpret import PinnedResolved
 from search.engine.region.decisions import PlaceSetTooLargeError
+from search.engine.region.phase_intake import oecd_reading
 from search.engine.region.place_context import PlaceContext, UnsettledPlace
 from search.engine.region.place_roles import (
     PlaceAssignment,
@@ -28,7 +32,9 @@ from search.engine.region.place_roles import (
     group_request_names,
     part_sets,
     place_key,
+    request_named_groups,
     settle_place_sets,
+    settled_roles,
 )
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.state import ResolveState
@@ -37,7 +43,8 @@ from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import FacetBatch, standard_resolve
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
-from search.models import Operation, RoleAxis, TimeWindow
+from search.models import ChoiceOrigin, Entry, Operation, RoleAxis, TimeWindow
+from search.scope.state import ScopeState
 from tests.fixtures import FakeGraph
 
 _GHA, _KEN, _TZA = "country/GHA", "country/KEN", "country/TZA"
@@ -462,6 +469,7 @@ def _state(
     axes: Mapping[str, str] | None = None,
     operations: Sequence[Operation] = (),
     pins: Mapping[str, str] | None = None,
+    scope_entries: Sequence[Entry] = (),
 ) -> ResolveState:
     """A resolve state naming `sets`, each directed to the flow axis `axes` gives it. The
     caller pinned each text in `pins` to its set's node, which the graph labels as
@@ -476,11 +484,16 @@ def _state(
             entities=[place_set.name for place_set in sets],
             place_sets={place_set.name: place_set for place_set in sets},
             party_sets={},
+            whole_sets={},
+            whole_named={},
+            whole_listed={},
             entity_roles=roles,
             operations=tuple(operations),
             open_axes=frozenset(),
             role_bearing_outranks=False,
             role_query="",
+            words_of=lambda name: name,
+            scope_selection=ScopeState(entries=tuple(scope_entries)),
             shape_draft=None,
             elected_place_roles=None,
             rcl=SimpleNamespace(
@@ -623,8 +636,9 @@ def test_a_set_takes_the_members_reading_any_of_its_texts_asks_for(members_first
 @pytest.mark.parametrize("pin_first", [True, False], ids=["pin-first", "name-first"])
 def test_a_set_expands_when_any_of_its_texts_does(pin_first) -> None:
     """The European Union's node pinned as one place under a text of the caller's, beside
-    the union's name. The part's one set is the group, under the union's name, and a
-    pin's text is only its key. The pin alone is one place under the graph's label."""
+    the union's name. The part's one set is the group, under the union's name. The pin
+    alone is one place under its own identity, which a refusal quotes in the request's
+    words (`ResolveState.words_of`)."""
     pin = PlaceSet(name="the union", kind="place", node=_EU.node)
     texts = [pin, _EU] if pin_first else [_EU, pin]
     pins = {pin.name: "European Union (graph)"}
@@ -632,9 +646,7 @@ def test_a_set_expands_when_any_of_its_texts_does(pin_first) -> None:
     (merged,) = part_sets(_state(texts, pins=pins)).values()
 
     assert merged == _EU
-    assert part_sets(_state([pin], pins=pins)) == {
-        place_key(pin): dataclasses.replace(pin, name="European Union (graph)")
-    }
+    assert part_sets(_state([pin], pins=pins)) == {place_key(pin): pin}
 
 
 @pytest.mark.parametrize("other_text", [None, "Africa"], ids=["alone", "beside-a-text-equal-to-it"])
@@ -670,6 +682,228 @@ def test_a_set_named_for_its_members_is_asked_for_them() -> None:
 
     assert isinstance(assignment, PlaceAssignment)
     assert assignment.members_asked == {place_key(_AFRICA)}
+
+
+# A recipient region read as one sum binds its residual buckets beside its members.
+
+_CRS = "provenance/OECDCreditorReportingSystem"
+_AFRICA_DAC = dataclasses.replace(_AFRICA, total="DACAfrica")
+_AFRICA_RESIDUALS = (
+    "DACAfricaUnallocated",
+    "DACEasternAfricaUnallocated",
+    "DACMiddleAfricaUnallocated",
+    "DACNorthOfSaharaUnallocated",
+    "DACSouthOfSaharaUnallocated",
+    "DACSouthernAfricaUnallocated",
+    "DACWesternAfricaUnallocated",
+)
+_MEMBERS_ONLY = "region:members_only"
+_WITH_RESIDUALS = "region:members_and_residuals"
+
+
+def _region_entry(option_id: str, provenance: str) -> Entry:
+    return Entry(
+        axis="region",
+        option_id=option_id,
+        provenance=provenance,
+        origin=ChoiceOrigin(choice_id="earlier:region"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("africa", "operations", "entries", "residuals", "record"),
+    [
+        pytest.param(_AFRICA_DAC, [], [], True, (_WITH_RESIDUALS, "default"), id="no-operation"),
+        pytest.param(
+            _AFRICA_DAC,
+            [Operation(verb="aggregate", phrase="total", over="destination")],
+            [],
+            True,
+            (_WITH_RESIDUALS, "default"),
+            id="aggregate-over-the-recipients",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [_rank("destination")],
+            [],
+            False,
+            (_MEMBERS_ONLY, "default"),
+            id="ranking-the-recipients",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [_rank("origin")],
+            [],
+            True,
+            (_WITH_RESIDUALS, "default"),
+            id="ranking-the-donors",
+        ),
+        pytest.param(
+            dataclasses.replace(_AFRICA_DAC, reading="members"),
+            [],
+            [],
+            False,
+            (_MEMBERS_ONLY, "explicit"),
+            id="named-for-its-members",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [],
+            [_region_entry(_MEMBERS_ONLY, "carried")],
+            False,
+            (_MEMBERS_ONLY, "carried"),
+            id="carried-members-only",
+        ),
+        pytest.param(
+            _AFRICA_DAC,
+            [_rank("destination")],
+            [_region_entry(_WITH_RESIDUALS, "carried")],
+            False,
+            (_MEMBERS_ONLY, "default"),
+            id="carried-residuals-on-a-ranking",
+        ),
+    ],
+)
+def test_a_summed_recipient_region_binds_its_residuals_beside_its_members(
+    africa, operations, entries, residuals, record
+) -> None:
+    """Africa to France on a CRS shape. Where the part sums the recipients, Africa binds
+    its seven residual buckets beside its members when its total holds no data, and its
+    total when it does. A ranking over the recipients, a set named for its members and a
+    members-only entry bind the members alone. The part records the region option it took
+    and what settled it; a set named for its members is an explicit entry."""
+    state = _state(
+        [_FRANCE, africa],
+        axes={"France": "origin", "Africa": "destination"},
+        operations=operations,
+        scope_entries=entries,
+    )
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=(_CRS,))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    members = (_GHA, _KEN, _TZA)
+    expected = tuple(sorted((*members, *_AFRICA_RESIDUALS))) if residuals else members
+    assert _settle(assignment, _flow_holds((_FRA, _KEN)))["destination"] == expected
+    asked = place_key(africa) in assignment.members_asked
+    assert _settle(assignment, _flow_holds((_FRA, "DACAfrica")))["destination"] == (
+        members if asked else ("DACAfrica",)
+    )
+    written = state.scope_selection.records["region"]
+    assert (written.active, written.provenance) == record
+    if record[1] == "explicit":
+        assert written.entry is not None
+        assert (written.entry.option_id, written.entry.origin.kind) == (_MEMBERS_ONLY, "text")
+
+
+def test_a_region_whose_dataset_publishes_no_residual_binds_its_members() -> None:
+    """A shape answering from a dataset that publishes none of Africa's residuals on the
+    recipient axis binds the members alone, as one with no dataset does."""
+    state = _state([_FRANCE, _AFRICA_DAC], axes={"France": "origin", "Africa": "destination"})
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=("provenance/OECDDAC1",))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    assert assignment.residuals == {}
+    assert _settle(assignment, lambda _places: False)["destination"] == (_GHA, _KEN, _TZA)
+
+
+# A graph region the OECD counts with other members reads as the OECD's region where a DAC
+# dataset sums it.
+
+_SDN = "country/SDN"
+_SSA = PlaceSet(
+    name="sub-Saharan Africa",
+    kind="region",
+    node=PlaceNode("SubSaharanAfrica", "UNGeoRegion"),
+    members=(_GHA, _KEN, _TZA),
+    member_type="Country",
+    label="Sub-Saharan Africa",
+)
+_SSA_AS_OECD = dataclasses.replace(
+    _SSA,
+    members=(_GHA, _KEN, _SDN, _TZA),
+    total="DACSouthOfSahara",
+    group_id="groups/OECD.DAC.Region.SouthOfSahara",
+    oecd_read=True,
+)
+_SSA_RESIDUALS = (
+    "DACEasternAfricaUnallocated",
+    "DACMiddleAfricaUnallocated",
+    "DACSouthOfSaharaUnallocated",
+    "DACSouthernAfricaUnallocated",
+    "DACWesternAfricaUnallocated",
+)
+
+
+@pytest.mark.parametrize(
+    ("datasets", "operations", "expected", "record"),
+    [
+        pytest.param(
+            (_CRS,),
+            [],
+            tuple(sorted((_GHA, _KEN, _SDN, _TZA, *_SSA_RESIDUALS))),
+            _WITH_RESIDUALS,
+            id="summed-on-the-crs",
+        ),
+        pytest.param(
+            (_CRS,), [_rank("destination")], (_GHA, _KEN, _TZA), _MEMBERS_ONLY, id="ranked"
+        ),
+        pytest.param(
+            ("provenance/SettleFixture",), [], (_GHA, _KEN, _TZA), None, id="no-dac-dataset"
+        ),
+    ],
+)
+def test_a_graph_region_the_oecd_counts_otherwise_reads_as_the_oecds_on_dac_data(
+    datasets, operations, expected, record
+) -> None:
+    """Sub-saharan Africa to France. Summed on the CRS, which publishes the South of Sahara
+    total, it binds the OECD's members, Sudan among them, and the region's residuals, and
+    the answer names the region by its registry group. A ranking over the recipients and a
+    dataset publishing no DAC total keep the graph region's members and name its node."""
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD)
+    state = _state(
+        [_FRANCE, region],
+        axes={"France": "origin", "sub-Saharan Africa": "destination"},
+        operations=operations,
+    )
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=datasets)
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    places = _settle(assignment, _flow_holds((_FRA, _KEN)))
+    assert places["destination"] == expected
+    written = state.scope_selection.records.get("region")
+    assert (None if written is None else written.active) == record
+    roles = settled_roles(shape, assignment, places)
+    (group,) = request_named_groups(state, roles)
+    if record == _WITH_RESIDUALS:
+        assert (group.dcid, group.group_id, group.total) == (
+            None,
+            "groups/OECD.DAC.Region.SouthOfSahara",
+            "DACSouthOfSahara",
+        )
+        assert group.member_dcids == {_GHA, _KEN, _SDN, _TZA}
+    else:
+        assert (group.dcid, group.group_id) == ("SubSaharanAfrica", None)
+        assert group.member_dcids == {_GHA, _KEN, _TZA}
+
+
+def test_a_subject_reads_a_graph_region_as_the_graph_does() -> None:
+    """ "Population of sub-Saharan Africa" reads the graph region's node or members, whatever
+    the OECD counts."""
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD)
+    shape = dataclasses.replace(_shape(), datasets=(_CRS,))
+
+    assignment = bind_place_roles(_state([region]), shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    assert _settle(assignment, _subject_holds("SubSaharanAfrica")) == {
+        "observationAbout": ("SubSaharanAfrica",)
+    }
 
 
 # Settling over a Spec's own read.
@@ -851,3 +1085,33 @@ def test_the_context_before_the_read_holds_each_undecided_set_at_its_members(
     assert refused_node.decided
     with pytest.raises(PlaceSetTooLargeError):
         refused_node.unread()
+
+
+@pytest.mark.parametrize("row", REGION_READINGS, ids=[row.region for row in REGION_READINGS])
+def test_place_resolution_gives_each_declared_region_the_oecds_reading(row) -> None:
+    """A graph region a reading declares carries the OECD's members, total and registry group
+    under its own node; Africa, whose total the graph place keys, carries none."""
+    policy = shared_membership_policy()
+    graph_members = policy.members(row.region).members
+    assert isinstance(graph_members, tuple)
+    place = PlaceSet(
+        name=row.name,
+        kind="region",
+        node=PlaceNode(row.region, "UNGeoRegion"),
+        members=graph_members,
+        member_type="Country",
+    )
+    total = get_index().parties[row.total]
+    assert total.totals is not None
+
+    reading = oecd_reading(place, membership=policy)
+
+    assert reading is not None
+    assert (reading.node, reading.total, reading.group_id, reading.oecd_read) == (
+        place.node,
+        row.total,
+        total.totals,
+        True,
+    )
+    assert reading.members == policy.members(total.totals).members
+    assert oecd_reading(dataclasses.replace(_AFRICA, total="DACAfrica"), membership=policy) is None

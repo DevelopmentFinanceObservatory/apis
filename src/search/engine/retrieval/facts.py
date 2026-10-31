@@ -1,11 +1,21 @@
-"""Read shape identity, constraint, and role facts from fetched graph arcs."""
+"""Read shape identity, constraint, and role facts from fetched graph arcs.
+
+An answer the catalogue's tables give is a read-only `FrozenArcs` shared by every request
+of its snapshot (`origin_catalogue.frozen_arcs`), so each reader here that returns an
+immutable value parses such an answer once and keeps the result on it
+(`FrozenArcs.derived`). Every phase of a resolve that reads a member's facts then reads
+the kept value. A live answer is parsed on every call.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import functools
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, NamedTuple
 
+from dc_graph import label_or_self_name
 from materialise.roles import declared_roles, roles_by_axis
+from origin_catalogue.frozen_arcs import FrozenArcs
 from search.engine.errors import RoleSignatureError
 
 if TYPE_CHECKING:
@@ -28,20 +38,30 @@ class FiveTuple(NamedTuple):
     meas_denom_unresolved: bool = False
 
 
+def _kept_on_answer[T](read: Callable[[dict], T]) -> Callable[[dict], T]:
+    """`read`, whose result on a `FrozenArcs` is computed once and kept on it. `read` must
+    return an immutable value."""
+
+    @functools.wraps(read)
+    def kept(arcs: dict) -> T:
+        if isinstance(arcs, FrozenArcs):
+            return arcs.derived(read)
+        return read(arcs)
+
+    return kept
+
+
 def _dcids_for(arcs: dict, prop: str) -> list[str]:
     """Extract dcid values from an arcs entry."""
     nodes = arcs.get(prop, {}).get("nodes", [])
     return [n["dcid"] for n in nodes if "dcid" in n]
 
 
-def read_name(arcs: dict) -> str | None:
-    """Return the last truthy `->name` value, matching the graph label policy.
-
-    Reads already-fetched arcs without another graph call.
-    """
-    name_nodes = arcs.get("name", {}).get("nodes", [])
-    values = [n["value"] for n in name_nodes if n.get("value")]
-    return values[-1] if values else None
+def read_name(arcs: dict, dcid: str) -> str | None:
+    """Return the label of node `dcid` from its already-fetched `->name` arcs as the graph
+    client's `node_label` reads it (`label_or_self_name`), without another graph call."""
+    names = [value for n in arcs.get("name", {}).get("nodes", []) if (value := n.get("value"))]
+    return label_or_self_name(names, dcid)
 
 
 def _value_for(arcs: dict, prop: str) -> str | None:
@@ -72,6 +92,7 @@ def _is_provisional_target(arcs: dict, prop: str) -> bool:
     return bool(nodes) and all(n.get("types") == ["ProvisionalNode"] for n in nodes)
 
 
+@_kept_on_answer
 def read_five_tuple(sv_arcs: dict) -> FiveTuple:
     """Read the five shape dimensions from fetched arcs.
 
@@ -126,23 +147,30 @@ def read_constraints(sv_arcs: dict) -> dict[str, str]:
     """Map declared constraint properties to values, omitting unresolved arcs.
 
     A dcid-bearing ProvisionalNode remains a filterable value. Grounding checks
-    the elected shape's taxonomy before echoing it.
+    the elected shape's taxonomy before echoing it. Each call returns a dict of its own.
     """
-    constraint_prop_dcids = _dcids_for(sv_arcs, "constraintProperties")
+    return dict(_constraint_pairs(sv_arcs))
+
+
+@_kept_on_answer
+def _constraint_pairs(sv_arcs: dict) -> tuple[tuple[str, str], ...]:
+    """`read_constraints` as (property, value) pairs, in declaration order."""
     result: dict[str, str] = {}
-    for prop_dcid in constraint_prop_dcids:
+    for prop_dcid in _dcids_for(sv_arcs, "constraintProperties"):
         value = _value_for(sv_arcs, prop_dcid)
         if value is not None:
             result[prop_dcid] = value
-    return result
+    return tuple(result.items())
 
 
+@_kept_on_answer
 def read_declared_constraint_properties(sv_arcs: dict) -> tuple[str, ...]:
     """Return the constraint properties a member lists in `constraintProperties`, whether
     or not it carries a value arc for each."""
     return tuple(_dcids_for(sv_arcs, "constraintProperties"))
 
 
+@_kept_on_answer
 def read_unresolved_constraints(sv_arcs: dict) -> frozenset[str]:
     """Return properties with asserted arcs whose values lack dcids.
 
@@ -152,19 +180,6 @@ def read_unresolved_constraints(sv_arcs: dict) -> frozenset[str]:
     """
     constraint_prop_dcids = _dcids_for(sv_arcs, "constraintProperties")
     return frozenset(p for p in constraint_prop_dcids if _is_unresolved(sv_arcs, p))
-
-
-def read_constraint_value_names(sv_arcs: dict) -> dict[str, str]:
-    """Map each constraint value dcid to the graph `name` its arc node carries.
-
-    Values whose node carries no name are omitted.
-    """
-    return {
-        node["dcid"]: node["name"]
-        for prop_dcid in _dcids_for(sv_arcs, "constraintProperties")
-        for node in sv_arcs.get(prop_dcid, {}).get("nodes", [])
-        if node.get("dcid") and node.get("name")
-    }
 
 
 class GroupRoles(NamedTuple):
@@ -214,6 +229,7 @@ def group_roles(arcs_by_sv: Mapping[str, dict]) -> GroupRoles:
     return GroupRoles(declared=declared, optional=optional)
 
 
+@_kept_on_answer
 def read_declared_roles(sv_arcs: dict) -> tuple[str, ...]:
     """Read declared roles from fetched arcs via the shared role parser.
 

@@ -13,13 +13,16 @@ from typing import Literal, cast
 
 import pytest
 
+from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
-from origin_catalogue import BASE, UN_SYSTEM, Catalogue, ProvenanceRow, SourceRef
+from origin_catalogue import BASE, UN_SYSTEM, Catalogue, DatasetRef, ProvenanceRow, SourceRef
 from origin_catalogue.context import current_source_scope
 from search.engine.clients.graph import (
     DetectedSV,
     EngineGraphClient,
     Facet,
+    family_ref,
+    with_entry_basis_siblings,
     with_rival_families,
 )
 from search.engine.conjoin import _build_part, _unbound_terms
@@ -55,6 +58,7 @@ from search.engine.spec_id import (
     build_identity_projection,
     build_spec_identity,
 )
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     BindingUnbound,
     GraphRef,
@@ -69,12 +73,13 @@ from search.models import (
     SlotKey,
     SourceMention,
 )
+from search.observations import provenance_facet_ref
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_pool_election as pools
 from tests.engine._binders import nominee_ratings
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine.test_admissibility_table import _FACETS, _GDP_SOLE_OPTION, _node, _SoleOptionLLM
 from tests.engine.test_ids_index_sourcing import _crs_arcs, _derive_one, _ids_shape
 from tests.engine.test_parsed_pipeline import _fertility_kenya_part
@@ -451,6 +456,85 @@ def test_recall_under_a_scope_its_recalled_family_meets_is_the_unscoped_recall(
     assert scoped == plain
 
 
+_DAC1 = "provenance/OECDDAC1"
+
+
+def _family_hit(population_type: str, provenance: str) -> DetectedSV:
+    """A hit on the `provenance` family of the nominal `population_type` amount five-tuple."""
+    family = next(
+        family
+        for families in get_index().families_by_five_tuple.values()
+        for family in families
+        if family.five_tuple.population_type == population_type
+        and family.five_tuple.measured_property == "amount"
+        and family.five_tuple.measurement_denominator is None
+        and provenance in family.datasets
+    )
+    return DetectedSV(
+        dcid=family.rows[0].dcid, score=0.9, type_of="StatisticalVariable", sentence=None
+    )
+
+
+@pytest.mark.parametrize(
+    ("hits", "basis", "added"),
+    [
+        # DAC2a publishes no commitments, so they come from the tables that do.
+        (
+            (("FinancialFlow", _DAC2A),),
+            "commitments",
+            {("FinancialObligation", "amount", _CRS), ("FinancialObligation", "amount", _DAC1)},
+        ),
+        (
+            (("FinancialFlow", _CRS),),
+            "grant_equivalent",
+            {
+                ("FinancialFlow", "grantEquivalent", _CRS),
+                ("FinancialFlow", "grantEquivalent", _DAC1),
+            },
+        ),
+        # Net and gross differ from the hit only on its netting slot.
+        ((("FinancialFlow", _DAC2A),), "net", set()),
+        ((("FinancialFlow", _DAC2A),), "gross", set()),
+        # A table whose family recall found adds none; the other tables still add theirs.
+        (
+            (("FinancialFlow", _DAC2A), ("FinancialObligation", _CRS)),
+            "commitments",
+            {("FinancialObligation", "amount", _DAC1)},
+        ),
+        # A table no convention reads keeps its own family.
+        ((("FinancialFlow", "provenance/OECDDAC2B"),), "commitments", set()),
+    ],
+    ids=[
+        "commitments-from-dac2a",
+        "grant-equivalents",
+        "net",
+        "gross",
+        "already-recalled",
+        "unconventional-table",
+    ],
+)
+def test_a_stated_or_carried_basis_adds_the_families_measuring_it(hits, basis, added):
+    """The part's hits gain a row of each family measuring the basis its entry names that
+    a convention table publishes, marked as a basis sibling of the recalled family."""
+    index = get_index()
+    recalled = [_family_hit(population_type, provenance) for population_type, provenance in hits]
+    measure = next(row for row in BASIS_MEASURES if row.basis == basis)
+
+    out = with_entry_basis_siblings(
+        recalled, measure=measure, catalogue=FakeCatalogue(), index=index
+    )
+
+    rows = [c for c in out if c not in recalled]
+    families = [index.family_by_dcid[c.dcid] for c in rows]
+    assert {
+        (f.five_tuple.population_type, f.five_tuple.measured_property, dataset)
+        for f in families
+        for dataset in f.datasets
+    } == added
+    sources = {family_ref(index.family_by_dcid[hit.dcid]) for hit in recalled}
+    assert all(c.rival and c.basis_of <= sources and c.score == 0.9 for c in rows)
+
+
 _EMPTY = "dc/base/EmptySource"
 
 
@@ -514,7 +598,7 @@ def test_an_unresolved_source_answers_no_data_quoting_its_words():
     assert part.no_data.reason == "source_not_resolved"
     assert part.no_data.source_terms == ["XYZ statistics"]
     assert part.no_data.ambiguous_sources == []
-    assert part.no_data.data_query is None
+    assert part.no_data.options == []
     assert "XYZ statistics" in part.no_data.message
 
 
@@ -605,18 +689,39 @@ def test_a_no_data_outcome_under_a_scope_names_its_sources(
     )
 
 
-def test_an_ambiguous_source_answers_no_data_with_its_candidates_and_the_part_to_post():
-    """The part names each candidate by ref, label and kind, and `data_query` is the part
-    with every resolved mention carrying its ref and the ambiguous one none."""
+@pytest.mark.parametrize(("polarity", "prefix"), [("include", ""), ("exclude", "Excluding ")])
+def test_an_ambiguous_source_answers_no_data_with_an_option_per_candidate(
+    bind_catalogue, polarity, prefix
+):
+    """The part names each candidate by ref, label and kind, and offers one option per
+    candidate: the part with the ambiguous mention carrying that candidate's ref, keeping
+    its words and polarity, and every resolved mention carrying its own ref. An excluded
+    mention's label says so. The bound catalogue admits every ref an option posts."""
+    bind_catalogue(
+        FakeCatalogue(
+            provenances={
+                row.id: row
+                for row in (
+                    _sourced_row("provenance/A1", "Table A1", "dc/s/A", "Source A"),
+                    dataclasses.replace(
+                        _sourced_row("provenance/B1", "Table B1", "dc/s/D", "Source D"),
+                        dataset=DatasetRef(ref="dc/d/B", label="Dataset B"),
+                    ),
+                    _sourced_row("provenance/C", "Table C", "dc/s/C", "Source C"),
+                    _row(_CRS),
+                )
+            }
+        )
+    )
     candidates = (
         SourceReference(ref="dc/s/A", label="Source A", kind="source"),
         SourceReference(ref="dc/d/B", label="Dataset B", kind="dataset"),
         SourceReference(ref="provenance/C", label="Table C", kind="provenance"),
     )
-    mentions = (
-        SourceMention(text="ambiguous"),
-        SourceMention(text="crs", ref="provenance/OECDCreditorReportingSystem", polarity="exclude"),
+    crs = SourceMention(
+        text="crs", ref="provenance/OECDCreditorReportingSystem", polarity="exclude"
     )
+    mentions = (SourceMention(text="ambiguous", polarity=polarity), crs)
     refusal = SourceRefusal(
         reason="source_ambiguous",
         terms=("ambiguous",),
@@ -638,8 +743,14 @@ def test_an_ambiguous_source_answers_no_data_with_its_candidates_and_the_part_to
         ("dc/d/B", "Dataset B", "dataset"),
         ("provenance/C", "Table C", "provenance"),
     ]
-    assert part.no_data.data_query is not None
-    assert part.no_data.data_query.parts[0].sources == list(mentions)
+    assert [(o.mentions, o.label, o.data_query.parts[0].sources) for o in part.no_data.options] == [
+        (
+            ["ambiguous"],
+            f"{prefix}{c.label}",
+            [SourceMention(text="ambiguous", ref=c.ref, polarity=polarity), crs],
+        )
+        for c in candidates
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -685,17 +796,35 @@ def test_the_options_door_reads_under_the_target_s_provenance_pin(monkeypatch):
 
 @pytest.mark.parametrize(
     ("provenance", "account"),
-    [("provenance/OECDCreditorReportingSystem", "provider"), (_WDI, None)],
-    ids=["declared-dataset", "base-provenance"],
+    [
+        ("provenance/OECDCreditorReportingSystem", "provider"),
+        ("provenance/ONEBilateralAndImputedMultilateral", "provider"),
+        (_WDI, None),
+    ],
+    ids=["declared-dataset", "composite", "base-provenance"],
 )
 def test_the_provenance_facet_states_the_account_of_a_declared_dataset(provenance, account):
     """A client reads whose account of a flow the answer gives from the served provenance:
-    the code index's declaration for a dataset it declares, none for any other."""
+    the code index's declaration for a dataset it declares, the one account a composite's
+    component tables share, none for any other."""
     facets = _resolved_facets(
         [{"provenance": SeriesFacetRef(ref=provenance, label=provenance)}], {}
     )
 
     assert facets["provenance"].account == account
+
+
+def test_a_composite_provenance_facet_takes_its_declared_label():
+    composite = get_index().composite("provenance/ONEBilateralAndImputedMultilateral")
+    assert composite is not None
+
+    facet = provenance_facet_ref(composite.provenance, {})
+
+    assert (facet.ref, facet.label, facet.documentation) == (
+        composite.provenance,
+        composite.label,
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +958,8 @@ class _NominatingLLM(pools._ElectLLM):
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         output, usage = await super().generate_structured(
             prompt=prompt, system=system, schema=schema
         )
@@ -980,6 +1111,8 @@ class _MenuLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         self.prompts.append(prompt)
         return schema(
             chosen_shape_index=0,
@@ -1144,6 +1277,8 @@ class _AskLLM(_MenuLLM):
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         self.prompts.append(prompt)
         return schema(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask="Which flow?"

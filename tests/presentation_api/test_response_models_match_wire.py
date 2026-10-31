@@ -15,10 +15,14 @@ from presentation_api.models import (
     FrameDimensionValuesResponse,
     FrameFilteredViewResponse,
     FrameStructuralViewResponse,
+    NewestFrameDimensionValuesResponse,
+    NewestFrameFilteredViewResponse,
+    NewestFrameStructuralViewResponse,
     ReleaseDocumentResponse,
     WriteReplyResponse,
 )
 from tests.assembler._pipeline_support import _stored_resolved_frame
+from tests.presentation_api.conftest import BARE_SPEC_ID
 
 _FRAME_REF = {
     "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
@@ -248,6 +252,23 @@ def test_frame_view_matches_its_shape_model(
         f"/api/presentation/frames/{frame_ref.spec_id}/{frame_ref.content_version}",
         params=params,
     )
+    assert resp.status_code == 200
+    model.model_validate(resp.json())
+
+
+@pytest.mark.parametrize(
+    ("params", "model"),
+    [
+        (None, NewestFrameStructuralViewResponse),
+        ({"dimension": "recipient"}, NewestFrameDimensionValuesResponse),
+        ({"query": "eth"}, NewestFrameFilteredViewResponse),
+    ],
+    ids=["structural", "dimension", "filtered"],
+)
+def test_a_bare_spec_frame_view_matches_its_shape_model(
+    newest_client: TestClient, params: dict | None, model: type
+):
+    resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}", params=params)
     assert resp.status_code == 200
     model.model_validate(resp.json())
 

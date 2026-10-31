@@ -78,6 +78,9 @@ class WriteReply:
     # Set only on the create that minted them; revises and no-ops carry `None`.
     write_token: str | None = None
     composition_write_token: str | None = None
+    # The stored intent's `frame_ref`, the pair the revision draws, `None` for a card that
+    # draws no frame. A create that named a dataset id alone stores the pair it resolved to.
+    frame_ref: Mapping[str, object] | None = None
 
 
 def build_changed_fields(
@@ -136,6 +139,7 @@ def build_reply(
         resolved_payload=resolved_payload,
         write_token=write_token,
         composition_write_token=composition_write_token,
+        frame_ref=cast("Mapping[str, object] | None", stored_intent.get("frame_ref")),
     )
 
 

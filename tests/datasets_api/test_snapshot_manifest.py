@@ -5,9 +5,12 @@ download link signs.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 
 from artifact_store import Tier
+from code_index.shared import get_index
 from dataset_store.snapshot import (
     Revocation,
     SnapshotNotFound,
@@ -21,7 +24,11 @@ from datasets_api.codes_snapshot import (
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.files import resolve_link
-from datasets_api.doors.snapshot import build_snapshot_door, read_snapshot_manifest
+from datasets_api.doors.snapshot import (
+    build_snapshot_door,
+    read_snapshot_currency,
+    read_snapshot_manifest,
+)
 from datasets_api.manifest import manifest_facts
 from datasets_api.manifest_models import (
     CitationModel,
@@ -37,6 +44,7 @@ from datasets_api.render import (
     rendition_token,
 )
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
+from datasets_api.version_store import enriched_rendering_key, rendering_key
 from materialise import EnrichmentLookup
 from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.frame_build import build_frame
@@ -60,6 +68,15 @@ from ._version_facts import facts_from_body
 _STAT_VAR_A = "dcid:GrantA"
 # A bundle rendered under the current settings carries this rendition.
 _RENDITION = rendition_token(DatasetsBuildSettings().site)
+# The digest the serving code index carries. A file linked before it existed sits under the
+# unsalted key (`_before_the_digest`), one rendered since under the salted one.
+_DIGEST = get_index().enrichment_digest
+
+
+def _before_the_digest(rendering: Mapping[str, object]) -> str:
+    """The key a file of `rendering` was linked under before links carried the code index's
+    digest."""
+    return rendering_key(rendering)
 
 
 def _output_options_fixture_frame(*, stat_var: str = _STAT_VAR_A):
@@ -116,6 +133,7 @@ def test_unregistered_id_refuses_spec_not_found():
             snapshot_reader=FakeSnapshotReader(),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
 
 
@@ -128,6 +146,7 @@ def test_registered_id_with_no_version_at_that_content_version_refuses_snapshot_
             snapshot_reader=FakeSnapshotReader(versions={("spec_a", "cv1"): _version()}),
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
 
 
@@ -145,6 +164,7 @@ def test_a_revoked_version_refuses_snapshot_revoked_even_with_servable_artifacts
             snapshot_reader=reader,
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
 
 
@@ -180,6 +200,7 @@ def test_a_collapsed_versions_row_names_its_base_content_version():
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.content_version == "cv_collapsed"
@@ -219,6 +240,7 @@ def test_a_collapsed_version_refuses_snapshot_revoked_when_its_base_version_is_r
             snapshot_reader=reader,
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
     # The error names the requested collapsed version and the base version's reason.
     assert exc_info.value.content_version == "cv_collapsed"
@@ -258,13 +280,12 @@ def test_a_collapsed_version_serves_fine_when_only_an_unrelated_version_is_revok
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
     assert manifest.content_version == "cv_collapsed"
 
 
 def test_read_snapshot_currency_also_refuses_when_the_base_version_is_revoked():
-    from datasets_api.doors.snapshot import read_snapshot_currency
-
     body = {
         **_minimal_manifest_kwargs(),
         "definition": {
@@ -315,6 +336,7 @@ def test_every_working_artifact_expired_and_none_pinned_refuses_artifact_expired
             snapshot_reader=reader,
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
 
 
@@ -328,6 +350,7 @@ def test_a_version_with_zero_artifacts_ever_linked_also_refuses_artifact_expired
             snapshot_reader=reader,
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
 
 
@@ -358,6 +381,7 @@ def test_an_expired_listable_rendering_refuses_artifact_expired_despite_an_unexp
             snapshot_reader=reader,
             now=lambda: _NOW,
             settings=DatasetsBuildSettings(),
+            enrichment_digest=None,
         )
 
 
@@ -379,6 +403,7 @@ def test_a_pinned_artifact_is_always_servable_regardless_of_age():
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert len(manifest.artifacts) == 1
@@ -395,12 +420,10 @@ def test_two_renderings_sharing_one_digest_both_survive_on_the_wire_manifest():
     stored = store.put(b"identical-bytes-two-renderings", tier=Tier.working)
     csv_location = _location(
         digest=stored.digest,
-        rendering_key="rk-csv",
         rendering={"format": "csv"},
     )
     parquet_location = _location(
         digest=stored.digest,
-        rendering_key="rk-parquet-bundle",
         rendering={"format": "parquet", "bundle": True, RENDITION_KEY: _RENDITION},
     )
     reader = FakeSnapshotReader(
@@ -494,6 +517,7 @@ def test_servable_artifacts_carry_their_download_links_and_the_stored_body_round
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.content_version == "cv1"
@@ -661,6 +685,7 @@ def test_a_stored_profile_derives_output_options_from_the_current_capability_doc
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert read_manifest.output_options is not None
@@ -685,6 +710,7 @@ def test_a_legacy_stored_body_without_an_output_profile_serves_with_output_optio
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.output_options is None
@@ -794,6 +820,7 @@ def test_rendering_key_left_none_lists_every_rendering():
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert {a.artifact_digest for a in manifest.artifacts} == {
@@ -812,8 +839,9 @@ def test_rendering_key_narrows_to_the_one_matching_rendering():
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
         now=lambda: _NOW,
-        rendering_key=target.rendering_key,
+        rendering_keys=lambda _: (target.rendering_key,),
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert len(manifest.artifacts) == 1
@@ -830,8 +858,9 @@ def test_rendering_key_matching_nothing_returns_empty_artifacts_with_no_error():
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
         now=lambda: _NOW,
-        rendering_key="rk-does-not-exist",
+        rendering_keys=lambda _: ("rk-does-not-exist",),
         settings=DatasetsBuildSettings(),
+        enrichment_digest=None,
     )
 
     assert manifest.artifacts == []
@@ -879,6 +908,7 @@ def test_a_bundle_from_before_renditions_is_listed_only_when_pinned_after_the_cu
             b"old-zip",
             tier=tier,
             rendering={"format": "csv", "bundle": True},
+            rendering_key=_before_the_digest({"format": "csv", "bundle": True}),
             media_type=zip_type,
         ),
         "current": _store_and_locate(
@@ -906,6 +936,7 @@ def test_a_bundle_from_before_renditions_is_listed_only_when_pinned_after_the_cu
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=_DIGEST,
     )
 
     assert [a.artifact_digest for a in manifest.artifacts] == [
@@ -927,7 +958,11 @@ def test_a_bare_file_in_an_old_layout_stays_listed_after_the_current_one():
             media_type="application/vnd.apache.parquet",
         ),
         "old": _store_and_locate(
-            store, b"old-csv", rendering={"format": "csv", "bundle": False}, media_type="text/csv"
+            store,
+            b"old-csv",
+            rendering={"format": "csv", "bundle": False},
+            rendering_key=_before_the_digest({"format": "csv", "bundle": False}),
+            media_type="text/csv",
         ),
         "frame": _store_and_locate(
             store,
@@ -960,9 +995,61 @@ def test_a_bare_file_in_an_old_layout_stays_listed_after_the_current_one():
         snapshot_reader=reader,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
+        enrichment_digest=_DIGEST,
     )
 
     assert [a.artifact_digest for a in manifest.artifacts] == [
         locations[name].artifact_digest
         for name in ("current", "frame", "old", "canonical", "statistics")
     ]
+
+
+def _listing(locations: list[StoredArtifactLocation]) -> list[str]:
+    """The digests a snapshot read lists for a version holding `locations`, under the packaged
+    digest."""
+    reader = FakeSnapshotReader(
+        versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
+    )
+    manifest = read_snapshot_manifest(
+        id="spec_a",
+        content_version="cv1",
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=reader,
+        now=lambda: _NOW,
+        settings=DatasetsBuildSettings(),
+        enrichment_digest=_DIGEST,
+    )
+    return [a.artifact_digest for a in manifest.artifacts]
+
+
+def test_a_version_holding_only_a_pinned_file_linked_before_the_digest_lists_it():
+    """A pinned citation whose working copies have aged out answers from its pinned file, which
+    was linked under the unsalted key. It lists, and does not answer `artifact_expired`."""
+    store = FakeArtifactStore()
+    rendering = {"format": "csv", "bundle": False, LAYOUT_KEY: DATA_LAYOUT_VERSION}
+    pinned = _store_and_locate(
+        store,
+        b"pinned-csv",
+        tier=Tier.pinned,
+        rendering=rendering,
+        rendering_key=_before_the_digest(rendering),
+    )
+
+    assert _listing([pinned]) == [pinned.artifact_digest]
+
+
+def test_a_file_linked_before_the_digest_is_hidden_only_by_a_twin_linked_under_it():
+    store = FakeArtifactStore()
+    rendering = {"format": "csv", "bundle": False, LAYOUT_KEY: DATA_LAYOUT_VERSION}
+    before = _store_and_locate(
+        store, b"before", rendering=rendering, rendering_key=_before_the_digest(rendering)
+    )
+    twin = _store_and_locate(
+        store,
+        b"after",
+        rendering=rendering,
+        rendering_key=enriched_rendering_key(rendering, _DIGEST),
+    )
+
+    assert _listing([before]) == [before.artifact_digest]
+    assert _listing([before, twin]) == [twin.artifact_digest]

@@ -12,8 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, assert_never, get_args
 
+from code_index.composites import provenance_account
 from code_index.shared import get_index
-from dfo_platform.roles import FlowAccount
 from materialise.facets import native_currency_iso
 from search.engine.clients.graph import Facet
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
@@ -23,7 +23,7 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
-from search.engine.retrieval.read_plan import facets_served, series_facets
+from search.engine.retrieval.read_plan import facets_served, populated_members, series_facets
 from search.engine.unit.lexicon import CURRENCY_DISPLAY_NAMES
 from search.models import (
     Coverage,
@@ -126,8 +126,8 @@ def _resolved_facets(
 
     An axis is omitted when no series carries it. A shared ref on every series yields
     `ref` with the first-seen series' label, source, and Data Commons, and on the provenance
-    axis the account of a declared dataset (`_declared_account`). Differing refs or a
-    missing value on any series yield `selection="per_series"` without a ref or label. `bound_axes` supplies each axis's
+    axis the account its datasets declare (`code_index.composites.provenance_account`).
+    Differing refs or a missing value on any series yield `selection="per_series"` without a ref or label. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
     Keys follow `FacetAxis` order.
@@ -160,7 +160,9 @@ def _resolved_facets(
                 currency=(
                     currency_of(shared.ref) if axis == "unit" and currency_of is not None else None
                 ),
-                account=_declared_account(shared.ref) if axis == "provenance" else None,
+                account=(
+                    provenance_account(get_index(), shared.ref) if axis == "provenance" else None
+                ),
                 request_basis=axis_request_basis,
             )
         else:
@@ -168,13 +170,6 @@ def _resolved_facets(
                 basis=basis, selection="per_series", request_basis=axis_request_basis
             )
     return result
-
-
-def _declared_account(ref: str) -> FlowAccount | None:
-    """The flow account of the dataset `ref` when the code index declares it
-    (`DatasetDeclaration.account`), else `None`."""
-    dataset = get_index().datasets.get(ref)
-    return dataset.account if dataset is not None else None
 
 
 def _currency_label(ref: str, labels: Mapping[str, str]) -> str:
@@ -391,16 +386,19 @@ def filter_answer(
     facets `admission` admits (`ReadPlan.narrowed`), and coverage and the headline are built
     from the narrowed plan as resolve built them from the unfiltered one
     (`coverage.answer_coverage`, `coverage.answer_headline`). The preview dispatch reads the
-    narrowed plan. With no filter, or an answer that read no facets, the answer is unchanged.
+    narrowed plan. A unit decision elects a unit only for the members its group serves
+    (`elected_units`), so the members holding data that it elects none for are left out, and
+    the narrowed plan names them (`ReadPlan.leaving_out`). With no filter, or an answer that
+    read no facets, the answer is unchanged.
     """
     if not admission or mat.read_plan is None or mat.coverage_form is None:
         return FilteredAnswer(mat.coverage, mat.headline, mat.read_plan)
-    return plan_answer(
-        mat,
-        mat.read_plan.narrowed(admission.admits),
-        date_request=date_request,
-        coverage_index=coverage_index,
-    )
+    narrowed = mat.read_plan.narrowed(admission.admits)
+    if admission.elected_units is not None:
+        narrowed = narrowed.leaving_out(
+            populated_members(mat.read_plan) - admission.elected_units.keys()
+        )
+    return plan_answer(mat, narrowed, date_request=date_request, coverage_index=coverage_index)
 
 
 def plan_answer(

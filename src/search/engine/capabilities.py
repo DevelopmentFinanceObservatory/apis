@@ -28,6 +28,7 @@ from search.engine.config import (
 )
 from search.models import Axis, FacetAxis
 from search.observations import observation_settings
+from search.scope_window import scope_window_settings
 
 # Canonical resolve doors, also used in the capability-version hash.
 _RESOLVE_DOORS: tuple[str, ...] = SEARCH_RESOLVE_DOORS
@@ -263,8 +264,8 @@ def build_capabilities(index: CodeIndex | None = None) -> Capabilities:
             max_unit_text_chars=SEARCH_MAX_UNIT_TEXT_CHARS,
             max_source_text_chars=SEARCH_MAX_SOURCE_TEXT_CHARS,
             region_max_members=settings().region_max_members,
-            scope_min_year=settings().scope_min_year,
-            scope_max_window_years=settings().scope_max_window_years,
+            scope_min_year=scope_window_settings().scope_min_year,
+            scope_max_window_years=scope_window_settings().scope_max_window_years,
         ),
         code_index=CodeIndexStamp(
             content_hash=index_stamp.content_hash,

@@ -64,11 +64,15 @@ PLATFORM_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
     "invalid_role_ref": (
         "Invalid Role Reference",
-        "The posted entity role reference does not resolve to a valid entity.",
+        "A posted entity role cannot be bound: the matched StatVar declares no such role, "
+        "its origin or destination alias names more than one declared role, or an entity "
+        "posted under it is absent from the graph or of a kind the role does not take.",
     ),
     "role_incompatible": (
         "Role Incompatible",
-        "The requested role is not declared on the matched StatVar(s).",
+        "The posted role cannot be bound on the matched StatVar(s): it is a graph property "
+        "they do not declare, a flow axis or observationAbout their role shape does not "
+        "take, or a role they pin to a fixed value.",
     ),
     "role_signature_incompatible": (
         "Role Signature Incompatible",
@@ -96,6 +100,12 @@ PLATFORM_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Refresh Not Permitted",
         "The authenticated caller is not the live-refresh principal, or live refresh is "
         "not configured on this deployment.",
+    ),
+    # Served by the Datasets pin door and the Presentation share routes.
+    "allowance_exhausted": (
+        "Allowance Exhausted",
+        "The caller has spent today's allowance for this kind of write; Retry-After names the "
+        "next UTC midnight, when it resets.",
     ),
 }
 

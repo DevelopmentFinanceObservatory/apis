@@ -1,8 +1,14 @@
-"""Checks ULID shape, ordering, uniqueness, and ID prefixes."""
+"""Checks ULID shape, ordering, uniqueness, ID prefixes, and share ids."""
 
 from __future__ import annotations
 
-from presentation_store.ids import mint_component_id, mint_composition_id, new_ulid
+from presentation_store.ids import (
+    SHARE_ID_PATTERN,
+    mint_component_id,
+    mint_composition_id,
+    mint_share_id,
+    new_ulid,
+)
 
 _CROCKFORD_CHARS = set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
 
@@ -35,3 +41,11 @@ def test_mint_composition_id_carries_the_cps_prefix():
     composition_id = mint_composition_id()
     assert composition_id.startswith("cps_")
     assert len(composition_id) == len("cps_") + 26
+
+
+def test_mint_share_id_is_eight_letters_and_digits_of_both_cases():
+    minted = {mint_share_id() for _ in range(200)}
+    assert all(SHARE_ID_PATTERN.fullmatch(share_id) for share_id in minted)
+    assert len(minted) == 200
+    joined = "".join(minted)
+    assert any(c.islower() for c in joined) and any(c.isupper() for c in joined)

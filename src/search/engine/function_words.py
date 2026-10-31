@@ -3,7 +3,9 @@
 Extraction reads them when it restores a variable's word order and when it judges a
 dropped qualifier, and the qualifier coverage rule (`phase_rank_bind._coverage_records`)
 reads `FUNCTION_WORDS`, `AMOUNT_WORDS`, `DATA_WORDS` and `FLOW_VERBS` as words no
-reader needs to cover, and `RATIO_WORDS` on a shape that divides by a denominator.
+reader needs to cover, `RATIO_WORDS` on a shape that divides by a denominator,
+`COUNT_WORDS` on a shape that measures a count, and `PERSON_WORDS` on one that counts
+persons.
 """
 
 from __future__ import annotations
@@ -62,15 +64,25 @@ AMOUNT_WORDS = frozenset(
 DATA_WORDS = frozenset({"data", "statistics", "numbers", "information", "indicators", "series"})
 
 # Verbs that say a flow moved or was reported and nothing about which flows: "net ODA
-# received by Kenya", "ODA going to Kenya", "total ODA reported to the DAC". The place's
-# role states the direction. "committed" stays out: commitments are a different measure.
+# received by Kenya", "ODA going to Kenya", "total ODA reported to the DAC", "external
+# debt Kenya owes China". The place's role states the direction. "committed" stays out:
+# commitments are a different measure.
 FLOW_VERBS = frozenset(
     {
         "received", "receive", "receives", "receiving", "given", "provided", "disbursed",
-        "spent", "going", "goes", "went", "reported", "reports",
+        "spent", "going", "goes", "went", "reported", "reports", "owe", "owes", "owed", "lent",
     }
 )  # fmt: skip
 
 # Nouns that say a measure is divided by another: "ODA as a share of GNI", "ODA GNI ratio".
 # A shape with a denominator states them; on an amount shape they restrict.
 RATIO_WORDS = frozenset({"share", "ratio", "percent", "percentage", "proportion"})
+
+# Nouns that say a measure counts what it names: "number of refugees" is their count. A
+# shape measuring a count states them.
+COUNT_WORDS = frozenset({"number", "numbers"})
+
+# Nouns that say a measure counts people: "refugee population" is the number of refugees.
+# Only a count of persons states them. On a count of households, "people in urban
+# households" leaves them to the binder.
+PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})

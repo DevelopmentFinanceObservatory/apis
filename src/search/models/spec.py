@@ -14,15 +14,15 @@ from dfo_platform.roles import FlowAccount
 
 from .base import StrictModel
 from .coverage import Coverage, Headline
-from .entity import EntityGroup, ResolvedEntity
+from .definition import SpecDefinition
+from .entity import EntityGroup, ResolvedEntity, _is_none
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
-from .identity import BaseIdentity
 from .observations import SpecObservations
 from .options import EntityOptions, FacetOptions, SlotOptions
+from .scope import PartScope
 from .statvar import ResolvedStatVars, SentenceFacts, StatVar
 from .trace import ResolutionTrace
 from .vocab import (
-    SCHEMA_VERSION,
     Axis,
     CandidateBasis,
     Confidence,
@@ -180,44 +180,6 @@ class ResolvedScope(StrictModel):
             "every entity on axis this Spec's read plan serves, sorted by ref; each carries "
             "role == axis and a best-effort label/entity_type from a batched graph read, "
             "None when the graph has neither"
-        )
-    )
-
-
-class SpecDefinition(StrictModel):
-    """The canonical definition a Spec was resolved from: `{schema_version,
-    spec_id, identity}`. This is the form the registry stores and permalinks
-    carry, so it is self-contained. A definition lifted out of its Spec still
-    names which spec it is.
-
-    `identity` is the identity-core projection (see `BaseIdentity`) this
-    Spec's spec_id was minted from, so hashing `identity` again reproduces
-    `spec_id` by construction.
-
-    `spec_id` is carried here as well as on `Spec.spec_id` deliberately: the
-    duplication is what makes the definition independently meaningful once
-    detached from the response that delivered it. The one exception is an
-    `unsupported` response's definition, which omits it: the request was
-    valid and understood but never became a resolvable construction, so no
-    spec_id was ever legitimately minted for it.
-    """
-
-    schema_version: Literal[1] = Field(
-        default=SCHEMA_VERSION,
-        description="contract schema version this definition was published under; exactly 1",
-    )
-    spec_id: str = Field(
-        description=(
-            "the spec_id minted from `identity`; equals the sibling Spec.spec_id, "
-            "and is what a detached definition (registry row, permalink) is keyed by"
-        )
-    )
-    identity: BaseIdentity = Field(
-        description=(
-            "the identity-core projection this Spec's spec_id was minted from, "
-            "serialised once and never re-derived; post it back byte-for-byte as "
-            "ResubmitIdentityPayload.identity to edit this Spec. Directional edits "
-            "change identity.entities.origin or identity.entities.destination directly"
         )
     )
 
@@ -428,7 +390,10 @@ class RoleAxisFact(StrictModel):
     role: RoleAxis = Field(description="which flow axis this fact is about")
     member_count: int | None = Field(
         description=(
-            "how many entities this axis' open scope resolves to. None when the "
+            "how many entities this axis' open scope resolves to, leaving out the "
+            "group totals the code index declares beside their members (party_kind "
+            "total), as the default download leaves them out; a scope of totals alone "
+            "counts them all. None when the "
             "count could not be established without a read this response chose not "
             "to make (e.g. a discovered opposite axis whose own role index was "
             "omitted after a cap trip); the fact still publishes in that case, "
@@ -442,6 +407,16 @@ class RoleAxisFact(StrictModel):
             "could be enumerated (e.g. through entity_options or the options door), "
             "not just counted. False exactly when member_count is None"
         )
+    )
+    holds_multilaterals: bool | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for the origin axis, whether its open population holds a multilateral "
+            "organisation (see ResolvedEntity.multilateral), read from the member list "
+            "where it is known and otherwise from the parties the served datasets publish "
+            "on the axis: true for the CRS's donors. Absent for the destination axis"
+        ),
     )
 
 
@@ -607,7 +582,11 @@ class ResolvedSpec(StrictModel):
 
     shape: Shape = Field(description="the structural family chosen")
     slots: list[Slot] = Field(
-        description="one entry per slot the shape defines, each in a binding state"
+        description=(
+            "one entry per slot the shape defines, each in a binding state. Its what/how "
+            "entries are the identity's slots, so a what/how property it leaves out is one "
+            "no served member asserts"
+        )
     )
     inapplicable_slots: list[str] = Field(
         default_factory=list,
@@ -784,7 +763,9 @@ class ResolvedSpec(StrictModel):
             "a genuine reading of the request's phrase; 'twin', an equivalent reading of the "
             "elected one, offered where the elected one holds no data; 'direction', the same "
             "reading with the other direction for a place the request names without one, "
-            "which a client shows as a direction prompt. The elected reading, listed first, "
+            "which a client shows as a direction prompt; 'breakdown', the same measure broken "
+            "down by another set of slots, offered when its family holds no total and the "
+            "request names no breakdown that serves a member. The elected reading, listed first, "
             "carries none. None on a definite answer and on every Spec outside "
             "CandidateSet.specs."
         ),
@@ -882,6 +863,30 @@ class ResolvedSpec(StrictModel):
             "BaseIdentity, never hashed."
         ),
     )
+    concept_label: str | None = Field(
+        default=None,
+        description=(
+            "what this Spec's series count, in a reader's words, with no measure basis, "
+            "codes, provider scope or dataset: the sector the identity binds where it "
+            "binds one ('health' for CRS 120 and 130 together, ONE's grouping; 'basic "
+            "health' for CRS 122), else the values the served members share outside the "
+            "measure axes, which shape.label states in brackets after measure_label "
+            "('official development assistance'). A composite carries its table "
+            "identity's concept label. None when the shape has no measure partition and "
+            "binds no sector. Never a member of BaseIdentity, never hashed."
+        ),
+    )
+    published_tables: str | None = Field(
+        default=None,
+        description=(
+            "the names of the tables this Spec's figures are published in, with no "
+            "provider scope: the elected dataset's label ('OECD Creditor Reporting System "
+            "(CRS)'), or for a composite the labels of the tables its components read, "
+            "joined ('OECD Creditor Reporting System (CRS) and ONE Imputed Multilateral "
+            "Sectors'). None when no provenance was elected. Never a member of "
+            "BaseIdentity, never hashed."
+        ),
+    )
     related_group: GraphRef | None = Field(
         default=None,
         description=(
@@ -940,12 +945,29 @@ class ResolvedSpec(StrictModel):
             "BaseIdentity, never hashed."
         ),
     )
+    scope_choices: PartScope | None = Field(
+        default=None,
+        description=(
+            "how the part this Spec answers was counted: one ScopeChoice per axis a "
+            "declared rule or the request settled (sector, region, measure basis, provider "
+            "scope), with its options and their availability, the explicit and carried "
+            "entries applied, and the identity they compile to (see PartScope). To switch "
+            "an option, post base.identity as identity on a dataset_resubmit identity "
+            "entry, with entries as scope_entries, the entry on the switched axis "
+            "replaced by the switch: one entry per axis. None when no axis was settled "
+            "and no scope entries were "
+            "posted. Never a member of BaseIdentity, never hashed."
+        ),
+    )
     # The named entities the answer's read plan serves no point at, each with the role it
     # was asked on (`ResolvedSpec.unserved_entities`), and the years the served series
     # hold over every date (`ResolvedSpec.data_years`). The part states them in its
     # departures, so they reach the wire in `departures` alone, and a response read back
     # from the cache holds neither. Equality compares the wire state (`__eq__`).
     _unserved_entities: tuple[tuple[str, str], ...] = PrivateAttr(default=())
+    # The members holding data that the answer's one group leaves out
+    # (`ResolvedSpec.unserved_members`), which the part states in its departures alike.
+    _unserved_members: tuple[GraphRef, ...] = PrivateAttr(default=())
     _data_years: tuple[int, int] | None = PrivateAttr(default=None)
     # Whether the served series include points continuing a series past its last period
     # (`ResolvedSpec.continued`), which the part states in a `modelled_values` departure.
@@ -984,6 +1006,14 @@ class ResolvedSpec(StrictModel):
         served on the other. The part names them in an `entity_unavailable` departure
         (`engine.departures.spec_departure_facts`)."""
         return self._unserved_entities
+
+    @property
+    def unserved_members(self) -> tuple[GraphRef, ...]:
+        """The members holding data that the one group the answer reads leaves out, each
+        with its label, in member order (`read_plan.unserved_members`), as a mint of the
+        Spec names them in `coverage_below_scope`'s `unserved_members`. The part names them
+        in a `member_unavailable` departure (`engine.departures.spec_departure_facts`)."""
+        return self._unserved_members
 
     @property
     def named_sets(self) -> tuple[tuple[str, EntityGroup, frozenset[str]], ...]:
@@ -1095,6 +1125,12 @@ class ResolvedSpec(StrictModel):
         """A copy whose `unserved_entities` are the `(role, dcid)` pairs `entities`."""
         stated = self.model_copy()
         stated._unserved_entities = entities
+        return stated
+
+    def stating_unserved_members(self, members: tuple[GraphRef, ...]) -> ResolvedSpec:
+        """A copy whose `unserved_members` are `members`."""
+        stated = self.model_copy()
+        stated._unserved_members = members
         return stated
 
     def stating_named_sets(

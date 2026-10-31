@@ -8,7 +8,7 @@ import time
 import httpx
 import pytest
 
-from dc_sdmx.client import SdmxClient
+from dc_sdmx.client import SdmxClient, _TotalSlot
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
@@ -207,3 +207,17 @@ def test_get_waiting_for_a_slot_past_the_deadline_raises_the_deadline_error(
 
     assert not holder.is_alive()
     assert holder_errors == []
+
+
+def test_a_lease_released_twice_keeps_the_slot_another_holder_uses():
+    semaphore = threading.BoundedSemaphore(1)
+    assert semaphore.acquire(blocking=False)
+    read = _TotalSlot(semaphore).lease()
+    send = read.retain()
+
+    read.release()
+    read.release()
+    assert not semaphore.acquire(blocking=False)
+
+    send.release()
+    assert semaphore.acquire(blocking=False)

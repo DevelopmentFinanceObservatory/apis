@@ -11,14 +11,15 @@ import sqlite3
 import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 
+from datasets_api.version_store import _ROLE_COLUMNS_SQL
 from datasets_api.versions import MaterialisationRecord, Trigger
 
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
-# The schema covers version records, artifacts, revocations, references, inventory, frame recipes,
-# description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# The schema covers version records, artifacts, revocations, references, caller allowances,
+# inventory, frame recipes, analysis answers, exports, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
@@ -47,6 +48,7 @@ CREATE TABLE datasets.version_record (
     composed_stat_vars TEXT,
     continuations TEXT,
     frame_sha256 TEXT,
+    frame_summed INTEGER,
     PRIMARY KEY (subject_id, content_version)
 );
 CREATE TABLE datasets.version_artifact (
@@ -76,6 +78,13 @@ CREATE TABLE datasets.artifact_reference (
     removed_at TEXT,
     PRIMARY KEY (principal, artifact_digest, subject_id, content_version, reference_kind)
 );
+CREATE TABLE datasets.caller_allowance (
+    caller_key TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('share', 'card', 'pin', 'pin_budget', 'open_pin_budget')),
+    day TEXT NOT NULL,
+    count INTEGER NOT NULL CHECK (count > 0),
+    PRIMARY KEY (caller_key, kind, day)
+);
 CREATE TABLE datasets.artifact_inventory (
     artifact_digest TEXT PRIMARY KEY,
     size_bytes INTEGER NOT NULL,
@@ -94,10 +103,30 @@ CREATE TABLE datasets.frame_recipe (
     subject_id TEXT NOT NULL,
     content_version TEXT NOT NULL,
     normal_form_hash TEXT NOT NULL,
-    replay_key TEXT NOT NULL UNIQUE,
+    replay_key TEXT NOT NULL,
     recipe TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
+    superseded_at TEXT,
     PRIMARY KEY (subject_id, content_version)
+);
+CREATE UNIQUE INDEX datasets.frame_recipe_replay_key_idx
+    ON frame_recipe (replay_key) WHERE superseded_at IS NULL;
+CREATE TABLE datasets.analysis_answer (
+    request_key TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    body TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE TABLE datasets.export (
+    export_id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    artifact_digest TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    object_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
 );
 CREATE TABLE datasets.description_record (
     subject_id TEXT NOT NULL,
@@ -138,11 +167,27 @@ CREATE TABLE datasets.subject_head (
 """
 
 
+def _role_columns(output_profile: str | None) -> str | None:
+    """SQLite's stand-in for the `jsonb_path_query_array` of `_ROLE_COLUMNS_SQL`: the names of
+    the profile's columns of kind `role`, as a JSON array."""
+    if output_profile is None:
+        return None
+    columns = json.loads(output_profile).get("columns", [])
+    return json.dumps([column["name"] for column in columns if column.get("kind") == "role"])
+
+
+def _to_sqlite(sql: str) -> str:
+    sql = sql.replace(_ROLE_COLUMNS_SQL, "role_columns(output_profile) AS role_columns")
+    # SQLite runs one writer at a time, so a row lock has nothing to add.
+    sql = sql.removesuffix(" FOR UPDATE")
+    return _to_sqlite_paramstyle(sql)
+
+
 def _sqlite_param(value: object) -> object:
-    """Encode dicts and datetimes as SQLite text for JSONB and timestamp columns."""
+    """Encode dicts, datetimes and dates as SQLite text for JSONB, timestamp and date columns."""
     if isinstance(value, dict):
         return json.dumps(value)
-    if isinstance(value, datetime):
+    if isinstance(value, date):
         return value.isoformat()
     return value
 
@@ -157,6 +202,7 @@ _JSON_COLUMNS = frozenset(
         "trace",
         "warnings",
         "output_profile",
+        "role_columns",
         "series_conversions",
         "input_content_versions",
         "composed_stat_vars",
@@ -164,6 +210,7 @@ _JSON_COLUMNS = frozenset(
         "rendering",
         "signal",
         "recipe",
+        "body",
         "record",
         "dependencies",
         "selection",
@@ -189,7 +236,7 @@ _TIMESTAMP_COLUMNS = frozenset(
         "submitted_at",
     }
 )
-_BOOL_COLUMNS = frozenset({"retryable", "final_delivery"})
+_BOOL_COLUMNS = frozenset({"retryable", "final_delivery", "frame_summed"})
 
 
 def _decode_row(row: sqlite3.Row) -> dict[str, object]:
@@ -214,7 +261,7 @@ class _VersionRecordFakeTransaction:
         if sql.strip().upper().startswith("SELECT PG_ADVISORY_XACT_LOCK"):
             # The store lock serialises transactions, so SQLite needs no advisory-lock function.
             return
-        self._conn.execute(_to_sqlite_paramstyle(sql), tuple(_sqlite_param(p) for p in params))
+        self._conn.execute(_to_sqlite(sql), tuple(_sqlite_param(p) for p in params))
 
     def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
         rows = self.fetch_all(sql, params)
@@ -225,9 +272,7 @@ class _VersionRecordFakeTransaction:
         return rows[0]
 
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
-        cursor = self._conn.execute(
-            _to_sqlite_paramstyle(sql), tuple(_sqlite_param(p) for p in params)
-        )
+        cursor = self._conn.execute(_to_sqlite(sql), tuple(_sqlite_param(p) for p in params))
         return [_decode_row(row) for row in cursor.fetchall()]
 
 
@@ -239,12 +284,18 @@ class FakeVersionRecordDatasetStore:
         self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.create_function("lease_end", 2, _lease_end, deterministic=True)
+        self._conn.create_function("role_columns", 1, _role_columns, deterministic=True)
         self._conn.execute("ATTACH DATABASE ':memory:' AS datasets")
         self._conn.executescript(_VERSION_RECORD_SCHEMA)
         self._conn.executescript(_OPERATION_SCHEMA)
         # Mint work and the request thread share this connection, so serialize transaction spans.
         # Postgres gives each call its own pooled connection.
         self._lock = threading.Lock()
+
+    @property
+    def total_changes(self) -> int:
+        """Rows every statement so far inserted, updated or deleted."""
+        return self._conn.total_changes
 
     @contextmanager
     def transaction(self) -> Generator[_VersionRecordFakeTransaction, None, None]:

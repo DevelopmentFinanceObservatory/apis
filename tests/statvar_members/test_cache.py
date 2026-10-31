@@ -31,7 +31,7 @@ from origin_catalogue import bound_catalogue
 from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.catalogue import CatalogueSnapshot
 from origin_catalogue.families import FamilyKey
-from origin_catalogue.graph import _wire
+from origin_catalogue.frozen_arcs import served_arcs
 from statvar_members.cache import MemberEnumerator
 from statvar_members.enumerate import (
     _REPROBE_BUDGET,
@@ -501,7 +501,7 @@ def recorded_slice() -> tuple[dict[str, dict[str, tuple[str, ...]]], CatalogueSn
     }
     properties = sorted({arc.property for rows in variables.values() for arc in rows})
     graph = {
-        dcid: parse_arcs(_wire(rows), properties, mark_unresolved=True)
+        dcid: parse_arcs(served_arcs(rows), properties, mark_unresolved=True)
         for dcid, rows in variables.items()
     }
     return graph, restrictive_catalogue(dfo_variables=read.variables, arcs=build_labelled(builder))

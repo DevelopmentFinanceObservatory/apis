@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections.abc import Sequence
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
@@ -36,7 +38,10 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.state import EngineOptions
+from search.engine.region.whole_totals import with_containing_total
 from search.models import (
+    BaseIdentity,
+    Entry,
     ResubmitCandidate,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
@@ -44,7 +49,25 @@ from search.models import (
     ResubmitParsedEntry,
     Warning,
 )
+from search.scope.provider import without_uncounted_inclusive
+from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
+
+
+def served_posted_identity(
+    identity: BaseIdentity, entries: Sequence[Entry] | None, *, coverage: CoverageSnapshot
+) -> tuple[BaseIdentity, Sequence[Entry] | None]:
+    """A posted `identity` and its scope `entries` as a fresh search of the identity would
+    serve them, read alike for identity and candidate entries: each flow side the identity
+    leaves open binds its dataset's containing total where a fresh search would
+    (`whole_totals.with_containing_total`), and an inclusive composite whose providers a
+    fresh search would not offer the inclusive scope serves its bilateral line, with that
+    scope a carried entry (`scope.provider.without_uncounted_inclusive`). Reads coverage
+    and scans families, so callers run it off the event loop."""
+    bound = with_containing_total(identity, coverage=coverage.index)
+    return without_uncounted_inclusive(
+        bound, entries, facts=ScopeFacts(index=get_index(), coverage=coverage)
+    )
 
 
 def spec_resubmit_input_for_identity(entry: ResubmitIdentityEntry) -> ResubmitIdentityPayload:
@@ -87,20 +110,25 @@ def _merge_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     return merged
 
 
-def _candidates_collapsed_warning(*, posted: int, survivors: int) -> Warning:
+def _candidates_collapsed_warning(*, posted: int, resolved: int, survivors: int) -> Warning:
     """Report a collapsed candidate set with posted and surviving counts.
 
-    One survivor yields `candidates_collapsed_definite`. Zero yields
-    `candidates_collapsed_no_data`.
+    One survivor yields `candidates_collapsed_definite`. Its message says how many posted
+    candidates still resolve and, when more than one does, that they rebuild to one
+    reading. Zero yields `candidates_collapsed_no_data`.
     """
     if survivors == 1:
+        resolves = (
+            "1 still resolves to a definite answer"
+            if resolved == 1
+            else f"{resolved} still resolve and rebuild to 1 reading"
+        )
         return Warning(
             code="candidates_collapsed_definite",
             severity="warn",
             message=(
-                f"{posted} candidates were posted; 1 still resolves to a definite "
-                "answer, so the part is reported as that answer and not as the "
-                "posted candidate set."
+                f"{posted} candidates were posted; {resolves}, so the part is reported "
+                "as that answer and not as the posted candidate set."
             ),
         )
     return Warning(
@@ -119,8 +147,20 @@ def _build_candidates_region(
     """Keep definite promotes in posted order, which `gather` preserves.
     No-data and unsupported promotes both drop. Two or more survivors rebuild
     the set. One becomes definite and zero becomes no-data, each with a warning.
+    Each survivor carries its candidate's assumptions echo. A set reads each reading with
+    its own, and a lone survivor's definite part states its own. Candidates that rebuild
+    to one spec_id keep the first, with its echo, as a first-pass set keeps one reading
+    per spec_id.
     """
-    survivors = [r for r in promoted if r.status == "definite"]
+    echoes = [
+        None if candidate.assumptions is None else tuple(candidate.assumptions)
+        for candidate in entry.candidates
+    ]
+    by_spec_id: dict[str, RegionResult] = {}
+    for r, echo in zip(promoted, echoes, strict=True):
+        if r.status == "definite":
+            by_spec_id.setdefault(r.spec.spec_id, dataclasses.replace(r, assumption_echo=echo))
+    survivors = list(by_spec_id.values())
     timing_by_step = _merge_timing_by_step(promoted)
 
     if len(survivors) >= 2:
@@ -143,6 +183,11 @@ def _build_candidates_region(
             # elected shape's do on a first pass.
             answered_roles=survivors[0].answered_roles,
             separate=entry.separate,
+            reading_assumption_echoes={
+                r.spec.spec_id: r.assumption_echo
+                for r in survivors
+                if r.assumption_echo is not None
+            },
         )
     if len(survivors) == 1:
         (only,) = survivors
@@ -151,7 +196,11 @@ def _build_candidates_region(
             variable_text=entry.variable_text,
             warnings=(
                 *only.warnings,
-                _candidates_collapsed_warning(posted=len(promoted), survivors=1),
+                _candidates_collapsed_warning(
+                    posted=len(promoted),
+                    resolved=sum(r.status == "definite" for r in promoted),
+                    survivors=1,
+                ),
             ),
             timing_by_step=timing_by_step,
             earliest_index=index,
@@ -175,7 +224,7 @@ def _build_candidates_region(
         unsupported=None,
         warnings=(
             *first.warnings,
-            _candidates_collapsed_warning(posted=len(promoted), survivors=0),
+            _candidates_collapsed_warning(posted=len(promoted), resolved=0, survivors=0),
         ),
         timing_by_step=timing_by_step,
         earliest_index=index,
@@ -225,27 +274,30 @@ async def resolve_candidates_entry(
     the configured candidate cap before scheduling this coroutine.
     """
 
+    def _promote(candidate: ResubmitCandidate) -> RegionResult:
+        # A candidate carries no scope entries, so the carried entry a served bilateral line
+        # would report has no scope to state it.
+        identity, _ = served_posted_identity(candidate.identity, None, coverage=coverage)
+        return resolve_spec_resubmit(
+            inp=ResubmitIdentityPayload(identity=identity, entity_groups=candidate.entity_groups),
+            graph=graph,
+            sdmx=sdmx,
+            coverage=coverage,
+            options=EngineOptions(
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                population_memo=population_memo,
+                place_options_pool=place_options_pool,
+                deadline=deadline,
+            ),
+            full_read_deadline=full_read_deadline,
+        )
+
     async def _promote_one(candidate_index: int, candidate: ResubmitCandidate) -> RegionResult:
         async with sem:
             try:
-                return await asyncio.to_thread(
-                    resolve_spec_resubmit,
-                    inp=ResubmitIdentityPayload(
-                        identity=candidate.identity, entity_groups=candidate.entity_groups
-                    ),
-                    graph=graph,
-                    sdmx=sdmx,
-                    coverage=coverage,
-                    options=EngineOptions(
-                        materialise_graph=materialise_graph,
-                        materialise_sdmx=materialise_sdmx,
-                        rate_cache=rate_cache,
-                        population_memo=population_memo,
-                        place_options_pool=place_options_pool,
-                        deadline=deadline,
-                    ),
-                    full_read_deadline=full_read_deadline,
-                )
+                return await asyncio.to_thread(_promote, candidate)
             except EngineInputError as exc:
                 raise _rewrite_candidate_pointer(
                     exc, index=index, candidate_index=candidate_index
@@ -307,7 +359,11 @@ async def resolve_parsed_entries(
     )
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     per_variable_pre_resolved = await per_part_pre_resolved(
-        parts, pins, resolver=resolver, deadline=deadline
+        parts,
+        pins,
+        surfaces=interpretation.entity_surfaces,
+        resolver=resolver,
+        deadline=deadline,
     )
 
     out = _FanOutResult()
@@ -343,6 +399,8 @@ async def resolve_parsed_entries(
         per_variable_role_queries=interpretation.role_queries,
         per_variable_entity_roles=interpretation.entity_roles,
         per_variable_member_entities=interpretation.member_entities,
+        per_variable_entity_surfaces=interpretation.entity_surfaces,
+        per_variable_entity_words=interpretation.entity_words,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_scopes=interpretation.source_scopes,
         per_variable_source_codes=interpretation.source_codes,

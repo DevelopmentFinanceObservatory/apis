@@ -15,8 +15,15 @@ from search.engine.retrieval.coverage import (
     citable_source_ids,
     headline_from_coverage_index,
 )
-from search.engine.retrieval.facet_election import merge_role_candidates, select_role_candidate
-from search.engine.retrieval.read_plan import BulkPlan, plan_standard, plan_years
+from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.read_plan import (
+    BulkPlan,
+    PairPlan,
+    PlanSeries,
+    plan_standard,
+    plan_years,
+    role_election,
+)
 from search.models import BreadthDim, CoverageBare, CoverageBreadth, CoverageExact, TimeWindow
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
@@ -56,9 +63,26 @@ def _one_series(facets: list[Facet]) -> dict[tuple[str, str], list[Facet]]:
 
 
 def _series_each(facets: list[Facet]) -> dict[tuple[str, str], list[Facet]]:
-    """Each of `facets` as the only candidate of its own variable's series, so every facet
-    is served: one variable serves one group."""
+    """Each of `facets` as the only candidate of its own variable's series. The variables
+    elect one group, so every facet sharing the first's id and provenance is served."""
     return {(f"sv{i}", "country/KEN"): [facet] for i, facet in enumerate(facets)}
+
+
+def _served_each(facets: list[Facet], **form) -> object:
+    """Coverage of a plan serving each of `facets` at its own variable's series, whatever
+    their sources: coverage counts what a plan serves, apart from the election that chose
+    it (`plan_standard` serves one group, so one source)."""
+    series = tuple(
+        PlanSeries(
+            stat_var=f"sv{i}",
+            role_tuple=(("observationAbout", "country/KEN"),),
+            candidates=(facet,),
+            group=(facet,),
+        )
+        for i, facet in enumerate(facets)
+    )
+    plan = PairPlan(members=tuple(s.stat_var for s in series), years=None, series=series)
+    return answer_coverage(plan, CoverageForm(**form))
 
 
 def _coverage(
@@ -377,7 +401,7 @@ def test_sources_dim_count_equals_distinct_provenance_count() -> None:
         _facet(obs_count=150, provenance_id="prov-a"),
         _facet(obs_count=200, provenance_id="prov-b"),
     ]
-    cov = _coverage(_series_each(facets))
+    cov = _served_each(facets)
     assert isinstance(cov, CoverageExact)
     sources_dim = next(d for d in dimensions_of(cov) if d.label == "sources")
     assert sources_dim.count == 2
@@ -412,7 +436,7 @@ def test_devfinance_donors_dim_count_equals_distinct_provenance_count() -> None:
         _facet(obs_count=200, provenance_id="prov-b"),
         _facet(obs_count=50, provenance_id="prov-c"),
     ]
-    cov = _coverage(_series_each(facets), facet_label="donors", obs_label="years")
+    cov = _served_each(facets, facet_label="donors", obs_label="years")
     assert isinstance(cov, CoverageExact)
     donors_dim = next(d for d in dimensions_of(cov) if d.label == "donors")
     assert donors_dim.count == 3
@@ -466,7 +490,7 @@ def test_a_facet_without_provenance_id_serves_and_cites_no_source() -> None:
     """A facet without a provenance_id serves its series, read by its facet id, and cites no
     source: its observations count and the sources dimension counts the other's alone."""
     facets = [_facet(obs_count=10, provenance_id=None), _facet(obs_count=5, provenance_id="prov-a")]
-    cov = _coverage(_series_each(facets))
+    cov = _served_each(facets)
     assert isinstance(cov, CoverageExact)
     assert citable_source_ids(facets) == ["prov-a"]
     sources_dim = next(d for d in dimensions_of(cov) if d.label == "sources")
@@ -670,7 +694,7 @@ def test_sources_dim_count_after_facet_id_merge_excludes_an_id_less_block() -> N
     facets = _parse_ordered_facets(facets_raw, top_facets_map, with_dates=True)
     assert len(facets) == 3  # two merged-by-id facets plus the id-less block
 
-    cov = _coverage(_series_each(facets))
+    cov = _served_each(facets)
 
     assert isinstance(cov, CoverageExact)
     sources_dim = next(d for d in dimensions_of(cov) if d.label == "sources")
@@ -716,11 +740,14 @@ def test_windowed_duplicate_facet_id_with_undated_block_stays_breadth() -> None:
 
 def _bulk_plan(years, candidates: list[RoleFacetCandidate]) -> BulkPlan:
     merged = merge_role_candidates(_one_index(candidates), ["sv"])
-    best = select_role_candidate(merged, stat_vars=["sv"], time_period=None)
+    facet_id, selected, _unserved, _continuing = role_election(
+        merged, members=["sv"], read_years=None
+    )
     return BulkPlan(
         members=("sv",),
         years=years,
-        facet_id=best.facet_id if best is not None else None,
+        facet_id=facet_id,
+        selected=selected,
         candidates=merged,
     )
 

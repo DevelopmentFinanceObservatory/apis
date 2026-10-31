@@ -22,11 +22,11 @@
 
 - id: dataset-imputed-health-oda-kenya
   query: imputed health ODA to Kenya
-  why: Bind elects the imputed table's measure, which names that table, and "health" binds crsPurpose 120.
+  why: Bind elects the imputed table's measure, which names that table, and "health" binds CRS 120 and 130, the declared health grouping.
   tags: {theme: health, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
   expect:
     definite:
-      measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode120}}
+      measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
       provenance: {bound: true}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
@@ -39,7 +39,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-disbursements-kenya
@@ -85,7 +85,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-aid-kenya-fr
@@ -158,11 +158,11 @@
 
 - id: dataset-germany-oda-kenya
   query: Germany's ODA to Kenya
-  why: Bilateral ODA from a donor to a recipient reads DAC2a, the default measure for a plain provider-to-recipient question.
+  why: ODA from a donor to a recipient reads DAC2a in net disbursements, the OECD's convention for a recipient's total over every sector.
   tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -173,7 +173,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2024, end: 2024}
 
 - id: dataset-bilateral-oda-ida
@@ -185,11 +185,11 @@
 
 - id: dataset-multilateral-aid-kenya
   query: multilateral aid to Kenya
-  why: '"Multilateral" before the measure, with a recipient named and no provider, reads as the multilateral agencies'' own outflows, which DAC2a publishes as the provider total "multilaterals (DAC)".'
+  why: '"Multilateral" with a recipient and no provider reads as the agencies'' own outflows, DAC2a''s provider total "multilaterals (DAC)", in net disbursements by convention.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: described}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: DACMultilaterals, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -251,11 +251,11 @@
 # include_families asserts inclusion only; the exact count of two candidates is unasserted.
 - id: dataset-imputed-student-costs-kenya
   query: imputed student costs from Germany to Kenya
-  why: '"Imputed student costs" is a CRS cooperation modality published as grant equivalent and as commitment; disbursements outrank commitments, so grant equivalent answers and no table is named.'
+  why: '"Imputed student costs" is a CRS cooperation modality, and a modality part counts gross CRS disbursements by the OECD''s convention, so no table is named.'
   tags: {theme: education, entity: two_roles, direction: both, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: crs.grant_equivalent, bound: {crsCooperationModality: CRSCooperationModalityE02}}
+      measure: {family: crs.disbursement_gross, bound: {crsCooperationModality: CRSCooperationModalityE02}}
       provenance: {bound: false}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
@@ -280,7 +280,7 @@
 
 - id: dataset-education-and-imputed-health-aid-kenya
   query: education aid and imputed health aid to Kenya
-  why: Only the second variable is the imputed measure, so education aid answers from the CRS and health aid from the imputed table.
+  why: Only the second variable is the imputed measure, so education aid answers from the CRS and health aid, CRS 120 and 130 by the declared grouping, from the imputed table.
   tags: {theme: [education, health], entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, conjunction: two_variables}
   expect:
     parts:
@@ -289,24 +289,24 @@
           entities: [{dcid: country/KEN, role: destination}]
           operations: []
       - definite:
-          measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode120}}
+          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
           provenance: {bound: true}
           entities: [{dcid: country/KEN, role: destination}]
           operations: []
 
 - id: dataset-imputed-education-and-health-aid-kenya
   query: imputed education and health aid to Kenya
-  why: One "imputed" marks both variables; their parts share a five-tuple, so each carries the merged spec binding both sectors.
+  why: One "imputed" marks both variables; their parts share a five-tuple, so each carries the merged spec binding education 110 and the health grouping, 120 and 130.
   tags: {theme: [education, health], entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, conjunction: two_variables}
   expect:
     parts:
       - definite:
-          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}}
+          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode110, CRSPurposeCode120, CRSPurposeCode130]}}
           provenance: {bound: true}
           entities: [{dcid: country/KEN, role: destination}]
           operations: []
       - definite:
-          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}}
+          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode110, CRSPurposeCode120, CRSPurposeCode130]}}
           provenance: {bound: true}
           entities: [{dcid: country/KEN, role: destination}]
           operations: []
@@ -336,13 +336,13 @@
 
 - id: dataset-oda-kenya-excluding-crs
   query: ODA to Kenya excluding the CRS
-  why: Excluding the CRS leaves the plain recipient question to DAC2a, which answers with its provenance pinned.
+  why: Excluding the CRS leaves the plain recipient question to DAC2a, which answers in net disbursements by the OECD's convention with its provenance pinned.
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: excluded}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 # raw_text cannot require query_qualifier_dropped, so a definite answer that drops the phrase passes.
@@ -379,11 +379,11 @@
 
 - id: dataset-multilateral-aid-kenya-es
   query: ayuda multilateral a Kenia
-  why: Spanish for "multilateral aid to Kenya", which reads as the multilateral agencies' own outflows, as in the English case.
+  why: 'Spanish for "multilateral aid to Kenya": the multilateral agencies'' own outflows on DAC2a, in net disbursements, as in the English case.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: described, language: es}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: DACMultilaterals, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -396,7 +396,7 @@
     definite:
       measure: {family: dac2a.imputed_multilateral}
       provenance: {bound: false}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-oecd-education-aid-kenya
@@ -412,33 +412,34 @@
 
 - id: dataset-dac2a-oda-kenya
   query: DAC2a ODA to Kenya
-  why: '"DAC2a" names the source, and DAC2a serves the plain recipient question; the answer pins the DAC2a provenance.'
+  why: '"DAC2a" names the source, which serves the plain recipient question in net disbursements by the OECD''s convention; the answer pins the DAC2a provenance.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-total-oda-reported-to-dac-germany
   query: total ODA reported to the DAC by Germany
-  why: A donor total with no recipient answers from DAC1 as total ODA; "the DAC" names a body with no source slot, so the provenance stays unbound.
+  why: A donor total with no recipient is DAC1 total ODA on the OECD headline per year; "the DAC" names a body, so only the headline composite binds the provenance.
   tags: {theme: aid, entity: country, direction: origin_only, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType1010}}
-      provenance: {bound: false}
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
       entities: [{dcid: country/DEU, role: origin}]
       operations: []
 
 - id: dataset-germany-multilateral-oda
   query: Germany's multilateral ODA
-  why: With no recipient this is Germany's core contributions to multilateral agencies, which DAC1 reports as multilateral ODA.
+  why: With no recipient this is Germany's core contributions to multilaterals, DAC1 multilateral ODA, counted on the OECD headline per year as every donor total is.
   tags: {theme: aid, entity: country, direction: origin_only, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType2000}}
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType2000}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
       entities: [{dcid: country/DEU, role: origin}]
       operations: []
 
@@ -486,13 +487,13 @@
     - variable_text: ODA
       entities: [{text: Kenya, role_text: to}]
       sources: [{text: CRS, polarity: exclude}]
-  why: With the CRS excluded, DAC2a answers the plain recipient question and the answer pins the DAC2a provenance.
+  why: With the CRS excluded, DAC2a answers the plain recipient question in net disbursements by the OECD's convention and pins the DAC2a provenance.
   tags: {theme: aid, entity: country, direction: destination_only, door: parsed, dataset: excluded}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       provenance: {bound: true}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-parsed-gdp-kenya-imf
@@ -539,11 +540,11 @@
     - variable_text: health aid
       entities: [{text: Malawi, role_text: to}]
       sources: [{text: the Global Fund, polarity: exclude}]
-  why: The Global Fund is a provider, not a table, so the exclusion removes no series and the CRS answers with its provenance pinned.
+  why: The Global Fund is a provider, not a table, so the exclusion removes no series, and the CRS answers health as CRS 120 and 130 with its provenance pinned.
   tags: {theme: health, entity: country, direction: destination_only, door: parsed, dataset: excluded}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}}
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}}
       provenance: {bound: true}
       entities: [{dcid: country/MWI, role: destination}]
       operations: []

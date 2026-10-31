@@ -40,7 +40,9 @@ _RENDERING_FORMATS: tuple[str, ...] = ("csv", "xlsx", "parquet")
 # `SUPPORTED_ENRICHMENTS - ENABLED_ENRICHMENTS` to `capability_unavailable`
 # once `materialise.reshape.parse_column_tokens` has parsed it as an
 # enrichment request against the materialised frame's own entity columns.
-ENABLED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "party_kind", "type"})
+ENABLED_ENRICHMENTS: frozenset[str] = frozenset(
+    {"iso2", "iso3", "label", "party_kind", "party_class", "party_whole", "type"}
+)
 
 # `groupby` reads summability from the packaged code index, loaded for the process lifetime.
 # This capability is always live because the index is available whenever this module is used.
@@ -93,6 +95,13 @@ class CapabilityCaps(BaseModel):
     )
     pivot_max_output_cells: int = Field(
         description="cap on a pivot's total output cell count (rows x columns) before pivot_over_cell_cap"
+    )
+    groupby_fold_max_rows: int = Field(
+        description=(
+            "cap on the frame rows a groupby that sums the frame folds; a larger frame "
+            "refuses over_ceiling (ceiling_kind rows). A version stored as a frame1 document "
+            "folds row by row under a lower cap"
+        )
     )
     operation_retention_days: int = Field(
         description=(
@@ -184,13 +193,22 @@ class Capabilities(BaseModel):
     enrichment_fields: list[str] = Field(
         description=(
             "enrichment field names this deployment enables. A live token qualifies one as "
-            "{entity_column}_{field} on the columns option. party_kind is a party's kind "
-            "(party, total, residual) from the code index's declaration for it. Long output "
-            "writes {role}_party_kind beside {role}_label "
-            "for every role on a flow axis without a token; a bare party_kind token requests "
-            "it for every role on a flow axis the table has. party_kind qualifies no subject "
-            "role, so observationAbout_party_kind refuses column_unknown. A party the index "
-            "does not list gets an empty cell and an enrichment_unavailable warning"
+            "{entity_column}_{field} on the columns option. Three fields come from the code "
+            "index's declaration of a party: party_kind is its kind (party, total, residual); "
+            "party_class is official, private or residual, and for a total the one class its "
+            "whole markers cover, empty when they cover none or several; party_whole is true "
+            "on a row whose party is a total that "
+            "holds every party of its classes on its axis in that row's dataset and year, such "
+            "as Official Donors, Total, false on a row where it is not, and empty where the "
+            "row names no one dataset and year, as in a pivot. A bare party field token "
+            "requests it for every role on a flow axis the table has, and a file holds a party "
+            "field only when a token asks for it. Long output writes one {role}_kind beside "
+            "{role}_label for every role on a flow axis instead, in words: official or private "
+            "for a provider or creditor, country or organisation for a recipient or debtor, "
+            "total, whole total or unallocated, and ignores party field tokens. A party field "
+            "qualifies no subject role, so observationAbout_party_kind refuses column_unknown. "
+            "A party the index does not list gets an empty cell and an enrichment_unavailable "
+            "warning"
         )
     )
     decode_code_systems: list[str] = Field(
@@ -290,6 +308,7 @@ def build_capabilities(
             async_max_rows=settings.async_max_rows,
             async_max_requests=settings.async_max_requests,
             pivot_max_output_cells=settings.pivot_max_output_cells,
+            groupby_fold_max_rows=settings.groupby_fold_max_rows,
             operation_retention_days=WORKING_TIER_RETENTION.days,
         ),
         code_index=CodeIndexStamp(
