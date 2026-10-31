@@ -193,7 +193,7 @@
                 },
                 "unit": {
                   "ref": "USD",
-                  "label": "USD"
+                  "label": "US dollars"
                 }
               },
               "sources": [
@@ -261,7 +261,6 @@
                 "title",
                 "steps.source_pipeline",
                 "about.measure",
-                "about.unit.label",
                 "sources.0.label",
                 "sources.0.publisher",
                 "sources.0.licence",
@@ -864,7 +863,7 @@
                 },
                 "unit": {
                   "ref": "USD",
-                  "label": "USD"
+                  "label": "US dollars"
                 }
               },
               "sources": [
@@ -932,7 +931,6 @@
                 "title",
                 "steps.source_pipeline",
                 "about.measure",
-                "about.unit.label",
                 "sources.0.label",
                 "sources.0.publisher",
                 "sources.0.licence",

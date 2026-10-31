@@ -19,8 +19,12 @@ everywhere, so the recording is stable and ids still line up across pairs:
 A JSON body is recorded whole. A file body is recorded as its first bytes: text for CSV, hex
 for a ZIP. Record again from the repository root:
 
-    uv run --frozen --extra engine --extra eval --extra datasets --extra graph \
+    SEARCH_GRAPH_BASE=https://graph.offline.invalid \
+        uv run --frozen --extra engine --extra eval --extra datasets --extra graph \
         python -m tests.live_refresh.wire_pairs
+
+`SEARCH_GRAPH_BASE` is the offline value tests/conftest.py sets; the module does not import
+without it.
 """
 
 from __future__ import annotations
