@@ -24,7 +24,7 @@ from enum import Enum
 from functools import partial, reduce
 from itertools import chain, groupby
 from threading import Lock
-from typing import TYPE_CHECKING, Literal, Protocol, final
+from typing import TYPE_CHECKING, Literal, Protocol, cast, final
 
 from dc_graph import CURRENCY_UNIT_OF_MEASURE_ISO_CODES
 from dc_graph import earliest_date as _earliest
@@ -360,6 +360,28 @@ class FacetSelection:
             "selection_reason": self.selection_reason,
             "dispatch_facet_id": self.dispatch_facet_id,
         }
+
+    @classmethod
+    def of_trace_entry(
+        cls, entry: Mapping[str, object], *, continued_by: str | None = None
+    ) -> FacetSelection:
+        """The selection a stored `trace.facets` entry (`as_trace_entry`) records, with the
+        method `trace.continuations` names on its axis as `continued_by`. The entry keeps no
+        unit `request`, `national_currency` or `ranked_values`. Of those `admits` reads only
+        `national_currency`, which no group binds (`pipeline._refuse_group_national_currency`),
+        so a group's rebuilt selection admits what its stored one did."""
+        return cls(
+            axis=cast(str, entry["axis"]),
+            ref=cast("str | None", entry["ref"]),
+            basis=cast(
+                'Literal["bound", "declared_default", "deployment_fallback"]', entry["basis"]
+            ),
+            default_policy=cast("str | None", entry["default_policy"]),
+            default_policy_version=cast("str | None", entry["default_policy_version"]),
+            selection_reason=cast("str | None", entry["selection_reason"]),
+            dispatch_facet_id=cast(str, entry["dispatch_facet_id"]),
+            continued_by=continued_by,
+        )
 
     def choice_entry(self) -> dict[str, object] | None:
         """The trace's `choices` entry for a value chosen over disagreeing candidates: `axis`
@@ -2717,6 +2739,22 @@ def joint_matches(
             selection.admits(facet_axis_value(c, axis)) for axis, selection in selections.items()
         )
     ]
+
+
+def facets_in_window(
+    candidates: Sequence[Facet],
+    *,
+    selections: Mapping[str, FacetSelection],
+    window: RequestedWindow | None,
+) -> bool | None:
+    """Whether a candidate jointly matching `selections` (`joint_matches`) holds a point in
+    `window` (`overlaps_window`), `None` when none jointly matches. Its one caller,
+    `group_facets.classify_uncounted`, calls a member the election did not count off cadence
+    when this is true and out of the window when it is false."""
+    matches = joint_matches(candidates, selections)
+    if not matches:
+        return None
+    return any(overlaps_window(facet, window=window) for facet in matches)
 
 
 def joint_dispatch_facet_ids(

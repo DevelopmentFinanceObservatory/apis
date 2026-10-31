@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from materialise.errors import (
     DefaultFacetUndefinedError,
@@ -49,6 +49,7 @@ from materialise.facets import (
     dataset_candidates,
     facet_axis_value,
     facet_election,
+    facets_in_window,
     joined_breadth,
     joint_dispatch_facet_ids,
     joint_matches,
@@ -107,11 +108,36 @@ def is_populated(candidates: Iterable[_Identified]) -> bool:
     return any(c.facet_id is not None for c in candidates)
 
 
-def _populated_mask(candidates: Sequence[Sequence[Facet]]) -> list[bool]:
-    """Marks members with a candidate `facet_id` (`is_populated`), in request order.
+# How a group member the election did not count is left out (`classify_uncounted`).
+type UncountedKind = Literal["off_cadence", "out_of_window", "unserved"]
 
-    The shared mask keeps policy agreement and the unserved members aligned.
-    """
+
+def classify_uncounted(
+    candidates: Sequence[Facet],
+    *,
+    electable: Sequence[Facet],
+    selections: Mapping[str, FacetSelection],
+    window: RequestedWindow | None,
+) -> UncountedKind | None:
+    """How a group member the election did not count (`FacetElection.members`) is left out,
+    from its `candidates` and those its elected dataset publishes (`electable`,
+    `facets.dataset_candidates`). `off_cadence` when a candidate jointly matching
+    `selections` holds a point in `window`, so its observations in those years are at another
+    period than the group's; `out_of_window` when such candidates hold none; `unserved` when
+    none jointly matches and the member is populated (`is_populated`), so its observations sit
+    under another source, unit or method; `None` for an unpopulated member, which no warning
+    names. The mint's warning (`generation._plan_group_members`), `GroupElection.unserved` and
+    the stored-warning backfill (`datasets_api.warning_backfill`) all classify here."""
+    in_window = facets_in_window(candidates, selections=selections, window=window)
+    if in_window is not None:
+        return "off_cadence" if in_window else "out_of_window"
+    return "unserved" if is_populated(electable) else None
+
+
+def _populated_mask(candidates: Sequence[Sequence[Facet]]) -> list[bool]:
+    """Marks members with a candidate `facet_id` (`is_populated`), in request order, for
+    `_group_declared_policies`. `classify_uncounted` names a member unserved by the same
+    `is_populated`, so the members whose policies count are those a warning can name."""
     return [is_populated(member_candidates) for member_candidates in candidates]
 
 
@@ -419,16 +445,22 @@ class GroupElection:
     dispatches under (`election`), and, per member in request order, the facet ids its
     dispatch serves (`dispatch_ids`, `facets.joint_dispatch_facet_ids`), those of them that
     continue the selected series past its last year (`continuing_ids`,
-    `facets.continuing_facet_ids`), the populated members holding no facet that matches the
-    selections, which serve nothing (`unserved`), and the members holding the elected
-    group's agreement key that hold no such facet either (`incoherent`), which the mint
-    refuses (`select_group_facets`)."""
+    `facets.continuing_facet_ids`), how a member the election did not count is left out
+    (`uncounted`, `classify_uncounted`, `None` for a counted or unpopulated member), and the
+    members holding the elected group's agreement key that hold no facet matching the
+    selections (`incoherent`), which the mint refuses (`select_group_facets`)."""
 
     election: FacetElection
     dispatch_ids: tuple[tuple[str, ...], ...]
     continuing_ids: tuple[tuple[str, ...], ...]
-    unserved: tuple[int, ...] = ()
+    uncounted: tuple[UncountedKind | None, ...] = ()
     incoherent: tuple[int, ...] = ()
+
+    @property
+    def unserved(self) -> tuple[int, ...]:
+        """The populated members holding no facet that matches the selections, which serve
+        nothing, in request order."""
+        return tuple(index for index, kind in enumerate(self.uncounted) if kind == "unserved")
 
     def selected(self, member: int) -> frozenset[str]:
         """The facet ids member `member` dispatches for the selection itself: its dispatch
@@ -546,12 +578,13 @@ def elect_group(
             continuing_facet_ids(member, election, member=index)
             for index, member in enumerate(members)
         ),
-        unserved=tuple(
-            index
-            for index, (member, populated) in enumerate(
-                zip(members, _populated_mask(electable), strict=True)
+        uncounted=tuple(
+            None
+            if index in election.members
+            else classify_uncounted(
+                member, electable=member_electable, selections=election.selections, window=window
             )
-            if populated and not joint_matches(member, election.selections)
+            for index, (member, member_electable) in enumerate(zip(members, electable, strict=True))
         ),
         incoherent=incoherent,
     )
