@@ -225,7 +225,7 @@ def build_derived_door(*, deps: DepsCell) -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={MANIFEST_PATH: "datasets.snapshot"},
+        registry_endpoints={("GET", MANIFEST_PATH): "datasets.snapshot"},
         classify=classify_datasets_refusal,
         exception_types=(
             SnapshotNotFound,
@@ -270,7 +270,7 @@ def build_derived_files_door(*, deps: DepsCell) -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={FILE_PATH: "datasets.files"},
+        registry_endpoints={("GET", FILE_PATH): "datasets.files"},
         classify=classify_files_exception,
         exception_types=(
             SnapshotNotFound,

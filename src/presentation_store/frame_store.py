@@ -158,7 +158,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Protocol, cast
+from typing import Protocol, TypeGuard, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -398,22 +398,46 @@ def _io_failure(*, action: str, digest: str, exc: Exception) -> FrameUnavailable
     )
 
 
+def _is_frame_document(doc: object) -> TypeGuard[Mapping[str, object]]:
+    """Whether `doc`, parsed from a frame1 document, has the shape every reader of a frame
+    takes: named columns, and rows of one cell per column."""
+    if not isinstance(doc, dict):
+        return False
+    columns, rows = doc.get("columns"), doc.get("rows")
+    return (
+        isinstance(columns, list)
+        and all(isinstance(column, str) for column in columns)
+        and isinstance(rows, list)
+        and all(isinstance(row, list) and len(row) == len(columns) for row in rows)
+    )
+
+
 def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
     """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
     document parsed, at its byte length, or a canonical frame built into one, at
     `_document_bytes`. A canonical frame whose Parquet footer counts more than `max_rows` rows
-    refuses `missing_rendering` before any row is decoded. Bytes that do not decode never will,
-    so they refuse `missing_rendering` too."""
+    refuses `missing_rendering` before any row is decoded.
+
+    `data` is in memory and passed its digest check, so a decoder's verdict on it is final. Bytes
+    the decoders reject as malformed refuse `missing_rendering`: `ValueError`, which covers
+    `pa.ArrowInvalid` and malformed JSON; `OSError`, which is how pyarrow reports a corrupt footer,
+    page, or column chunk, and no read here touches a file; `RecursionError` from JSON nested past
+    the parser's depth; and a parsed document that is not a frame. Any other Arrow failure and
+    `MemoryError` say nothing about the bytes, since an allocation failure or a codec this build
+    lacks clears on another instance or release, so they refuse the retryable `io`."""
     try:
         if location.media_type == FRAME1_MEDIA_TYPE:
-            return cast("Mapping[str, object]", json.loads(data)), len(data)
+            parsed = json.loads(data)
+            if not _is_frame_document(parsed):
+                raise ValueError("not a frame1 document")
+            return parsed, len(data)
         rows = pq.read_metadata(pa.BufferReader(data)).num_rows
         if rows > max_rows:
             raise _over_row_bound(location, rows=rows, max_rows=max_rows)
         doc = canonical_frame_document(read_canonical_frame_table(data))
-    except (ValueError, pa.ArrowException) as exc:
+    except (ValueError, OSError, RecursionError) as exc:
         raise FrameUnavailable(
             reason="missing_rendering",
             detail=(
@@ -421,6 +445,8 @@ def _decode_frame(
                 f"{type(exc).__name__}"
             ),
         ) from None
+    except (MemoryError, pa.ArrowException) as exc:
+        raise _io_failure(action="decoding", digest=location.artifact_digest, exc=exc) from None
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
 
@@ -1253,7 +1279,7 @@ class LiveFrameStore:
         write, makes a retry pin the roots. A derived frame with no recipe that a reference
         already names pins with no roots (`_recipe_roots`). A store with no recipe reader, and
         a recipe root that names no dataset version, refuse `recipe_unreadable`, a server
-        fault. Both answer a retryable 503 (`presentation_api.refusals`). Then the frame pins,
+        fault no retry clears (`presentation_api.refusals`). Then the frame pins,
         and a refusal there pins nothing either. Then each root pins while it is still held: a
         root that aged out of the working tier, was revoked, or cannot be read is left unpinned
         and logged. A root whose pin fails on I/O raises `io`, and a retry pins what is left.

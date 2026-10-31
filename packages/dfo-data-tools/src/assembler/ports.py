@@ -176,15 +176,28 @@ class ResolvedFrame:
     rendering: Mapping[str, object] | None = None
 
 
+# Why a frame does not load. Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed
+# on retry. `recipe_pending` (a derived frame with no recipe yet), which a recipe write clears, and
+# `recipe_unreadable` (a store with no recipe reader, or a recipe root naming no dataset version),
+# which no retry clears, refuse a pin. `pending` is a newest version not ready to serve, which a
+# retry may find ready. `io` is a store that fails to answer.
+FrameUnavailableReason = Literal[
+    "revoked",
+    "expired",
+    "missing_rendering",
+    "digest_mismatch",
+    "ops_unsupported",
+    "quarantined",
+    "recipe_pending",
+    "recipe_unreadable",
+    "pending",
+    "io",
+    "unknown",
+]
+
+
 class FrameUnavailable(Exception):
-    # reason: "revoked" | "expired" | "missing_rendering" | "digest_mismatch" |
-    # "ops_unsupported" | "quarantined" | "recipe_pending" | "recipe_unreadable" | "io" |
-    # "unknown"
-    # Publishing an `ops_`/`ocv_` pair can make `ops_unsupported` succeed on retry.
-    # `recipe_pending` (a derived frame with no recipe yet) and `recipe_unreadable` (a store with
-    # no recipe reader, or a recipe root naming no dataset version) refuse a pin, and both are
-    # retryable.
-    def __init__(self, *, reason: str, detail: str) -> None:
+    def __init__(self, *, reason: FrameUnavailableReason, detail: str) -> None:
         self.reason = reason
         self.detail = detail
         super().__init__(detail)

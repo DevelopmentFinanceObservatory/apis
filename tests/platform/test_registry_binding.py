@@ -39,6 +39,7 @@ from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
 from search.engine.config import SEARCH_RESOLVE_DOORS
 from search.models import NoDataReason
+from tests.code_registry import registered_status_codes
 
 _REGISTRY = load_registry()
 
@@ -220,25 +221,9 @@ def _served_status_codes(
     return frozenset(outcomes)
 
 
-def _registered_status_codes(endpoint: str) -> frozenset[tuple[str, int]]:
-    """Returns active `problem_details` code-status pairs for `endpoint`.
-
-    Manifest warnings use a separate channel without HTTP statuses."""
-    pairs: set[tuple[str, int]] = set()
-    for entry in _REGISTRY.entries:
-        if entry.lifecycle != "active":
-            continue
-        for mapping in entry.mappings:
-            if mapping.endpoint != endpoint or mapping.channel != "problem_details":
-                continue
-            assert mapping.http_status is not None
-            pairs.add((entry.code, mapping.http_status))
-    return frozenset(pairs)
-
-
 def _assert_endpoint_bijection(*, endpoint: str, contribution: DoorContribution) -> None:
     served = frozenset(_served_status_codes(contribution, endpoint=endpoint))
-    registered = _registered_status_codes(endpoint)
+    registered = registered_status_codes(endpoint)
     unregistered = sorted(served - registered)
     unserved = sorted(registered - served)
     assert not unregistered and not unserved, (

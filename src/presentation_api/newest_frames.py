@@ -29,7 +29,7 @@ for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`).
 served definition's newest version in the root's default rendering, rebuilt when its head is stale.
 A rebuild too large for the call's budget (`doors.definition.inline_definition_deps`) goes to an
 operation, so a retry finds it, and the call answers `NewestPending`.
-`resolve_bare_spec` turns its refusals into the `frame_unavailable` the presentation doors serve.
+`resolve_bare_spec` turns its refusals into the `FrameUnavailable` the presentation doors refuse.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
 that mounts that surface (`dfo_apis.app` passes the cell and the `RunningAnalyses` to both).
@@ -202,7 +202,7 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
     """The frame a bare `spec_id` names (`NewestFrames.newest_of_spec`).
 
     Raises:
-        FrameUnavailable: `io` (503, retryable) while the version builds or for a refusal a
+        FrameUnavailable: `pending` (retryable) while the version builds or for a refusal a
             retry may clear; `quarantined` for a quarantined identity; `revoked` for a revoked
             version; `unknown` (404) for any other refusal below status 500, the Datasets code
             and detail in its detail; and
@@ -227,7 +227,7 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         if problem is None:
             raise
         if problem.retryable:
-            reason = "io"
+            reason = "pending"
         elif problem.code == "identity_quarantined":
             reason = "quarantined"
         elif problem.code == "snapshot_revoked":
@@ -244,7 +244,7 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         ) from exc
     if isinstance(resolved, NewestPending):
         raise FrameUnavailable(
-            reason="io",
+            reason="pending",
             detail=f"the newest version of {spec_id} is building; retry in "
             f"{math.ceil(resolved.retry_after_s)} s",
         )

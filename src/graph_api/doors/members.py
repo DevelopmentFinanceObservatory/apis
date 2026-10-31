@@ -740,8 +740,8 @@ def build_members_door() -> DoorContribution:
     return DoorContribution(
         router=router,
         registry_endpoints={
-            "/api/graph/node/{dcid:dcid}/members": "graph.members",
-            "/api/graph/roots": "graph.roots",
+            ("GET", "/api/graph/node/{dcid:dcid}/members"): "graph.members",
+            ("GET", "/api/graph/roots"): "graph.roots",
         },
         classify=classify_members_exception,
         exception_types=(

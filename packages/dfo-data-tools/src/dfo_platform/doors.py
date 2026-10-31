@@ -12,6 +12,9 @@ from fastapi.routing import APIRoute
 from dfo_platform import ProblemSpec
 from dfo_platform.codes import bound_endpoint
 
+# A route as `registry_endpoints` names it: its method, and its path as the router declares it.
+type RouteKey = tuple[str, str]
+
 
 @dataclass(frozen=True)
 class DoorContribution:
@@ -20,7 +23,7 @@ class DoorContribution:
     Routers carry full paths. Classifiers return `None` for unrecognised exceptions. Lifespans enter
     together. Middleware checks run synchronously before FastAPI parses the request body. Each
     check decides for itself, for example by path, whether a request concerns it.
-    `registry_endpoints` maps each route path to the code registry endpoint it serves
+    `registry_endpoints` maps each route's `RouteKey` to the code registry endpoint it serves
     (`dfo_platform.app.Surface.registry_endpoints`), and `public_paths` names the route paths any
     origin may read (`dfo_platform.app.Surface.public_paths`).
     """
@@ -31,7 +34,7 @@ class DoorContribution:
     exception_exemplars: tuple[BaseException, ...] = ()
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
-    registry_endpoints: Mapping[str, str] = field(default_factory=dict)
+    registry_endpoints: Mapping[RouteKey, str] = field(default_factory=dict)
     public_paths: frozenset[str] = frozenset()
 
 
@@ -86,6 +89,16 @@ def flatten(doors: Iterable[DoorContribution]) -> APIRouter:
     return router
 
 
-def route_registry_endpoints(router: APIRouter, endpoint: str) -> dict[str, str]:
+def route_keys(router: APIRouter) -> frozenset[RouteKey]:
+    """The `RouteKey` of each method each route on `router` answers."""
+    return frozenset(
+        (method, route.path)
+        for route in router.routes
+        if isinstance(route, APIRoute)
+        for method in route.methods or ()
+    )
+
+
+def route_registry_endpoints(router: APIRouter, endpoint: str) -> dict[RouteKey, str]:
     """Map every route on `router` to the one code registry `endpoint` its door serves."""
-    return {route.path: endpoint for route in router.routes if isinstance(route, APIRoute)}
+    return dict.fromkeys(route_keys(router), endpoint)

@@ -119,11 +119,26 @@ def test_frame_unavailable_outcome_change_moves_the_token(release: CatalogueRele
     baseline = version.compute_presentation_capability_version(release=release)
     mutated_outcome = dict(version._FRAME_UNAVAILABLE_OUTCOME)
     reason = next(iter(sorted(mutated_outcome)))
-    code, status, retryable = mutated_outcome[reason]
-    mutated_outcome[reason] = (code, status, not retryable)
+    code, retryable = mutated_outcome[reason]
+    mutated_outcome[reason] = (code, not retryable)
 
     perturbed = version.compute_presentation_capability_version(
         release=release, frame_unavailable_outcome=mutated_outcome
+    )
+
+    assert perturbed != baseline
+
+
+def test_a_registry_status_change_on_any_endpoint_moves_the_token(release: CatalogueRelease):
+    """A pin bump that changes what the render routes serve moves the token."""
+    baseline = version.compute_presentation_capability_version(release=release)
+    statuses = {
+        endpoint: dict(codes) for endpoint, codes in version.presentation_statuses().items()
+    }
+    statuses["presentation.render"]["frame_unavailable"] = 410
+
+    perturbed = version.compute_presentation_capability_version(
+        release=release, registry_statuses=statuses
     )
 
     assert perturbed != baseline

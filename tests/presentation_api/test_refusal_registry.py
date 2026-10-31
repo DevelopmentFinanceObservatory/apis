@@ -1,56 +1,94 @@
-"""Every Presentation route that serves a code registry endpoint binds it, and every exemplar goes
-out at the status the registry gives its code on the endpoint whose routes raise it: a render
-door exemplar on `presentation.render`, a shares door exemplar on `presentation.shares`, and every
-other exemplar on `presentation.write`.
-
-The registry maps no endpoint onto Presentation's read routes. They share the write routes'
-classifiers, so they serve the write routes' statuses.
+"""Every Presentation route but the meta routes binds the code registry endpoint it serves, and
+every exemplar and `FrameUnavailable` reason a door's routes raise goes out, through the surface's
+classifier with the route's endpoint bound, at the one status the registry gives its code there.
 """
 
 from __future__ import annotations
 
-from dfo_spec_kit.registry import REGISTRY
+import logging
+from collections import Counter
 
-from assembler.errors import FrameUnavailable
+import pytest
+
+from assembler.errors import (
+    BindingInvalid,
+    ConstraintViolation,
+    FrameUnavailable,
+    ReleaseMismatch,
+    ResourceExhausted,
+    SchemaInvalid,
+    WriteRefused,
+)
 from assembler.fakes import FakeReleaseRegistry
+from assembler.pipeline import ComponentHoldsNoFrame
+from assembler.ports import FrameUnavailableReason
+from datasets_api.allowance import AllowanceExhausted
+from datasets_api.door_executor import build_door_executor
+from datasets_api.live_refresh import RefreshNotPermitted
 from dfo_platform.codes import bound_registry_endpoint
+from dfo_platform.doors import DoorContribution
 from presentation_api.app import presentation_surface
-from presentation_api.doors.render import RENDER_EXCEPTION_EXEMPLARS
-from presentation_api.doors.shares import SHARES_EXCEPTION_EXEMPLARS
-from presentation_api.refusals import _FRAME_UNAVAILABLE_OUTCOME
+from presentation_api.codes import (
+    _UNCHANGED_RETRY_MODES,
+    CODE_RETRY_MODE,
+    RENDER_ENDPOINT,
+    served_status,
+)
+from presentation_api.doors.components import build_components_door
+from presentation_api.doors.frames import build_frames_door
+from presentation_api.doors.render import RenderTargetMismatch
+from presentation_api.doors.shares import build_shares_door
+from presentation_api.refusals import _FRAME_UNAVAILABLE_OUTCOME, frame_unavailable_spec
+from tests.code_registry import problem_statuses, registered_endpoints, unbound_routes
 
-_WRITE = "presentation.write"
-_RENDER = "presentation.render"
-_SHARES = "presentation.shares"
-
-# Codes of the write routes alone. No render route raises them, and every other code a non-share
-# exemplar classifies to must be mapped on `presentation.render`, whose routes restate it.
-_WRITE_ONLY_CODES = frozenset({"write_refused", "allowance_exhausted"})
-
-# Routes that serve no registry endpoint. The component read shares the revise route's path,
-# so it is bound with it.
+# Routes that serve no registry endpoint: they refuse only with platform codes.
 _UNBOUND_PATHS = frozenset(
     {
         "/api/presentation/healthz",
         "/api/presentation/capabilities",
         "/api/presentation/release",
-        "/api/presentation/frames/{spec_id}",
-        "/api/presentation/frames/{spec_id}/{content_version}",
-        "/api/presentation/components/{component_id}/revisions/{revision}/data",
     }
 )
 
-
-def _statuses(code: str, endpoint: str) -> set[int]:
-    """The statuses the registry gives `code`'s problem details on `endpoint`."""
-    entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
-    return {
-        mapping.http_status
-        for mapping in (entry.mappings if entry is not None else ())
-        if mapping.channel == "problem_details"
-        and mapping.http_status is not None
-        and mapping.endpoint == endpoint
+# The endpoints whose routes load or pin a frame.
+_FRAME_ENDPOINTS = frozenset(
+    {
+        "presentation.write",
+        "presentation.component_data",
+        "presentation.frames",
+        "presentation.render",
+        "presentation.shares",
     }
+)
+
+_RENDER_ONLY = (RefreshNotPermitted, RenderTargetMismatch, ComponentHoldsNoFrame)
+_WRITES_AND_DRAWS = (
+    AllowanceExhausted,
+    WriteRefused,
+    SchemaInvalid,
+    ConstraintViolation,
+    ResourceExhausted,
+)
+
+# What each endpoint's routes do not raise, of the exemplars of the door that serves them.
+_NOT_RAISED: dict[str, tuple[type[BaseException], ...]] = {
+    "presentation.write": _RENDER_ONLY,
+    "presentation.component_read": (*_RENDER_ONLY, *_WRITES_AND_DRAWS, BindingInvalid),
+    "presentation.component_data": (*_RENDER_ONLY, *_WRITES_AND_DRAWS, ReleaseMismatch),
+    "presentation.render": (AllowanceExhausted, WriteRefused),
+    "presentation.frames": (),
+    "presentation.shares": (RefreshNotPermitted,),
+}
+
+
+@pytest.fixture
+def doors(release_registry: FakeReleaseRegistry) -> tuple[DoorContribution, ...]:
+    reads = build_door_executor(1, "test-frames-bare", surface="presentation")
+    return (
+        build_components_door(release_registry=release_registry, bare_reads=reads),
+        build_frames_door(bare_reads=reads),
+        build_shares_door(release_registry=release_registry),
+    )
 
 
 def test_every_presentation_route_binds_the_registry_endpoint_it_serves(
@@ -59,58 +97,75 @@ def test_every_presentation_route_binds_the_registry_endpoint_it_serves(
     """The surface binds every Presentation endpoint the registry maps, each to a route it
     serves, and leaves only the routes in `_UNBOUND_PATHS` unbound."""
     surface = presentation_surface(release_registry=release_registry)
-    registered = {
-        mapping.endpoint
-        for entry in REGISTRY.entries
-        for mapping in entry.mappings
-        if mapping.endpoint.startswith("presentation.")
-    }
-    routed = {getattr(route, "path", None) for route in surface.router.routes}
 
-    assert set(surface.registry_endpoints.values()) == registered
-    assert routed - set(surface.registry_endpoints) == _UNBOUND_PATHS
+    assert set(surface.registry_endpoints.values()) == registered_endpoints("presentation.")
+    assert {path for _, path in unbound_routes(surface)} == _UNBOUND_PATHS
 
 
-def test_every_presentation_exemplar_goes_out_at_its_registered_status(
-    release_registry: FakeReleaseRegistry,
+def test_each_presentation_endpoint_belongs_to_one_door(doors: tuple[DoorContribution, ...]):
+    """`classify_by_door` tries the door that owns the bound endpoint first, so a shared endpoint
+    would hand one door's routes to the other."""
+    owners = Counter(
+        endpoint for door in doors for endpoint in set(door.registry_endpoints.values())
+    )
+    assert [endpoint for endpoint, count in owners.items() if count > 1] == []
+
+
+def _raised_on(endpoint: str, exemplar: BaseException) -> bool:
+    """Whether a route of `endpoint` raises `exemplar`: a door's exemplars cover every route it
+    serves."""
+    return not isinstance(exemplar, _NOT_RAISED[endpoint])
+
+
+def test_every_presentation_refusal_goes_out_at_its_registered_status(
+    release_registry: FakeReleaseRegistry, doors: tuple[DoorContribution, ...]
 ):
-    """Each exemplar, classified with its routes' endpoint bound, goes out at the one status the
-    registry gives its code there, and its code is mapped on that endpoint. So does every
-    `FrameUnavailable` reason, on the write and share routes."""
+    """A code a route raises and the registry leaves off its endpoint fails here, and on a render
+    route `retryable` holds only for a code the same request may pass later."""
     surface = presentation_surface(release_registry=release_registry)
-    render_exemplars = {id(exemplar) for exemplar in RENDER_EXCEPTION_EXEMPLARS}
-    share_exemplars = {id(exemplar) for exemplar in SHARES_EXCEPTION_EXEMPLARS}
-    reasons = [
+    reasons = tuple(
         FrameUnavailable(reason=reason, detail="exemplar") for reason in _FRAME_UNAVAILABLE_OUTCOME
-    ]
-    bound: list[tuple[str, BaseException]] = [
-        *((_WRITE, exemplar) for exemplar in reasons),
-        *((_SHARES, exemplar) for exemplar in reasons),
-    ]
-    for exemplar in surface.exception_exemplars:
-        if id(exemplar) in render_exemplars:
-            bound.append((_RENDER, exemplar))
-        elif id(exemplar) in share_exemplars:
-            bound.append((_SHARES, exemplar))
-        else:
-            bound.append((_WRITE, exemplar))
+    )
     disagreements: set[tuple[str, str, str, int]] = set()
-    unmapped: set[tuple[str, str, str]] = set()
-    unmapped_on_render: set[str] = set()
-    checked: set[str] = set()
-    for endpoint, exemplar in bound:
-        with bound_registry_endpoint(endpoint):
-            spec = surface.classify(exemplar)
-        assert spec is not None, repr(exemplar)
-        checked.add(endpoint)
-        statuses = _statuses(spec.code, endpoint)
-        if not statuses:
-            unmapped.add((type(exemplar).__qualname__, endpoint, spec.code))
-        elif statuses != {spec.status}:
-            disagreements.add((type(exemplar).__qualname__, endpoint, spec.code, spec.status))
-        if endpoint == _WRITE and not _statuses(spec.code, _RENDER):
-            unmapped_on_render.add(spec.code)
-    assert checked == {_WRITE, _RENDER, _SHARES}
+    swept: set[str] = set()
+    for door in doors:
+        for endpoint in set(door.registry_endpoints.values()):
+            frame_refusals = reasons if endpoint in _FRAME_ENDPOINTS else ()
+            for exemplar in (*door.exception_exemplars, *frame_refusals):
+                if not _raised_on(endpoint, exemplar):
+                    continue
+                with bound_registry_endpoint(endpoint):
+                    spec = surface.classify(exemplar)
+                assert spec is not None, repr(exemplar)
+                swept.add(endpoint)
+                if problem_statuses(spec.code, endpoint) != {spec.status}:
+                    disagreements.add(
+                        (type(exemplar).__qualname__, endpoint, spec.code, spec.status)
+                    )
+                if endpoint == RENDER_ENDPOINT and spec.retryable:
+                    assert CODE_RETRY_MODE[spec.code] in _UNCHANGED_RETRY_MODES, repr(exemplar)
+    assert swept == registered_endpoints("presentation.")
     assert sorted(disagreements) == []
-    assert sorted(unmapped) == []
-    assert unmapped_on_render == _WRITE_ONLY_CODES
+
+
+@pytest.mark.parametrize(
+    ("reason", "logged"),
+    [("io", True), ("recipe_unreadable", True), ("pending", False), ("expired", False)],
+)
+def test_a_frame_refusal_that_names_a_server_fault_logs_an_error(
+    caplog: pytest.LogCaptureFixture, reason: FrameUnavailableReason, logged: bool
+):
+    with bound_registry_endpoint("presentation.shares"), caplog.at_level(logging.ERROR):
+        frame_unavailable_spec(FrameUnavailable(reason=reason, detail="exemplar"))
+
+    assert bool(caplog.records) is logged
+
+
+def test_a_code_the_bound_endpoint_leaves_unmapped_keeps_its_refusal_and_logs(
+    caplog: pytest.LogCaptureFixture,
+):
+    with bound_registry_endpoint(RENDER_ENDPOINT), caplog.at_level(logging.ERROR):
+        status = served_status("write_refused")
+
+    assert status == 403
+    assert "write_refused" in caplog.text

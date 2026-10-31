@@ -491,7 +491,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             503,
             "service_unavailable",
             True,
-            None,
+            "pending",
             id="building",
         ),
         pytest.param(
@@ -503,7 +503,7 @@ def test_a_bare_id_the_runner_takes_no_spec_root_of_is_request_invalid(
             id="not-registered",
         ),
         pytest.param(
-            MintBackpressure(), 503, "service_unavailable", True, None, id="mint-backpressure"
+            MintBackpressure(), 503, "service_unavailable", True, "pending", id="mint-backpressure"
         ),
         pytest.param(
             IdentityQuarantined(subject_id=BARE_SPEC_ID, id_kind="spec"),
@@ -538,7 +538,7 @@ def test_a_bare_spec_id_that_cannot_be_served_answers_by_cause(
     status: int,
     code: str,
     retryable: bool,
-    cause: str | None,
+    cause: str,
 ):
     newest_specs.answer = answer  # ty: ignore[invalid-assignment]
 
@@ -547,7 +547,7 @@ def test_a_bare_spec_id_that_cannot_be_served_answers_by_cause(
     assert resp.status_code == status, resp.text
     body = resp.json()
     assert (body["code"], body["retryable"]) == (code, retryable)
-    assert (body.get("cause") or {}).get("code") == cause
+    assert body["cause"]["code"] == cause
 
 
 def test_bare_reads_at_their_limit_refuse_and_leave_pair_reads_their_permits(

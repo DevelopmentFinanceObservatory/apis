@@ -35,9 +35,9 @@ from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.store_errors import store_failure_is_permanent
-from presentation_api.codes import retryable_for
+from presentation_api.codes import FRAMES_ENDPOINT, retryable_for, served_status
 from presentation_api.config import (
     PRESENTATION_FRAMES_MAX_CONCURRENCY,
     PRESENTATION_FRAMES_TIMEOUT_SECONDS,
@@ -65,7 +65,7 @@ class FramesBackpressure(Exception):
 def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, PathParamInvalid):
         return ProblemSpec(
-            status=400,
+            status=served_status("request_invalid"),
             code="request_invalid",
             detail=str(exc),
             retryable=False,
@@ -76,7 +76,7 @@ def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
         return frame_unavailable_spec(exc)
     if isinstance(exc, FramesBackpressure):
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="the frames door is at its concurrent-read capacity right now; retry",
             retryable=retryable_for("service_unavailable"),
@@ -85,7 +85,7 @@ def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
         # A frame load reads the registry to scope its revocation check, and fails closed.
         logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
@@ -97,14 +97,14 @@ def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
                 exc,
             )
             return ProblemSpec(
-                status=500,
+                status=served_status("internal_error"),
                 code="internal_error",
                 detail="a frame store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
         logger.error("Datasets store call underlying a frame load failed: %s", exc)
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="a frame store call failed; retry",
             retryable=retryable_for("service_unavailable"),
@@ -254,6 +254,7 @@ def build_frames_door(
 
     return DoorContribution(
         router=router,
+        registry_endpoints=route_registry_endpoints(router, FRAMES_ENDPOINT),
         classify=classify_frames_exception,
         exception_types=(
             PathParamInvalid,

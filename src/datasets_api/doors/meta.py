@@ -491,5 +491,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
             OperationBackpressure(),
             OperationBacklogFull(in_flight=1, limit=1),
         ),
-        registry_endpoints={"/api/datasets/operations/{operation_id}": "datasets.operations"},
+        registry_endpoints={
+            ("GET", "/api/datasets/operations/{operation_id}"): "datasets.operations"
+        },
     )

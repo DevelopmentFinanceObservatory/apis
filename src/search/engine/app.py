@@ -1249,8 +1249,8 @@ def search_surface(
         ),
         lifespan=lifespan,
         registry_endpoints={
-            "/api/search/resolve": "search.resolve",
-            "/api/search/options": "search.options",
+            ("POST", "/api/search/resolve"): "search.resolve",
+            ("POST", "/api/search/options"): "search.options",
         },
         request_scope=lambda: _request_scope(catalogue, release, conversions, variable_breadth),
     )

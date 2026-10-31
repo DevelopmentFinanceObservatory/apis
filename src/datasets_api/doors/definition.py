@@ -1010,9 +1010,10 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
     return DoorContribution(
         router=router,
         registry_endpoints={
-            "/api/datasets/{id:dfo_spec_id}": "datasets.definition",
-            "/api/datasets/{id:dfo_spec_id}/options": "datasets.options",
-            "/api/datasets/{id:dfo_spec_id}/members": "datasets.members",
+            ("GET", "/api/datasets/{id:dfo_spec_id}"): "datasets.definition",
+            ("GET", "/api/datasets/{id:dfo_spec_id}/options"): "datasets.options",
+            ("POST", "/api/datasets/{id:dfo_spec_id}/options"): "datasets.options",
+            ("POST", "/api/datasets/{id:dfo_spec_id}/members"): "datasets.members",
         },
         classify=classify_definition_exception,
         exception_types=tuple(dict.fromkeys(chain.from_iterable(ROUTE_EXCEPTION_TYPES.values()))),

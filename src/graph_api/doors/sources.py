@@ -444,7 +444,7 @@ def build_sources_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={"/api/graph/documentation/{dcid:dcid}": "graph.documentation"},
+        registry_endpoints={("GET", "/api/graph/documentation/{dcid:dcid}"): "graph.documentation"},
         classify=classify_sources_exception,
         exception_types=(
             SourceDocumentNotFound,

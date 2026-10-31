@@ -15,8 +15,10 @@ from contextlib import ExitStack, contextmanager
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any, Never, cast
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
 
@@ -753,14 +755,87 @@ def test_load_refuses_a_canonical_frame_over_the_row_bound_before_fetching_it():
     assert [call for call in artifacts.calls if call[0] == "get"] == []
 
 
-def test_load_refuses_a_canonical_frame_whose_bytes_do_not_decode():
+def _parquet_bytes() -> bytes:
+    sink = io.BytesIO()
+    table = pa.table({"name": [f"row {index}" for index in range(5000)]})
+    pq.write_table(table, sink, compression="snappy")
+    return sink.getvalue()
+
+
+def _footer_zeroed(data: bytes) -> bytes:
+    footer = int.from_bytes(data[-8:-4], "little")
+    return data[: -8 - footer] + bytes(footer) + data[-8:]
+
+
+def _pages_flipped(data: bytes) -> bytes:
+    flipped = bytearray(data)
+    for index in range(40, 2000, 3):
+        flipped[index] ^= 0xFF
+    return bytes(flipped)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(lambda _: b"not a parquet file", id="not-parquet"),
+        pytest.param(lambda _: b"", id="empty"),
+        pytest.param(_footer_zeroed, id="footer-zeroed"),
+        pytest.param(_pages_flipped, id="pages-flipped"),
+        pytest.param(lambda data: data[: len(data) // 2], id="body-truncated"),
+        pytest.param(lambda data: data[:4] + data[len(data) // 2 :], id="tail-kept"),
+    ],
+)
+def test_load_refuses_a_canonical_frame_whose_bytes_do_not_decode(corrupt):
     """Stored bytes that match their digest and do not decode as a frame never load, so the
     load refuses `missing_rendering`."""
-    snapshots, artifacts, frame_ref = _canonical_frame_version(b"not a parquet file")
+    snapshots, artifacts, frame_ref = _canonical_frame_version(corrupt(_parquet_bytes()))
     store = _store(snapshots=snapshots, artifacts=artifacts)
 
     with pytest.raises(FrameUnavailable) as excinfo:
         store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        pytest.param(MemoryError(), id="python-out-of-memory"),
+        pytest.param(pa.ArrowMemoryError("exemplar"), id="arrow-out-of-memory"),
+        pytest.param(pa.ArrowNotImplementedError("codec not built"), id="codec-not-built"),
+    ],
+)
+def test_load_refuses_io_for_a_decode_failure_that_says_nothing_about_the_bytes(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    def fail(_data: bytes) -> Never:
+        raise raised
+
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", fail)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "io"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"not json", id="not-json"),
+        pytest.param(b"\xff\xfe", id="not-utf8"),
+        pytest.param(b"[" * 100_000, id="nested-past-the-parser"),
+        pytest.param(b"null", id="null"),
+        pytest.param(b"[]", id="list"),
+        pytest.param(b"{}", id="no-columns"),
+        pytest.param(b'{"columns": 3, "rows": []}', id="columns-not-a-list"),
+        pytest.param(b'{"columns": ["a", "b"], "rows": [[1]]}', id="short-row"),
+    ],
+)
+def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: bytes):
+    with pytest.raises(FrameUnavailable) as excinfo:
+        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=10)
 
     assert excinfo.value.reason == "missing_rendering"
 

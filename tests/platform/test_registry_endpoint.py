@@ -41,6 +41,10 @@ def _client(**overrides: object) -> TestClient:
     async def route_a() -> None:
         raise _Unsupported()
 
+    @router.post("/api/t/a")
+    async def route_a_posted() -> None:
+        raise _Unsupported()
+
     @router.get("/api/t/a/admitted")
     async def route_admitted() -> None:
         return None
@@ -64,7 +68,12 @@ def _client(**overrides: object) -> TestClient:
         middleware=(_admit,),
         registry_endpoints=overrides.get(
             "registry_endpoints",
-            {"/api/t/a": "t.a", "/api/t/a/admitted": "t.a", "/api/t/b/{item}": "t.b"},
+            {
+                ("GET", "/api/t/a"): "t.a",
+                ("POST", "/api/t/a"): "t.b",
+                ("GET", "/api/t/a/admitted"): "t.a",
+                ("GET", "/api/t/b/{item}"): "t.b",
+            },
         ),
     )
     return TestClient(create_app([surface]), raise_server_exceptions=False)
@@ -86,9 +95,13 @@ def test_a_refusal_renders_at_the_status_of_its_routes_endpoint(path: str, statu
     assert response.status_code == status, response.text
 
 
+def test_two_methods_on_one_path_serve_their_own_endpoints() -> None:
+    assert _client().post("/api/t/a").status_code == 501
+
+
 def test_a_registry_endpoint_naming_no_route_is_refused() -> None:
     with pytest.raises(SurfaceConfigurationError):
-        _client(registry_endpoints={"/api/t/missing": "t.a"})
+        _client(registry_endpoints={("GET", "/api/t/missing"): "t.a"})
 
 
 @pytest.mark.parametrize(

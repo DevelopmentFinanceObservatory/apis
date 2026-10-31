@@ -99,7 +99,14 @@ from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, r
 from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.doors import DoorContribution, combine_classifiers
 from dfo_platform.store_errors import store_failure_is_permanent
-from presentation_api.codes import retryable_for
+from presentation_api.codes import (
+    COMPONENT_DATA_ENDPOINT,
+    COMPONENT_READ_ENDPOINT,
+    RENDER_ENDPOINT,
+    WRITE_ENDPOINT,
+    retryable_for,
+    served_status,
+)
 from presentation_api.config import (
     PRESENTATION_COMPONENTS_MAX_CONCURRENCY,
     PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
@@ -108,27 +115,24 @@ from presentation_api.config import (
 from presentation_api.doors.component_data import (
     COMPONENT_DATA_EXCEPTION_EXEMPLARS,
     COMPONENT_DATA_EXCEPTION_TYPES,
+    COMPONENT_DATA_PATH,
     add_component_data_route,
     classify_component_data_exception,
 )
 from presentation_api.doors.render import (
     RENDER_DATA_PATH,
-    RENDER_ENDPOINT,
     RENDER_EXCEPTION_EXEMPLARS,
     RENDER_EXCEPTION_TYPES,
     RENDER_PATH,
     build_render_router,
     classify_render_exception,
+    replayed,
 )
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import ComponentReadResponse, CreateReplyResponse, WriteReplyResponse
 from presentation_api.newest_frames import NewestFrames, resolve_bare_spec
 from presentation_api.path_params import PathParamInvalid, require_component_id
-from presentation_api.refusals import (
-    WRITE_ENDPOINT,
-    binding_invalid_spec,
-    frame_unavailable_spec,
-)
+from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
 from presentation_api.retention import stated_retention
 from presentation_api.vocabulary import LiveVocabularySource
@@ -192,14 +196,14 @@ class CreateComponentBody(ComponentBody):
 def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, PathParamInvalid):
         return ProblemSpec(
-            status=400,
+            status=served_status("request_invalid"),
             code="request_invalid",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, CreateRequestInvalid):
         return ProblemSpec(
-            status=400,
+            status=served_status("request_invalid"),
             code="request_invalid",
             detail=exc.detail,
             pointer=exc.pointer,
@@ -211,7 +215,7 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         return binding_invalid_spec(exc)
     if isinstance(exc, ConstraintViolation):
         return ProblemSpec(
-            status=400,
+            status=served_status("constraint_violation"),
             code="constraint_violation",
             detail=f"{exc.detail} fix: {exc.fix}",
             pointer=exc.pointer,
@@ -220,28 +224,28 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, EditConflict):
         return ProblemSpec(
-            status=409,
+            status=served_status("edit_conflict"),
             code="edit_conflict",
             detail=str(exc) or "the component or composition moved before this write committed",
             retryable=retryable_for("edit_conflict"),
         )
     if isinstance(exc, WriteRefused):
         return ProblemSpec(
-            status=403,
+            status=served_status("write_refused"),
             code="write_refused",
             detail=f"{exc.detail} fix: {exc.fix}",
             retryable=retryable_for("write_refused"),
         )
     if isinstance(exc, DraftNotFound):
         return ProblemSpec(
-            status=404,
+            status=served_status("not_found"),
             code="not_found",
             detail=str(exc),
             retryable=retryable_for("not_found"),
         )
     if isinstance(exc, RevisionNotFound):
         return ProblemSpec(
-            status=404,
+            status=served_status("not_found"),
             code="not_found",
             detail=exc.detail,
             retryable=retryable_for("not_found"),
@@ -250,7 +254,7 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         return frame_unavailable_spec(exc)
     if isinstance(exc, ResourceExhausted):
         return ProblemSpec(
-            status=400,
+            status=served_status("resource_exhausted"),
             code="resource_exhausted",
             detail=f"{exc.detail} (limit: {exc.limit_name})",
             pointer=exc.pointer,
@@ -258,14 +262,14 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, ReleaseMismatch):
         return ProblemSpec(
-            status=503,
+            status=served_status("release_mismatch"),
             code="release_mismatch",
             detail=exc.detail,
             retryable=retryable_for("release_mismatch"),
         )
     if isinstance(exc, PresentationBackpressure):
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="the components door is at its concurrent-write capacity right now; retry",
             retryable=retryable_for("service_unavailable"),
@@ -273,7 +277,7 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, GeneratedIdCollision):
         logger.warning("Fresh presentation %s ID collision. Retry safely", exc.subject_kind)
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail=f"A generated presentation {exc.subject_kind} ID collided. Retry the request.",
             retryable=retryable_for("service_unavailable"),
@@ -282,14 +286,14 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         if store_failure_is_permanent(exc.sqlstate):
             logger.error("Presentation store call failed with a permanent cause: %s", exc)
             return ProblemSpec(
-                status=500,
+                status=served_status("internal_error"),
                 code="internal_error",
                 detail="a presentation store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
         logger.error("Presentation store call failed: %s", exc)
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="a presentation store call failed; retry",
             retryable=retryable_for("service_unavailable"),
@@ -298,25 +302,35 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
         # A frame load reads the registry to scope its revocation check, and fails closed.
         logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, AllowanceExhausted):
         return ProblemSpec(
-            status=429,
+            status=served_status("allowance_exhausted"),
             code="allowance_exhausted",
             detail=str(exc),
             retryable=exc.retryable,
             headers=exc.headers,
         )
     if isinstance(exc, CallerHeaderInvalid):
-        return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("request_invalid"),
+            code="request_invalid",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, CallerUnresolved):
         # A deployment fault a retry does not clear, so not the retryable service_unavailable.
         logger.error("Components door cannot name a caller: %s", exc)
-        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("internal_error"),
+            code="internal_error",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
             logger.error(
@@ -324,14 +338,14 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
                 exc,
             )
             return ProblemSpec(
-                status=500,
+                status=served_status("internal_error"),
                 code="internal_error",
                 detail="a frame store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
         logger.error("Datasets store call underlying a frame load failed: %s", exc)
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail="a frame store call failed; retry",
             retryable=retryable_for("service_unavailable"),
@@ -350,7 +364,7 @@ def _schema_invalid_spec(exc: SchemaInvalid) -> ProblemSpec:
             f"{exc.detail} minimal legal intent: {json.dumps(exc.minimal_intent, sort_keys=True)}"
         )
         return ProblemSpec(
-            status=400,
+            status=served_status("schema_invalid"),
             code="schema_invalid",
             detail=detail,
             pointer=exc.pointer,
@@ -358,7 +372,7 @@ def _schema_invalid_spec(exc: SchemaInvalid) -> ProblemSpec:
         )
     legal_fields = cast(tuple[str, ...], exc.legal_fields)
     return ProblemSpec(
-        status=400,
+        status=served_status("schema_invalid"),
         code="schema_invalid",
         detail=exc.detail,
         pointer=exc.pointer,
@@ -657,31 +671,24 @@ def build_components_door(
 
     add_component_data_route(router, deps=deps, run=_run)
     # Extending the route list keeps each render route's own class, which admits the caller.
-    router.routes.extend(
-        build_render_router(
-            deps=deps,
-            run=_run,
-            classify=combine_classifiers(
-                classify_components_exception, classify_component_data_exception
-            ),
-            live_refresh=live_refresh,
-        ).routes
-    )
+    router.routes.extend(build_render_router(deps=deps, run=_run, live_refresh=live_refresh).routes)
 
     return DoorContribution(
         router=router,
-        classify=combine_classifiers(
-            classify_components_exception,
-            classify_component_data_exception,
-            classify_render_exception,
+        classify=replayed(
+            combine_classifiers(
+                classify_components_exception,
+                classify_component_data_exception,
+                classify_render_exception,
+            )
         ),
-        # The component read shares the revise route's path, so it runs with
-        # `presentation.write` bound and serves the write routes' statuses.
         registry_endpoints={
-            COMPONENTS_PATH: WRITE_ENDPOINT,
-            COMPONENT_PATH: WRITE_ENDPOINT,
-            RENDER_PATH: RENDER_ENDPOINT,
-            RENDER_DATA_PATH: RENDER_ENDPOINT,
+            ("POST", COMPONENTS_PATH): WRITE_ENDPOINT,
+            ("PATCH", COMPONENT_PATH): WRITE_ENDPOINT,
+            ("GET", COMPONENT_PATH): COMPONENT_READ_ENDPOINT,
+            ("GET", COMPONENT_DATA_PATH): COMPONENT_DATA_ENDPOINT,
+            ("POST", RENDER_PATH): RENDER_ENDPOINT,
+            ("GET", RENDER_DATA_PATH): RENDER_ENDPOINT,
         },
         exception_types=(
             PathParamInvalid,

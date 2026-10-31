@@ -152,7 +152,7 @@ def build_exports_door(
     exemplar_day = datetime(2026, 1, 1, tzinfo=UTC)
     return DoorContribution(
         router=router,
-        registry_endpoints={PREPARE_PATH: "datasets.exports"},
+        registry_endpoints={("POST", PREPARE_PATH): "datasets.exports"},
         classify=classify_files_exception,
         exception_types=(
             SpecNotFound,
@@ -248,7 +248,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
 
     return DoorContribution(
         router=router,
-        registry_endpoints={LINK_PATH: "datasets.export_link"},
+        registry_endpoints={("GET", LINK_PATH): "datasets.export_link"},
         classify=classify_files_exception,
         exception_types=(
             ExportNotFound,

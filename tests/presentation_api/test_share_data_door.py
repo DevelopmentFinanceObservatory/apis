@@ -609,10 +609,18 @@ def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: 
 @pytest.mark.parametrize(
     ("reason", "status", "code", "retryable"),
     [
-        ("io", 503, "service_unavailable", True),
+        ("expired", 404, "frame_unavailable", True),
         ("revoked", 404, "frame_unavailable", False),
+        ("ops_unsupported", 404, "frame_unavailable", True),
+        ("missing_rendering", 404, "frame_unavailable", False),
+        ("digest_mismatch", 404, "frame_unavailable", False),
+        ("quarantined", 404, "frame_unavailable", False),
+        ("recipe_pending", 404, "frame_unavailable", True),
+        ("unknown", 404, "frame_unavailable", False),
+        ("io", 503, "service_unavailable", True),
+        ("pending", 503, "service_unavailable", True),
+        ("recipe_unreadable", 500, "internal_error", False),
     ],
-    ids=["read-failed", "frame-gone"],
 )
 def test_a_slot_whose_frame_does_not_load_answers_by_cause(
     door: _Door,
@@ -632,6 +640,7 @@ def test_a_slot_whose_frame_does_not_load_answers_by_cause(
 
     body = resp.json()
     assert (resp.status_code, body["code"], body["retryable"]) == (status, code, retryable)
+    assert body["cause"]["code"] == reason
 
 
 def test_an_emptied_slot_and_a_notes_slot_answer_not_found(door: _Door):

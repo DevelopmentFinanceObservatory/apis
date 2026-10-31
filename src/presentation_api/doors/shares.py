@@ -209,6 +209,7 @@ from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.state import StateSlot
 from materialise.formats import ExcelIllegalCharacterError
+from presentation_api.codes import SHARES_ENDPOINT, served_status
 from presentation_api.config import (
     PRESENTATION_COMPONENTS_MAX_CONCURRENCY,
     PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
@@ -283,7 +284,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-SHARES_ENDPOINT = "presentation.shares"
 """The code registry endpoint every share route serves."""
 
 SHARES_PATH = "/api/presentation/shares"
@@ -1134,33 +1134,54 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
     the share routes share with it."""
     if isinstance(exc, WriteTokenRequired):
         return ProblemSpec(
-            status=403, code="write_token_required", detail=str(exc), retryable=False
+            status=served_status("write_token_required"),
+            code="write_token_required",
+            detail=str(exc),
+            retryable=False,
         )
     if isinstance(exc, WriteTokenInvalid):
-        return ProblemSpec(status=403, code="write_token_invalid", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("write_token_invalid"),
+            code="write_token_invalid",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, ShareNotReplaceable):
         return ProblemSpec(
-            status=409, code="share_not_replaceable", detail=str(exc), retryable=False
+            status=served_status("share_not_replaceable"),
+            code="share_not_replaceable",
+            detail=str(exc),
+            retryable=False,
         )
     if isinstance(exc, ShareIdTaken):
-        return ProblemSpec(status=409, code="share_id_taken", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("share_id_taken"),
+            code="share_id_taken",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, ShareImportNotPermitted):
         return ProblemSpec(
-            status=403, code="share_import_not_permitted", detail=str(exc), retryable=False
+            status=served_status("share_import_not_permitted"),
+            code="share_import_not_permitted",
+            detail=str(exc),
+            retryable=False,
         )
     if isinstance(exc, SlotDrawsNoFrame):
         return ProblemSpec(
-            status=400,
+            status=served_status("request_invalid"),
             code="request_invalid",
             detail=str(exc),
             pointer=f"/slots/{exc.index}/frame",
             retryable=False,
         )
     if isinstance(exc, ShareNotFound | ShareSlotEmpty):
-        return ProblemSpec(status=404, code="not_found", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("not_found"), code="not_found", detail=str(exc), retryable=False
+        )
     if isinstance(exc, AllowanceExhausted):
         return ProblemSpec(
-            status=429,
+            status=served_status("allowance_exhausted"),
             code="allowance_exhausted",
             detail=str(exc),
             retryable=exc.retryable,
@@ -1168,23 +1189,43 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         )
     if isinstance(exc, PinBudgetExhausted | OpenPinBudgetExhausted):
         return ProblemSpec(
-            status=503,
+            status=served_status("service_unavailable"),
             code="service_unavailable",
             detail=str(exc),
             retryable=True,
             headers=exc.headers,
         )
     if isinstance(exc, CallerHeaderInvalid):
-        return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("request_invalid"),
+            code="request_invalid",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, CallerUnresolved):
         # A deployment fault a retry does not clear. This surface's `service_unavailable` is
         # retryable, so it answers `internal_error`.
         logger.error("Shares door cannot name a caller: %s", exc)
-        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("internal_error"),
+            code="internal_error",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, SharePayloadTooLarge):
-        return ProblemSpec(status=413, code="payload_too_large", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=served_status("payload_too_large"),
+            code="payload_too_large",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, SharesUnavailable):
-        return ProblemSpec(status=503, code="service_unavailable", detail=str(exc), retryable=True)
+        return ProblemSpec(
+            status=served_status("service_unavailable"),
+            code="service_unavailable",
+            detail=str(exc),
+            retryable=True,
+        )
     return classify_components_exception(exc) or classify_component_data_exception(exc)
 
 

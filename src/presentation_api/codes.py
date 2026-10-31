@@ -9,18 +9,16 @@ uses platform code `unsupported_schema_version` (422) with `retryable=False`, ou
 `schema_invalid` and `frame_unavailable` vary by cause. Each response's `retryable` value is
 authoritative. `request_invalid` has a retryable headline mode but always returns false.
 
-`schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
-`resource_exhausted` return 400. `write_refused` returns 403, `edit_conflict` returns 409, and
-`not_found` returns 404. The render routes refuse a caller other than the live-refresh
-principal with `refresh_not_permitted` (403) and a target frame that may not stand in for the
-stored one with `render_target_mismatch` (409). They serve `binding_invalid` and
-`constraint_violation` at 422 and `frame_unavailable`, `release_mismatch`, and
-`resource_exhausted` at 409 (`presentation_api.doors.render`). Their caller replays a stored
-intent and cannot correct it, so there `retryable` is true only when the same request may
-succeed later: `replay_retryable` keeps an occurrence's value for a `retry_after_delay` or
-`refresh_then_retry` code and answers false for every other mode.
-Frame unavailability returns 404, and a frame store that fails to answer returns
-`service_unavailable`. Release mismatch and service unavailability return 503. Timeout returns 504, and internal errors return 500.
+Every classifier reads a refusal's status from the code registry under the endpoint the platform
+binds for the route (`served_status`), and `presentation_statuses` holds the registry's map for
+the surface. `schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
+`resource_exhausted` are 400 on the write routes, and `frame_unavailable` 404. The render routes
+serve `binding_invalid` and `constraint_violation` at 422 and `frame_unavailable`,
+`release_mismatch`, and `resource_exhausted` at 409. Their caller replays a stored intent and
+cannot correct it, so there `retryable` is true only when the same request may succeed later:
+`replay_retryable` keeps an occurrence's value for a `retry_after_delay` or `refresh_then_retry`
+code and answers false for every other mode. `presentation_api.refusals` names the code of each
+`FrameUnavailable` reason.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
 `correct_and_retry`, which `retryable_for` answers false. The request must change before it can
@@ -34,7 +32,7 @@ The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` 
 `write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
 `share_not_replaceable` and `share_id_taken` at 409 and `payload_too_large` at 413, none
 retryable. A card create or revise and a share create refuse
-the platform's `allowance_exhausted` at 429, not retryable either, with `Retry-After` naming
+the platform's `allowance_exhausted`, not retryable either, with `Retry-After` naming
 the reset (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
 none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
 serves.
@@ -46,19 +44,49 @@ constraint fixes, and limit names appear in `detail`.
 
 from __future__ import annotations
 
-from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, CodeCatalogue, merge_catalogues
+import logging
+from collections.abc import Mapping
+from functools import cache
+from types import MappingProxyType
+
+from dfo_spec_kit.registry import REGISTRY
+
+from dfo_platform.codes import (
+    PLATFORM_CODE_CATALOGUE,
+    CodeCatalogue,
+    merge_catalogues,
+    registered_status,
+)
 
 __all__ = [
     "CODE_CATALOG",
     "CODE_RETRY_MODE",
+    "COMPONENT_DATA_ENDPOINT",
+    "COMPONENT_READ_ENDPOINT",
+    "FRAMES_ENDPOINT",
     "PRESENTATION_CODE_CATALOGUE",
     "PRESENTATION_SERVED_CODES",
     "PRESENTATION_SERVED_PLATFORM_CODES",
+    "RENDER_ENDPOINT",
+    "SHARES_ENDPOINT",
     "SHARE_CODE_CATALOGUE",
+    "WRITE_ENDPOINT",
     "WRITE_SERVED_PLATFORM_CODES",
+    "presentation_statuses",
     "replay_retryable",
     "retryable_for",
+    "served_status",
 ]
+
+logger = logging.getLogger(__name__)
+
+# The code registry endpoints the surface's routes serve.
+WRITE_ENDPOINT = "presentation.write"
+COMPONENT_READ_ENDPOINT = "presentation.component_read"
+COMPONENT_DATA_ENDPOINT = "presentation.component_data"
+RENDER_ENDPOINT = "presentation.render"
+FRAMES_ENDPOINT = "presentation.frames"
+SHARES_ENDPOINT = "presentation.shares"
 
 PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "schema_invalid": (
@@ -83,7 +111,7 @@ PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
     "frame_unavailable": (
         "Frame Unavailable",
-        "The referenced frame cannot be loaded right now.",
+        "The referenced frame is not held in a state Presentation can load.",
     ),
     "resource_exhausted": (
         "Resource Exhausted",
@@ -222,6 +250,42 @@ def replay_retryable(code: str, *, retryable: bool) -> bool:
     occurrence's own value when `code`'s mode is in `_UNCHANGED_RETRY_MODES`, else false.
     """
     return retryable and CODE_RETRY_MODE.get(code) in _UNCHANGED_RETRY_MODES
+
+
+@cache
+def presentation_statuses() -> Mapping[str, Mapping[str, int]]:
+    """The status the code registry gives each code's problem details, by `presentation.*`
+    endpoint."""
+    statuses: dict[str, dict[str, int]] = {}
+    for entry in REGISTRY.entries:
+        for mapping in entry.mappings:
+            if (
+                mapping.endpoint.startswith("presentation.")
+                and mapping.channel == "problem_details"
+                and mapping.http_status is not None
+            ):
+                statuses.setdefault(mapping.endpoint, {})[entry.code] = mapping.http_status
+    return MappingProxyType({endpoint: statuses[endpoint] for endpoint in sorted(statuses)})
+
+
+def served_status(code: str) -> int:
+    """The status the code registry gives `code` on the bound endpoint. A code that endpoint
+    does not map answers the status of the first Presentation endpoint that does,
+    `presentation.write` before the others, and logs an error, so the client reads the refusal
+    and not a 500. `tests/presentation_api/test_refusal_registry.py` fails on such a pair.
+
+    Raises:
+        LookupError: No Presentation endpoint maps `code`.
+    """
+    try:
+        return registered_status(code)
+    except LookupError:
+        statuses = presentation_statuses()
+        for endpoint in (WRITE_ENDPOINT, *statuses):
+            if code in statuses[endpoint]:
+                logger.error("The bound registry endpoint maps no status for %s", code)
+                return statuses[endpoint][code]
+        raise
 
 
 def _catalogue_covers(catalogue: CodeCatalogue) -> None:

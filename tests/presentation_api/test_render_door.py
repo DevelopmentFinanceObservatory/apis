@@ -819,6 +819,13 @@ def test_a_target_frame_that_does_not_load_refuses_frame_unavailable_at_409(
             id="frame-unavailable-revoked",
         ),
         pytest.param(
+            FrameUnavailable(reason="io", detail="the store did not answer"),
+            503,
+            "service_unavailable",
+            True,
+            id="frame-store-io",
+        ),
+        pytest.param(
             ReleaseMismatch(catalog_version="2099.1.0", detail="newer"),
             409,
             "release_mismatch",

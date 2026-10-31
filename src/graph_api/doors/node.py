@@ -818,8 +818,8 @@ def build_node_door() -> DoorContribution:
     return DoorContribution(
         router=router,
         registry_endpoints={
-            "/api/graph/node/{dcid:dcid}": "graph.node",
-            "/api/graph/nodes": "graph.nodes",
+            ("GET", "/api/graph/node/{dcid:dcid}"): "graph.node",
+            ("POST", "/api/graph/nodes"): "graph.nodes",
         },
         classify=classify_node_exception,
         exception_types=(
