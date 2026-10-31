@@ -44,10 +44,23 @@ def shape_carries_measure_match(shape: ShapeDraft, match: QualifierMatch) -> boo
         return any(shape_carries_measure_value(shape, index, axis, value) for value in reading)
     if axis.kind != "shape":
         return False
-    carried = getattr(shape, _MEASURE_AXIS_DRAFT_FIELDS[axis.axis])
-    if carried is None and axis.axis == "measurementQualifier":
-        carried = declared_measurement_qualifier(shape)
-    return carried in reading
+    return _carried_measure_value(shape, axis.axis) in reading
+
+
+def _carried_measure_value(shape: ShapeDraft, axis: str) -> str | None:
+    """The value `shape`'s five-tuple states on the measure axis `axis`, the origin
+    registry's declared price basis standing for a UN series' measurementQualifier
+    (`declared_measurement_qualifier`), `None` when it states none."""
+    carried = getattr(shape, _MEASURE_AXIS_DRAFT_FIELDS[axis])
+    if carried is None and axis == "measurementQualifier":
+        return declared_measurement_qualifier(shape)
+    return carried
+
+
+def shape_reads_measure_axis(shape: ShapeDraft, axis: str) -> bool:
+    """Whether `shape` states a value on the measure axis `axis` (`_carried_measure_value`).
+    A shape that states none sums over the axis."""
+    return _carried_measure_value(shape, axis) is not None
 
 
 def bound_value_reads_measure(

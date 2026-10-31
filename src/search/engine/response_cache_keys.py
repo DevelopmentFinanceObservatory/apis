@@ -18,7 +18,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import rfc8785
 from pydantic import BaseModel
@@ -81,6 +81,9 @@ _UNSTORABLE_WARNING_CODES = frozenset(
 )
 
 _INTERNAL_WHITESPACE = re.compile(r"\s+")
+
+if TYPE_CHECKING:
+    from search.engine.exclusion_read import LeftOut
 
 
 def normalise_query(query: str) -> str:
@@ -260,7 +263,6 @@ def layer2_key(
     declared_default_trigger_words: Sequence[Mapping[str, str]],
     declared_default_slots_named: Sequence[str],
     scope: dict,
-    query_text_negated_stated_words: Sequence[str] = (),
     query_text_value_source: str | None = None,
     source_codes: Sequence[str | None] = (),
     unit_texts: Sequence[str | None] = (),
@@ -271,6 +273,7 @@ def layer2_key(
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
     open_axes: Sequence[frozenset[str]] = (),
     stated_scopes: Sequence[Mapping[str, object] | None] = (),
+    exclusions: Sequence[tuple[LeftOut, tuple[int, ...]]] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -302,6 +305,11 @@ def layer2_key(
     part whose words state none, so "ODA to Kenya", "bilateral ODA to Kenya" and "net ODA
     to Kenya" key apart whatever their extractions. The key states them and
     adds nothing when no part states any.
+    `exclusions` are the stretches of the query a part judges or discloses, each with the
+    positions in `variables` of the parts it qualifies. The blanked text no longer holds
+    them, and each moves the departures of the parts it qualifies, so the key states each
+    phrase with the words it judges, the words naming what it leaves out and those parts,
+    and adds nothing when there is none.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -309,9 +317,7 @@ def layer2_key(
     reading), unsupported phrases, declared-default trigger words, the
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
-    when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one, the
-    flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
+    when one is given, the flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
     which the key states only when one does, and the warnings extraction adds to the answer
     (`extraction_warnings`): a relative date the parser could not read, quoting its wording,
     and the variable and qualifier caps, counting what the model named before them. The key
@@ -338,8 +344,16 @@ def layer2_key(
         "declared_default_trigger_words": [dict(word) for word in declared_default_trigger_words],
         "declared_default_slots_named": list(declared_default_slots_named),
     }
-    if query_text_negated_stated_words:
-        document["query_text_negated_stated_words"] = list(query_text_negated_stated_words)
+    if exclusions:
+        document["exclusions"] = [
+            {
+                "phrase": exclusion.phrase,
+                "shown": exclusion.shown,
+                "left_out": list(exclusion.things),
+                "parts": list(parts),
+            }
+            for exclusion, parts in exclusions
+        ]
     if query_text_value_source is not None:
         document["query_text_value_source"] = " ".join(query_text_value_source.split())
     if any(code is not None for code in source_codes):

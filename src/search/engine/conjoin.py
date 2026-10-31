@@ -77,10 +77,10 @@ if TYPE_CHECKING:
 BINDING_FOLDED = "binding_folded"
 VARIABLES_CLAMPED = "variables_clamped"
 
-# The name of the one step every leg's own timing_by_step seeds from the shared,
-# once-per-request extraction stage (see fanout.py's base_timing). It is reported
-# once, on the envelope's own timing_ms.by_step.
-_SHARED_TIMING_STEP = "extract"
+# The steps every leg's own timing_by_step seeds from the shared, once-per-request stages
+# ahead of the fan-out, extraction and the exclusion read (see fanout.py's base_timing). Each
+# is reported once, on the envelope's own timing_ms.by_step.
+_SHARED_TIMING_STEPS = frozenset({"extract", "exclusion_read"})
 
 # The steps that time stages inside `shape` (`phase_intake._phase_derive_shapes`). A part's
 # by_step reports them, and its total leaves them out, since `shape` already spans them.
@@ -163,11 +163,14 @@ def _shared_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     """Read the shared pre-fanout timing from the first region that carries it.
 
     Deadline placeholders may carry no timing. Return an empty mapping when
-    no region records the shared step.
+    no region records a shared step.
     """
     for region in regions:
-        if _SHARED_TIMING_STEP in region.timing_by_step:
-            return {_SHARED_TIMING_STEP: region.timing_by_step[_SHARED_TIMING_STEP]}
+        shared = {
+            step: ms for step, ms in region.timing_by_step.items() if step in _SHARED_TIMING_STEPS
+        }
+        if shared:
+            return shared
     return {}
 
 
@@ -622,7 +625,7 @@ def _build_part(
     part's departures speak for every reading it shows.
     """
     own_timing_by_step = {
-        step: ms for step, ms in region.timing_by_step.items() if step != _SHARED_TIMING_STEP
+        step: ms for step, ms in region.timing_by_step.items() if step not in _SHARED_TIMING_STEPS
     }
     raised = {**region.departure_facts, **representative.departure_facts}
     timing_ms = Timing(

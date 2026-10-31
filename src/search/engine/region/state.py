@@ -14,8 +14,9 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 
 from code_index.members import FamilyQuery
-from code_index.shared import get_index
-from code_index.types import BroadReading
+from code_index.shared import get_index, get_measure_index
+from code_index.tokens import word_tokens
+from code_index.types import BroadReading, summable_axes
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Cause
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -39,6 +40,7 @@ from search.engine.errors import GraphInfraError
 from search.engine.events import EventSink
 from search.engine.extract import DateRequest
 from search.engine.frame import Frame, door_frame
+from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import PinnedResolved, Recall
 from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.place import ConsultedPresence, read_default_presence
@@ -49,6 +51,7 @@ from search.engine.qualifier_match import (
     QualifierSpan,
     QualifierTie,
     _normalize,
+    read_qualifiers,
 )
 from search.engine.quantity import (
     DenominatorKind,
@@ -149,6 +152,7 @@ from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
     # Deferred to break the runtime cycle through `resubmit_promote` and this module.
+    from search.engine.exclusion_read import LeftOut
     from search.engine.options.population_memo import OptionsPopulationMemo
     from search.engine.region.alternate_guard import AlternateJudge
 
@@ -432,10 +436,17 @@ class CodeRule:
     (`CodeIndex.expansion`), on `property_dcid`, and leaves it unmet when its shape's slots
     hold the property (`shape_vocabulary`) and its bindings bind none of them. An answer
     whose shape lacks the property is outside it: the code is the model's judgement of the
-    measure."""
+    measure.
+
+    A rule with `excluded` set holds codes the request asked to leave out, and reads the
+    other way: an answer meets it when it binds `property_dcid` and no value it binds holds
+    one of `codes` or lies under one, and leaves it unmet when it binds one or leaves the
+    property open. `excluded` is the run of the request's words that names the codes
+    ("grants" in "excluding grants and humanitarian aid"), `None` on every other rule."""
 
     property_dcid: str
     codes: tuple[str, ...]
+    excluded: str | None = None
 
 
 @dataclass(frozen=True)
@@ -467,10 +478,10 @@ class MeasureRule:
 # elected reading's own measure phrases, coverage words and query records ("bind"), a run
 # naming a value by its graph label ("value"), a value the bind drafted on a slot the
 # elected reading lacks ("stray"), each value of such a set of two or more ("set_value"), a
-# request-named value unbinding drops ("unbinding"), or a value a resubmit posts and cannot
-# apply ("posted").
+# request-named value unbinding drops ("unbinding"), a value a resubmit posts and cannot
+# apply ("posted"), or a phrase the request asked to leave out ("exclusion").
 type RequirementOrigin = Literal[
-    "tie", "bind", "value", "stray", "set_value", "unbinding", "posted"
+    "tie", "bind", "value", "stray", "set_value", "unbinding", "posted", "exclusion"
 ]
 
 # How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
@@ -510,6 +521,124 @@ class Requirement:
     @property
     def phrase(self) -> str:
         return _normalize(self.term.text)
+
+
+@dataclass(frozen=True, slots=True)
+class PartExclusions:
+    """The stretches of the request that leave something out and qualify one part's measure
+    (`stretches`), and the requirements its answers are judged on for them (`requirements`,
+    `exclusion_requirements`)."""
+
+    stretches: tuple[LeftOut, ...] = ()
+    requirements: tuple[Requirement, ...] = ()
+
+
+def exclusion_requirements(
+    per_part: Sequence[Sequence[LeftOut]], *, variables: Sequence[str]
+) -> list[tuple[Requirement, ...]]:
+    """The requirements that judge whether a part's answer leaves out what each stretch of
+    the request that leaves something out ("not net", "excluding loans") and qualifies the
+    part names: one tuple per part, `per_part[i]` its stretches and `variables[i]` the measure
+    it answers. Each phrase is read once, whatever parts it qualifies.
+
+    A stretch is judged on its own words alone (`LeftOut.shown`), the words its blank
+    removed, so an applied scope phrase it is quoted beside judges nothing. Each run of those
+    words that names codes, read in every code system as
+    `match_qualifiers` and `match_qualifier_ties` read them (a tie giving each of its rows),
+    gives one rule per property, `excluded` holding the run. A run whose words the part's
+    variable also holds names what was asked for and gives none: "ODA" in "not net ODA"
+    beside the variable "ODA". A value of an axis the measure's shape carries
+    (`populationType`, `measuredProperty`, `measurementQualifier`) gives the `MeasureRule`
+    a positive measure term gives, so an answer meets it when it does not read the value
+    (`qualifier_readings.answer_reads_measure`): "GDP not in constant prices" answered in
+    current prices leaves "constant prices" out. Any other property gives a `CodeRule`.
+
+    Only a property whose values partition what it classifies is judged: a measure axis,
+    whose values are alternative readings, and a code system declared `summable`. Binding
+    another value of any other system says nothing of the excluded one: DAC2a's "official
+    development assistance" counts its "humanitarian aid". A phrase with a run that names
+    codes of no such property cannot be shown to be left out and gives no requirement.
+
+    A phrase is judged only when every word of what it leaves out (`LeftOut.things`, less
+    function words) lies in one of its runs that names codes. A word no code names leaves
+    the phrase unjudged, and so does a phrase that names no thing: "excluding standard grants
+    and loans" judges no answer, for "loans" names no code, and "excluding French standard
+    grants" judges none, for leaving out every standard grant leaves out more than the French
+    ones.
+
+    The requirements carry no departure. The door that holds the phrase discloses it unless
+    every answer leaves out every run (`requirements.Judgement.met_exclusions`).
+    """
+    if not any(per_part):
+        return [() for _ in per_part]
+    index, measure_index = get_index(), get_measure_index()
+    shape_axes = {axis.axis for axis in measure_index.axes if axis.kind == "shape"}
+    partitioned = summable_axes(index.declarations) | {axis.axis for axis in measure_index.axes}
+    read: dict[LeftOut, dict[str, list[QualifierMatch]] | None] = {}
+
+    def words(text: str) -> set[str]:
+        return {token.text.casefold() for token in word_tokens(text)}
+
+    def runs_of(exclusion: LeftOut) -> dict[str, list[QualifierMatch]] | None:
+        """The runs of `exclusion` naming codes, by run, `None` when it is not judged."""
+        if exclusion not in read:
+            matches, ties = read_qualifiers(exclusion.shown, index, measure_index)
+            runs: dict[str, list[QualifierMatch]] = {}
+            for match in matches:
+                runs.setdefault(match.phrase, []).append(match)
+            for tie in ties:
+                runs.setdefault(tie.phrase, []).extend(tie.rows)
+            things = words(" ".join(exclusion.things)) - FUNCTION_WORDS
+            judged = bool(things) and things <= set().union(*map(words, runs))
+            read[exclusion] = runs if judged else None
+        return read[exclusion]
+
+    def requirement(phrase: str, run: str, prop: str, held: list[QualifierMatch]) -> Requirement:
+        code = CodeRule(
+            property_dcid=prop, codes=tuple(row.code_dcid for row in held), excluded=run
+        )
+        return Requirement(
+            term=ResolvedQualifier(
+                text=phrase,
+                named=[GraphRef(ref=row.code_dcid, label=row.label) for row in held],
+                slot=prop,
+                disposition="unbound",
+            ),
+            origin="exclusion",
+            rule=MeasureRule(match=held[0], code=code) if prop in shape_axes else code,
+        )
+
+    out: list[tuple[Requirement, ...]] = []
+    for exclusions, variable in zip(per_part, variables, strict=True):
+        asked = words(variable)
+        requirements: list[Requirement] = []
+        for exclusion in exclusions:
+            runs = runs_of(exclusion)
+            if runs is None:
+                continue
+            left_out = {run: rows for run, rows in runs.items() if not words(run) <= asked}
+            if not all(
+                any(row.code_system in partitioned for row in rows) for rows in left_out.values()
+            ):
+                continue
+            for run, rows in left_out.items():
+                by_property: dict[str, list[QualifierMatch]] = {}
+                for row in rows:
+                    if row.code_system not in partitioned:
+                        continue
+                    # A shape axis judges each value apart, as one positive measure term does.
+                    key = (
+                        f"{row.code_system}:{row.code_dcid}"
+                        if row.code_system in shape_axes
+                        else row.code_system
+                    )
+                    by_property.setdefault(key, []).append(row)
+                requirements += [
+                    requirement(exclusion.phrase, run, held[0].code_system, held)
+                    for held in by_property.values()
+                ]
+        out.append(tuple(requirements))
+    return out
 
 
 def code_requirement(
@@ -1059,6 +1188,10 @@ class ResolveState:
     # Every term the request names that each final answer is judged against
     # (`Requirement`), in the order recorded.
     requirements: tuple[Requirement, ...] = ()
+    # The stretches of the request that leave something out and qualify this part's measure
+    # (`exclusion_read.LeftOut`), which the door blanked from every text the part reads.
+    # `apply_named_exclusions` reads them.
+    exclusions: tuple[LeftOut, ...] = ()
     # The judgement of the part's final answers (`requirements.settle_answer`,
     # `requirements.settle_flagged`, `requirements.settle_candidate_set`), `None` until one
     # is judged. The region
@@ -1261,13 +1394,25 @@ class ResolveState:
 
     def forget_bound(self, properties: AbstractSet[str]) -> None:
         """Drop what the engine derived from binding `properties`, once they are unbound:
-        their place among the text-recognised, grouped, defaulted and measure-elected properties,
+        the value binding repair bound for a stretch left out of the request
+        (`require_named_exclusion`), their place among the text-recognised, grouped,
+        defaulted and measure-elected properties,
         each fired default's warnings and the phrases it answers (`slot_defaults`), and,
         when a measure-elected property goes, the measure election's partition and dropped
         axes, which describe a family the bindings no longer select."""
         if properties & self.measure_elected_properties:
             self.measure_elected_partition = None
             self.measure_dropped_axes = ()
+        self.requirements = tuple(
+            requirement
+            for requirement in self.requirements
+            if not (
+                requirement.origin == "exclusion"
+                and isinstance(requirement.rule, CodeRule)
+                and requirement.rule.excluded is None
+                and requirement.rule.property_dcid in properties
+            )
+        )
         self.text_recognized_properties -= properties
         self.grouped_properties -= properties
         self.measure_elected_properties -= properties
@@ -1399,6 +1544,30 @@ class ResolveState:
                 origin=origin,
             )
         self.requirements = with_requirement(self.requirements, requirement)
+
+    def require_named_exclusion(self, phrase: str, *, property_dcid: str, value: str) -> None:
+        """Record that binding repair bound `value` on `property_dcid` because a stretch the
+        request asked to leave out, `phrase` as written, is its label
+        (`bind_repair.apply_named_exclusions`). Each final answer is judged on it, and one that binds the
+        value leaves the phrase out (`requirements.Judgement.met_exclusions`). It departs and
+        refuses nothing, and `forget_bound` drops it with the binding."""
+        label = (
+            (self.shape_draft.value_labels or {}).get(value, value) if self.shape_draft else value
+        )
+        self.requirements = with_requirement(
+            self.requirements,
+            Requirement(
+                term=ResolvedQualifier(
+                    text=phrase,
+                    named=[GraphRef(ref=value, label=label)],
+                    slot=property_dcid,
+                    disposition="bound",
+                ),
+                origin="exclusion",
+                rule=CodeRule(property_dcid=property_dcid, codes=(value,)),
+                refuses=False,
+            ),
+        )
 
     def require_measure(self, phrase: str, match: QualifierMatch, *, discloses: bool) -> None:
         """Record that the elected shape does not carry the measure value `match` names, by
