@@ -861,7 +861,7 @@ def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering(
 def test_load_refuses_io_when_decoding_runs_out_of_memory(
     monkeypatch: pytest.MonkeyPatch, raised: Exception
 ):
-    def fail(_data: bytes) -> Never:
+    def fail(_data: bytes, *, columns: object = None) -> Never:
         raise raised
 
     snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
@@ -1040,8 +1040,12 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
         pytest.param(b"[" + b"9" * 5000 + b"]", id="integer-past-the-digit-limit"),
         pytest.param(_frame1_with(frame_version="frame2"), id="another-version"),
         pytest.param(_frame1_with(frame_version=None), id="no-version"),
+        pytest.param(_frame1_with(columns=["stat_var", 3], rows=[]), id="a-column-not-a-name"),
         pytest.param(
-            _frame1_with(columns=["recipient", "stat_var"], rows=[]), id="columns-not-derived"
+            json.dumps(
+                {"frame_version": "frame1", "columns": ["stat_var", "\ud800"], "rows": []}
+            ).encode(),
+            id="a-column-name-with-a-lone-surrogate",
         ),
         pytest.param(_frame1_with(rows=[["dcid:X"]]), id="a-short-row"),
     ],

@@ -743,7 +743,7 @@ def _left_out(*recipients: str) -> tuple[LeftOutSeries, ...]:
             (*_FOUR[:2], "country/MLI"), None, ["Ethiopia", "Ghana", "Mali"], id="one-joins"
         ),
         pytest.param(
-            (*_FOUR[:2], "country/MLI"), "expired", ["Ethiopia", "Ghana"], id="stored-frame-gone"
+            (*_FOUR[:2], "country/MLI"), "revoked", ["Ethiopia", "Ghana"], id="stored-frame-gone"
         ),
         pytest.param(
             (*_FOUR[:2], "country/MLI"),
@@ -792,7 +792,7 @@ def test_a_select_of_every_value_follows_the_target_and_names_the_left_out_serie
     assert excinfo.value.pointer == "/select/recipient"
 
 
-@pytest.mark.parametrize("reason", ["io", "busy"])
+@pytest.mark.parametrize("reason", ["io", "busy", "expired", "ops_unsupported", "recipe_pending"])
 def test_a_stored_frame_a_retry_may_load_refuses_the_render(
     monkeypatch, write, render, frame_store, reason
 ):

@@ -150,7 +150,6 @@ copy skipped because its frame is pinned already spends nothing.
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import threading
 import time
@@ -167,13 +166,10 @@ from dfo_frame_grammar import (
     TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
     Frame,
-    canonical_frame_schema,
 )
 from dfo_frame_grammar.grammar import (
-    FRAME_VERSION,
     STAT_VAR_REF_PREFIX,
     FrameError,
-    unit_cell_from_json,
 )
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
@@ -253,7 +249,9 @@ from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     canonical_frame_document,
+    frame1_unit_cells,
     read_canonical_frame_table,
+    read_frame1_document,
 )
 from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
@@ -425,43 +423,25 @@ _DECODE_RETRY_AFTER_S = 30
 
 
 def _frame1_document(data: bytes) -> Mapping[str, object]:
-    """The frame1 document `data` holds, as `read_frame1_table` reads one: a JSON object at
-    `FRAME_VERSION` whose columns pass the canonical frame's column rule (`_check_columns`) and
-    whose rows hold one cell per column. Its `time_period` cells are strings and its `unit` cells
-    pass `unit_cell_from_json`, the two the structural view reads past what a canonical frame's
-    schema fixes.
+    """The frame1 document `data` holds, under `read_frame1_document`'s rule, the one Datasets
+    reads it by. Its `time_period` cells are strings and its `unit` cells pass
+    `frame1_unit_cells`, the two the structural view reads past that rule; the other cells are
+    trusted as the grammar's writer wrote them.
 
     Raises:
-        FrameError: For any other document. `ValueError` from the parse, which covers
-            `JSONDecodeError` and an integer past Python's digit limit, and `RecursionError`
-            for nesting past the parser, are raised as `schema_violation`.
+        FrameError: For any other document.
     """
-    try:
-        doc = json.loads(data)
-    except (ValueError, RecursionError) as exc:
-        raise FrameError("schema_violation", f"not JSON: {type(exc).__name__}") from exc
-    if not isinstance(doc, dict) or doc.get("frame_version") != FRAME_VERSION:
-        raise FrameError("schema_violation", f"not a {FRAME_VERSION} document")
-    columns, rows = doc.get("columns"), doc.get("rows")
-    if not (isinstance(columns, list) and all(isinstance(column, str) for column in columns)):
-        raise FrameError("schema_violation", "frame1 columns are not a list of names")
-    _check_columns(tuple(columns))
-    if not (isinstance(rows, list) and all(isinstance(row, list) for row in rows)):
-        raise FrameError("schema_violation", "frame1 rows are not a list of lists")
-    period, unit = columns.index(TIME_PERIOD_COLUMN), columns.index(UNIT_COLUMN)
-    for row in rows:
-        if len(row) != len(columns):
-            raise FrameError("schema_violation", f"a row holds {len(row)} of {len(columns)} cells")
-        if not isinstance(row[period], str):
-            raise FrameError("invalid_time_period", f"time_period cell holds {row[period]!r}")
-        unit_cell_from_json(row[unit])
+    doc = read_frame1_document(data)
+    columns = cast("list[str]", doc["columns"])
+    rows = cast("list[list[object]]", doc["rows"])
+    if TIME_PERIOD_COLUMN in columns:
+        period = columns.index(TIME_PERIOD_COLUMN)
+        if not all(isinstance(row[period], str) for row in rows):
+            raise FrameError("invalid_time_period", "a time_period cell is not a string")
+    if UNIT_COLUMN in columns:
+        unit = columns.index(UNIT_COLUMN)
+        frame1_unit_cells([row[unit] for row in rows])
     return doc
-
-
-def _check_columns(columns: tuple[str, ...]) -> None:
-    """Refuse `columns` unless they are what `grammar.derive_columns` gives for their own role
-    columns, the rule `Frame.from_table` applies to a canonical frame."""
-    Frame.from_table(columns=columns, table=canonical_frame_schema(columns).empty_table())
 
 
 @contextmanager
@@ -529,12 +509,13 @@ def _decode_frame(
     with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
             return _frame1_document(data), len(data)
-        rows = pq.read_metadata(pa.BufferReader(data)).num_rows
+        footer = pq.ParquetFile(pa.BufferReader(data))
+        rows = footer.metadata.num_rows
         if rows > max_rows:
             raise _over_row_bound(location, rows=rows, max_rows=max_rows)
-        schema = pq.read_schema(pa.BufferReader(data))
+        schema = footer.schema_arrow
         Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
-        table = read_canonical_frame_table(data)
+        table = read_canonical_frame_table(data, columns=schema.names)
         if table.column(TIME_PERIOD_COLUMN).null_count:
             raise FrameError("invalid_time_period", "a time_period cell is null")
         doc = canonical_frame_document(table)

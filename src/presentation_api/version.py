@@ -14,7 +14,7 @@ import json
 from collections.abc import Mapping
 
 from assembler.catalogue import CatalogueRelease
-from assembler.ports import FrameUnavailableReason
+from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameUnavailableReason
 from dfo_platform import Alternative, Cause, CodeCatalogue, Envelope, ProblemIssue
 from dfo_platform.codes import endpoint_statuses
 from dfo_platform.doors import RouteKey
@@ -25,7 +25,7 @@ from presentation_api.codes import (
     PRESENTATION_CODE_CATALOGUE,
 )
 from presentation_api.doors.release import release_document
-from presentation_api.refusals import _FRAME_UNAVAILABLE_OUTCOME, NEWEST_NOT_READY_OUTCOME
+from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME
 from presentation_api.routes import RENDER_ENDPOINT, ROUTE_ENDPOINTS
 
 __all__ = ["compute_presentation_capability_version"]
@@ -86,7 +86,7 @@ def compute_presentation_capability_version(
     retry_modes: Mapping[str, str] = CODE_RETRY_MODE,
     frame_unavailable_outcome: Mapping[
         FrameUnavailableReason, tuple[str, bool]
-    ] = _FRAME_UNAVAILABLE_OUTCOME,
+    ] = FRAME_UNAVAILABLE_OUTCOME,
     registry_statuses: Mapping[str, Mapping[str, tuple[int, ...]]] = PRESENTATION_STATUSES,
     newest_not_ready_outcome: tuple[str, bool] = NEWEST_NOT_READY_OUTCOME,
     route_endpoints: Mapping[RouteKey, str] = ROUTE_ENDPOINTS,

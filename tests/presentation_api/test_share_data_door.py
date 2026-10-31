@@ -20,7 +20,7 @@ from pydantic import SecretStr
 import presentation_api.retention as presentation_retention
 from assembler.errors import FrameUnavailable
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
-from assembler.ports import FrameRef, ResolvedFrame
+from assembler.ports import FrameRef, FrameUnavailableReason, ResolvedFrame
 from assembler.testing import (
     build_resolved_frame,
     malaria_ethiopia_frame_ref,
@@ -99,12 +99,26 @@ class _Clock:
         return self.at
 
 
+class _RefusingFrameStore(FakeFrameStore):
+    """Refuses `_UNREADABLE` with `refusal`, a frame that cannot be loaded unless a test sets a
+    reason a retry may pass."""
+
+    refusal: FrameUnavailableReason = "missing_rendering"
+
+    def load(self, *, frame_ref: FrameRef) -> ResolvedFrame:
+        if frame_ref == _UNREADABLE:
+            # Only a store or capacity refusal names a wait, as the frame store and Datasets do.
+            wait = 7.0 if self.refusal in ("io", "busy") else None
+            raise FrameUnavailable(reason=self.refusal, detail="exemplar", retry_after_s=wait)
+        return super().load(frame_ref=frame_ref)
+
+
 class _Door:
     def __init__(
         self,
         client: TestClient,
         *,
-        frame_store: FakeFrameStore,
+        frame_store: _RefusingFrameStore,
         newest: _Newest,
         presentation: FakePresentationStore,
     ):
@@ -175,7 +189,7 @@ def cors_door(release_registry: FakeReleaseRegistry) -> Iterator[_Door]:
 def _serve_door(
     release_registry: FakeReleaseRegistry, *, cors_origins: tuple[str, ...]
 ) -> Iterator[_Door]:
-    frame_store = FakeFrameStore()
+    frame_store = _RefusingFrameStore()
     frame_store.put(resolved_frame=_frame(_STORED))
     frame_store.put(resolved_frame=_frame(_MOVED, moved_by=_MOVED_BY))
     newest = _Newest()
@@ -546,6 +560,25 @@ def test_a_live_slot_whose_card_cannot_draw_the_newer_frame_serves_its_own_as_st
 
     assert _stated(first) == _stated(second) == ("stale", _STORED.content_version, "live")
     assert door.newest.asked == [_STORED]
+
+
+@pytest.mark.parametrize("reason", ["io", "busy", "expired"])
+def test_a_live_slot_whose_newer_frame_a_retry_may_load_refuses_with_its_wait(
+    door: _Door, reason: FrameUnavailableReason
+):
+    """A read a retry may pass is no reason to fall back, so the slot is not recorded stale."""
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = _UNREADABLE
+    door.frame_store.refusal = reason
+
+    refused = door.data(share["id"])
+    door.frame_store.refusal = "missing_rendering"
+    door.later(minutes=1)
+    served = door.data(share["id"])
+
+    assert (refused.json()["cause"]["code"], refused.json()["retryable"]) == (reason, True)
+    assert refused.headers.get("retry-after") == (None if reason == "expired" else "7")
+    assert _stated(served) == ("stale", _STORED.content_version, "live")
 
 
 def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(

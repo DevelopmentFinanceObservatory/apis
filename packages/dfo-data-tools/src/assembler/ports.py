@@ -9,7 +9,8 @@ import datetime
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from types import MappingProxyType
+from typing import Literal, Protocol, get_args
 
 from assembler.catalogue import CatalogueRelease
 from description.facts import DescriptionRecord
@@ -18,7 +19,8 @@ from dfo_platform.caller import Caller
 from materialise.continued_series import ContinuedSeries
 
 __all__ = [
-    "TRANSIENT_FRAME_REASONS",
+    "FRAME_UNAVAILABLE_OUTCOME",
+    "RETRYABLE_FRAME_REASONS",
     "CompositionAppend",
     "CompositionMembership",
     "DimensionView",
@@ -196,9 +198,40 @@ FrameUnavailableReason = Literal[
     "unknown",
 ]
 
-# The reasons a later read of the same frame may pass: the store failed to answer, or the
-# Datasets surface was at capacity. Every other reason says the frame cannot be loaded.
-TRANSIENT_FRAME_REASONS: frozenset[FrameUnavailableReason] = frozenset({"io", "busy"})
+# The code and retryability each `FrameUnavailable` reason refuses with. `expired`,
+# `ops_unsupported` and `recipe_pending` can succeed once the frame is republished or its recipe
+# written. Revoked, missing, digest mismatch, quarantined, and unknown refs are permanent. A store
+# that fails to answer (`io`), and a Datasets surface at capacity (`busy`), is
+# `service_unavailable`. A recipe the store cannot read (`recipe_unreadable`) is write-once, so
+# no retry clears it.
+FRAME_UNAVAILABLE_OUTCOME: Mapping[FrameUnavailableReason, tuple[str, bool]] = MappingProxyType(
+    {
+        "expired": ("frame_unavailable", True),
+        "revoked": ("frame_unavailable", False),
+        "ops_unsupported": ("frame_unavailable", True),
+        "missing_rendering": ("frame_unavailable", False),
+        "digest_mismatch": ("frame_unavailable", False),
+        "quarantined": ("frame_unavailable", False),
+        "recipe_pending": ("frame_unavailable", True),
+        "unknown": ("frame_unavailable", False),
+        "io": ("service_unavailable", True),
+        "busy": ("service_unavailable", True),
+        "recipe_unreadable": ("internal_error", False),
+    }
+)
+
+if set(FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
+    # Fail at import if a reason and its outcome drift apart.
+    raise AssertionError(
+        f"FRAME_UNAVAILABLE_OUTCOME {sorted(FRAME_UNAVAILABLE_OUTCOME)} does not match "
+        f"FrameUnavailableReason {sorted(get_args(FrameUnavailableReason))}"
+    )
+
+# The reasons a later read of the same frame may pass. A reader that falls back when a frame
+# cannot be loaded raises these instead, keeping the refusal's wait.
+RETRYABLE_FRAME_REASONS: frozenset[FrameUnavailableReason] = frozenset(
+    reason for reason, (_, retryable) in FRAME_UNAVAILABLE_OUTCOME.items() if retryable
+)
 
 
 class FrameUnavailable(Exception):

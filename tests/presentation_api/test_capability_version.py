@@ -119,7 +119,7 @@ def test_code_catalogue_title_change_moves_the_token(release: CatalogueRelease):
 
 def test_frame_unavailable_outcome_change_moves_the_token(release: CatalogueRelease):
     baseline = version.compute_presentation_capability_version(release=release)
-    mutated_outcome = dict(version._FRAME_UNAVAILABLE_OUTCOME)
+    mutated_outcome = dict(version.FRAME_UNAVAILABLE_OUTCOME)
     reason = next(iter(sorted(mutated_outcome)))
     code, retryable = mutated_outcome[reason]
     mutated_outcome[reason] = (code, not retryable)

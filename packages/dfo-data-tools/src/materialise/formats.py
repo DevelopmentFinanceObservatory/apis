@@ -41,9 +41,7 @@ from dfo_frame_grammar import (
     Frame,
     canonical_frame_schema,
     stream_canonical_frame_bytes,
-    unit_cell_to_json,
-    unit_cells,
-    unit_codes,
+    unit_column_cells,
 )
 from dfo_frame_grammar.grammar import (
     FRAME_VERSION,
@@ -53,7 +51,10 @@ from dfo_frame_grammar.grammar import (
     UNIT_COLUMN,
     VALUE_COLUMN,
     ComposedUnit,
+    FrameError,
+    UnitCell,
     UnitRequest,
+    reject_lone_surrogates,
     unit_cell_from_json,
 )
 from openpyxl import Workbook
@@ -797,41 +798,98 @@ class Frame1Table:
 
 
 def read_frame1_table(data: bytes) -> Table:
-    """Parses frame1 JSON into a `Frame1Table` for reshaping and tabular writers. Raises
-    `ValueError` unless the document is an object with `frame_version`, `columns`, and `rows`,
-    the version matches `FRAME_VERSION`, and each row matches the column count.
+    """Parses frame1 JSON into a `Frame1Table` for reshaping and tabular writers, under
+    `read_frame1_document`'s rule.
 
     Non-null value cells become `float` because whole-number floats parse from JSON as `int`.
-    Unit dictionaries are validated and rebuilt as `UnitRequest` or `ComposedUnit` through
-    `unit_cell_from_json`, so reshaping keeps hashable, typed cells."""
-    document = json.loads(data)
+    Unit cells are validated and rebuilt as a ref, `UnitRequest` or `ComposedUnit` through
+    `frame1_unit_cells`, so reshaping keeps hashable, typed cells.
+
+    Raises:
+        FrameError: What `read_frame1_document` and `frame1_unit_cells` raise.
+    """
+    document = read_frame1_document(data)
+    columns = tuple(cast("list[str]", document["columns"]))
+    rows = [list(row) for row in cast("list[list[object]]", document["rows"])]
+    if VALUE_COLUMN in columns:
+        value_index = columns.index(VALUE_COLUMN)
+        for row in rows:
+            if row[value_index] is not None:
+                row[value_index] = float(cast(float, row[value_index]))
+    if UNIT_COLUMN in columns:
+        unit_index = columns.index(UNIT_COLUMN)
+        units = frame1_unit_cells([row[unit_index] for row in rows])
+        for row, unit in zip(rows, units, strict=True):
+            row[unit_index] = unit
+    return Frame1Table(columns=columns, rows=tuple(tuple(row) for row in rows))
+
+
+def read_frame1_document(data: bytes) -> dict[str, object]:
+    """The frame1 document `data` holds: a JSON object with `frame_version` at `FRAME_VERSION`,
+    `columns` a list of column names, and `rows` lists of one cell per column. The one rule both
+    Datasets and Presentation read a stored frame1 document by. Cells are not read.
+
+    Raises:
+        FrameError: `schema_violation` for any other document, including bytes that do not
+            parse (`ValueError` covers `JSONDecodeError` and an integer past Python's digit
+            limit; `RecursionError` nesting past the parser); `lone_surrogate` for a column
+            name holding one.
+    """
+    try:
+        document = json.loads(data)
+    except (ValueError, RecursionError) as exc:
+        raise FrameError("schema_violation", f"frame1 document is not JSON: {exc}") from exc
     if not isinstance(document, dict):
-        raise ValueError(f"frame1 document must be a JSON object, got {type(document).__name__}")
+        raise FrameError(
+            "schema_violation",
+            f"frame1 document must be a JSON object, got {type(document).__name__}",
+        )
     missing = [key for key in ("frame_version", "columns", "rows") if key not in document]
     if missing:
-        raise ValueError(f"frame1 document is missing key(s) {missing!r}")
+        raise FrameError("schema_violation", f"frame1 document is missing key(s) {missing!r}")
     version = document["frame_version"]
     if version != FRAME_VERSION:
-        raise ValueError(
-            f"frame1 document has frame_version {version!r}, expected {FRAME_VERSION!r}"
+        raise FrameError(
+            "schema_violation",
+            f"frame1 document has frame_version {version!r}, expected {FRAME_VERSION!r}",
         )
-    columns = tuple(document["columns"])
-    value_index = columns.index(VALUE_COLUMN) if VALUE_COLUMN in columns else None
-    unit_index = columns.index(UNIT_COLUMN) if UNIT_COLUMN in columns else None
-    rows: list[tuple[object, ...]] = []
-    for index, raw_row in enumerate(document["rows"]):
-        row = list(raw_row)
-        if len(row) != len(columns):
-            raise ValueError(
-                f"row {index} has {len(row)} cell(s), expected {len(columns)} to match "
-                f"the {len(columns)} column(s)"
+    columns, rows = document["columns"], document["rows"]
+    if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
+        raise FrameError("schema_violation", "frame1 columns must be a list of strings")
+    for column in columns:
+        reject_lone_surrogates(column)
+    if not isinstance(rows, list):
+        raise FrameError("schema_violation", "frame1 rows must be a list")
+    for index, row in enumerate(rows):
+        if not isinstance(row, list) or len(row) != len(columns):
+            raise FrameError(
+                "schema_violation",
+                f"row {index} is not a list of {len(columns)} cell(s), one per column",
             )
-        if value_index is not None and row[value_index] is not None:
-            row[value_index] = float(row[value_index])
-        if unit_index is not None and isinstance(row[unit_index], dict):
-            row[unit_index] = unit_cell_from_json(row[unit_index])
-        rows.append(tuple(row))
-    return Frame1Table(columns=columns, rows=tuple(rows))
+    return document
+
+
+def frame1_unit_cells(cells: Sequence[object]) -> list[UnitCell | None]:
+    """The validated cell of each frame1 `unit` cell in `cells`, through `unit_cell_from_json`,
+    read once per distinct cell keyed by its canonical JSON text, as a canonical frame reads
+    its `unit` column once per dictionary code.
+
+    Raises:
+        FrameError: For a cell outside the `unit` cell's forms.
+    """
+    read: dict[object, UnitCell | None] = {}
+    validated: list[UnitCell | None] = []
+    for cell in cells:
+        # A mapping keys by its text beside the cell kind, so a ref spelling that text stays apart.
+        key = (
+            ("json", json.dumps(cell, sort_keys=True, separators=(",", ":")))
+            if isinstance(cell, (dict, list))
+            else cell
+        )
+        if key not in read:
+            read[key] = unit_cell_from_json(cell)
+        validated.append(read[key])
+    return validated
 
 
 def frame_entity_columns(columns: Sequence[str]) -> tuple[str, ...]:
@@ -951,12 +1009,7 @@ def _column_cells(table: pa.Table, name: str, *, json_form: bool) -> list[object
     parsed JCS too (`_jcs_number`)."""
     column = table.column(name)
     if name == UNIT_COLUMN:
-        codes = unit_codes(column)
-        cells = unit_cells(column, codes)
-        distinct: list[object] = (
-            [_parsed_jcs(unit_cell_to_json(cell)) for cell in cells] if json_form else list(cells)
-        )
-        return [distinct[cast(int, code)] for code in codes.codes.to_pylist()]
+        return unit_column_cells(column, json_form=json_form)
     if name == VALUE_COLUMN:
         values = column.to_pylist()
         return [_jcs_number(value) for value in values] if json_form else values
@@ -997,12 +1050,4 @@ def _jcs_number(value: float | None) -> float | int | None:
     the double's exact value."""
     if value is not None and value.is_integer() and abs(value) < _JCS_EXPONENT_FROM:
         return int(Decimal(repr(value)))
-    return value
-
-
-def _parsed_jcs(value: object) -> object:
-    """`value` as `json.loads` parses its JCS text, with JCS's sorted mapping keys."""
-    if isinstance(value, Mapping):
-        mapping = cast("Mapping[str, object]", value)
-        return {key: _parsed_jcs(mapping[key]) for key in sorted(mapping)}
     return value

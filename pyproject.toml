@@ -300,8 +300,8 @@ dfo-analysis-engine = { workspace = true }
 # recipe.
 # Follow-up: move all eight to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4a250e88adea258752ecf319445e179156afe0d0", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4a250e88adea258752ecf319445e179156afe0d0", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "eb6afef5debf03813d51837f28d6a42aff25d2ed", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "eb6afef5debf03813d51837f28d6a42aff25d2ed", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]

@@ -64,7 +64,7 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from assembler.pipeline.stored_revision import read_stored_revision
-from assembler.ports import FrameRef, RevisionRecord
+from assembler.ports import RETRYABLE_FRAME_REASONS, FrameRef, FrameUnavailable, RevisionRecord
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
@@ -214,8 +214,11 @@ def serve_on_slot_frame[T](
         except ExcelIllegalCharacterError:
             # The format refuses the rows, whatever frame they come from.
             raise
-        except Exception:
-            if check.frame == card.frame:
+        except Exception as exc:
+            # A read a retry may pass refuses with its wait, so the slot is not recorded stale.
+            if check.frame == card.frame or (
+                isinstance(exc, FrameUnavailable) and exc.reason in RETRYABLE_FRAME_REASONS
+            ):
                 raise
             # The newer frame does not fit the card's intent, or cannot be read. The slot
             # serves the card's own frame, which its share pinned, until the next check.
