@@ -35,6 +35,7 @@ from statvar_members import DEFAULT_SUBJECT_CEILING
 # `DATASETS_OPERATION_DEADLINE_SECONDS` where the environment sets none, derived at
 # `DatasetsBuildSettings.operation_deadline_seconds`.
 DEFAULT_OPERATION_DEADLINE_SECONDS = 36_000
+DEFAULT_MATERIALISE_WAIT_SECONDS = 30
 
 
 class DatasetsConfigError(Exception):
@@ -107,7 +108,7 @@ class DatasetsBuildSettings(BaseSettings):
     materialise_max_concurrency: int = Field(default=2, ge=1)
 
     # Slot wait limit. The semaphore uses the earlier of this limit and the request deadline (503).
-    materialise_wait_seconds: float = Field(default=30, gt=0)
+    materialise_wait_seconds: float = Field(default=DEFAULT_MATERIALISE_WAIT_SECONDS, gt=0)
 
     # Analysis executor threads (`datasets_api.doors.analysis`): recipe trees the runner
     # computes. A same-sized semaphore refuses retryable 503 when full. A run reads its root

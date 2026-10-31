@@ -1264,7 +1264,7 @@ class LiveFrameStore:
                 root's pin failed on I/O.
             PinBudgetExhausted: The day's pin budget is spent.
             OpenPinBudgetExhausted: The open callers' pin budget is spent.
-            PinUnitHeld: A running export prepare holds the last unit of a limit.
+            PinUnitHeld: An export claim holds the last unit of a limit.
             AllowanceExhausted: `caller`'s `pin` allowance is spent.
         """
         roots = self._root_closure(frame_ref)

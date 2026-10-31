@@ -431,7 +431,8 @@ class FakeGCSBucket:
     def blob(self, name: str) -> FakeGCSBlob:
         return FakeGCSBlob(self, name)
 
-    def get_blob(self, name: str) -> FakeGCSBlob | None:
+    def get_blob(self, name: str, **options: object) -> FakeGCSBlob | None:
+        self.get_blob_options = options
         return FakeGCSBlob(self, name) if name in self.objects else None
 
     def copy_blob(

@@ -40,6 +40,7 @@ from code_index.types import PartyRow, StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.allowance import (
     BUDGET_KEY,
+    SWEEP_INTERVAL_SECONDS,
     AllowanceExhausted,
     AllowanceKind,
     ExportClaim,
@@ -621,6 +622,53 @@ def test_a_spent_caller_refuses_a_file_that_must_render_even_when_its_bytes_are_
     assert (resp.status_code, resp.json()["code"]) == (429, "allowance_exhausted"), resp.text
 
 
+def test_a_file_pinned_already_asks_for_no_copy(monkeypatch: pytest.MonkeyPatch):
+    """The first prepare spends the caller's last unit and lists the file. The second reads it
+    from the listing, finds the pinned copy first, and so spends and copies nothing."""
+    rig = _Rig("fetched", monkeypatch, ledger=_ledger(pin=1))
+    first = rig.prepare("csv")
+    assert first.status_code == 200, first.text
+    spent = _spent(rig.ledger)
+    rig.forget_exports()
+    monkeypatch.setattr(PreparingCopy, "copy", _forbidden)
+    monkeypatch.setattr(*_RENDERS["fetched"], _forbidden)
+
+    again = rig.prepare("csv")
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+    assert _spent(rig.ledger) == spent
+
+
+def test_an_invalid_request_writes_no_claim_and_a_second_does_not_wait_for_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rig = _Rig("fetched", monkeypatch)
+    monkeypatch.setattr(LiveAllowanceLedger, "claim", _forbidden)
+
+    missing = rig.prepare("csv", frame={**rig.frame, "content_version": "missing"})
+
+    assert missing.status_code == 404, missing.text
+
+
+def test_a_first_prepare_sheds_at_a_full_pool_at_once(monkeypatch: pytest.MonkeyPatch):
+    """Only a call that waited on a prepare queues for a permit, so overload still sheds."""
+    monkeypatch.setenv("DATASETS_WORK_MAX_CONCURRENCY", "1")
+    rig = _Rig("derived", monkeypatch)
+    render = _HeldRender("derived", monkeypatch, results=[None])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader = pool.submit(rig.prepare, "csv")
+        assert render.entered.wait(10)
+        try:
+            shed = pool.submit(rig.prepare, "xlsx").result(timeout=5)
+        finally:
+            render.release.set()
+        assert leader.result().status_code == 200
+
+    assert (shed.status_code, shed.headers["retry-after"]) == (503, "1"), shed.text
+
+
 def test_a_repeat_prepare_answers_its_record_with_one_read(monkeypatch: pytest.MonkeyPatch):
     rig = _Rig("fetched", monkeypatch)
     first = rig.prepare("csv")
@@ -1050,7 +1098,7 @@ def test_a_burst_from_a_caller_with_one_unit_left_renders_one_file(
 
     assert [r.status_code for r in burst] == [503, 503, 503], [r.text for r in burst]
     assert {r.json()["retryable"] for r in burst} == {True}
-    assert {r.headers["retry-after"] for r in burst} == {"1"}
+    assert {r.headers["retry-after"] for r in burst} == {"30"}
     assert answered.status_code == 200, answered.text
     assert render.calls == 1
     assert _spent(rig.ledger)[(caller_key, "pin")] == 1
@@ -1139,11 +1187,13 @@ def test_a_dead_prepares_unit_refuses_retryably_until_the_sweep_settles_it(
 
     assert refused.status_code == 503, refused.text
     assert refused.json()["detail"] == PinUnitHeld.detail
+    assert refused.headers["retry-after"] == str(SWEEP_INTERVAL_SECONDS)
     assert answered.status_code == 200, answered.text
 
 
 def test_waiters_past_the_read_pool_all_answer_the_record(monkeypatch: pytest.MonkeyPatch):
-    """Waiters wake together, and each read waits for a permit in place of refusing."""
+    """Waiters wake together, and each read after a wait queues for a permit in place of
+    refusing."""
     monkeypatch.setenv("DATASETS_READ_MAX_CONCURRENCY", "2")
     rig = _Rig("derived", monkeypatch)
     render = _HeldRender("derived", monkeypatch, results=[None])
@@ -1153,13 +1203,15 @@ def test_waiters_past_the_read_pool_all_answer_the_record(monkeypatch: pytest.Mo
         time.sleep(0.02)
         return read_claim(ledger, export_id)
 
-    monkeypatch.setattr(LiveAllowanceLedger, "read_claim", slow)
-
     with ThreadPoolExecutor(max_workers=8) as pool:
         leader = pool.submit(rig.prepare, "csv")
         assert render.entered.wait(10)
-        waiters = [pool.submit(rig.prepare, "csv") for _ in range(7)]
-        assert render.parked.wait(10)
+        waiters = []
+        for _ in range(7):
+            render.parked.clear()
+            waiters.append(pool.submit(rig.prepare, "csv"))
+            assert render.parked.wait(10)
+        monkeypatch.setattr(LiveAllowanceLedger, "read_claim", slow)
         time.sleep(0.3)
         render.release.set()
         responses = [leader.result(), *(waiter.result() for waiter in waiters)]
@@ -1222,8 +1274,8 @@ def test_a_prepare_answers_a_record_written_since_the_door_read_it(
     rig = _Rig(kind, monkeypatch)
     first = rig.prepare("csv")
     monkeypatch.setattr(exports_door, "recorded_export", lambda **_: None)
-    monkeypatch.setattr(exports_module, "_prepare_dataset", _forbidden)
-    monkeypatch.setattr(exports_module, "_prepare_derived", _forbidden)
+    monkeypatch.setattr(PreparingCopy, "hold", _forbidden)
+    monkeypatch.setattr(PreparingCopy, "copy", _forbidden)
 
     again = rig.prepare("csv")
 

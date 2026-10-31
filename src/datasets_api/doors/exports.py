@@ -119,25 +119,31 @@ async def _prepared(
     """The facts of the export `export_request` names: its record, else a new prepare's. While
     any instance's prepare holds its claim, the call sleeps on the event loop, holding no work
     permit, and reads only the claim, backing off from `_CLAIM_POLL_SECONDS` to
-    `_CLAIM_POLL_MAX_SECONDS`. Each hop waits for its permit until the wait ends, so waiters that
-    wake together all get one.
+    `_CLAIM_POLL_MAX_SECONDS`. Once a call has waited, each hop waits for its permit until the wait
+    ends, so waiters that wake together all get one. Any other call sheds at a full pool.
 
     Raises:
+        ExportBackpressure: A pool is full, and this call has not waited.
         ExportPrepareRunning: The other prepare still runs at `materialise_wait_seconds`, or at
             the deadline if that comes first.
     """
     wait_seconds = current.settings.materialise_wait_seconds
     ends = min(time.monotonic() + wait_seconds, cast(float, retrieval.deadline))
+    has_waited = False
+
+    def permit_wait() -> float:
+        return max(0.0, ends - time.monotonic()) if has_waited else 0.0
 
     async def read[T](fn: Callable[..., T], /, **kwargs: object) -> T:
         return await current.read_executor.run(
             functools.partial(run_with_timings, fn, timings, **kwargs),
             refuse=ExportBackpressure,
-            wait_seconds=max(0.0, ends - time.monotonic()),
+            wait_seconds=permit_wait(),
         )
 
     async def waited_for_claim() -> bool:
         """Sleep while a live claim holds the export, and say whether any did."""
+        nonlocal has_waited
         delay = _CLAIM_POLL_SECONDS
         started = time.perf_counter()
         waited = False
@@ -150,7 +156,7 @@ async def _prepared(
             if time.monotonic() >= ends:
                 raise ExportPrepareRunning(wait_seconds=wait_seconds)
             await asyncio.sleep(delay)
-            waited = True
+            waited = has_waited = True
             delay = min(delay * 2, _CLAIM_POLL_MAX_SECONDS)
 
     export = export_id(export_request)
@@ -172,7 +178,7 @@ async def _prepared(
             deps=retrieval,
             timings=timings,
             refuse=ExportBackpressure,
-            wait_seconds=max(0.0, ends - time.monotonic()),
+            wait_seconds=permit_wait(),
             request=export_request,
             caller=caller,
             current=current,
@@ -274,8 +280,8 @@ def build_exports_door(
             OpenPinBudgetExhausted(limit=0, now=exemplar_day),
             AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
             ExportPrepareRunning(wait_seconds=30),
-            ExportClaimUnsettled(),
-            PinUnitHeld(),
+            ExportClaimUnsettled(retry_after=1),
+            PinUnitHeld(retry_after=1),
             ExportBackpressure(),
             DatasetsStoreUnavailable("exemplar"),
             StoredTraceMissingResolvedStatVars(

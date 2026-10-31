@@ -27,9 +27,10 @@ takes this one path, so a spent day costs no render. A failed render, a refusal 
 render that finds its bytes pinned gives the units back. The claim stays until the record is
 written, so a retry after a failure past the copy takes it over, finds the copy those units paid
 for and spends nothing more. The lease outlasts the definition deadline, so a client's timeout
-leaves the prepare running and its retry answers its record. A process that dies leaves a stale
-claim: a claim with no copy begun refunds as the next prepare takes it over or the sweep finds
-it, and the next caller spends for itself. The bytes a render gives are known
+leaves the prepare running and its retry answers its record, and a render that outlives the lease
+still lands while nothing took the claim. A process that dies leaves a stale claim: a claim with
+no copy begun refunds as the next prepare takes it over or the sweep finds it, and the next caller
+spends for itself. The bytes a render gives are known
 only by rendering, so a caller with no unit left and no claim refuses even when another export or
 a pin holds the same bytes.
 
@@ -42,10 +43,10 @@ A request whose id holds a record answers that record, rendering and spending no
 Concurrent prepares of one id share one prepare, on any instance. The first takes the claim on a
 work thread (`prepare_export`), and each other reads the claim from the door with no work
 permit, at most `materialise_wait_seconds` and refusing `ExportPrepareRunning` (code
-`service_unavailable`) after that, then answers the record as a repeat prepare does. A refusal
-After a prepare that refused or failed, a waiter takes the claim in turn and runs every guard
+`service_unavailable`) after that, then answers the record as a repeat prepare does. After a
+prepare that refused or failed, a waiter takes the claim in turn and runs every guard
 itself, and a spent unit refuses each waiter at its own spend, for no render. Two prepares can run
-together only past a lease. Every render is deterministic (bundle
+together only when one is past a lease and the other took the claim. Every render is deterministic (bundle
 members carry fixed timestamps), so they give one file, which the content-addressed store holds
 once, and the second record write returns the first's row.
 
@@ -88,7 +89,7 @@ import io
 import json
 import math
 import zipfile
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -433,14 +434,14 @@ def _stored_file_shape(
         )
 
 
+type _Prepare = Callable[..., ExportRecord]
+"""The prepare of a file a request's checks passed, taking the `copy` of its claim."""
+
+
 def _prepare_dataset(
-    request: ExportRequest,
-    *,
-    export: str,
-    copy: PreparingCopy,
-    current: Deps,
-    deps: DefinitionDeps,
-) -> ExportRecord:
+    request: ExportRequest, *, export: str, current: Deps, deps: DefinitionDeps
+) -> _Prepare:
+    """Read and check the version `request` names, and return the prepare of its file."""
     frame = request.frame
     stored, subject_ids = read_version(
         id=frame.spec_id, content_version=frame.content_version, deps=deps
@@ -451,11 +452,39 @@ def _prepare_dataset(
     check_licences(licence.source for licence in licences)
     _check_rows(request, cast(int, facts.coverage["rows"]))
 
+    return functools.partial(
+        _dataset_record,
+        request,
+        stored=stored,
+        subject_ids=subject_ids,
+        coverage=facts.coverage,
+        citation=citation.text,
+        licences=licences,
+        export=export,
+        current=current,
+        deps=deps,
+    )
+
+
+def _dataset_record(
+    request: ExportRequest,
+    *,
+    stored: ServableVersion,
+    subject_ids: tuple[str, ...],
+    coverage: Mapping[str, Any],
+    citation: str,
+    licences: list[ExportLicence],
+    export: str,
+    copy: PreparingCopy,
+    current: Deps,
+    deps: DefinitionDeps,
+) -> ExportRecord:
+    frame = request.frame
     # The file holds the enrichment a client's frame of the version holds: the columns a Spec
     # root reads it with, added to the long layout's own.
     requested = resolve_enrichment(
         MintOptions(format=request.format, bundle=request.bundle, enrichment="default"),
-        coverage=CoverageModel.model_validate(facts.coverage),
+        coverage=CoverageModel.model_validate(coverage),
     )
     location = listed_file_location(
         stored,
@@ -498,7 +527,7 @@ def _prepare_dataset(
         size_bytes=location.size_bytes,
         rows=rows,
         columns=columns,
-        citation=citation.text,
+        citation=citation,
         licences=licences,
     )
 
@@ -535,13 +564,9 @@ def _stored_derived_file(
 
 
 def _prepare_derived(
-    request: ExportRequest,
-    *,
-    export: str,
-    copy: PreparingCopy,
-    current: Deps,
-    deps: DefinitionDeps,
-) -> ExportRecord:
+    request: ExportRequest, *, export: str, current: Deps, deps: DefinitionDeps
+) -> _Prepare:
+    """Read and check the derived frame `request` names, and return the prepare of its file."""
     frame = request.frame
     read_servable_version(
         current.snapshot_reader,
@@ -558,7 +583,28 @@ def _prepare_derived(
     _check_roots(recipe, frame=frame, current=current)
     licences = _licences(citation)
     check_licences(licence.source for licence in licences)
+    return functools.partial(
+        _derived_record,
+        request,
+        citation=citation,
+        licences=licences,
+        export=export,
+        current=current,
+        deps=deps,
+    )
 
+
+def _derived_record(
+    request: ExportRequest,
+    *,
+    citation: CitationModel,
+    licences: list[ExportLicence],
+    export: str,
+    copy: PreparingCopy,
+    current: Deps,
+    deps: DefinitionDeps,
+) -> ExportRecord:
+    frame = request.frame
     copy.hold()
     file = derived_file(
         id=frame.spec_id,
@@ -861,6 +907,8 @@ def prepare_export(
         MintBackpressure: No materialise permit came free.
     """
     export = export_id(request)
+    check = _prepare_derived if request.frame.spec_id.startswith("ops_") else _prepare_dataset
+    prepare = check(request, export=export, current=current, deps=deps)
     now = current.now()
     lease = timedelta(seconds=deps.settings.definition_timeout_seconds) + PREPARE_LEASE_MARGIN
     claim = current.allowances.claim(export, now=now, expires_at=now + lease)
@@ -878,8 +926,7 @@ def prepare_export(
         recorded = recorded_export(request=request, current=current)
         if recorded is not None:
             return recorded
-        prepare = _prepare_derived if request.frame.spec_id.startswith("ops_") else _prepare_dataset
-        record = prepare(request, export=export, copy=copy, current=current, deps=deps)
+        record = prepare(copy=copy)
         with phase("record"):
             stored = current.export_store.write_export(record)
         return _servable_facts(stored, current=current)

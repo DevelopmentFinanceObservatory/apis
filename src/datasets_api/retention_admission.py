@@ -13,7 +13,7 @@ others. A spent budget refuses `PinBudgetExhausted` or `OpenPinBudgetExhausted`,
 `retryable: true` and `Retry-After` naming the reset at the next UTC midnight, and a spent
 allowance `AllowanceExhausted`, 429. A unit on an export claim, held or behind a copy whose outcome
 is unknown, can come back, so its limit refuses `PinUnitHeld`, 503 with `retryable: true` and a
-one-second `Retry-After`.
+`Retry-After` of the wait on the claim (`allowance.claim_retry_seconds`).
 
 The units pay for the copy that stands. A copy that finds the pinned bytes already stored, made
 by a concurrent pin, gives its units back, since that pin's units pay for it, and so does a copy
@@ -29,19 +29,23 @@ that render nothing, and moves the claim to `copying` before every copy, so a pr
 its claim copies nothing. The copy's own result settles it: a new object is `landed`, and a
 deduplicated copy or absent bytes refund, unless the claim had already paid. The claim's lease is
 static, with no thread renewing it, since Cloud Run throttles a prepare that outlives its request:
-`definition_timeout_seconds` plus `PREPARE_LEASE_MARGIN`, as the worker's static lease does, and a
-crashed prepare's claim is free when it ends. `begin_copy` refuses past the lease and sets
-`_COPY_LEASE`, so a running copy's claim stays live. A retry takes over a `copying` claim and
-settles it by the pinned object before any render, refusing `ExportClaimUnsettled` if it cannot. A
-stale claim with no copy begun refunds as it is taken over, so the next caller spends for itself.
-A stale unit answers `PinUnitHeld` until then or until `sweep_export_claims`, the five-minute
-backstop, settles it. A refund lands on the UTC day that spent the unit, so after midnight it
-changes nothing a caller can see, since that day's limits no longer apply.
+`definition_timeout_seconds` plus `PREPARE_LEASE_MARGIN`, as the worker's static lease does.
+`begin_copy` writes `_COPY_LEASE`, so a running copy's claim stays live, and a render that outlives
+its lease lands when nothing took the claim, since a takeover fails the generation fence. A retry
+takes over a `copying` claim and settles it by the pinned object before any render, refusing
+`ExportClaimUnsettled` if it cannot. A stale claim with no copy begun refunds as it is taken over,
+so the next caller spends for itself. A stale unit answers `PinUnitHeld` until then or until
+`sweep_export_claims`, the five-minute backstop, settles it. A crash holds a unit for at most the
+lease plus the sweep interval: about 450 seconds with no copy begun, and 750 with one. A refund
+lands on the UTC day that spent the unit, so after midnight it changes nothing a caller can see,
+since that day's limits no longer apply.
 
-Three cases can land a copy after its units came back, each at most one free object per digest:
-a prepare paused past `_COPY_LEASE` between `begin_copy` and the copy, a client-side `copy_blob`
-timeout with the server still copying, and a lost response retried with `if_generation_match=0`,
-which reads as deduplicated.
+Three causes can land a copy after its units came back, each at most one free object per digest:
+a prepare paused between `begin_copy` and the copy, which `cpu_idle` makes ordinary, a client-side
+`copy_blob` timeout with the server still copying, and a lost response retried with
+`if_generation_match=0`, which reads as deduplicated. A pin landing first leaves two sets spent,
+since an existence read cannot say who paid. A `copy_to_pinned` whose existence read also fails
+keeps its units, with no sweep to settle them.
 """
 
 from __future__ import annotations
@@ -61,10 +65,10 @@ from datasets_api.allowance import (
     ExportClaim,
     SharedAllowanceLedger,
     Spend,
+    claim_retry_seconds,
     seconds_to_reset,
     utc_day,
 )
-from datasets_api.backpressure import Backpressure
 from dfo_platform.caller import Caller
 from dfo_platform.problem import Refusal
 
@@ -72,9 +76,10 @@ PREPARE_LEASE_MARGIN = timedelta(seconds=30)
 """How long a prepare's claim outlives its `definition_timeout_seconds`, for the writes begun
 before the deadline."""
 
-_COPY_LEASE = timedelta(seconds=180)
-"""How long a begun copy keeps its claim: above `copy_blob`'s 60-second timeout and the 120-second
-deadline of the client's retry."""
+_COPY_LEASE = timedelta(seconds=450)
+"""How long a begun copy keeps its claim, above `LiveArtifactStore.copy`'s 420-second budget: a 30 s
+inventory read, a `copy_blob` of 180 s (its last retry starts at 120 s and runs 60 s), a `get_blob`
+of the same 180 s, and a 30 s inventory write."""
 
 __all__ = [
     "PREPARE_LEASE_MARGIN",
@@ -126,18 +131,28 @@ class OpenPinBudgetExhausted(Refusal):
         )
 
 
-class PinUnitHeld(Backpressure):
+class _ClaimWait(Refusal):
+    """A retryable refusal that lasts until an export claim settles, with `Retry-After` of the
+    wait on it (`allowance.claim_retry_seconds`)."""
+
+    retryable = True
+
+    def __init__(self, *, retry_after: int) -> None:
+        self.headers = MappingProxyType({"Retry-After": str(retry_after)})
+        super().__init__()
+
+
+class PinUnitHeld(_ClaimWait):
     """An export claim, of a running prepare or a dead one, holds the last unit of a pin limit,
-    and may give it back. Maps to retryable `service_unavailable`, 503, with the one-second
-    `Retry-After` of full capacity."""
+    and may give it back. Maps to retryable `service_unavailable`, 503."""
 
     code = "service_unavailable"
     detail = "the last unit of a pin limit is held by an export that has not settled; retry"
 
 
-class ExportClaimUnsettled(Backpressure):
-    """An export prepare cannot go on over its claim: another writer moved it, its lease passed,
-    or the pinned object that settles an earlier copy could not be read. Maps to retryable
+class ExportClaimUnsettled(_ClaimWait):
+    """An export prepare cannot go on over its claim: another writer moved it, or the pinned
+    object that settles an earlier copy could not be read. Maps to retryable
     `service_unavailable`, 503."""
 
     code = "service_unavailable"
@@ -162,10 +177,10 @@ def _pin_spends(caller: Caller | None) -> list[Spend]:
 
 
 def _spend_refusal(exhausted: AllowanceExhausted, *, now: datetime) -> Refusal:
-    """The refusal of the spend `exhausted` stopped: `PinUnitHeld` when a live claim holds the
+    """The refusal of the spend `exhausted` stopped: `PinUnitHeld` when a claim holds the
     unit, else the copy's own for a day that spent it."""
-    if exhausted.held:
-        return PinUnitHeld()
+    if exhausted.held_for is not None:
+        return PinUnitHeld(retry_after=exhausted.held_for)
     budget = _BUDGET_REFUSALS.get(exhausted.kind)
     return exhausted if budget is None else budget(limit=exhausted.limit, now=now)
 
@@ -198,6 +213,12 @@ class PreparingCopy:
         self._caller = caller
         self._clock = clock
 
+    def _unsettled(self) -> ExportClaimUnsettled:
+        """The refusal of a prepare that cannot go on, asking the caller to wait out the row."""
+        claim = self._allowances.read_claim(self._claim.export_id)
+        retry_after = 1 if claim is None else claim_retry_seconds(claim.expires_at, self._clock())
+        return ExportClaimUnsettled(retry_after=retry_after)
+
     def _settle(self, *, landed: bool) -> None:
         """Move the claim out of `copying`. A write that fails leaves it there for a retry or
         the sweep, so the prepare's own outcome stands."""
@@ -224,7 +245,7 @@ class PreparingCopy:
         if self._claim.state == ClaimState.copying:
             self._judge()
         if self._claim.state == ClaimState.copying:
-            raise ExportClaimUnsettled()
+            raise self._unsettled()
 
     def hold(self) -> None:
         """Spend the copy's units onto the claim, unless it stands behind a copy already.
@@ -242,25 +263,32 @@ class PreparingCopy:
         except AllowanceExhausted as exhausted:
             raise _spend_refusal(exhausted, now=now) from None
         if held is None:
-            raise ExportClaimUnsettled()
+            raise self._unsettled()
         self._claim = held
 
     def copy(self, artifact_digest: str) -> StoredArtifact:
         """Copy `artifact_digest` to the pinned tier on the held units, moving the claim to
-        `copying` first and settling it by what the copy shows.
+        `copying` first and settling it by what the copy shows. A claim that paid for another
+        digest reopens and spends for this one.
 
         Raises:
             ArtifactNotFoundError: The working bytes are gone.
-            ExportClaimUnsettled: Another writer moved the claim, or its lease passed. Nothing is
-                copied.
+            PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted, PinUnitHeld: As
+                `copy_to_pinned`, when a reopened claim spends.
+            ExportClaimUnsettled: Another writer moved the claim. Nothing is copied.
         """
+        if self._claim.state == ClaimState.landed and self._claim.digest != artifact_digest:
+            reopened = self._allowances.reopen_claim(self._claim)
+            if reopened is None:
+                raise self._unsettled()
+            self._claim = reopened
+            self.hold()
         paid = self._claim.state == ClaimState.landed
-        now = self._clock()
         began = self._allowances.begin_copy(
-            self._claim, artifact_digest, now=now, expires_at=now + _COPY_LEASE
+            self._claim, artifact_digest, expires_at=self._clock() + _COPY_LEASE
         )
         if began is None:
-            raise ExportClaimUnsettled()
+            raise self._unsettled()
         self._claim = began
         try:
             copied = self._artifacts.copy(
@@ -356,31 +384,32 @@ def _settle_stale_claim(
     allowances: SharedAllowanceLedger,
     artifacts: ArtifactStore,
     now: datetime,
-) -> None:
-    """Move one stale claim on. A `copying` claim is judged by the pinned object, and a `landed`
-    one stays through its UTC day so that a retry finds its paid copy: from the next day a retry
-    has units of its own, which the pinned bytes give back."""
+) -> bool:
+    """Move one stale claim on, and return whether it moved. A `copying` claim is judged by the
+    pinned object, and a `landed` one stays through its UTC day so that a retry finds its paid
+    copy: from the next day a retry has units of its own, which the pinned bytes give back."""
     if claim.state == ClaimState.copying and artifacts.exists(
         cast(str, claim.digest), tier=Tier.pinned
     ):
-        allowances.settle_copy(claim, landed=True)
-    elif claim.state != ClaimState.landed or utc_day(cast(datetime, claim.spent_at)) < utc_day(now):
-        allowances.close_claim(claim)
+        return allowances.settle_copy(claim, landed=True) is not None
+    if claim.state == ClaimState.landed and utc_day(cast(datetime, claim.spent_at)) >= utc_day(now):
+        return False
+    return allowances.close_claim(claim)
 
 
 def sweep_export_claims(
     *, allowances: SharedAllowanceLedger, artifacts: ArtifactStore, now: datetime
 ) -> tuple[int, int]:
-    """Settle every claim whose lease has passed at `now`, one by one, and return how many went
-    through and how many failed. Each is fenced, so a second run or a writer that got there
+    """Settle every claim whose lease has passed at `now`, one by one, and return how many moved
+    and how many failed. Each names its generation, so a second run or a writer that got there
     first leaves nothing to do."""
     settled = failed = 0
     for claim in allowances.expired_claims(now):
         try:
-            _settle_stale_claim(claim, allowances=allowances, artifacts=artifacts, now=now)
+            settled += _settle_stale_claim(
+                claim, allowances=allowances, artifacts=artifacts, now=now
+            )
         except Exception:
             logger.exception("Settling the claim of %s failed", claim.export_id)
             failed += 1
-        else:
-            settled += 1
     return settled, failed

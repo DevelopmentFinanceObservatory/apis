@@ -17,8 +17,8 @@ allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 100 a UTC day), refusing 429
 `allowance_exhausted` once it is spent. The copy goes through `retention_admission.copy_to_pinned`,
 which a share's pins go through too, so they draw on the same budgets. It spends the daily
 budget, the open budget and the allowance together, so a refusal by one spends none of the
-others. A unit a running export prepare holds refuses `PinUnitHeld`, retryable 503 with
-`Retry-After: 1`. A unit stays spent when the copy stands and the reference write then fails, and
+others. A unit on an export claim refuses `PinUnitHeld`, retryable 503 with `Retry-After` of the
+wait on the claim. A unit stays spent when the copy stands and the reference write then fails, and
 when the copy fails with its outcome unknown. A repeat pin of an artifact that already has a
 pinned copy spends nothing, and a pin whose copy finds the pinned copy already made, by a
 concurrent pin of the same artifact or an earlier attempt, or finds the working bytes gone, gives
@@ -170,7 +170,7 @@ def pin_artifact(
     open caller (`caller` set) one unit of the open callers' budget and one of `caller`'s `pin`
     allowance, all together before any copy. A spent budget refuses `PinBudgetExhausted` or
     `OpenPinBudgetExhausted`, a spent allowance `AllowanceExhausted`, and a refusal spends none
-    of the others. A unit a running export prepare holds refuses `PinUnitHeld`. An artifact that
+    of the others. A unit on an export claim refuses `PinUnitHeld`. An artifact that
     already has a pinned copy spends nothing, and a copy that finds the pinned bytes already
     stored, or the working bytes gone, gives the units back. Any other copy failure keeps them,
     since the bytes may have landed (`retention_admission.copy_to_pinned`).
@@ -442,7 +442,7 @@ def build_pin_door(
             PinBackpressure(),
             PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
             OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-            PinUnitHeld(),
+            PinUnitHeld(retry_after=1),
             AllowanceExhausted(
                 kind=AllowanceKind.pin, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
             ),

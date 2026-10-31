@@ -1515,7 +1515,7 @@ def build_shares_door(
             ),
             PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
             OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-            PinUnitHeld(),
+            PinUnitHeld(retry_after=1),
             CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),

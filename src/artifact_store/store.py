@@ -203,7 +203,8 @@ class ArtifactStore(Protocol):
         ...
 
     def exists(self, digest: str, *, tier: Tier) -> bool:
-        """Whether the tier's bucket holds the object of `digest`, whatever the inventory says."""
+        """Whether the tier's bucket holds the object of `digest`, whatever the inventory says.
+        The read is short and takes no retry, so a failure raises in seconds."""
         ...
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
@@ -228,6 +229,9 @@ class ArtifactStore(Protocol):
         (`inventory.write_entry`); until then the bytes are stored but not inventoried.
         """
         ...
+
+
+_EXISTS_TIMEOUT_SECONDS = 5.0
 
 
 class _HashingSink(io.RawIOBase):
@@ -692,7 +696,8 @@ class LiveArtifactStore:
             )
 
     def exists(self, digest: str, *, tier: Tier) -> bool:
-        return self._client.bucket(self._buckets[tier]).get_blob(digest) is not None
+        bucket = self._client.bucket(self._buckets[tier])
+        return bucket.get_blob(digest, timeout=_EXISTS_TIMEOUT_SECONDS, retry=None) is not None
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         """Copy from the recorded source location. Record the destination after success. A

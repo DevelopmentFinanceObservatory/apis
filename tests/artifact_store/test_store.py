@@ -750,3 +750,18 @@ def test_a_pinned_dedupe_without_a_location_row_reads_no_object_metadata():
 
     assert stored.deduplicated is True
     assert stored.object_name == digest
+
+
+@pytest.mark.parametrize("stored", [True, False], ids=["present", "absent"])
+def test_an_existence_read_is_short_and_takes_no_retry(stored: bool):
+    """A settle holds a work permit through this read, so a failing bucket raises in seconds."""
+    client = FakeGCSClient()
+    store = _store(client, RecordingArtifactInventory())
+    bucket = client.bucket(_BUCKETS[Tier.pinned])
+    if stored:
+        bucket.objects["sha256:a"] = b"bytes"
+
+    assert store.exists("sha256:a", tier=Tier.pinned) is stored
+
+    assert bucket.get_blob_options["retry"] is None
+    assert 0 < bucket.get_blob_options["timeout"] <= 10
