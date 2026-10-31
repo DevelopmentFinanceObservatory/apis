@@ -26,7 +26,7 @@ from typing import Any, Protocol
 
 from pydantic import TypeAdapter
 
-from dc_graph import FacetDefaultPolicy
+from dc_graph import ArcTarget, FacetDefaultPolicy
 from graph_generation import GenerationStamp
 from origin_catalogue import current_catalogue
 from origin_catalogue.graph import UnAvailabilityClient
@@ -305,6 +305,56 @@ class GraphCache:
                     _key("node_arcs_many", dcid, sorted_properties),
                     "node_arcs_many",
                     {k: list(v) for k, v in entry.items()} if entry is not None else None,
+                )
+                result[dcid] = entry
+        return result
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Cache each dcid's targets under its sorted `properties`, as `node_arcs_many` does."""
+        del deadline
+        if not dcids:
+            return {}
+        sorted_properties = sorted(properties)
+        result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        misses: list[str] = []
+        for dcid in dict.fromkeys(dcids):
+            hit, arcs = self._store.get(_key("node_arc_targets_many", dcid, sorted_properties))
+            if hit:
+                result[dcid] = (
+                    None
+                    if arcs is None
+                    else {
+                        prop: tuple(
+                            ArcTarget(value=value, name=name, types=tuple(types))
+                            for value, name, types in targets
+                        )
+                        for prop, targets in arcs.items()
+                    }
+                )
+            else:
+                misses.append(dcid)
+        if misses:
+            if self._read_only:
+                raise CacheMiss(_key("node_arc_targets_many", *sorted(misses), sorted_properties))
+            with self._semaphore:
+                fetched = self._inner.node_arc_targets_many(misses, properties=properties)
+            for dcid in misses:
+                entry = fetched.get(dcid)
+                self._store.put(
+                    _key("node_arc_targets_many", dcid, sorted_properties),
+                    "node_arc_targets_many",
+                    None
+                    if entry is None
+                    else {
+                        prop: [[t.value, t.name, list(t.types)] for t in targets]
+                        for prop, targets in entry.items()
+                    },
                 )
                 result[dcid] = entry
         return result
