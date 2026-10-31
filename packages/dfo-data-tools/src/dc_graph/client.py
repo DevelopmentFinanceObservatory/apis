@@ -1323,10 +1323,13 @@ class GraphClient:
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging arcs for {list(dcids)!r} "
-                    "instead of making progress"
+                    "instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=payload["property"],
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return merged
@@ -1434,10 +1437,13 @@ class GraphClient:
                         children.append(child_dcid)
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging child places for {parent!r} "
-                    f"via {child_type!r} instead of making progress"
+                    f"via {child_type!r} instead of making progress",
+                    dcid=parent,
+                    property=prop,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return children
@@ -1561,10 +1567,13 @@ class GraphClient:
                         break
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging subjects for {unique_dcids!r} "
-                    f"via {property!r} instead of making progress"
+                    f"via {property!r} instead of making progress",
+                    dcid=", ".join(unique_dcids),
+                    property=arc_spec,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None or len(capped) == len(unique_dcids):
                 return {
@@ -2123,10 +2132,13 @@ class GraphClient:
             if next_token is None:
                 return members
             if next_token in tokens_seen:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated a nextToken paging <-typeOf members for "
-                    f"{class_dcids!r} instead of making progress"
+                    f"{class_dcids!r} instead of making progress",
+                    dcid=", ".join(class_dcids),
+                    property="<-typeOf",
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             tokens_seen.add(next_token)
             token = next_token
         raise self._read_error_cls(
@@ -2223,10 +2235,13 @@ class GraphClient:
             _merge_node_arcs_page(merged, body.get("data", {}))
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
-                raise self._read_error_cls(
+                stuck = GraphNotAdvancingError(
                     f"graph repeated the same nextToken paging {arc_spec!r} for "
-                    f"{list(dcids)!r} instead of making progress"
+                    f"{list(dcids)!r} instead of making progress",
+                    dcid=", ".join(dcids),
+                    property=arc_spec,
                 )
+                raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None:
                 return merged

@@ -2156,6 +2156,12 @@ def _continues(base: Facet, candidate: Facet, *, after: int, units: set[str | No
     )
 
 
+def continues_selection(selection: FacetSelection) -> bool:
+    """Whether a `measurementMethod` selection can be continued (`continued_election`): one
+    the request does not bind."""
+    return selection.basis != "bound"
+
+
 def continued_election(
     election: FacetElection,
     members: Sequence[Sequence[Facet]],
@@ -2173,7 +2179,7 @@ def continued_election(
     returned as it is. `joint_matches`, and so every member's dispatch, then admits the
     continuing facets beside the served ones."""
     selection = election.selections.get("measurementMethod")
-    if selection is None or selection.basis == "bound":
+    if selection is None or not continues_selection(selection):
         return election
     by_id: dict[str, list[Facet]] = {}
     for member, candidates in enumerate(members):

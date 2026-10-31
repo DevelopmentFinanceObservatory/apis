@@ -9,6 +9,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -23,7 +24,7 @@ from datasets_api.warning_backfill import (
     run_backfill_warnings,
     select_rows,
 )
-from dc_graph import GraphNotAdvancingError, GraphOmittedDcidsError
+from dc_graph import GraphClient, GraphNotAdvancingError, GraphOmittedDcidsError
 from dc_sdmx import SdmxHttpError, SdmxUnsupportedFilterError
 from materialise import facets as facets_module
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
@@ -579,7 +580,14 @@ def test_a_row_changed_after_it_was_read_keeps_the_change(where, capsys):
 
     assert _run(store, rows=rows) == 1
     assert json.loads(json.dumps(store.rows[("spec_a", "cv_a")], default=str)) == after != before
-    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
+    assert (failed["conflict"], failed["severity"], failed["subject_id"]) == (
+        True,
+        "ERROR",
+        "spec_a",
+    )
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert summary["conflicts"] == 1
 
 
@@ -805,6 +813,13 @@ class _StatusGraph(FakeGraphReader):
         raise self._error
 
 
+def _chained(*errors: GraphReadError) -> GraphReadError:
+    """The first of `errors`, each raised from the next."""
+    for error, cause in pairwise(errors):
+        error.__cause__ = cause
+    return errors[0]
+
+
 def _omitted(dcids: Sequence[str]) -> GraphReadError:
     """The read error a graph client raises over dcids its re-request omits too."""
     omitted = GraphOmittedDcidsError("omitted again", dcids=dcids)
@@ -837,12 +852,16 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
         pytest.param(_StatusGraph(status=302, facets=_FACETS), None, True, id="graph-302"),
         pytest.param(
             _StatusGraph(
-                error=GraphNotAdvancingError("repeated", dcid=_IN, property="nextToken"),
+                error=_chained(
+                    GraphReadError("a reader wrapping the client's error"),
+                    GraphReadError("graph repeated the same nextToken"),
+                    GraphNotAdvancingError("repeated", dcid=_IN, property="typeOf"),
+                ),
                 facets=_FACETS,
             ),
             None,
             False,
-            id="graph-not-advancing",
+            id="graph-not-advancing-wrapped-twice",
         ),
         pytest.param(
             _StatusGraph(error=_omitted([_IN]), facets=_FACETS),
@@ -887,6 +906,39 @@ def test_a_client_status_is_refused_for_good_and_a_server_status_is_retried(
 
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
     assert failed["transient"] is transient
+
+
+class _StuckPagingGraph(FakeGraphReader):
+    """Reads the arcs of the places a default scope lists through a real graph client whose
+    every page repeats its `nextToken`."""
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        self._count("node_arcs_many")
+        client = GraphClient(base_url="http://fake/core/api")
+        client.post = lambda path, payload, *, deadline=None: {"data": {}, "nextToken": "T"}
+        return client.node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+
+
+def test_a_paged_read_whose_token_repeats_is_refused_for_good(capsys):
+    store = _Store([_row(_warning([_IN]), zero=[_IN], places=())])
+
+    assert (
+        _run(
+            store,
+            graph=_StuckPagingGraph(facets=_FACETS),
+            availability=ScopeAvailability(data=[(_IN, _KEN)]),
+        )
+        == 0
+    )
+
+    assert _stored(store) == _warning([_IN])
+    (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
+    assert (failed["refused"], failed["transient"]) == (True, False)
 
 
 def test_a_probe_timeout_is_retried_and_the_run_goes_on(monkeypatch, capsys):
@@ -1096,22 +1148,32 @@ def test_a_new_format_row_left_short_by_the_graph_disagrees(capsys):
 
 
 @pytest.mark.parametrize(
-    ("method", "field"),
+    ("method", "year", "selection", "field"),
     [
-        pytest.param("M2", "unserved_members", id="nothing-estimated"),
-        pytest.param("Estimated", None, id="an-estimated-facet"),
+        pytest.param("M2", "2018", {}, "unserved_members", id="nothing-estimated"),
+        pytest.param("Estimated", "2018", {}, None, id="an-estimated-facet"),
+        # A bound method is never continued.
+        pytest.param(
+            "Estimated", "2018", {"basis": "bound"}, "unserved_members", id="bound-method"
+        ),
+        # An estimated method continues nothing.
+        pytest.param(
+            "Estimated", "2018", {"ref": "Modelled"}, "unserved_members", id="estimated-method"
+        ),
+        # An estimate with no point in the window continues nothing.
+        pytest.param("Estimated", "1990", {}, "unserved_members", id="estimate-before-window"),
     ],
 )
 def test_a_selection_the_graph_no_longer_holds_is_refused_only_where_it_could_continue(
-    method, field, capsys
+    method, year, selection, field, capsys
 ):
     # The graph no longer holds Var_Served, the one member that held the selected facets.
     other = "Var_Other"
     facets = {
-        (other, _KEN): [_facet("f-other", "2018", method=method)],
+        (other, _KEN): [_facet("f-other", year, method=method)],
     }
     row = _row(_warning([other]), zero=[other])
-    row["trace"]["facets"].append(_METHOD_SELECTION)
+    row["trace"]["facets"].append({**_METHOD_SELECTION, **selection})
     store = _Store([row])
 
     assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
@@ -1153,7 +1215,7 @@ def test_a_continuation_is_judged_at_the_cadence_most_members_hold(capsys):
 
     assert _stored(store) == _warning([other])
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert "Estimated" in failed["error"]
+    assert (failed["refused"], failed["transient"]) == (True, False)
 
 
 def test_a_cadence_tie_breaks_on_the_series_each_facet_holds(capsys):

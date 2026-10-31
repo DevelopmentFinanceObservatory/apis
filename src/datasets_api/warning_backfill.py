@@ -85,7 +85,7 @@ import json
 import re
 import time
 import traceback
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from functools import partial
@@ -120,10 +120,12 @@ from materialise.errors import (
 )
 from materialise.facets import (
     ElectedDataset,
+    FacetElection,
     FacetSelection,
     MemberProbe,
+    continuation,
+    continues_selection,
     dataset_candidates,
-    facet_axis_value,
     probe_collection_candidates,
 )
 from materialise.finish import (
@@ -141,7 +143,6 @@ from materialise.group_facets import (
     group_breadth,
     group_election,
 )
-from materialise.method_status import status_of
 from materialise.pipeline import MaterialisationRequest
 from materialise.place_scope import AvailabilityReader, PlaceScopeReadError
 from materialise.window import RequestedWindow
@@ -232,6 +233,41 @@ class _Member:
         return self.probe.candidates
 
 
+@dataclass
+class _Probed:
+    """One probe's members, keyed by ref, the series counts ranking their group's election
+    (`group_facets.group_breadth`), and the elections rebuilt over them, by selections."""
+
+    members: Mapping[str, _Member]
+    breadth: Mapping[str, int] | None
+    elections: dict[tuple[object, ...], FacetElection] = field(default_factory=dict)
+
+    def election(
+        self,
+        selections: Mapping[str, FacetSelection],
+        *,
+        stat_vars: Sequence[str],
+        window: RequestedWindow,
+    ) -> FacetElection:
+        """The group's election under `selections` over the members in `stat_vars` order
+        (`group_facets.group_election`), built once per selections."""
+        key = tuple(
+            sorted(
+                (axis, s.ref, s.basis, s.continued_by, s.dispatch_facet_id)
+                for axis, s in selections.items()
+            )
+        )
+        if key not in self.elections:
+            self.elections[key] = group_election(
+                [self.members[ref].candidates for ref in stat_vars],
+                selections,
+                stat_vars=stat_vars,
+                window=window,
+                breadth=self.breadth,
+            )
+        return self.elections[key]
+
+
 @dataclass(frozen=True)
 class Split:
     """The members a warning leaves out, as a mint classifies them, and how many of the K the
@@ -273,10 +309,8 @@ class Readers:
     availability: AvailabilityReader
     code_index: CodeIndex
     coverage: CoverageIndex | None
-    # The current subject's probes, by `_members`'s key.
-    probes: dict[tuple[object, ...], Mapping[str, _Member] | Exception] = field(
-        default_factory=dict
-    )
+    # The current subject's probes, by `_probed`'s key.
+    probes: dict[tuple[object, ...], _Probed | Exception] = field(default_factory=dict)
     probe_calls: int = 0
 
 
@@ -456,6 +490,17 @@ def _backfill_row(
         updated = _update(store, row, warnings, clears_on_retry=clears_on_retry)
         if updated is None:
             counts.conflicts += 1
+            emit(
+                "datasets_warning_backfill_failed",
+                severity="ERROR",
+                subject_id=row.subject_id,
+                content_version=row.content_version,
+                new_format=False,
+                transient=True,
+                refused=False,
+                conflict=True,
+                error="the row's warnings changed after they were read",
+            )
             return
     counts.rewritten += 1
     counts.gone += sum(split.gone for _count, split in splits)
@@ -631,11 +676,11 @@ def _split(
         )
     window = identity_requested_window(identity, clock_year=row.recorded_at.year)
     selections = _selections(trace)
-    members = _members(
-        row, identity, resolved, window=window, selections=selections, readers=readers
+    probed = _probed(row, identity, resolved, window=window, selections=selections, readers=readers)
+    members = probed.members
+    _continuation_stated(
+        selections, probed, stat_vars=[_ref(entry) for entry in resolved], window=window
     )
-    refs = [_ref(entry) for entry in resolved]
-    _continuation_stated(selections, [members[ref] for ref in refs], stat_vars=refs, window=window)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
             members[ref].candidates,
@@ -687,7 +732,7 @@ def _selections(trace: Mapping[str, object]) -> dict[str, FacetSelection]:
 
 def _continuation_stated(
     selections: Mapping[str, FacetSelection],
-    members: Sequence[_Member],
+    probed: _Probed,
     *,
     stat_vars: Sequence[str],
     window: RequestedWindow,
@@ -697,27 +742,19 @@ def _continuation_stated(
 
     `trace.continuations` names a continuing method only when it served a row, so a trace
     naming none leaves a continuation that served none unknown. The group's election is
-    rebuilt from the selections and `members`' candidates in `stat_vars` order
-    (`group_facets.group_election`), ranked by their series under the window as the mint
-    ranked them (`group_facets.group_breadth`). The job binds no whole-variable breadth
-    reader (`facets.bound_variable_breadth`), so a single-place tie the mint broke by a
-    variable's whole breadth falls here to the unit's name, and its cadence can differ from
-    the mint's. When no member holds a facet matching every selection
-    any more, its cadence is gone, and the row is refused if a member holds an estimated facet
-    of the selected source and unit under a range window with an end year, which is when a
-    series can continue (`facets.continuation`)."""
+    rebuilt from the selections and the probed members' candidates in `stat_vars` order
+    (`_Probed.election`), ranked by their series under the window as the mint ranked them.
+    The job binds no whole-variable breadth reader (`facets.bound_variable_breadth`), so a
+    single-place tie the mint broke by a variable's whole breadth falls here to the unit's
+    name, and its cadence can differ from the mint's. When no member holds a facet matching
+    every selection any more, the cadence and the served series are gone, and the row is
+    refused if the mint could have continued them (`_may_continue`)."""
     method = selections.get(_METHOD_AXIS)
     if method is None or method.continued_by is not None:
         return
-    candidates = [member.candidates for member in members]
-    election = group_election(
-        candidates,
-        selections,
-        stat_vars=stat_vars,
-        window=window,
-        breadth=group_breadth([member.probe for member in members], window=window),
-    )
+    election = probed.election(selections, stat_vars=stat_vars, window=window)
     if election.cadence is None:
+        candidates = [probed.members[ref].candidates for ref in stat_vars]
         if _may_continue(candidates, selections, window=window):
             raise _Refused(
                 "no member holds the selected facets any more, and an estimated facet of the "
@@ -738,22 +775,42 @@ def _may_continue(
     *,
     window: RequestedWindow,
 ) -> bool:
-    """Whether a range window with an end year leaves a member holding an estimated facet
-    (`method_status.status_of`) of the selected source and unit, the facets
-    `facets.continuation` continues a series with."""
-    if window.kind != "range" or window.end_year is None:
+    """Whether the mint could have continued a served series of `selections` that the graph no
+    longer holds with one of `candidates` (`facets.continuation`): its method selection is
+    continuable (`facets.continues_selection`), and a series of the selected method, source
+    and unit ending at the window's first year, the earliest a series serving a row in the
+    window can end, would be continued. Where no source or unit is selected, each one the
+    candidates carry is tried."""
+    method = selections.get(_METHOD_AXIS)
+    if method is None or not continues_selection(method):
         return False
-    shared = [selections[axis] for axis in ("provenance", "unit") if axis in selections]
+    facets = [facet for member in candidates for facet in member]
+    provenance, unit = selections.get("provenance"), selections.get("unit")
+    sources = {provenance.ref} if provenance is not None else {f.provenance_id for f in facets}
+    units = {unit.ref} if unit is not None else {f.unit for f in facets}
+    end = f"{window.start_year:04d}" if window.start_year is not None else "0001"
     return any(
-        facet.facet_id is not None
-        and status_of(facet.measurement_method, facet.provenance_id) == "estimated"
-        and all(selection.admits(facet_axis_value(facet, selection.axis)) for selection in shared)
-        for member in candidates
-        for facet in member
+        continuation(
+            [
+                Facet(
+                    obs_count=1,
+                    earliest_date=end,
+                    latest_date=end,
+                    provenance_id=source,
+                    measurement_method=method.ref,
+                    unit=served_unit,
+                )
+                for served_unit in units
+            ],
+            facets,
+            window=window,
+            serves=lambda _facet_id: True,
+        )
+        for source in sources
     )
 
 
-def _members(
+def _probed(
     row: WarningRow,
     identity: Mapping[str, object],
     resolved: Sequence[Mapping[str, object]],
@@ -761,9 +818,9 @@ def _members(
     window: RequestedWindow,
     selections: Mapping[str, FacetSelection],
     readers: Readers,
-) -> Mapping[str, _Member]:
-    """Each of the `resolved` members' candidates, probed as the mint probed them, or as a
-    probe, or its failure, earlier in the run left them for the same requests: the subject,
+) -> _Probed:
+    """The `resolved` members' candidates and series counts, probed as the mint probed them,
+    or as a probe, or its failure, earlier in the run left them for the same requests: the subject,
     its members, the mint's window and the provenance its selections dispatch, which elects
     each member's dataset (`_request`). A failure kept from an earlier row is raised afresh,
     of its class when it is a refusal or an incomplete read."""
@@ -780,10 +837,14 @@ def _members(
     if held is not None:
         return held
     try:
-        found = _probe(identity, resolved, window=window, selections=selections, readers=readers)
+        members = _probe(identity, resolved, window=window, selections=selections, readers=readers)
     except Exception as exc:
         readers.probes[key] = exc
         raise
+    found = _Probed(
+        members=members,
+        breadth=group_breadth([members[_ref(entry)].probe for entry in resolved], window=window),
+    )
     readers.probes[key] = found
     return found
 
@@ -854,14 +915,17 @@ def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
     client refuses before sending it (no status, as `SdmxUnsupportedFilterError`, or
     `SdmxQueryError` and `SdmxCapExceededError`), a paged read whose `nextToken` repeats
     (`GraphNotAdvancingError`) and dcids the graph omits from a read and its re-request
-    (`GraphOmittedDcidsError`) would repeat. An availability read failing for a place scope
-    (`PlaceScopeReadError`) is judged by the client error it wraps."""
+    (`GraphOmittedDcidsError`) would repeat, at any depth of the cause chain. An availability
+    read failing for a place scope (`PlaceScopeReadError`) is judged by the client error it
+    wraps."""
+    if any(
+        isinstance(cause, GraphNotAdvancingError | GraphOmittedDcidsError) for cause in _causes(exc)
+    ):
+        return False
     if isinstance(exc, PlaceScopeReadError) and isinstance(
         exc.__cause__, GraphReadError | SdmxClientError
     ):
         return _clears_on_resend(exc.__cause__)
-    if isinstance(exc, GraphNotAdvancingError) or isinstance(exc.__cause__, GraphOmittedDcidsError):
-        return False
     if isinstance(exc, SdmxTransportError | SdmxResponseError):
         return True
     if not isinstance(exc, GraphReadError | SdmxHttpError):
@@ -870,6 +934,14 @@ def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
     if status is None:
         return isinstance(exc, GraphReadError)
     return not 400 <= status < 500 or status in TRANSIENT_CLIENT_ERRORS
+
+
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """`exc` and each exception it was raised from, in turn."""
+    cause: BaseException | None = exc
+    while cause is not None:
+        yield cause
+        cause = cause.__cause__
 
 
 def _ref(entry: Mapping[str, object]) -> str:
