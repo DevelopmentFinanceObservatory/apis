@@ -10,6 +10,7 @@ import io
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import openpyxl
 import pyarrow.parquet as pq
@@ -18,8 +19,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import presentation_api.retention as presentation_retention
-import presentation_api.share_slots as share_slots
-from assembler.errors import FrameUnavailable
+from assembler.errors import FrameUnavailable, ReleaseMismatch
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
@@ -32,10 +32,9 @@ from datasets_api.retention import RetentionUnreadable
 from dfo_platform.app import create_app
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
-from presentation_api.doors.components import PresentationBackpressure
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
 from presentation_api.newest_frames import NewestPending
-from presentation_store import LiveShareStore
+from presentation_store import LiveShareStore, PresentationStoreUnavailable
 from tests.presentation_api.test_shares_door import _Allowances
 from tests.presentation_store.conftest import FakePresentationStore
 
@@ -107,11 +106,13 @@ class _RefusingFrameStore(FakeFrameStore):
 
     def __init__(self) -> None:
         super().__init__()
+        self.loads: list[FrameRef] = []
         self.refusals: dict[FrameRef, Exception] = {
             _UNREADABLE: FrameUnavailable(reason="missing_rendering", detail="exemplar")
         }
 
     def load(self, *, frame_ref: FrameRef) -> ResolvedFrame:
+        self.loads.append(frame_ref)
         if frame_ref in self.refusals:
             raise self.refusals[frame_ref]
         return super().load(frame_ref=frame_ref)
@@ -567,35 +568,61 @@ def test_a_live_slot_whose_card_cannot_draw_the_newer_frame_serves_its_own_as_st
 
 
 @pytest.mark.parametrize(
-    ("raised", "stored"),
+    ("raised", "wait_s"),
     [
-        pytest.param(FrameUnavailable(reason="io", detail="exemplar"), False, id="io"),
-        pytest.param(FrameUnavailable(reason="busy", detail="exemplar"), False, id="busy"),
-        pytest.param(PresentationBackpressure(), False, id="classified-retryable"),
-        pytest.param(FrameUnavailable(reason="expired", detail="exemplar"), True, id="expired"),
+        pytest.param(
+            FrameUnavailable(reason="io", detail="exemplar", retry_after_s=7.0), 7, id="io"
+        ),
+        pytest.param(FrameUnavailable(reason="busy", detail="exemplar"), 30, id="busy"),
+        pytest.param(PresentationStoreUnavailable("exemplar"), 30, id="store-unavailable"),
+        pytest.param(FrameUnavailable(reason="expired", detail="exemplar"), None, id="expired"),
+        pytest.param(
+            ReleaseMismatch(catalog_version="2020.1.0", detail="exemplar"),
+            None,
+            id="release-mismatch",
+        ),
     ],
 )
-def test_a_live_slot_stores_a_stale_check_only_when_the_newer_frame_cannot_be_drawn(
-    door: _Door, raised: Exception, stored: bool
+def test_a_live_slot_serves_its_own_frame_until_a_transient_failure_s_wait_ends(
+    door: _Door, monkeypatch: pytest.MonkeyPatch, raised: Exception, wait_s: int | None
 ):
-    """A transient failure serves the card's own frame for that read and stores no check, so the
-    read after the claim lapses checks again and, on a healthy store, serves the newer frame."""
+    """A transient failure stores the slot `stale` on the card's own frame until its wait, and
+    the reads inside it neither draw the failing frame nor record a frame served. A permanent
+    one stores it until the next check, past both reads here."""
+    served: list[FrameRef] = []
+    record_served = LiveShareStore.record_served
+
+    def counting(self: LiveShareStore, **kwargs: Any) -> object:
+        served.append(kwargs["frame"])
+        return record_served(self, **kwargs)
+
+    monkeypatch.setattr(LiveShareStore, "record_served", counting)
     share = door.share(door.card(), latest=True)
     door.newest.answer = _MOVED
     door.frame_store.refusals[_MOVED] = raised
+    served.clear()
 
     first = door.data(share["id"])
+    door.later(seconds=(wait_s or 60) - 1)
+    inside = door.data(share["id"])
+    moved_loads = door.frame_store.loads.count(_MOVED)
     del door.frame_store.refusals[_MOVED]
-    door.later(seconds=share_slots._CLAIM_TTL.total_seconds() + 1)
-    second = door.data(share["id"])
+    door.later(seconds=2)
+    after = door.data(share["id"])
 
-    assert _stated(first) == ("stale", _STORED.content_version, "live")
-    if stored:
-        assert _stated(second) == ("stale", _STORED.content_version, "live")
+    stale = ("stale", _STORED.content_version, "live")
+    assert _stated(first) == _stated(inside) == stale
+    assert moved_loads == 1
+    if wait_s is None:
+        assert _stated(after) == stale
         assert door.newest.asked == [_STORED]
+        assert served == [_STORED] * 3
     else:
-        assert _stated(second) == ("current", _MOVED.content_version, "live")
+        assert _stated(after) == ("current", _MOVED.content_version, "live")
         assert door.newest.asked == [_STORED] * 2
+        # The first read's fallback records no frame served; the read inside the wait serves the
+        # check it stored.
+        assert served == [_STORED, _MOVED]
 
 
 def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(

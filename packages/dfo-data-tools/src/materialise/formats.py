@@ -65,6 +65,7 @@ from openpyxl.utils import get_column_letter
 from materialise.cell_safety import spreadsheet_safe
 from materialise.codes import CodeCatalogue
 from materialise.errors import MaterialisationError, MaterialisationUsageError
+from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from materialise.unit_cells import unit_cell_text
 
 if TYPE_CHECKING:
@@ -823,6 +824,28 @@ def read_frame1_table(data: bytes) -> Table:
         for row, unit in zip(rows, units, strict=True):
             row[unit_index] = unit
     return Frame1Table(columns=columns, rows=tuple(tuple(row) for row in rows))
+
+
+def frame_of_frame1(data: bytes) -> Frame:
+    """The frame the frame1 document `data` holds, rebuilt through the grammar
+    (`read_frame1_table`, then `build_frame`), so a frame1 document and a canonical frame of the
+    same rows decode to one `Frame`.
+
+    Raises:
+        FrameError: The document or a cell is outside the grammar's forms.
+    """
+    table = read_frame1_table(data)
+    return build_frame(
+        role_keys=frame_entity_columns(table.columns),
+        rows=[
+            {
+                column: unit_cell_for_rebuild(cell)
+                for column, cell in zip(table.columns, row, strict=True)
+                if column != STATUS_COLUMN
+            }
+            for row in table.rows
+        ],
+    )
 
 
 def read_frame1_document(data: bytes) -> dict[str, object]:

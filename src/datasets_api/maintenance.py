@@ -250,11 +250,10 @@ from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
+    frame_of_frame1,
     read_canonical_frame,
-    read_frame1_table,
     write_frame1,
 )
-from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from materialise.reshape import RollupNotSummableError
 from materialise.statistics import (
     SERIES_STATISTICS_SCHEMA,
@@ -497,18 +496,7 @@ def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
     """The frame a frame1 document holds, rebuilt through the grammar. Raises `ValueError` when
     the rebuilt frame's frame1 digest differs from `digest`, so a conversion never changes
     content."""
-    table = read_frame1_table(data)
-    frame = build_frame(
-        role_keys=frame_entity_columns(table.columns),
-        rows=[
-            {
-                column: unit_cell_for_rebuild(cell)
-                for column, cell in zip(table.columns, row, strict=True)
-                if column != "status"
-            }
-            for row in table.rows
-        ],
-    )
+    frame = frame_of_frame1(data)
     rebuilt = write_frame1((frame,), sink=_DiscardSink()).digest
     if rebuilt != digest:
         raise ValueError(f"the frame rebuilt from {digest} writes frame1 digest {rebuilt}")

@@ -20,7 +20,8 @@ A snapshot slot states `current`, since its rows are the share's for good.
 
 `serve_on_slot_frame` makes that choice for both of a slot's reads, its data and its card, so
 the two serve one frame. It draws the read on the frame the check chose, and when
-that fails on a newer frame it records the slot `stale` on the card's own frame and draws there.
+that fails on a newer frame it draws on the card's own frame, recording the slot `stale` there
+until the next check, or until the failure's wait when a later read may pass.
 
 The rows are the card's data export (`assembler.pipeline.export_component.export_component_data`,
 the one the components door's data route serves), on the served frame as a target when it is
@@ -64,23 +65,23 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from assembler.pipeline.stored_revision import read_stored_revision
-from assembler.ports import TRANSIENT_FRAME_REASONS, FrameRef, FrameUnavailable, RevisionRecord
-from dfo_platform.codes import bound_registry_endpoint
+from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameRef, FrameUnavailable, RevisionRecord
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
-from presentation_api.doors.components import classify_components_exception
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
-from presentation_api.routes import SHARES_ENDPOINT
 from presentation_store import (
     Freshness,
+    PresentationStoreUnavailable,
     ServedPage,
     ServedPosition,
     ShareCard,
     ShareRecord,
     SlotCheck,
 )
+from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
 if TYPE_CHECKING:
     from presentation_api.doors.shares import SharesDeps
@@ -120,6 +121,18 @@ _MAX_ENTRY_ID = 2**63 - 1
 
 _MIN_RETRY_S = 1.0
 """The least a pending check waits, whatever retry time it was given."""
+
+_TRANSIENT_WAIT_S = 30.0
+"""How long a slot serves its card's own frame after a transient failure that names no wait."""
+
+# The infrastructure failures a later read may pass: the stores and the spec registry failing
+# to answer.
+_TRANSIENT_FAILURES: tuple[type[Exception], ...] = (
+    PresentationStoreUnavailable,
+    DatasetsStoreUnavailable,
+    SpecRegistryStoreError,
+    SpecRegistryUnavailable,
+)
 
 # How long a claimed check holds off other reads before any may claim it again. It is twice the
 # bound on one request, so a claim outlives the read that runs its check, and one whose reader
@@ -199,14 +212,17 @@ def serve_on_slot_frame[T](
     now, and record the frame served. A snapshot serves its recorded frame. A live slot serves
     its check's frame (`_live_check`), stored once `draw` succeeds on it. When `draw` fails on a
     frame other than the card's own, `draw` draws on the card's own frame, served `stale`. A
-    transient failure (`_transient`) stores no check, so the read after the claim lapses checks
-    again; any other failure stores the slot `stale` on the card's own frame.
+    transient failure (`_transient_wait`) stores a check `stale` on the card's own frame, due
+    after the failure's wait, so the reads before it serve that frame without drawing the
+    failing one, and records no frame served; any other failure stores the slot `stale` on the
+    card's own frame until the next check.
     `card.frame` must be set and `record` must be the card revision.
 
     Raises:
         Any refusal of `draw` on the card's own frame.
     """
     assert card.frame is not None
+    served = True
     if share.mode == "snapshot":
         frame, freshness, checked_at = card.frame, "current", None
         drawn = draw(frame)
@@ -222,33 +238,43 @@ def serve_on_slot_frame[T](
         except Exception as exc:
             if check.frame == card.frame:
                 raise
-            transient = _transient(exc)
+            wait = _transient_wait(exc)
             # The newer frame does not fit the card's intent, or cannot be read. The slot
             # serves the card's own frame, which its share pinned: until the next check when
-            # the failure is permanent, and for this read alone when a later read may pass.
+            # the failure is permanent, and until the failure's wait when a later read may pass.
             logger.warning(
-                "Share %s slot %s cannot draw %s on %s%s; serving its own frame",
+                "Share %s slot %s cannot draw %s on %s; serving its own frame%s",
                 share.id,
                 slot,
                 card.component_id,
                 check.frame,
-                " for now" if transient else "",
+                "" if wait is None else f" for {wait:g} s",
                 exc_info=True,
             )
-            check = replace(check, frame=card.frame, freshness="stale")
+            if wait is None:
+                check = replace(check, frame=card.frame, freshness="stale")
+            else:
+                now = deps.now()
+                check = SlotCheck(
+                    frame=card.frame,
+                    freshness="stale",
+                    checked_at=now,
+                    next_check_at=now + timedelta(seconds=wait),
+                )
             drawn = draw(card.frame)
-            ran = not transient
+            ran, served = True, wait is None
         if ran:
             deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
         frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
-    deps.share_store.record_served(
-        share_id=share.id,
-        revision=share.revision,
-        slot=slot,
-        card=card,
-        frame=frame,
-        rendering=record.frame_rendering,
-    )
+    if served:
+        deps.share_store.record_served(
+            share_id=share.id,
+            revision=share.revision,
+            slot=slot,
+            card=card,
+            frame=frame,
+            rendering=record.frame_rendering,
+        )
     return SlotServed(drawn=drawn, frame=frame, freshness=freshness, checked_at=checked_at)
 
 
@@ -448,15 +474,21 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
     return isinstance(held_until, str) and datetime.fromisoformat(held_until) > now
 
 
-def _transient(exc: Exception) -> bool:
-    """Whether a later read may draw where `exc` refused with nothing done: a `FrameUnavailable`
-    whose reason is transient (`TRANSIENT_FRAME_REASONS`), or any other failure the components
-    classifier, on the share routes' endpoint, marks retryable."""
+def _transient_wait(exc: Exception) -> float | None:
+    """The seconds after which a later read may draw where `exc` refused with nothing done, or
+    `None` when it may not: a `FrameUnavailable` whose reason is transient
+    (`FrameOutcome.transient`) waits its `retry_after_s`, and an infrastructure failure that
+    clears on retry (`_TRANSIENT_FAILURES`) `_TRANSIENT_WAIT_S`, each held between
+    `_MIN_RETRY_S` and `FRESHNESS_WINDOW`."""
     if isinstance(exc, FrameUnavailable):
-        return exc.reason in TRANSIENT_FRAME_REASONS
-    with bound_registry_endpoint(SHARES_ENDPOINT):
-        spec = classify_components_exception(exc)
-    return spec is not None and spec.retryable
+        if not FRAME_UNAVAILABLE_OUTCOME[exc.reason].transient:
+            return None
+        wait = exc.retry_after_s if exc.retry_after_s is not None else _TRANSIENT_WAIT_S
+    elif isinstance(exc, _TRANSIENT_FAILURES):
+        wait = _TRANSIENT_WAIT_S
+    else:
+        return None
+    return min(max(wait, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())
 
 
 def _live_check(

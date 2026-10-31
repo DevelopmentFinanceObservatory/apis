@@ -95,7 +95,7 @@ from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
-from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, frame_of_frame1
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
 from presentation_store import frame_store
@@ -1067,31 +1067,37 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
             _frame1_with(columns=["stat_var", "stat_var", "time_period", "value", "unit"], rows=[]),
             id="a-repeated-column",
         ),
-        pytest.param(_frame1_with(), id="past-the-row-bound"),
     ],
 )
 def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: bytes):
-    """The malaria document holds 9 rows, one past the bound here."""
     with pytest.raises(FrameUnavailable) as excinfo:
-        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=8)
+        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=9)
 
     assert excinfo.value.reason == "missing_rendering"
 
 
-@pytest.mark.parametrize("missing", ["measurementMethod", "status"])
-def test_a_frame1_document_older_than_an_optional_column_decodes_at_the_frame_measure(
-    missing: str,
-):
-    """A frame1 document counts in the cache at the measure a canonical frame of its rows and
-    columns does, whatever its byte length."""
-    data = _frame1_without(missing)
+@pytest.mark.parametrize("missing", [None, "measurementMethod", "status"])
+def test_a_frame1_document_decodes_as_the_canonical_frame_of_its_rows(missing: str | None):
+    """A frame1 document, of any age and past the row bound, decodes to the document of the
+    canonical frame of its rows, with its unit cells shared, and counts in the cache at that
+    frame's measure whatever its byte length. The malaria document holds 9 rows."""
+    data = _frame1_with() if missing is None else _frame1_without(missing)
     doc, size = frame_store._decode_frame(
-        data, location=_location(digest="d", tier="working"), max_rows=9
+        data, location=_location(digest="d", tier="working"), max_rows=1
+    )
+    canonical = canonical_frame_parquet((frame_of_frame1(data),))
+    canonical_doc, canonical_size = frame_store._decode_frame(
+        canonical,
+        location=_location(digest="c", tier="working", media_type=CANONICAL_FRAME_MEDIA_TYPE),
+        max_rows=9,
     )
 
     rows, columns = cast("list[list[object]]", doc["rows"]), cast("list[str]", doc["columns"])
-    assert missing not in columns
-    assert size == frame_store._document_bytes(rows=len(rows), columns=len(columns)) != len(data)
+    unit = columns.index("unit")
+    assert doc == canonical_doc
+    assert all(row[unit] is rows[0][unit] for row in rows)
+    assert size == canonical_size == frame_store._document_bytes(rows=9, columns=len(columns))
+    assert size != len(data)
 
 
 def test_load_decodes_a_canonical_frame_at_the_row_bound():
@@ -2702,7 +2708,7 @@ def test_load_names_each_variable_of_a_join_of_two_quotients_from_the_step_that_
 def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold():
     """A compare frame holds no entity column, so the label read takes the entities from the
     step's sides, and the variable reads in the order compare subtracts."""
-    rows: list[list[object]] = [["dcid:ops_difference", None, "2015", 1.0, None, "src_oecd_dac"]]
+    rows: list[list[object]] = [["dcid:ops_difference", "2015", 1.0, None, "src_oecd_dac"]]
     steps: list[dict[str, object]] = [
         _RETRIEVE_AID,
         {**_RETRIEVE_AID, "id": "s2"},
@@ -2719,6 +2725,7 @@ def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold(
     ]
     store, frame_ref, _, _ = _computed_frame_store(
         rows=rows,
+        columns=["stat_var", "time_period", "value", "unit", "provenance"],
         steps=steps,
         graph_labels={"country/GBR": "United Kingdom", "country/FRA": "France"},
     )

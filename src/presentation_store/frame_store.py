@@ -250,9 +250,8 @@ from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     canonical_frame_document,
-    frame1_unit_cells,
+    frame_of_frame1,
     read_canonical_frame_table,
-    read_frame1_document,
 )
 from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
@@ -423,30 +422,6 @@ _MALFORMED_CONTENT = (FrameError, pa.ArrowException, OSError, UnicodeDecodeError
 _DECODE_RETRY_AFTER_S = 30
 
 
-def _frame1_document(
-    data: bytes, *, location: StoredArtifactLocation, max_rows: int
-) -> Mapping[str, object]:
-    """The frame1 document `data` holds, under `read_frame1_document`'s rule, the one Datasets
-    reads it by, refused past `max_rows` before any cell is read. Its `time_period` cells are
-    strings and its `unit` cells pass `frame1_unit_cells`, the two the structural view reads
-    past that rule; the other cells are trusted as the grammar's writer wrote them.
-
-    Raises:
-        FrameError: For any other document.
-        FrameUnavailable: `missing_rendering` past `max_rows`.
-    """
-    doc = read_frame1_document(data)
-    columns = cast("list[str]", doc["columns"])
-    rows = cast("list[list[object]]", doc["rows"])
-    if len(rows) > max_rows:
-        raise _over_row_bound(location, rows=len(rows), max_rows=max_rows)
-    period, unit = columns.index(TIME_PERIOD_COLUMN), columns.index(UNIT_COLUMN)
-    if not all(isinstance(row[period], str) for row in rows):
-        raise FrameError("invalid_time_period", "a time_period cell is not a string")
-    frame1_unit_cells([row[unit] for row in rows])
-    return doc
-
-
 @contextmanager
 def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
     """Refuse what the block raises while it reads the content `location` names.
@@ -504,13 +479,16 @@ def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
     """The frame1 document `data` holds and the bytes the cache counts for it, `_document_bytes`
-    of its rows and columns: a frame1 document parsed (`_frame1_document`), or a canonical frame
-    built into one (`_canonical_document`), each bounded by `max_rows` before any cell is read.
-    An unparseable `time_period` refuses in the structural view; the cells neither reads are
-    trusted as the grammar's writer wrote them. `_decoding` refuses what does not decode."""
+    of its rows and columns. Both stored forms build the document from a canonical frame table
+    through `canonical_frame_document`, so their cells are shared alike: a canonical frame read
+    as one (`_canonical_document`), bounded by `max_rows` before any row is decoded, and a
+    frame1 document rebuilt as the grammar's `Frame` (`materialise.formats.frame_of_frame1`),
+    which validates every cell. A frame1 document is not row-bounded: it predates canonical
+    frames, and `datasets_api.maintenance.run_backfill_frame1` gives such a version a canonical
+    frame. `_decoding` refuses what does not decode."""
     with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            doc = _frame1_document(data, location=location, max_rows=max_rows)
+            doc = canonical_frame_document(frame_of_frame1(data).table)
         else:
             doc = _canonical_document(data, location=location, max_rows=max_rows)
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
