@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Protocol, assert_never, get_args
 
 from code_index.composites import provenance_account
 from code_index.shared import get_index
-from materialise.facets import native_currency_iso
+from materialise.facets import nominal_currency
 from search.engine.clients.graph import Facet
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.region.result import FacetAxisFilter
@@ -128,7 +128,7 @@ def _resolved_facets(
     `ref` with the first-seen series' label, source, and Data Commons, and on the provenance
     axis the account its datasets declare (`code_index.composites.provenance_account`).
     Differing refs or a missing value on any series yield `selection="per_series"` without a
-    ref or label, with `refs` listing the distinct refs in series order. `bound_axes` supplies each axis's
+    ref or label, with `refs` on the unit axis listing the distinct units in series order. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
     Keys follow `FacetAxis` order.
@@ -170,7 +170,7 @@ def _resolved_facets(
             result[axis] = ResolvedFacet(
                 basis=basis,
                 selection="per_series",
-                refs=list(distinct),
+                refs=list(distinct) if axis == "unit" else None,
                 request_basis=axis_request_basis,
             )
     return result
@@ -318,13 +318,13 @@ def cluster_currency_filter(mat: Materialised) -> dict[str, FacetAxisFilter] | N
         return None
     currency = cluster.currency
     units = {f.unit for facets in (mat.facets_by_sv or {}).values() for f in facets if f.unit}
-    if not any(native_currency_iso(unit) == currency for unit in units) or all(
-        native_currency_iso(unit) == currency for unit in units
+    if not any(nominal_currency(unit) == currency for unit in units) or all(
+        nominal_currency(unit) == currency for unit in units
     ):
         return None
     return {
         "unit": FacetAxisFilter(
-            predicate=lambda f: f.unit is not None and native_currency_iso(f.unit) == currency
+            predicate=lambda f: f.unit is not None and nominal_currency(f.unit) == currency
         )
     }
 

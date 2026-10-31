@@ -14,7 +14,7 @@ from dfo_platform.roles import RoleWording
 from search.heading.measure_noun import MeasureNoun as AuthoredNoun
 from search.heading.measure_noun import denominator_noun, measure_noun
 from search.models import ResolvedFacet, Slot
-from unit_words.unit_class import PER_CAPITA_DENOMINATOR, UnitClass, classify_unit, rate_phrase
+from unit_words.unit_class import UnitClass, classify_unit, rate_phrase
 
 from .how import _is_adjectival
 from .labels import (
@@ -425,9 +425,9 @@ def _unit_heading_phrase(
 
     A unit stays in the heading when it changes the magnitude and is no currency: the base
     of a rate ("per 1,000 people", `unit_class.rate_phrase`), "per capita" for a per-head
-    denominator (`UnitClass.per_head`: `PerCapita`, or `Count_Person` over no unit, a
-    currency or a purchasing-power unit), "as a share of exports of goods, services and primary income", "in PPP
-    international dollars", or "in percent". A currency, whatever its code, is the
+    denominator (`UnitClass.per_head`: `PerCapita` or `Count_Person` under any unit but a
+    rate or a percent), "as a share of exports of goods, services and primary income", "in
+    PPP international dollars", or "in percent". A currency, whatever its code, is the
     byline's (`heading._byline_unit`), so a per-capita amount in euros reads "per capita"
     here and "current euros" there. Units outside these classes return empty.
     ``graph_heading_text`` is the heading so far when a graph name states the measure,
@@ -436,10 +436,10 @@ def _unit_heading_phrase(
     emissions per capita" adds no "per capita", and a rate whose base the name states adds
     nothing, while a murder rate named "per capita" and served per 100,000 people adds
     "per 100,000 people". An authored noun never names a unit, so it is not inspected.
-    Before facets resolve (``facets`` None) only a `PerCapita` denominator reads, since the
-    shape alone fixes it; a `Count_Person` one states no scale until the unit is read. A
-    unit whose series disagree (``per_series``) has no class, though its denominator still
-    reads.
+    Before facets resolve (``facets`` None) only the per-head reading applies, as it would
+    under an unknown unit, so the streamed and final sentences agree for a WEO or IDS
+    per-capita series. Series that select several units (``per_series``) read per head when
+    every unit does (`_per_head`), and their unit has no other class.
     A ratio whose dataset declares whose total it divides by (`_ratio_base_owner`) names
     that party in ``wording``'s noun: DAC2a's "as a share of the recipient's GNI", DAC1's
     "as a share of the provider's GNI".
@@ -457,10 +457,7 @@ def _unit_heading_phrase(
     )
     stated_bases = _stated_bases(graph_heading_text)
     per_head = _per_head(
-        unit,
-        unit_class,
-        denominator=denominator.ref if denominator is not None else None,
-        facets=facets,
+        unit, unit_class, denominator=denominator.ref if denominator is not None else None
     )
     phrases: list[str] = []
     if per_head and not stated_bases:
@@ -493,28 +490,23 @@ def _unit_heading_phrase(
 
 
 def _per_head(
-    unit: ResolvedFacet | None,
-    unit_class: UnitClass,
-    *,
-    denominator: str | None,
-    facets: Mapping[str, ResolvedFacet] | None,
+    unit: ResolvedFacet | None, unit_class: UnitClass, *, denominator: str | None
 ) -> bool:
     """Whether the heading reads "per capita", over the units the answer's series hold.
 
-    Before facets resolve (``facets`` None) only `PerCapita` fixes a per-head amount: a
-    `Count_Person` denominator waits for the unit, which may be a rate or a percent. Series
-    that select different units (``per_series``) read per head only when every unit they
-    select does (`ResolvedFacet.refs`); a series with no unit qualifies, so it adds no ref.
-    Any other answer reads its one unit's class, ``unit_class``.
+    Series that select different units (``per_series``) read per head only when every unit
+    they select does (`ResolvedFacet.refs`), each classified as the single-unit path
+    classifies its unit; a series with no unit qualifies, so it adds no ref, and a facet
+    listing no refs reads as an unknown unit does. Any other answer, and a heading before
+    facets resolve, reads its one unit's class, ``unit_class``.
     """
-    if facets is None:
-        return denominator == PER_CAPITA_DENOMINATOR
-    if unit is not None and unit.selection == "per_series":
-        return unit.refs is not None and all(
-            classify_unit(unit=ref, denominator=denominator, currency_units={}).per_head
-            for ref in unit.refs
-        )
-    return unit_class.per_head
+    if unit is None or unit.selection != "per_series" or unit.refs is None:
+        return unit_class.per_head
+    currency_units = facet_currency_units(unit)
+    return all(
+        classify_unit(unit=ref, denominator=denominator, currency_units=currency_units).per_head
+        for ref in unit.refs
+    )
 
 
 def _ratio_base_owner(facets: Mapping[str, ResolvedFacet], wording: RoleWording) -> str | None:

@@ -155,6 +155,7 @@ def test_satisfies_native_facets_the_graph_types_without_an_iso_code_through_the
         pytest.param("CurrencyKES", {}, "KES", False, id="currency-unit-convention"),
         pytest.param("USDollar", {}, "USD", False, id="currency-unit-of-measure"),
         pytest.param("INR", {}, "INR", False, id="base-dc-currency-member"),
+        pytest.param("BGN", {}, "BGN", False, id="withdrawn-bare-code"),
         pytest.param(
             _GRAPH_ONLY_UNIT, {_GRAPH_ONLY_UNIT: "INR"}, "INR", True, id="graph-only-unit"
         ),

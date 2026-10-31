@@ -356,6 +356,30 @@ def test_a_place_whose_cue_states_its_direction_keeps_its_end():
     assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
 
 
+@pytest.mark.parametrize(
+    ("query", "france_cue", "kenya_cue"),
+    [
+        ("How much aid that France funds did Kenya receive", "funds", "receive"),
+        ("ODA funded by France and received by Kenya", "funded by", "received by"),
+    ],
+)
+def test_a_verb_cue_keeps_its_place_on_its_end(query, france_cue, kenya_cue):
+    """France's own verb cue states its end, so the receipt wording moves Kenya alone,
+    whatever words the cue takes."""
+    roles = _prepared_roles(
+        [
+            ExtractedEntity(text="France", span="France", flow_role="origin", role_span=france_cue),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span=kenya_cue),
+        ],
+        query=query,
+        measures=["aid"],
+    )
+    assert {name: [role.axis for role in rs] for name, rs in roles.items()} == {
+        "France": ["origin"],
+        "Kenya": ["destination"],
+    }
+
+
 def test_a_cue_against_its_extracted_end_lets_the_whole_parse_swap():
     """ "How much ODA did Kenya receive from France" extracted backwards puts France's
     "from" on destination. The cue contradicts that end, so it protects nothing: the

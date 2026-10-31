@@ -44,7 +44,7 @@ from code_index.types import PartyRow
 from dfo_platform.wire import ResponseModel
 from graph_api.refs import DOCUMENTATION_PATH, NodeRef
 from materialise.facet_profile import FacetProfile
-from materialise.facets import native_currency_iso
+from materialise.facets import unit_currency_code
 from origin_catalogue import Catalogue
 from unit_words.currency_nouns import currency_noun
 
@@ -343,9 +343,7 @@ class HeldFacets:
     def targets(self) -> ReadTargets:
         """The dcids `build_availability` takes names and kinds for."""
         units = {
-            h.unit
-            for h in self.facets
-            if h.unit is not None and native_currency_iso(h.unit) is None
+            h.unit for h in self.facets if h.unit is not None and unit_currency_code(h.unit) is None
         }
         methods = {h.measurement_method for h in self.facets if h.measurement_method is not None}
         return ReadTargets(
@@ -554,7 +552,7 @@ class _Names:
     def unit_label(self, unit: str | None) -> str | None:
         if unit is None:
             return None
-        iso = native_currency_iso(unit)
+        iso = unit_currency_code(unit)
         if iso is not None:
             return currency_noun(iso, label=self.labels.get(unit))
         return self.labels.get(unit)
@@ -678,7 +676,7 @@ def _units(
 def _is_national(held: _Held, national_currencies: Mapping[str, str]) -> bool:
     """Whether `held`'s unit is a currency the graph names as the national currency of every
     place it covers."""
-    iso = native_currency_iso(held.unit)
+    iso = unit_currency_code(held.unit)
     return (
         iso is not None
         and bool(held.reach)

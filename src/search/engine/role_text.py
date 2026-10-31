@@ -360,7 +360,7 @@ def debtor_possessive(
     measures: Sequence[str],
     places: Mapping[str, Sequence[str]],
     directed: Mapping[str, RoleAxis],
-    phrases: Sequence[str] = (),
+    phrases: Sequence[str],
 ) -> dict[str, RoleAxis]:
     """Return the debtor's axis for the one place a possessive names over its own debt.
 
@@ -591,19 +591,30 @@ _BREAKDOWN_CONNECTIVES: frozenset[str] = frozenset({"by", "across"})
 # The words that open a phrase `breakdown_axis` reads: "by donor", "across recipients", "for
 # each donor", "from every provider", "to each recipient".
 _SEGMENT_OPENERS: frozenset[str] = _BREAKDOWN_CONNECTIVES | {"for", *_ROLE_PREP_AXES}
+# The words that end one: a preposition that opens the next phrase, or a word that adds a
+# window or another breakdown ("by debtor country in 2020", "since 2010", "over time", "and
+# year").
+_SEGMENT_ENDS: frozenset[str] = (
+    _SEGMENT_OPENERS | _PHRASE_END_PREPS | {"in", "since", "over", "and"}
+)
 
 
 def breakdown_segments(query: str) -> list[str]:
     """The query's phrases that can ask for a breakdown, each read whole by `breakdown_axis`:
-    the words from each opener (``by``, ``across``, ``for``, ``from``, ``to``) to the next
-    opener or the end. ``Kenya's external debt by debtor type`` gives ``by debtor type``, which opens
-    no side, so no shorter span reads as ``by debtor``."""
+    the words from each opener (``by``, ``across``, ``for``, ``from``, ``to``) up to the next
+    word in `_SEGMENT_ENDS` or the end. ``China's debt by debtor country in 2020`` gives ``by
+    debtor country``, and ``Kenya's external debt by debtor type`` gives ``by debtor type``,
+    which opens no side, so no shorter span reads as ``by debtor``."""
     tokens = _tokenize(query.replace("\u2019", "'"))
-    starts = [i for i, token in enumerate(tokens) if token in _SEGMENT_OPENERS]
-    return [
-        " ".join(tokens[start:end])
-        for start, end in zip(starts, [*starts[1:], len(tokens)], strict=False)
-    ]
+    segments: list[str] = []
+    for start, token in enumerate(tokens):
+        if token not in _SEGMENT_OPENERS:
+            continue
+        end = next(
+            (i for i in range(start + 1, len(tokens)) if tokens[i] in _SEGMENT_ENDS), len(tokens)
+        )
+        segments.append(" ".join(tokens[start:end]))
+    return segments
 
 
 def breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:

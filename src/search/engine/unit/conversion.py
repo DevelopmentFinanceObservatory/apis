@@ -53,7 +53,7 @@ from typing import Final, Literal, Self
 
 from code_index.composites import provenance_datasets
 from materialise.convert import TermKey, row_terms
-from materialise.facets import native_currency_iso
+from materialise.facets import nominal_currency
 from materialise.recipe_bodies import ConversionRecipe
 from materialise.recipes import (
     RecipeNotDeclaredError,
@@ -278,7 +278,7 @@ class CountedConversion:
 
     def converts(self, unit: str | None) -> bool:
         """Whether rows in a facet of `unit` convert under the rules this count read."""
-        return native_currency_iso(unit) in self.natives
+        return nominal_currency(unit) in self.natives
 
 
 type CountConversion = CountedConversion | Literal["undecided"] | None
@@ -313,7 +313,7 @@ def counted_conversion(
         return None
     request: IdentityUnitRequest = binding.request
     keys = served_facet_keys(plan)
-    natives = {native_currency_iso(unit) for unit, _provenance in keys}
+    natives = {nominal_currency(unit) for unit, _provenance in keys}
     natively = isinstance(request.currency, str) and natives == {request.currency}
     if not keys or (request.prices == "current" and natively):
         return None
@@ -550,7 +550,7 @@ def _natives(spec: Spec, plans: Sequence[ReadPlan]) -> frozenset[str] | None:
     is no currency, or the native currency is unknown; such an answer offers nothing."""
     units = frozenset[str | None]().union(*(served_units(plan) for plan in plans))
     if units:
-        codes = {native_currency_iso(unit) for unit in units}
+        codes = {nominal_currency(unit) for unit in units}
         return None if None in codes else frozenset(code for code in codes if code is not None)
     unit = spec.resolved.facets.get("unit")
     if _unit_requested(spec) or unit is None or unit.currency is None:

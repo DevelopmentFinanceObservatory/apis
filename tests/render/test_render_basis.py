@@ -164,7 +164,12 @@ def test_a_rate_the_graph_name_states_reads_once(label, unit, expected):
             "GDP per capita in PPP international dollars.",
             id="purchasing-power",
         ),
-        pytest.param("GDP", _unit("PersonPerSquareKilometer", None), "GDP.", id="physical-unit"),
+        pytest.param(
+            "Electricity use",
+            _unit("KilowattHour", None),
+            "Electricity use per capita.",
+            id="physical-unit",
+        ),
         pytest.param(
             "Households with electricity",
             _unit("Percent", None),
@@ -186,15 +191,21 @@ def test_a_rate_the_graph_name_states_reads_once(label, unit, expected):
         pytest.param(
             "GDP", _per_series("CurrencyUSD", "Percent"), "GDP.", id="money-beside-a-percent"
         ),
+        pytest.param(
+            "GDP",
+            {"unit": ResolvedFacet(basis="fallback", selection="per_series")},
+            "GDP per capita.",
+            id="units-not-listed",
+        ),
     ],
 )
-def test_count_person_reads_per_capita_over_no_unit_money_or_purchasing_power(
+def test_count_person_reads_per_capita_under_any_unit_but_a_rate_or_percent(
     measure, facets, expected
 ):
-    """A `Count_Person` denominator is a per-head amount over series with no unit, a currency
-    or a purchasing-power unit. A percent is a share and an unknown unit states no scale, so
-    neither reads "per capita", and series that select several units read it only when every
-    one does: France's deaths, per 1,000 people beside series with no unit, do not."""
+    """A `Count_Person` denominator is a per-head amount whatever the unit, a physical one
+    included. A rate states its own base and a percent is a share, so neither reads "per
+    capita", and series that select several units read it only when every one does:
+    France's deaths, per 1,000 people beside series with no unit, do not."""
     spec = _spec(
         measured_property=_ref("measure", measure),
         measurement_denominator=_ref("Count_Person", "Total population"),
@@ -415,23 +426,16 @@ def _shape(denominator) -> Shape:
 
 
 def test_a_pre_materialise_plan_states_only_the_per_head_unit():
-    """Before facets resolve (`facets=None`, the bind-time sentence event) only a
-    `PerCapita` denominator fixes a per-head rate, so "per capita" reads. A `Count_Person`
-    denominator states no scale until the unit is read: the adolescent birth rate is served
-    per 1,000 women. A ratio waits for the unit, which decides "as a share of" against
-    "relative to". An empty mapping is a resolved answer and states the ratio."""
+    """Before facets resolve (`facets=None`, the bind-time sentence event) the shape
+    alone fixes a per-head rate, so "per capita" reads, as the final sentence of a WEO or
+    IDS per-capita series does; a ratio waits for the unit, which decides "as a share of"
+    against "relative to". An empty mapping is a resolved answer and states the ratio."""
     per_head = plan_tokens(
-        heading_from_parts(
-            [], [], _shape(_ref("PerCapita", "")), window=None, pinned_properties=frozenset()
-        )
-    )
-    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
-    per_person = plan_tokens(
         heading_from_parts(
             [], [], _shape(_ref("Count_Person", "")), window=None, pinned_properties=frozenset()
         )
     )
-    assert sentence_from_plan(per_person) == "Adolescent birth rate."
+    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
     pre = plan_tokens(
         heading_from_parts([], [], _shape(_LIVE_BIRTHS), window=None, pinned_properties=frozenset())
     )

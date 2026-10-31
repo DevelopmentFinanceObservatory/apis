@@ -48,7 +48,7 @@ from materialise.convert import (
 )
 from materialise.errors import MaterialisationUsageError
 from materialise.facet_collapse import collapse_duplicate_identity_facets_table
-from materialise.facets import FacetSelection, UnitRequest, native_currency_iso
+from materialise.facets import FacetSelection, UnitRequest, nominal_currency
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTable, RateTableCache, load_table
 from materialise.recipes import (
@@ -177,7 +177,7 @@ def decide_member_conversion(
     """Resolve a member's unit request without loading tables or fetching observations.
     Return `None` when the unit binding is a ref or unbound. Mint planning
     calls this before table loads; `decide_member_unit` uses the same decision.
-    The native unit resolves through its ISO code (`native_currency_iso`) to
+    The native unit resolves through its ISO code (`nominal_currency`) to
     `Currency<ISO>`, so a `USDollar` facet satisfies and converts as `CurrencyUSD`.
     The decision reads the StatVar, the provenance, and both `Currency<ISO>` nodes in one
     `graph.node_arcs_many` call under `deadline`. A natively satisfied request reads only the
@@ -215,7 +215,7 @@ def _decide(
         return None
 
     native_unit_ref = unit_selection.ref
-    native_iso = native_currency_iso(native_unit_ref)
+    native_iso = nominal_currency(native_unit_ref)
     # `select_facet` raises `NonCurrencyUnitError` for any other unit request result.
     assert native_unit_ref is not None and native_iso is not None
     provenance_id = selections["provenance"].ref
@@ -723,7 +723,7 @@ def coverage_decision(
     """
     unit = selections["unit"]
     if unit.request is None or _natively_satisfied(
-        unit.request, native_iso=native_currency_iso(unit.ref)
+        unit.request, native_iso=nominal_currency(unit.ref)
     ):
         return None
     decision = _decide(

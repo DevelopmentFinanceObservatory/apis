@@ -17,9 +17,9 @@ The class comes from graph types:
 - Percent and a rate over a stated count come from the unit registry too. A rate's base
   is the unit's own: the World Development Indicators crude birth rate divides by
   `Count_Person` and is served in `Per1000Persons`, so it is a rate per 1,000 people.
-- Per head is a `measurementDenominator` of `PerCapita` (base Data Commons), or of
-  `Count_Person` (WEO, IDS) over a series with no unit, a currency or a purchasing-power
-  unit. A rate states its own base and a percent is a share, so neither is per head.
+- Per head is a `measurementDenominator` of `PerCapita` (base Data Commons) or
+  `Count_Person` (WEO, IDS), whatever the unit, tonnes and kWh included, or before the unit
+  is known. A rate states its own base and a percent is a share, so neither is per head.
 """
 
 from __future__ import annotations
@@ -32,8 +32,9 @@ from dfo_spec_kit.units import Money, Other, Percent, Rate, UnpricedMoney, parse
 
 PER_CAPITA_DENOMINATOR: Final = "PerCapita"
 """The base Data Commons `measurementDenominator` that frames a measure as per capita. A
-`Count_Person` denominator is a per-person amount only under a unit `PER_HEAD_KINDS` holds:
-it also divides a crude birth rate in `Per1000Persons` and a census share in `Percent`."""
+`Count_Person` denominator is a per-person amount too, except under a rate, which states its
+own base (a crude birth rate in `Per1000Persons`), or a percent, a share (a census share in
+`Percent`)."""
 
 PER_HEAD_DENOMINATORS: Final = frozenset({"Count_Person", PER_CAPITA_DENOMINATOR})
 """`measurementDenominator` dcids of a per-person rate."""
@@ -47,9 +48,6 @@ type UnitKind = Literal["currency", "purchasing_power", "percent", "other", "non
 """`currency`: an ISO 4217 currency. `purchasing_power`: PPP or international dollars.
 `percent`: a percentage. `other`: a unit outside these classes, a rate over a stated count
 among them. `none`: the series names no unit."""
-
-PER_HEAD_KINDS: Final[frozenset[UnitKind]] = frozenset({"none", "currency", "purchasing_power"})
-"""The unit kinds under which a `Count_Person` denominator reads per head."""
 
 type Prices = Literal["current", "constant"]
 
@@ -132,8 +130,8 @@ def classify_unit(
         The unit's class. A rate over a stated count takes the place of the denominator.
         Otherwise the denominator sets `per_head` or `ratio_denominator`, so a per-capita
         amount in Kenyan shillings is a `currency` with `per_head` true. A per-head
-        denominator under any other unit sets neither, so a census share over `Count_Person`
-        in `Percent` is a plain `percent`.
+        denominator under a percent sets neither, so a census share over `Count_Person` in
+        `Percent` is a plain `percent`.
     """
     value = parse_unit(unit) if unit is not None else None
     currency: str | None = None
@@ -153,14 +151,7 @@ def classify_unit(
     else:
         kind = "other"
     rate = value if isinstance(value, Rate) else None
-    per_head = (
-        rate is None
-        and kind != "percent"
-        and (
-            denominator == PER_CAPITA_DENOMINATOR
-            or (is_per_head_denominator(denominator) and kind in PER_HEAD_KINDS)
-        )
-    )
+    per_head = rate is None and kind != "percent" and is_per_head_denominator(denominator)
     money = value if isinstance(value, Money) else None
     return UnitClass(
         kind=kind,

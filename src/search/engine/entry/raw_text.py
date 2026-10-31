@@ -96,11 +96,11 @@ from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import (
     DoorRole,
     breakdown_axis,
+    contradicts,
     debt_axes,
     debtor_possessive,
     every_member_breakdown_axis,
     receipt_axes,
-    role_axis_for_text,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import scan_sources, source_phrases
@@ -540,10 +540,11 @@ def _read_wording(
 def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: str) -> Ends:
     """The permutation of ends the query's wording makes of the extraction's reading
     (`flow_ends.end_permutation`), from each directed place it moves. A directed place the
-    wording leaves alone whose own cue states the end the extraction gave it ("from France"
-    on origin, `_cue_states_direction`) keeps it, so the wording then moves only the places
-    it names. A cue stating the other end ("from France" on destination) shows the
-    extraction read the flow backwards, so it protects nothing."""
+    wording leaves alone whose validated cue states its direction (`_cue_states_direction`:
+    "from France", "funded by France", "France funds") keeps its end, so the wording then
+    moves only the places it names. A cue whose preposition names the other end ("from
+    France" on destination, `role_text.contradicts`) shows the extraction read the flow
+    backwards, so it protects nothing."""
     moves = {
         name: (wording.extracted[name], axis)
         for name in wording.extracted
@@ -552,7 +553,7 @@ def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: 
     if any(
         (name := _entity_key(entity)) in wording.extracted
         and name not in moves
-        and role_axis_for_text(entity.role_span) == wording.extracted[name]
+        and not contradicts(query, span=entity.span or entity.text, axis=wording.extracted[name])
         and _cue_states_direction(entity, entities=entities, query=query)
         for entity in entities
     ):

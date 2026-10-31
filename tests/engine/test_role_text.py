@@ -584,7 +584,11 @@ class TestDebtorPossessive:
         """One place the extraction directed is read by its possessive alone, whichever
         axis the extraction guessed."""
         axes = debtor_possessive(
-            query, measures=[measure], places=_places("Kenya"), directed={"Kenya": guessed}
+            query,
+            measures=[measure],
+            places=_places("Kenya"),
+            directed={"Kenya": guessed},
+            phrases=(),
         )
         assert axes == {"Kenya": "destination"}
 
@@ -593,7 +597,10 @@ class TestDebtorPossessive:
         """One place the extraction left undirected keeps no axis, so a subject-only series
         drops no direction for it."""
         assert (
-            debtor_possessive(query, measures=[measure], places=_places("Kenya"), directed={}) == {}
+            debtor_possessive(
+                query, measures=[measure], places=_places("Kenya"), directed={}, phrases=()
+            )
+            == {}
         )
 
     @pytest.mark.parametrize(
@@ -620,28 +627,33 @@ class TestDebtorPossessive:
             ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
             ("China's debt for each debtor country", ["debt"], "China"),
             ("China's debt service from each debtor", ["debt service"], "China"),
+            # The query's own breakdown ends where a window or a second breakdown begins.
+            ("China's debt by borrower in 2020", ["debt"], "China"),
+            ("China's debt by debtor country in 2020", ["debt"], "China"),
+            ("China's debt by debtor country and year", ["debt"], "China"),
+            ("China's debt by recipient since 2010", ["debt"], "China"),
+            ("China's debt by debtor country over time", ["debt"], "China"),
+            ("China's debt for each debtor country in Africa", ["debt"], "China"),
         ],
     )
     def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:
         axes = debtor_possessive(
-            query, measures=measures, places=_places(place), directed={place: "origin"}
+            query, measures=measures, places=_places(place), directed={place: "origin"}, phrases=()
         )
         assert axes == {}
 
     def test_an_extracted_breakdown_phrase_opens_the_debtors(self) -> None:
-        """A breakdown the query's segments miss ("by borrower in 2020" reads whole) opens
-        the debtors through the extraction's own phrase."""
-        query = "China's debt by borrower in 2020"
+        """A breakdown no opener starts ("every borrower") opens the debtors through the
+        extraction's own phrase."""
+        query = "China's debt, every borrower"
         places, directed = _places("China"), {"China": "origin"}
-        assert debtor_possessive(query, measures=["debt"], places=places, directed=directed) == {
-            "China": "destination"
-        }
-        assert (
+        read = [
             debtor_possessive(
-                query, measures=["debt"], places=places, directed=directed, phrases=["by borrower"]
+                query, measures=["debt"], places=places, directed=directed, phrases=phrases
             )
-            == {}
-        )
+            for phrases in ((), ["every borrower"])
+        ]
+        assert read == [{"China": "destination"}, {}]
 
     def test_two_places_are_debt_axes_alone(self) -> None:
         axes = debtor_possessive(
@@ -649,6 +661,7 @@ class TestDebtorPossessive:
             measures=["debt"],
             places=_places("Kenya", "China"),
             directed={"Kenya": "origin", "China": "destination"},
+            phrases=(),
         )
         assert axes == {}
 
