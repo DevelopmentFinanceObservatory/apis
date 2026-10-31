@@ -16,6 +16,9 @@ token's unique index replays the winner the same way.
 A create's `frame_ref` may name a dataset id alone (`write.bare_frame_ref`). The caller passes
 `resolve_spec`, which names the version it stands for, and the revision stores that pair.
 
+`remint_component` revises a component's head with an empty patch through the same write path
+and no write token, for a maintenance job that composes cards' descriptions again.
+
 `render_component` rebuilds a stored revision's intent on a frame the caller has accepted,
 pins nothing, and appends no revision.
 
@@ -28,7 +31,12 @@ from __future__ import annotations
 from assembler.pipeline.describe_component import get_component
 from assembler.pipeline.describe_frame import get_frame_view
 from assembler.pipeline.render import ComponentHoldsNoFrame, render_component
-from assembler.pipeline.write import BARE_SPEC_ID, bare_frame_ref, write_component
+from assembler.pipeline.write import (
+    BARE_SPEC_ID,
+    bare_frame_ref,
+    remint_component,
+    write_component,
+)
 
 __all__ = [
     "BARE_SPEC_ID",
@@ -36,6 +44,7 @@ __all__ = [
     "bare_frame_ref",
     "get_component",
     "get_frame_view",
+    "remint_component",
     "render_component",
     "write_component",
 ]

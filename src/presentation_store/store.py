@@ -20,13 +20,15 @@ records whether the driver failure meant a dead connection so the presentation p
 
 `rehash_derived_rendering` moves the revisions drawing one derived frame from its recipe's old
 `normal_form_hash` to a new one, for `datasets-maintenance normalise-recipes`.
+`described_heads` lists the head revisions that carry a description, for
+`datasets-maintenance remint-card-descriptions`.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -52,7 +54,7 @@ from presentation_store.store_errors import (
     violated_constraint,
 )
 
-__all__ = ["LivePresentationStore", "rehash_derived_rendering"]
+__all__ = ["DescribedHead", "LivePresentationStore", "described_heads", "rehash_derived_rendering"]
 
 _REVISION_COLUMNS = (
     "revision, stored_intent, resolved_payload, catalog_version, schema_version, "
@@ -447,6 +449,47 @@ def rehash_derived_rendering(
                 (json.dumps({"normal_form_hash": new_hash}), old, pair),
             )
     return len(rows)
+
+
+@dataclass(frozen=True)
+class DescribedHead:
+    """A component's head revision that carries a description, and the frame it draws."""
+
+    component_id: str
+    revision: int
+    spec_id: str
+    content_version: str
+    created_at: datetime
+
+
+def described_heads(store: DatasetStore, *, page_size: int = 500) -> Iterator[DescribedHead]:
+    """Each component's head revision that carries a description and draws a frame, in
+    component id order, read `page_size` components to a transaction. A head without a
+    description, such as a note or a card minted before descriptions, is left out."""
+    after = ""
+    while True:
+        with store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT DISTINCT ON (component_id) component_id, revision, "
+                "stored_intent -> 'frame_ref' AS frame_ref, created_at, "
+                "COALESCE(jsonb_typeof(resolved_payload -> 'description') = 'object', false) "
+                "AS described FROM presentation.component_revision WHERE component_id > %s "
+                "ORDER BY component_id, revision DESC LIMIT %s",
+                (after, page_size),
+            )
+        for row in rows:
+            frame_ref = cast("Mapping[str, str] | None", row["frame_ref"])
+            if row["described"] and frame_ref is not None:
+                yield DescribedHead(
+                    component_id=cast(str, row["component_id"]),
+                    revision=cast(int, row["revision"]),
+                    spec_id=frame_ref["spec_id"],
+                    content_version=frame_ref["content_version"],
+                    created_at=cast(datetime, row["created_at"]),
+                )
+        if len(rows) < page_size:
+            return
+        after = cast(str, rows[-1]["component_id"])
 
 
 def _insert_generated_subject(

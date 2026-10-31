@@ -38,7 +38,11 @@ from presentation_store.shares import (
     ShareNotFound,
     SlotCheck,
 )
-from presentation_store.store import LivePresentationStore, rehash_derived_rendering
+from presentation_store.store import (
+    LivePresentationStore,
+    described_heads,
+    rehash_derived_rendering,
+)
 from presentation_store.store_errors import GeneratedIdCollision
 
 _DSN = os.environ.get("DFO_PRESENTATION_STORE_LIVE_DSN")
@@ -911,3 +915,47 @@ def test_rehash_derived_rendering_moves_only_the_revisions_drawing_the_frame(liv
         f"cmp_other_frame_{suffix}": old,
         f"cmp_other_hash_{suffix}": f"rnf_x_{suffix}",
     }
+
+
+def test_described_heads_lists_each_head_carrying_a_description_and_a_frame(live_store):
+    """`datasets-maintenance remint-card-descriptions` reads each component's head once,
+    through `DISTINCT ON` and `jsonb_typeof`, paging by component id: an earlier described
+    revision does not stand in for an undescribed head, and a head with a `null` description or
+    no frame is left out."""
+    _apply()
+    suffix = secrets.token_hex(4)
+    frame = {"spec_id": f"spec_{suffix}", "content_version": f"cv_{suffix}"}
+    described = {"description": {"title": "Aid"}}
+    revisions = {
+        f"cmp_{suffix}_a": [(frame, {}), (frame, described)],
+        f"cmp_{suffix}_b": [(frame, described), (frame, {})],
+        f"cmp_{suffix}_c": [(frame, {"description": None})],
+        f"cmp_{suffix}_d": [(None, described)],
+        f"cmp_{suffix}_e": [(frame, described)],
+    }
+    with live_store.transaction() as tx:
+        for component_id, rows in revisions.items():
+            _seed_component(tx, component_id)
+            for revision, (frame_ref, payload) in enumerate(rows, start=1):
+                intent = {"type": "line_chart"} | ({"frame_ref": frame_ref} if frame_ref else {})
+                tx.execute(
+                    "INSERT INTO presentation.component_revision (component_id, revision, "
+                    "stored_intent, resolved_payload, catalog_version, schema_version) "
+                    "VALUES (%s, %s, %s, %s, 'test', 1)",
+                    (component_id, revision, intent, payload),
+                )
+
+    heads = [
+        head
+        for head in described_heads(live_store, page_size=2)
+        if head.component_id.startswith(f"cmp_{suffix}_")
+    ]
+
+    assert [(head.component_id, head.revision) for head in heads] == [
+        (f"cmp_{suffix}_a", 2),
+        (f"cmp_{suffix}_e", 1),
+    ]
+    assert {(head.spec_id, head.content_version) for head in heads} == {
+        (frame["spec_id"], frame["content_version"])
+    }
+    assert all(isinstance(head.created_at, datetime) for head in heads)
