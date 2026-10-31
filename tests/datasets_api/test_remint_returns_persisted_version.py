@@ -657,6 +657,59 @@ def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_pr
     assert _digests(_bundle_entries(again)) == _digests(_bundle_entries(collapsed))
 
 
+def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_warnings(
+    version_store, monkeypatch: pytest.MonkeyPatch
+):
+    """The base is on record before this call's write, under a warning this call does not
+    find, and both date the same. The write finds the base, records nothing rendered, and the
+    call renders the collapse again from the stored base, so the collapsed version warns as the
+    base on record does."""
+    monkeypatch.setattr(serve, "_prepared_now", lambda: _FIRST_PREPARED)
+    _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
+
+    def unavailable_at(place: str) -> None:
+        warning = WarningModel(
+            code="un_system_unavailable", severity=severity, message=f"{detail} {place}."
+        )
+        monkeypatch.setattr(
+            serve, "un_unavailable_warnings", lambda _blocked, *, request=None: (warning,)
+        )
+
+    spec_store = FakeDatasetStore()
+
+    def client(version_writer=None):
+        return definition_door_client(
+            graph=groupby_fixture._graph(),
+            store=spec_store,
+            sdmx_transport=groupby_fixture._sdmx_transport(),
+            version_store=version_store,
+            version_writer=version_writer,
+            code_index=groupby_fixture._code_index(),
+            coverage=groupby_fixture._coverage_service(),
+        )
+
+    spec_id, sidecar = groupby_fixture._spec_id_and_sidecar()
+    unavailable_at("country/GRC")
+    base = groupby_fixture._mint(
+        client(), spec_id=spec_id, sidecar=sidecar, options={"bundle": False}
+    )
+    unavailable_at("country/ITA")
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
+
+    collapsed = groupby_fixture._mint(
+        client(writer),
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": True, "groupby": {"by": ["recipient"], "op": "sum"}},
+    )
+
+    assert [written.rendered for written in writer.written] == _LOST_THEN_RENDERED
+    (recorded,) = _snapshot(client(), base)["warnings"]
+    assert recorded["message"].endswith("country/GRC.")
+    for served in (collapsed, _snapshot(client(), collapsed)):
+        assert [w for w in served["warnings"] if w["code"] == "un_system_unavailable"] == [recorded]
+
+
 @pytest.mark.parametrize(
     "stat_vars",
     [["dcid:RaceBundleDefinition"]],
