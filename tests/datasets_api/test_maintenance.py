@@ -140,7 +140,7 @@ def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
     artifact_store = FakeArtifactStore()
     held = _held(ledger)
     if digest is not None:
-        ledger.begin_copy(held, digest)
+        ledger.begin_copy(held, digest, now=_SPENT_AT, expires_at=_SPENT_AT)
     if pinned:
         artifact_store._objects[(digest, Tier.pinned.value)] = b"bytes"
 
@@ -165,7 +165,7 @@ class _BrokenFor(FakeArtifactStore):
 def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(capsys):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()
-    ledger.begin_copy(_held(ledger, "exp_a"), "sha256:broken")
+    ledger.begin_copy(_held(ledger, "exp_a"), "sha256:broken", now=_SPENT_AT, expires_at=_SPENT_AT)
     _held(ledger, "exp_b")
 
     failed = maintenance.run_export_claim_sweep(
@@ -184,7 +184,7 @@ def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(caps
 def test_the_daily_sweep_writes_its_report_whatever_the_claims_did(error, capsys, monkeypatch):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()
-    ledger.begin_copy(_held(ledger), "sha256:broken")
+    ledger.begin_copy(_held(ledger), "sha256:broken", now=_SPENT_AT, expires_at=_SPENT_AT)
     if error is not None:
 
         def down(**_: object) -> int:

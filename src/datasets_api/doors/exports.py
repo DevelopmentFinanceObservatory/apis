@@ -41,7 +41,6 @@ from datasets_api.allowance import AllowanceExhausted, AllowanceKind
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_exports import (
     ExportFileIncomplete,
-    ExportFileRefused,
     ExportNotFound,
     ExportOverCeiling,
     ExportPrepareRunning,
@@ -76,7 +75,7 @@ from datasets_api.exports import (
 from datasets_api.headers import no_store_headers
 from datasets_api.principals import Grant, Principal, Principals, granted_route_class
 from datasets_api.retention_admission import (
-    ExportClaimLost,
+    ExportClaimUnsettled,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
     PinUnitHeld,
@@ -121,10 +120,9 @@ async def _prepared(
     any instance's prepare holds its claim, the call sleeps on the event loop, holding no work
     permit, and reads only the claim, backing off from `_CLAIM_POLL_SECONDS` to
     `_CLAIM_POLL_MAX_SECONDS`. Each hop waits for its permit until the wait ends, so waiters that
-    wake together all get one. A refusal left on the claim answers a call that was waiting.
+    wake together all get one.
 
     Raises:
-        ExportFileRefused: The prepare this call waited on refused.
         ExportPrepareRunning: The other prepare still runs at `materialise_wait_seconds`, or at
             the deadline if that comes first.
     """
@@ -138,46 +136,49 @@ async def _prepared(
             wait_seconds=max(0.0, ends - time.monotonic()),
         )
 
-    export = export_id(export_request)
-    delay = _CLAIM_POLL_SECONDS
-    waited = 0.0
-    try:
+    async def waited_for_claim() -> bool:
+        """Sleep while a live claim holds the export, and say whether any did."""
+        delay = _CLAIM_POLL_SECONDS
+        started = time.perf_counter()
+        waited = False
         while True:
             claim = await read(current.allowances.read_claim, export_id=export)
-            if claim is not None and claim.refusal is not None and waited:
-                raise ExportFileRefused(**claim.refusal)
-            if claim is None or claim.refusal is not None or claim.expires_at <= current.now():
-                facts = await read(recorded_export, request=export_request, current=current)
-                if facts is not None:
-                    return facts
-                # Only a new export can spend, so a repeat needs no caller.
-                caller: Caller | None = (
-                    None
-                    if Grant.pin in granted.grants
-                    else resolve_caller(request, current.settings.caller)
-                )
-                facts = await _run_retrieval(
-                    current.work_executor,
-                    prepare_export,
-                    deps=retrieval,
-                    timings=timings,
-                    refuse=ExportBackpressure,
-                    wait_seconds=max(0.0, ends - time.monotonic()),
-                    request=export_request,
-                    caller=caller,
-                    current=current,
-                )
-                if facts is not None:
-                    return facts
+            if claim is None or claim.expires_at <= current.now():
+                if waited:
+                    timings.record("rebuild_wait", (time.perf_counter() - started) * 1000)
+                return waited
             if time.monotonic() >= ends:
                 raise ExportPrepareRunning(wait_seconds=wait_seconds)
-            started = time.perf_counter()
             await asyncio.sleep(delay)
-            waited += time.perf_counter() - started
+            waited = True
             delay = min(delay * 2, _CLAIM_POLL_MAX_SECONDS)
-    finally:
-        if waited:
-            timings.record("rebuild_wait", waited * 1000)
+
+    export = export_id(export_request)
+    while True:
+        facts = await read(recorded_export, request=export_request, current=current)
+        if facts is not None:
+            return facts
+        if await waited_for_claim():
+            continue
+        # Only a new export can spend, so a repeat needs no caller.
+        caller: Caller | None = (
+            None
+            if Grant.pin in granted.grants
+            else resolve_caller(request, current.settings.caller)
+        )
+        facts = await _run_retrieval(
+            current.work_executor,
+            prepare_export,
+            deps=retrieval,
+            timings=timings,
+            refuse=ExportBackpressure,
+            wait_seconds=max(0.0, ends - time.monotonic()),
+            request=export_request,
+            caller=caller,
+            current=current,
+        )
+        if facts is not None:
+            return facts
 
 
 def build_exports_door(
@@ -245,8 +246,7 @@ def build_exports_door(
             OpenPinBudgetExhausted,
             AllowanceExhausted,
             ExportPrepareRunning,
-            ExportFileRefused,
-            ExportClaimLost,
+            ExportClaimUnsettled,
             PinUnitHeld,
             ExportBackpressure,
             # A derived file's slot and a render from the stored frame each raise this at the
@@ -274,8 +274,7 @@ def build_exports_door(
             OpenPinBudgetExhausted(limit=0, now=exemplar_day),
             AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
             ExportPrepareRunning(wait_seconds=30),
-            ExportFileRefused(code="over_ceiling", detail="exemplar"),
-            ExportClaimLost(),
+            ExportClaimUnsettled(),
             PinUnitHeld(),
             ExportBackpressure(),
             DatasetsStoreUnavailable("exemplar"),

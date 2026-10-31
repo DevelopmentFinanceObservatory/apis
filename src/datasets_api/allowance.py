@@ -17,45 +17,40 @@ fails, so a failed write costs its caller nothing. A pin's units stay spent when
 stands and a later step fails.
 
 An export prepare runs under one row of `datasets.export_prepare_claim` under its export id, so
-one prepare runs across every instance. The row is a state machine, and a unit on it is a unit
-spent:
+one prepare runs across every instance. A unit on the row is a unit spent:
 
-| State     | Units held | Means                                                     |
-| :-------- | :--------- | :-------------------------------------------------------- |
-| `open`    | none       | A prepare runs and has spent nothing.                     |
-| `held`    | yes        | Units are spent ahead of a render. No copy has begun.     |
-| `copying` | yes        | A copy of `digest` began on them. Its outcome is unknown. |
-| `landed`  | yes        | This claim's copy of `digest` stands, so they paid for it.|
-| `refused` | none       | The request's own file refused, for the prepare's waiters.|
+| State     | Units   | Means                                                      |
+| :-------- | :------ | :--------------------------------------------------------- |
+| `open`    | none    | A prepare holds the export and has spent nothing.          |
+| `held`    | spent   | Units are spent ahead of a render. No copy has begun.      |
+| `copying` | spent   | A copy of `digest` began on them. Its outcome is unknown.  |
+| `landed`  | paid    | This claim's copy of `digest` stands, so they paid for it. |
 
-| Transition    | From                      | To       | Units                 |
-| :------------ | :------------------------ | :------- | :-------------------- |
-| `claim`       | no row                    | `open`   | none                  |
-| `claim`       | `refused`, stale `open`   | `open`   | none                  |
-| `claim`       | stale `held`              | `open`   | refunded              |
-| `claim`       | stale `copying`, `landed` | the same | kept, new lease       |
-| `hold_claim`  | `open`                    | `held`   | spent                 |
-| `begin_copy`  | `held`, `landed`          | `copying`| kept                  |
-| `settle_copy` | `copying`, it landed      | `landed` | kept                  |
-| `settle_copy` | `copying`, it did not     | `open`   | refunded              |
-| `refuse_claim`| `open`, `held`            | `refused`| refunded              |
-| `free_claim`  | any                       | the same | kept, lease ended     |
-| `close_claim` | any                       | no row   | refunded from `held` and `copying` |
+| Transition    | From                                  | To         | Units                 |
+| :------------ | :------------------------------------ | :--------- | :-------------------- |
+| `claim`       | no row                                | `open`     | none                  |
+| `claim`       | stale `open`, stale `held`            | `open`     | refunded from `held`  |
+| `claim`       | stale `copying`, stale `landed`       | the same   | kept                  |
+| `hold_claim`  | `open`                                | `held`     | spent                 |
+| `begin_copy`  | `held`, `landed`, inside the lease    | `copying`  | kept                  |
+| `settle_copy` | `copying`, landed                     | `landed`   | kept                  |
+| `settle_copy` | `copying`, not landed                 | `open`     | refunded              |
+| `free_claim`  | any                                   | the same   | kept, lease ended     |
+| `close_claim` | any                                   | no row     | refunded from `held`, `copying` |
 
-Each transition is one transaction that names the `generation` the writer read, every one of
-them writes a new random value, so a value never comes back even after a row is deleted and
-claimed again, and any refund reads the units from the row inside that transaction. A writer
-acting on an old read, a holder that lost its lease or a sweep behind a hold, changes nothing and
-refunds nothing. `close_claim` can also require the lease to be stale, so a sweep cannot close a
-claim a heartbeat revived. `renew_claim` moves `expires_at` alone: a running prepare's heartbeat
-keeps its lease without touching the fence, and only a stale lease lets another writer in.
+Every write gives the row a new random `generation`, so a value never comes back, even after the
+row is deleted and claimed again. `claim` matches a stale `expires_at`, and every other transition
+names the generation the writer read, so a writer acting on an old read, a holder that lost its
+claim or a sweep behind a hold, changes nothing and refunds nothing. `expires_at` moves only with
+the generation, so the lease a writer read stays true while its generation stands, and any refund
+reads the units from the row inside its transaction.
 
 A limit-reached spend reads the claims inside its own transaction, whose skipped upsert keeps the
-day's row locked, so no refund can land between the failed spend and the verdict. A unit on a live
-claim, or on any `copying` one, may come back, so it raises `AllowanceExhausted` with `held` set.
-A unit on a stale `held` claim is settled and the spend tried once more, so no refusal stands on a
-recoverable unit. Spends and refunds lock rows in one order (`_in_lock_order`), and a claim's row
-before any of its units.
+day's row locked, so no refund can land between the failed spend and the verdict. A unit on a
+`held` or `copying` claim of that day may come back, whether its lease runs or not, so it raises
+`AllowanceExhausted` with `held` set. A stale claim keeps its unit until a retry takes it over or
+the sweep settles it. Spends and refunds lock rows in one order (`_in_lock_order`), and a claim's
+row before any of its units.
 
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
 it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
@@ -70,7 +65,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -114,7 +109,6 @@ class ClaimState(StrEnum):
     held = "held"
     copying = "copying"
     landed = "landed"
-    refused = "refused"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -128,7 +122,6 @@ class ExportClaim:
     spends: tuple[Spend, ...] = ()
     spent_at: datetime | None = None
     digest: str | None = None
-    refusal: Mapping[str, Any] | None = None
 
 
 def seconds_to_reset(now: datetime) -> int:
@@ -140,8 +133,8 @@ def seconds_to_reset(now: datetime) -> int:
 class AllowanceExhausted(Refusal):
     """The caller has spent today's allowance of one kind. Maps to 429 with `retryable: false`,
     since a client that waits for the reset holds a request open for hours, and `Retry-After`
-    naming the reset at the next UTC midnight. `held` says a live export claim holds a unit, so
-    the limit can free again today."""
+    naming the reset at the next UTC midnight. `held` says an export claim holds a unit, so the
+    limit can free again today."""
 
     code = "allowance_exhausted"
     retryable = False
@@ -250,14 +243,6 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         """
         ...
 
-    def renew_claim(self, claim: ExportClaim, expires_at: datetime) -> None:
-        """Move `claim`'s lease to `expires_at`, unless another writer moved its state.
-
-        Raises:
-            DatasetsStoreUnavailable: The claim could not be written.
-        """
-        ...
-
     def hold_claim(
         self, claim: ExportClaim, spends: Sequence[Spend], now: datetime
     ) -> ExportClaim | None:
@@ -270,9 +255,11 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         """
         ...
 
-    def begin_copy(self, claim: ExportClaim, digest: str) -> ExportClaim | None:
-        """Move `claim` to `copying` for `digest`, or return `None` when it is not this
-        claim's to copy on any more.
+    def begin_copy(
+        self, claim: ExportClaim, digest: str, *, now: datetime, expires_at: datetime
+    ) -> ExportClaim | None:
+        """Move `claim` to `copying` for `digest`, with its lease moved to `expires_at`, or
+        return `None` when its generation is gone or its lease has passed at `now`.
 
         Raises:
             DatasetsStoreUnavailable: The claim could not be written.
@@ -296,17 +283,8 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         """
         ...
 
-    def refuse_claim(self, claim: ExportClaim, refusal: Mapping[str, Any]) -> None:
-        """Move `claim` to `refused`, refunding its units and leaving `refusal` for its waiters.
-
-        Raises:
-            DatasetsStoreUnavailable: The claim could not be written.
-        """
-        ...
-
-    def close_claim(self, claim: ExportClaim, *, stale_at: datetime | None = None) -> None:
-        """Delete `claim`, refunding the units of a `held` or `copying` row. With `stale_at`, only
-        while its lease has passed at that time.
+    def close_claim(self, claim: ExportClaim) -> None:
+        """Delete `claim`, refunding the units of a `held` or `copying` row.
 
         Raises:
             DatasetsStoreUnavailable: The claim could not be written.
@@ -323,13 +301,12 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
 
 
 class _LimitReached(Exception):
-    """Rolls back a transaction's spends when one finds its row at the limit. `held` says a live
-    claim holds a unit of `spend`, and `stale` that a stale `held` claim does."""
+    """Rolls back a transaction's spends when one finds its row at the limit. `held` says a claim
+    holds a unit of `spend` that may come back."""
 
-    def __init__(self, spend: Spend, *, held: bool, stale: bool) -> None:
+    def __init__(self, spend: Spend, *, held: bool) -> None:
         self.spend = spend
         self.held = held
-        self.stale = stale
 
 
 class _ClaimLost(Exception):
@@ -401,28 +378,15 @@ class LiveAllowanceLedger:
                 (spend.key, spend.kind.value, utc_day(now), self._limits[spend.kind]),
             )
             if row is None:
-                claims = self._claims_on(tx, spend, now)
-                raise _LimitReached(
-                    spend,
-                    held=any(
-                        claim["expires_at"] > now or claim["state"] == ClaimState.copying
-                        for claim in claims
-                    ),
-                    stale=any(
-                        claim["expires_at"] <= now and claim["state"] == ClaimState.held
-                        for claim in claims
-                    ),
-                )
+                raise _LimitReached(spend, held=self._unit_held(tx, spend, now))
 
-    def _claims_on(
-        self, tx: Transaction, spend: Spend, now: datetime
-    ) -> Sequence[Mapping[str, Any]]:
-        """The lease and state of each claim whose unit of `spend` for `now`'s UTC day may
-        come back."""
+    def _unit_held(self, tx: Transaction, spend: Spend, now: datetime) -> bool:
+        """Whether a claim holds a unit of `spend` for `now`'s UTC day that may come back."""
         midnight = datetime.combine(utc_day(now), time(), UTC)
-        return tx.fetch_all(
-            "SELECT expires_at, state FROM datasets.export_prepare_claim "
-            f"WHERE {_HOLDS_UNIT} AND spent_at >= %s AND spent_at < %s AND state IN (%s, %s)",
+        row = tx.fetch_one(
+            "SELECT 1 AS held FROM datasets.export_prepare_claim "
+            "WHERE spends ->> CAST(%s AS text) = %s AND spent_at >= %s AND spent_at < %s "
+            "AND state IN (%s, %s) LIMIT 1",
             (
                 spend.kind.value,
                 spend.key,
@@ -432,29 +396,13 @@ class LiveAllowanceLedger:
                 ClaimState.copying.value,
             ),
         )
+        return row is not None
 
-    def _settle_stale(self, spend: Spend, now: datetime) -> None:
-        """Close each stale `held` claim on a unit of `spend`, which began no copy."""
-        with self._transaction(f"settling stale claims on {spend.kind}") as tx:
-            rows = tx.fetch_all(
-                "DELETE FROM datasets.export_prepare_claim "
-                f"WHERE {_HOLDS_UNIT} AND state = %s AND expires_at <= %s "
-                "RETURNING spends, spent_at",
-                (spend.kind.value, spend.key, ClaimState.held.value, now),
-            )
-            for row in rows:
-                self._refund_row(tx, row)
-
-    def _spending[T](
-        self,
-        spends: Sequence[Spend],
-        now: datetime,
-        *,
-        doing: str,
-        write: Callable[[Transaction], T],
-    ) -> T:
-        """Run `write`, which spends `spends`, in one transaction, and once more after settling
-        a stale claim the limit found.
+    @contextmanager
+    def _spending(
+        self, spends: Sequence[Spend], now: datetime, *, doing: str
+    ) -> Iterator[Transaction]:
+        """A transaction whose block spends `spends`, all or none.
 
         Raises:
             AllowanceExhausted: The first of `spends` whose day's limit is reached.
@@ -463,30 +411,21 @@ class LiveAllowanceLedger:
         for spend in spends:
             if self._limits[spend.kind] <= 0:
                 raise AllowanceExhausted(kind=spend.kind, limit=self._limits[spend.kind], now=now)
-        settled = False
-        while True:
-            try:
-                with self._transaction(doing) as tx:
-                    return write(tx)
-            except _LimitReached as reached:
-                if settled or not reached.stale:
-                    raise AllowanceExhausted(
-                        kind=reached.spend.kind,
-                        limit=self._limits[reached.spend.kind],
-                        now=now,
-                        held=reached.held,
-                    ) from None
-                self._settle_stale(reached.spend, now)
-                settled = True
+        try:
+            with self._transaction(doing) as tx:
+                yield tx
+        except _LimitReached as reached:
+            raise AllowanceExhausted(
+                kind=reached.spend.kind,
+                limit=self._limits[reached.spend.kind],
+                now=now,
+                held=reached.held,
+            ) from None
 
     def spend_together(self, spends: Sequence[Spend], now: datetime) -> None:
         spent = ", ".join(f"{spend.kind} of {spend.key!r}" for spend in spends)
-        self._spending(
-            spends,
-            now,
-            doing=f"spending {spent}",
-            write=lambda tx: self._spend_in(tx, spends, now),
-        )
+        with self._spending(spends, now, doing=f"spending {spent}") as tx:
+            self._spend_in(tx, spends, now)
 
     def refund(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
         self.refund_together([Spend(caller.key, kind)], now)
@@ -538,15 +477,8 @@ class LiveAllowanceLedger:
         with self._transaction(f"claiming {export_id!r}") as tx:
             ended = tx.fetch_one(
                 "DELETE FROM datasets.export_prepare_claim WHERE export_id = %s "
-                "AND (state = %s OR (state IN (%s, %s) AND expires_at <= %s)) "
-                "RETURNING spends, spent_at",
-                (
-                    export_id,
-                    ClaimState.refused.value,
-                    ClaimState.open.value,
-                    ClaimState.held.value,
-                    now,
-                ),
+                "AND state IN (%s, %s) AND expires_at <= %s RETURNING spends, spent_at",
+                (export_id, ClaimState.open.value, ClaimState.held.value, now),
             )
             if ended is not None:
                 self._refund_row(tx, ended)
@@ -567,18 +499,10 @@ class LiveAllowanceLedger:
                 )
         return None if row is None else _claim(row)
 
-    def renew_claim(self, claim: ExportClaim, expires_at: datetime) -> None:
-        with self._transaction(f"renewing the claim of {claim.export_id!r}") as tx:
-            tx.execute(
-                "UPDATE datasets.export_prepare_claim SET expires_at = %s "
-                "WHERE export_id = %s AND generation = %s",
-                (expires_at, claim.export_id, claim.generation),
-            )
-
     def _lock(self, tx: Transaction, claim: ExportClaim, *states: ClaimState) -> Mapping[str, Any]:
         """The row of `claim`, locked, while it stays at this generation and in `states`."""
         row = tx.fetch_one(
-            "SELECT state, spends, spent_at FROM datasets.export_prepare_claim "
+            "SELECT state, expires_at, spends, spent_at FROM datasets.export_prepare_claim "
             "WHERE export_id = %s AND generation = %s FOR UPDATE",
             (claim.export_id, claim.generation),
         )
@@ -603,36 +527,36 @@ class LiveAllowanceLedger:
     def hold_claim(
         self, claim: ExportClaim, spends: Sequence[Spend], now: datetime
     ) -> ExportClaim | None:
-        def write(tx: Transaction) -> ExportClaim:
-            self._lock(tx, claim, ClaimState.open)
-            self._spend_in(tx, spends, now)
-            return self._move(
-                tx,
-                claim,
-                "state = %s, spends = %s, spent_at = %s",
-                (
-                    ClaimState.held.value,
-                    {spend.kind.value: spend.key for spend in spends},
-                    now,
-                ),
-            )
-
         try:
-            return self._spending(
-                spends, now, doing=f"holding units on {claim.export_id!r}", write=write
-            )
-        except _ClaimLost:
-            return None
-
-    def begin_copy(self, claim: ExportClaim, digest: str) -> ExportClaim | None:
-        try:
-            with self._transaction(f"beginning the copy of {claim.export_id!r}") as tx:
-                self._lock(tx, claim, ClaimState.held, ClaimState.landed)
+            with self._spending(spends, now, doing=f"holding units on {claim.export_id!r}") as tx:
+                self._lock(tx, claim, ClaimState.open)
+                self._spend_in(tx, spends, now)
                 return self._move(
                     tx,
                     claim,
-                    "state = %s, artifact_digest = %s",
-                    (ClaimState.copying.value, digest),
+                    "state = %s, spends = %s, spent_at = %s",
+                    (
+                        ClaimState.held.value,
+                        {spend.kind.value: spend.key for spend in spends},
+                        now,
+                    ),
+                )
+        except _ClaimLost:
+            return None
+
+    def begin_copy(
+        self, claim: ExportClaim, digest: str, *, now: datetime, expires_at: datetime
+    ) -> ExportClaim | None:
+        try:
+            with self._transaction(f"beginning the copy of {claim.export_id!r}") as tx:
+                row = self._lock(tx, claim, ClaimState.held, ClaimState.landed)
+                if row["expires_at"] <= now:
+                    raise _ClaimLost
+                return self._move(
+                    tx,
+                    claim,
+                    "state = %s, artifact_digest = %s, expires_at = %s",
+                    (ClaimState.copying.value, digest, expires_at),
                 )
         except _ClaimLost:
             return None
@@ -660,28 +584,12 @@ class LiveAllowanceLedger:
         ):
             self._move(tx, claim, "expires_at = %s", (now,))
 
-    def refuse_claim(self, claim: ExportClaim, refusal: Mapping[str, Any]) -> None:
-        with (
-            contextlib.suppress(_ClaimLost),
-            self._transaction(f"refusing the claim of {claim.export_id!r}") as tx,
-        ):
-            row = self._lock(tx, claim, ClaimState.open, ClaimState.held)
-            self._refund_row(tx, row)
-            self._move(
-                tx,
-                claim,
-                "state = %s, spends = %s, spent_at = NULL, refusal = %s",
-                (ClaimState.refused.value, {}, dict(refusal)),
-            )
-
-    def close_claim(self, claim: ExportClaim, *, stale_at: datetime | None = None) -> None:
-        lease, params = ("", ()) if stale_at is None else (" AND expires_at <= %s", (stale_at,))
+    def close_claim(self, claim: ExportClaim) -> None:
         with self._transaction(f"closing the claim of {claim.export_id!r}") as tx:
             row = tx.fetch_one(
                 "DELETE FROM datasets.export_prepare_claim "
-                f"WHERE export_id = %s AND generation = %s{lease} "
-                "RETURNING state, spends, spent_at",
-                (claim.export_id, claim.generation, *params),
+                "WHERE export_id = %s AND generation = %s RETURNING state, spends, spent_at",
+                (claim.export_id, claim.generation),
             )
             if row is not None and row["state"] in (ClaimState.held, ClaimState.copying):
                 self._refund_row(tx, row)
@@ -696,12 +604,7 @@ class LiveAllowanceLedger:
         return [_claim(row) for row in rows]
 
 
-_CLAIM_COLUMNS = (
-    "export_id, generation, state, expires_at, spends, spent_at, artifact_digest, refusal"
-)
-
-_HOLDS_UNIT = "spends ->> CAST(%s AS text) = %s"
-"""Whether a claim's row holds a unit of a kind under a key."""
+_CLAIM_COLUMNS = "export_id, generation, state, expires_at, spends, spent_at, artifact_digest"
 
 
 def _spends(spends: Mapping[str, str]) -> tuple[Spend, ...]:
@@ -717,7 +620,6 @@ def _claim(row: Mapping[str, Any]) -> ExportClaim:
         spends=_spends(row["spends"]),
         spent_at=row["spent_at"],
         digest=row["artifact_digest"],
-        refusal=row["refusal"],
     )
 
 

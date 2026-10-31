@@ -17,8 +17,8 @@ database settings `dataset_store.provider.shared_pool` reads.
 `sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each export claim
 past its lease by itself (`retention_admission.sweep_export_claims`), so a claim that fails
 leaves the rest settled, and writes one `datasets_export_claims_swept` line with the settled and
-failed counts. It exits non-zero when any failed. Every settlement is fenced, so a second run
-changes nothing. A refund lands on the UTC day that spent the unit.
+failed counts. It exits non-zero when any failed. Every settlement names the claim's generation,
+so a second run changes nothing. A refund lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or

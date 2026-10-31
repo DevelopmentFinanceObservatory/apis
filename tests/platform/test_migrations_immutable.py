@@ -112,7 +112,7 @@ _DATASET_STORE = {
     ),
     "0044_export.sql": ("9678288ce977ce82d4accb1778bf65e383faa1b72d23c1b53469fc59ee2c3e79"),
     "0045_export_prepare_claim.sql": (
-        "8ea5c25f31f3a94cc0f3a2e890f4ed38bbda7a2d62230e5b9f7c908a64816e41"
+        "32d9de375dd8c6b60c93ecf90aa0839a87f46976e4e3eee780a5646821294848"
     ),
 }
 

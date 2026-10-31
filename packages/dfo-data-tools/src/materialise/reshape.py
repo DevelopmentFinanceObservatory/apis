@@ -141,7 +141,6 @@ class RollupNotSummableError(MaterialisationError):
 
     code = "rollup_not_summable"
     status = 422
-    decided_by_request = True
 
     def __init__(self, *args: object, axis: str, precondition: str) -> None:
         # The structured issue lets clients branch on the axis without parsing the detail.

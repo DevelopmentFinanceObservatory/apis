@@ -13,7 +13,6 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +23,8 @@ from uuid import uuid4
 import pg8000.exceptions
 import pytest
 
+from artifact_store import ArtifactNotFoundError
+from artifact_store.errors import ArtifactWriteError
 from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import StoredArtifact, Tier
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
@@ -64,7 +65,7 @@ from datasets_api.recipe_store import (
     ReplayKeyHeld,
 )
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
-from datasets_api.retention_admission import ExportClaimLost, PreparingCopy
+from datasets_api.retention_admission import ExportClaimUnsettled, PreparingCopy
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import (
@@ -2445,7 +2446,7 @@ def test_a_sweep_behind_a_hold_changes_nothing_under_real_postgres(live_store):
     swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.export_id == export)
 
     held = ledger.hold_claim(opened, [spend], _AFTER_LEASE)
-    ledger.close_claim(swept, stale_at=_AFTER_LEASE)
+    ledger.close_claim(swept)
 
     assert ledger.read_claim(export) == held
     assert _unit_count(live_store, spend) == 1
@@ -2458,10 +2459,10 @@ def test_a_sweep_behind_a_copy_refunds_nothing_under_real_postgres(live_store, l
     held = _held_claim(ledger, export, spend)
     swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.export_id == export)
 
-    current = ledger.begin_copy(held, "sha256:a")
+    current = ledger.begin_copy(held, "sha256:a", now=_CLAIMED_AT, expires_at=_CLAIM_LEASE)
     if landed:
         current = ledger.settle_copy(current, landed=True)
-    ledger.close_claim(swept, stale_at=_AFTER_LEASE)
+    ledger.close_claim(swept)
 
     assert ledger.read_claim(export) == current
     assert _unit_count(live_store, spend) == 1
@@ -2471,28 +2472,17 @@ def test_a_sweep_refunds_a_copying_claim_once_against_a_settling_holder_under_re
     live_store,
 ):
     ledger, export, spend = _claim_rig(live_store)
-    copying = ledger.begin_copy(_held_claim(ledger, export, spend), "sha256:a")
+    copying = ledger.begin_copy(
+        _held_claim(ledger, export, spend), "sha256:a", now=_CLAIMED_AT, expires_at=_CLAIM_LEASE
+    )
     swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.export_id == export)
 
     ledger.settle_copy(copying, landed=False)
-    ledger.close_claim(swept, stale_at=_AFTER_LEASE)
+    ledger.close_claim(swept)
     ledger.settle_copy(copying, landed=False)
 
     assert ledger.read_claim(export).state == ClaimState.open
     assert _unit_count(live_store, spend) == 0
-
-
-def test_a_lease_a_heartbeat_renewed_stands_against_a_sweep_under_real_postgres(live_store):
-    ledger, export, spend = _claim_rig(live_store)
-    held = _held_claim(ledger, export, spend)
-    swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.export_id == export)
-    renewed_to = _AFTER_LEASE + timedelta(minutes=2)
-
-    ledger.renew_claim(held, renewed_to)
-    ledger.close_claim(swept, stale_at=_AFTER_LEASE)
-
-    assert ledger.read_claim(export) == replace(held, expires_at=renewed_to)
-    assert _unit_count(live_store, spend) == 1
 
 
 def test_a_takeover_by_another_caller_refunds_and_fences_the_first_under_real_postgres(
@@ -2506,9 +2496,8 @@ def test_a_takeover_by_another_caller_refunds_and_fences_the_first_under_real_po
     second = ledger.hold_claim(taken, [other], _AFTER_LEASE)
 
     assert _unit_count(live_store, spend) == 0
-    assert ledger.begin_copy(first, "sha256:a") is None
+    assert ledger.begin_copy(first, "sha256:a", now=_CLAIMED_AT, expires_at=_CLAIM_LEASE) is None
     ledger.close_claim(first)
-    ledger.refuse_claim(first, {"code": "over_ceiling"})
     ledger.free_claim(first, _CLAIMED_AT)
     assert ledger.read_claim(export) == second
     assert _unit_count(live_store, other) == 1
@@ -2517,7 +2506,7 @@ def test_a_takeover_by_another_caller_refunds_and_fences_the_first_under_real_po
 def test_a_copy_after_the_row_has_gone_copies_nothing_under_real_postgres(live_store):
     ledger, export, spend = _claim_rig(live_store)
     held = _held_claim(ledger, export, spend)
-    ledger.close_claim(held, stale_at=_AFTER_LEASE)
+    ledger.close_claim(held)
 
     class _Forbidden:
         def copy(self, digest, *, from_tier, to_tier):
@@ -2526,30 +2515,75 @@ def test_a_copy_after_the_row_has_gone_copies_nothing_under_real_postgres(live_s
     preparing = PreparingCopy(
         held, allowances=ledger, artifacts=_Forbidden(), caller=None, clock=lambda: _AFTER_LEASE
     )
-    with pytest.raises(ExportClaimLost):
+    with pytest.raises(ExportClaimUnsettled):
         preparing.copy("sha256:a")
     assert _unit_count(live_store, spend) == 0
 
 
-def test_a_refused_claim_gives_its_units_back_once_under_real_postgres(live_store):
+class _PaidBucket:
+    """A bucket whose working bytes have gone, whose pinned object `pinned` says stands or raises
+    when it is an error."""
+
+    def __init__(self, pinned: bool | Exception) -> None:
+        self._pinned = pinned
+
+    def copy(self, digest, *, from_tier, to_tier):
+        raise ArtifactNotFoundError(digest=digest, tier=from_tier)
+
+    def exists(self, digest, *, tier):
+        if isinstance(self._pinned, Exception):
+            raise self._pinned
+        return self._pinned
+
+
+def _preparing(ledger, claim, bucket) -> PreparingCopy:
+    return PreparingCopy(
+        claim, allowances=ledger, artifacts=bucket, caller=None, clock=lambda: _CLAIMED_AT
+    )
+
+
+def test_a_paid_claim_stays_paid_when_a_retry_finds_no_working_bytes_under_real_postgres(
+    live_store,
+):
     ledger, export, spend = _claim_rig(live_store)
-    held = _held_claim(ledger, export, spend)
+    copying = ledger.begin_copy(
+        _held_claim(ledger, export, spend), "sha256:a", now=_CLAIMED_AT, expires_at=_CLAIM_LEASE
+    )
+    ledger.settle_copy(copying, landed=True)
+    paid = ledger.claim(export, now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=3))
 
-    ledger.refuse_claim(held, {"code": "over_ceiling", "detail": "too many rows"})
-    ledger.refuse_claim(held, {"code": "over_ceiling", "detail": "too many rows"})
+    with pytest.raises(ArtifactNotFoundError):
+        _preparing(ledger, paid, _PaidBucket(True)).copy("sha256:a")
 
-    refused = ledger.read_claim(export)
-    assert (refused.state, refused.spends) == (ClaimState.refused, ())
-    assert refused.refusal == {"code": "over_ceiling", "detail": "too many rows"}
-    assert _unit_count(live_store, spend) == 0
-    assert ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE).state == ClaimState.open
+    assert ledger.read_claim(export).state == ClaimState.landed
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_takeover_of_a_copy_it_cannot_judge_refuses_before_any_render_under_real_postgres(
+    live_store,
+):
+    ledger, export, spend = _claim_rig(live_store)
+    ledger.begin_copy(
+        _held_claim(ledger, export, spend), "sha256:a", now=_CLAIMED_AT, expires_at=_CLAIM_LEASE
+    )
+    taken = ledger.claim(export, now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=3))
+    unreadable = _PaidBucket(ArtifactWriteError(object_name="sha256:a", digest="sha256:a"))
+
+    with pytest.raises(ExportClaimUnsettled), _preparing(ledger, taken, unreadable) as preparing:
+        preparing.settle_earlier()
+
+    assert ledger.read_claim(export).state == ClaimState.copying
+    assert ledger.read_claim(export).expires_at == _CLAIMED_AT
+    assert _unit_count(live_store, spend) == 1
 
 
 def test_a_freed_claim_keeps_its_units_for_the_retry_that_takes_it_under_real_postgres(
     live_store,
 ):
     ledger, export, spend = _claim_rig(live_store)
-    copying = ledger.begin_copy(_held_claim(ledger, export, spend), "sha256:a")
+    copying = ledger.begin_copy(
+        _held_claim(ledger, export, spend), "sha256:a", now=_CLAIMED_AT, expires_at=_CLAIM_LEASE
+    )
 
     ledger.free_claim(copying, _CLAIMED_AT)
     taken = ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE)
@@ -2565,13 +2599,33 @@ def test_a_freed_claim_keeps_its_units_for_the_retry_that_takes_it_under_real_po
     assert _unit_count(live_store, spend) == 1
 
 
-def test_a_limit_recovers_the_unit_of_a_stale_held_claim_under_real_postgres(live_store):
+def test_a_stale_claims_unit_reads_as_held_until_the_sweep_settles_it_under_real_postgres(
+    live_store,
+):
     ledger, export, spend = _claim_rig(live_store, limit=1)
     _held_claim(ledger, export, spend)
 
-    ledger.spend_together([spend], _AFTER_LEASE)
+    with pytest.raises(AllowanceExhausted) as refused:
+        ledger.spend_together([spend], _AFTER_LEASE)
+    assert refused.value.held is True
 
-    assert ledger.read_claim(export) is None
+    swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.export_id == export)
+    ledger.close_claim(swept)
+    ledger.spend_together([spend], _AFTER_LEASE)
+    assert _unit_count(live_store, spend) == 1
+
+
+def test_a_copy_past_its_lease_cannot_land_after_a_sweep_refund_under_real_postgres(live_store):
+    ledger, export, spend = _claim_rig(live_store)
+    held = _held_claim(ledger, export, spend)
+
+    assert (
+        ledger.begin_copy(
+            held, "sha256:a", now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=3)
+        )
+        is None
+    )
+    assert ledger.read_claim(export) == held
     assert _unit_count(live_store, spend) == 1
 
 

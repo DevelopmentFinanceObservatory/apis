@@ -26,10 +26,10 @@ render and refuse there what the copy would refuse. Every unit, the caller's and
 takes this one path, so a spent day costs no render. A failed render, a refusal below, or a
 render that finds its bytes pinned gives the units back. The claim stays until the record is
 written, so a retry after a failure past the copy takes it over, finds the copy those units paid
-for and spends nothing more. A heartbeat keeps a running prepare's lease, so a client's timeout
-leaves it running and its retry answers its record. A process that dies leaves a stale claim: a
-claim with no copy begun refunds as the next prepare takes it over, or as a limit-reached spend
-or the sweep finds it, and the next caller spends for itself. The bytes a render gives are known
+for and spends nothing more. The lease outlasts the definition deadline, so a client's timeout
+leaves the prepare running and its retry answers its record. A process that dies leaves a stale
+claim: a claim with no copy begun refunds as the next prepare takes it over or the sweep finds
+it, and the next caller spends for itself. The bytes a render gives are known
 only by rendering, so a caller with no unit left and no claim refuses even when another export or
 a pin holds the same bytes.
 
@@ -43,11 +43,9 @@ Concurrent prepares of one id share one prepare, on any instance. The first take
 work thread (`prepare_export`), and each other reads the claim from the door with no work
 permit, at most `materialise_wait_seconds` and refusing `ExportPrepareRunning` (code
 `service_unavailable`) after that, then answers the record as a repeat prepare does. A refusal
-the request alone decides (`Refusal.decided_by_request`) stays on the claim as data and answers
-the callers waiting on that prepare (`ExportFileRefused`). A caller that arrives after it runs
-every guard and prepares again. After a prepare that failed any other way, a waiter takes the
-claim, and a spent unit refuses each waiter at its own spend, for no render. Two prepares can run
-together only when one's heartbeat has failed for a lease. Every render is deterministic (bundle
+After a prepare that refused or failed, a waiter takes the claim in turn and runs every guard
+itself, and a spent unit refuses each waiter at its own spend, for no render. Two prepares can run
+together only past a lease. Every render is deterministic (bundle
 members carry fixed timestamps), so they give one file, which the content-addressed store holds
 once, and the second record write returns the first's row.
 
@@ -92,6 +90,7 @@ import math
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import IO, Any, Literal, cast
 
@@ -137,7 +136,7 @@ from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import EXPORT_REFERENCE_KIND
 from datasets_api.render import is_incomplete_rendering
 from datasets_api.retention_admission import (
-    PREPARE_LEASE,
+    PREPARE_LEASE_MARGIN,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
     PinUnitHeld,
@@ -857,13 +856,14 @@ def prepare_export(
         ExportOverCeiling: A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows.
         PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: The copy's units are
             spent.
-        PinUnitHeld: A running prepare holds the last unit.
-        ExportClaimLost: This prepare outlived its lease.
+        PinUnitHeld: An export claim holds the last unit.
+        ExportClaimUnsettled: This prepare lost its claim, or an earlier copy cannot be settled.
         MintBackpressure: No materialise permit came free.
     """
     export = export_id(request)
     now = current.now()
-    claim = current.allowances.claim(export, now=now, expires_at=now + PREPARE_LEASE)
+    lease = timedelta(seconds=deps.settings.definition_timeout_seconds) + PREPARE_LEASE_MARGIN
+    claim = current.allowances.claim(export, now=now, expires_at=now + lease)
     if claim is None:
         return None
     with PreparingCopy(

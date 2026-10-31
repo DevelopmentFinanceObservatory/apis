@@ -277,13 +277,11 @@ class Refusal(Exception):
     `strip_pointer` removes the top-level pointer and every issue's pointer, for a route whose
     request has no body the pointers could name. A refusal with a `cause` extension renders
     through its surface's own classifier, since the materialise conversion refusals name their
-    cause as a bare code. `decided_by_request` marks a refusal the request alone decides,
-    whoever asks, so one attempt's answer stands for concurrent identical requests.
+    cause as a bare code.
     """
 
     code: str
     retryable: bool = False
-    decided_by_request: bool = False
     detail: str | None = None
     pointer: str | None = None
     alternatives: list[Alternative] | None = None

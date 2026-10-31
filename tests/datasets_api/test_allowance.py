@@ -3,15 +3,13 @@ the limit with a wait to the next UTC midnight. `refund` and `spending` give a u
 
 from __future__ import annotations
 
-import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from artifact_store import Tier
+from artifact_store import ArtifactNotFoundError, Tier
 from artifact_store.errors import ArtifactWriteError
-from datasets_api import retention_admission
 from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceExhausted,
@@ -22,7 +20,7 @@ from datasets_api.allowance import (
     Spend,
     spending,
 )
-from datasets_api.retention_admission import PREPARE_LEASE, PreparingCopy
+from datasets_api.retention_admission import ExportClaimUnsettled, PreparingCopy
 from dfo_platform.caller import Caller
 
 from ._artifact_doubles import FakeArtifactStore
@@ -131,7 +129,7 @@ def test_a_claim_with_no_copy_begun_refunds_as_it_is_taken_over(claims):
     ("landed", "state"), [(None, ClaimState.copying), (True, ClaimState.landed)]
 )
 def test_a_claim_a_copy_began_on_keeps_its_units_through_a_takeover(claims, landed, state):
-    copying = claims.begin_copy(_held(claims), "sha256:a")
+    copying = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE)
     if landed:
         claims.settle_copy(copying, landed=True)
 
@@ -144,15 +142,13 @@ def test_a_claim_a_copy_began_on_keeps_its_units_through_a_takeover(claims, land
 
 def test_every_write_on_an_old_read_changes_nothing(claims):
     held = _held(claims)
-    current = claims.begin_copy(held, "sha256:a")
+    current = claims.begin_copy(held, "sha256:a", now=_NOON, expires_at=_LEASE)
     spent = _counts(claims)
 
     claims.close_claim(held)
     claims.free_claim(held, _NOON)
-    claims.refuse_claim(held, {"code": "over_ceiling"})
-    claims.renew_claim(held, _LATER)
 
-    assert claims.begin_copy(held, "sha256:b") is None
+    assert claims.begin_copy(held, "sha256:b", now=_NOON, expires_at=_LEASE) is None
     assert claims.hold_claim(held, _UNITS[:1], _NOON) is None
     assert claims.settle_copy(held, landed=False) is None
     assert _counts(claims) == spent
@@ -168,8 +164,21 @@ def test_a_read_of_a_deleted_claim_stays_fenced_from_the_next_claim_of_its_expor
     assert claims.read_claim(_EXPORT) == second
 
 
+def test_a_copy_past_the_lease_does_not_begin(claims):
+    held = _held(claims)
+
+    assert claims.begin_copy(held, "sha256:a", now=_LEASE, expires_at=_LATER) is None
+    assert claims.read_claim(_EXPORT) == held
+
+
+def test_beginning_a_copy_gives_it_its_own_lease(claims):
+    began = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LATER)
+
+    assert claims.read_claim(_EXPORT).expires_at == began.expires_at == _LATER
+
+
 def test_settling_a_copy_that_did_not_land_refunds_and_reopens_the_claim(claims):
-    copying = claims.begin_copy(_held(claims), "sha256:a")
+    copying = claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE)
 
     opened = claims.settle_copy(copying, landed=False)
 
@@ -190,21 +199,13 @@ def test_closing_a_claim_refunds_once_whoever_else_closes_it(claims):
 
 
 def test_closing_a_landed_claim_keeps_the_units_that_paid_for_it(claims):
-    landed = claims.settle_copy(claims.begin_copy(_held(claims), "sha256:a"), landed=True)
+    landed = claims.settle_copy(
+        claims.begin_copy(_held(claims), "sha256:a", now=_NOON, expires_at=_LEASE), landed=True
+    )
 
     claims.close_claim(landed)
 
     assert claims.read_claim(_EXPORT) is None
-    assert _counts(claims) == {(unit.key, unit.kind): 1 for unit in _UNITS}
-
-
-def test_a_sweep_cannot_close_a_claim_a_heartbeat_revived(claims):
-    held = _held(claims)
-    claims.renew_claim(held, _LATER)
-
-    claims.close_claim(held, stale_at=_LEASE)
-
-    assert claims.read_claim(_EXPORT).expires_at == _LATER
     assert _counts(claims) == {(unit.key, unit.kind): 1 for unit in _UNITS}
 
 
@@ -218,9 +219,15 @@ def _exhausted(ledger: LiveAllowanceLedger, *, now: datetime = _NOON) -> Allowan
     ("move", "held"),
     [
         pytest.param(lambda ledger, claim: claim, True, id="held"),
-        pytest.param(lambda ledger, claim: ledger.begin_copy(claim, "d"), True, id="copying"),
         pytest.param(
-            lambda ledger, claim: ledger.settle_copy(ledger.begin_copy(claim, "d"), landed=True),
+            lambda ledger, claim: ledger.begin_copy(claim, "d", now=_NOON, expires_at=_LEASE),
+            True,
+            id="copying",
+        ),
+        pytest.param(
+            lambda ledger, claim: ledger.settle_copy(
+                ledger.begin_copy(claim, "d", now=_NOON, expires_at=_LEASE), landed=True
+            ),
             False,
             id="landed",
         ),
@@ -230,6 +237,13 @@ def test_a_limit_says_whether_a_running_claims_unit_can_come_back(claims, move, 
     move(claims, _held(claims))
 
     assert _exhausted(claims).held is held
+
+
+def test_a_stale_claims_unit_answers_held_until_it_settles(claims):
+    held = _held(claims)
+
+    assert _exhausted(claims, now=_LEASE).held is True
+    assert claims.read_claim(_EXPORT) == held
 
 
 def test_a_limit_names_only_the_held_units_of_its_own_key_and_day(claims):
@@ -243,36 +257,6 @@ def test_a_limit_names_only_the_held_units_of_its_own_key_and_day(claims):
     next_day = _exhausted(claims, now=_NOON + timedelta(days=1))
 
     assert (bob.value.held, next_day.held) == (False, False)
-
-
-def test_a_limit_settles_a_stale_held_claim_and_spends_its_unit(claims):
-    """The refund is what lets the spend through, so no refusal stands on a recoverable unit."""
-    _held(claims)
-
-    claims.spend(_ALICE, AllowanceKind.pin, _LEASE)
-
-    assert claims.read_claim(_EXPORT) is None
-    assert _counts(claims) == {(_ALICE.key, "pin"): 1}
-
-
-def test_a_stale_copying_claim_at_the_limit_reads_as_held_since_only_the_bucket_can_judge_it(
-    claims,
-):
-    claims.begin_copy(_held(claims), "sha256:a")
-
-    assert _exhausted(claims, now=_LEASE).held is True
-    assert claims.read_claim(_EXPORT).state == ClaimState.copying
-
-
-def test_a_hold_takes_a_stale_claims_unit_at_the_limit(claims):
-    _held(claims)
-    other = claims.claim("exp_b", now=_LEASE, expires_at=_LATER)
-
-    held = claims.hold_claim(other, _UNITS, _LEASE)
-
-    assert held.state == ClaimState.held
-    assert claims.read_claim(_EXPORT) is None
-    assert _counts(claims) == {(unit.key, unit.kind): 1 for unit in _UNITS}
 
 
 def test_spends_and_refunds_lock_rows_in_one_order_whatever_order_they_are_named(monkeypatch):
@@ -360,15 +344,10 @@ _WRITE_FAILED = ArtifactWriteError(object_name=_DIGEST, digest=_DIGEST)
     [
         pytest.param(_Bucket(lands=True), ClaimState.landed, _ALL_UNITS, id="present-keeps"),
         pytest.param(_Bucket(), ClaimState.open, {}, id="absent-refunds"),
-        pytest.param(
-            _Bucket(read_fails=True), ClaimState.copying, _ALL_UNITS, id="failed-read-keeps"
-        ),
     ],
 )
-def test_a_copy_an_earlier_attempt_began_is_judged_by_the_pinned_object(
-    claims, bucket, state, units
-):
-    copying = claims.begin_copy(_held(claims), _DIGEST)
+def test_a_copy_an_earlier_attempt_began_settles_by_the_pinned_object(claims, bucket, state, units):
+    copying = claims.begin_copy(_held(claims), _DIGEST, now=_NOON, expires_at=_LEASE)
     if bucket.lands:
         bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
 
@@ -412,7 +391,9 @@ def test_a_deduplicated_copy_refunds_but_a_paid_retrys_keeps_its_units(claims):
     bucket._objects[(_DIGEST, Tier.working.value)] = b"bytes"
     bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
     held = _held(claims)
-    landed = claims.settle_copy(claims.begin_copy(held, _DIGEST), landed=True)
+    landed = claims.settle_copy(
+        claims.begin_copy(held, _DIGEST, now=_NOON, expires_at=_LEASE), landed=True
+    )
     paid = claims.claim(_EXPORT, now=_LEASE, expires_at=_LATER)
     assert paid.generation != landed.generation
 
@@ -424,6 +405,30 @@ def test_a_deduplicated_copy_refunds_but_a_paid_retrys_keeps_its_units(claims):
     _preparing(claims, held, bucket).copy(_DIGEST)
     assert claims.read_claim("exp_b").state == ClaimState.open
     assert _counts(claims) == _ALL_UNITS
+
+
+def test_a_paid_claim_whose_working_bytes_have_gone_stays_paid(claims):
+    bucket = _Bucket()
+    bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
+    held = _held(claims)
+    claims.settle_copy(claims.begin_copy(held, _DIGEST, now=_NOON, expires_at=_LEASE), landed=True)
+    paid = claims.claim(_EXPORT, now=_LEASE, expires_at=_LATER)
+
+    with pytest.raises(ArtifactNotFoundError):
+        _preparing(claims, paid, bucket).copy(_DIGEST)
+
+    assert claims.read_claim(_EXPORT).state == ClaimState.landed
+    assert _counts(claims) == _ALL_UNITS
+
+
+def test_a_copy_nobody_can_judge_refuses_before_the_render(claims):
+    held = _held(claims)
+    copying = claims.begin_copy(held, _DIGEST, now=_NOON, expires_at=_LEASE)
+
+    with pytest.raises(ExportClaimUnsettled):
+        _preparing(claims, copying, _Bucket(read_fails=True)).settle_earlier()
+
+    assert claims.read_claim(_EXPORT) == copying
 
 
 def test_a_prepare_that_ends_settles_its_claim_by_how_it_ended(claims):
@@ -450,28 +455,6 @@ def test_a_prepare_that_fails_past_its_copy_leaves_the_claim_to_its_retry(claims
     assert claims.read_claim(_EXPORT).state == ClaimState.landed
     assert claims.read_claim(_EXPORT).expires_at == _NOON
     assert _counts(claims) == _ALL_UNITS
-
-
-def test_a_running_prepare_renews_its_lease_and_stops_when_it_ends(claims, monkeypatch):
-    monkeypatch.setattr(retention_admission, "_HEARTBEAT_SECONDS", 0.001)
-    renewed = threading.Event()
-    renew = claims.renew_claim
-
-    def beat(claim, expires_at):
-        renew(claim, expires_at)
-        renewed.set()
-
-    monkeypatch.setattr(claims, "renew_claim", beat)
-    claim = claims.claim(_EXPORT, now=_NOON, expires_at=_LEASE)
-
-    with pytest.raises(ValueError), _preparing(claims, claim, _Bucket()):
-        assert renewed.wait(5)
-        assert claims.read_claim(_EXPORT).expires_at == _NOON + PREPARE_LEASE
-        assert claims.read_claim(_EXPORT).generation == claim.generation
-        raise ValueError
-
-    renewed.clear()
-    assert not renewed.wait(0.01)
 
 
 def test_spends_together_take_every_unit_or_none():

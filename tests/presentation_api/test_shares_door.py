@@ -1204,17 +1204,19 @@ def test_a_read_that_waits_past_the_admission_wait_refuses_503(
     assert body["retryable"] is True
 
 
+_DAY = datetime(2026, 6, 1, tzinfo=UTC)
+
+
 @pytest.mark.parametrize(
-    "refusal",
+    ("refusal", "detail"),
     [
-        PinUnitHeld(),
-        PinBudgetExhausted(limit=1, now=datetime(2026, 6, 1, tzinfo=UTC)),
-        OpenPinBudgetExhausted(limit=1, now=datetime(2026, 6, 1, tzinfo=UTC)),
+        (PinUnitHeld(), PinUnitHeld.detail),
+        (PinBudgetExhausted(limit=1, now=_DAY), PinBudgetExhausted.detail),
+        (OpenPinBudgetExhausted(limit=1, now=_DAY), OpenPinBudgetExhausted.detail),
     ],
     ids=["held", "budget", "open-budget"],
 )
-def test_a_pin_capacity_refusal_tells_the_caller_why(refusal: Refusal):
+def test_a_pin_capacity_refusal_answers_the_pin_doors_detail(refusal: Refusal, detail: str):
     spec = shares_door.classify_shares_exception(refusal)
 
-    assert (spec.status, spec.code) == (503, "service_unavailable")
-    assert spec.detail
+    assert (spec.status, spec.code, spec.detail) == (503, "service_unavailable", detail)

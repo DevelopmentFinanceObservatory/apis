@@ -11,9 +11,8 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import Any
 
-from dfo_platform.problem import ProblemIssue, Refusal
+from dfo_platform.problem import Refusal
 
 EXPORTS_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "provenance_unavailable": (
@@ -63,7 +62,6 @@ class ExportOverCeiling(Refusal):
 
     code = "over_ceiling"
     ceiling_kind = "rows"
-    decided_by_request = True
 
     def __init__(self, *, format: str, count: int, cap: int) -> None:
         self.count = count
@@ -102,44 +100,6 @@ class ExportPrepareRunning(Refusal):
     def __init__(self, *, wait_seconds: float) -> None:
         self.headers = MappingProxyType({"Retry-After": str(math.ceil(wait_seconds))})
         super().__init__("another prepare of this export is still running; retry")
-
-
-class ExportFileRefused(Refusal):
-    """The refusal a concurrent prepare's file gave, read back from the prepare's claim
-    (`allowance.ExportClaim.refusal`) and rendered as that prepare's was. It carries the code
-    that refusal registered."""
-
-    def __init__(
-        self,
-        *,
-        code: str,
-        detail: str,
-        pointer: str | None = None,
-        ceiling_kind: str | None = None,
-        count: int | None = None,
-        cap: int | None = None,
-        issues: Sequence[Mapping[str, Any]] | None = None,
-    ) -> None:
-        self.code = code
-        self.pointer = pointer
-        self.ceiling_kind = ceiling_kind
-        self.count = count
-        self.cap = cap
-        self.issues = [ProblemIssue.model_validate(issue) for issue in issues] if issues else None
-        super().__init__(detail)
-
-    @classmethod
-    def facts_of(cls, refusal: Refusal) -> dict[str, Any]:
-        """The keyword arguments that rebuild `refusal`, as JSON, with no traceback."""
-        return {
-            "code": refusal.code,
-            "detail": refusal.detail or str(refusal),
-            "pointer": refusal.pointer,
-            "ceiling_kind": refusal.ceiling_kind,
-            "count": refusal.count,
-            "cap": refusal.cap,
-            "issues": [issue.model_dump(mode="json") for issue in refusal.issues or ()],
-        }
 
 
 class ExportNotFound(Refusal):

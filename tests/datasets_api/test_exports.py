@@ -42,14 +42,12 @@ from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceExhausted,
     AllowanceKind,
-    ClaimState,
     ExportClaim,
     LiveAllowanceLedger,
     Spend,
 )
 from datasets_api.analysis import AnalysisPending
 from datasets_api.codes_exports import (
-    ExportFileRefused,
     ExportOverCeiling,
     LicenceNotRedistributable,
 )
@@ -65,7 +63,7 @@ from datasets_api.export_store import LiveExportStore
 from datasets_api.exports import BareExportFrame
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.reference_store import LiveArtifactReferenceWriter
-from datasets_api.retention_admission import PreparingCopy
+from datasets_api.retention_admission import PinUnitHeld, PreparingCopy
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
@@ -364,6 +362,7 @@ class _Rig:
                 pin_allowed_principals=frozenset({_PIN_PRINCIPAL}),
                 now=lambda: stores.now,
             )
+            self.spent_at = stores.now
             self.frame = {
                 "spec_id": member["spec"]["spec_id"],
                 "content_version": member["content_version"],
@@ -603,6 +602,34 @@ def test_a_caller_with_a_unit_spent_refuses_as_the_copy_would_before_any_render(
     assert int(resp.headers["retry-after"]) > 0
     assert _spent(rig.ledger) == {}
     assert rig.link(_export_id(rig.frame, "csv", bundle=True)).status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_spent_caller_refuses_a_file_that_must_render_even_when_its_bytes_are_pinned(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    """Only a render names the digest, and a spent caller gets none, so a file another export or
+    a pin holds refuses here as any new file does."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=1))
+    assert rig.prepare("csv").status_code == 200
+    rig.forget_exports()
+    monkeypatch.setattr(exports_module, "listed_file_location", lambda *_, **__: None)
+    monkeypatch.setattr(*_RENDERS[kind], _forbidden)
+
+    resp = rig.prepare("csv")
+
+    assert (resp.status_code, resp.json()["code"]) == (429, "allowance_exhausted"), resp.text
+
+
+def test_a_repeat_prepare_answers_its_record_with_one_read(monkeypatch: pytest.MonkeyPatch):
+    rig = _Rig("fetched", monkeypatch)
+    first = rig.prepare("csv")
+    monkeypatch.setattr(LiveAllowanceLedger, "read_claim", _forbidden)
+
+    again = rig.prepare("csv")
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
@@ -976,16 +1003,16 @@ def test_a_waiter_runs_its_own_prepare_after_the_one_it_waited_on_failed(
     ],
     ids=["over-ceiling", "excel-limit", "excel-character", "parquet", "rollup", "stored-trace"],
 )
-def test_a_waiter_answers_the_refusal_its_file_gave_the_prepare_it_waited_on(
+def test_a_waiter_on_a_prepare_that_refused_prepares_in_turn_and_answers_the_same_refusal(
     kind: str,
     refusal: Exception,
     code: str,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The request names the file, and the file decides the refusal, so one render decides it
-    for a caller that waited on it, and the units go back."""
+    """The request names the file, and the file decides the refusal, so each render gives it, and
+    the units go back."""
     rig = _Rig(kind, monkeypatch)
-    render = _HeldRender(kind, monkeypatch, results=[refusal])
+    render = _HeldRender(kind, monkeypatch, results=[refusal, refusal])
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         leader = pool.submit(rig.prepare, "xlsx")
@@ -997,43 +1024,8 @@ def test_a_waiter_answers_the_refusal_its_file_gave_the_prepare_it_waited_on(
 
     assert [r.json()["code"] for r in responses] == [code] * 2, [r.text for r in responses]
     assert len({(r.status_code, r.json()["detail"]) for r in responses}) == 1
-    assert render.calls == 1
-    assert _spent(rig.ledger) == {}
-
-
-@pytest.mark.parametrize("kind", ["fetched", "derived"])
-def test_a_caller_after_a_refused_prepare_runs_every_guard_again(
-    kind: str, monkeypatch: pytest.MonkeyPatch
-):
-    """A refusal left on the claim answers only the callers that waited on that prepare."""
-    rig = _Rig(kind, monkeypatch)
-    render = _HeldRender(kind, monkeypatch, results=[ExcelLimitError("too wide"), None])
-    render.release.set()
-
-    refused = rig.prepare("xlsx")
-    export = _export_id(rig.frame, "xlsx", bundle=False)
-    assert rig.ledger.read_claim(export).state == ClaimState.refused
-    answered = rig.prepare("xlsx")
-
-    assert refused.json()["code"] == "excel_limit", refused.text
-    assert answered.status_code == 200, answered.text
     assert render.calls == 2
-
-
-def test_a_kept_refusal_is_data_with_every_field_a_problem_renders():
-    refused = ExportOverCeiling(format="csv", count=2, cap=1)
-
-    kept = json.loads(json.dumps(ExportFileRefused.facts_of(refused)))
-    again = ExportFileRefused(**kept)
-
-    assert (again.code, str(again), again.ceiling_kind, again.count, again.cap) == (
-        "over_ceiling",
-        str(refused),
-        "rows",
-        2,
-        1,
-    )
-    assert again.__traceback__ is None
+    assert _spent(rig.ledger) == {}
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
@@ -1112,7 +1104,7 @@ def _dead_prepare(rig: _Rig, spends: list[Spend]) -> ExportClaim:
     past = datetime(2020, 1, 1, tzinfo=UTC)
     dead = rig.ledger.claim(export, now=past, expires_at=past)
     assert dead is not None
-    held = rig.ledger.hold_claim(dead, spends, datetime.now(UTC))
+    held = rig.ledger.hold_claim(dead, spends, rig.spent_at)
     assert held is not None
     return held
 
@@ -1128,20 +1120,26 @@ def test_a_prepare_that_died_before_a_copy_refunds_as_its_retry_takes_over(
 
     assert retry.status_code == 200, retry.text
     assert rig.ledger.read_claim(held.export_id) is None
-    assert _spent(rig.ledger)[(caller_key, "pin")] == 1
+    assert _spent(rig.ledger) == {
+        (BUDGET_KEY, "pin_budget"): 1,
+        (BUDGET_KEY, "open_pin_budget"): 1,
+        (caller_key, "pin"): 1,
+    }
 
 
-def test_a_stale_claim_answers_a_limit_with_its_unit_instead_of_a_refusal(
-    monkeypatch: pytest.MonkeyPatch, caller_key: str
+def test_a_dead_prepares_unit_refuses_retryably_until_the_sweep_settles_it(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """A dead prepare held the budget's last unit, and no sweep has run."""
     rig = _Rig("derived", monkeypatch, ledger=_ledger(pin_budget=1))
-    _dead_prepare(rig, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)])
+    dead = _dead_prepare(rig, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)])
 
+    refused = rig.prepare("xlsx")
+    rig.ledger.close_claim(dead)
     answered = rig.prepare("xlsx")
 
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"] == PinUnitHeld.detail
     assert answered.status_code == 200, answered.text
-    assert _spent(rig.ledger)[(BUDGET_KEY, "pin_budget")] == 1
 
 
 def test_waiters_past_the_read_pool_all_answer_the_record(monkeypatch: pytest.MonkeyPatch):

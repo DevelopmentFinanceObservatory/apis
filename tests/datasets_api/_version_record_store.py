@@ -135,8 +135,7 @@ CREATE TABLE datasets.export_prepare_claim (
     expires_at TEXT NOT NULL,
     spends TEXT NOT NULL DEFAULT '{}',
     spent_at TEXT,
-    artifact_digest TEXT,
-    refusal TEXT
+    artifact_digest TEXT
 );
 CREATE TABLE datasets.description_record (
     subject_id TEXT NOT NULL,
