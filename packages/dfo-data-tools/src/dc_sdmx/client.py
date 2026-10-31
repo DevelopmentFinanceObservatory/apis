@@ -146,7 +146,7 @@ _SLOT_POLL_INTERVAL = 0.02
 
 # Request Timeout and Too Many Requests may clear on a resend, and so may Unauthorized and
 # Forbidden, since a token refresh can fail one send alone. Any other 4xx would repeat.
-_TRANSIENT_CLIENT_ERRORS = frozenset({401, 403, 408, 429})
+TRANSIENT_CLIENT_ERRORS = frozenset({401, 403, 408, 429})
 
 
 def _count_request(_request: httpx.Request) -> None:
@@ -2223,7 +2223,7 @@ def _decides(sent: Future[httpx.Response]) -> bool:
     response = sent.result()
     if response.is_success:
         return _is_csv(response)
-    return response.is_client_error and response.status_code not in _TRANSIENT_CLIENT_ERRORS
+    return response.is_client_error and response.status_code not in TRANSIENT_CLIENT_ERRORS
 
 
 def _close_sent_response(sent: Future[httpx.Response]) -> None:

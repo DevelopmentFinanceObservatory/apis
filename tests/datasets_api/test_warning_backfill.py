@@ -22,7 +22,7 @@ from datasets_api.warning_backfill import (
     run_backfill_warnings,
     select_rows,
 )
-from dc_sdmx import SdmxHttpError
+from dc_sdmx import SdmxHttpError, SdmxUnsupportedFilterError
 from materialise import facets as facets_module
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
 from materialise.finish import COUNTRIES_FALLBACK_SENTENCE, member_sentences
@@ -395,19 +395,27 @@ _METHOD_SELECTION = {
 
 
 @pytest.mark.parametrize(
-    ("method", "stated", "field"),
+    ("method", "stated", "served_until", "field"),
     [
-        pytest.param("Estimated", True, "off_cadence_members", id="stated"),
-        pytest.param("Estimated", False, None, id="unstated"),
+        pytest.param("Estimated", True, "2015", "off_cadence_members", id="stated"),
+        pytest.param("Estimated", False, "2015", None, id="unstated"),
         # A method that is not estimated never continues a series, so the trace states all.
-        pytest.param("M2", False, "unserved_members", id="not-estimated"),
+        pytest.param("M2", False, "2015", "unserved_members", id="not-estimated"),
+        # A served series reaching the window's end continues with nothing.
+        pytest.param("Estimated", False, "2020", "unserved_members", id="served-to-the-end"),
     ],
 )
-def test_a_continuation_the_trace_cannot_state_is_refused(method, stated, field, capsys):
-    # Var_Other holds the selected source only under `method`, which a continuation of the
-    # selected method admits when `method` is estimated.
+def test_a_continuation_the_trace_cannot_state_is_refused(
+    method, stated, served_until, field, capsys
+):
+    # Var_Other holds the selected source only under `method`, past the served series' end,
+    # which a continuation of the selected method admits when `method` is estimated.
     other = "Var_Other"
-    facets = {**_FACETS, (other, _KEN): [_facet("f-other", "2015", method=method)]}
+    facets = {
+        **_FACETS,
+        (_SERVED, _KEN): [_facet("f-served", served_until)],
+        (other, _KEN): [_facet("f-other", "2018", method=method)],
+    }
     row = _row(_warning([other]), zero=[other])
     row["trace"]["facets"].append(_METHOD_SELECTION)
     if stated:
@@ -585,9 +593,9 @@ def test_a_row_whose_body_and_column_disagree_is_refused_for_good(capsys):
     assert json.loads(json.dumps(store.rows[("spec_a", "cv_a")], default=str)) == before
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
-    assert (failed["transient"], failed["severity"]) == (False, "ERROR")
+    assert (failed["transient"], failed["severity"]) == (False, "WARNING")
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
-    assert (summary["permanent"], summary["mismatched"]) == (1, 1)
+    assert (summary["permanent"], summary["mismatched"], summary["severity"]) == (1, 1, "WARNING")
 
 
 def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
@@ -674,6 +682,7 @@ def test_the_versions_of_one_subject_share_one_probe(capsys):
 
 
 def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
+    monkeypatch.setenv("DATASETS_GRAPH_TOKEN", "token")
     monkeypatch.setattr(maintenance, "shared_pool", lambda: None)
     monkeypatch.setattr(maintenance, "close_shared_pool", lambda: None)
     monkeypatch.setattr(maintenance, "select_rows", lambda store, *, new_format: [])
@@ -686,6 +695,19 @@ def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
     assert maintenance.main(["backfill-warnings", "--dry-run"]) == 0
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
     assert (summary["dry_run"], summary["rewritten"]) == (True, 0)
+
+
+def test_the_task_without_a_graph_token_refuses_to_start(monkeypatch, capsys):
+    monkeypatch.delenv("DATASETS_GRAPH_TOKEN", raising=False)
+
+    def no_store():
+        raise AssertionError("the store was opened")
+
+    monkeypatch.setattr(maintenance, "shared_pool", no_store)
+
+    assert maintenance.main(["backfill-warnings"]) == 1
+    (failed,) = _lines(capsys, "datasets_maintenance_failed")
+    assert (failed["task"], failed["severity"]) == ("backfill-warnings", "ERROR")
 
 
 class _OutageStore(_Store):
@@ -717,22 +739,23 @@ class _BrokenGraph(FakeGraphReader):
         raise ValueError("a defect, not a failed read")
 
 
-@pytest.mark.parametrize("fault", ["ceiling", "malformed-identity", "defect"])
+@pytest.mark.parametrize("fault", ["ceiling", "malformed-identity"])
 def test_a_deterministic_failure_is_refused_for_good(fault, monkeypatch, capsys):
     row = _row(_warning([_IN]), zero=[_IN])
-    graph = FakeGraphReader(facets=_FACETS)
     if fault == "ceiling":
         monkeypatch.setattr(facets_module, "_MAX_COLLECTION_PROBE_PAIRS", 0)
-    elif fault == "malformed-identity":
-        row["definition"]["identity"]["facets"] = {"unit": {"ref": "USD", "request": {}}}
     else:
-        graph = _BrokenGraph(facets=_FACETS)
+        row["definition"]["identity"]["facets"] = {"unit": {"ref": "USD", "request": {}}}
     store = _Store([row])
 
-    assert _run(store, graph=graph) == 0
+    assert _run(store) == 0
 
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert failed["transient"] is False
+    assert (failed["transient"], failed["refused"], failed["severity"]) == (
+        False,
+        True,
+        "WARNING",
+    )
 
 
 def test_a_failed_probe_is_kept_for_the_run(capsys):
@@ -747,7 +770,12 @@ def test_a_failed_probe_is_kept_for_the_run(capsys):
     assert _run(store, graph=graph) == 2
 
     assert graph.calls["observation_facets_batch_many"] == 1
-    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    first, second = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
+    # The second row raises an error of its own, chained to the first row's.
+    assert (first["transient"], second["transient"]) == (True, True)
+    assert second["error"].startswith("_Unread: an earlier row's probe")
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert (summary["transient"], summary["probes"]) == (2, 1)
 
 
@@ -774,12 +802,12 @@ class _StatusGraph(FakeGraphReader):
 
 
 class _StatusAvailability(ScopeAvailability):
-    def __init__(self, *, status: int, **kwargs: Any) -> None:
+    def __init__(self, *, error: Exception, **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._status = status
+        self._error = error
 
     def availability_values(self, **kwargs):
-        raise SdmxHttpError("refused", upstream_status=self._status)
+        raise self._error
 
 
 _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country"): [_KEN]})
@@ -790,11 +818,32 @@ _SCOPED_GRAPH = FakeGraphReader(facets=_FACETS, child_places={("Earth", "Country
     [
         pytest.param(_StatusGraph(status=404, facets=_FACETS), None, False, id="graph-404"),
         pytest.param(_StatusGraph(status=503, facets=_FACETS), None, True, id="graph-503"),
+        pytest.param(_StatusGraph(status=429, facets=_FACETS), None, True, id="graph-429"),
+        pytest.param(_StatusGraph(status=401, facets=_FACETS), None, True, id="graph-401"),
         pytest.param(
             _SCOPED_GRAPH,
-            _StatusAvailability(status=404, data=[(_IN, _KEN)]),
+            _StatusAvailability(
+                error=SdmxHttpError("refused", upstream_status=404), data=[(_IN, _KEN)]
+            ),
             False,
             id="availability-404",
+        ),
+        pytest.param(
+            _SCOPED_GRAPH,
+            _StatusAvailability(
+                error=SdmxHttpError("refused", upstream_status=403), data=[(_IN, _KEN)]
+            ),
+            True,
+            id="availability-403",
+        ),
+        pytest.param(
+            _SCOPED_GRAPH,
+            _StatusAvailability(
+                error=SdmxUnsupportedFilterError("TIME_PERIOD", upstream_status=None),
+                data=[(_IN, _KEN)],
+            ),
+            False,
+            id="availability-refused-before-sending",
         ),
     ],
 )
@@ -831,7 +880,7 @@ def test_a_probe_timeout_is_retried_and_the_run_goes_on(monkeypatch, capsys):
     assert (summary["transient"], summary["rewritten"]) == (1, 1)
 
 
-def test_a_probe_raising_a_defect_is_kept_for_the_run(capsys):
+def test_a_defect_fails_the_run_and_its_probe_is_kept(capsys):
     store = _Store(
         [
             _row(_warning([_IN]), zero=[_IN], content_version="cv_a"),
@@ -840,11 +889,14 @@ def test_a_probe_raising_a_defect_is_kept_for_the_run(capsys):
     )
     graph = _BrokenGraph(facets=_FACETS)
 
-    assert _run(store, graph=graph) == 0
+    assert _run(store, graph=graph) == 2
 
     assert graph.calls["observation_facets_batch_many"] == 1
-    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
-    assert (summary["permanent"], summary["probes"]) == (2, 1)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    failed = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
+    assert [(line["refused"], line["severity"]) for line in failed] == [(False, "ERROR")] * 2
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
+    assert (summary["failed"], summary["permanent"], summary["probes"]) == (2, 0, 1)
 
 
 def test_versions_dispatching_different_sources_probe_apart():
@@ -935,6 +987,60 @@ def test_a_new_format_row_names_its_members_in_dcid_order_across_kinds(capsys):
 
     (row,) = _lines(capsys, "datasets_warning_backfill_row")
     assert row["agrees"] is True
+
+
+def test_a_new_format_row_reading_absence_as_zero_fills_only_what_the_mint_counts(capsys):
+    # The mint counted Var_A..Var_E, Var_G and Var_H off cadence and dropped Var_F, out of the
+    # window, since the group reads an absent member as zero.
+    off = ["Var_A", "Var_B", "Var_C", "Var_D", "Var_E", "Var_G", "Var_H"]
+    facets = {
+        **_FACETS,
+        **{(member, _KEN): [_facet(f"f-{member}", "2015")] for member in off},
+        ("Var_F", _KEN): [_facet("f-f", "1990")],
+    }
+    refs = tuple(f"dcid:{member}" for member in off)
+    split = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": " ".join(
+            (
+                _DETAIL,
+                *member_sentences(
+                    off_cadence=refs, out_of_window=(), unserved_members=(), member_count=9
+                ),
+            )
+        ),
+        "member_count": 9,
+        "off_cadence_members": {"count": 7, "refs": list(refs[:5])},
+    }
+    store = _Store([_row(split, zero=sorted([*off, "Var_F"]))])
+
+    assert (
+        _run(store, graph=FakeGraphReader(facets=facets), absent_reads_zero=True, dry_run=True) == 0
+    )
+
+    (row,) = _lines(capsys, "datasets_warning_backfill_row")
+    assert (row["agrees"], row["severity"]) == (True, "INFO")
+
+
+def test_a_new_format_row_that_disagrees_warns(capsys):
+    # The stored split calls Var_In out of the window; the graph holds it in the window.
+    split = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": "x",
+        "member_count": 2,
+        "out_of_window_members": {"count": 1, "refs": ["dcid:Var_In"]},
+    }
+    store = _Store([_row(split, zero=[_IN])])
+
+    assert _run(store, dry_run=True) == 0
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (row,) = [line for line in lines if line["event"] == "datasets_warning_backfill_row"]
+    assert (row["agrees"], row["severity"]) == (False, "WARNING")
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
+    assert (summary["new_format_agreed"], summary["severity"]) == (0, "WARNING")
 
 
 def test_a_repeated_axis_in_the_trace_reads_its_first_entry():

@@ -16,7 +16,7 @@ their writers, keep their stored messages.
 
 For one version row, the old sentence names the first five members it left out, in the
 trace's dcid order, and counts K in all. The members holding no observation are those the
-trace records with an `observation_count` of 0. The task probes those members' facets as the
+trace records with an `observation_count` of 0. The task probes every member's facets as the
 mint did (`facets.probe_collection_candidates`, under the definition's read scope), each
 request carrying the dataset the trace's provenance selection elected when the code index
 resolves the definition (`facets.dataset_candidates`), and rebuilds the mint's selections
@@ -38,22 +38,28 @@ A row is refused for good (`permanent`) when it cannot be rewritten from what it
 definition or trace, a named member the trace says served observations, fewer zero-count
 members after the last named one than K counts, a body and column holding different warnings
 (`mismatched`), a composite, an identity the adapter refuses, a probe over its pair ceiling
-or refusing its requests, a graph or SDMX read answering 4xx or refusing its query, a dataset
-the code index disagrees with, any failure the probe does not document, or a continuation the
-trace cannot state. The last is a range window with an end year whose trace names no
-continuation of a selected method that is not estimated, while a zero-count member holds an
-estimated facet matching every other selection (`facets.continuation`): the trace leaves out
-a continuing method that served no row, so the selection cannot be rebuilt. A permanent
-refusal follows from the stored row, the graph's answer and this image, so every run refuses
-it again; it is reported on every run and sets no exit code. A graph or SDMX read failing in
-transport, timing out or answering 5xx, a UN read recorded as failed beside ours
-(`origin_catalogue.UnBlockedPlaces.failures`), or a member whose default place scope is not
-settled leaves the row for the next run (`transient`). The places the UN front door refuses do
-not: it refused them at the mint too. An update the store fails as an outage does
-(`clears_on_retry`) stops the run, and the rows not yet tried count as `remaining`.
+or refusing its requests, a graph or SDMX read the client would not resend
+(`_clears_on_resend`: a 4xx outside `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`, or an SDMX
+request refused before it was sent, as `SdmxUnsupportedFilterError`), a dataset the code
+index disagrees with, or a continuation the trace cannot state. The last is a method
+selection the mint continued (`facets.continued_election`) with a method the trace does not
+name, since the trace names one only when it served a row, so the selection cannot be
+rebuilt. A permanent refusal follows from the stored row, the graph's answer and this image,
+so every run refuses it again. A graph or SDMX read failing in transport, timing out or
+answering 5xx or a status among `TRANSIENT_CLIENT_ERRORS`, a UN read recorded as failed beside
+ours (`origin_catalogue.UnBlockedPlaces.failures`), or a member whose default place scope is
+not settled leaves the row for the next run (`transient`). The places the UN front door
+refuses do not: it refused them at the mint too. An update the store fails as an outage does
+(`clears_on_retry`) stops the run, and the rows not yet tried count as `remaining`. Any other
+exception is a defect in this task (`failed`).
+
+The run exits 1 when a later run could still rewrite a row (`transient`, `conflicts`,
+`remaining`) or a row failed with a defect, with an `ERROR` line naming the row. A refusal
+exits 0 with a `WARNING` line naming the row and its count in the summary, so a scheduled run
+does not fail on every run over rows that will never change.
 
 Rows come by subject, and a probe, or its failure, is kept until the subject changes, keyed
-by its zero-count members, the mint's window and the provenance the selections dispatch, so
+by its members, the mint's window and the provenance the selections dispatch, so
 the versions of one definition probe once. Each row is written in a transaction of its own,
 and the update holds the row to the warnings it read in both the column and the body, so a
 row changed meanwhile is left (`conflicts`).
@@ -61,8 +67,10 @@ row changed meanwhile is left (`conflicts`).
 With `dry_run` it does all but the update, writes one `datasets_warning_backfill_row` line per
 row with K and its split, and classifies the rows already in the new format, with member
 fields and no old sentence, the same way, comparing its split with the stored one
-(`new_format`). That measures how far the graph has moved since those rows were written. A
-row in the new format sets no exit code. A row this task rewrote is in the new format, so a
+(`new_format`), each filled only with the kinds a mint counts in those fields. That measures
+how far the graph has moved since those rows were written. A row in the new format sets no
+exit code unless it fails with a defect, and one that disagrees or fails to read is logged at
+`WARNING`. A row this task rewrote is in the new format, so a
 dry run after a real one counts it under `new_format_rows`; the real run's `rewritten` counts
 the rows it rewrote.
 """
@@ -73,7 +81,7 @@ import json
 import re
 import time
 import traceback
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from functools import partial
@@ -96,7 +104,8 @@ from datasets_api.codes_materialise import CompositeUnservable, CurrencyRoleUnde
 from datasets_api.manifest import warning_model
 from datasets_api.operation_store import Clock
 from datasets_api.shape import StatVarShape
-from dc_sdmx import SdmxCapExceededError, SdmxClientError, SdmxHttpError, SdmxQueryError
+from dc_sdmx import SdmxClientError, SdmxHttpError, SdmxResponseError, SdmxTransportError
+from dc_sdmx.client import TRANSIENT_CLIENT_ERRORS
 from materialise.codes import MATERIALISE_CODE_CATALOGUE, MemberFields
 from materialise.continued_series import continued_series_of_trace
 from materialise.errors import (
@@ -106,9 +115,11 @@ from materialise.errors import (
 )
 from materialise.facets import (
     ElectedDataset,
+    FacetElection,
     FacetSelection,
+    cadences_by_member,
+    continued_election,
     dataset_candidates,
-    facet_axis_value,
     probe_collection_candidates,
 )
 from materialise.finish import (
@@ -121,9 +132,8 @@ from materialise.finish import (
 from materialise.generation import dispatched_provenances, reads_absent_as_zero
 from materialise.graph import Facet, GraphReader, GraphReadError
 from materialise.group_facets import UncountedKind, classify_uncounted
-from materialise.method_status import status_of
 from materialise.pipeline import MaterialisationRequest
-from materialise.place_scope import AvailabilityReader
+from materialise.place_scope import AvailabilityReader, PlaceScopeReadError
 from materialise.window import RequestedWindow
 from origin_catalogue import recording_un_blocked_places
 from series_coverage.index import CoverageIndex
@@ -270,6 +280,7 @@ class _Counts:
     new_format_rows: int = 0
     new_format_agreed: int = 0
     new_format_failed: int = 0
+    failed: int = 0
 
 
 def run_backfill_warnings(
@@ -319,8 +330,11 @@ def run_backfill_warnings(
             # the store is out.
             outage = isinstance(exc, _Outage)
             transient = outage or isinstance(exc, _Unread)
+            defect = not (transient or isinstance(exc, _Refused))
             if outage:
                 counts.remaining = len(rows) - position
+            elif defect:
+                counts.failed += 1
             elif not task:
                 counts.new_format_failed += 1
             elif transient:
@@ -330,12 +344,13 @@ def run_backfill_warnings(
                 counts.mismatched += isinstance(exc, _Mismatched)
             emit(
                 "datasets_warning_backfill_failed",
-                # A new-format row measures the graph and leaves the exit code alone.
-                severity="ERROR" if task or outage else "WARNING",
+                # A refusal and a new-format row's failed read leave the exit code alone.
+                severity="ERROR" if defect or (task and transient) else "WARNING",
                 subject_id=row.subject_id,
                 content_version=row.content_version,
                 new_format=not task,
                 transient=transient,
+                refused=not (transient or defect),
                 error=f"{type(exc).__name__}: {exc}",
                 traceback=traceback.format_exc(),
             )
@@ -350,12 +365,15 @@ def emit_nothing_backfilled(*, dry_run: bool) -> None:
 
 
 def _emit_backfilled(counts: _Counts, *, dry_run: bool, probes: int) -> int:
-    """Emit `counts`, the probes made and whether the run was dry, at `ERROR` when a row failed
-    or was left, and return how many rows a later run can still rewrite."""
-    unfinished = counts.transient + counts.conflicts + counts.remaining
+    """Emit `counts`, the probes made and whether the run was dry, at `ERROR` when a row is
+    left for a later run or failed unexpectedly, at `WARNING` when a row was refused or a
+    new-format row failed or disagreed, and return how many rows set the exit code."""
+    unfinished = counts.transient + counts.conflicts + counts.remaining + counts.failed
+    measured = counts.permanent or counts.new_format_failed
+    disagreed = counts.new_format_agreed < counts.new_format_rows - counts.new_format_failed
     emit(
         "datasets_warnings_backfilled",
-        severity="ERROR" if unfinished or counts.permanent else "INFO",
+        severity="ERROR" if unfinished else "WARNING" if measured or disagreed else "INFO",
         dry_run=dry_run,
         probes=probes,
         **asdict(counts),
@@ -493,7 +511,7 @@ def _unwritten(
     clamped = isinstance(applied, Mapping) and applied.get("origin") == "coverage_clamp"
     message = cast(str, warning["message"])
     rest = f"{message[: match.start()]}{message[match.end() :]}"
-    stated = rest.removeprefix(_DETAIL) if rest.startswith(_DETAIL) else rest
+    stated = rest.removeprefix(_DETAIL)
     countries_fallback = f" {COUNTRIES_FALLBACK_SENTENCE}" in stated
     stated = stated.replace(f" {COUNTRIES_FALLBACK_SENTENCE}", "")
     return not writes_coverage_below_scope(
@@ -528,13 +546,14 @@ def _new_format_row(row: WarningRow, *, readers: Readers) -> bool:
             :MAX_COUNTED_REFS
         ]
         count = sum(cast(int, counted["count"]) for counted in stored)
-        split = _split(row, named=named, count=count, readers=readers)
+        split = _split(row, named=named, count=count, readers=readers, new_format=True)
         found = split.fields(member_count=_member_count(trace))
         held = {key: warning[key] for key in ("member_count", *_MEMBER_KEYS) if key in warning}
         agrees = found == held
         agreed = agreed and agrees
         emit(
             "datasets_warning_backfill_row",
+            severity="INFO" if agrees else "WARNING",
             subject_id=row.subject_id,
             content_version=row.content_version,
             new_format=True,
@@ -567,12 +586,21 @@ def _resolved(trace: Mapping[str, object]) -> list[Mapping[str, object]]:
     return cast("list[Mapping[str, object]]", trace.get("resolved_stat_vars") or [])
 
 
-def _split(row: WarningRow, *, named: Sequence[str], count: int, readers: Readers) -> Split:
+def _split(
+    row: WarningRow,
+    *,
+    named: Sequence[str],
+    count: int,
+    readers: Readers,
+    new_format: bool = False,
+) -> Split:
     """The members a warning naming `named` of `count` leaves out, split as the module
-    docstring says. Raises `_Refused` when the row cannot state them and `_Unread` when the
-    probe does not complete."""
+    docstring says, where `new_format` says `count` is that of a mint's member fields. Raises
+    `_Refused` when the row cannot state them and `_Unread` when the probe does not
+    complete."""
     trace, identity = _trace(row), _identity(row)
-    zero = [entry for entry in _resolved(trace) if entry.get("observation_count") == 0]
+    resolved = _resolved(trace)
+    zero = [entry for entry in resolved if entry.get("observation_count") == 0]
     zero_refs = [cast(str, entry["ref"]) for entry in zero]
     missing = [ref for ref in named if ref not in zero_refs]
     if missing:
@@ -585,22 +613,38 @@ def _split(row: WarningRow, *, named: Sequence[str], count: int, readers: Reader
         )
     window = identity_requested_window(identity, clock_year=row.recorded_at.year)
     selections = _selections(trace)
-    members = _members(row, identity, zero, window=window, selections=selections, readers=readers)
-    _continuation_stated(selections, members.values(), window=window)
+    members = _members(
+        row, identity, resolved, window=window, selections=selections, readers=readers
+    )
+    _continuation_stated(selections, [members[_ref(entry)] for entry in resolved], window=window)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
-            member.candidates, electable=member.electable, selections=selections, window=window
+            members[ref].candidates,
+            electable=members[ref].electable,
+            selections=selections,
+            window=window,
         )
-        for ref, member in members.items()
+        for ref in zero_refs
     }
-    # The old sentence named members with a jointly matching facet, so those fill the count
-    # first, each part in dcid order.
-    matched = [ref for ref in after_named if kinds[ref] in ("off_cadence", "out_of_window")]
-    rest = [ref for ref in after_named if ref not in matched]
-    left_out = [*named, *[*matched, *rest][: count - len(named)]]
     absent_reads_zero = reads_absent_as_zero(
         selections, partial(absent_member_reads_zero, readers.code_index)
     )
+    # The old sentence named members with a jointly matching facet, so those fill the count
+    # first, each part in dcid order. A mint's fields count only the kinds it names, and none
+    # out of the window when the group reads an absent member as zero.
+    counted = ("off_cadence",) if absent_reads_zero else ("off_cadence", "out_of_window")
+    matched = [
+        ref
+        for ref in after_named
+        if kinds[ref] in (counted if new_format else ("off_cadence", "out_of_window"))
+    ]
+    rest = [] if new_format else [ref for ref in after_named if ref not in matched]
+    if count - len(named) > len(matched) + len(rest):
+        raise _Refused(
+            f"{count - len(named)} more members left out, {len(matched) + len(rest)} members "
+            "a mint counts follow the last named one"
+        )
+    left_out = [*named, *[*matched, *rest][: count - len(named)]]
     return Split(
         off_cadence=tuple(ref for ref in left_out if kinds[ref] == "off_cadence"),
         # A member holding no facet of the elected dataset was named as the old sentence named
@@ -630,74 +674,72 @@ def _selections(trace: Mapping[str, object]) -> dict[str, FacetSelection]:
 
 def _continuation_stated(
     selections: Mapping[str, FacetSelection],
-    members: Iterable[_Member],
+    members: Sequence[_Member],
     *,
     window: RequestedWindow,
 ) -> None:
-    """Raise `_Refused` when the selection on `measurementMethod` may have been continued by a
-    method the trace does not name and a member holds a facet only that method could admit.
+    """Raise `_Refused` when the mint continued the selection on `measurementMethod`
+    (`facets.continued_election`) with a method the trace does not name.
 
-    A series continues only under a range window with an end year, with an estimated method
-    (`method_status.status_of`) of its source and unit, and only when it is not estimated
-    itself (`facets.continuation`). `trace.continuations` names a continuing method only when
-    it served a row, so such a window whose trace names none leaves the continuation unknown.
-    It changes nothing unless a member holds an estimated facet matching every other
-    selection."""
+    `trace.continuations` names a continuing method only when it served a row, so a trace
+    naming none leaves a continuation that served none unknown. The election is rebuilt from
+    the selections, every member's candidates in trace order, and the cadence of the method
+    selection's dispatched facet. A range window with an end year whose dispatched facet the
+    graph no longer holds cannot be rebuilt either."""
     method = selections.get(_METHOD_AXIS)
-    provenance = selections.get("provenance")
-    source = provenance.ref if provenance is not None else None
-    if (
-        window.kind != "range"
-        or window.end_year is None
-        or method is None
-        or method.continued_by is not None
-        or status_of(method.ref, source) == "estimated"
-    ):
+    if method is None or method.continued_by is not None:
         return
-    others = {axis: selection for axis, selection in selections.items() if axis != _METHOD_AXIS}
-    for member in members:
-        for facet in member.candidates:
-            if (
-                facet.facet_id is not None
-                and not method.admits(facet_axis_value(facet, _METHOD_AXIS))
-                and status_of(facet.measurement_method, facet.provenance_id) == "estimated"
-                and all(
-                    selection.admits(facet_axis_value(facet, axis))
-                    for axis, selection in others.items()
-                )
-            ):
-                raise _Refused(
-                    "the trace names no continuation of the selected method, and "
-                    f"{facet.facet_id} under {facet.measurement_method} would match one"
-                )
+    candidates = [member.candidates for member in members]
+    cadence_of = cadences_by_member(candidates)
+    cadence = next(
+        (held[method.dispatch_facet_id] for held in cadence_of if method.dispatch_facet_id in held),
+        None,
+    )
+    if cadence is None:
+        if window.kind == "range" and window.end_year is not None:
+            raise _Refused(f"the graph no longer holds the dispatched {method.dispatch_facet_id}")
+        return
+    election = continued_election(
+        FacetElection(selections=dict(selections), cadence=cadence, cadence_of=cadence_of),
+        candidates,
+        window=window,
+    )
+    continued_by = election.selections[_METHOD_AXIS].continued_by
+    if continued_by is not None:
+        raise _Refused(
+            f"the mint continued the selected method with {continued_by}, which the trace "
+            "does not name"
+        )
 
 
 def _members(
     row: WarningRow,
     identity: Mapping[str, object],
-    zero: Sequence[Mapping[str, object]],
+    resolved: Sequence[Mapping[str, object]],
     *,
     window: RequestedWindow,
     selections: Mapping[str, FacetSelection],
     readers: Readers,
 ) -> Mapping[str, _Member]:
-    """Each of the `zero` members' candidates, probed as the mint probed them, or as a probe,
-    or its failure, earlier in the run left them for the same requests: the subject, its
-    zero-count members, the mint's window and the provenance its selections dispatch, which
-    elects each member's dataset (`_request`)."""
+    """Each of the `resolved` members' candidates, probed as the mint probed them, or as a
+    probe, or its failure, earlier in the run left them for the same requests: the subject,
+    its members, the mint's window and the provenance its selections dispatch, which elects
+    each member's dataset (`_request`). A failure kept from an earlier row is raised afresh,
+    of its class when it is a refusal or an incomplete read."""
     key = (
         row.subject_id,
-        tuple(cast(str, entry["ref"]) for entry in zero),
+        tuple(_ref(entry) for entry in resolved),
         (window.kind, window.start_year, window.end_year),
         tuple(dispatched_provenances(selections)),
     )
     held = readers.probes.get(key)
     if isinstance(held, Exception):
-        raise held
+        kind = type(held) if isinstance(held, _Refused | _Unread) else RuntimeError
+        raise kind(f"an earlier row's probe of the same requests failed: {held}") from held
     if held is not None:
         return held
     try:
-        found = _probe(identity, zero, window=window, selections=selections, readers=readers)
+        found = _probe(identity, resolved, window=window, selections=selections, readers=readers)
     except Exception as exc:
         readers.probes[key] = exc
         raise
@@ -707,21 +749,21 @@ def _members(
 
 def _probe(
     identity: Mapping[str, object],
-    zero: Sequence[Mapping[str, object]],
+    resolved: Sequence[Mapping[str, object]],
     *,
     window: RequestedWindow,
     selections: Mapping[str, FacetSelection],
     readers: Readers,
 ) -> dict[str, _Member]:
-    """Probe the `zero` members as one group under the definition's read scope, and keep the
-    candidates each one's elected dataset publishes."""
+    """Probe the `resolved` members as one group under the definition's read scope, and keep
+    the candidates each one's elected dataset publishes."""
     readers.probe_calls += 1
     try:
         if composite_components(identity, code_index=readers.code_index) is not None:
             raise _Refused("a composite's members are probed under its component identities")
         requests = [
             _request(identity, entry, window=window, selections=selections, readers=readers)
-            for entry in zero
+            for entry in resolved
         ]
     except (CompositeUnservable, CurrencyRoleUndeclared, IdentityError) as exc:
         raise _Refused(f"the identity is refused: {type(exc).__name__}: {exc}") from exc
@@ -738,18 +780,12 @@ def _probe(
                 coverage=readers.coverage,
                 deadline=time.monotonic() + PROBE_DEADLINE_SECONDS,
             )
-    except (
-        CollectionProbeCeilingExceededError,
-        MaterialisationUsageError,
-        SdmxQueryError,
-        SdmxCapExceededError,
-    ) as exc:
+    except (CollectionProbeCeilingExceededError, MaterialisationUsageError) as exc:
         raise _Refused(f"the probe refused: {type(exc).__name__}: {exc}") from exc
     except (GraphReadError, SdmxClientError) as exc:
-        status = exc.upstream_status if isinstance(exc, GraphReadError | SdmxHttpError) else None
-        if status is not None and 400 <= status < 500:
-            raise _Refused(f"the probe was refused: {type(exc).__name__}: {exc}") from exc
-        raise _Unread(f"the probe failed: {type(exc).__name__}: {exc}") from exc
+        if _clears_on_resend(exc):
+            raise _Unread(f"the probe failed: {type(exc).__name__}: {exc}") from exc
+        raise _Refused(f"the probe was refused: {type(exc).__name__}: {exc}") from exc
     except TimeoutError as exc:
         # `place_scope.PlaceScopeDeadlineError` among them: the read ran past its deadline.
         raise _Unread(f"the probe timed out: {exc}") from exc
@@ -767,6 +803,31 @@ def _probe(
         }
     except DatasetDisagreementError as exc:
         raise _Refused(f"the code index disagrees: {exc}") from exc
+
+
+def _clears_on_resend(exc: GraphReadError | SdmxClientError) -> bool:
+    """Whether a later read can get past `exc`, as the SDMX client judges a resend: a graph
+    read no response answered, an SDMX transport failure or unparsable 2xx, or a status of
+    5xx or among `dc_sdmx.client.TRANSIENT_CLIENT_ERRORS`. Any other 4xx, and an SDMX request
+    the client refuses before sending it (no status, as `SdmxUnsupportedFilterError`, or
+    `SdmxQueryError` and `SdmxCapExceededError`), would repeat. An availability read failing
+    for a place scope (`PlaceScopeReadError`) is judged by the client error it wraps."""
+    if isinstance(exc, PlaceScopeReadError) and isinstance(
+        exc.__cause__, GraphReadError | SdmxClientError
+    ):
+        return _clears_on_resend(exc.__cause__)
+    if isinstance(exc, SdmxTransportError | SdmxResponseError):
+        return True
+    if not isinstance(exc, GraphReadError | SdmxHttpError):
+        return False
+    status = exc.upstream_status
+    if status is None:
+        return isinstance(exc, GraphReadError)
+    return status >= 500 or status in TRANSIENT_CLIENT_ERRORS
+
+
+def _ref(entry: Mapping[str, object]) -> str:
+    return cast(str, entry["ref"])
 
 
 def _request(
