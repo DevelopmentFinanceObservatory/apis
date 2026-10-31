@@ -95,7 +95,7 @@ from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
-from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, frame_of_frame1
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, unchecked_frame_of_frame1
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
 from presentation_store import frame_store
@@ -1076,6 +1076,15 @@ def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: b
     assert excinfo.value.reason == "missing_rendering"
 
 
+def _frame1_with_value(value: int) -> bytes:
+    """The malaria document with `value` in its first row, as `write_frame1` writes a whole
+    number: a JSON integer."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    columns = cast("list[str]", doc["columns"])
+    cast("list[list[object]]", doc["rows"])[0][columns.index("value")] = value
+    return json.dumps(doc).encode()
+
+
 def _frame1_with_null_cells() -> bytes:
     """The malaria document with a null role and value in its first row and its second row
     repeated, cells `Frame.build` refuses and Datasets serves."""
@@ -1095,6 +1104,7 @@ def _frame1_with_null_cells() -> bytes:
         pytest.param(_frame1_without("measurementMethod"), id="before-measurementMethod"),
         pytest.param(_frame1_without("status"), id="before-status"),
         pytest.param(_frame1_with_null_cells(), id="null-cells-and-a-repeated-grain"),
+        pytest.param(_frame1_with_value(20_900_000_000_000_000), id="a-value-past-2-to-the-53"),
     ],
 )
 def test_a_frame1_document_decodes_as_the_canonical_frame_of_its_rows(data: bytes):
@@ -1104,7 +1114,7 @@ def test_a_frame1_document_decodes_as_the_canonical_frame_of_its_rows(data: byte
     doc, size = frame_store._decode_frame(
         data, location=_location(digest="d", tier="working"), max_rows=1
     )
-    canonical = canonical_frame_parquet((frame_of_frame1(data),))
+    canonical = canonical_frame_parquet((unchecked_frame_of_frame1(data),))
     canonical_doc, canonical_size = frame_store._decode_frame(
         canonical,
         location=_location(digest="c", tier="working", media_type=CANONICAL_FRAME_MEDIA_TYPE),

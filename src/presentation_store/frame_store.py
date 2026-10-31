@@ -250,8 +250,8 @@ from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     canonical_frame_document,
-    frame_of_frame1,
     read_canonical_frame_table,
+    unchecked_frame_of_frame1,
 )
 from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import SourceCitation, read_source_citations
@@ -483,12 +483,12 @@ def _decode_frame(
     null `time_period`, and build the document from it through `canonical_frame_document`, so
     their cells are shared alike: a canonical frame read as one (`_canonical_table`), bounded by
     `max_rows` before any row is decoded, and a frame1 document under the rule Datasets reads
-    frame1 by (`materialise.formats.frame_of_frame1`). A frame1 document is not row-bounded: it
+    frame1 by (`materialise.formats.unchecked_frame_of_frame1`). A frame1 document is not row-bounded: it
     predates canonical frames, and `datasets_api.maintenance.run_backfill_frame1` gives such a
     version a canonical frame. `_decoding` refuses what does not decode."""
     with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            table = frame_of_frame1(data).table
+            table = unchecked_frame_of_frame1(data).table
         else:
             table = _canonical_table(data, location=location, max_rows=max_rows)
         if table.column(TIME_PERIOD_COLUMN).null_count:

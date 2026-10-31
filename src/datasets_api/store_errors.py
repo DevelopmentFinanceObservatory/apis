@@ -18,7 +18,7 @@ from dfo_frame_grammar import FrameError
 
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
-from materialise.formats import Table, read_frame1_table
+from materialise.formats import Frame, Table, read_frame1_table, validated_frame_of_frame1
 from spec_registry.errors import SpecRegistryStoreError
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,19 @@ def read_stored_frame1_table(data: bytes, *, digest: str) -> Table:
     """
     try:
         return read_frame1_table(data)
+    except FrameError as exc:
+        raise StoredFrameUnreadable(digest=digest) from exc
+
+
+def validated_stored_frame1(data: bytes, *, digest: str) -> Frame:
+    """The stored frame1 artifact `data`, at `digest`, as a grammar-valid frame in row order
+    (`validated_frame_of_frame1`).
+
+    Raises:
+        StoredFrameUnreadable: `validated_frame_of_frame1` raised `FrameError` for it.
+    """
+    try:
+        return validated_frame_of_frame1(data)
     except FrameError as exc:
         raise StoredFrameUnreadable(digest=digest) from exc
 

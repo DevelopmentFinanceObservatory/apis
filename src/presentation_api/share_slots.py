@@ -205,8 +205,8 @@ def serve_on_slot_frame[T](
     its check's frame (`_live_check`), stored once `draw` succeeds on it. When `draw` fails on a
     frame other than the card's own, the slot serves an earlier frame `stale`. A transient
     failure (`_transient_wait`) keeps the last good frame, the one the slot served before this
-    check, or the card's own when the failing frame is that one: it stores a check `stale` on
-    it, due after the failure's wait, so the reads before it serve that frame without drawing
+    check, or the card's own when the failing frame is that one or the last good frame cannot
+    be drawn: it stores a check `stale` on it, due after the failure's wait, so the reads before it serve that frame without drawing
     the failing one. Any other failure stores the slot `stale` on the card's own frame until the
     next check.
     `card.frame` must be set and `record` must be the card revision.
@@ -254,7 +254,25 @@ def serve_on_slot_frame[T](
                 "" if wait is None else f" for {wait:g} s",
                 exc_info=True,
             )
-            drawn = draw(check.frame)
+            try:
+                drawn = draw(check.frame)
+            except ExcelIllegalCharacterError:
+                raise
+            except Exception:
+                if check.frame == card.frame:
+                    raise
+                # The last good frame cannot be drawn either; the card's own frame, which its
+                # share pinned, serves in its place for the same wait.
+                logger.warning(
+                    "Share %s slot %s cannot draw %s on %s; serving its own frame",
+                    share.id,
+                    slot,
+                    card.component_id,
+                    check.frame,
+                    exc_info=True,
+                )
+                check = replace(check, frame=card.frame)
+                drawn = draw(card.frame)
             ran = True
         if ran:
             deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)

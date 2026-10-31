@@ -49,7 +49,6 @@ import pyarrow.parquet as pq
 import rfc8785
 from dfo_frame_grammar import (
     Frame,
-    FrameError,
     build_frame_from_arrow,
     canonical_frame_schema,
     map_units,
@@ -89,7 +88,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import is_statistics_rendering, stored_frame_location
-from datasets_api.store_errors import StoredFrameUnreadable
+from datasets_api.store_errors import validated_stored_frame1
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -97,7 +96,6 @@ from dfo_analysis_engine.place_type import (
 )
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
-    frame_of_frame1,
     read_canonical_frame,
 )
 from spec_registry.reader import StoredDefinition
@@ -249,18 +247,11 @@ def frame_from_frame_layout(data: bytes) -> Frame:
     return build_frame_from_arrow(table, role_keys=role_keys)
 
 
-def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
-    try:
-        return frame_of_frame1(data)
-    except FrameError as exc:
-        raise StoredFrameUnreadable(digest=digest) from exc
-
-
 def frame_of_stored(data: bytes, *, media_type: str, digest: str) -> Frame:
     """The frame a version's stored frame `data`, at `digest`, holds: its frame1 document when
     `media_type` names one, else its canonical frame."""
     if media_type == FRAME1_MEDIA_TYPE:
-        return _frame_of_frame1(data, digest=digest)
+        return validated_stored_frame1(data, digest=digest)
     return read_canonical_frame(data)
 
 

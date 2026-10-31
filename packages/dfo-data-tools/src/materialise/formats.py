@@ -44,6 +44,7 @@ from dfo_frame_grammar import (
     unit_cell_array,
     unit_column_cells,
 )
+from dfo_frame_grammar.arrow import build_frame_from_arrow
 from dfo_frame_grammar.grammar import (
     FRAME_VERSION,
     STAT_VAR_COLUMN,
@@ -801,88 +802,122 @@ class Frame1Table:
 
 def read_frame1_table(data: bytes) -> Table:
     """Parses frame1 JSON into a `Frame1Table` for reshaping and tabular writers, under
-    `read_frame1_document`'s rule.
+    `read_frame1_document`'s rule, with the cells `_frame1_columns` reads.
 
-    Non-null value cells become `float` because whole-number floats parse from JSON as `int`.
-    Unit cells are validated and rebuilt as a ref, `UnitRequest` or `ComposedUnit` through
-    `frame1_unit_cells`, so reshaping keeps hashable, typed cells.
+    Raises:
+        FrameError: What `read_frame1_document` and `frame1_unit_cells` raise.
+    """
+    columns, cells = _frame1_columns(data)
+    return Frame1Table(columns=columns, rows=tuple(zip(*cells, strict=True)))
+
+
+def unchecked_frame_of_frame1(data: bytes) -> Frame:
+    """The frame1 document `data` as a canonical frame whose cells are taken as stored, the
+    `_frame1_arrow_table` of its cells wrapped unchecked by `Frame.from_table`, since
+    `write_frame1` wrote the rows from a `Frame` in its row order. A reader that needs a
+    grammar-valid frame takes `validated_frame_of_frame1`.
+
+    Raises:
+        FrameError: What `_frame1_arrow_table` raises.
+    """
+    columns, table = _frame1_arrow_table(data)
+    return Frame.from_table(columns=columns, table=table)
+
+
+def validated_frame_of_frame1(data: bytes) -> Frame:
+    """The frame1 document `data` as a grammar-valid frame in row order: the
+    `_frame1_arrow_table` of its cells through `build_frame_from_arrow`, which checks every
+    column and sorts the rows.
+
+    Raises:
+        FrameError: What `_frame1_arrow_table` and `build_frame_from_arrow` raise.
+    """
+    columns, table = _frame1_arrow_table(data)
+    return build_frame_from_arrow(
+        table.drop_columns(STATUS_COLUMN), role_keys=frame_entity_columns(columns)
+    )
+
+
+def _frame1_columns(data: bytes) -> tuple[tuple[str, ...], list[tuple[object, ...]]]:
+    """The columns of the frame1 document `data` and each column's cells, under
+    `read_frame1_document`'s rule. Non-null value cells become `float`, because whole-number
+    floats parse from JSON as `int`. Unit cells are validated and rebuilt as a ref,
+    `UnitRequest` or `ComposedUnit` through `frame1_unit_cells`, one object per distinct cell,
+    so reshaping keeps hashable, typed cells.
 
     Raises:
         FrameError: What `read_frame1_document` and `frame1_unit_cells` raise.
     """
     document = read_frame1_document(data)
     columns = tuple(cast("list[str]", document["columns"]))
-    rows = [list(row) for row in cast("list[list[object]]", document["rows"])]
+    rows = cast("list[list[object]]", document["rows"])
+    cells: list[tuple[object, ...]] = (
+        list(zip(*rows, strict=True)) if rows else [() for _ in columns]
+    )
     if VALUE_COLUMN in columns:
-        value_index = columns.index(VALUE_COLUMN)
-        for row in rows:
-            if row[value_index] is not None:
-                row[value_index] = float(cast(float, row[value_index]))
+        index = columns.index(VALUE_COLUMN)
+        cells[index] = tuple(
+            None if cell is None else float(cast(float, cell)) for cell in cells[index]
+        )
     if UNIT_COLUMN in columns:
-        unit_index = columns.index(UNIT_COLUMN)
-        units = frame1_unit_cells([row[unit_index] for row in rows])
-        for row, unit in zip(rows, units, strict=True):
-            row[unit_index] = unit
-    return Frame1Table(columns=columns, rows=tuple(tuple(row) for row in rows))
+        index = columns.index(UNIT_COLUMN)
+        cells[index] = tuple(frame1_unit_cells(cells[index]))
+    return columns, cells
 
 
-def frame_of_frame1(data: bytes) -> Frame:
-    """The canonical frame of the frame1 document `data`, read under the rule Datasets reads
-    frame1 by (`read_frame1_document`, then `frame1_unit_cells`, as `read_frame1_table` reads
-    it). Its cells become the canonical frame's Arrow columns, each distinct `unit` cell
-    converted once, and `Frame.from_table` wraps them unchecked, since `write_frame1` wrote the
-    rows from a `Frame` in its row order. A column the document predates, `measurementMethod`
-    or `status`, is null.
+def _frame1_arrow_table(data: bytes) -> tuple[tuple[str, ...], pa.Table]:
+    """The derived columns of the frame1 document `data` and its cells (`_frame1_columns`) in
+    the canonical frame schema, one Arrow conversion per column. A column the document
+    predates, `measurementMethod` or `status`, is null.
 
     Raises:
-        FrameError: What `read_frame1_document` and `frame1_unit_cells` raise, and
-            `schema_violation` for a cell its column's Arrow type cannot hold.
+        FrameError: What `_frame1_columns` raises, and `schema_violation` for a cell its
+            column's Arrow type cannot hold.
     """
-    document = read_frame1_document(data)
-    stored = cast("list[str]", document["columns"])
-    rows = cast("list[list[object]]", document["rows"])
+    stored, cells = _frame1_columns(data)
     columns = derive_columns(frame_entity_columns(stored))
-    present = {column: index for index, column in enumerate(stored)}
-    unit = present[UNIT_COLUMN]
-    units = _frame1_unit_array(frame1_unit_cells([row[unit] for row in rows]), columns)
-    schema = canonical_frame_schema(columns, recipe=units.type != _unit_type(columns))
+    present = dict(zip(stored, cells, strict=True))
+    units, recipe = _frame1_unit_array(present[UNIT_COLUMN], columns)
+    schema = canonical_frame_schema(columns, recipe=recipe)
+    count = len(units)
     arrays: list[pa.Array] = []
     for field in schema:
         if field.name == UNIT_COLUMN:
             arrays.append(units)
         elif field.name in present and field.name != STATUS_COLUMN:
-            index = present[field.name]
             try:
-                arrays.append(pa.array([row[index] for row in rows], type=field.type))
+                arrays.append(pa.array(present[field.name], type=field.type))
             except (pa.ArrowInvalid, pa.ArrowTypeError) as exc:
                 raise FrameError(
                     "schema_violation", f"a {field.name} cell is not a {field.type}"
                 ) from exc
         else:
-            arrays.append(pa.nulls(len(rows), type=field.type))
-    return Frame.from_table(columns=columns, table=pa.Table.from_arrays(arrays, schema=schema))
+            arrays.append(pa.nulls(count, type=field.type))
+    return columns, pa.Table.from_arrays(arrays, schema=schema)
 
 
-def _unit_type(columns: tuple[str, ...], *, recipe: bool = False) -> pa.DataType:
-    return canonical_frame_schema(columns, recipe=recipe).field(UNIT_COLUMN).type
-
-
-def _frame1_unit_array(cells: Sequence[object], columns: tuple[str, ...]) -> pa.Array:
+def _frame1_unit_array(cells: Sequence[object], columns: tuple[str, ...]) -> tuple[pa.Array, bool]:
     """The `unit` column of `cells`, `frame1_unit_cells`' output, which shares one object per
-    distinct cell: each distinct cell converts once (`unit_cell_array`), in the recipe layout
-    when any of them needs it."""
+    distinct cell, and whether it takes the recipe layout, which it does when any cell needs
+    it. Each distinct cell converts once (`unit_cell_array`), and the rows take their cell's
+    array by index."""
     codes: list[int] = []
-    distinct: dict[int, tuple[int, pa.Array]] = {}
+    distinct: dict[int, int] = {}
+    arrays: list[pa.Array] = []
     for cell in cells:
-        if id(cell) not in distinct:
-            distinct[id(cell)] = (len(distinct), unit_cell_array(cast("UnitCell | None", cell), 1))
-        codes.append(distinct[id(cell)][0])
-    arrays = [array for _, array in distinct.values()]
-    recipe = any(array.type != _unit_type(columns) for array in arrays)
-    mapped = pa.array(
-        [array.to_pylist()[0] for array in arrays], type=_unit_type(columns, recipe=recipe)
-    )
-    return mapped.take(pa.array(codes, type=pa.int32()))
+        code = distinct.get(id(cell))
+        if code is None:
+            code = distinct[id(cell)] = len(arrays)
+            arrays.append(unit_cell_array(cast("UnitCell | None", cell), 1))
+        codes.append(code)
+    plain = canonical_frame_schema(columns).field(UNIT_COLUMN).type
+    recipe = any(array.type != plain for array in arrays)
+    if recipe:
+        # A cell without a recipe takes the recipe layout's null `recipe` child.
+        layout = canonical_frame_schema(columns, recipe=True).field(UNIT_COLUMN).type
+        arrays = [pa.array(array.to_pylist(), type=layout) for array in arrays]
+    distinct_cells = pa.concat_arrays(arrays) if arrays else pa.array([], type=plain)
+    return distinct_cells.take(pa.array(codes, type=pa.int32())), recipe
 
 
 def read_frame1_document(data: bytes) -> dict[str, object]:

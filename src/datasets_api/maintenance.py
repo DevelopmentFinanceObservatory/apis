@@ -236,7 +236,7 @@ from datasets_api.render import (
     stored_frame_location,
 )
 from datasets_api.serve import refs_from_resolved_stat_vars
-from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.store_errors import DatasetsStoreUnavailable, validated_stored_frame1
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from description.facts import SCHEMA_VERSION, DescriptionRecord
@@ -250,7 +250,6 @@ from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
-    frame_of_frame1,
     read_canonical_frame,
     write_frame1,
 )
@@ -493,10 +492,15 @@ def _pinned_frame1_versions(store: DatasetStore) -> list[tuple[str, str, str]]:
 
 
 def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
-    """The frame a frame1 document holds, rebuilt through the grammar. Raises `ValueError` when
-    the rebuilt frame's frame1 digest differs from `digest`, so a conversion never changes
-    content."""
-    frame = frame_of_frame1(data)
+    """The frame1 document `data`, at `digest`, as a grammar-valid frame in row order
+    (`validated_stored_frame1`), whose frame1 digest is `digest`, so a conversion never changes
+    content.
+
+    Raises:
+        StoredFrameUnreadable: The document does not read as a grammar-valid frame.
+        ValueError: The rebuilt frame's frame1 digest differs from `digest`.
+    """
+    frame = validated_stored_frame1(data, digest=digest)
     rebuilt = write_frame1((frame,), sink=_DiscardSink()).digest
     if rebuilt != digest:
         raise ValueError(f"the frame rebuilt from {digest} writes frame1 digest {rebuilt}")

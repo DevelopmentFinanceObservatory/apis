@@ -632,9 +632,13 @@ def test_a_live_slot_serves_its_own_frame_until_a_transient_failure_s_wait_ends(
         assert served == [_STORED, _STORED, _MOVED]
 
 
-def test_a_transient_failure_keeps_a_live_slot_on_its_last_good_frame(door: _Door):
+@pytest.mark.parametrize("last_drawable", [True, False])
+def test_a_transient_failure_keeps_a_live_slot_on_its_last_good_frame(
+    door: _Door, last_drawable: bool
+):
     """A slot current on a newer frame serves that frame `stale` through a transient failure of
-    a newer one still, and keeps it through the pending check that follows."""
+    a newer one still, and keeps it through the pending check that follows. When that frame
+    cannot be drawn either, the slot serves the card's own frame in its place."""
     newer = FrameRef(spec_id=_STORED.spec_id, content_version="cv_" + "c" * 32)
     door.frame_store.refusals[newer] = FrameUnavailable(
         reason="io", detail="exemplar", retry_after_s=7.0
@@ -644,6 +648,8 @@ def test_a_transient_failure_keeps_a_live_slot_on_its_last_good_frame(door: _Doo
     first = door.data(share["id"])
     door.later(minutes=16)
     door.newest.answer = newer
+    if not last_drawable:
+        door.frame_store.refusals[_MOVED] = FrameUnavailable(reason="expired", detail="exemplar")
     failed = door.data(share["id"])
     door.later(seconds=6)
     inside = door.data(share["id"])
@@ -651,9 +657,10 @@ def test_a_transient_failure_keeps_a_live_slot_on_its_last_good_frame(door: _Doo
     door.newest.answer = NewestPending(retry_after_s=30)
     pending = door.data(share["id"])
 
+    held = _MOVED if last_drawable else _STORED
     assert _stated(first) == ("current", _MOVED.content_version, "live")
-    assert _stated(failed) == _stated(inside) == ("stale", _MOVED.content_version, "live")
-    assert _stated(pending) == ("pending", _MOVED.content_version, "live")
+    assert _stated(failed) == _stated(inside) == ("stale", held.content_version, "live")
+    assert _stated(pending) == ("pending", held.content_version, "live")
     assert door.frame_store.loads.count(newer) == 1
 
 
