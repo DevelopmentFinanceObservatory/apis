@@ -200,7 +200,6 @@ def _vocabulary(ethiopia: str = "Ethiopia", crs: str = _CRS_NAME) -> Vocabulary:
                 publisher=None, last_downloaded=_DOWNLOADED, next_release=_NEXT_RELEASE
             )
         },
-        currency_units={"CurrencyUSD": "USD"},
         graph_generation=None,
         catalogue_build=None,
     )
@@ -838,7 +837,6 @@ def test_a_card_whose_drawn_definitions_overrun_the_envelope_degrades_and_mints(
         measure_index=base.measure_index,
         labels={**base.labels, **{code: code.ljust(label_length, "x") for code in codes}},
         sources=base.sources,
-        currency_units=base.currency_units,
         graph_generation=None,
         catalogue_build=None,
         definitions=dict.fromkeys(codes, "d" * 4096),

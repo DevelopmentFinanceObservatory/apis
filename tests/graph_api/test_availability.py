@@ -234,12 +234,19 @@ def test_the_crs_example_folds_from_the_coverage_summary():
 
 _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
 _COUNTRIES = tuple(f"country/C{i:03d}" for i in range(197))
+
+
 # C000 uses US dollars, C001-C025 the euro, C026-C195 139 other currencies (some shared), and
 # C196 has no mapping.
+def _code(n: int) -> str:
+    """A made-up currency code the unit registry still reads as one: three capital letters."""
+    return f"Q{chr(65 + n // 26)}{chr(65 + n % 26)}"
+
+
 _NATIONAL = {
     _COUNTRIES[0]: "USD",
     **dict.fromkeys(_COUNTRIES[1:26], "EUR"),
-    **{place: f"X{(i - 26) % 139:02d}" for i, place in enumerate(_COUNTRIES[26:196], start=26)},
+    **{place: _code((i - 26) % 139) for i, place in enumerate(_COUNTRIES[26:196], start=26)},
 }
 
 
@@ -247,7 +254,7 @@ def _weo_series(method: str | None, *, reach: int, first: str, last: str, curren
     """One WEO series: US dollars at the first `reach` countries, and each national currency
     among the first `currencies` other ones (the euro first) at its countries in reach."""
     places_by_unit = {"CurrencyUSD": frozenset(_COUNTRIES[:reach])}
-    codes = ["EUR", *(f"X{i:02d}" for i in range(currencies - 1))]
+    codes = ["EUR", *(_code(i) for i in range(currencies - 1))]
     for code in codes:
         places_by_unit[f"Currency{code}"] = frozenset(
             p for p in _COUNTRIES[:reach] if _NATIONAL.get(p) == code
@@ -343,7 +350,7 @@ def test_the_weo_gdp_fold_counts_units_and_national_currencies():
         "2019",
         "2031",
     )
-    # The euro's 25 countries, and the 164 of C026-C192 whose currency is among X00-X135.
+    # The euro's 25 countries, and the 164 of C026-C192 whose currency is among QAA-QFF.
     assert (estimated["units"]["count"], estimated["units"]["national_currency"]) == (
         138,
         {"currencies": 137, "places": 189},
@@ -391,6 +398,41 @@ def test_a_unit_folds_as_national_only_when_every_place_it_covers_names_it(curre
     assert (
         series.units.national_currency.model_dump() if series.units.national_currency else None
     ) == national
+
+
+@pytest.mark.parametrize(
+    ("unit", "label"),
+    [
+        pytest.param("CurrencyUSD", "US dollars", id="unpriced"),
+        pytest.param("SDG_CU_USD", "current US dollars", id="sdg-current"),
+        pytest.param("SDG_CON_USD", "constant US dollars", id="sdg-constant"),
+        pytest.param("undata/UNIT_MEASURE-CR_USD_K", "constant US dollars", id="un-constant"),
+        pytest.param("ConstantPriceUSDollar2015", "constant 2015 US dollars", id="base-year"),
+        pytest.param("ChainedUSDollarBaseYr2017", "chained 2017 US dollars", id="chained"),
+    ],
+)
+def test_a_currency_unit_reads_with_the_price_basis_it_states(unit, label):
+    facet = Facet(
+        facet_id="fUSD",
+        provenance_id=_WEO,
+        unit=unit,
+        obs_count=2,
+        earliest_date="2020",
+        latest_date="2021",
+    )
+    profile = FacetProfile(
+        stat_var=_GDP,
+        candidates=(facet,),
+        breadth={},
+        default=(facet,),
+        places_by_facet={"fUSD": frozenset({"country/A"})},
+    )
+
+    read = _build(_GDP, profile, coverage=_empty_coverage(), catalogue=_catalogue((_WEO, DFO)))
+
+    (series,) = read.availability.sources[0].series
+    assert [u.label for u in series.units.leading] == [label]
+    assert read.availability.default.unit.label == label
 
 
 # --- a roleless variable at entities no place scan reaches (design acceptance case 8) --------

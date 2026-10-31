@@ -7,7 +7,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","dcAggregate/Census","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD","dcAggregate/Census"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -18,7 +17,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","dcAggregate/Census","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD","dcAggregate/Census"]}]
   ],
   "test_available_role_scope_facet_still_resolves_definite[facets1]": [
@@ -29,7 +27,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","dcAggregate/Census","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD","dcAggregate/Census"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -40,7 +37,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","dcAggregate/Census","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD","dcAggregate/Census"]}]
   ],
   "test_available_role_scope_facet_still_resolves_definite[facets2]": [
@@ -51,7 +47,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","dcAggregate/Census","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD","dcAggregate/Census"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -62,7 +57,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","dcAggregate/Census","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD","dcAggregate/Census"]}]
   ],
   "test_dateless_source_slot_is_validated_against_the_role_index[source/A-False]": [
@@ -142,7 +136,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","USD"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -153,7 +146,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR"]}]
   ],
   "test_source_slot_and_unit_must_share_one_role_tuple[source/A-USD-True]": [
@@ -164,7 +156,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","USD"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -182,7 +173,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","USD"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -193,7 +183,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/NOR"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/NOR"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["USD"]}]
   ],
   "test_unavailable_role_scope_facet_refuses_from_role_index[facets0-unit-EUR]": [
@@ -251,7 +240,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","measuredValue"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","USD"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
@@ -262,7 +250,6 @@
     ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","USD","amount","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/KEN"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/KEN"]}],
-    ["FakeGraph.currency_units",{"deadline":null}],
     ["FakeGraph.node_labels_batch",{"dcids":["EUR","USD"]}]
   ]
 }

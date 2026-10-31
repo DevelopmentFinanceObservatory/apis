@@ -175,6 +175,21 @@ def test_search_headline_requires_its_recent_years(schema: dict[str, Any]):
     }
 
 
+@pytest.mark.parametrize("envelope", ["Manifest", "OptionsEnvelope"])
+def test_a_trace_types_the_party_totals_left_out_and_keeps_other_keys_open(
+    schema: dict[str, Any], envelope: str
+):
+    components = schema["components"]["schemas"]
+    trace = components[components[envelope]["properties"]["trace"]["$ref"].rsplit("/", 1)[-1]]
+    assert trace["additionalProperties"] is True
+    assert "required" not in trace
+    entry_ref = trace["properties"]["party_totals_left_out"]["items"]["$ref"]
+    entry = components[entry_ref.rsplit("/", 1)[-1]]
+    assert entry["additionalProperties"] is False
+    assert set(entry["required"]) == {"role", "entities"}
+    assert set(entry["properties"]) == {"role", "provenance", "entities"}
+
+
 def test_no_two_schemas_share_a_title(schema: dict[str, Any]):
     titles: dict[str, list[str]] = {}
     for name, schema_node in schema["components"]["schemas"].items():

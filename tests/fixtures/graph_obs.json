@@ -67,7 +67,8 @@
     {
       "earliestDate": "1960",
       "latestDate": "2023",
-      "obsCount": 64
+      "obsCount": 64,
+      "unit": "Per1000Persons"
     }
   ],
   "Amount_EconomicActivity_GrossDomesticProduction_Nominal|country/IND": [

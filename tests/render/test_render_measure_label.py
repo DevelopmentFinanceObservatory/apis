@@ -14,6 +14,7 @@ from search.models import (
     SlotValue,
 )
 from search.render.plan import render_sentence_plan
+from search.render.tokens import sentence_from_plan
 from tests.render._helpers import (
     _ref,
     _rendered,
@@ -165,4 +166,5 @@ def test_the_heading_never_states_a_price_basis(measurement_qualifier, facets, i
         facets=facets,
         identity_facets=identity_facets,
     )
-    assert _rendered(spec) == "Gross disbursements."
+    heading = [t for t in render_sentence_plan(spec) if t.segment == "heading"]
+    assert sentence_from_plan(heading) == "Gross disbursements."

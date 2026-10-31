@@ -4,6 +4,7 @@ union, and `select_facet`'s per-axis outcomes.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import time
 from dataclasses import replace
@@ -47,11 +48,13 @@ from materialise.facets import (
     joint_matches,
     merge_facets,
     narrow_to_window,
+    nominal_currency,
     overlaps_window,
     probe_collection_candidates,
     probe_facets,
     rank_candidates,
     select_facet,
+    unit_currency_code,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.pipeline import MaterialisationRequest
@@ -1937,7 +1940,7 @@ def test_request_resolved_to_a_null_native_unit_raises_non_currency_unit_error()
 
 
 def test_request_resolved_to_a_non_currency_ref_raises_non_currency_unit_error():
-    # The sole default candidate is bare `USD`, not a currency unit, so
+    # The sole default candidate is in `Percent`, no currency unit, so
     # `NonCurrencyUnitError` is raised.
     request = UnitRequest(currency="EUR", prices="current")
     binding = FacetBinding(state="request", request=request)
@@ -1946,7 +1949,7 @@ def test_request_resolved_to_a_non_currency_ref_raises_non_currency_unit_error()
         select_facet(
             "unit",
             binding,
-            candidates=[_FACET_KEN],
+            candidates=[dataclasses.replace(_FACET_KEN, unit="Percent")],
             graph=FakeGraphReader(),
             stat_var=_STAT_VAR,
             window=None,
@@ -1955,7 +1958,7 @@ def test_request_resolved_to_a_non_currency_ref_raises_non_currency_unit_error()
             ),
         )
 
-    assert excinfo.value.unit == "USD"
+    assert excinfo.value.unit == "Percent"
 
 
 def test_request_declared_policy_over_the_narrowed_pool_wins_over_ranking():
@@ -2515,3 +2518,23 @@ def test_wide_group_election_bounds_cadence_lookups_by_actual_matches(facets_per
         "member-0-facet-0"
     }
     assert lookups <= 2 * len(matching)
+
+
+@pytest.mark.parametrize(
+    ("ref", "nominal", "currency"),
+    [
+        pytest.param("CurrencyKES", "KES", "KES", id="currency-prefix"),
+        pytest.param("USDollar", "USD", "USD", id="currency-unit-of-measure"),
+        pytest.param("INR", "INR", "INR", id="bare-iso-code"),
+        pytest.param("SDG_CU_USD", "USD", "USD", id="current-prices"),
+        pytest.param("undata/UNIT_MEASURE-CR_USD_K", None, "USD", id="constant-prices"),
+        pytest.param("ChainedUSDollarBaseYr2017", None, "USD", id="chained"),
+        pytest.param("Percent", None, None, id="no-currency"),
+        pytest.param("CurrencyXYZW", None, None, id="prefix-without-a-code"),
+    ],
+)
+def test_the_unit_registry_names_a_unit_currency(ref, nominal, currency):
+    """Every currency read goes through the unit registry: `unit_currency_code` names a
+    money unit's currency at any prices, and `nominal_currency` only at current or unstated
+    prices, the currency a conversion starts from."""
+    assert (nominal_currency(ref), unit_currency_code(ref)) == (nominal, currency)

@@ -348,12 +348,12 @@ def test_role_shaped_currency_with_an_undeclared_axis_raises_the_named_error():
 
 
 def test_unit_only_non_currency_failure_propagates_unchanged():
-    # The sole candidate's unit is a bare, non-`Currency`-prefixed ref, so
-    # the request's default fallback (no `CurrencyEUR` candidate exists)
-    # elects it and then refuses on the currency-prefix check. Provenance
-    # and measurementMethod both resolve against the same sole candidate,
-    # so the unit axis is the only one that fails.
-    facets = [_facet(facet_id="f1", unit="USD")]
+    # The sole candidate's unit is `Percent`, no currency, so the request's
+    # default fallback (no `CurrencyEUR` candidate exists) elects it and then
+    # refuses on the currency check. Provenance and measurementMethod both
+    # resolve against the same sole candidate, so the unit axis is the only
+    # one that fails.
+    facets = [_facet(facet_id="f1", unit="Percent")]
     graph = _graph(facets)
     request = _request(unit=FacetBinding(state="request", request=UnitRequest("EUR", "current")))
 
@@ -363,7 +363,7 @@ def test_unit_only_non_currency_failure_propagates_unchanged():
             request, settle=True, graph=graph, sdmx=entry_sdmx, coverage=_SUBJECT_ONLY_COVERAGE
         )
     assert exc_info.value.code == "facet_binding_unsupported"
-    assert exc_info.value.unit == "USD"
+    assert exc_info.value.unit == "Percent"
     assert entry_requests == []
 
     mint_sdmx, mint_requests = _router_sdmx({})
@@ -389,7 +389,7 @@ def test_unit_failure_plus_a_provenance_failure_keeps_the_aggregate():
         facet_id="f1",
         provenance_id=None,
         measurement_method="NotApplicable",
-        unit="USD",
+        unit="Percent",
         obs_count=5,
         earliest_date="2020",
         latest_date="2022",

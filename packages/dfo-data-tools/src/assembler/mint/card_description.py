@@ -270,7 +270,6 @@ def _card_vocabulary(*, vocabulary: Vocabulary, resolved_frame: ResolvedFrame) -
             measure_index=vocabulary.measure_index,
             labels=labels,
             sources=sources,
-            currency_units=vocabulary.currency_units,
             graph_generation=resolved_frame.graph_generation,
             catalogue_build=resolved_frame.catalogue_build,
             definitions=dict(resolved_frame.descriptions) | dict(vocabulary.definitions),

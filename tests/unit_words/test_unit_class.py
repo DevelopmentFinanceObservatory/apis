@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from dfo_spec_kit.units import Rate
 
 from unit_words.unit_class import UnitClass, classify_unit
 
@@ -80,9 +81,25 @@ _EXPORTS = "Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nomin
                 per_head=False,
                 ratio_denominator=None,
                 base_year=2017,
+                prices="constant",
+                chained=True,
             ),
             False,
             id="chained-usd-constant-2017",
+        ),
+        pytest.param(
+            "SDG_CU_USD",
+            None,
+            UnitClass(
+                "currency",
+                "SDG_CU_USD",
+                "USD",
+                per_head=False,
+                ratio_denominator=None,
+                prices="current",
+            ),
+            False,
+            id="sdg-current-usd",
         ),
         pytest.param(
             "undata/UNIT_MEASURE-CR_USD",
@@ -106,6 +123,7 @@ _EXPORTS = "Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nomin
                 "USD",
                 per_head=False,
                 ratio_denominator=None,
+                prices="constant",
             ),
             False,
             id="undata-thousand-usd",
@@ -116,6 +134,75 @@ _EXPORTS = "Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nomin
             UnitClass("other", "Year", None, per_head=False, ratio_denominator=None),
             False,
             id="unclassified-unit",
+        ),
+        pytest.param(
+            "Per1000Persons",
+            "Count_Person",
+            UnitClass(
+                "other",
+                "Per1000Persons",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                rate=Rate(1000, "people"),
+            ),
+            True,
+            id="crude-birth-rate-count-base-over-count-person",
+        ),
+        pytest.param(
+            "Per1000Persons",
+            "PerCapita",
+            UnitClass(
+                "other",
+                "Per1000Persons",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                rate=Rate(1000, "people"),
+            ),
+            True,
+            id="count-base-clears-a-per-capita-denominator",
+        ),
+        pytest.param(
+            "Per1000LiveBirths",
+            "Count_BirthEvent_LiveBirth",
+            UnitClass(
+                "other",
+                "Per1000LiveBirths",
+                None,
+                per_head=False,
+                ratio_denominator=None,
+                rate=Rate(1000, "live births"),
+            ),
+            True,
+            id="count-base-takes-the-place-of-a-ratio-denominator",
+        ),
+        pytest.param(
+            "PersonPerSquareKilometer",
+            "Count_Person",
+            UnitClass(
+                "other",
+                "PersonPerSquareKilometer",
+                None,
+                per_head=True,
+                ratio_denominator=None,
+            ),
+            True,
+            id="count-person-under-a-physical-unit-reads-per-head",
+        ),
+        pytest.param(
+            "Percent",
+            "Count_Person",
+            UnitClass("percent", "Percent", None, per_head=False, ratio_denominator=None),
+            True,
+            id="census-percent-of-people-is-no-per-head-amount",
+        ),
+        pytest.param(
+            None,
+            "Count_Person",
+            UnitClass("none", None, None, per_head=True, ratio_denominator=None),
+            True,
+            id="count-person-over-no-unit-reads-per-head",
         ),
         pytest.param(
             None,

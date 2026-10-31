@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index, get_measure_index
 from dfo_platform import Cause
-from materialise.facets import native_currency_iso
 from materialise.recipes import (
     NonCurrencyUnitError,
     RateCoverageGapError,
@@ -293,13 +292,10 @@ def _answer_states_unit_text(state: ResolveState) -> bool:
 
 
 def _unit_currency(unit: str | None) -> str | None:
-    """The ISO 4217 code facet unit `unit` is denominated in: a currency node's
-    (`native_currency_iso`), or a US-dollar unit no graph node types, such as the UN System
-    Data Commons' `undata/UNIT_MEASURE-CR_USD_K` (`unit_class.classify_unit`)."""
-    return (
-        native_currency_iso(unit)
-        or classify_unit(unit=unit, denominator=None, currency_units={}).currency
-    )
+    """The ISO 4217 code facet unit `unit` is denominated in, as the unit registry reads it
+    (`unit_class.classify_unit`): a currency node's, or a US-dollar unit no graph node types,
+    such as the UN System Data Commons' `undata/UNIT_MEASURE-CR_USD_K`."""
+    return classify_unit(unit=unit, denominator=None, currency_units={}).currency
 
 
 async def _elected_flagged_match(

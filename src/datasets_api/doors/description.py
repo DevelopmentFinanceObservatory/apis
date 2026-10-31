@@ -55,14 +55,13 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import TypeAdapter, ValidationError
-from pydantic.experimental.missing_sentinel import MISSING
 
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
@@ -86,19 +85,16 @@ from dc_graph import GraphCapExceededError, GraphReadError
 from description.blocks import Words
 from description.compose import describe_version, version_title
 from description.facts import DescriptionRecord, DimensionValue
-from description.steps import ComposedUnit, SimpleUnit, Unit
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
 from dfo_platform.static_response import dynamic_public_json
 from materialise import EnrichmentLookup
-from materialise.facets import native_currency_iso
 from materialise.graph import GraphReader
 from materialise.provenance_doc import read_source_citations
 from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
 from spec_registry import IdentityQuarantined
-from unit_words.currency_codes import ISO_4217_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +292,6 @@ def _vocabulary(
             measure_index=get_measure_index(),
             labels=labels,
             sources=sources,
-            currency_units=_currency_units(record),
             graph_generation=generation,
             catalogue_build=current_words_build(),
         )
@@ -326,29 +321,6 @@ def _graph_named(record: DescriptionRecord, *, index: CodeIndex, indexed: Vocabu
         ]
     )
     return unlabelled(named_refs(record), properties, index=index, indexed=indexed)
-
-
-def _currency_units(record: DescriptionRecord) -> dict[str, str]:
-    """Each currency unit the record names, with its ISO 4217 code, read from the unit's dcid
-    as `datasets_api.unit_labels.unit_currency` reads it, with no graph read."""
-    units: dict[str, str] = {}
-    for unit in _units(record):
-        ref = unit.ref
-        if ref is MISSING:
-            continue
-        iso = native_currency_iso(ref) or (ref if ref in ISO_4217_CODES else None)
-        if iso is not None:
-            units[ref] = iso
-    return units
-
-
-def _units(record: DescriptionRecord) -> Iterator[SimpleUnit]:
-    held: list[Unit] = [count.unit for count in record.series.by_source_unit or []]
-    for step in record.known_steps:
-        held.extend(unit for unit in (step.unit, step.converted_from) if unit is not MISSING)
-    for unit in held:
-        sides = (unit.numerator, unit.denominator) if isinstance(unit, ComposedUnit) else (unit,)
-        yield from (side for side in sides if isinstance(side, SimpleUnit))
 
 
 def read_values_page(
@@ -417,7 +389,6 @@ def _record_vocabulary(index: CodeIndex) -> Vocabulary:
         measure_index=get_measure_index(),
         labels={},
         sources={},
-        currency_units={},
         graph_generation=None,
         catalogue_build=None,
     )

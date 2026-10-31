@@ -927,7 +927,6 @@ def test_a_set_binding_names_its_codes_in_the_version_title(collapsed: bool) -> 
         ),
         labels={},
         sources={},
-        currency_units={},
         graph_generation="gen-1",
         catalogue_build="fake-catalogue",
     )
@@ -1222,7 +1221,6 @@ def test_a_definitions_shape_names_its_measure_through_the_fixture_indexes() -> 
         measure_index=get_measure_index(),
         labels=labels,
         sources={},
-        currency_units={},
         graph_generation=None,
         catalogue_build=None,
     )
@@ -1416,7 +1414,6 @@ def _vocabulary() -> Vocabulary:
         measure_index=MeasureIndex(axes=(), values=(), partition_labels=()),
         labels={},
         sources={},
-        currency_units={},
         graph_generation="gen-1",
         catalogue_build="fake-catalogue",
     )

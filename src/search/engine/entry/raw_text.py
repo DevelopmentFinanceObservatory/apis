@@ -118,6 +118,7 @@ from search.engine.role_text import (
     DoorRole,
     breakdown_axis,
     debt_axes,
+    debtor_possessive,
     every_member_breakdown_axis,
     receipt_axes,
 )
@@ -516,12 +517,15 @@ def _entity_roles(
 
     The query's debt wording sets the axes of a two-party debt relation
     (`role_text.debt_axes`), and its receipt wording sets each recipient's
-    (`role_text.receipt_axes`); every other place keeps its extracted axis. Preserve
-    distinct mentions in order, including self-flows on opposite axes. Collapse duplicate
-    mentions with the same axis and span. Store directional roles only, each recording
-    whether the query's words give its direction. A debt or receipt axis does by
-    construction, and an extracted axis does when its cue does (`_cue_states_direction`). Fall back to entity text for
-    the overlap anchor when translation leaves no span.
+    (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
+    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
+    its extracted axis. Preserve distinct mentions in order, including self-flows on
+    opposite axes. Collapse duplicate mentions with the same axis and span. Store
+    directional roles only, each recording whether the query's words give its direction. A
+    debt or receipt axis does by construction, a possessive debtor does not, since it
+    reads the measure, and an extracted axis does when its cue does
+    (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
+    translation leaves no span.
     """
     places: dict[str, list[str]] = {}
     for entity in entities:
@@ -534,10 +538,11 @@ def _entity_roles(
     directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
     worded = receipt_axes(query, places=places) | debt
+    read = debtor_possessive(query, measures=measures, places=places, directed=directed)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = worded.get(name)
+        axis = worded.get(name) or read.get(name)
         if axis is None:
             if entity.flow_role == "unspecified":
                 continue

@@ -71,7 +71,6 @@ def _vocabulary(labels: Mapping[str, str] | None = None) -> Vocabulary:
         measure_index=MeasureIndex(axes=(), values=(), partition_labels=()),
         labels=labels or {},
         sources={},
-        currency_units={"USDollar": "USD"},
         graph_generation=None,
         catalogue_build=None,
     )

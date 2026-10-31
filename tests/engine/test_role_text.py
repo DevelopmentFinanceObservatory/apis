@@ -10,6 +10,7 @@ from search.engine.role_text import (
     breakdown_axis,
     contradicts,
     debt_axes,
+    debtor_possessive,
     every_member_axis,
     every_member_breakdown,
     every_member_breakdown_axis,
@@ -558,6 +559,253 @@ class TestDebtAxes:
             measures=["external debt"],
             places=_places("Kenya", "Ghana"),
             directed={},
+        )
+        assert axes == {}
+
+
+# One place a possessive names over its own debt in a query that is the possessive and its
+# measure alone.
+_ONE_POSSESSIVE_OVER_ITS_DEBT = [
+    ("Kenya's debt", "debt", "Kenya"),
+    ("Kenya's debt", "total debt", "Kenya"),
+    ("Kenya\u2019s debt", "debt", "Kenya"),
+    ("the Kenya's debt", "debt", "Kenya"),
+    ("Kenya's external debt", "external debt", "Kenya"),
+    ("Kenya's gross debt service", "gross debt service", "Kenya"),
+    ("Kenya's debt service", "debt service", "Kenya"),
+    ("Kenya's debt repayments", "debt repayments", "Kenya"),
+    ("Kenya's repayments", "debt repayments", "Kenya"),
+    ("Kenya's liabilities", "external liabilities", "Kenya"),
+    ("The World Bank's debt", "debt", "World Bank"),
+]
+
+
+class TestDebtorPossessive:
+    """One place a possessive names over its own debt is the debtor."""
+
+    @pytest.mark.parametrize(("query", "measure", "place"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    @pytest.mark.parametrize("guessed", ["origin", "destination"])
+    def test_one_directed_possessive_over_its_own_debt_is_the_debtor(
+        self, query: str, measure: str, place: str, guessed: RoleAxis
+    ) -> None:
+        """One place the extraction directed is read by its possessive alone, whichever
+        axis the extraction guessed."""
+        axes = debtor_possessive(
+            query, measures=[measure], places=_places(place), directed={place: guessed}
+        )
+        assert axes == {place: "destination"}
+
+    @pytest.mark.parametrize(("query", "measure", "place"), _ONE_POSSESSIVE_OVER_ITS_DEBT)
+    def test_one_undirected_possessive_sets_no_axis(
+        self, query: str, measure: str, place: str
+    ) -> None:
+        """One place the extraction left undirected keeps no axis, so a subject-only series
+        drops no direction for it."""
+        assert (
+            debtor_possessive(query, measures=[measure], places=_places(place), directed={}) == {}
+        )
+
+    @pytest.mark.parametrize(
+        ("query", "measures", "place"),
+        [
+            # `_owns_debt`: a possessed phrase that names no debt, or a second measure.
+            ("China's lending to Africa", ["lending"], "China"),
+            ("Germany's aid", ["aid"], "Germany"),
+            ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
+            # `_bare_possessive`: words before the possessive, or no possessive over the place.
+            ("debt owed to China", ["debt"], "China"),
+            ("external debt of Kenya", ["external debt"], "Kenya"),
+            ("How China's debt by debtor has changed since 2010", ["debt"], "China"),
+            ("Which countries owe the most of China's debt", ["debt"], "China"),
+            (
+                "Which African countries owe the most of China's outstanding debt",
+                ["outstanding debt"],
+                "China",
+            ),
+            ("rank countries by how much of China's debt they owe", ["debt"], "China"),
+            ("Which countries owe China's debt by creditor", ["debt"], "China"),
+            (
+                "Which countries does Kenya's gross debt service go to, total",
+                ["gross debt service"],
+                "Kenya",
+            ),
+            # `_bare_possessive`: words after the possessive beyond the measure's own. Each row is a
+            # probed query that once moved its possessor.
+            ("China's debt exposure", ["debt"], "China"),
+            ("Kenya's debt by creditor", ["debt"], "Kenya"),
+            ("Kenya's debt by year and creditor", ["debt"], "Kenya"),
+            ("Kenya's debt by lenders", ["debt"], "Kenya"),
+            ("Kenya's debt by creditor-country", ["debt"], "Kenya"),
+            ("Kenya's debt target by creditor", ["debt"], "Kenya"),
+            ("Kenya's debt by creditor destination", ["debt"], "Kenya"),
+            ("China's debt by creditor", ["debt"], "China"),
+            ("China's debt by lender", ["debt"], "China"),
+            ("China's debt as a creditor", ["debt"], "China"),
+            ("China's debt as the largest bilateral creditor", ["debt"], "China"),
+            ("China's outstanding debt as lender", ["outstanding debt"], "China"),
+            ("IMF's debt as lender of last resort", ["debt"], "IMF"),
+            ("IMF's debt, lender of last resort", ["debt"], "IMF"),
+            ("China's creditor debt", ["debt"], "China"),
+            ("China's official creditor debt", ["debt"], "China"),
+            ("China's debt and creditor countries' share", ["debt"], "China"),
+            ("China's debt in creditor countries' share", ["debt"], "China"),
+            ("World Bank's debt as a multilateral lender", ["debt"], "World Bank"),
+            ("Paris Club's debt, creditor-country totals", ["debt"], "Paris Club"),
+            ("China's debt as top lender since 2010", ["debt"], "China"),
+            ("China's lender debt stock", ["debt stock"], "China"),
+            ("China's debt, top creditors excluded", ["debt"], "China"),
+            ("China's debt to recipients by creditor", ["debt"], "China"),
+            ("China's debt by destination and creditor", ["debt"], "China"),
+            ("China's debt by importer and lender", ["debt"], "China"),
+            ("China's debt lent to creditor nations", ["debt"], "China"),
+            ("Japan's debt from lenders", ["debt"], "Japan"),
+            ("China's debt receivable by creditor", ["debt"], "China"),
+            ("Japan's debt in the Creditor Reporting System", ["debt"], "Japan"),
+            ("Japan's debt, Creditor Reporting System", ["debt"], "Japan"),
+            ("Japan's debt relief in the Creditor Reporting System", ["debt relief"], "Japan"),
+            ("Japan's debt rescheduling by creditor", ["debt rescheduling"], "Japan"),
+            (
+                "Japan's debt forgiveness grants, Creditor Reporting System",
+                ["debt forgiveness"],
+                "Japan",
+            ),
+            ("Japan's debt from CRS creditor data", ["debt"], "Japan"),
+            ("Paris Club creditors' debt", ["debt"], "Paris Club creditors"),
+            ("Kenya's debt in USD", ["debt"], "Kenya"),
+            ("Kenya's debt by creditor and Japan", ["debt"], "Kenya"),
+            ("China's debt by debtor country", ["debt"], "China"),
+            ("China's debt for each debtor country", ["debt"], "China"),
+            ("China's debt, every borrower", ["debt"], "China"),
+            ("China's debt by borrower in 2020", ["debt"], "China"),
+            ("China's debt by debtor country in 2020", ["debt"], "China"),
+            ("China's debt by debtor country and year", ["debt"], "China"),
+            ("China's debt by recipient since 2010", ["debt"], "China"),
+            ("China's debt by debtor country over time", ["debt"], "China"),
+            ("China's debt for each debtor country in Africa", ["debt"], "China"),
+            ("China's debt by debtor country between 2010 and 2020", ["debt"], "China"),
+            ("China's debt by debtor country during 2015", ["debt"], "China"),
+            ("China's debt by debtor country until 2020", ["debt"], "China"),
+            ("China's debt by debtor country through 2020", ["debt"], "China"),
+            ("China's debt by debtor country after 2015", ["debt"], "China"),
+            ("China's debt by debtor country as of 2020", ["debt"], "China"),
+            ("China's debt by debtor country per year", ["debt"], "China"),
+            ("China's debt by debtor country or region", ["debt"], "China"),
+            ("China's debt by debtor country at current prices", ["debt"], "China"),
+            ("China's debt by debtor country last decade", ["debt"], "China"),
+            ("China's debt by debtor, 2020", ["debt"], "China"),
+            ("China's debt by debtor governments in 2020", ["debt"], "China"),
+            ("China's debt by debtor is largest in Angola", ["debt"], "China"),
+            ("China's debt by debtor when it peaked", ["debt"], "China"),
+            ("China's debt by debtor then sector", ["debt"], "China"),
+            ("China's debt by debtor in the most recent year", ["debt"], "China"),
+            ("China's debt by year and debtor country", ["debt"], "China"),
+            ("China's debt by sector and recipient country", ["debt"], "China"),
+            ("China's debt by debtor's region", ["debt"], "China"),
+            ("China's debt by debtor country with interest", ["debt"], "China"),
+            ("China's debt by debtor country in USD", ["debt"], "China"),
+            ("China's debt by debtor country?", ["debt"], "China"),
+            ("China's debt by debtor countries in Africa", ["debt"], "China"),
+            ("China's debt held by debtor countries", ["debt"], "China"),
+            ("China's debt by debtor-country", ["debt"], "China"),
+            ("China's debt by creditor and debtor-country", ["debt"], "China"),
+            ("Kenya's debt by creditor, owed by borrowers", ["debt"], "Kenya"),
+            ("China's debt by borrower-country", ["debt"], "China"),
+            ("China's debt by recipient-country", ["debt"], "China"),
+            ("China's debt by debtor nation", ["debt"], "China"),
+            ("China's debt by debtor economy", ["debt"], "China"),
+            ("China's debt by debtor government", ["debt"], "China"),
+            ("China's debt service from each debtor", ["debt service"], "China"),
+            ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
+            ("Kenya's debt in Africa by debtor", ["debt"], "Kenya"),
+            ("Kenya's external debt by debtor type", ["external debt"], "Kenya"),
+            ("Kenya's external debt by debtor group", ["external debt"], "Kenya"),
+            ("Kenya's external debt by debtor classification", ["external debt"], "Kenya"),
+            ("Kenya's external debt by debtor country type", ["external debt"], "Kenya"),
+            ("World Bank's debt to recipients", ["debt"], "World Bank"),
+            ("Kenya's debt beneficiary", ["debt"], "Kenya"),
+            ("China's debt owed by African countries", ["debt"], "China"),
+            ("China's debt owed by low-income countries", ["debt"], "China"),
+            ("China's debt by creditor owed by Africa", ["debt"], "China"),
+            ("China's debt extended to each country", ["debt"], "China"),
+            ("China's debt extended to every country", ["debt"], "China"),
+            ("China's debt disbursed to each country", ["debt"], "China"),
+            (
+                "China's outstanding debt going to each country in Africa",
+                ["outstanding debt"],
+                "China",
+            ),
+            ("China's debt lent to each country", ["debt"], "China"),
+            ("China's debt, to each country", ["debt"], "China"),
+            ("China's debt across every country it lends to", ["debt"], "China"),
+            ("China's debt by borrowing country", ["debt"], "China"),
+            ("China's debt broken down by indebted country", ["debt"], "China"),
+            ("China's debt repayments from African countries", ["debt repayments"], "China"),
+            ("China's debt repayments from developing countries", ["debt repayments"], "China"),
+            ("China's debt repayments received from Africa", ["debt repayments"], "China"),
+            ("China's debt service received from developing countries", ["debt service"], "China"),
+            ("China's debt service receipts", ["debt service"], "China"),
+            ("China's debt investments abroad", ["debt"], "China"),
+            ("China's debt loans to Africa", ["debt"], "China"),
+            ("China's debt stock held by African governments", ["debt stock"], "China"),
+            ("China's debt held abroad", ["debt"], "China"),
+            ("China's outstanding debt in low-income economies", ["outstanding debt"], "China"),
+            ("China's debt in developing nations", ["debt"], "China"),
+            ("China's debt across developing economies", ["debt"], "China"),
+            ("China's debt by country", ["debt"], "China"),
+            ("China's debt financing", ["debt"], "China"),
+            ("China's debt service paid by Zambia", ["debt service"], "China"),
+            ("China's debt service payments from Africa", ["debt service"], "China"),
+            ("China's debt service by country", ["debt service"], "China"),
+            ("Kenya's debt in 2020", ["debt"], "Kenya"),
+            ("Kenya's debt reduction target", ["debt"], "Kenya"),
+            ("Kenya's debt by destination of funds", ["debt"], "Kenya"),
+            ("Kenya's debt sustainability for importers", ["debt"], "Kenya"),
+            ("Kenya's debt and the IMF target", ["debt"], "Kenya"),
+            ("Paris Club's debt with Kenya", ["debt"], "Paris Club"),
+            ("IMF's debt portfolio in Africa", ["debt"], "IMF"),
+            ("The IMF's outstanding debt from Africa", ["debt"], "IMF"),
+            ("World Bank's debt outstanding from borrowing countries", ["debt"], "World Bank"),
+            ("China's debt claims on Africa", ["debt"], "China"),
+            # `_bare_possessive`: a phrase whose head is no debt word, with the measure
+            # covering every word.
+            ("China's debt service receipts", ["debt service receipts"], "China"),
+            ("China's debt repayments received", ["debt repayments received"], "China"),
+            ("Japan's debt securities holdings", ["debt securities holdings"], "Japan"),
+            ("China's debt investments", ["debt investments"], "China"),
+            ("Kenya's debt reduction target", ["debt reduction target"], "Kenya"),
+            ("China's debt claims", ["debt claims"], "China"),
+            ("China's debt exposure", ["debt exposure"], "China"),
+            ("China's debt holdings", ["debt holdings"], "China"),
+            ("China's debt portfolio", ["debt portfolio"], "China"),
+            ("China's debt receivables", ["debt receivables"], "China"),
+            ("China's debt lending", ["debt lending"], "China"),
+            ("China's debt assets", ["debt assets"], "China"),
+            ("China's debt claim", ["debt claim"], "China"),
+            ("China's debt credits", ["debt credits"], "China"),
+            # `_bare_possessive`: a measure word that names a party of the debt.
+            ("China's official creditor debt", ["official creditor debt"], "China"),
+            ("Kenya's debt by creditor", ["debt by creditor"], "Kenya"),
+            ("China's debtor debt", ["debtor debt"], "China"),
+            ("China's lender debt stock", ["lender debt stock"], "China"),
+            ("Kenya's debt by creditor-country", ["debt by creditor-country"], "Kenya"),
+            # `_owns_debt`: a possessive claim on another party's debt.
+            ("Kenya's share of external debt", ["share of external debt"], "Kenya"),
+            # `_follows_creditor_cue`: a creditor cue whose object is no place.
+            ("Kenya's debt to GDP ratio", ["debt to GDP ratio"], "Kenya"),
+        ],
+    )
+    def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:
+        axes = debtor_possessive(
+            query, measures=measures, places=_places(place), directed={place: "origin"}
+        )
+        assert axes == {}
+
+    def test_two_places_are_debt_axes_alone(self) -> None:
+        axes = debtor_possessive(
+            "Kenya's debt to China",
+            measures=["debt"],
+            places=_places("Kenya", "China"),
+            directed={"Kenya": "origin", "China": "destination"},
         )
         assert axes == {}
 

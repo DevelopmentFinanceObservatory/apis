@@ -15,7 +15,7 @@ import pytest
 
 from code_index.shared import get_index
 from graph_release.context import bound_release
-from materialise.facets import native_currency_iso
+from materialise.facets import unit_currency_code
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.region import resolve_spec_resubmit
@@ -187,8 +187,7 @@ _CATALOGUE = ConversionCatalogue(
     tables={
         "ConversionRecipeDAC": RecipeTables(
             rate_years={
-                native_currency_iso(dcid) or dcid: frozenset(years)
-                for dcid, years in _RATES.items()
+                unit_currency_code(dcid) or dcid: frozenset(years) for dcid, years in _RATES.items()
             },
             deflator_years={dcid: frozenset(years) for dcid, years in _DEFLATORS.items()},
             base_year_min=2019,
