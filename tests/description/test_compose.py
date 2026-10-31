@@ -24,6 +24,7 @@ from description.facts import (
     PipelineStep,
     RoleCount,
     SourceEvidence,
+    SourceUnitCount,
 )
 from description.steps import SimpleUnit, Step, StepRef, Summed, VersionRef
 from description.stored import TEXT_MAX_LENGTH
@@ -42,6 +43,7 @@ from tests.description.test_accept_compose import (
     _SECTOR,
     _WORKED_DIMENSIONS,
     _checked,
+    _computed_record,
     _dataset_record,
     _describe_card,
     _describe_version,
@@ -49,6 +51,8 @@ from tests.description.test_accept_compose import (
     _evidence,
     _growth_record,
     _quotient_record,
+    _quotient_step,
+    _retrieve,
     _selection,
     _series,
     _variables,
@@ -803,6 +807,118 @@ def test_a_computed_version_credits_the_sources_of_its_inputs(
     assert served["cite"]["text"] == text
     assert [item["id"] for item in served["cite"]["inputs"]] == [_ODA.id, _GNI.id]
     assert not [gap for gap in served["gaps"] if gap.startswith("sources")]
+
+
+def test_a_computed_versions_credits_past_the_schemas_bound_keep_the_most_drawn() -> None:
+    """Two inputs crediting 32 sources each would make 66 entries, past the 64 the kit's
+    schema allows. Both inputs stay, with the 62 credits most series draw on: the two the
+    version's series name besides those naming none, though listed last, are among them."""
+    oda_refs = [f"provenance/Oda{n:02d}" for n in range(32)]
+    gni_refs = [f"provenance/Gni{n:02d}" for n in range(32)]
+    drawn_most = gni_refs[-2:]
+    record = _quotient_record()
+    assert record.series.by_source_unit is not None
+    record = record.model_copy(
+        update={
+            "series": record.series.model_copy(
+                update={
+                    "by_source_unit": [
+                        *record.series.by_source_unit,
+                        *(SourceUnitCount(source=ref, unit=None, series=1) for ref in drawn_most),
+                    ]
+                }
+            )
+        }
+    )
+    inputs = [_input_record(_ODA, *oda_refs), _input_record(_GNI, *gni_refs)]
+
+    words = _words()
+    named = build_vocabulary(
+        index=_INDEX,
+        measure_index=_MEASURES,
+        labels={
+            **words.labels,
+            _WORLD_BANK: "World Bank",
+            **{ref: ref[-5:] for ref in [*oda_refs, *gni_refs]},
+        },
+        sources={
+            **words.sources,
+            **{ref: SourceDocumentFacts(publisher=_WORLD_BANK) for ref in [*oda_refs, *gni_refs]},
+        },
+        currency_units=words.currency_units,
+        graph_generation="gen-1",
+        catalogue_build="ocb_20260927",
+    )
+
+    served = _checked(describe_version(record, named, inputs=inputs))
+
+    *credited, oda, gni = served["sources"]
+    assert [oda["ref"], gni["ref"]] == [_ODA.id, _GNI.id]
+    refs = [source["ref"] for source in credited]
+    assert len(refs) == 62
+    assert set(drawn_most) <= set(refs)
+    assert refs == [ref for ref in [*oda_refs, *gni_refs] if ref in refs], "in credit order"
+
+
+_POP = VersionRef(
+    id="spec_9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+    content_version="cv_9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+    label="Population",
+)
+
+
+def test_a_card_credits_only_the_inputs_its_drawn_variable_was_computed_from() -> None:
+    """A join of ODA per GNI and ODA per person: a card drawing only ODA per GNI credits the
+    sources of the ODA and GNI inputs, lists those two inputs, and leaves the population
+    input and its source out of its sources and citation line."""
+    per_gni = _quotient_step().model_copy(update={"stat_var": "OdaPerGni"})
+    per_person = _quotient_step().model_copy(
+        update={
+            "id": "s5",
+            "inputs": {"denominator": "s4", "numerator": "s1"},
+            "stat_var": "OdaPerPerson",
+        }
+    )
+    join = Step(id="s6", op="join", inputs={"left": "s3", "right": "s5"}, policy="join_inner")
+    record = _computed_record(
+        steps=[
+            _retrieve("s1", _ODA),
+            _retrieve("s2", _GNI),
+            per_gni,
+            _retrieve("s4", _POP),
+            per_person,
+            join,
+        ],
+        caveats=[],
+        inputs=[_ODA, _GNI, _POP],
+    )
+    inputs = [
+        _input_record(_ODA, "provenance/OECDCreditorReportingSystem"),
+        _input_record(_GNI, _WDI),
+        _input_record(_POP, "provenance/UNPopulation"),
+    ]
+    drawn = _drawn("s_nga", {"stat_var": "OdaPerGni", "recipient": "country/NGA"}).model_copy(
+        update={"source": None}
+    )
+
+    served = _checked(
+        describe_card(
+            record,
+            _selection(drawn),
+            _words_with_wdi(),
+            component_id="cmp_Ab3dE5gH7k",
+            revision=2,
+            inputs=inputs,
+        )
+    )
+
+    assert [(source["ref"], source.get("series")) for source in served["sources"]] == [
+        ("provenance/OECDCreditorReportingSystem", 1),
+        (_WDI, 1),
+        (_ODA.id, None),
+        (_GNI.id, None),
+    ]
+    assert "UNPopulation" not in served["cite"]["text"]
 
 
 def test_a_citation_line_past_its_bound_is_clipped() -> None:

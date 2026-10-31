@@ -2091,6 +2091,45 @@ def test_a_card_over_a_computed_version_names_its_inputs_by_their_titles(
     assert [step["input"].get("label") for step in retrieved] == step_labels
 
 
+def test_a_card_names_and_lists_only_the_inputs_its_variable_was_computed_from(
+    frame_store, revision_store, release_registry
+):
+    """A card drawing a variable the version computed from its second input alone lists that
+    input as its source, and its series names it, so the minted card's source refs name a
+    listed source."""
+    frame = _computed_frame()
+    record = _quotient_record(frame)
+    retrieved = (record.steps or [])[:2]
+    growth = Step(
+        id="s3",
+        op="growth",
+        input="s2",
+        policy="growth_endpoint_years",
+        params={"start": "2020", "end": "2022"},
+        stat_var="MalariaGrantDisbursements",
+    )
+    frame_store.put(
+        resolved_frame=dataclasses.replace(
+            _described(frame, record.model_copy(update={"steps": [*retrieved, growth]})),
+            input_records=_input_records(),
+        )
+    )
+    created = _write(
+        _intent(frame, "line_chart", title="Growth of gross national income"),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    payload = created.resolved_payload
+
+    inputs = [
+        source["ref"] for source in _description(payload)["sources"] if "content_version" in source
+    ]
+    assert inputs == [_GNI.spec_id]
+    assert set(_source_refs(payload["component"])) == {_GNI.spec_id}
+
+
 @pytest.mark.parametrize("inputs_read", [True, False], ids=["inputs-read", "input-read-failed"])
 def test_a_card_over_a_computed_version_credits_the_sources_its_inputs_records_hold(
     frame_store, revision_store, release_registry, inputs_read

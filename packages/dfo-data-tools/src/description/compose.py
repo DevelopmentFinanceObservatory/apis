@@ -30,7 +30,6 @@ from description.facts import (
     CaveatFact,
     DescriptionRecord,
     SelectionFacts,
-    SourceEvidence,
     Span,
 )
 from description.steps import (
@@ -81,8 +80,9 @@ def describe_version(
     """The description of a dataset version (`spec_`) or a computed version (`ops_`).
 
     A computed version credits the sources its inputs' records credit
-    (`blocks.input_evidence`). Its `sources` list each of them ahead of its inputs, and its
-    citation line names them. Without them, its citation line names its inputs.
+    (`blocks.version_credits`). Its `sources` list those that fit beside its inputs
+    (`blocks.computed_sources`) ahead of the inputs, and its citation line names them.
+    Without them, its citation line names its inputs.
 
     Args:
         record: the version's facts and evidence.
@@ -100,8 +100,11 @@ def describe_version(
             "id": record.id,
             "content_version": record.content_version,
         }
-        credited = blocks.input_evidence(inputs)
-        about, sources, freshness = _computed_blocks(record, words, credited)
+        served = blocks.computed_sources(
+            blocks.version_credits(record, inputs), record.computed.inputs, words
+        )
+        sources, credited = served.entries, served.cited
+        about, freshness = _computed_blocks(record, words)
     else:
         credited = None
         describes = {
@@ -141,9 +144,10 @@ def describe_card(
 ) -> dict[str, Any]:
     """The description of a card revision drawn from `record`'s version.
 
-    A card drawn from a computed version credits the sources its inputs' records credit, as
-    `describe_version` does. Its `sources` list them ahead of the inputs, and its citation
-    line names them.
+    A card drawn from a computed version credits the sources of the inputs the series it
+    draws were computed from (`blocks.drawn_credits`), each traced from its variable back
+    through the steps that wrote it. Its `sources` list them ahead of those inputs, and its
+    citation line names them.
 
     Args:
         record: the facts and evidence of the version the card draws from.
@@ -169,21 +173,22 @@ def describe_card(
     if 1 + len(steps or ()) > MAX_CARD_STEPS:
         raise ValueError(f"a card serves at most {MAX_CARD_STEPS} steps after its version's")
     words = Words.for_record(record, vocabulary)
-    credited = blocks.input_evidence(inputs) if record.computed is not None else None
     version_title, composed = _version_title(record, words)
     title = clipped(f"{version_title}, {_window(selection.window)}")
     selected = _selection_step(record, selection, label=version_title)
     numbered = _numbered(record, card=[selected, *(steps or [])])
     served = _served_steps(record, words, numbered)
+    about = {
+        **_card_measure(record, words),
+        "drawn": blocks.drawn(record, selection, words),
+        "unit": blocks.drawn_unit(selection, words),
+    }
+    drawn_sources = blocks.drawn_sources(record, selection, words, inputs=inputs)
     description: dict[str, Any] = {
         "describes": {"kind": "card_revision", "component_id": component_id, "revision": revision},
         "title": title,
-        "about": {
-            **_card_measure(record, words),
-            "drawn": blocks.drawn(record, selection, words),
-            "unit": blocks.drawn_unit(selection, words),
-        },
-        "sources": blocks.drawn_sources(record, selection, words, credited=credited or ()),
+        "about": about,
+        "sources": drawn_sources.entries,
         "freshness": blocks.drawn_freshness(selection, words),
         "steps": served,
         "caveats": _caveats(record, words, numbered, card=caveats, selection=selection),
@@ -195,7 +200,7 @@ def describe_card(
                 words,
                 title=version_title,
                 composed=composed,
-                sources=credited,
+                sources=drawn_sources.cited if record.computed is not None else None,
                 steps=numbered.card,
             ),
         },
@@ -310,9 +315,7 @@ def _card_measure(record: DescriptionRecord, words: Words) -> Wire:
     }
 
 
-def _computed_blocks(
-    record: DescriptionRecord, words: Words, credited: Sequence[SourceEvidence]
-) -> tuple[Wire, list[Wire], Wire]:
+def _computed_blocks(record: DescriptionRecord, words: Words) -> tuple[Wire, Wire]:
     computed = record.computed
     assert computed is not None, "a computed version's record holds what it was computed from"
     about: Wire = {
@@ -321,9 +324,6 @@ def _computed_blocks(
         "period": blocks.period(record.series, words),
         "unit": _computed_unit(record, words),
     }
-    sources = blocks.computed_sources(
-        record, credited, words, counts=blocks.source_counts(record.series)
-    )
     inputs = [
         words.input_ref(version, f"freshness.inputs.{n}")
         for n, version in enumerate(computed.inputs)
@@ -334,7 +334,7 @@ def _computed_blocks(
         **blocks.latest(record.series, words),
         **blocks.status(record.series.status, words),
     }
-    return about, sources, freshness
+    return about, freshness
 
 
 def _computed_name(record: DescriptionRecord, vocabulary: Vocabulary) -> str | None:

@@ -32,7 +32,7 @@ from description.steps_text import (
     templated_operations,
 )
 from description.stored import LONG_TEXT_MAX_LENGTH
-from description.vocabulary import Vocabulary, build_vocabulary
+from description.vocabulary import COMPOSER_VERSION, Vocabulary, build_vocabulary
 
 _STEPS = TypeAdapter(list[Step])
 
@@ -800,6 +800,24 @@ def test_a_ratio_names_each_side_with_its_narrowing(step: Step, text: str, name:
 
     assert served is not None
     assert (served[-1]["text"], name_computed(steps, vocabulary)) == (text, name)
+
+
+_NAME_BY_COMPOSER_VERSION = {
+    "4": "gross ODA disbursements (United Kingdom) per gross ODA disbursements (France)",
+}
+"""The name each composer version gives a quotient whose step narrows its sides apart."""
+
+
+def test_a_wording_change_ships_with_its_composer_version() -> None:
+    """A stored card description is revalidated by its `voc_` revision, which moves with
+    `COMPOSER_VERSION` but not with the composer's code. Wording the composer changes must
+    raise the version and record its wording here, else a conditional read keeps the old
+    words. Version 4 names each side a step narrows with its entities."""
+    steps = [_retrieve("s1", _ODA), _narrowed("quotient", _GBR, _FRA)]
+
+    name = name_computed(steps, _vocabulary(_COMPARED))
+
+    assert _NAME_BY_COMPOSER_VERSION.get(COMPOSER_VERSION) == name
 
 
 def _composed(variable: str, relation: str, first: str, second: str) -> ComposedVariable:

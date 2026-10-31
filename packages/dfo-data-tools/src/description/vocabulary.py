@@ -32,7 +32,7 @@ from dfo_platform.roles import GENERIC_ROLE_WORDING, ROLE_WORDING, FlowFamily, R
 from unit_words.currency_nouns import CURRENCY_NOUNS
 from unit_words.unit_class import classify_unit
 
-COMPOSER_VERSION: Final = "3"
+COMPOSER_VERSION: Final = "4"
 """The version of how the composer phrases sentences from the same words. Raising it moves
 every `voc_` revision. An edit to the packaged word tables moves the revision on its own
 (`vocabulary_revision`)."""
