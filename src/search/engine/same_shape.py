@@ -1075,7 +1075,9 @@ def _finalize_merged_region(
 
     Copy the agreed lexicon and declaration versions from the base spec.
     Clear pending option tasks so enrichment can relaunch them for the new
-    spec id; retain place-option relaunch state. Remap group warnings to the
+    spec id; retain place-option relaunch state. A composite's preview relaunch
+    (`composite_answer.CompositeRelaunch`) is rebuilt over the merged spec, so the preview
+    reads every member's entities. Remap group warnings to the
     merged spec id so they remain attached to their result, and add the facet-options
     read's warning. The merged region is one answer, so a warning several members raise
     appears once.
@@ -1098,10 +1100,17 @@ def _finalize_merged_region(
     facet_warnings = (facet_warning,) if facet_warning is not None else ()
     merged_warnings = _dedupe_merged_warnings((*remapped, *facet_warnings))
 
+    # composite_answer reads through resubmit, which imports conjoin, which imports this module.
+    from search.engine.region.composite_answer import CompositeRelaunch
+
+    relaunch = group[0].observations_relaunch
     return dataclasses.replace(
         group[0],
         variable_text=" and ".join(r.variable_text for r in group if r.variable_text),
         specs=(merged_spec,),
+        observations_relaunch=(
+            relaunch.over(merged_spec) if isinstance(relaunch, CompositeRelaunch) else relaunch
+        ),
         warnings=merged_warnings,
         timing_by_step=dict(group[0].timing_by_step),
         earliest_index=min(r.earliest_index for r in group),

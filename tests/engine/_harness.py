@@ -1049,6 +1049,7 @@ def offline_events(
     place_options_pool: PlaceOptionsPool | None = None,
     close_after: str | None = None,
     binder: Binder | None = None,
+    part_memo: PartMemo | None = None,
 ) -> list[Event]:
     """Every event `resolve_events` streams for `request`, in order, under the shared fakes
     and the pinned extraction date `offline_resolve` runs with. `graph` and `llm` replace
@@ -1056,7 +1057,7 @@ def offline_events(
     streams the trailing events as the SSE route does; `response_cache` and
     `place_options_pool` are the app's shared ones.
     `close_after` names an event kind: the stream is closed after the first such event, as
-    when a client disconnects."""
+    when a client disconnects. Pass `part_memo` to serve resubmitted identities from it."""
     graph = _FAKE_GRAPH if graph is None else graph
 
     async def collect() -> list[Event]:
@@ -1073,6 +1074,7 @@ def offline_events(
             response_cache=response_cache,
             place_options_pool=place_options_pool,
             binder=binder,
+            part_memo=part_memo,
         )
         async with aclosing(stream):
             async for event in stream:
