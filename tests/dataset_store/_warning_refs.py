@@ -116,7 +116,7 @@ WITHOUT_RESOLVED_STAT_VARS = frozenset({"members_without_trace_count"})
 
 
 def trace_for(case: str) -> dict[str, object]:
-    """The trace of `case`'s row, resolving seven members unless the case is in
+    """The trace of `case`'s row, resolving four members unless the case is in
     `WITHOUT_RESOLVED_STAT_VARS`."""
     if case in WITHOUT_RESOLVED_STAT_VARS:
         return {"graph_revision": "rev"}
@@ -124,7 +124,7 @@ def trace_for(case: str) -> dict[str, object]:
         "graph_revision": "rev",
         "resolved_stat_vars": [
             {"ref": f"dcid:Member{index}", "roles": ["recipient"], "observation_count": 0}
-            for index in range(7)
+            for index in range(4)
         ],
     }
 
