@@ -57,7 +57,7 @@ from search.engine.interpret import PinnedResolved
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.refs import confirm_dcids_present
-from search.engine.region.result import RegionResult, with_entity_words
+from search.engine.region.result import RegionResult, any_degraded, with_entity_words
 from search.engine.region.sentence_events import answer_events
 from search.engine.response_cache_flow import CacheScope
 from search.engine.retrieval.read_plan import current_year
@@ -691,7 +691,7 @@ async def handle(
                 yield ev
         region = interpretation.interpreted(out.regions[0], 0)
         if scope is not None:
-            scope.note_health(timed_out=out.timed_out, degraded_leg=out.degraded_leg)
+            scope.note_health(timed_out=out.timed_out, degraded_leg=any_degraded(out.regions))
         total_usage = region.llm_usage
         response = assemble_region(
             region,
@@ -729,7 +729,7 @@ async def handle(
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=out.timed_out,
-            degraded_leg=out.degraded_leg,
+            degraded_leg=any_degraded(out.regions),
             trace_id=get_trace_id(),
             telemetry=DoneTelemetry(llm_usage=total_usage),
             warnings=slot_options_warnings,
@@ -807,7 +807,7 @@ async def handle(
             extra_warnings=[],
             echo=echo,
             timed_out=out.timed_out,
-            degraded_leg=out.degraded_leg,
+            degraded_leg=any_degraded(out.regions),
             graph=graph,
             start_ms=start_ms,
             params=params,

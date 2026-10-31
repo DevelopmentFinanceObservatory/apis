@@ -40,9 +40,11 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import FamilyNotResolvableError, GraphReadFailure
 from search.engine.quantity import QuantityRequirement
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import candidates as candidates_module
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region import state as region_state
 from search.engine.region.alternate_guard import offered_alternates, query_pins
@@ -61,7 +63,6 @@ from search.engine.region.phase_place_materialise import (
     _lacks_presence,
     _read_taker_stat_vars,
     _sibling_shapes_of,
-    merge_presence,
     record_unevaluated,
 )
 from search.engine.region.phase_rank_bind import (
@@ -73,7 +74,7 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.phase_shared import _elected_flagged_match
 from search.engine.region.pipeline import resolve_variable
-from search.engine.region.place_context import PlaceContext, place_context
+from search.engine.region.place_context import PlaceContext, note_unsettled_scope, place_context
 from search.engine.region.place_roles import PlaceAssignment
 from search.engine.region.sentence_events import _member_count
 from search.engine.region.state import (
@@ -1570,7 +1571,7 @@ def test_after_one_alternate_s_top_up_fails_no_other_is_tried(
     assert read.unevaluated == ((first, "timed_out"), (second, "timed_out"))
 
 
-def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
+def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
     sent: list[httpx.Request],
     client: LiveGraphClient,
     bind_catalogue,
@@ -1578,9 +1579,7 @@ def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
 ) -> None:
     """The alternate's presence read after unbinding gives the member it now answers through
     a countries fallback for this request only (`_alternate_bound_past_its_recall`). The
-    read comes back with the alternates' result and joins the request's presence
-    (`merge_presence`), so the pass's scope is unsettled and the answer stays out of the
-    cache."""
+    answer offering the alternate stays out of the cache, whichever pass holds it."""
     alternate = _alternate_bound_past_its_recall(client, bind_catalogue)
     shape = alternate.shape
     known = _presence_of([_BONDS])
@@ -1591,6 +1590,14 @@ def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
         )
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
+    served: list[object] = []
+    materialise = candidates_module.materialise
+
+    def recording_materialise(*args: Any, **kwargs: Any) -> object:
+        served.append(materialise(*args, **kwargs))
+        return served[-1]
+
+    monkeypatch.setattr(candidates_module, "materialise", recording_materialise)
 
     read = _materialise_alt_shapes(
         [alternate],
@@ -1602,12 +1609,12 @@ def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
         date_request=None,
         coverage=empty_coverage_snapshot(),
     )
-    state = SimpleNamespace(default_presence=known)
-    merge_presence(cast("ResolveState", state), read.presence)
 
-    assert read.presence is not None and read.presence.unsettled
-    assert _BONDS not in read.presence.unsettled
-    assert state.default_presence.unsettled
+    with recording_degraded_reads() as lost:
+        note_unsettled_scope(served[-1])
+
+    assert lost.degraded
+    assert read.presence is not None and _BONDS not in read.presence.unsettled
 
 
 def test_each_default_scope_taker_is_elected_once_off_the_event_loop(

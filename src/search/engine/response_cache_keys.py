@@ -28,6 +28,7 @@ from search.engine.events import DoneEvent, Event, LateDepartures, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
+    ALTERNATES_UNEVALUATED,
     AVAILABILITY_PROBE_FAILED,
     MEMBERS_ABSENT_FROM_GRAPH,
     MEMBERSHIP_UNVERIFIED,
@@ -57,14 +58,15 @@ from search.models import (
 # Warnings that mark an answer a dependency could not complete: the skills index, a UN
 # System Data Commons read that failed (`_is_unstorable_warning`), the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
-# offer reads, and the option-coverage, availability and observation reads that failed or
-# ran past the deadline. An elected member the graph read did not return
+# offer reads, the presence read of an alternate, and the option-coverage, availability and
+# observation reads that failed or ran past the deadline. An elected member the graph read did not return
 # (`members_absent_from_graph`) can be a transient drop, so that answer is not kept either.
 _UNSTORABLE_WARNING_CODES = frozenset(
     {
         "skills_index_unavailable",
         "skills_index_incomplete",
         UN_SYSTEM_UNAVAILABLE,
+        ALTERNATES_UNEVALUATED,
         MEMBERSHIP_UNVERIFIED,
         MEMBERS_ABSENT_FROM_GRAPH,
         ROLE_DECLARATION_UNVERIFIED,

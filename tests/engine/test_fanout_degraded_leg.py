@@ -6,22 +6,29 @@ import asyncio
 import dataclasses
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
 
 from entity_resolution import Admission
-from materialise.place_scope import DefaultPresence
+from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from search.engine.binders import GeminiBinder
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.place import read_default_presence
 from search.engine.region import RegionResult
+from search.engine.region.place_context import note_unsettled_scope
+from search.engine.region.result import any_degraded
+from search.engine.retrieval.retrieve import Materialised
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
+
+_SERVED = "Count_Served"
+_READ_ONLY = "Count_Read_Only"
+_BOTH = (_SERVED, _READ_ONLY)
 
 
 async def _drain(agen: AsyncIterator[object]) -> None:
@@ -93,7 +100,7 @@ def test_non_infra_exception_under_degrade_sets_degraded_leg():
         return out
 
     out = asyncio.run(_scenario())
-    assert out.degraded_leg is True
+    assert any_degraded(out.regions) is True
     assert out.regions[0].status == "no_data"
     assert out.regions[0].no_data_reason == "variable_not_resolved"
     assert [region.degraded for region in out.regions] == [True, False]
@@ -119,7 +126,7 @@ def test_clean_multi_variable_run_leaves_degraded_leg_false():
         return out
 
     out = asyncio.run(_scenario())
-    assert out.degraded_leg is False
+    assert any_degraded(out.regions) is False
     assert out.timed_out is False
 
 
@@ -145,31 +152,66 @@ def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg():
         return out
 
     out = asyncio.run(_scenario())
-    assert out.degraded_leg is True
+    assert any_degraded(out.regions) is True
     assert out.timed_out is False
 
 
-@pytest.mark.parametrize(
-    ("presence", "unsettled"),
-    [
-        pytest.param(DefaultPresence(countries=(), scopes={}), False, id="settled"),
-        pytest.param(
-            DefaultPresence(countries=(), scopes={}, unsettled=frozenset({"Count_Person"})),
-            True,
-            id="unsettled",
-        ),
-    ],
-)
-def test_a_default_scope_read_that_left_a_scope_unsettled_is_a_lost_read(
-    presence: DefaultPresence, unsettled: bool
-) -> None:
+def _served_from(presence: DefaultPresence) -> Materialised:
+    """A read serving `_SERVED` from `presence`."""
+    return Materialised(
+        sv_dcids=[_SERVED],
+        has_data=True,
+        coverage=cast(Any, None),
+        default_scope=presence.union_scope([_SERVED]),
+    )
+
+
+def test_an_unsettled_presence_read_no_answer_uses_notes_nothing() -> None:
+    presence = DefaultPresence(countries=(), scopes={}, unsettled=frozenset({_SERVED}))
     with (
         patch("search.engine.place.place_scope.read_default_presence", return_value=presence),
         recording_degraded_reads() as lost,
     ):
         read_default_presence(graph=FakeGraph(), sdmx=FakeSdmxClient(), stat_vars=[])
 
-    assert lost.degraded is unsettled
+    assert lost.degraded is False
+
+
+@pytest.mark.parametrize(
+    ("known_unsettled", "degraded"),
+    [
+        pytest.param({_SERVED}, True, id="served-unsettled"),
+        pytest.param({_READ_ONLY}, False, id="unserved-unsettled"),
+        pytest.param(set(), False, id="settled"),
+    ],
+)
+def test_only_a_served_stat_var_s_fallback_is_a_lost_read(
+    known_unsettled: set[str], degraded: bool
+) -> None:
+    scopes = {sv: DefaultPlaceScope(places=("country/KEN",), every_place=False) for sv in _BOTH}
+    presence = DefaultPresence(
+        countries=("country/KEN",), scopes=scopes, unsettled=frozenset(known_unsettled)
+    )
+    mat = _served_from(presence)
+
+    with recording_degraded_reads() as lost:
+        note_unsettled_scope(mat)
+
+    assert lost.degraded is degraded
+
+
+def test_a_later_read_that_settled_a_stat_var_leaves_the_answer_cacheable() -> None:
+    scope = DefaultPlaceScope(places=("country/KEN",), every_place=False)
+    settled = DefaultPresence(countries=("country/KEN",), scopes={_SERVED: scope})
+    later = DefaultPresence(
+        countries=("country/KEN",), scopes={_SERVED: scope}, unsettled=frozenset({_SERVED})
+    )
+    mat = _served_from(settled.merged(later))
+
+    with recording_degraded_reads() as lost:
+        note_unsettled_scope(mat)
+
+    assert lost.degraded is False
 
 
 def test_infra_error_fails_the_request_and_never_sets_degraded_leg():
@@ -199,7 +241,7 @@ def test_infra_error_fails_the_request_and_never_sets_degraded_leg():
 
     out, raised = asyncio.run(_scenario())
     assert raised is not None, "expected the injected infra error to surface"
-    assert out.degraded_leg is False
+    assert any_degraded(out.regions) is False
     assert out.regions == []
 
 
@@ -228,4 +270,4 @@ def test_deadline_backfill_sets_timed_out_and_leaves_degraded_leg_false():
 
     out = asyncio.run(_scenario())
     assert out.timed_out is True
-    assert out.degraded_leg is False
+    assert any_degraded(out.regions) is False

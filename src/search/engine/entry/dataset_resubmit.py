@@ -107,7 +107,11 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
-from search.engine.region.result import with_composite_answer, with_runnable_operations
+from search.engine.region.result import (
+    any_degraded,
+    with_composite_answer,
+    with_runnable_operations,
+)
 from search.engine.region.sentence_events import answer_events, response_sentence_events
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
@@ -616,7 +620,7 @@ async def handle(
     trailing_deadline = max(
         [params.deadline, *(r.reads_deadline for r in regions if r.reads_deadline is not None)]
     )
-    degraded_leg = any(region.degraded for region in regions)
+    degraded_leg = any_degraded(regions)
 
     # Candidate regions carry the posted ordering override for the combiner.
     echo = QueryEcho(

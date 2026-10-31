@@ -26,7 +26,14 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import refusal
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
-from dfo_platform.trace import get_trace_id
+from dfo_platform.trace import (
+    get_cloud_trace_id,
+    get_trace_id,
+    reset_cloud_trace_id,
+    reset_trace_id,
+    set_cloud_trace_id,
+    set_trace_id,
+)
 from entity_resolution import Admission, EntityResolver, acquire_shared, release_shared
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise import GraphReader
@@ -135,14 +142,18 @@ def resolve_line(
     cancellation, since `asyncio.timeout` has turned the cap's own into a `TimeoutError`. A
     logging failure neither replaces the response nor reaches the route.
 
-    The SSE route sets `record.delivered` when its last frame has left, and a disconnect
-    before then reads `cancelled`. The buffered route ends the block once the response is
-    built, before it is sent, so its line cannot tell whether the client received the answer.
+    The SSE route sets `record.delivered` when its last frame has left, and reads delivery:
+    a client that stalls delays the line, and one that leaves before taking the last frame
+    reads `cancelled` even when the pipeline finished, since it never took the answer. The
+    buffered route ends the block once the response is built, before it is sent, so its line
+    cannot tell whether the client received the answer.
 
-    The trace id is read on entry, because an SSE body abandoned at a `yield` closes later in
-    a task of its own, outside the request's context.
+    The trace ids are read on entry and bound for the line, which `JsonFormatter` stamps at
+    format time, because an SSE body abandoned at a `yield` closes later in a task of its
+    own, outside the request's context.
     """
     trace_id = get_trace_id()
+    cloud_trace_id = get_cloud_trace_id()
     try:
         yield
     except BaseException as exc:
@@ -150,10 +161,15 @@ def resolve_line(
             record.error_code = served_code(exc) if isinstance(exc, Exception) else "cancelled"
         raise
     finally:
+        trace_token = set_trace_id(trace_id)
+        cloud_trace_token = set_cloud_trace_id(cloud_trace_id)
         try:
-            _log_resolve(request, record, caller=caller, transport=transport, trace_id=trace_id)
+            _log_resolve(request, record, caller=caller, transport=transport)
         except Exception:
             logger.exception("resolve log line failed")
+        finally:
+            reset_cloud_trace_id(cloud_trace_token)
+            reset_trace_id(trace_token)
 
 
 def _close_each(closers: Iterable[Callable[[], object]]) -> None:
@@ -182,7 +198,6 @@ def _log_resolve(
     *,
     caller: str | None,
     transport: str,
-    trace_id: str,
 ) -> None:
     """Log one INFO line for a resolve a route ran (`resolve_line`), `resolve ` followed by a
     JSON object. A refusal at the route ahead of the pipeline logs none, and neither does a
@@ -237,7 +252,7 @@ def _log_resolve(
         "resolve %s",
         json.dumps(
             {
-                "trace_id": trace_id,
+                "trace_id": get_trace_id(),
                 "kind": inp.kind,
                 "caller": caller,
                 **{name: value for name, value in posted.items() if name.startswith("include_")},

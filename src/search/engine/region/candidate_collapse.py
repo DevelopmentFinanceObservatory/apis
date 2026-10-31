@@ -74,6 +74,7 @@ from search.engine.region.phase_shared import (
 )
 from search.engine.region.place_context import (
     install_place_warnings,
+    note_unsettled_scope,
     stamp_offered_place_warnings,
 )
 from search.engine.region.related_read import (
@@ -860,6 +861,8 @@ async def assemble_candidates(
         if not unique_specs:
             return await refuse_unserved_quantity(state)
     unique_specs, _served_twin = _apply_twin_diversion(state, unique_specs, grounded)
+    for spec in unique_specs:
+        note_unsettled_scope(grounded.cand_candidates[spec.spec_id].mat)
     _settled = _handle_sparse_survivors(state, unique_specs, grounded, _served_twin)
     if isinstance(_settled, RegionResult):
         return _settled

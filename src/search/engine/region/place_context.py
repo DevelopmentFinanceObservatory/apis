@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from materialise.roles import axis_noun
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import WarningKey, direction_discarded, warning_key
 from search.engine.errors import DefaultScopeIndexSourcedError
 from search.engine.region.codes import DIRECTION_DISCARDED, PLACE_SCOPE_DEFAULTED
@@ -184,6 +185,16 @@ def settled_shape(shape: ShapeDraft, mat: Materialised) -> ShapeDraft:
     ):
         return shape
     return dataclasses.replace(shape, declared_roles=roles, optional_roles=frozenset())
+
+
+def note_unsettled_scope(mat: object) -> None:
+    """Note as lost the default scope of `mat`, a read an answer serves from, when a StatVar
+    it serves took a countries fallback (`DefaultPlaceScope.settled`): the fallback holds for
+    this request only, and a later request may read it over every place with data. Each
+    terminal calls this on what it serves, so a presence read no answer used notes nothing
+    however its worker raced the answer."""
+    if isinstance(mat, Materialised) and mat.default_scope and not mat.default_scope.settled:
+        note_degraded_read("default scope presence")
 
 
 def settle_place(place: PlaceContext, mat: Materialised, warnings: list[Warning]) -> PlaceContext:

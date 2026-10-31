@@ -67,6 +67,7 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.phase_shared import settle_unjudged_refusal
 from search.engine.region.phase_timing import book_unbooked_time, booked_ms
+from search.engine.region.place_context import note_unsettled_scope
 from search.engine.region.place_roles import (
     bound_entity_refs,
     group_request_names,
@@ -1019,6 +1020,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
+                    note_unsettled_scope(state.mat_result)
                     # Only a vetted election can report qualifier matches: earlier terminals
                     # may hold pre-bind candidates without a forced binding or elected shape.
                     every_member = (

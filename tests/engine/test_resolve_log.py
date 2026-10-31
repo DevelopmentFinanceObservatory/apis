@@ -5,21 +5,36 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import io
 import json
+import logging
 import time
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from dfo_platform.trace import reset_trace_id, set_trace_id
+from dfo_platform.cloud_logging import TRACE_FIELD, JsonFormatter
+from dfo_platform.trace import (
+    reset_cloud_trace_id,
+    reset_trace_id,
+    set_cloud_trace_id,
+    set_trace_id,
+)
 from search.engine.app import _event_source, _served_code
 from search.engine.core import ResolveRecord, _log_resolve, resolve_events, resolve_line
 from search.engine.envelope import make_diagnostics, make_query_echo
 from search.engine.errors import EngineInfraError, EngineInputError
-from search.engine.events import DoneEvent, DoneTelemetry, ResponseEvent, serialize_sse
+from search.engine.events import (
+    DoneEvent,
+    DoneTelemetry,
+    ErrorEvent,
+    Event,
+    ResponseEvent,
+    serialize_sse,
+)
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
 from search.engine.response_cache_keys import normalise_query
@@ -73,7 +88,7 @@ def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
 def _logged(request: ResolveRequest, record: ResolveRecord) -> dict:
     """The JSON object of the one line `_log_resolve` writes for `record`."""
     with resolve_log_lines() as lines:
-        _log_resolve(request, record, caller=None, transport="buffered", trace_id=_TRACE_ID)
+        _log_resolve(request, record, caller=None, transport="buffered")
     [line] = lines
     return line
 
@@ -424,10 +439,104 @@ def test_a_frame_that_cannot_serialise_ends_the_stream_with_the_error_it_logs(mo
     assert logged["error_code"] == "internal_error"
 
 
+def _raising(exc: Exception) -> AsyncGenerator[Event]:
+    async def stream():
+        raise exc
+        yield
+
+    return stream()
+
+
+def _empty() -> AsyncGenerator[Event]:
+    async def stream():
+        return
+        yield
+
+    return stream()
+
+
+def _child_cancelled() -> AsyncGenerator[Event]:
+    async def stream():
+        raise asyncio.CancelledError
+        yield
+
+    return stream()
+
+
+async def _collect(body: AsyncIterator[str]) -> list[str]:
+    return [frame async for frame in body]
+
+
+@pytest.mark.parametrize(
+    ("stream", "unserialisable"),
+    [
+        pytest.param(_empty, False, id="empty"),
+        pytest.param(_child_cancelled, False, id="child-cancelled"),
+        pytest.param(lambda: _raising(_BOOM), True, id="error-event-unserialisable"),
+    ],
+)
+def test_a_stream_with_no_terminal_event_ends_on_the_catch_all(
+    monkeypatch, stream, unserialisable: bool
+):
+    def _failing_serialize(event):
+        raise ValueError("no frame")
+
+    if unserialisable:
+        monkeypatch.setattr("search.engine.app.serialize_sse", _failing_serialize)
+    record = ResolveRecord()
+
+    async def _run() -> list[str]:
+        body = _event_source(
+            stream(),
+            hard_deadline=time.monotonic() + 60,
+            record=record,
+            line=resolve_line(_RAW, record, caller=None, transport="sse", served_code=_served_code),
+        )
+        # A body that never ends would hang the run, so a missing catch-all fails here.
+        return await asyncio.wait_for(_collect(body), timeout=5)
+
+    with resolve_log_lines() as lines:
+        frames = asyncio.run(_run())
+
+    [(event, payload)] = parse_sse("".join(frames))
+    assert (event, payload["code"], payload["trace_id"]) == ("error", "internal_error", _TRACE_ID)
+    ErrorEvent.model_validate(payload)
+    assert record.delivered is True
+    [logged] = lines
+    assert logged["error_code"] == "internal_error"
+
+
+def test_the_heartbeat_stops_with_the_producer_while_a_client_stalls():
+    record = ResolveRecord()
+
+    async def _stream():
+        yield _done()
+
+    async def _run() -> set[str]:
+        body = _event_source(
+            _stream(),
+            hard_deadline=time.monotonic() + 60,
+            record=record,
+            line=resolve_line(_RAW, record, caller=None, transport="sse", served_code=_served_code),
+        )
+        await anext(body)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        running = {task.get_coro().__name__ for task in asyncio.all_tasks() if not task.done()}
+        await body.aclose()
+        return running
+
+    with resolve_log_lines():
+        assert "heartbeat" not in asyncio.run(_run())
+
+
 def test_a_client_gone_before_done_left_reads_cancelled_under_the_request_trace_id():
     """The pipeline finished, but `done` never left. The closing body runs outside the
     request's context, as an abandoned response body does."""
     record = ResolveRecord()
+    formatted = io.StringIO()
+    handler = logging.StreamHandler(formatted)
+    handler.setFormatter(JsonFormatter(project="p"))
 
     async def _stream():
         record.response = _resolution([_NO_DATA])
@@ -443,19 +552,29 @@ def test_a_client_gone_before_done_left_reads_cancelled_under_the_request_trace_
             line=resolve_line(_RAW, record, caller=None, transport="sse", served_code=_served_code),
         )
         await anext(body)
-        await asyncio.sleep(0)
+        await anext(body)
         token = set_trace_id("another-request")
+        cloud_token = set_cloud_trace_id(None)
         try:
             await body.aclose()
         finally:
+            reset_cloud_trace_id(cloud_token)
             reset_trace_id(token)
 
-    with resolve_log_lines() as lines:
-        asyncio.run(_run())
+    logger = logging.getLogger("search.engine.core")
+    logger.addHandler(handler)
+    cloud_token = set_cloud_trace_id("cloud-trace")
+    try:
+        with resolve_log_lines() as lines:
+            asyncio.run(_run())
+    finally:
+        reset_cloud_trace_id(cloud_token)
+        logger.removeHandler(handler)
 
     [logged] = lines
     assert logged["error_code"] == "cancelled"
     assert logged["trace_id"] == _TRACE_ID
+    assert json.loads(formatted.getvalue())[TRACE_FIELD] == "projects/p/traces/cloud-trace"
 
 
 def test_a_client_gone_once_done_left_reads_clean_while_the_pipeline_unwinds():

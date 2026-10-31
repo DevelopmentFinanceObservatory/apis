@@ -103,20 +103,12 @@ class _FanOutResult:
     """Out-parameter for the async generator's final state.
 
     The generator assigns these fields only on normal completion. `regions`
-    contains one result per input leg, including deadline backfills. `timed_out`
-    reports those. `degraded_leg` reports a leg that stands on less than a later request
-    may read: a lost read, an unsettled scope, an unevaluated alternate, a swallowed
-    error, or the reads an abandoned reading carried (`RegionResult.degraded`).
-    The generator cancels trailing tasks if it exits abnormally.
+    contains one result per input leg, including deadline backfills, which `timed_out`
+    reports. The generator cancels trailing tasks if it exits abnormally.
     """
 
     regions: list[RegionResult] = field(default_factory=list)
     timed_out: bool = False
-    # True when a leg's answer is weaker than its response part shows (`RegionResult.degraded`).
-    # A consumer that must tell a transient upstream failure from a settled negative one, such
-    # as the response cache deciding what is safe to store, reads this flag instead of the
-    # response body. The deadline backfill is reported by `timed_out` and does not set it.
-    degraded_leg: bool = False
 
 
 def _date_request_to_time_text(date_request: DateRequest | None) -> str | None:
@@ -952,14 +944,12 @@ def _launch_variable_tasks(
 class _FanOutProgress:
     """Mutable fold state `_run_variables_streaming`'s queue-draining loop
     threads through `_handle_fanout_item`: which leg indices have landed so
-    far, the first hard failure any leg raised, and whether any leg
-    degraded rather than failing outright.
+    far and the first hard failure any leg raised.
     """
 
     results: dict[int, RegionResult]
     n_pending: int
     first_failure: BaseException | None = None
-    degraded_leg: bool = False
 
 
 def _handle_fanout_item(
@@ -972,8 +962,6 @@ def _handle_fanout_item(
     """
     if isinstance(item, _RegionDone):
         progress.results[item.index] = item.region
-        if item.region.degraded:
-            progress.degraded_leg = True
         progress.n_pending -= 1
         return None
     if isinstance(item, _TaskFailed):
@@ -1217,7 +1205,6 @@ async def _run_variables_streaming(
             )
     out.regions = [progress.results[i] for i in range(len(unique))]
     out.timed_out = timed_out
-    out.degraded_leg = progress.degraded_leg
 
 
 def _log_unfinished_legs(tasks: Sequence[asyncio.Task], phases: Sequence[LegPhase]) -> None:

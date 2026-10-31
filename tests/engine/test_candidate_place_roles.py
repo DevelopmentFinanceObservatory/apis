@@ -34,6 +34,7 @@ from code_index.shared import get_index
 from dfo_platform.trace import reset_trace_id, set_trace_id
 from entity_resolution import Entity, Resolved
 from graph_generation import UNKNOWN_GENERATION
+from materialise import place_scope
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
@@ -2251,6 +2252,27 @@ def test_placeless_subject_alternate_beside_a_role_bearing_election_takes_a_defa
     assert [(w.code, w.spec_id) for w in result.warnings if w.code == "role_scope_defaulted"] == [
         ("role_scope_defaulted", None)
     ]
+
+
+@pytest.mark.parametrize(
+    ("unsettled", "degraded"), [(scenarios._PPP, True), ("Count_Unread", False)], ids=str
+)
+def test_only_an_offered_alternate_s_countries_fallback_keeps_the_answer_uncached(
+    monkeypatch, search_settings, unsettled: str, degraded: bool
+) -> None:
+    read = place_scope.read_default_presence
+
+    def unsettled_read(**kwargs):
+        return dataclasses.replace(read(**kwargs), unsettled=frozenset({unsettled}))
+
+    monkeypatch.setattr(place_scope, "read_default_presence", unsettled_read)
+
+    result, _, _ = _scenario_candidates(
+        monkeypatch, "placeless-role-bearing-elected-subject-alternate", search_settings
+    )
+
+    assert result.status == "candidates", result
+    assert result.degraded is degraded
 
 
 def test_placeless_subject_alternate_reads_its_default_scope_in_bulk(

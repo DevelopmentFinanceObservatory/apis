@@ -24,7 +24,6 @@ from materialise.place_scope import (
     PlaceScopeReadError,
     is_worldwide,
 )
-from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphReadFailure
 
 if TYPE_CHECKING:
@@ -106,20 +105,13 @@ def read_default_presence(
     infrastructure failure. The read may be one the datasets door's
     reader started, so the error carries no SDMX client's type. A read the deadline
     ends raises `place_scope.PlaceScopeDeadlineError`, a `TimeoutError`, which Search refuses
-    as a timeout.
-
-    A read that leaves a StatVar's scope unsettled is noted as lost: its countries fallback
-    holds for this request only, and a later request may read it over every place with data.
-    Every door reads here, so none can omit it."""
+    as a timeout."""
     try:
-        presence = place_scope.read_default_presence(
+        return place_scope.read_default_presence(
             graph=graph, availability=sdmx, stat_vars=stat_vars, known=known, deadline=deadline
         )
     except (DefaultScopeUnknownError, PlaceScopeReadError) as exc:
         raise GraphReadFailure(str(exc), upstream_status=exc.upstream_status) from exc
-    if presence.unsettled:
-        note_degraded_read("default scope presence")
-    return presence
 
 
 def earth_countries(*, graph: EngineGraphClient, deadline: float | None = None) -> DefaultPresence:

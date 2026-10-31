@@ -88,7 +88,12 @@ from search.engine.qualifier_match import (
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_rank_bind import holds_words, names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
-from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
+from search.engine.region.result import (
+    RegionResult,
+    any_degraded,
+    with_departure_facts,
+    with_entity_words,
+)
 from search.engine.region.sentence_events import answer_events
 from search.engine.region.state import qualifier_dropped_warning
 from search.engine.response_cache_flow import CacheScope
@@ -1272,7 +1277,7 @@ async def _handle_single_variable(
     region = out.regions[0]
     # Record run health. `is_storable` decides cache eligibility.
     if scope is not None:
-        scope.note_health(timed_out=out.timed_out, degraded_leg=out.degraded_leg)
+        scope.note_health(timed_out=out.timed_out, degraded_leg=any_degraded(out.regions))
     total_usage = _sum_usage(extract_usage, region.llm_usage)
     # The part and its late departures read the same facts and entity words.
     answered = prep.onto(region, 0)
@@ -1314,7 +1319,7 @@ async def _handle_single_variable(
     yield DoneEvent(
         elapsed_ms=now_ms() - start_ms,
         timed_out=out.timed_out,
-        degraded_leg=out.degraded_leg,
+        degraded_leg=any_degraded(out.regions),
         trace_id=get_trace_id(),
         telemetry=DoneTelemetry(llm_usage=total_usage),
         warnings=slot_options_warnings,
@@ -1428,7 +1433,7 @@ async def _handle_multi_variable(
             ),
             echo=None,
             timed_out=out.timed_out,
-            degraded_leg=out.degraded_leg,
+            degraded_leg=any_degraded(out.regions),
             graph=graph,
             start_ms=start_ms,
             params=params,

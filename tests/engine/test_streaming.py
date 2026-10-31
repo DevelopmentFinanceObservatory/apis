@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 import dc_graph
 import search.engine.app as app_module
 from code_index.shared import get_index
-from dfo_platform import ProblemSpec, refusal
+from dfo_platform import Cause, ProblemSpec, refusal
 from entity_resolution import NotFound
 from search.engine.app import _ENVELOPE, classify_search_exception
 from search.engine.bind import _UniversalBindOutput
@@ -722,6 +722,13 @@ def test_sse_terminal_error_survives_a_classify_returning_an_unregistered_code(m
     [
         EngineInputError("posted shape does not match its members", code="shape_mismatch"),
         EngineInputError("unknown shape_id"),
+        EngineInputError(
+            "the posted unit has no declared recipe",
+            code="recipe_not_declared",
+            status=422,
+            pointer="/input/facets/unit",
+            cause=Cause(code="nominal_undeclared", entities=["StatVarX"], truncated=False),
+        ),
         GraphInfraError("simulated upstream failure", upstream_status=404),
         GraphInfraError("simulated transient failure"),
         TimeoutError(),
@@ -741,6 +748,7 @@ def test_sse_terminal_error_survives_a_classify_returning_an_unregistered_code(m
     ids=[
         "engine_input_error_with_code",
         "engine_input_error_without_code",
+        "dataset_resubmit_unit_refusal",
         "engine_infra_error_upstream_4xx",
         "engine_infra_error_no_upstream_status",
         "timeout",
@@ -786,8 +794,15 @@ def test_sse_terminal_error_matches_the_json_paths_envelope_render(monkeypatch, 
         "truncated",
         "retryable",
         "issues",
+        "cause",
+        "constraint_id",
+        "ceiling_kind",
+        "count",
+        "cap",
     ):
         assert sse_payload.get(field) == expected.get(field), field
+    if getattr(exc, "cause", None) is not None:
+        assert sse_payload["cause"]["code"] == exc.cause.code
 
 
 def test_sse_exactly_one_terminal_event_on_success():

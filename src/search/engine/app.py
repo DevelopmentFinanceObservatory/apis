@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import logging
+import sys
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
 from contextlib import (
@@ -35,7 +37,7 @@ from contextlib import (
     asynccontextmanager,
     contextmanager,
 )
-from typing import Annotated, TypedDict
+from typing import Annotated, NamedTuple, TypedDict
 
 from fastapi import APIRouter, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -111,12 +113,11 @@ from search.engine.deps import (
 )
 from search.engine.envelope import make_diagnostics, now_ms
 from search.engine.errors import (
-    RATE_TABLE_REFUSALS,
     EngineInfraError,
     EngineInputError,
     GraphInfraError,
     LLMInfraError,
-    search_problem,
+    classify_refusal,
     served_problem,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
@@ -190,22 +191,39 @@ def _accepts_sse(request: Request) -> bool:
 
 
 def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
-    """Return a Search `ProblemSpec` or defer to platform classification. JSON and SSE use
-    this function. Platform classification handles routing 404/405 errors.
+    """Return a Search `ProblemSpec`, logged, or defer to platform classification. JSON and SSE
+    use this function. Platform classification handles routing 404/405 errors.
     """
-    if isinstance(exc, RATE_TABLE_REFUSALS):
-        logger.warning("Rate table refusal %s: %s", exc.code, exc.detail)
-    elif isinstance(exc, EngineInfraError):
-        logger.error("Engine infrastructure error: %s", exc, exc_info=exc)
-    elif isinstance(exc, asyncio.TimeoutError):
-        logger.error("Request hit its hard deadline")
-    return search_problem(exc)
+    classified = classify_refusal(exc)
+    if classified is None:
+        return None
+    if classified.log_line:
+        logger.log(
+            classified.log_level,
+            classified.log_line,
+            exc_info=exc if classified.log_traceback else None,
+        )
+    return classified.problem
 
 
 def _logged_classification(exc: BaseException) -> ProblemSpec:
     """`exc`'s refusal, logged as on the JSON route, so an unhandled error's traceback appears
     once."""
     return classify_search_exception(exc) or refusal.classify_default(exc)
+
+
+def _catch_all_problem() -> dict[str, object]:
+    """The catch-all problem body, from constants, with no catalogue lookup to fail."""
+    return {
+        "type": f"/codes/{refusal.UNHANDLED_DEFAULT.code}",
+        "title": _FALLBACK_ERROR_TITLE,
+        "status": refusal.UNHANDLED_DEFAULT.status,
+        "detail": _FALLBACK_ERROR_DETAIL,
+        "code": refusal.UNHANDLED_DEFAULT.code,
+        "trace_id": get_trace_id(),
+        "capability_version": _ENVELOPE.capability_version,
+        "retryable": refusal.UNHANDLED_DEFAULT.retryable,
+    }
 
 
 def _error_event(
@@ -216,36 +234,15 @@ def _error_event(
     classification that fails serves the catch-all, as the platform's exception handler does.
     The event carries only the client detail."""
     try:
-        spec = classify(exc)
-        details = _ENVELOPE.details(
-            status=spec.status,
-            code=spec.code,
-            detail=spec.detail,
-            pointer=spec.pointer,
-            alternatives=spec.alternatives,
-            truncated=spec.truncated,
-            issues=spec.issues,
-            retryable=spec.retryable,
-        )
-        return ErrorEvent(**details.model_dump())
+        return ErrorEvent(**_ENVELOPE.problem(classify(exc)).model_dump())
     except Exception as classify_exc:
-        # Constants provide the fallback without another catalogue lookup.
         logger.error(
             "classifying %s for its problem body failed: %s",
             type(exc).__name__,
             classify_exc,
             exc_info=classify_exc,
         )
-        return ErrorEvent(
-            type=f"/codes/{refusal.UNHANDLED_DEFAULT.code}",
-            title=_FALLBACK_ERROR_TITLE,
-            status=refusal.UNHANDLED_DEFAULT.status,
-            detail=_FALLBACK_ERROR_DETAIL,
-            code=refusal.UNHANDLED_DEFAULT.code,
-            trace_id=get_trace_id(),
-            capability_version=settings().capability_version,
-            retryable=refusal.UNHANDLED_DEFAULT.retryable,
-        )
+        return ErrorEvent.model_validate(_catch_all_problem())
 
 
 def _served_code(exc: BaseException) -> str:
@@ -253,8 +250,14 @@ def _served_code(exc: BaseException) -> str:
     return _error_event(exc, classify=served_problem).code
 
 
-# The SSE merge queue's heartbeat frame, a 10s tick.
-_PING = ": ping\n\n"
+class _Frame(NamedTuple):
+    """One frame of the SSE merge queue, and whether it ends the stream."""
+
+    text: str
+    last: bool = False
+
+
+_PING = _Frame(": ping\n\n")
 
 
 async def _event_source(
@@ -264,7 +267,7 @@ async def _event_source(
     record: ResolveRecord,
     line: AbstractContextManager[None],
 ) -> AsyncIterator[str]:
-    """Merge events with 10-second heartbeat comments. Stop at the terminal event and cancel
+    """Merge events with 10-second heartbeat comments. Stop at the terminal frame and cancel
     both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
 
     `hard_deadline`, an absolute `time.monotonic()` value, caps the stream. The producer
@@ -273,46 +276,60 @@ async def _event_source(
     loop, so it never fires inside a `yield` the consumer resumes.
 
     The producer serialises each event, so a frame that cannot serialise fails as the pipeline
-    does. `line` writes the request's `resolve` log line (`resolve_line`). It wraps the
-    consumer, which resumes only once the server took its frame, so the line ends when the
-    last frame has left and the helpers have stopped. A terminal error is `record.error_code`,
-    and a cancellation before the last frame left, such as a client disconnect, reads
-    `cancelled`.
+    does, and queues exactly one last frame unless the consumer cancelled it. `done` is that
+    frame, else the error event, else, when the pipeline ended with neither or the error
+    event cannot serialise, the catch-all built from constants. It stops the heartbeat when it
+    ends, since no later ping would be sent.
+
+    `line` writes the request's `resolve` log line (`resolve_line`). It wraps the consumer,
+    which resumes only once the server took its frame, so `record.delivered` is set when the
+    last frame has left. A terminal error is `record.error_code`.
     """
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    queue: asyncio.Queue[_Frame] = asyncio.Queue()
 
     async def produce() -> None:
-        terminal = False
+        last_queued = False
         try:
             with request_deadline(hard_deadline):
                 async with asyncio.timeout(hard_deadline - time.monotonic()), aclosing(stream):
                     async for ev in stream:
-                        await queue.put(serialize_sse(ev))
-                        if isinstance(ev, DoneEvent):
-                            terminal = True
-                            await queue.put(None)
+                        is_done = isinstance(ev, DoneEvent)
+                        queue.put_nowait(_Frame(serialize_sse(ev), last=is_done))
+                        last_queued = last_queued or is_done
         except Exception as exc:
             # This is the sole conversion of a pipeline failure into a terminal ErrorEvent. A
             # failure after `done` is logged and sends nothing: the stream has ended.
             error_event = _error_event(exc, classify=_logged_classification)
-            if not terminal:
+            if not last_queued:
                 record.error_code = error_event.code
-                await queue.put(serialize_sse(error_event))
+                queue.put_nowait(_Frame(serialize_sse(error_event), last=True))
+                last_queued = True
         finally:
-            await queue.put(None)
+            hb_task.cancel()
+            if not last_queued and not prod_task.cancelling():
+                logger.error(
+                    "the SSE stream ended with no terminal event", exc_info=sys.exception()
+                )
+                problem = _catch_all_problem()
+                record.error_code = refusal.UNHANDLED_DEFAULT.code
+                frame = f"event: error\ndata: {json.dumps({**problem, 'kind': 'error'})}\n\n"
+                queue.put_nowait(_Frame(frame, last=True))
 
     async def heartbeat() -> None:
         while True:
             await asyncio.sleep(10)
-            await queue.put(_PING)
+            queue.put_nowait(_PING)
 
     prod_task = asyncio.create_task(produce())
     hb_task = asyncio.create_task(heartbeat())
     with line:
         try:
-            while (frame := await queue.get()) is not None:
-                yield frame
-            record.delivered = True
+            while True:
+                frame = await queue.get()
+                yield frame.text
+                if frame.last:
+                    record.delivered = True
+                    return
         finally:
             # Cancel and await both helpers so neither outlives the response. Producer
             # cancellation unwinds the pipeline's in-flight variable fan-out.

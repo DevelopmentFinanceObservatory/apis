@@ -1,7 +1,9 @@
-"""Record the reads one region's resolution swallowed, so the response cache stores none of it.
+"""Record the reads one region's resolution lost, so the response cache stores none of it.
 
-A read that fails or runs past its deadline inside a resolution often leaves the answer
-standing on less than it would have read, with no warning to say so. Two examples are the dated
+A read that fails, runs past its deadline, or could not start inside a resolution often leaves
+the answer standing on less than it would have read, and so does a default scope a served
+StatVar took as a countries fallback, a read left unsettled for this request alone
+(`place_context.note_unsettled_scope`). Two examples of a lost read are the dated
 read the unit gate checks a sparse series with and the re-read that names the provenances a
 no-data answer is withheld under. `recording_degraded_reads` binds a record for one region's
 resolution (`pipeline.resolve_variable`, `resubmit.resolve_spec_resubmit`). Any site in its
@@ -18,8 +20,8 @@ The record spans every pass of a resolution, so a fact noted in a pass reaches t
 whichever pass answers. A party reading abandoned for the reading without party words hands its
 reads to that reading (`pipeline.resolve_variable`).
 
-Only a read that was made and lost is noted. A fact left unknown because no read was made for
-it is not: a one-shape bind menu skips the availability read over a named set's places
+Only a read an answer depends on is noted. A fact left unknown because no read was asked for
+is not: a one-shape bind menu skips the availability read over a named set's places
 (`phase_rank_bind._phase_prune_and_rank`), so that shape's availability there is unknown,
 and its region is not degraded.
 """
@@ -62,8 +64,8 @@ def recording_degraded_reads(*, detached: bool = False) -> Iterator[DegradedRead
 
 
 def note_degraded_read(read: str) -> None:
-    """Note that `read` failed or ran past its deadline and the answer stands without it.
-    Outside a record it notes nothing."""
+    """Note that `read` was lost, could not start, or was left unsettled, and the answer
+    stands without it. Outside a record it notes nothing."""
     record = _RECORD.get()
     if record is not None:
         record.reads.append(read)
