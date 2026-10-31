@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any, cast
@@ -1369,19 +1369,31 @@ def _stale_words_store(
     return store, frame_ref, graph, first
 
 
-def _gate_graph_reads(graph: _FakeGraphReader) -> tuple[threading.Event, threading.Event]:
-    """Hold every graph read of `graph` until the returned release event is set; the entered
-    event is set once a read is held."""
+_READER: ContextVar[str] = ContextVar("frame_store_test_reader", default="refresh")
+
+
+def _gate_graph_reads(
+    graph: _FakeGraphReader,
+) -> tuple[threading.Event, threading.Event, list[str]]:
+    """Hold every graph read of `graph` until the returned release event is set. The entered
+    event is set once a read is held, and the list names each read's `_READER` value as the
+    read starts, so a test tells a waiting load's reads from the refresh's, whichever thread
+    of the load runs them."""
     entered, release = threading.Event(), threading.Event()
-    read = graph.node_arcs_many
+    readers: list[str] = []
 
-    def gated(*args, **kwargs):
-        entered.set()
-        release.wait(5)
-        return read(*args, **kwargs)
+    def gate(read):
+        def gated(*args, **kwargs):
+            readers.append(_READER.get())
+            entered.set()
+            release.wait(5)
+            return read(*args, **kwargs)
 
-    graph.node_arcs_many = gated
-    return entered, release
+        return gated
+
+    graph.node_arcs_many = gate(graph.node_arcs_many)
+    graph.node_arc_targets_many = gate(graph.node_arc_targets_many)
+    return entered, release, readers
 
 
 @pytest.mark.parametrize("failing", [False, True], ids=["refresh-succeeds", "refresh-fails"])
@@ -1397,7 +1409,7 @@ def test_concurrent_loads_of_a_stale_frame_refresh_it_once(failing: bool):
     one_refresh = graph.calls - calls
 
     store, frame_ref, graph, first = _stale_words_store(failing=failing)
-    entered, release = _gate_graph_reads(graph)
+    entered, release, _ = _gate_graph_reads(graph)
     calls = graph.calls
     with ThreadPoolExecutor(max_workers=4) as pool:
         loads = [pool.submit(copy_context().run, store.load, frame_ref=frame_ref) for _ in range(4)]
@@ -1418,14 +1430,17 @@ def test_a_load_waiting_on_a_refresh_past_its_deadline_serves_the_cached_words()
     """A load that waits on another load's refresh of the same frame until its door deadline
     passes serves the cached words, reading nothing."""
     store, frame_ref, graph, first = _stale_words_store(failing=False)
-    entered, release = _gate_graph_reads(graph)
+    entered, release, readers = _gate_graph_reads(graph)
     with ThreadPoolExecutor(max_workers=1) as pool:
         refresh = pool.submit(copy_context().run, store.load, frame_ref=frame_ref)
         assert entered.wait(5)
-        calls = graph.calls
-        with frame_reads_bounded_by(timeout_seconds=0.2):
-            waited = store.load(frame_ref=frame_ref)
-        reads_while_waiting = graph.calls - calls
+        _READER.set("waiter")
+        try:
+            with frame_reads_bounded_by(timeout_seconds=0.2):
+                waited = store.load(frame_ref=frame_ref)
+        finally:
+            _READER.set("refresh")
+        reads_while_waiting = readers.count("waiter")
         release.set()
         refreshed = refresh.result(timeout=5)
 
