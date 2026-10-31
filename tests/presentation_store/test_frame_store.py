@@ -20,6 +20,7 @@ from typing import Any, cast
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
 
+from artifact_store import ArtifactLocation, CopyBounds
 from artifact_store.errors import (
     ArtifactIntegrityError,
     ArtifactInventoryError,
@@ -250,7 +251,26 @@ class _FakeArtifactStore:
     ) -> str:
         raise NotImplementedError("not exercised by LiveFrameStore")
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    copy_lands_within = CopyBounds().lands_within
+
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        if (tier, digest) not in self.objects:
+            return None
+        return ArtifactLocation(
+            bucket="fake-bucket", object_name=digest, stored_at=datetime.min, renewal=0
+        )
+
+    def exists(self, digest: str, *, tier: Tier, read: object = None) -> bool:
+        return (tier, digest) in self.objects
+
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         self.calls.append(("copy", from_tier, digest))
         if self.copy_raises is not None:
             raise self.copy_raises
@@ -4470,6 +4490,31 @@ def test_pin_keeps_the_units_of_a_copy_whose_reference_write_then_fails():
         store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
 
     assert (Tier.pinned, digest) in artifacts.objects
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
+def test_pin_keeps_one_set_of_units_when_a_copy_lands_and_raises():
+    """The first attempt's bytes stand, so it keeps its units, and the retry gives its own back."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    copy = artifacts.copy
+    left = [ArtifactInventoryError(digest=digest)]
+
+    def landed_and_raised(*args, **kwargs):
+        copied = copy(*args, **kwargs)
+        if left:
+            raise left.pop()
+        return copied
+
+    artifacts.copy = landed_and_raised
+    ledger = _ledger()
+    store = _store(snapshots=snapshots, artifacts=artifacts, allowances=ledger)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+    assert excinfo.value.reason == "io"
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
     assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
 
 
