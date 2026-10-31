@@ -163,6 +163,16 @@ class TestRawTextDoorCarriesEveryOccurrence:
             "China": [DoorRole(axis="origin", span="China", stated=True)],
         }
 
+    def test_a_lone_debt_possessive_sets_the_debtor_and_states_no_direction(self):
+        """The possessive debtor in "Kenya's debt service" reads its axis off the measure,
+        so the axis changes and the direction stays unstated."""
+        roles = _entity_roles(
+            [ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
+            query="Which countries does Kenya's debt service go to",
+            measures=["debt service"],
+        )
+        assert roles == {"Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]}
+
     @pytest.mark.parametrize(
         ("query", "measure", "entities", "expected"),
         [
@@ -472,12 +482,44 @@ class TestRawTextDoorReadsDebtWording:
                 ["GDP", "debt"],
                 {},
             ),
-            # One place is no two-party relation.
+            # One place the extraction left undirected, one whose debt is measured against
+            # a quantity, one with a possessive claim on a debt, or a creditor's claim
+            # words.
+            (
+                "Kenya's external debt",
+                [("Kenya", "Kenya", "unspecified")],
+                ["external debt"],
+                {},
+            ),
             (
                 "Kenya's debt to GDP ratio",
                 [("Kenya", "Kenya", "origin")],
                 ["debt"],
                 {"Kenya": ["origin"]},
+            ),
+            (
+                "Kenya's share of external debt",
+                [("Kenya", "Kenya", "origin")],
+                ["external debt"],
+                {"Kenya": ["origin"]},
+            ),
+            (
+                "China's debt exposure",
+                [("China", "China", "origin")],
+                ["debt exposure"],
+                {"China": ["origin"]},
+            ),
+            (
+                "China's debt exposure",
+                [("China", "China", "origin")],
+                ["debt"],
+                {"China": ["origin"]},
+            ),
+            (
+                "China's debt claims",
+                [("China", "China", "origin")],
+                ["debt claims"],
+                {"China": ["origin"]},
             ),
             # No debt measure.
             ("refugees owing to Syria", [("Syria", "Syria", "unspecified")], ["refugees"], {}),

@@ -7,9 +7,12 @@ from typing import Any
 import pyarrow as pa
 import pytest
 from dfo_frame_grammar import Frame, frame_sha256
+from pydantic import TypeAdapter
 
 from code_index.types import PartyRow, WholeMarker
+from datasets_api.manifest_models import TraceModel
 from datasets_api.party_totals import (
+    TRACE_KEY,
     PartyTotalsCut,
     cut_frame,
     cut_party_totals,
@@ -325,8 +328,11 @@ def test_a_cut_rebuilt_from_a_trace_leaves_out_the_rows_it_recorded(
     entries: list[dict[str, object]], kept: list[int]
 ):
     """A version recorded before its trace named the provenance left those parties out of
-    every dataset's rows, and a rebuilt cut writes back the entries it was rebuilt from."""
+    every dataset's rows, and a rebuilt cut writes back the entries it was rebuilt from, in the
+    shape the served manifest's trace types."""
     cut = PartyTotalsCut.of_trace_entries(entries)
 
     assert _kept_rows(cut, _kenya_2020_frame()) == sorted(_KENYA_2020[index] for index in kept)
     assert cut.trace_entries() == entries
+    trace = {TRACE_KEY: cut.trace_entries()}
+    assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace

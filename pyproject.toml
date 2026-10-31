@@ -9,6 +9,8 @@ dependencies = [
     # under `from __future__ import annotations` (pydantic PR #12785).
     "pydantic>=2.13",
     "pydantic-settings>=2.10",
+    # datasets_api/manifest_models.py's `TraceModel` declares `extra_items` (PEP 728).
+    "typing-extensions>=4.13",
     # search/models.py imports WarningSeverity from dfo_platform's pure core.
     "dfo-data-tools",
     # Every generation-keyed cache (search's response/options/SDMX caches,

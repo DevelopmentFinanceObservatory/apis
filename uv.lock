@@ -2882,6 +2882,7 @@ dependencies = [
     { name = "dfo-data-tools" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -2985,6 +2986,7 @@ requires-dist = [
     { name = "search", extras = ["api"], marker = "extra == 'graph'" },
     { name = "starlette", marker = "extra == 'api'" },
     { name = "typesafe-sdk", extras = ["zstd"], marker = "extra == 'engine'", specifier = "==0.7.5" },
+    { name = "typing-extensions", specifier = ">=4.13" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'api'" },
 ]
 provides-extras = ["eval", "api", "sdmx", "coverage", "engine", "datasets", "graph"]

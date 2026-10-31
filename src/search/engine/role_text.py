@@ -122,6 +122,10 @@ _DEBT_ACTION_WORDS: frozenset[str] = frozenset(
         "swaps",
     }
 )
+# After a debt noun these name a holder's claim on the debt, which the creditor holds:
+# "China's debt claims", "China's debt exposure", "China's debt portfolio".
+_DEBT_CLAIM_WORDS: frozenset[str] = frozenset({"claims", "exposure", "holdings", "portfolio"})
+_NOT_DEBT_AFTER: frozenset[str] = _DEBT_ACTION_WORDS | _DEBT_CLAIM_WORDS
 # Active forms of "owe", whose subject is the debtor and whose object is the creditor:
 # "how much does China owe India". The past "owed" is left out, since "China owed by
 # Kenya" is passive and reverses the parties.
@@ -159,9 +163,9 @@ def _span_starts(query_tokens: list[str], span_tokens: list[str]) -> list[int]:
 
 
 def _names_debt(tokens: list[str]) -> bool:
-    """Whether ``tokens`` hold a debt noun that no action word follows."""
+    """Whether ``tokens`` hold a debt noun that no action or claim word follows."""
     return any(
-        token in _DEBT_NOUNS and (i + 1 == len(tokens) or tokens[i + 1] not in _DEBT_ACTION_WORDS)
+        token in _DEBT_NOUNS and (i + 1 == len(tokens) or tokens[i + 1] not in _NOT_DEBT_AFTER)
         for i, token in enumerate(tokens)
     )
 
@@ -240,6 +244,26 @@ def _owns_debt(query_tokens: list[str], after: int) -> bool | None:
     return shares and all(token in _CONJUNCTIONS for token in phrase)
 
 
+def _debt_possessors(
+    query_tokens: list[str], places: Mapping[str, Sequence[str]]
+) -> set[str] | None:
+    """Return each place a possessive names over its own debt (``_owns_debt``), by place
+    name; None when a possessive names a claim on another party's debt."""
+    possessors: set[str] = set()
+    for name, spans in places.items():
+        for tokens in (_tokenize(span) for span in spans):
+            if not tokens:
+                continue
+            possessive = [*tokens[:-1], tokens[-1].removesuffix(_POSSESSIVE) + _POSSESSIVE]
+            for start in _span_starts(query_tokens, possessive):
+                owns = _owns_debt(query_tokens, start + len(possessive))
+                if owns is None:
+                    return None
+                if owns:
+                    possessors.add(name)
+    return possessors
+
+
 def _follows_owe(query_tokens: list[str], start: int) -> bool:
     """Whether the place starting at ``start`` is the object of an active ``owe``, as
     ``India`` in ``China owe India``. An article before the place is skipped: ``owe the
@@ -283,6 +307,9 @@ def debt_axes(
     if len(measures) != 1 or not _names_debt(_tokenize(measures[0])) or len(places) != 2:
         return {}
     query_tokens = _tokenize(query.replace("\u2019", "'"))
+    possessors = _debt_possessors(query_tokens, places)
+    if possessors is None:
+        return {}
     # (name, start, end) for every whole-word occurrence of every span.
     occurrences = [
         (name, start, start + len(tokens))
@@ -306,23 +333,12 @@ def debt_axes(
         if _follows_creditor_cue(query_tokens, start, debtor_ends)
         or _follows_owe(query_tokens, start)
     }
-    debtors = {name for name, _ in debtor_by}
+    debtors = {name for name, _ in debtor_by} | possessors
     debtors.update(
         name
         for name, _, end in occurrences
         if end < len(query_tokens) and query_tokens[end] in _OWE_VERBS
     )
-    for name, spans in places.items():
-        for tokens in (_tokenize(span) for span in spans):
-            if not tokens:
-                continue
-            possessive = [*tokens[:-1], tokens[-1].removesuffix(_POSSESSIVE) + _POSSESSIVE]
-            for start in _span_starts(query_tokens, possessive):
-                owns = _owns_debt(query_tokens, start + len(possessive))
-                if owns is None:
-                    return {}
-                if owns:
-                    debtors.add(name)
     if creditors & debtors or len(creditors) > 1 or len(debtors) > 1:
         return {}
     cued: dict[str, RoleAxis] = dict.fromkeys(creditors, "origin")
@@ -336,6 +352,36 @@ def debt_axes(
                 return {}
             cued[name] = _OPPOSITE_AXIS[other]
     return cued
+
+
+def debtor_possessive(
+    query: str,
+    *,
+    measures: Sequence[str],
+    places: Mapping[str, Sequence[str]],
+    directed: Mapping[str, RoleAxis],
+) -> dict[str, RoleAxis]:
+    """Return the debtor's axis for the one place a possessive names over its own debt.
+
+    The rule reads a single measure that names a debt and exactly one place, and only when
+    the extraction gave that place an axis (``directed``): ``Kenya's debt by creditor``,
+    ``which countries does Kenya's debt service go to``. A place the extraction left
+    undirected keeps no axis (``Kenya's external debt``), so a subject-only series drops no
+    direction for it. A possessive claim on another party's debt (``Kenya's share of
+    external debt``), a place with no possessive, and a creditor cue whose object is no
+    place (``Kenya's debt to GDP ratio``, a debt measured against a quantity) set nothing,
+    and a debt noun followed by a claim word (``China's debt exposure``) names no debt.
+
+    The possessive reads the measure, so the axis states no direction of its own
+    (``FramePlace.direction_stated``).
+    """
+    if len(measures) != 1 or len(places) != 1 or not _names_debt(_tokenize(measures[0])):
+        return {}
+    query_tokens = _tokenize(query.replace("\u2019", "'"))
+    if any(_follows_creditor_cue(query_tokens, start) for start in range(len(query_tokens))):
+        return {}
+    possessors = _debt_possessors(query_tokens, places) or set()
+    return {name: "destination" for name in possessors if name in directed}
 
 
 # Forms of "receive" that read the place beside them as the recipient: "received by

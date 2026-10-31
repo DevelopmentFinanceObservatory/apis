@@ -308,6 +308,37 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
     }
 
 
+def test_no_data_refused_before_binding_states_its_resolved_texts_refs():
+    """A part refused before its places bind states the node each resolved text names,
+    and [] for the ambiguous one."""
+    request = ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text="zzz nonexistent indicator zzz",
+                    entities=[
+                        ParsedEntity(text="Netherlands", role_text="from"),
+                        ParsedEntity(text="Congo", role_text="to"),
+                    ],
+                ),
+            ]
+        ),
+        response_options=ResolveOptions(),
+    )
+    r = offline_resolve(
+        request,
+        graph=FakeGraph(),
+        llm=_FixedBindLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts[0]
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "entity_ambiguous"
+    assert r.entity_refs == [
+        EntityRefs(text="Netherlands", refs=["country/NLD"]),
+        EntityRefs(text="Congo", refs=[]),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # no_data: a resubmit quotes its posted entry text, never a display slug
 # ---------------------------------------------------------------------------

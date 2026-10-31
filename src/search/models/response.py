@@ -44,9 +44,10 @@ class EntityRefs(StrictModel):
             "group, continent or subregion bound as itself gives its own node, or the "
             "total its dataset publishes for it (G7 bound as GroupOfSeven); one bound as "
             "its members gives the set's own ref first (its node, else that total, else "
-            "its registry id) and then the members, sorted. [] for an ambiguous text, one that "
-            "resolved to no node or a node the answer does not bind, and every text of a "
-            "part refused before its places were bound"
+            "its registry id) and then the members, sorted. In a part refused before its "
+            "places were bound, a text that resolved to one node gives that node, and a "
+            "group or a set read as its members gives []. [] for an ambiguous text and one "
+            "that resolved to no node or a node the answer does not bind"
         )
     )
 
