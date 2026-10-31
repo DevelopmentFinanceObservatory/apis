@@ -10,6 +10,7 @@ as its membership and derives its scope from them.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, Sequence
 
 import pytest
@@ -20,6 +21,7 @@ from materialise.place_scope import (
     scope_of_places,
 )
 from search.engine.bind import SlotBindingDraft
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.extract import DateRequest
 from search.engine.retrieval import standard
 from search.engine.retrieval.retrieve import Materialised
@@ -344,6 +346,23 @@ def test_a_member_with_facets_beyond_its_scope_keeps_its_scope_alone() -> None:
     assert mat.facets_by_entity is not None
     assert len(mat.facets_by_entity[_KEN]) == 1
     assert _place_facts(mat) == _place_facts(_resubmitted(mat, obs, presence))
+
+
+@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
+def test_a_member_left_out_on_an_unsettled_scope_keeps_the_answer_uncached(
+    unsettled: bool,
+) -> None:
+    """Female's scope is an empty countries fallback, so the read leaves her out and the
+    answer serves male alone. A later request may read her over every place with data."""
+    presence = _presence({_FEMALE: [], _MALE: [_KEN]})
+    if unsettled:
+        presence = dataclasses.replace(presence, unsettled=frozenset({_FEMALE}))
+
+    with recording_degraded_reads() as lost:
+        mat = _resolve(_shape(_FEMALE, _MALE), _BatchRecordingGraph(_at(_MALE, _KEN)), presence)
+
+    assert mat.sv_dcids == [_MALE]
+    assert lost.degraded is unsettled
 
 
 def test_a_presence_read_without_a_probe_member_raises() -> None:

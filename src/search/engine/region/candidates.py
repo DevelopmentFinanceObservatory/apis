@@ -24,6 +24,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.extract import DateRequest
+from search.engine.place import consulted_scope
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
@@ -137,7 +138,7 @@ def _prewarm_places(
     scoped = place.presence_for(presence)
     if scoped is not None:
         covered = set(presence_stat_vars(shape, bindings, role_keys))
-        return {sv: scoped.scope(sv).places for sv in members if sv in covered}
+        return {sv: consulted_scope(scoped, sv).places for sv in members if sv in covered}
     entities = tuple(read_places or place.probe_dcids or named_place_dcids)
     return dict.fromkeys(members, entities)
 

@@ -41,7 +41,7 @@ from search.engine.extract import DateRequest
 from search.engine.frame import Frame, door_frame
 from search.engine.interpret import PinnedResolved, Recall
 from search.engine.interpretation import Interpretation, InterpretationSet
-from search.engine.place import read_default_presence
+from search.engine.place import covers_stat_var, read_default_presence
 from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierMatch,
@@ -338,7 +338,9 @@ def presence_lacking(
     """The StatVars a resolve of `shape` under `bindings` reads at their own default scope
     (`presence_stat_vars`) that `presence` does not cover."""
     return [
-        sv for sv in presence_stat_vars(shape, bindings, role_keys) if sv not in presence.scopes
+        sv
+        for sv in presence_stat_vars(shape, bindings, role_keys)
+        if not covers_stat_var(presence, sv)
     ]
 
 

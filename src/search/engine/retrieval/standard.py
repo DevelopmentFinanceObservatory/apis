@@ -11,7 +11,7 @@ from code_index.members import FamilyQuery, SourceNotInFamily, option_families
 from code_index.shared import get_index
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from search.engine.clients.materialise_bridge import _FACET_PROBE_MAX_PAIRS_PER_POST
-from search.engine.place import is_worldwide_scope
+from search.engine.place import consulted_scope, consulted_union, is_worldwide_scope
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     _bound_value_conflicts,
@@ -1020,7 +1020,7 @@ def _member_places(
     `probe_entities`."""
     places = dict.fromkeys(members, tuple(probe_entities))
     if presence is not None:
-        places.update((sv, presence.scope(sv).places) for sv in own_scope_members)
+        places.update((sv, consulted_scope(presence, sv).places) for sv in own_scope_members)
     return places
 
 
@@ -1525,7 +1525,7 @@ def standard_resolve(
             raise AssertionError(
                 f"a default place scope was asked for beside the subject entity {place_dcid!r}"
             )
-        place_dcids = default_presence.facet_entities(answering)
+        place_dcids = list(consulted_union(default_presence, answering).places)
 
     # The places the default-scope facet reads covered, once they have been read.
     read_places: set[str] | None = None
@@ -1536,7 +1536,7 @@ def standard_resolve(
         them as empty would answer a place with no data it may hold."""
         if default_presence is None:
             return result
-        scope = default_presence.union_scope(result.sv_dcids)
+        scope = consulted_union(default_presence, result.sv_dcids)
         if read_places is not None and (unread := set(scope.places) - read_places):
             raise AssertionError(
                 f"the default scope of {result.sv_dcids!r} settles on {sorted(unread)!r}, "
@@ -1638,7 +1638,7 @@ def standard_resolve(
         tuple(dict.fromkeys(e for sv, _, _ in named_members for e in places_of[sv])),
         place_dcids=place_dcids,
         default_scope=(
-            default_presence.union_scope([sv for sv, _, _ in named_members])
+            consulted_union(default_presence, [sv for sv, _, _ in named_members])
             if default_presence is not None and scope_check.active
             else None
         ),

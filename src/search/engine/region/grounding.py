@@ -1136,7 +1136,7 @@ def _relaxations_presence(
     served members. Off a default scope, or with every member covered, `ctx.presence`
     itself. A read that fails leaves `ctx.presence`, and a relaxation whose members it
     lacks yields no suggestion."""
-    from search.engine.place import read_default_presence
+    from search.engine.place import covers_stat_var, read_default_presence
     from search.engine.region.state import presence_stat_vars
 
     presence = ctx.presence
@@ -1151,7 +1151,7 @@ def _relaxations_presence(
             for relaxation in relaxations
             if relaxation is not None
             for sv in presence_stat_vars(relaxation[0], relaxation[1], role_keys)
-            if sv not in presence.scopes
+            if not covers_stat_var(presence, sv)
         )
     )
     if not missing:
@@ -1184,12 +1184,7 @@ def _relaxed_binding_suggestion(
     the suggestion's own places. This optional no-data probe fails open and leaves the
     resolved response intact.
     """
-    from search.engine.region.place_context import (
-        note_unsettled_scope,
-        settle_sets,
-        settled_shape,
-        with_where,
-    )
+    from search.engine.region.place_context import settle_sets, settled_shape, with_where
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_resolve import graph_confirm_resolve
 
@@ -1264,7 +1259,6 @@ def _relaxed_binding_suggestion(
         ) = ground
         if not sv_refs:
             return None, None, ground_warnings, None
-        note_unsettled_scope(mat)
 
         # Use the probe's resolved facts. Index-backed shape arcs may cover another population.
         inapplicable_slots = inapplicable_slots_from_member_facts(

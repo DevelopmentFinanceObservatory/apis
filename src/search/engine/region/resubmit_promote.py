@@ -18,7 +18,6 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.envelope import now_ms
 from search.engine.region.phase_timing import book_unbooked_time, booked_ms
-from search.engine.region.place_context import note_unsettled_scope
 from search.engine.region.promote_bindings import _phase_build_bindings
 from search.engine.region.promote_edits import _phase_detect_edits
 from search.engine.region.promote_finalize import _phase_finalize
@@ -135,7 +134,6 @@ def _resolve_standard_promote(
                     booked=booked_ms(state) - booked_before,
                 )
             if result is not None:
-                note_unsettled_scope(state.mat_result)
                 # Include timings from phases that returned early, the departures of the
                 # posted values the answer leaves unapplied (`with_requirement_departures`),
                 # and the departures raised beside the warnings the result keeps. A resubmit posts no words for any

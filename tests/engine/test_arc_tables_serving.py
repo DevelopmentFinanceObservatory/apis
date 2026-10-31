@@ -44,7 +44,6 @@ from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import FamilyNotResolvableError, GraphReadFailure
 from search.engine.quantity import QuantityRequirement
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import candidates as candidates_module
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region import state as region_state
 from search.engine.region.alternate_guard import offered_alternates, query_pins
@@ -74,7 +73,7 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.phase_shared import _elected_flagged_match
 from search.engine.region.pipeline import resolve_variable
-from search.engine.region.place_context import PlaceContext, note_unsettled_scope, place_context
+from search.engine.region.place_context import PlaceContext, place_context
 from search.engine.region.place_roles import PlaceAssignment
 from search.engine.region.sentence_events import _member_count
 from search.engine.region.state import (
@@ -1590,30 +1589,21 @@ def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
         )
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
-    served: list[object] = []
-    materialise = candidates_module.materialise
-
-    def recording_materialise(*args: Any, **kwargs: Any) -> object:
-        served.append(materialise(*args, **kwargs))
-        return served[-1]
-
-    monkeypatch.setattr(candidates_module, "materialise", recording_materialise)
-
-    read = _materialise_alt_shapes(
-        [alternate],
-        places=[place_context(shape, subject_place_roles(), stat_vars=[_BONDS], presence=known)],
-        presence=known,
-        named_place_dcids=[],
-        graph=client,
-        sdmx=FakeSdmxClient(observations={}, availability={}),
-        date_request=None,
-        coverage=empty_coverage_snapshot(),
-    )
+    place = place_context(shape, subject_place_roles(), stat_vars=[_BONDS], presence=known)
 
     with recording_degraded_reads() as lost:
-        note_unsettled_scope(served[-1])
+        read = _materialise_alt_shapes(
+            [alternate],
+            places=[place],
+            presence=known,
+            named_place_dcids=[],
+            graph=client,
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            date_request=None,
+            coverage=empty_coverage_snapshot(),
+        )
 
-    assert lost.degraded
+    assert lost.unsettled
     assert read.presence is not None and _BONDS not in read.presence.unsettled
 
 

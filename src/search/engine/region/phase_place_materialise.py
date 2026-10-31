@@ -28,7 +28,7 @@ from search.engine.departures import direction_inferred
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.interpret import PinnedResolved, Recall
-from search.engine.place import earth_countries, read_default_presence
+from search.engine.place import covers_stat_var, earth_countries, read_default_presence
 from search.engine.quantity import (
     NamedDenominator,
     check_denominator,
@@ -878,7 +878,7 @@ def _lacks_presence(
     `takers` or the capped shapes at `group`'s indices (`_group_stat_vars`)."""
     known = state.default_presence
     return known is None or any(
-        sv not in known.scopes for sv in _group_stat_vars(state, group, takers)
+        not covers_stat_var(known, sv) for sv in _group_stat_vars(state, group, takers)
     )
 
 

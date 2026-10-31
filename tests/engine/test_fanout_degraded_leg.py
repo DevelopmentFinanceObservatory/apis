@@ -4,24 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 import time
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
 from entity_resolution import Admission
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
+from search.engine import place as place_module
 from search.engine.binders import GeminiBinder
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
-from search.engine.place import read_default_presence
+from search.engine.place import consulted_scope, consulted_union, read_default_presence
 from search.engine.region import RegionResult
-from search.engine.region.place_context import note_unsettled_scope
 from search.engine.region.result import any_degraded
-from search.engine.retrieval.retrieve import Materialised
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -156,16 +157,6 @@ def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg():
     assert out.timed_out is False
 
 
-def _served_from(presence: DefaultPresence) -> Materialised:
-    """A read serving `_SERVED` from `presence`."""
-    return Materialised(
-        sv_dcids=[_SERVED],
-        has_data=True,
-        coverage=cast(Any, None),
-        default_scope=presence.union_scope([_SERVED]),
-    )
-
-
 def test_an_unsettled_presence_read_no_answer_uses_notes_nothing() -> None:
     presence = DefaultPresence(countries=(), scopes={}, unsettled=frozenset({_SERVED}))
     with (
@@ -180,22 +171,21 @@ def test_an_unsettled_presence_read_no_answer_uses_notes_nothing() -> None:
 @pytest.mark.parametrize(
     ("known_unsettled", "degraded"),
     [
-        pytest.param({_SERVED}, True, id="served-unsettled"),
-        pytest.param({_READ_ONLY}, False, id="unserved-unsettled"),
+        pytest.param({_SERVED}, True, id="consulted-unsettled"),
+        pytest.param({_READ_ONLY}, False, id="unconsulted-unsettled"),
         pytest.param(set(), False, id="settled"),
     ],
 )
-def test_only_a_served_stat_var_s_fallback_is_a_lost_read(
+def test_a_decision_consulting_an_unsettled_scope_is_a_lost_read(
     known_unsettled: set[str], degraded: bool
 ) -> None:
     scopes = {sv: DefaultPlaceScope(places=("country/KEN",), every_place=False) for sv in _BOTH}
     presence = DefaultPresence(
         countries=("country/KEN",), scopes=scopes, unsettled=frozenset(known_unsettled)
     )
-    mat = _served_from(presence)
 
     with recording_degraded_reads() as lost:
-        note_unsettled_scope(mat)
+        consulted_union(presence, [_SERVED])
 
     assert lost.degraded is degraded
 
@@ -206,12 +196,27 @@ def test_a_later_read_that_settled_a_stat_var_leaves_the_answer_cacheable() -> N
     later = DefaultPresence(
         countries=("country/KEN",), scopes={_SERVED: scope}, unsettled=frozenset({_SERVED})
     )
-    mat = _served_from(settled.merged(later))
 
     with recording_degraded_reads() as lost:
-        note_unsettled_scope(mat)
+        consulted_scope(settled.merged(later), _SERVED)
 
     assert lost.degraded is False
+
+
+def test_search_reads_a_presence_s_scopes_only_through_the_consulting_door() -> None:
+    """A scope read outside `place.consulted_scope` would shape an answer on a countries
+    fallback without keeping it out of the cache."""
+    door = Path(place_module.__file__)
+    direct = re.compile(r"\.scopes\b|\.scope\(|\bfacet_entities\(|\bunion_scope\(")
+    found = [
+        f"{path}:{number}"
+        for path in sorted(door.parents[1].rglob("*.py"))
+        if path != door
+        for number, line in enumerate(path.read_text().splitlines(), start=1)
+        if direct.search(line)
+    ]
+
+    assert found == []
 
 
 def test_infra_error_fails_the_request_and_never_sets_degraded_leg():

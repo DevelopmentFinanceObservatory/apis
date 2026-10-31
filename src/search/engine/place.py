@@ -24,6 +24,7 @@ from materialise.place_scope import (
     PlaceScopeReadError,
     is_worldwide,
 )
+from search.engine.degraded_reads import note_unsettled_scope
 from search.engine.errors import GraphReadFailure
 
 if TYPE_CHECKING:
@@ -85,6 +86,34 @@ def default_place_scope_message(scope: DefaultPlaceScope) -> str:
         "no place was named; the answer covers the countries with data, because the full list "
         "of places was too large or unavailable."
     )
+
+
+def consulted_scope(presence: DefaultPresence, stat_var: str) -> DefaultPlaceScope:
+    """The default scope of `stat_var` in `presence`, for a decision that reads it.
+
+    A scope that is a countries fallback this request alone took is noted
+    (`degraded_reads.note_unsettled_scope`), so the answer the decision shapes stays out of
+    the response cache. Search reads a presence's scopes only here and in `consulted_union`,
+    and asks whether a presence covers a StatVar with `covers_stat_var`, which reads no scope.
+    A presence read that no decision consults notes nothing."""
+    scope = presence.scope(stat_var)
+    if not scope.settled:
+        note_unsettled_scope(stat_var)
+    return scope
+
+
+def consulted_union(presence: DefaultPresence, stat_vars: Iterable[str]) -> DefaultPlaceScope:
+    """`DefaultPresence.union_scope` of `stat_vars`, each scope read through
+    `consulted_scope`."""
+    stat_vars = list(dict.fromkeys(stat_vars))
+    for stat_var in stat_vars:
+        consulted_scope(presence, stat_var)
+    return presence.union_scope(stat_vars)
+
+
+def covers_stat_var(presence: DefaultPresence, stat_var: str) -> bool:
+    """Whether `presence` holds a default scope for `stat_var`."""
+    return stat_var in presence.scopes
 
 
 def read_default_presence(

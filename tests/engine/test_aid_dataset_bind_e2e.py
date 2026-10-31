@@ -39,6 +39,7 @@ from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
+from search.engine.degraded_reads import note_unsettled_scope
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
@@ -924,20 +925,25 @@ def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
 
 
 @pytest.mark.parametrize(
-    ("first_reading_lost", "degraded"), [(True, True), (False, False)], ids=["lost", "settled"]
+    ("first_reading", "degraded"),
+    [("lost", True), ("scope", False), ("settled", False)],
+    ids=["lost", "scope", "settled"],
 )
 def test_a_party_reading_dropped_after_its_answer_marks_the_reply_degraded(
-    monkeypatch: pytest.MonkeyPatch, first_reading_lost: bool, degraded: bool
+    monkeypatch: pytest.MonkeyPatch, first_reading: str, degraded: bool
 ):
     """An alternate the first reading left unevaluated holds for this request only, whichever
-    reading answers."""
+    reading answers. An unsettled scope it consulted shaped only its own answer, which the
+    reply does not hold."""
     _party_coverage(monkeypatch, from_the_party=False)
     stating = pipeline_module._stating_unevaluated
 
     def leaving_an_alternate(result, state):
-        if first_reading_lost and not state.party_words_off:
+        if not state.party_words_off and first_reading == "lost":
             state.unevaluated_alternates = True
             state.alternates_presence_failure = "timed_out"
+        if not state.party_words_off and first_reading == "scope":
+            note_unsettled_scope("Count_Consulted")
         return stating(result, state)
 
     monkeypatch.setattr(pipeline_module, "_stating_unevaluated", leaving_an_alternate)

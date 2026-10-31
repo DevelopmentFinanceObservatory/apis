@@ -6,10 +6,12 @@ Offline scenarios use hand-built graph and LLM doubles with registry dcids.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Callable
 
 import pytest
 
+from materialise import place_scope
 from search.engine.binders import Binder
 from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
@@ -156,6 +158,54 @@ def _sv_refs(spec) -> set[str]:
 
 def _warning_codes(result) -> set[str]:
     return {w.code for w in result.warnings}
+
+
+@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
+def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
+    monkeypatch: pytest.MonkeyPatch, unsettled: bool
+) -> None:
+    """With no place named, the twin diverted into `equivalent_readings` is read over its
+    own default scope. A countries fallback there holds for this request only."""
+    read = place_scope.read_default_presence
+
+    def reading(**kwargs):
+        presence = read(**kwargs)
+        return dataclasses.replace(presence, unsettled=frozenset({_ELEC_SDG} if unsettled else ()))
+
+    monkeypatch.setattr(place_scope, "read_default_presence", reading)
+    graph = FakeGraph(
+        nodes=_NODES,
+        detect={"electricity access": {"svs": [_ELEC_WB, _ELEC_SDG], "cosine_scores": [0.9, 0.85]}},
+        obs={
+            f"{_ELEC_WB}|country/KEN": [_facet(provenance_id="source/WorldBank")],
+            f"{_ELEC_SDG}|country/KEN": [_facet(provenance_id="source/SDG")],
+        },
+        children={"Earth": {"Country": ["country/KEN"]}},
+    )
+    result = asyncio.run(
+        resolve_variable(
+            "electricity access",
+            entities=[],
+            date_request=None,
+            detect_query="electricity access",
+            role_query="electricity access",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_CandidateBindLLM(chosen_shape_index=0, also_plausible=[1]),
+            base_timing={},
+            sdmx=FakeSdmxClient(
+                observations={}, availability={}, scope_availability=graph.scope_availability
+            ),
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(),
+        )
+    )
+
+    assert result.status == "definite", result
+    [twin] = result.specs[0].resolved.equivalent_readings or []
+    assert _sv_refs(twin) == {_ELEC_SDG}
+    assert result.degraded is unsettled
 
 
 # A genuine twin diverts: definite, with the twin named in equivalent_readings.

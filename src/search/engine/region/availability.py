@@ -38,6 +38,7 @@ from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.extract import DateRequest
+from search.engine.place import consulted_scope, covers_stat_var
 from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
 from search.engine.region.coverage_series import holds_series, requested_window
 from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
@@ -243,9 +244,11 @@ def _default_scope_has_data(shape: ShapeDraft, presence: DefaultPresence | None)
     """D in the default scope a subject-only shape declares: whether a member's default
     scope holds a place. Unknown when the presence read does not cover every member."""
     members = list(shape.sv_arc_facts or ())
-    if presence is None or not members or any(sv not in presence.scopes for sv in members):
+    if presence is None or not members:
         return None
-    return any(presence.scopes[sv].places for sv in members)
+    if not all(covers_stat_var(presence, sv) for sv in members):
+        return None
+    return any(consulted_scope(presence, sv).places for sv in members)
 
 
 def has_data_where_asked(
