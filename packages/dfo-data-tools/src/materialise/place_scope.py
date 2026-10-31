@@ -341,13 +341,12 @@ class DefaultPresence:
 
     def union_scope(self, stat_vars: Iterable[str]) -> DefaultPlaceScope:
         """The places a set of StatVars covers when each is served at its own scope, every
-        place only when each scope is, and settled only when each scope is."""
+        place only when each scope is."""
         scopes = [self.scope(stat_var) for stat_var in dict.fromkeys(stat_vars)]
-        union = scope_of_places(
+        return scope_of_places(
             (place for scope in scopes for place in scope.places),
             every_place=all(scope.every_place for scope in scopes),
         )
-        return replace(union, settled=all(scope.settled for scope in scopes))
 
     def merged(self, other: DefaultPresence) -> DefaultPresence:
         """This presence with the StatVars `other` covers and this one does not. Both lists
