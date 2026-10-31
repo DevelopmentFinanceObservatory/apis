@@ -31,20 +31,25 @@ its claim copies nothing. The copy's own result settles it: a new object is `lan
 deduplicated copy or absent bytes refund, unless the claim had already paid. The claim's lease is
 static, with no thread renewing it, since Cloud Run throttles a prepare that outlives its request:
 `definition_timeout_seconds` plus `PREPARE_LEASE_MARGIN`, as the worker's static lease does.
-`begin_copy` writes `_COPY_LEASE`, so a running copy's claim stays live, and settling the copy
-writes the prepare's lease back on either outcome. A render that outlives
+The copy reads its source location first, then `begin_copy` writes `_COPY_LEASE`, so the leased
+window holds only `copy_blob` and a running copy's claim stays live in the usual case. Settling
+the copy writes a fresh prepare lease on either outcome, so the owner keeps the claim through its
+reference, shape and record writes. A render that outlives
 its lease lands when nothing took the claim, since a takeover fails the generation fence. A retry
 takes over a `copying` claim and settles it by the pinned object before any render, refusing
 `ExportClaimUnsettled` if it cannot. A stale claim with no copy begun refunds as it is taken over,
 so the next caller spends for itself. A stale unit answers `PinUnitHeld` until then or until
-`sweep_export_claims`, the five-minute backstop, settles it. A crash holds a unit for at most its
-lease plus the sweep interval: 450 seconds with no copy begun, and 480 with one. A refund
+`sweep_export_claims`, the five-minute backstop, settles it. A crash holds a unit, counted from
+the spend, for at most the prepare lease (150 seconds at the default definition timeout) plus the
+sweep interval with no copy begun, 450 seconds, and with one begun for the prepare lease plus
+`_COPY_LEASE` plus the sweep interval, 610 seconds. A refund
 lands on the UTC day that spent the unit, so after midnight it changes nothing a caller can see,
 since that day's limits no longer apply.
 
-Three causes can land a copy after its units came back, each at most one free object per digest:
-a prepare paused between `begin_copy` and the copy, which `cpu_idle` makes ordinary, a client-side
-`copy_blob` timeout with the server still copying, and a lost response retried with
+Four causes can land a copy after its units came back, each at most one free object per digest:
+a prepare paused between `begin_copy` and the copy, which `cpu_idle` makes ordinary, a copy whose
+reply trickles past `_COPY_LEASE`, a client-side `copy_blob` timeout with the server still copying,
+and a lost response retried with
 `if_generation_match=0`, which reads as deduplicated. A pin landing first leaves two sets spent,
 since an existence read cannot say who paid. A `copy_to_pinned` whose existence read also fails
 keeps its units, with no sweep to settle them.
@@ -57,6 +62,8 @@ from datetime import datetime, timedelta
 from types import MappingProxyType, TracebackType
 from typing import Self, cast
 
+from google.cloud.storage.retry import DEFAULT_RETRY
+
 from artifact_store import (
     COPY_LANDS_WITHIN,
     ArtifactNotFoundError,
@@ -64,10 +71,10 @@ from artifact_store import (
     StoredArtifact,
     Tier,
 )
+from dataset_store import BORROW_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS
 from dataset_store.clock import Clock
 from datasets_api.allowance import (
     BUDGET_KEY,
-    RUNNING_CLAIM_RETRY_SECONDS,
     AllowanceExhausted,
     AllowanceKind,
     ClaimState,
@@ -84,9 +91,16 @@ PREPARE_LEASE_MARGIN = timedelta(seconds=30)
 """How long a prepare's claim outlives its `definition_timeout_seconds`, for the writes begun
 before the deadline."""
 
-_COPY_LEASE = COPY_LANDS_WITHIN + timedelta(seconds=30)
-"""How long a begun copy keeps its claim: the longest a copy takes to land, with a margin for the
-claim write before it."""
+_COPY_LEASE = COPY_LANDS_WITHIN + timedelta(
+    seconds=BORROW_TIMEOUT_SECONDS + 2 * CONNECT_TIMEOUT_SECONDS
+)
+"""How long a begun copy keeps its claim. `begin_copy` computes it before its own write, so it
+holds that transaction's bound (a pool borrow, a dial and one round trip) and then the time
+`copy_blob` takes to land (`artifact_store.COPY_LANDS_WITHIN`)."""
+
+_UNSETTLED_RETRY_SECONDS = 30
+"""`ExportClaimUnsettled`'s wait: the pinned bucket could not be read, and a quick retry would
+only take a work permit to fail again."""
 
 
 __all__ = [
@@ -156,13 +170,12 @@ class PinUnitHeld(Refusal):
 class ExportClaimUnsettled(Refusal):
     """An export prepare cannot go on over its claim: another writer moved it, or the pinned
     object that settles an earlier copy could not be read. Maps to retryable
-    `service_unavailable`, 503, with `Retry-After` of `RUNNING_CLAIM_RETRY_SECONDS`, since a retry
-    of the export takes the claim itself."""
+    `service_unavailable`, 503, with `Retry-After` of `_UNSETTLED_RETRY_SECONDS`."""
 
     code = "service_unavailable"
     retryable = True
     detail = "this export's claim is not settled; retry"
-    headers = MappingProxyType({"Retry-After": str(RUNNING_CLAIM_RETRY_SECONDS)})
+    headers = MappingProxyType({"Retry-After": str(_UNSETTLED_RETRY_SECONDS)})
 
 
 _BUDGET_REFUSALS = {
@@ -191,11 +204,11 @@ def _spend_refusal(exhausted: AllowanceExhausted, *, now: datetime) -> Refusal:
     return exhausted if budget is None else budget(limit=exhausted.limit, now=now)
 
 
-def _landed(artifacts: ArtifactStore, digest: str, *, retry: bool) -> bool | None:
-    """Whether the pinned object of `digest` exists, `None` when the read fails. A read under a
-    work permit passes `retry=False` and stays short."""
+def _landed(artifacts: ArtifactStore, digest: str) -> bool | None:
+    """Whether the pinned object of `digest` exists, `None` when the read fails. The read takes
+    the short default retry (`artifact_store.EXISTS_RETRY`), since its caller holds a permit."""
     try:
-        return artifacts.exists(digest, tier=Tier.pinned, retry=retry)
+        return artifacts.exists(digest, tier=Tier.pinned)
     except Exception:
         logger.exception("Reading the pinned object %s failed", digest)
         return None
@@ -213,20 +226,21 @@ class PreparingCopy:
         artifacts: ArtifactStore,
         caller: Caller | None,
         clock: Clock,
+        lease: timedelta,
     ) -> None:
         self._claim = claim
         self._allowances = allowances
         self._artifacts = artifacts
         self._caller = caller
         self._clock = clock
-        self._lease = claim.expires_at
+        self._lease = lease
 
     def _settle(self, *, landed: bool) -> None:
         """Move the claim out of `copying`. A write that fails leaves it there for a retry or
         the sweep, so the prepare's own outcome stands."""
         try:
             settled = self._allowances.settle_copy(
-                self._claim, landed=landed, expires_at=self._lease
+                self._claim, landed=landed, expires_at=self._clock() + self._lease
             )
         except Exception:
             logger.exception("Settling the copy of %s failed", self._claim.export_id)
@@ -236,7 +250,7 @@ class PreparingCopy:
 
     def _judge(self) -> None:
         """Settle a `copying` claim by the pinned object, or leave it when the read fails."""
-        landed = _landed(self._artifacts, cast(str, self._claim.digest), retry=False)
+        landed = _landed(self._artifacts, cast(str, self._claim.digest))
         if landed is not None:
             self._settle(landed=landed)
 
@@ -288,6 +302,9 @@ class PreparingCopy:
             self._claim = reopened
             self.hold()
         paid = self._claim.state == ClaimState.landed
+        source = self._artifacts.location(artifact_digest, tier=Tier.working)
+        if source is None:
+            raise ArtifactNotFoundError(digest=artifact_digest, tier=Tier.working)
         began = self._allowances.begin_copy(
             self._claim, artifact_digest, expires_at=self._clock() + _COPY_LEASE
         )
@@ -296,7 +313,7 @@ class PreparingCopy:
         self._claim = began
         try:
             copied = self._artifacts.copy(
-                artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+                artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source
             )
         except ArtifactNotFoundError:
             self._settle(landed=paid)
@@ -365,7 +382,7 @@ def copy_to_pinned(
         _refund(allowances, spends, now=now)
         raise
     except Exception:
-        if _landed(artifacts, artifact_digest, retry=True) is False:
+        if _landed(artifacts, artifact_digest) is False:
             _refund(allowances, spends, now=now)
         raise
     if copied.deduplicated:
@@ -393,7 +410,7 @@ def _settle_stale_claim(
     pinned object, and a `landed` one stays through its UTC day so that a retry finds its paid
     copy: from the next day a retry has units of its own, which the pinned bytes give back."""
     if claim.state == ClaimState.copying and artifacts.exists(
-        cast(str, claim.digest), tier=Tier.pinned
+        cast(str, claim.digest), tier=Tier.pinned, retry=DEFAULT_RETRY
     ):
         return allowances.settle_copy(claim, landed=True, expires_at=claim.expires_at) is not None
     if claim.state == ClaimState.landed and utc_day(cast(datetime, claim.spent_at)) >= utc_day(now):

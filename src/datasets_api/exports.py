@@ -932,6 +932,7 @@ def prepare_export(
         artifacts=current.artifact_store,
         caller=caller,
         clock=current.now,
+        lease=lease,
     ) as copy:
         copy.settle_earlier()
         # A prepare can end between the door's read and this claim, so the claim reads again.

@@ -357,8 +357,9 @@ SWEEP_INTERVAL_SECONDS = 300
 """How often Cloud Scheduler runs `maintenance`'s `sweep-export-claims`, and so the wait on a
 claim whose lease has passed."""
 
-RUNNING_CLAIM_RETRY_SECONDS = 5
-"""The wait on a claim whose lease runs. A prepare takes about 6 s."""
+RUNNING_CLAIM_RETRY_SECONDS = 10
+"""The wait on a claim whose lease runs. A prepare takes about 6 s, so a typical one settles
+before the retry, and a long render is polled every 10 s."""
 
 
 class LiveAllowanceLedger:

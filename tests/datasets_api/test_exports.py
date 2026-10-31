@@ -1154,7 +1154,7 @@ def test_a_burst_from_a_caller_with_one_unit_left_renders_one_file(
 
     assert [r.status_code for r in burst] == [503, 503, 503], [r.text for r in burst]
     assert {r.json()["retryable"] for r in burst} == {True}
-    assert {r.headers["retry-after"] for r in burst} == {"5"}
+    assert {r.headers["retry-after"] for r in burst} == {"10"}
     assert answered.status_code == 200, answered.text
     assert render.calls == 1
     assert _spent(rig.ledger)[(caller_key, "pin")] == 1

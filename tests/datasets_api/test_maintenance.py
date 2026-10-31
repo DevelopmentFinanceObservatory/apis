@@ -156,7 +156,7 @@ def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
 class _BrokenFor(FakeArtifactStore):
     """A bucket whose read of one digest fails."""
 
-    def exists(self, digest: str, *, tier: Tier, retry: bool = True) -> bool:
+    def exists(self, digest: str, *, tier: Tier, retry: object = None) -> bool:
         if digest == "sha256:broken":
             raise ArtifactWriteError(object_name=digest, digest=digest)
         return super().exists(digest, tier=tier)

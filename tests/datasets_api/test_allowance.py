@@ -359,7 +359,12 @@ def _preparing(
     ledger: LiveAllowanceLedger, claim: ExportClaim, artifacts: FakeArtifactStore
 ) -> PreparingCopy:
     return PreparingCopy(
-        claim, allowances=ledger, artifacts=artifacts, caller=None, clock=lambda: _NOON
+        claim,
+        allowances=ledger,
+        artifacts=artifacts,
+        caller=None,
+        clock=lambda: _NOON,
+        lease=_LEASE - _NOON,
     )
 
 
@@ -373,14 +378,14 @@ class _Bucket(FakeArtifactStore):
         self.copy_raises = copy_raises
         self.read_fails = read_fails
 
-    def copy(self, digest, *, from_tier, to_tier):
+    def copy(self, digest, *, from_tier, to_tier, source=None):
         if self.copy_raises is None or self.lands:
             copied = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
         if self.copy_raises is not None:
             raise self.copy_raises
         return copied
 
-    def exists(self, digest, *, tier, retry=True):
+    def exists(self, digest, *, tier, retry=None):
         if self.read_fails:
             raise ArtifactWriteError(object_name=digest, digest=digest)
         return super().exists(digest, tier=tier)
@@ -482,8 +487,40 @@ def test_a_copy_nobody_can_judge_refuses_before_the_render(claims):
     with pytest.raises(ExportClaimUnsettled) as refused:
         _preparing(claims, copying, _Bucket(read_fails=True)).settle_earlier()
 
-    assert refused.value.headers == {"Retry-After": "5"}
+    assert refused.value.headers == {"Retry-After": "30"}
     assert claims.read_claim(_EXPORT) == copying
+
+
+def test_a_copy_settling_past_the_first_prepare_lease_leaves_a_live_claim(claims):
+    """The owner keeps the claim through the writes that follow its copy."""
+    bucket = _Bucket()
+    bucket._objects[(_DIGEST, Tier.working.value)] = b"bytes"
+    late = _LATER + timedelta(minutes=5)
+    preparing = PreparingCopy(
+        _held(claims),
+        allowances=claims,
+        artifacts=bucket,
+        caller=None,
+        clock=lambda: late,
+        lease=_LEASE - _NOON,
+    )
+
+    preparing.copy(_DIGEST)
+
+    settled = claims.read_claim(_EXPORT)
+    assert settled.state == ClaimState.landed
+    assert settled.expires_at == late + (_LEASE - _NOON)
+    assert claims.expired_claims(late) == []
+
+
+def test_a_copy_reads_its_source_before_it_begins(claims):
+    """A missing source refuses before the claim moves to `copying`."""
+    held = _held(claims)
+
+    with pytest.raises(ArtifactNotFoundError):
+        _preparing(claims, held, _Bucket()).copy(_DIGEST)
+
+    assert claims.read_claim(_EXPORT) == held
 
 
 def test_a_prepare_that_ends_settles_its_claim_by_how_it_ended(claims):

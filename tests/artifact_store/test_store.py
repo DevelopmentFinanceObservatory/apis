@@ -7,6 +7,7 @@ from datetime import timedelta
 
 import pytest
 from google.api_core.exceptions import ServiceUnavailable
+from google.cloud.storage.retry import DEFAULT_RETRY
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -17,8 +18,10 @@ from artifact_store.errors import (
 )
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
 from artifact_store.store import (
-    COPY_ATTEMPT_TIMEOUT_SECONDS,
+    COPY_CONNECT_TIMEOUT_SECONDS,
+    COPY_READ_TIMEOUT_SECONDS,
     COPY_RETRY_DEADLINE_SECONDS,
+    EXISTS_RETRY,
     LiveArtifactStore,
     Tier,
 )
@@ -758,20 +761,20 @@ def test_a_pinned_dedupe_without_a_location_row_reads_no_object_metadata():
 
 
 @pytest.mark.parametrize("stored", [True, False], ids=["present", "absent"])
-def test_an_existence_read_is_short_and_takes_no_retry(stored: bool):
-    """A settle holds a work permit through this read, so a failing bucket raises in seconds."""
+def test_an_existence_read_is_short_unless_its_caller_names_a_longer_retry(stored: bool):
+    """A settle holds a work permit through this read, so by default it retries within 5 s."""
     client = FakeGCSClient()
     store = _store(client, RecordingArtifactInventory())
     bucket = client.bucket(_BUCKETS[Tier.pinned])
     if stored:
         bucket.objects["sha256:a"] = b"bytes"
 
-    assert store.exists("sha256:a", tier=Tier.pinned, retry=False) is stored
-    assert bucket.get_blob_options["retry"] is None
-    assert 0 < bucket.get_blob_options["timeout"] <= 10
-
     assert store.exists("sha256:a", tier=Tier.pinned) is stored
-    assert bucket.get_blob_options == {}
+    assert bucket.get_blob_options["retry"] is EXISTS_RETRY
+    assert EXISTS_RETRY._timeout == bucket.get_blob_options["timeout"] == 5
+
+    assert store.exists("sha256:a", tier=Tier.pinned, retry=DEFAULT_RETRY) is stored
+    assert bucket.get_blob_options["retry"] is DEFAULT_RETRY
 
 
 def test_a_copy_names_the_bounds_its_lease_counts_on():
@@ -791,5 +794,5 @@ def test_a_copy_names_the_bounds_its_lease_counts_on():
 
     store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
 
-    assert seen["timeout"] == COPY_ATTEMPT_TIMEOUT_SECONDS
+    assert seen["timeout"] == (COPY_CONNECT_TIMEOUT_SECONDS, COPY_READ_TIMEOUT_SECONDS)
     assert seen["retry"]._timeout == COPY_RETRY_DEADLINE_SECONDS

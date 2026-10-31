@@ -23,7 +23,7 @@ from uuid import uuid4
 import pg8000.exceptions
 import pytest
 
-from artifact_store import ArtifactNotFoundError
+from artifact_store import ArtifactLocation, ArtifactNotFoundError
 from artifact_store.errors import ArtifactWriteError
 from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import StoredArtifact, Tier
@@ -2434,7 +2434,7 @@ def test_an_export_claim_holds_units_and_refunds_them_once_under_real_postgres(l
     assert ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE) is None
     with pytest.raises(AllowanceExhausted) as refused:
         ledger.spend_together([spend], _CLAIMED_AT)
-    assert refused.value.held_for == 5
+    assert refused.value.held_for == 10
     ledger.close_claim(held)
     ledger.close_claim(held)
     assert ledger.read_claim(export) is None
@@ -2504,23 +2504,6 @@ def test_a_takeover_by_another_caller_refunds_and_fences_the_first_under_real_po
     assert _unit_count(live_store, other) == 1
 
 
-def test_a_copy_after_the_row_has_gone_copies_nothing_under_real_postgres(live_store):
-    ledger, export, spend = _claim_rig(live_store)
-    held = _held_claim(ledger, export, spend)
-    ledger.close_claim(held)
-
-    class _Forbidden:
-        def copy(self, digest, *, from_tier, to_tier):
-            raise AssertionError("a prepare that lost its claim must not copy")
-
-    preparing = PreparingCopy(
-        held, allowances=ledger, artifacts=_Forbidden(), caller=None, clock=lambda: _AFTER_LEASE
-    )
-    with pytest.raises(ExportClaimUnsettled):
-        preparing.copy("sha256:a")
-    assert _unit_count(live_store, spend) == 0
-
-
 class _PaidBucket:
     """A bucket whose working bytes have gone, whose pinned object `pinned` says stands or raises
     when it is an error."""
@@ -2528,10 +2511,15 @@ class _PaidBucket:
     def __init__(self, pinned: bool | Exception) -> None:
         self._pinned = pinned
 
-    def copy(self, digest, *, from_tier, to_tier):
+    def location(self, digest, *, tier):
+        return ArtifactLocation(
+            bucket="working", object_name=digest, stored_at=_CLAIMED_AT, renewal=0
+        )
+
+    def copy(self, digest, *, from_tier, to_tier, source=None):
         raise ArtifactNotFoundError(digest=digest, tier=from_tier)
 
-    def exists(self, digest, *, tier, retry=True):
+    def exists(self, digest, *, tier, retry=None):
         if isinstance(self._pinned, Exception):
             raise self._pinned
         return self._pinned
@@ -2539,8 +2527,28 @@ class _PaidBucket:
 
 def _preparing(ledger, claim, bucket) -> PreparingCopy:
     return PreparingCopy(
-        claim, allowances=ledger, artifacts=bucket, caller=None, clock=lambda: _CLAIMED_AT
+        claim,
+        allowances=ledger,
+        artifacts=bucket,
+        caller=None,
+        clock=lambda: _CLAIMED_AT,
+        lease=_CLAIM_LEASE - _CLAIMED_AT,
     )
+
+
+def test_a_copy_after_the_row_has_gone_copies_nothing_under_real_postgres(live_store):
+    ledger, export, spend = _claim_rig(live_store)
+    held = _held_claim(ledger, export, spend)
+    ledger.close_claim(held)
+
+    class _Forbidden(_PaidBucket):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
+            raise AssertionError("a prepare that lost its claim must not copy")
+
+    preparing = _preparing(ledger, held, _Forbidden(True))
+    with pytest.raises(ExportClaimUnsettled):
+        preparing.copy("sha256:a")
+    assert _unit_count(live_store, spend) == 0
 
 
 def test_a_paid_claim_stays_paid_when_a_retry_finds_no_working_bytes_under_real_postgres(
