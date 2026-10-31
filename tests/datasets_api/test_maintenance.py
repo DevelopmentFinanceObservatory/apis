@@ -17,6 +17,7 @@ from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
 from dataset_store.migrate import MIGRATIONS_DIR
 from dataset_store.snapshot import WORKING_TIER_RETENTION, FrameLineage, LiveSnapshotReader
 from datasets_api import maintenance
+from datasets_api.allowance import BUDGET_KEY, AllowanceKind, LiveAllowanceLedger, Spend
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.render import CANONICAL_FRAME_RENDERING
@@ -89,6 +90,61 @@ def test_the_daily_run_logs_counts_and_capped_sorted_names_for_each_tier(capsys)
     assert lines["pinned"]["missing_objects_sample"] == first_names
     assert lines["pinned"]["unreferenced_pinned_digests_sample"] == first_names
     assert "orphaned_objects_sample" not in lines["pinned"]
+
+
+def _claims() -> LiveAllowanceLedger:
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={AllowanceKind.pin_budget: 5},
+    )
+
+
+@pytest.mark.parametrize(
+    ("digest", "pinned", "later", "units", "left"),
+    [
+        pytest.param(None, False, False, {}, False, id="died-mid-render"),
+        pytest.param("sha256:a", False, False, {}, False, id="copy-never-landed"),
+        pytest.param("sha256:a", True, False, {"pin_budget": 1}, True, id="copy-stands-same-day"),
+        pytest.param("sha256:a", True, True, {"pin_budget": 1}, False, id="copy-stands-day-passed"),
+    ],
+)
+def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
+    digest: str | None, pinned: bool, later: bool, units: dict[str, int], left: bool, capsys
+):
+    """A second run changes nothing, and a standing copy is read from the bucket, since its
+    inventory row can be what failed."""
+    spent_at = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    now = spent_at + timedelta(days=1 if later else 0, minutes=5)
+    ledger = _claims()
+    artifact_store = FakeArtifactStore()
+    claim = ledger.claim("exp_a", now=spent_at, expires_at=spent_at + timedelta(minutes=2))
+    held = ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], spent_at)
+    if digest is not None:
+        ledger.name_claim_digest(held, digest)
+    if pinned:
+        artifact_store._objects[(digest, Tier.pinned.value)] = b"bytes"
+
+    for _ in range(2):
+        maintenance.run_export_claim_sweep(
+            store=ledger._store, artifact_store=artifact_store, now=lambda: now
+        )
+
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT kind, count FROM datasets.caller_allowance")
+    assert {row["kind"]: row["count"] for row in rows} == units
+    assert (ledger.read_claim("exp_a") is not None) is left
+
+
+def test_the_sweep_leaves_a_claim_with_a_running_lease():
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    ledger = _claims()
+    ledger.claim("exp_a", now=now, expires_at=now + timedelta(minutes=2))
+
+    maintenance.run_export_claim_sweep(
+        store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
+    )
+
+    assert ledger.read_claim("exp_a") is not None
 
 
 def test_a_missing_or_unknown_task_is_refused():

@@ -128,6 +128,14 @@ CREATE TABLE datasets.export (
     body TEXT NOT NULL,
     recorded_at TEXT NOT NULL
 );
+CREATE TABLE datasets.export_prepare_claim (
+    export_id TEXT PRIMARY KEY,
+    expires_at TEXT NOT NULL,
+    spends TEXT NOT NULL DEFAULT '{}',
+    spent_at TEXT,
+    artifact_digest TEXT,
+    refusal TEXT
+);
 CREATE TABLE datasets.description_record (
     subject_id TEXT NOT NULL,
     content_version TEXT NOT NULL,
@@ -218,10 +226,13 @@ _JSON_COLUMNS = frozenset(
         "request_identity",
         "options",
         "refusal",
+        "spends",
     }
 )
 _TIMESTAMP_COLUMNS = frozenset(
     {
+        "expires_at",
+        "spent_at",
         "recorded_at",
         "created_at",
         "revoked_at",

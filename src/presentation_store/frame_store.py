@@ -222,6 +222,7 @@ from datasets_api.render import servable_frame_location
 from datasets_api.retention_admission import (
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
+    PinUnitHeld,
     copy_to_pinned,
 )
 from datasets_api.subject_ids import served_subject_ids
@@ -1263,6 +1264,7 @@ class LiveFrameStore:
                 root's pin failed on I/O.
             PinBudgetExhausted: The day's pin budget is spent.
             OpenPinBudgetExhausted: The open callers' pin budget is spent.
+            PinUnitHeld: A running export prepare holds the last unit of a limit.
             AllowanceExhausted: `caller`'s `pin` allowance is spent.
         """
         roots = self._root_closure(frame_ref)
@@ -1383,7 +1385,7 @@ class LiveFrameStore:
                     caller=caller,
                     now=self._now(),
                 )
-            except (PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted):
+            except (PinBudgetExhausted, OpenPinBudgetExhausted, PinUnitHeld, AllowanceExhausted):
                 raise
             except ArtifactNotFoundError as exc:
                 raise FrameUnavailable(

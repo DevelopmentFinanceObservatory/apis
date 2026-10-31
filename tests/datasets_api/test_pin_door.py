@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 from artifact_store import Tier
+from artifact_store.errors import ArtifactWriteError
 from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
     ArtifactNotFound,
@@ -38,6 +39,7 @@ from datasets_api.reference_store import (
     PIN_REFERENCE_KIND,
 )
 from datasets_api.render import servable_frame_location
+from datasets_api.retention_admission import PinUnitHeld
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.caller import Caller, address_key
 from materialise.formats import FRAME1_MEDIA_TYPE
@@ -577,6 +579,46 @@ def _pin_named(store, location, ledger: LiveAllowanceLedger, *, caller: Caller |
         caller=caller,
     )
     return pinned_at, writer
+
+
+def test_a_copy_that_landed_and_raised_ends_with_one_set_of_units():
+    """The bytes can land before a copy raises, so the failed attempt keeps its units, and the
+    retry, which finds them stored, gives its own set back."""
+
+    class _LandedThenRaised(FakeArtifactStore):
+        failed = False
+
+        def copy(self, digest, *, from_tier, to_tier):
+            copied = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+            if not self.failed:
+                self.failed = True
+                raise ArtifactWriteError(object_name=digest, digest=digest)
+            return copied
+
+    store = _LandedThenRaised()
+    location = _store_and_locate(store, b"landed")
+    ledger = _ledger()
+
+    with pytest.raises(ArtifactWriteError):
+        _pin_named(store, location, ledger)
+    _pin_named(store, location, ledger)
+
+    assert _spent(ledger) == {(BUDGET_KEY, "pin_budget"): 1}
+
+
+def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
+    """The unit can come back, so its limit reads as capacity, and not as a day that spent it."""
+    store = _CopyForbiddenArtifactStore()
+    location = _store_and_locate(store, b"held")
+    ledger = _ledger(pin_budget=1)
+    claim = ledger.claim("exp_a", now=_NOW, expires_at=_NOW + timedelta(minutes=2))
+    ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], _NOW)
+
+    with pytest.raises(PinUnitHeld) as refused:
+        _pin_named(store, location, ledger)
+
+    assert (refused.value.code, refused.value.retryable) == ("service_unavailable", True)
+    assert refused.value.headers == {"Retry-After": "1"}
 
 
 def test_pin_at_the_daily_budget_refuses_before_copying_until_utc_midnight():

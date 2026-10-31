@@ -17,10 +17,12 @@ allowance (`DATASETS_PIN_DAILY_ALLOWANCE`, default 100 a UTC day), refusing 429
 `allowance_exhausted` once it is spent. The copy goes through `retention_admission.copy_to_pinned`,
 which a share's pins go through too, so they draw on the same budgets. It spends the daily
 budget, the open budget and the allowance together, so a refusal by one spends none of the
-others. A unit stays spent when the copy stands and the reference write then fails. A repeat pin
-of an artifact that already has a pinned copy spends nothing, and a pin whose copy finds the
-pinned copy already made, by a concurrent pin of the same artifact, or finds the working bytes
-gone, gives its units back, so one copy spends one set of units.
+others. A unit a running export prepare holds refuses `PinUnitHeld`, retryable 503 with
+`Retry-After: 1`. A unit stays spent when the copy stands and the reference write then fails, and
+when the copy fails with its outcome unknown. A repeat pin of an artifact that already has a
+pinned copy spends nothing, and a pin whose copy finds the pinned copy already made, by a
+concurrent pin of the same artifact or an earlier attempt, or finds the working bytes gone, gives
+its units back, so one copy spends one set of units.
 
 The door checks the spec, then the version, its revocation and its base version's, and the
 digest's link in one `read_servable_version` transaction, before copying. The path id resolves
@@ -116,6 +118,7 @@ from datasets_api.retention import retained_frame_location
 from datasets_api.retention_admission import (
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
+    PinUnitHeld,
     copy_to_pinned,
 )
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -167,9 +170,10 @@ def pin_artifact(
     open caller (`caller` set) one unit of the open callers' budget and one of `caller`'s `pin`
     allowance, all together before any copy. A spent budget refuses `PinBudgetExhausted` or
     `OpenPinBudgetExhausted`, a spent allowance `AllowanceExhausted`, and a refusal spends none
-    of the others. An artifact that already has a pinned copy spends nothing, and a copy that
-    finds the pinned bytes already stored, or the working bytes gone, gives the units back
-    (`retention_admission.copy_to_pinned`).
+    of the others. A unit a running export prepare holds refuses `PinUnitHeld`. An artifact that
+    already has a pinned copy spends nothing, and a copy that finds the pinned bytes already
+    stored, or the working bytes gone, gives the units back. Any other copy failure keeps them,
+    since the bytes may have landed (`retention_admission.copy_to_pinned`).
 
     The refusals concern the named artifact alone. A serving frame is retained after the named
     artifact's reference is recorded. The serving frames are walked in order, each the frame the
@@ -419,6 +423,7 @@ def build_pin_door(
             PinBackpressure,
             PinBudgetExhausted,
             OpenPinBudgetExhausted,
+            PinUnitHeld,
             AllowanceExhausted,
             # Surface-level classification handles errors reference writes can raise.
             DatasetsStoreUnavailable,
@@ -437,6 +442,7 @@ def build_pin_door(
             PinBackpressure(),
             PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
             OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+            PinUnitHeld(),
             AllowanceExhausted(
                 kind=AllowanceKind.pin, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
             ),

@@ -295,6 +295,7 @@ class StoredTraceMissingResolvedStatVars(Refusal):
     """
 
     code = "internal_error"
+    decided_by_request = True
 
     def __init__(self, *, subject_id: str, content_version: str) -> None:
         self.subject_id = subject_id

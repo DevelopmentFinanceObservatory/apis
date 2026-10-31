@@ -13,21 +13,24 @@ it reads: each typed role's `_type` cells beside the layout's own `_label` and `
 It is the file the version lists under that rendering, else one rendered from its stored frame.
 A derived frame's file is the one its file route renders (`doors.derived.derived_file`). Its
 render and its store run inside one materialise slot, so its bytes stay inside a slot, as a
-dataset file's do. The file is then copied to the pinned tier through
-`retention_admission.copy_to_pinned`, which spends the caller's `pin` allowance and the day's
+dataset file's do. The file is then copied to the pinned tier
+(`retention_admission.PreparingCopy`), which spends the caller's `pin` allowance and the day's
 pin budgets as a pin does. A file with a pinned copy needs no copy and spends nothing, whichever
 version or export pinned it.
 
-A file its version lists names its digest, so its units are spent at its copy, and only if it has
-no pinned copy. A file that must render first, a derived frame's or a dataset file its version
-does not list, has no digest until it renders, so its units are spent ahead of the render
-(`retention_admission.reserve_pin`) and refuse there what the copy would refuse. Every unit, the
-caller's and both budgets, takes this one path, so a spent day costs no render. The reservation
-gives its units back when the render fails, when the file's refusals below stop it, or when the
-render finds its bytes pinned. A process that dies holding one costs its caller the units until
-they reset. A caller with no unit to reserve still renders when the export's own reference says
-its copy landed (`_reservation`), so a retry of a prepare that lost its record is served. A
-same-bytes copy another export or a pin made has no such reference, and refuses that caller.
+A prepare runs under a claim of its export id (`allowance.ExportClaim`), which holds across
+instances. A file its version lists names its digest, so its units are spent at its copy, and
+only if it has no pinned copy. A file that must render first, a derived frame's or a dataset file
+its version does not list, has no digest until it renders, so its units are spent onto the claim
+ahead of the render and refuse there what the copy would refuse. Every unit, the caller's and
+both budgets, takes this one path, so a spent day costs no render. A failed render, a refusal
+below, or a render that finds its bytes pinned gives the units back. The claim names the digest
+before the copy, and stays until the record is written, so a retry after a failure past that
+point takes it over and finds its paid copy, spending nothing more. The bytes a render gives are
+known only by rendering, so a caller with no unit left and no claim refuses even when another
+export or a pin holds the same bytes. A process that dies leaves its claim to a lease and the
+sweep (`retention_admission.sweep_export_claims`), which gives the units back when no copy
+stands.
 
 An `artifact_reference` row of kind `export`
 (`reference_store.EXPORT_REFERENCE_KIND`) then keeps the copy from any deletion keyed on references, under the transactional revocation
@@ -35,17 +38,16 @@ recheck a pin's reference takes. The record keeps the pinned copy's location and
 prepare answered.
 
 A request whose id holds a record answers that record, rendering and spending nothing.
-Concurrent prepares of one id in one process share one prepare (`admission.RebuildFlights`). The
-first runs on a work thread (`prepare_export`), and each other waits on the event loop with no
-thread or permit, at most `materialise_wait_seconds` and refusing `ExportPrepareRunning` after
-that (`admission.RebuildFlights.landed`), then answers the record as a repeat prepare does. A
-refusal that comes of the file (`_FILE_REFUSALS`) answers every waiter too. After a prepare that
-failed any other way, a waiter runs its own, and a spent unit refuses each waiter at its own
-reservation, for no render. Two instances can prepare one id together. Every render is
-deterministic (bundle members carry fixed timestamps), so they give one file, which the
-content-addressed store holds once: the second copy finds the pinned bytes stored and gives its
-units back, and the second record write returns the first's row. A caller whose last unit the
-other instance's reservation holds refuses until that prepare's record lands.
+Concurrent prepares of one id share one prepare, on any instance. The first takes the claim on a
+work thread (`prepare_export`), and each other reads the claim from the door with no work
+permit, at most `materialise_wait_seconds` and refusing `ExportPrepareRunning` (code
+`service_unavailable`) after that, then answers the record as a repeat prepare does. A refusal
+the request alone decides (`Refusal.decided_by_request`) stays on the claim as data for the rest
+of its lease and answers every waiter (`ExportFileRefused`). After a prepare that failed any
+other way, a waiter takes the claim, and a spent unit refuses each waiter at its own spend, for
+no render. A prepare that outlives its lease can run beside the one that took over. Every render
+is deterministic (bundle members carry fixed timestamps), so they give one file, which the
+content-addressed store holds once, and the second record write returns the first's row.
 
 The first prepare, a repeat prepare and the export link (`sign_export`) answer a record through
 one guard (`_servable_facts`), so they cannot disagree. A version's revocation, or its base
@@ -87,8 +89,8 @@ import json
 import math
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
-from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import IO, Any, Literal, cast
 
@@ -105,6 +107,7 @@ from datasets_api.analysis import AnalysisPending
 from datasets_api.analysis_roots import newest_spec_version
 from datasets_api.codes_exports import (
     ExportFileIncomplete,
+    ExportFileRefused,
     ExportNotFound,
     ExportOverCeiling,
     LicenceNotRedistributable,
@@ -136,9 +139,8 @@ from datasets_api.render import is_incomplete_rendering
 from datasets_api.retention_admission import (
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
-    PinReservation,
-    copy_to_pinned,
-    reserve_pin,
+    PinUnitHeld,
+    PreparingCopy,
 )
 from datasets_api.subject_ids import served_subject_ids
 from datasets_api.timings import phase
@@ -146,12 +148,7 @@ from dfo_platform.caller import Caller
 from dfo_platform.codes import bound_registry_endpoint, registered_status
 from dfo_platform.problem import Refusal
 from dfo_platform.trace import get_trace_id
-from materialise.formats import (
-    DATA_SHEET_TITLE,
-    ExcelIllegalCharacterError,
-    ExcelLimitError,
-    ParquetSizeBoundError,
-)
+from materialise.formats import DATA_SHEET_TITLE
 
 EXPORT_MAX_ROWS = PUBLISH_MAX_ROWS
 """The most rows a CSV or xlsx export holds: the frame ceiling a publish admits, 250,000."""
@@ -159,16 +156,7 @@ EXPORT_MAX_ROWS = PUBLISH_MAX_ROWS
 EXPORT_LINK_PREFIX = "/api/datasets/exports"
 """The path of the export link route, which the site's proxy serves on its own origin."""
 
-_FILE_REFUSALS = (
-    ExportOverCeiling,
-    ExcelLimitError,
-    ExcelIllegalCharacterError,
-    ParquetSizeBoundError,
-)
-"""The refusals an export's file decides, whoever asks, so one prepare's refusal answers its
-waiters (`admission.RebuildFlights.lead`)."""
-
-_SPENT_REFUSALS = (AllowanceExhausted, PinBudgetExhausted, OpenPinBudgetExhausted)
+_SPENT_REFUSALS = (AllowanceExhausted, PinBudgetExhausted, OpenPinBudgetExhausted, PinUnitHeld)
 
 _LICENCE_RESTRICTIONS = Path(__file__).with_name("licence_restrictions.json")
 
@@ -353,23 +341,6 @@ def _check_rows(request: ExportRequest, rows: int) -> None:
         raise ExportOverCeiling(format=request.format, count=rows, cap=EXPORT_MAX_ROWS)
 
 
-def _reservation(export: str, *, caller: Caller | None, current: Deps) -> PinReservation | None:
-    """The units of the pinned copy of the file a render is about to give (`reserve_pin`), or
-    `None` when none are left and the export's own reference says that copy landed, so the
-    render only names the file. The caller of a held reservation needs no spend at the copy.
-
-    Raises:
-        PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: A unit is spent, and no
-            copy of this export landed.
-    """
-    try:
-        return reserve_pin(current.allowances, caller, now=current.now())
-    except _SPENT_REFUSALS:
-        if not current.reference_writer.holds_live_reference(principal=f"export:{export}"):
-            raise
-        return None
-
-
 def _pinned_location(digest: str, *, current: Deps) -> tuple[str, str] | None:
     """The bucket and object name of `digest`'s pinned copy, `None` when it has none."""
     location = current.artifact_store.location(digest, tier=Tier.pinned)
@@ -377,30 +348,16 @@ def _pinned_location(digest: str, *, current: Deps) -> tuple[str, str] | None:
 
 
 def _copied_to_pinned(
-    digest: str,
-    *,
-    frame: ExportFrame,
-    caller: Caller | None,
-    reservation: PinReservation | None,
-    current: Deps,
+    digest: str, *, frame: ExportFrame, copy: PreparingCopy, current: Deps
 ) -> tuple[str, str]:
-    """Copy `digest` to the pinned tier on `reservation`'s units, or with none on units spent
-    now (`copy_to_pinned`), and return the copy's bucket and object name. Working bytes gone
-    before the copy refuse `ArtifactExpired`. A spent unit refuses only while no pinned copy
-    exists, since a concurrent prepare may have spent the last one on these bytes."""
+    """Copy `digest` to the pinned tier on `copy`'s units and return the copy's bucket and
+    object name. Working bytes gone before the copy refuse `ArtifactExpired`. A spent unit
+    refuses only while no pinned copy exists, since a concurrent pin of these bytes may have
+    spent the last one."""
     try:
+        copy.hold()
         with phase("copy"):
-            copied = (
-                copy_to_pinned(
-                    current.artifact_store,
-                    digest,
-                    allowances=current.allowances,
-                    caller=caller,
-                    now=current.now(),
-                )
-                if reservation is None
-                else reservation.copy(current.artifact_store, digest)
-            )
+            copied = copy.copy(current.artifact_store, digest)
     except ArtifactNotFoundError as exc:
         raise ArtifactExpired(id=frame.spec_id, content_version=frame.content_version) from exc
     except _SPENT_REFUSALS:
@@ -421,8 +378,7 @@ def _pinned_copy(
     subject_id: str,
     subject_ids: tuple[str, ...],
     export: str,
-    caller: Caller | None,
-    reservation: PinReservation | None = None,
+    copy: PreparingCopy,
     current: Deps,
 ) -> tuple[str, str]:
     """The bucket and object name of the pinned copy of `digest`, stored at `tier`, copying it
@@ -434,9 +390,7 @@ def _pinned_copy(
     )
     already_pinned = pinned is not None
     if pinned is None:
-        pinned = _copied_to_pinned(
-            digest, frame=frame, caller=caller, reservation=reservation, current=current
-        )
+        pinned = _copied_to_pinned(digest, frame=frame, copy=copy, current=current)
     record_pin_reference(
         current.reference_writer,
         principal=f"export:{export}",
@@ -483,7 +437,7 @@ def _prepare_dataset(
     request: ExportRequest,
     *,
     export: str,
-    caller: Caller | None,
+    copy: PreparingCopy,
     current: Deps,
     deps: DefinitionDeps,
 ) -> ExportRecord:
@@ -510,29 +464,25 @@ def _prepare_dataset(
         enrichment_digest=deps.code_index.enrichment_digest,
         deps=deps,
     )
-    reservation = (
-        None if location is not None else _reservation(export, caller=caller, current=current)
-    )
-    with reservation or nullcontext():
-        if location is None:
-            stored, location = render_file_location(
-                stored, id=frame.spec_id, subject_ids=subject_ids, requested=requested, deps=deps
-            )
-        if not _linked_complete(stored, location.artifact_digest):
-            raise ExportFileIncomplete(id=frame.spec_id, content_version=frame.content_version)
-        bucket, object_name = _pinned_copy(
-            digest=location.artifact_digest,
-            tier=location.tier,
-            bucket=location.bucket,
-            object_name=location.object_name,
-            frame=frame,
-            subject_id=stored.version.subject_id,
-            subject_ids=subject_ids,
-            export=export,
-            caller=caller,
-            reservation=reservation,
-            current=current,
+    if location is None:
+        copy.hold()
+        stored, location = render_file_location(
+            stored, id=frame.spec_id, subject_ids=subject_ids, requested=requested, deps=deps
         )
+    if not _linked_complete(stored, location.artifact_digest):
+        raise ExportFileIncomplete(id=frame.spec_id, content_version=frame.content_version)
+    bucket, object_name = _pinned_copy(
+        digest=location.artifact_digest,
+        tier=location.tier,
+        bucket=location.bucket,
+        object_name=location.object_name,
+        frame=frame,
+        subject_id=stored.version.subject_id,
+        subject_ids=subject_ids,
+        export=export,
+        copy=copy,
+        current=current,
+    )
     rows, columns = _stored_file_shape(
         location.artifact_digest, request=request, current=current, deps=deps
     )
@@ -588,7 +538,7 @@ def _prepare_derived(
     request: ExportRequest,
     *,
     export: str,
-    caller: Caller | None,
+    copy: PreparingCopy,
     current: Deps,
     deps: DefinitionDeps,
 ) -> ExportRecord:
@@ -609,30 +559,28 @@ def _prepare_derived(
     licences = _licences(citation)
     check_licences(licence.source for licence in licences)
 
-    reservation = _reservation(export, caller=caller, current=current)
-    with reservation or nullcontext():
-        file = derived_file(
-            id=frame.spec_id,
-            content_version=frame.content_version,
-            options=MintOptions(format=request.format, bundle=request.bundle),
-            current=current,
-            deadline=cast(float, deps.deadline),
-            then=functools.partial(_stored_derived_file, request=request, current=current),
-        )
-        stored = file.stored
-        bucket, object_name = _pinned_copy(
-            digest=stored.digest,
-            tier=stored.tier,
-            bucket=stored.bucket,
-            object_name=stored.object_name,
-            frame=frame,
-            subject_id=frame.spec_id,
-            subject_ids=(frame.spec_id,),
-            export=export,
-            caller=caller,
-            reservation=reservation,
-            current=current,
-        )
+    copy.hold()
+    file = derived_file(
+        id=frame.spec_id,
+        content_version=frame.content_version,
+        options=MintOptions(format=request.format, bundle=request.bundle),
+        current=current,
+        deadline=cast(float, deps.deadline),
+        then=functools.partial(_stored_derived_file, request=request, current=current),
+    )
+    stored = file.stored
+    bucket, object_name = _pinned_copy(
+        digest=stored.digest,
+        tier=stored.tier,
+        bucket=stored.bucket,
+        object_name=stored.object_name,
+        frame=frame,
+        subject_id=frame.spec_id,
+        subject_ids=(frame.spec_id,),
+        export=export,
+        copy=copy,
+        current=current,
+    )
     return _record(
         request,
         export=export,
@@ -890,13 +838,34 @@ def recorded_export(*, request: ExportRequest, current: Deps) -> Mapping[str, An
     return _servable_facts(record, current=current)
 
 
+def prepare_progress(
+    *, request: ExportRequest, current: Deps
+) -> tuple[Mapping[str, Any] | None, bool]:
+    """The facts of the request's record, or `None`, and whether a prepare of it holds a live
+    claim, read for the door between its turns.
+
+    Raises:
+        IdentityQuarantined, SnapshotRevoked, LicenceNotRedistributable: As `_servable_facts`.
+        ExportFileRefused: A prepare of this request refused, and its lease still runs.
+    """
+    facts = recorded_export(request=request, current=current)
+    if facts is not None:
+        return facts, False
+    claim = current.allowances.read_claim(export_id(request))
+    if claim is None or claim.expires_at <= current.now():
+        return None, False
+    if claim.refusal is not None:
+        raise ExportFileRefused(**claim.refusal)
+    return None, True
+
+
 def prepare_export(
     *, request: ExportRequest, caller: Caller | None, current: Deps, deps: DefinitionDeps
 ) -> Mapping[str, Any] | None:
     """Prepare the file `request` names, pin it, record it, and return its facts, or answer the
-    record a concurrent prepare left. Return `None`, at once, while another prepare of the
-    request runs here, so this work thread is free while the caller waits for it
-    (`RebuildFlights.landed`). See the module docstring. `caller` names an open caller, whose
+    record a concurrent prepare left. Return `None`, at once, while another prepare holds the
+    request's claim, so this work thread is free while the caller waits for it
+    (`prepare_progress`). See the module docstring. `caller` names an open caller, whose
     `pin` allowance a new pinned copy spends, and `None` a caller holding the pin grant. `deps`
     is the request's retrieval view of `current`, under its deadline.
 
@@ -909,18 +878,28 @@ def prepare_export(
         ExportOverCeiling: A CSV or xlsx export of more than `EXPORT_MAX_ROWS` rows.
         PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted: The copy's units are
             spent.
+        PinUnitHeld: A running prepare holds the last unit.
+        ExportClaimLost: This prepare outlived its lease.
         MintBackpressure: No materialise permit came free.
     """
     export = export_id(request)
-    with deps.rebuilds.lead(export, shared=_FILE_REFUSALS) as leading:
-        if not leading:
-            return None
-        # A prepare can end between the door's read and this flight, so the flight reads again.
+    now = current.now()
+    claim = current.allowances.claim(
+        export,
+        now=now,
+        expires_at=now + timedelta(seconds=deps.settings.definition_timeout_seconds),
+    )
+    if claim is None:
+        return None
+    with PreparingCopy(
+        claim, allowances=current.allowances, caller=caller, clock=current.now
+    ) as copy:
+        # A prepare can end between the door's read and this claim, so the claim reads again.
         recorded = recorded_export(request=request, current=current)
         if recorded is not None:
             return recorded
         prepare = _prepare_derived if request.frame.spec_id.startswith("ops_") else _prepare_dataset
-        record = prepare(request, export=export, caller=caller, current=current, deps=deps)
+        record = prepare(request, export=export, copy=copy, current=current, deps=deps)
         with phase("record"):
             stored = current.export_store.write_export(record)
         return _servable_facts(stored, current=current)

@@ -77,6 +77,73 @@ def test_a_zero_limit_refuses_the_first_spend():
         ledger.spend(_ALICE, AllowanceKind.pin, _NOON)
 
 
+_EXPORT = "exp_" + "a" * 32
+_LEASE = _NOON + timedelta(minutes=2)
+_UNITS = [Spend(BUDGET_KEY, AllowanceKind.pin_budget), Spend(_ALICE.key, AllowanceKind.pin)]
+
+
+@pytest.fixture
+def claims():
+    store = FakeVersionRecordDatasetStore()
+    try:
+        yield LiveAllowanceLedger(
+            store=store,
+            limits={AllowanceKind.pin: 1, AllowanceKind.pin_budget: 5},
+        )
+    finally:
+        store.close()
+
+
+def _counts(ledger: LiveAllowanceLedger) -> dict[tuple[str, str], int]:
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
+    return {(row["caller_key"], row["kind"]): row["count"] for row in rows}
+
+
+def test_a_claim_runs_alone_until_its_lease_passes_and_then_passes_on_its_units(claims):
+    claim = claims.claim(_EXPORT, now=_NOON, expires_at=_LEASE)
+    held = claims.hold_claim(claim, _UNITS, _NOON)
+    assert claims.name_claim_digest(held, "sha256:a") is True
+
+    assert claims.claim(_EXPORT, now=_NOON, expires_at=_LEASE) is None
+    taken = claims.claim(_EXPORT, now=_LEASE, expires_at=_LEASE + timedelta(minutes=2))
+
+    assert (taken.spends, taken.spent_at, taken.digest) == (tuple(_UNITS), _NOON, "sha256:a")
+
+
+def test_a_write_under_a_lost_lease_changes_nothing(claims):
+    held = claims.hold_claim(claims.claim(_EXPORT, now=_NOON, expires_at=_LEASE), _UNITS, _NOON)
+    claims.claim(_EXPORT, now=_LEASE, expires_at=_LEASE + timedelta(minutes=2))
+    spent = _counts(claims)
+
+    claims.close_claim(held, refund=True)
+    claims.free_claim(held, _NOON)
+    claims.refuse_claim(held, {"code": "over_ceiling"})
+
+    assert claims.name_claim_digest(held, "sha256:a") is False
+    assert claims.hold_claim(held, _UNITS[:1], _NOON) is None
+    assert _counts(claims) == spent
+    assert claims.read_claim(_EXPORT).refusal is None
+
+
+def test_closing_a_claim_refunds_once_whoever_else_closes_it(claims):
+    held = claims.hold_claim(claims.claim(_EXPORT, now=_NOON, expires_at=_LEASE), _UNITS, _NOON)
+
+    claims.close_claim(held, refund=True)
+    claims.spend(_ALICE, AllowanceKind.pin, _NOON)
+    claims.close_claim(held, refund=True)
+
+    assert _counts(claims) == {(_ALICE.key, "pin"): 1}
+
+
+def test_a_held_unit_is_told_from_a_spent_one_until_its_lease_ends(claims):
+    claims.hold_claim(claims.claim(_EXPORT, now=_NOON, expires_at=_LEASE), _UNITS, _NOON)
+
+    assert claims.holds_unit(_UNITS[1], _NOON) is True
+    assert claims.holds_unit(Spend(_BOB.key, AllowanceKind.pin), _NOON) is False
+    assert claims.holds_unit(_UNITS[1], _LEASE) is False
+
+
 def test_spends_together_take_every_unit_or_none():
     """A pin spends the shared budget and the caller's allowance together, so a caller past its
     allowance takes nothing from the budget every caller shares."""

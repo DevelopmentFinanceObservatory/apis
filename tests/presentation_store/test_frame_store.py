@@ -4473,6 +4473,31 @@ def test_pin_keeps_the_units_of_a_copy_whose_reference_write_then_fails():
     assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
 
 
+def test_pin_keeps_one_set_of_units_when_a_copy_lands_and_raises():
+    """The first attempt's bytes stand, so it keeps its units, and the retry gives its own back."""
+    snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
+    copy = artifacts.copy
+    left = [ArtifactInventoryError(digest=digest)]
+
+    def landed_and_raised(*args, **kwargs):
+        copied = copy(*args, **kwargs)
+        if left:
+            raise left.pop()
+        return copied
+
+    artifacts.copy = landed_and_raised
+    ledger = _ledger()
+    store = _store(snapshots=snapshots, artifacts=artifacts, allowances=ledger)
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+    assert excinfo.value.reason == "io"
+
+    store.pin(frame_ref=frame_ref, component_id="cmp_a", caller=_OPEN_CALLER)
+
+    assert _units(ledger) == _set_of_units(_OPEN_CALLER, 1)
+
+
 def test_pin_gives_back_the_units_of_a_copy_whose_working_bytes_are_gone():
     snapshots, artifacts, frame_ref, digest = _happy_path_fixture()
     del artifacts.objects[(Tier.working, digest)]

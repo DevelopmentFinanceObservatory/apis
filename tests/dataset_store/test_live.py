@@ -2387,6 +2387,37 @@ def test_a_card_unit_refund_takes_one_back_and_deletes_a_day_left_at_zero(live_s
     assert held() is None
 
 
+def test_an_export_claim_holds_units_and_refunds_them_once_under_real_postgres(live_store):
+    """The lease fence compares a timestamptz as read back, and `spends` round-trips as jsonb."""
+    suffix = uuid4().hex
+    export, key = f"exp_{suffix}", f"ip:{suffix}"
+    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.pin: 2})
+    now = datetime(2026, 6, 1, 12, 0, 0, 123456, tzinfo=UTC)
+    lease = now + timedelta(minutes=2)
+    spends = [Spend(key, AllowanceKind.pin)]
+
+    held = ledger.hold_claim(ledger.claim(export, now=now, expires_at=lease), spends, now)
+    assert held is not None
+    assert ledger.claim(export, now=now, expires_at=lease) is None
+    assert ledger.name_claim_digest(ledger.read_claim(export), "sha256:a") is True
+    assert ledger.holds_unit(spends[0], now) is True
+
+    taken = ledger.claim(export, now=lease, expires_at=lease + timedelta(minutes=2))
+
+    assert (taken.spends, taken.spent_at, taken.digest) == (tuple(spends), now, "sha256:a")
+    ledger.close_claim(held, refund=True)
+    ledger.close_claim(taken, refund=True)
+    ledger.close_claim(taken, refund=True)
+    assert ledger.read_claim(export) is None
+    with live_store.transaction() as tx:
+        assert (
+            tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s", (key,)
+            )
+            is None
+        )
+
+
 def test_a_refund_racing_a_spend_takes_its_unit_back(live_store):
     """A refund that reads the day's last unit while a spend holds the row uncommitted waits for
     the spend, then takes one from the count the spend leaves."""

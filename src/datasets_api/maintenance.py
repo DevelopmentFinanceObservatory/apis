@@ -198,6 +198,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from datasets_api.allowance import LiveAllowanceLedger
 from datasets_api.analysis import FrameUnavailable
 from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
 from datasets_api.description_record import backfill_record, computed_inputs
@@ -235,6 +236,7 @@ from datasets_api.render import (
     render_and_store_canonical_frame,
     stored_frame_location,
 )
+from datasets_api.retention_admission import sweep_export_claims
 from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
@@ -279,9 +281,24 @@ SWEEP_NAMES_PER_LEG = 20
 """The most object names, or digests, a sweep line carries for one leg."""
 
 
+def run_export_claim_sweep(
+    *, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now
+) -> None:
+    """Settle the export claims past their lease (`retention_admission.sweep_export_claims`)
+    and emit how many went."""
+    settled = sweep_export_claims(
+        allowances=LiveAllowanceLedger(store=store, limits={}),
+        pinned=lambda: artifact_store.list(tier=Tier.pinned),
+        now=now(),
+    )
+    emit("datasets_export_claims_swept", settled_claims=settled)
+
+
 def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> None:
-    """Sweep both tiers and emit one line per tier with each leg's count and, for each
-    non-empty leg, its first `SWEEP_NAMES_PER_LEG` names in sorted order."""
+    """Settle expired export claims, sweep both tiers and emit one line per tier with each
+    leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG` names in sorted
+    order."""
+    run_export_claim_sweep(store=store, artifact_store=artifact_store, now=now)
     for report in sweep(store=store, artifact_store=artifact_store, now=now()):
         legs = {
             "orphaned_objects": report.orphaned_objects,
@@ -303,6 +320,10 @@ def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock 
 
 def _sweep() -> int:
     return _run_over_artifacts("sweep", run_sweep)
+
+
+def _sweep_export_claims() -> int:
+    return _run_over_artifacts("sweep-export-claims", run_export_claim_sweep)
 
 
 def _run_over_artifacts(task: str, run: Callable[..., int | None]) -> int:
@@ -1429,6 +1450,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks.add_parser(
         "sweep", help="report orphaned and missing artifact objects per tier"
     ).set_defaults(run=_sweep)
+    tasks.add_parser(
+        "sweep-export-claims", help="give back the units of export prepares that left no copy"
+    ).set_defaults(run=_sweep_export_claims)
     tasks.add_parser(
         "age-operations",
         help="fail abandoned operations and delete done and failed ones past their retention",

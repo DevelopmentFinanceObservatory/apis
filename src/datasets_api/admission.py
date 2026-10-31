@@ -25,9 +25,9 @@ with `MintBackgroundDeclined`.
 A permit covers a frame for as long as its work runs. An error's traceback can keep the frame
 until the door has answered the error, after the permit is released.
 
-`RebuildFlights` lets concurrent callers share one rebuild of a subject, and concurrent exports
-of one id share one prepare (`RebuildFlights.lead`). `sync_estimate` models dispatch from one coverage snapshot: it groups by request-batch key and
-window years, then applies the same lane and StatVar chunk rules as materialisation.
+`RebuildFlights` lets concurrent callers share one rebuild of a subject. `sync_estimate`
+models dispatch from one coverage snapshot: it groups by request-batch key and window years,
+then applies the same lane and StatVar chunk rules as materialisation.
 
 Uncovered StatVars contribute zero priced rows or requests. The estimate counts them separately
 and refuses more than 700 with a 422 member-cardinality error. Sync budgets assess covered costs,
@@ -51,12 +51,10 @@ rows, columns and cell lengths after fetch.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 
 from code_index.types import CompositeDeclaration, PartyRow
 from datasets_api.background_admission import HeadroomSemaphore, admission_headroom
@@ -85,9 +83,6 @@ UNCOVERED_MEMBER_CAP = 700
 # How long a request waits for a permit or a rebuild turn between looks at whether the service
 # still serves its bound release.
 STALE_CHECK_SECONDS = 0.1
-
-# How often a caller waiting on the event loop for a flight (`RebuildFlights.landed`) looks again.
-_FLIGHT_POLL_SECONDS = 0.02
 
 
 def _sliced_wait(
@@ -256,87 +251,28 @@ def bounded_materialise_slot(
         materialise_semaphore.release()
 
 
-@dataclass(eq=False)
-class _Flight:
-    """One running rebuild or prepare: `finished` is set when it ends, and `refusal` holds what
-    it refused that every waiter would be refused too (`RebuildFlights.lead`)."""
-
-    finished: threading.Event = field(default_factory=threading.Event)
-    refusal: Exception | None = None
-
-
 class RebuildFlights:
     """Lets the callers that need one rebuild of a subject share it, within this process.
 
     A rebuild that advances a subject's head serves every caller that needs it, so the
-    definition and frame refresh doors take a turn here before re-materialising, and their
-    waiters wait in the work thread that would otherwise rebuild. An export runs under its
-    `exp_` id, which names no subject, and its waiters wait on the event loop, holding no
-    thread (`lead`, `landed`). Two instances can still rebuild one subject together: version
-    inserts are `ON CONFLICT DO NOTHING` and `HeadWriter.advance_head` is a compare-and-swap on
-    the observed run, so the second records its run and moves no head.
+    definition and frame refresh doors take a turn here before re-materialising. Two
+    instances can still rebuild one subject together: version inserts are
+    `ON CONFLICT DO NOTHING` and `HeadWriter.advance_head` is a compare-and-swap on the
+    observed run, so the second records its run and moves no head.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._running: dict[str, _Flight] = {}
+        self._running: dict[str, threading.Event] = {}
 
-    def _claim(self, subject_id: str, flight: _Flight) -> _Flight | None:
-        """Register `flight` as the running rebuild of `subject_id` and return `None`, or
-        return the flight already running."""
+    def _claim(self, subject_id: str, finished: threading.Event) -> threading.Event | None:
+        """Register `finished` as the running rebuild of `subject_id` and return `None`, or
+        return the event of the rebuild already running."""
         with self._lock:
             running = self._running.get(subject_id)
             if running is None:
-                self._running[subject_id] = flight
+                self._running[subject_id] = finished
             return running
-
-    def _end(self, subject_id: str, flight: _Flight) -> None:
-        with self._lock:
-            del self._running[subject_id]
-        flight.finished.set()
-
-    @contextmanager
-    def lead(self, subject_id: str, *, shared: tuple[type[Exception], ...]) -> Iterator[bool]:
-        """Run as the one flight of `subject_id`, yielding `True`, or yield `False` with nothing
-        claimed while another runs, and never wait. The caller that got `False` holds a work
-        thread, so it leaves and waits for the flight in `landed`.
-
-        A refusal of one of the `shared` types, which depends on the subject and on no caller,
-        stays on the flight, and `landed` raises it to each waiter.
-        """
-        flight = _Flight()
-        if self._claim(subject_id, flight) is not None:
-            yield False
-            return
-        try:
-            yield True
-        except shared as refusal:
-            flight.refusal = refusal
-            raise
-        finally:
-            self._end(subject_id, flight)
-
-    async def landed(
-        self, subject_id: str, *, ends: float, refuse: Callable[[], Exception]
-    ) -> None:
-        """Return once no flight of `subject_id` runs, holding no thread and no permit while
-        one does: the wait polls every `_FLIGHT_POLL_SECONDS` on the event loop. The caller then
-        reads what the flight left, and leads its own (`lead`) if it left nothing.
-
-        Raises:
-            Exception: `refuse()` when the flight still runs at the monotonic time `ends`, or
-                the flight's shared refusal (`lead`).
-        """
-        with self._lock:
-            flight = self._running.get(subject_id)
-        if flight is None:
-            return
-        while not flight.finished.is_set():
-            if time.monotonic() >= ends:
-                raise refuse()
-            await asyncio.sleep(_FLIGHT_POLL_SECONDS)
-        if flight.refusal is not None:
-            raise flight.refusal
 
     @contextmanager
     def turn(
@@ -371,8 +307,8 @@ class RebuildFlights:
         rebuild already warms the subject.
         """
         served = _bound_release_served()
-        flight = _Flight()
-        running = self._claim(subject_id, flight)
+        finished = threading.Event()
+        running = self._claim(subject_id, finished)
         waited = running is not None
         if running is not None and admission_headroom():
             raise MintBackgroundDeclined()
@@ -381,15 +317,17 @@ class RebuildFlights:
                 float(wait_seconds) if deadline is None else max(0.0, deadline - time.monotonic())
             )
             with phase("rebuild_wait"):
-                ended = _sliced_wait(running.finished.wait, ends=ends, keep_waiting=served)
+                ended = _sliced_wait(running.wait, ends=ends, keep_waiting=served)
             if not ended:
                 raise MintBackpressure()
-            running = self._claim(subject_id, flight)
+            running = self._claim(subject_id, finished)
         try:
             yield waited
         finally:
             if running is None:
-                self._end(subject_id, flight)
+                with self._lock:
+                    del self._running[subject_id]
+                finished.set()
 
 
 def _bare_dcid(stat_var: str) -> str:
