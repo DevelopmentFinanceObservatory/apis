@@ -265,7 +265,7 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
     lock = threading.Lock()
     sent: Counter[str] = Counter()
     stalled: list[str] = []
-    minted = threading.Event()
+    stalled_until_done = threading.Event()
 
     def stall_first(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
@@ -275,7 +275,7 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
             if stall:
                 stalled.append(url)
         if stall:
-            minted.wait(5)
+            stalled_until_done.wait(5)
             return _sdmx_response(stale, request)
         return _sdmx_response(populated, request)
 
@@ -296,7 +296,7 @@ def test_a_pooled_hedged_mint_writes_the_serial_mint_s_bytes():
     try:
         pooled = mint(4, httpx.MockTransport(stall_first), 0.05)
     finally:
-        minted.set()
+        stalled_until_done.set()
     serial = mint(1, _sdmx_transport(populated), None)
 
     [stalled_url] = stalled

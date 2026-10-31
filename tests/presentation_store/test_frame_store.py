@@ -1369,7 +1369,7 @@ def _stale_words_store(
     return store, frame_ref, graph, first
 
 
-_READER: ContextVar[str] = ContextVar("frame_store_test_reader", default="refresh")
+_READER: ContextVar[str] = ContextVar("frame_store_test_reader", default="unattributed")
 
 
 def _gate_graph_reads(
@@ -1431,21 +1431,22 @@ def test_a_load_waiting_on_a_refresh_past_its_deadline_serves_the_cached_words()
     passes serves the cached words, reading nothing."""
     store, frame_ref, graph, first = _stale_words_store(failing=False)
     entered, release, readers = _gate_graph_reads(graph)
+    refresh_context = copy_context()
+    refresh_context.run(_READER.set, "refresh")
     with ThreadPoolExecutor(max_workers=1) as pool:
-        refresh = pool.submit(copy_context().run, store.load, frame_ref=frame_ref)
+        refresh = pool.submit(refresh_context.run, store.load, frame_ref=frame_ref)
         assert entered.wait(5)
-        _READER.set("waiter")
+        token = _READER.set("waiter")
         try:
             with frame_reads_bounded_by(timeout_seconds=0.2):
                 waited = store.load(frame_ref=frame_ref)
         finally:
-            _READER.set("refresh")
-        reads_while_waiting = readers.count("waiter")
+            _READER.reset(token)
         release.set()
         refreshed = refresh.result(timeout=5)
 
     assert waited is first
-    assert reads_while_waiting == 0
+    assert set(readers) == {"refresh"}
     assert refreshed.graph_generation == "gen-2"
     assert store.load(frame_ref=frame_ref) is refreshed
 
