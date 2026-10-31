@@ -88,7 +88,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import is_statistics_rendering, stored_frame_location
-from datasets_api.store_errors import validated_stored_frame1
+from datasets_api.store_errors import read_stored_frame1
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -251,7 +251,7 @@ def frame_of_stored(data: bytes, *, media_type: str, digest: str) -> Frame:
     """The frame a version's stored frame `data`, at `digest`, holds: its frame1 document when
     `media_type` names one, else its canonical frame."""
     if media_type == FRAME1_MEDIA_TYPE:
-        return validated_stored_frame1(data, digest=digest)
+        return read_stored_frame1(data, digest=digest)
     return read_canonical_frame(data)
 
 

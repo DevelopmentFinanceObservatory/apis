@@ -95,7 +95,7 @@ from graph_generation import FakeGeneration, GenerationStamp
 from graph_release.context import bound_release, current_release
 from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
-from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, unchecked_frame_of_frame1
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_frame1
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
 from presentation_store import frame_store
@@ -1008,6 +1008,13 @@ def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(
         pytest.param("time_period", 2020, id="period-a-number"),
         pytest.param("time_period", ["2020"], id="period-a-list"),
         pytest.param("time_period", "20:0", id="period-unparseable"),
+        pytest.param("recipient", None, id="role-null"),
+        pytest.param("value", None, id="value-null"),
+        pytest.param("value", "1.5", id="value-a-numeric-string"),
+        pytest.param("value", "abc", id="value-a-string"),
+        pytest.param("value", [1], id="value-a-list"),
+        pytest.param("value", 10**400, id="value-past-the-double-range"),
+        pytest.param("value", True, id="value-a-boolean"),
     ],
 )
 def test_a_malformed_frame1_cell_refuses_missing_rendering(column: str, cell: object):
@@ -1085,25 +1092,12 @@ def _frame1_with_value(value: int) -> bytes:
     return json.dumps(doc).encode()
 
 
-def _frame1_with_null_cells() -> bytes:
-    """The malaria document with a null role and value in its first row and its second row
-    repeated, cells `Frame.build` refuses and Datasets serves."""
-    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
-    columns = cast("list[str]", doc["columns"])
-    rows = cast("list[list[object]]", doc["rows"])
-    rows[0][columns.index("recipient")] = rows[0][columns.index("value")] = None
-    rows.insert(1, list(rows[1]))
-    rows.pop()
-    return json.dumps(doc).encode()
-
-
 @pytest.mark.parametrize(
     "data",
     [
         pytest.param(_frame1_with(), id="whole"),
         pytest.param(_frame1_without("measurementMethod"), id="before-measurementMethod"),
         pytest.param(_frame1_without("status"), id="before-status"),
-        pytest.param(_frame1_with_null_cells(), id="null-cells-and-a-repeated-grain"),
         pytest.param(_frame1_with_value(20_900_000_000_000_000), id="a-value-past-2-to-the-53"),
     ],
 )
@@ -1114,7 +1108,7 @@ def test_a_frame1_document_decodes_as_the_canonical_frame_of_its_rows(data: byte
     doc, size = frame_store._decode_frame(
         data, location=_location(digest="d", tier="working"), max_rows=1
     )
-    canonical = canonical_frame_parquet((unchecked_frame_of_frame1(data),))
+    canonical = canonical_frame_parquet((read_frame1(data),))
     canonical_doc, canonical_size = frame_store._decode_frame(
         canonical,
         location=_location(digest="c", tier="working", media_type=CANONICAL_FRAME_MEDIA_TYPE),
@@ -2737,7 +2731,7 @@ def test_load_names_each_variable_of_a_join_of_two_quotients_from_the_step_that_
 def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold():
     """A compare frame holds no entity column, so the label read takes the entities from the
     step's sides, and the variable reads in the order compare subtracts."""
-    rows: list[list[object]] = [["dcid:ops_difference", None, "2015", 1.0, None, "src_oecd_dac"]]
+    rows: list[list[object]] = [["dcid:ops_difference", "2015", 1.0, None, "src_oecd_dac"]]
     steps: list[dict[str, object]] = [
         _RETRIEVE_AID,
         {**_RETRIEVE_AID, "id": "s2"},
@@ -2754,6 +2748,7 @@ def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold(
     ]
     store, frame_ref, _, _ = _computed_frame_store(
         rows=rows,
+        columns=["stat_var", "time_period", "value", "unit", "provenance"],
         steps=steps,
         graph_labels={"country/GBR": "United Kingdom", "country/FRA": "France"},
     )

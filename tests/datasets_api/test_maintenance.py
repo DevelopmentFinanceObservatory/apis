@@ -359,11 +359,20 @@ class _Sink:
 
 
 def _record_frame1_version(
-    store, artifact_store, *, content_version: str, value: float, pinned: bool
+    store,
+    artifact_store,
+    *,
+    content_version: str,
+    value: float,
+    pinned: bool,
+    data: bytes | None = None,
 ):
-    sink = _Sink()
-    write_frame1((_frame(value),), sink=sink)
-    stored = artifact_store.put(sink.data, tier=Tier.working)
+    """A version of `spec_backfill` holding the frame1 document of `_frame(value)`, or `data`."""
+    if data is None:
+        sink = _Sink()
+        write_frame1((_frame(value),), sink=sink)
+        data = sink.data
+    stored = artifact_store.put(data, tier=Tier.working)
     if pinned:
         artifact_store.copy(stored.digest, from_tier=Tier.working, to_tier=Tier.pinned)
     LiveVersionRecordWriter(store=store).record_version(
@@ -531,6 +540,60 @@ def test_backfill_exits_non_zero_when_a_version_cannot_be_converted(monkeypatch,
         store.close()
 
     assert _backfill_counts(capsys) == [(1, 0), (0, 1)]
+
+
+def test_backfill_counts_an_unreadable_frame1_as_failed_and_converts_the_rest(capsys):
+    store = FakeVersionRecordDatasetStore()
+    try:
+        artifact_store = LiveArtifactStore(
+            buckets={Tier.working: "working-bucket", Tier.pinned: "pinned-bucket"},
+            inventory=LiveArtifactInventory(store=store),
+            client=FakeGCSClient(),
+        )
+        unreadable = json.loads(_frame1_bytes(_frame(2.0)))
+        unreadable["rows"][0][unreadable["columns"].index("value")] = "abc"
+        for content_version, data in (
+            ("cv_a", None),
+            ("cv_b", json.dumps(unreadable).encode()),
+            ("cv_c", None),
+        ):
+            _record_frame1_version(
+                store,
+                artifact_store,
+                content_version=content_version,
+                value=1.0,
+                pinned=True,
+                data=data,
+            )
+
+        failed = maintenance.run_backfill_frame1(store=store, artifact_store=artifact_store)
+
+        reader = LiveSnapshotReader(store=store)
+        converted = [
+            content_version
+            for content_version in ("cv_a", "cv_b", "cv_c")
+            if any(
+                location.rendering == CANONICAL_FRAME_RENDERING
+                for location in reader.read_artifact_locations("spec_backfill", content_version)
+            )
+        ]
+    finally:
+        store.close()
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert failed == 1
+    assert converted == ["cv_a", "cv_c"]
+    assert [
+        line["content_version"]
+        for line in lines
+        if line["event"] == "datasets_frame1_backfill_failed"
+    ] == ["cv_b"]
+
+
+def _frame1_bytes(frame) -> bytes:
+    sink = _Sink()
+    write_frame1((frame,), sink=sink)
+    return sink.data
 
 
 def test_a_share_taken_down_twice_is_logged_once_taken_down_and_once_not_found(capsys):

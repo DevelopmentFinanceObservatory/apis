@@ -32,7 +32,7 @@ from materialise.formats import (
     Rendering,
     _sanitize_csv_cell,
     frame_entity_columns,
-    read_frame1_table,
+    read_frame1,
     table_schema_for,
 )
 from materialise.formats import write_csv as _real_write_csv
@@ -787,25 +787,25 @@ def test_write_frame1_streams_a_multi_chunk_frame_in_bounded_writes(
     assert max(sink.writes) < 1024 < len(whole)
 
 
-# --- read_frame1_table / frame_entity_columns -----------------------------
+# --- read_frame1 / frame_entity_columns -----------------------------
 
 
-def test_read_frame1_table_round_trips_write_csv_bytes():
+def test_read_frame1_round_trips_write_csv_bytes():
     # The frame contains `1000.0`; JSON parsing can turn it into an int.
-    # CSV equality confirms `read_frame1_table` restores the float.
+    # CSV equality confirms `read_frame1` restores the float.
     frame = _frame1_source_frame()
-    table = read_frame1_table(write_frame1((frame,)).data)
+    table = read_frame1(write_frame1((frame,)).data)
     assert (
         write_csv((frame,), rendering=_PLAIN_RENDERING).data
         == write_csv((table,), rendering=_PLAIN_RENDERING).data
     )
 
 
-def test_read_frame1_table_round_trips_write_parquet_bytes():
+def test_read_frame1_round_trips_write_parquet_bytes():
     # Equal Parquet bytes confirm the read-back table preserves rows, order,
     # and the whole-number value cell.
     frame = _frame1_source_frame()
-    table = read_frame1_table(write_frame1((frame,)).data)
+    table = read_frame1(write_frame1((frame,)).data)
     assert (
         write_parquet((frame,), rendering=_PLAIN_RENDERING).data
         == write_parquet((table,), rendering=_PLAIN_RENDERING).data
@@ -828,7 +828,7 @@ def test_read_frame1_table_round_trips_write_parquet_bytes():
     ],
     ids=["converted", "composed"],
 )
-def test_read_frame1_table_types_a_structured_unit_and_its_rows_rebuild_the_frame(unit, cell):
+def test_read_frame1_types_a_structured_unit_and_its_rows_rebuild_the_frame(unit, cell):
     role_keys = ("recipient",)
     frame = build_frame(
         role_keys=role_keys,
@@ -842,7 +842,7 @@ def test_read_frame1_table_types_a_structured_unit_and_its_rows_rebuild_the_fram
             }
         ],
     )
-    table = read_frame1_table(write_frame1((frame,)).data)
+    table = read_frame1(write_frame1((frame,)).data)
 
     assert [row[table.columns.index("unit")] for row in table.rows] == [cell]
     rebuilt = build_frame(
@@ -859,29 +859,29 @@ def test_read_frame1_table_types_a_structured_unit_and_its_rows_rebuild_the_fram
     assert rebuilt == frame
 
 
-def test_read_frame1_table_columns_and_rows_are_tuples_of_tuples():
+def test_read_frame1_columns_and_rows_are_tuples_of_tuples():
     frame = _frame1_source_frame()
-    table = read_frame1_table(write_frame1((frame,)).data)
+    table = read_frame1(write_frame1((frame,)).data)
     assert isinstance(table.columns, tuple)
     assert isinstance(table.rows, tuple)
     assert all(isinstance(row, tuple) for row in table.rows)
 
 
-def test_read_frame1_table_refuses_a_wrong_frame_version():
+def test_read_frame1_refuses_a_wrong_frame_version():
     document = json.dumps({"frame_version": "frame0", "columns": ["stat_var"], "rows": []}).encode(
         "utf-8"
     )
     with pytest.raises(ValueError, match="frame_version"):
-        read_frame1_table(document)
+        read_frame1(document)
 
 
-def test_read_frame1_table_refuses_a_document_missing_a_required_key():
+def test_read_frame1_refuses_a_document_missing_a_required_key():
     document = json.dumps({"frame_version": "frame1", "columns": ["stat_var"]}).encode("utf-8")
     with pytest.raises(ValueError, match="rows"):
-        read_frame1_table(document)
+        read_frame1(document)
 
 
-def test_read_frame1_table_refuses_a_ragged_row():
+def test_read_frame1_refuses_a_ragged_row():
     document = json.dumps(
         {
             "frame_version": "frame1",
@@ -890,7 +890,7 @@ def test_read_frame1_table_refuses_a_ragged_row():
         }
     ).encode("utf-8")
     with pytest.raises(ValueError, match="row 0"):
-        read_frame1_table(document)
+        read_frame1(document)
 
 
 @pytest.mark.parametrize(
@@ -903,10 +903,39 @@ def test_read_frame1_table_refuses_a_ragged_row():
         ),
     ],
 )
-def test_read_frame1_table_refuses_columns_outside_the_grammar(columns: list[str]):
+def test_read_frame1_refuses_columns_outside_the_grammar(columns: list[str]):
     document = json.dumps({"frame_version": "frame1", "columns": columns, "rows": []}).encode()
     with pytest.raises(FrameError):
-        read_frame1_table(document)
+        read_frame1(document)
+
+
+def _frame1_with_value(value: object) -> bytes:
+    document = json.loads(write_frame1((_frame1_source_frame(),)).data)
+    document["rows"][0][document["columns"].index("value")] = value
+    return json.dumps(document).encode()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("1.5", id="a-numeric-string"),
+        pytest.param("abc", id="a-string"),
+        pytest.param([1], id="a-list"),
+        pytest.param(10**400, id="past-the-double-range"),
+        pytest.param(True, id="a-boolean"),
+    ],
+)
+def test_read_frame1_refuses_a_value_cell_that_is_not_a_number(value: object):
+    with pytest.raises(FrameError) as excinfo:
+        read_frame1(_frame1_with_value(value))
+
+    assert excinfo.value.category == "schema_violation"
+
+
+def test_read_frame1_rounds_an_integer_value_past_2_to_the_53_to_the_nearest_double():
+    frame = read_frame1(_frame1_with_value(2**53 + 1))
+
+    assert frame.table.column("value")[0].as_py() == float(2**53 + 1)
 
 
 def test_frame_entity_columns_on_a_two_role_frame_matches_the_sorted_role_keys():
@@ -923,7 +952,7 @@ def test_frame_entity_columns_on_a_two_role_frame_matches_the_sorted_role_keys()
             }
         ],
     )
-    table = read_frame1_table(write_frame1((frame,)).data)
+    table = read_frame1(write_frame1((frame,)).data)
     assert frame_entity_columns(table.columns) == tuple(sorted(role_keys))
 
 

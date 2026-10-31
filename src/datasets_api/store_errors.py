@@ -18,7 +18,7 @@ from dfo_frame_grammar import FrameError
 
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
-from materialise.formats import Frame, Table, read_frame1_table, validated_frame_of_frame1
+from materialise.formats import Frame, read_frame1
 from spec_registry.errors import SpecRegistryStoreError
 
 logger = logging.getLogger(__name__)
@@ -49,27 +49,14 @@ class StoredFrameUnreadable(Exception):
         super().__init__(f"stored frame artifact_digest {digest!r} does not read as a frame")
 
 
-def read_stored_frame1_table(data: bytes, *, digest: str) -> Table:
-    """The table of the stored frame1 artifact `data`, at `digest`.
+def read_stored_frame1(data: bytes, *, digest: str) -> Frame:
+    """The stored frame1 artifact `data`, at `digest`, as a grammar-valid frame (`read_frame1`).
 
     Raises:
-        StoredFrameUnreadable: `read_frame1_table` raised `FrameError` for it.
+        StoredFrameUnreadable: `read_frame1` raised `FrameError` for it.
     """
     try:
-        return read_frame1_table(data)
-    except FrameError as exc:
-        raise StoredFrameUnreadable(digest=digest) from exc
-
-
-def validated_stored_frame1(data: bytes, *, digest: str) -> Frame:
-    """The stored frame1 artifact `data`, at `digest`, as a grammar-valid frame in row order
-    (`validated_frame_of_frame1`).
-
-    Raises:
-        StoredFrameUnreadable: `validated_frame_of_frame1` raised `FrameError` for it.
-    """
-    try:
-        return validated_frame_of_frame1(data)
+        return read_frame1(data)
     except FrameError as exc:
         raise StoredFrameUnreadable(digest=digest) from exc
 

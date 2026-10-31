@@ -86,7 +86,7 @@ from datasets_api.manifest import (
 from datasets_api.manifest_models import Manifest
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import rendition_token, servable_frame_location
-from datasets_api.store_errors import read_stored_frame1_table
+from datasets_api.store_errors import read_stored_frame1
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
@@ -249,8 +249,8 @@ def _stored_frame_rows(
     """The columns and rows of a version's stored frame at `digest`: its frame1 document, or its
     canonical frame without the `status` column, whose rows are built a slice at a time."""
     if media_type == FRAME1_MEDIA_TYPE:
-        table = read_stored_frame1_table(data, digest=digest)
-        return table.columns, table.rows
+        frame = read_stored_frame1(data, digest=digest)
+        return frame.columns, frame.rows
     columns = [
         name for name in pq.read_schema(pa.BufferReader(data)).names if name != STATUS_COLUMN
     ]
