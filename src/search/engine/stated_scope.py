@@ -256,15 +256,24 @@ def without_scope_phrases(text: str, intake: ScopeIntake | None) -> str:
     part's tables do not hold. The other scope words stay: "bilateral", "net", "gross" and
     "commitments" also name measures and parties outside the scope axes ("net FDI
     inflows", "bilateral creditors")."""
-    stated = _stated_provider(intake)
+    spans = scope_phrase_spans(text, intake)
+    if not spans:
+        return text
     rest = text
-    for m in reversed(list(_INCLUSIVE.finditer(text))):
+    for start, end in reversed(spans):
+        rest = f"{rest[:start]} {rest[end:]}"
+    return " ".join(rest.split())
+
+
+def scope_phrase_spans(text: str, intake: ScopeIntake | None) -> list[tuple[int, int]]:
+    """The character ranges of `text` that `without_scope_phrases` removes, in order."""
+    stated = _stated_provider(intake)
+    spans: list[tuple[int, int]] = []
+    for m in _INCLUSIVE.finditer(text):
         negated = occurrence_negated(text, m.start(), m.end())
-        if provider_option_id("bilateral" if negated else "inclusive") != stated:
-            continue
-        start = _cue_start(text, m.start()) if negated else m.start()
-        rest = f"{rest[:start]} {rest[m.end() :]}"
-    return text if rest is text else " ".join(rest.split())
+        if provider_option_id("bilateral" if negated else "inclusive") == stated:
+            spans.append((_cue_start(text, m.start()) if negated else m.start(), m.end()))
+    return spans
 
 
 def _stated_provider(intake: ScopeIntake | None) -> str | None:

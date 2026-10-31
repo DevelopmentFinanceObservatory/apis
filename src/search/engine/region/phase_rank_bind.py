@@ -2311,10 +2311,8 @@ def _dataset_stated_words(
     The part states a word where its variable or a typed qualifier phrase holds it as a
     modifier of the measure (`place_roles.part_states`): "bilateral ODA", "net bilateral
     ODA". A word inside another ("non-bilateral"), one an occurrence negates or excludes
-    in those texts or in the verbatim query (`bind_repair.stated_words_negated`, which
-    reaches a negation the extraction left out of the variable, as "not bilateral ODA", and
-    keys the response cache), and one standing past a function word or a connective ("ODA
-    net of bilateral flows") names something else and is not stated. A part holding none
+    in those texts, and one standing past a function word or a connective ("ODA net of
+    bilateral flows") names something else and is not stated. A part holding none
     of the words the datasets declare reads no place, and so does a call with no `state`,
     as a resubmit makes.
 

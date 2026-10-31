@@ -19811,5 +19811,2784 @@
         "stated": true
       }
     ]
+  },
+  "Extraction@501cb31acc6e:6883ca1a643eec055207b86f7ffb459c61af4114": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:aa80ef72e6577ff266d9ea7da7f899ba6937dc93": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:dbdfbe5e374fb3602968b7a97d113401fb94d5fb": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:f2f41e6a6d80abde267c0849a3b18bf57c08b7ba": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:8697f8a131536c6729cce06734a7a738d468adfe": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:5fde028fbd7f5aa63174e10e76de31c5374ec679": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:9cf1a142e6e5998ab1eb1cdb1b0a3d2e6da1fb2b": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Africa",
+        "span": "Africa",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:47d5a4999e788c2c8b38e10aa96f8a83591d8dee": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:58ecb68ecc9b7304a7782997312d86e5d3db981a": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenia",
+        "flow_role": "destination",
+        "role_span": "a",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:d300f1f2ad12acfec42dc078b7802fc67a26f4ac": {
+    "kind": "resolution",
+    "variables": [
+      "gross ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:285b3fcbc1f096a787176599b3044cf9e5a597af": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:2f6a7621ec59e7d35b81faad931e204537d2c625": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:960643a3ff448dcef2e2b207a08e88afbc48816d": {
+    "kind": "catalogue",
+    "variables": [],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:2e50cc4d9ef9f9d1a2b51e831a5e5224dc88ab1f": {
+    "kind": "resolution",
+    "variables": [
+      "long-term external debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:2ec2b050e6a23f4ed7913376f7a8080486d77fdb": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "owes",
+        "members": false
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "owes",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:21dd740e520743309b2ac8a196f5b2a3a969cbe9": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:85353509f140138496bccf10128e240ee61dca04": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:cbf3cab314a6b166bfbfd2b77a5a3c3637f42b90": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance excluding debt relief"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:8387dc0e90e6316304a2b712440b1b103b223771": {
+    "kind": "resolution",
+    "variables": [
+      "non-humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:65347116391e8b145808afc089c0b545b150956e": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": null,
+        "end": "2015"
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:5f65f084223d4fc87658adc9f9e88174b88a3046": {
+    "kind": "resolution",
+    "variables": [
+      "ODA grants"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:8e83bbd4a677007b391c63e7376c71addd292a8d": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "'s",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:dfc96d2b39d8f1c7467b807e49799442e6c2589d": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:2b3e423a27a2a23a9aaf6566691652a4c4b10dad": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:944d9b3e20497c69d247e81e5bf368e1298bbed2": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "Extraction@501cb31acc6e:bfd011590ece39706842a8b8bcdb30df3b64aca1": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not including multilateral flows"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:ea1d520c0f1f42fdaa77a64f591d7a25d343e040": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not including multilateral aid"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:d9d43b77cce67856d4af47fbb9f6f586f04797a1": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not including multilateral"
+    ],
+    "dates": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:b987feb0adb6931fe647196938a6f71fb09b81e9": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:695fe58fdefa27d47f79b1fa1bdd9c64d966cdaf": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:95bc7bf59b613daacdcd47bdfa3b78e317712348": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f21e669f0dd3399964faf23c97b475309f3c09f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b7b8048eb0b934daaf445993af1ee2ec252e3c37": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9d99e958fca0a62cca391c69b4235211a903e28d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d5c25ca86568ff761aabf263082fee6532dccdb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7554807695ab8b575842f1840d8ef531f3c6c624": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2561c8582de43b036e1b1555640804356db86431": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:05c389c969baf5018fbaded1e35adb7ac7f5d91e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fdc566f9522c146bc756dc533a36a3dcfa3decab": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b1cb011ff38f6e911ba45deae4eb3622ff70a8e5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a9c0de6f7d6e4ade1e865039de355a7dc0b45d8d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9538b7c206407d1e8e84cc6b4294525b2c7fdfcc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a028b16f26e1b5b0f9f522fa31fb276a4fc4c3a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:29378af3fe4e0a97be02615480a7764a92b3484f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6cef91c399c90f7c5ea2a3dcd774677ac8878695": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9873683461220c24cc6f2cf462ccfdfe48472827": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4069677ace21e424697d186c510d6c23781b2cdf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6524857424661a399563076dd97a394f83154fb0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d4d04da7382552cf87fbe7d6b55f37dd51c7f926": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1a2b89c023ea27217b13b1fbef51ef7e9aaa3673": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dc5570146a73cdfac57d6d09788a2e2d41531d61": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aa7931f3199972ab0deca8547cce1c6b171bd09b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0903e9bc2c7d2bdf7f5d58771b31d577df1bce66": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:191a3ecc4ed3fcc591f1e8c6d87ac1b326146498": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a42f1cbadeab1a352251d8fa2aeb10ca25728876": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:864f0103eda01bd69182ddf958aa673b70a0bec8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c9e144e5cc6053fa53558c322c7ff79bdd28c788": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c6b7d03329d5d0a39aa8d76f9ceb3b4113a6bee6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7fe96bb872f15c23ce72f78469c4220b6616e206": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:01a3850f7e94f6b815045ad9d500866fc7f09ab3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9ab5b61417f6c21a04597053ff537f254aff78be": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:efd9b9e7633c68e0f24e8da450ef32a65cac5c6b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:88a7ffc9450021a0003d960d6e4c2bdc4ace8cde": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d9097115b2a56649913978d0e678fc30e4bba418": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:907b5b6834a710afe4dda8a1522f1a3b76d6a96b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9cbbb6b7845046a5b903b1d0d1076564faefdc7e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ff52f002da041543614d7222dc341fa04a2f7c51": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e948d7a34c7bc1954cb12c7abdc8182777b640d0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e209eb4e216998d27c80aeef3868feb0d1908467": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b44940098083b2996fc582919448c0f0d4417427": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e0cecc852c2d1254a362607af53fc072ded3567e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7f963145df011716b9e4531480b641c1f64d3a7c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d359abd4420ada649a4d1d719f12d5a13c653608": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:22e9955d874f6e2c387990e80aa9e1b38405f3a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a91a5a41a4e2ab896109982d03724283fd570745": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:302830524901ca60ad09c614b46f8ac54d4dada8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2005b6272be4d01da41326be4f210070c0eb9cc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f114b1c0442ff6e43b14bb58d94db6e19a9bd857": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:daba9a0c6f6360ca078868b2d714554e7ec8a07a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:860456e80f55195431b6afeaf1853a1af0a8ef72": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ceb66fd70c8d7b8b7eb1f623037d29adcfbf23a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:248fc28c2af7e4ee5651e3d37a8a270f0a9d7d94": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:29086db76d5ad88ac028eba21b3f36de2d57b78f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8e6966dfbde26488eb44325424bd12a19aa1703f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3a9948e90e3b557eaa981258c51d8907fd0ecc5f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4e1822594e7917d1f4f8b7ec61f6542722a91cf6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d0a0ae9713ab0a3436c16cc4f610c88cc35c31cc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8cb36bc0494f6222714e611e8633a1173e1d2dda": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:67aabdc08ded894d0eadd988bd991689da937a15": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ebca3968bb527164cbe63ff0e627d282ad0ab5bd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ab3fbde08d7cafc4dc58072a00dc1d5076ef5452": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c45ba7e6814aaef6d43e38b358bc65b498ff9fdf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2dd336592524052f188581fea69633f4c430748a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2b4a9ffcf076a9211fd110f49df4507cfbb82d21": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ed35da6b2b81eb37d36689abb737a92b5a659c12": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9c34acee93ebc4adf824869df6f8d012858da8a8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:73256a0cfb7c0b3a0c535c99b18423cc242b2b25": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:478320788af26f664d4030f6e996a2e4c03c0472": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:583042243c85c998f4a22026faf7c8f06f7a70a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:23bb6d7be9271ad0c4cf3d36aaa09e0d4363e4c8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:874001007f37eb6b5a14df262d07d47102825215": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d62bcfd505b0431dd93ac22982ac3a0ed0365e7e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:426460cde2c5903de1657eb71c79696df5de59ce": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:da67d51cad1a5e44963c1417218f97b3bd2bd420": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0f99f3ce76a85cdab7960c851ae15f4a9a13bfa0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e9eab69a7471c0c7e4e7c6ed30a2daa2a8a3195a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2dcaa95eea4ada3933264052b55de37c0257b010": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ee2699247024223ae0f977a206f32d52a1af51bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9db511e5ebebb5e5916defecce8a2be2001bd8f1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bb508db85500824cd379d20f4f1ef97dfcce75cf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f6b55712c10f5ac75c598a20f4b8dee3566d411": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4ff1ff7af7df54952f49212a54cbd2fd2540e0e3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0b17c3a2462c751a0bbd01f9b248033eec79f8f9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:722faa527829aa105026fb15ea253b7f5741012f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fa053891cc353117eb31b52d42f7b82b7ee6a32d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:67bcfb8b48901a0e4b17e6cc5e3393cd599b1cf7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f95e46ff4e56a772ff03714990af16f822e10ee7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:484da20619bc9d8a4fb326896f9fd800b8178cae": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bc107757c8d9cf53e189ea9bf6dc5c226242a251": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a3e0ecb822af54054c1cea82c2900b61949861a9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e66da900be687801793a5a2b2ed14826f69ad47c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:301ad410805f849f8da3c57a86efe36bc51cc5bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:069dbf7d1cca5d12edf871662f6020fb5442b168": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e092ca2635c32db4d8b7e610ad3185cad770b738": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c6daf0e0e80fa49622b89ba68d439a983c9121be": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:81152d51ad091ee8c76d81231b939848f8c19bc3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e6e5657835d369d86ec1f533f4cae8a8fad6ebc6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9477b759237914146bd63860a744dc2fa39c5b15": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d61d5cbb5940f28411e16f0bfd2957dfab9fc8f5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7de9e2ca27dc32d658c19764a0470d80c56c04bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:415252733cd192b3fce43e75eb42dee2504c741f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cfa70650235d1e7ed987340a952c5e71cb73c195": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:62c3f8d2fba783a001bb88dd916b9ea04c6854ef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b15abb684e6c4ee4aaaa1440884ec622df250c38": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:332109078759c7314403be91e13cbb0839b1788f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2d7c10f4d8b69f70a11a246e60ea960461613cf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4b35fb1b909139ad1de3bc93c9f2fbd85821f852": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f3dd53a57c54cd8d0b59221f3bcded4646802dc7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7713511b7db43d82e50e042a45fdc70dc0abaa62": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:27648c2049f747ba65af3dc69dc94285e5aee132": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6183513135166bbedc40c5e5d58fce6e9b0fa50b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:60c4b2a1671071ab7896a4da8d3b978697e09ccd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f78045a3af78cc4f7c3788b0baee0fdf8950746c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:585aeaf08e17352f1f57b57df42e0ded650a14b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:82c66c8e9937b49504b1cb54c4ef0e57624b6a54": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:926e78f9bd0dc649fda89d844c42c8ba842536b5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6739b74f938d9296d3de604c3e35d3abe6476f5d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:76676c8816ad15f42a3226f108325325c139b2e2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ed2c7c7a53ee9bcf2bab0b45fcdcca9b5fbe48ea": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c9e44b05d566062deba8cdca5b2acdc824955fcc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a873881ad8607d6505202e3b8b189d59aa43ba2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e9000d483f88c426c35eb964559488c038373e26": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6fa741ef1f8a4c5a645fa23094f3381868f53e86": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aea08b1a415033f008077334f69e879ae4081b69": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c75dd2636eb823ed8d89637e268a139b5c20d941": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ef4424ced00ba1f1d25ab935ecf010e48a45db2d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a5d637a693051ab5d77b6c08bec9395c8818f53": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:055f2c124643753b331abcdf4fb4763238947bb8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:87e2714d4072827169f6655bbeea0f0e95f5eeb1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:402bf019ce655324b6a7d9ff27cf0632ebf28cf4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:24ab10adf4b12410ed48f74913ae550978d227ab": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:366b5cfc3785e8da5c4af0665dfd2290f3e5cfc9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:45311d249b1b49e3b2ceae0290e62b57b827f74d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e3de20e01056a113b399b3b4ea65fe10a50ae512": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9591fa095d45267a0ee06c1c14351e59b584c5a0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:92eeb5791d33dfdf5a3bfc2f9ad9a4d1692fbfe9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4bce68a474aadbafd0e17c1d53f5d660e9bf2615": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bff95612a8a7a17364297143e30d57f4a606e0a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4d3dceb62c3c12ca416ff3622a986f384c288dd5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:11b278490253b49ff71f10573b38c26acc550d26": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f0a1cbec41f385d56bbdf41b4d875c4e5e48f950": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5068389f59f2b2c2886b8cb49930f28d5dafcd74": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:982e92e11bdc6a2e7b5c5451bc46859786743bc1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d8d31f1d5866d5ed30cfa28fd48efdbdaaee0a19": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e70aa0b148dd7a10c6f6f31db602bc86c1fbd39b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2fb0507f397f027b27c27a76d8ef725ec1c4d17d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:04b37a08e2a3c27b646df3ed4824c8bdbd353fc9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:abe13b1b3b0186cad7055fe43369f73968acf264": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3dfbbf32d1a3068a90a0264b84d8718b6403523b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4028f94f344ffd37acd0ad9a06bb58005af969d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f97f2e5f1e4dbb1c45e136489f592e135b685c6f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:edb45ea2c8a2f0d8d98947d7632a7ec1f8200106": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:202545e2f516c0178061b071f44a24b5341dd32d": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:3db17b9aa6a19f04f094a9d3e8281ad78c43956c": {
+    "exclusions": [
+      {
+        "phrase": "excluding imputed multilateral",
+        "left_out": [
+          "imputed",
+          "multilateral"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:65227a728d42f1ecf6533dc7f278c2c67845dc7a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a410b614b9ce8a17bd7fafbdf7dc618e30c43b1c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1829bce0d2f939739fd47780f93c65e89fcd2e94": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:81483cd2a194707858f8d6d41238d4eb0d9a06f5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a62dcf83b59716821c510d32c65b01a430aec536": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:50daa8c40223259f2bffcd498616d4f9e207cda6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:93b73307fb1a5bded91a830e40963d179e0b4879": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:167f77e1760c38c69debe95d99f801852f5fd90e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6358b0aa965bfee12a4bf8cecd494c913465e163": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:38fa8dc43a23ea310b96f50deeab1a61606bdf58": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:893c73ac4d10565c2f43bc2536a9b81070dccaea": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e2814c9236806a186060b9acd323dbbaf4a5d961": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1677dc45ca0310d05ac9c537c33aa85244fe9761": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a10f8e5fda03a5f1249a39be3982ea6ecb8b176": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f8c9e60ec3482c4e35b9b3ce87302ab7fd61feef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0b042dd4e62d6e1bba3ce8ccbb57fc3f53c67292": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0deb09ca0d5d0c5b1d372a0fcd9d4b7c2873061e": {
+    "exclusions": [
+      {
+        "phrase": "not imputed",
+        "left_out": [
+          "imputed"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:cae5ce49885dde9f45dd5a9c2b85641b88175e39": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:084c97c4d76e882db308c59043f916e848cb704b": {
+    "exclusions": [
+      {
+        "phrase": "excluding multilateral donors",
+        "left_out": [
+          "multilateral",
+          "donors"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:d04b82ed2880da49432d92d1c8eaf713ca10ba98": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:70a73ba0f4424f24a8e496d3712114f77530a3d3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e58f0cc410e891b0c42ea14e015ef11714096506": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ca3fc9e63ee4adaddb01390a10da8a0b2f8c2666": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:487b5f3326316702b99946b0aeddd9d6fd43941e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1405f1a4b0dcbb8f2fbf33a1ecae468c78386982": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:050cb8424a399caf0a37c44fb781e19afa9acc2f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a7a88835d1d81540c13fbcca6956ffca456fc9b6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9fe7640ddeb97db3c8c6d0fad54da6072be3f2c2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4d6112883979369900b83961fb1793dc1a87f7f1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:716982b5ff5650a03ffe70ddf0614a3c42085e50": {
+    "exclusions": [
+      {
+        "phrase": "excluding humanitarian aid",
+        "left_out": [
+          "humanitarian",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a16bd7f58c5ff48aea6f0c354603a2d9f731da11": {
+    "exclusions": [
+      {
+        "phrase": "not from the United States",
+        "left_out": [
+          "from",
+          "the",
+          "United",
+          "States"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:feb58c9e07b29f8f9ad530133285f93c0ab4affa": {
+    "exclusions": [
+      {
+        "phrase": "except Kenya",
+        "left_out": [
+          "Kenya"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:71187a72ea13c8f1fd1e06dba88ac7ff5f8c31b1": {
+    "exclusions": [
+      {
+        "phrase": "except to Kenya and Uganda",
+        "left_out": [
+          "to",
+          "Kenya",
+          "and",
+          "Uganda"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:dbcf20291a1aa2e10f0af717814ebdf1c0366e4d": {
+    "exclusions": [
+      {
+        "phrase": "sin ayuda humanitaria",
+        "left_out": [
+          "ayuda",
+          "humanitaria"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:79db13c2d483c09faad3265330b510270329be2b": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:fd5c4f3088f4fc6317057935c2f4b4ce5b95ac4d": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:1e3acbb9de1a50d49883606db7d62a0cf919c8ea": {
+    "exclusions": [
+      {
+        "phrase": "no humanitarian aid",
+        "left_out": [
+          "humanitarian",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:114015157fcbe51ba80b734f82810584f686c6b4": {
+    "exclusions": [
+      {
+        "phrase": "but humanitarian aid",
+        "left_out": [
+          "humanitarian",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:e51849a0ec59f31d60bba7ddb7259fb1c16c9028": {
+    "exclusions": [
+      {
+        "phrase": "without IMF credit",
+        "left_out": [
+          "IMF",
+          "credit"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:5cae1504275769822d23dd299e92b928bd37ad74": {
+    "exclusions": [
+      {
+        "phrase": "excluding debt relief",
+        "left_out": [
+          "debt relief"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a11ce785f9cbc3ffb7b79d2587f528d485177cfe": {
+    "exclusions": [
+      {
+        "phrase": "excluding grants",
+        "left_out": [
+          "grants"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:20d5f7dde315bb9dc053b60f351d1cc2f24a13b9": {
+    "exclusions": [
+      {
+        "phrase": "excluding standard grants",
+        "left_out": [
+          "standard",
+          "grants"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a68f1df3911329fcf7ec7a68e4993c808b92af38": {
+    "exclusions": [
+      {
+        "phrase": "excluding North Africa",
+        "left_out": [
+          "North",
+          "Africa"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:05f2c60f38962bd7372716a47b19653d1276bf75": {
+    "exclusions": [
+      {
+        "phrase": "excluding bilateral loans",
+        "left_out": [
+          "bilateral",
+          "loans"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:ab82fa607ebdfc81ede7a9d0cbd6cb9100fafef2": {
+    "exclusions": [
+      {
+        "phrase": "excluding debt relief",
+        "left_out": [
+          "debt",
+          "relief"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:cfa774ae03bf6300cee69cba86c44f706105539f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:14d70e43dc7d6065725686e2873eb85ed3e757d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2fe327dd9fa3ebc855b238a74f753e0216d74d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f5d47858944142dab1142ce2c2763295ba13bab2": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral flows",
+        "left_out": [
+          "multilateral",
+          "flows"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:37f1d8ba3238132f5663e5a0407843fc65e22280": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral aid",
+        "left_out": [
+          "multilateral",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:43ea66d2b03b73fa1bd4b83c76f0a6e577d2d6e6": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral",
+        "left_out": [
+          "multilateral"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:e44ee1ab9d47a7a1fdcb233785b4d690de80670e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2d0ee7203cd404a071ec9c738c66de394a75825b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c54f1353bdc23779705aeb0d396be5c2baf19b74": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a3678fcf74f3da1b202c1ed87e7a21f39b5b66f0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:85a7042181e540b3e343a496bae8449db652ee2a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2ce3ef3cdde4fde92a1b59e6e13834260589b44": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:03a558dc4dce285fa0d0637ed76b047d15159e7c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:da258b892cf3c7bbc4a5f18a976f8c32fd9fffda": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a2944f0755c18d72c97820df36df151ced0e8dd0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:704061fd1b186240b7c402c83481c1b5db295aa6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:430e0d3e92775b9e54e3ea787c7f145da0c627f5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8384a72f71e00033fe3536a2050fd77d1c81a48d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:287a573a61193d7d75f15ba13accee9d13c64f8e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f64eaecd7df298ca917766cb806d7b64ef165b3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3a816def1400c16db63d24bd280f4c898bf08e78": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ffc621fe98cf87fd79a5493294c08a26d6d7e3a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5ae5dd6d2a87040949e9cbc335948e9ac05b8615": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:30749198487771f5d03fdb5776d09016adfe105d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:71ab88fd40b4a622b126eb5d627ea3e0aaceaa32": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4eaabbcdd8dd418e06b98aea0613811609943726": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5f9b388f56227dce4a224b0fa4253fec4ab9a171": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0c39aff1d7885e3d73d8cdb07251ed9575a7291b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7e5f9046d8559853c9e50588b9d87ee2890a2006": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ea81493b28bb570593d59f41724e8438a9841249": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6c5be28e0f4ddb87916981c04d103e16fe515898": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ec963e31523b5ba369a9b8b62b7dccf952551e4b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:17120ad2b41942266be87a9da041f7dd05425e57": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d126b702f71f3e1192af3a6fbb6eb0abf0432430": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9a8d671e384c6e5f388dd25634d637d1feb3b982": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8756bc370edb247f51ad170131d24384e3563720": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0e110d179938a94ebe85ae202f9602be8603ac8f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5debb648e6d21a6fba57220cf4a156b40a2a788e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bbb75ba914f085d106ed7abe4e6760f657d89246": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:da86a56a1d2f30b209c41c8b6eefba68b4fd0c95": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cd1b11ead123b5d538732020620a39a2aba794c5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e9616789fdd20fa2565bf7fb3dde8112f602d79f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4fce4c5f5ad892481401d41d8b6b0bb4184405d3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7280b8d7779ad20876f64078d23705161de8c7ff": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84727bb86d073a7e71ac6719aecd530e7ae86b61": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6ec62ce1b696d1bc48ffe608a671dd47d32c7e8a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cf37e789d9ec053f9431391aa2c13f58b4c798a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:723c707fc5f0be5eecd57f57fda00df84d47f1b5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2a28369ec12c50e6e16a6dc7bf3a4528b1c00e9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:89002ea4c70c11bbfe4d05a703c7eb94a3c913e1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:217e9b4764512429a57dee7f19c8eafd804ec152": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2607c5ef1d0ddda02eb887d5bba050e9a5eba6f6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dcf9b3011b7498e2e2ea2fc1be98f504ce66b953": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:73a0e260412d5f8a3d8a908da306182f43c29dbd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cea4d82cdfa087dc6a363121b51267ff3719d4f2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:47272646d1ce8816242ca96297deca7ca1d46d49": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f59212cec54a4e32ca19bde0665f35935bffeaf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b0c288dc8e3e742b364cb60aaf1059c069f6e4f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:03c196635aac7f47f23bd010c631b279ec346e73": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4e7e44ddff35f0d494f0ab769a23f2f6cab1a5bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7d902f9254b25cfd92f1f7e7d14154ff0b44d95a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d6407ed94ff27abfb4a080618db446efea4fad0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d5b5176f9b73d50ef868e0a125918eaba9a6d04c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fb1dea01ea756a066b8bf1749c31ee30a99e66c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c96860ef1ad444b37d785351b6bca6ad66093c08": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bef1a4f0188d214dfc32eb19fb48d5e2eb7fe3bc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b9e999e6b05f63bf96cfb4af00226337dd0b4501": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:65f3e8a32a7a8ede8ed12940c6c3310d04dc62a4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:71a8188c59880e3d52f2bca58ad4d6b4d2cc4360": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:741e361955ca0b86e3880eb6c860590f43afb89c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1997327af74fba081a79f25cf8b9a7211ea0654a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e598b5ceb00f09aacb5393b8e1af03155a47ddd4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:62577f2c3ef992261f3f9fde8f2b1f0d25b1f374": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:27b646d5077de11087898700bf64b0917f324db0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:acb9c4d7c626d5e49281f75681a25818885d6bcf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:72ddd338b2e4b5053ad666ecfaf6b13572b4f1c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2834b926166a40cc9b1452613da333ecf1d7a741": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fc629062cdf7c123106bdf44446e85c1139f0405": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94086367a350f05dc367f2a15b660475bab9c7db": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:589fb5e1d785cb9026721e2d2ed86cdd705331d9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:47c56539d36cd4e3326548103f68419f2d09d20e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0f58b2eadf1a8dbddb128fd8ebb1ba3138c8b607": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8f243a374dad20688c296bfe5baacacb0e0c3e41": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:be77bd2ab888beb065849d899f25ddeeca5f57c7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:966ed72734e494c3b043f1d81356b7871258b2a7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bd56782c9beade717bdcfec8de42143cdb6e5b97": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a190da11456f15f691e42229a353573722806903": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aa1666348d1f4f9f3924b9353877a07c1ba162a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2412940a572e60f569a48cf96f913f26fd963560": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:95dc9a408b939ac636a566c5d907ec6c750c6950": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d667810219beed5bf9c91fb065dc0928f385be15": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:29a800dff47d68f9ba0f09f47f994b56463df85c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7bae2df8a17ae623665290173b18939ed06705bc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aa311d5724364db44ec36c9dfed9e6804dc4c2d2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6fffc6314f73a4623838a537f6426d94cd5eb402": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:16378249311eee0fb438fc958401bc5f25747883": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:98e21494e5d9b2d184d14d56999b94cd893fbec0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f672b6ee7e80b170a38e16be28fae01afe4dc71a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:54bfb2e669af3f79dcb54f0ea9a0ebc14256756a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e4ab348226bf646511e8079a3627b6474407378a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a12b3dd73527f86bf960192acc051874a746ec18": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2e27851c7aef44c27c97a39b86d7cbc218a5619b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:910c081567960d474762858d0c48101668e2fb71": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:98308c7153b4fbd45b413327d1be020337dfbe6e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:331c18d69237b722a72fbdaa5fabeef42924c2fc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:992cb05032745df0883630fc8e000f11c742baad": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e7cd498ce942d3d986075d3c3482a71c735f8fff": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:87da92357eeb671c76e0b91368efc3da725b72a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d787ecc2b1c4230f3ab949de3b867190d7b62dbf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:efda540952ea98445c14203ffa4bdbabd3f3810e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40120adcb652f8e30f2d0c610f3667f0132dfe14": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40f365630d3bc0a33fcaf4789f9e4d4de702f020": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:19a6417c2c5408ff60a229d8f370c9248bfec1da": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84f536560fad6bc2349c449e3eec23c207ac802b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9f7505d4a6c7a39d05d4eada172a01f6920173e5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40aab304506761feb9173b06b6d88cac020b4494": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0fd290f802056bbd54cf417cfe9f9ddf94bef092": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5382478d87b7d3db6b81222385df72c735ef7ed2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8b1a440ae04a46a662e55a068c699bca24537621": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ddc8cd1f6d2e0e28bff1f32926c8fa36140161fb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1579eb3470dd4a25a4861f20c0474cdb64ef62b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b585fac87d9784d3e804ce60c98eb8981ee94d26": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d7985e088e363e85c153c8eee116cea4dfe360e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:663445cb37668f93b555b603681d04d749beda68": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6e48e57f5f019ff88d1f9b1f9cbf996059957b31": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:eeeb5cc88d959da85740026c08bca8c521aa052c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:712cedab88eeb428ba68e0d9784a8dfb8d8d8e2e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ee6785c873d77fcf2a82b9644cd352c04e8e93dd": {
+    "exclusions": [
+      {
+        "phrase": "not counting what goes through multilaterals",
+        "left_out": [
+          "counting",
+          "what",
+          "goes",
+          "through",
+          "multilaterals"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:decb17b14d60c1160c88dbe28556d4726e78e9c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c20300dc726dd5a8e77a6ade92d926cb01336417": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c7e103108f5f0d4514246b803218754de62fc94f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3def6c6be7b8036cbf2f461ccd49b97da8fa0c5a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4118afd92a753cfa8aa46475770550d25151443b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0c09e47d4a7acec67af65c8933769227c823750c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b80d35168afc0f550dcbd8a02ff2ef2768285627": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8f05574044814cfe4691d1f895a7342e1eabb4fa": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:178edb98d02f45594470300dfeb946110e226d42": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5444f01fee0e9708b030e9b954cc29227170d2c6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8f8cdc49ebecf61376ee642de8db4fb2ffd1f285": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e37b64092af48db27d7948a8a950233ff9f89df8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fe91a4e02408dd5bb46b75a1f0de3cb1c9ccc9d1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:78a06afa4aa4c89ba2a9a8f0975d9ed3724cbee6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f1488b03e199acbf6c2c7663115f2741059210c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7e954b13204b5d06efd82965d8b1859b3c6f05b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d580cbaf6fb3be1772e7eb907cc57c4d1aba1611": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4371c617637955412533deee1df9e28d6671ad5d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f1c0aaa7509bf8fd0411f232131aa3d9cdbf712f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e03fe8d6a0a4fbeea43f84e89ca30d87a5b93d5c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d0617214988d48f53827b6064dff301e507e79fb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:597bf98b7ec58200bde2be7b61c83afe64b03950": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9ee32499e43f53c2972e2db68523ac59180b0f8e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:14002cbd9041ffa7fc563b835edd4c2f2f9e316b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c1b76de05b8d0679d408eb2674c98a79b11f582a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:364d56569e03c428d93f4dc793c6818bdabe0b1b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1ab8e50d53fc0f466a45587613c61f68c278ecc9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3537c7b0759d3f38d0fecf60216bab0c887234cb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94f2daeb9a6b209e297596caab5ffc226ae9a52a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6dc9bcc2e78f55d9d67577e2b426e64b64aa61d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f39907c2123b618e56e1fb21c7650e7ff95e6ab7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:82319dd6a641e0645d5c42a1acd97f19f43bdef0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a700ee0a8614838b0b40fd6609bbcbf8a25f55a4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c27589839dade97d069cedfd5ad86717782c6dfd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:033ca8ae0c9ac761fc9c1831a1136e22f6a36b08": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:babc1b013d67de97969c841d5afc4b0d6dce17fa": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:189d120cb59b26978ff81181a9bf967a6417a483": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4118b6b0936e0829f697c0d481c474cfeda29134": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d276f3b23deb1898e47e18e0a5bcc47d9136aa04": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b25f37fd43f335d6c65d02371f9960285a220e5c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:db767c8342c79413bacefdac3fb4f6e9464c97ed": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1e1041e3d95cc3b31355769f12308e98da874db": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2838d8a1afc7217ccd5eea99b4ad258f2f217fd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:77c9426d6b922d10eb52cd7379a989960646d699": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fa04d3e8235d82643f52387d35318704f23b0747": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9c32e2a66f519a1aa3c556b1f78be936beb942fe": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d8ddec1d7760889f716412d2079b1073f6dacd91": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f3571587ff5665de485d795ca701e5fa42677084": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:690356afad9ad7097a316e737dd5efefbb4fc630": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:169ba8926f9b178327bbc0cce27af8af1fa072a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:64975dcdf4e2b868eaddaf533f524667e603e1b4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fe2c3a1e3eeef47205fddc970cddf95db39c6642": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bbb825cd3c88a27b24ce8a1c4c2a1812041982d1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:09b0f252ce93723fa4d0ad4610ea9c416743d7b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:41b2d43a64431ee395c9e5854e044e71b3c83269": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:47982a5f5f65f5f2ceb2e6a7612ee4d7cd27c319": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:26b23fb2ad573eb8889dbd4739c67a3a48302025": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:69c0c0380bbdca8113deb9dfba85bbb0da7fc15c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dc255aa1bf62b0225f59aa1763a7ec1aaf6b501f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7ef6cb34a4d62123e03b95255e0e16766c6e1bce": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e1a934955a18923f308d0a729990965ad1906f9b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:acda5875b087e5ff5bfb04dffe8044b574628c54": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4922e91ad7f62021b5c34d71d9f02e1b34d3df9b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:365b0dbc22ce1e32883a44b8e4535f2a6c11cc3e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3bac37991ba21eb71ae00e9071dccc1832c82044": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:110fa9df40e0cfb07180052413d5926d7904525c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5b8b344556e1bacfc73e23ab1cf2ae36b34eb9ba": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94b438bed7ebbf5f12dd6f73b8546df5006c035e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:217c36da61b047928112355c58c1d254868ebb85": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:280b3f15341d3810d346d8908c2f18650d304464": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:99ef627948cac60a3d0dcff6b094b35e0e491ce8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:522ebc4637c91f931547afa43601606f8225ed9b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:eb0008917eed132b2193763c265ef3f711eda7a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2806f808346a5e1bdd566b6bac99f571075b97f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0cdc20035578ee3efb81d17278209db08dd31526": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:558b466f7e39ddb0744645af79f0a8678499f977": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ced789775b30fb6fba9e763ae4f0e01410cfb723": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3c43b85458c255ca39297bcd3891f2d146d40f6c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4a3b98f1ec031c4d65888e79202821eae517a7c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:50eeb1b650c739c198098f5985a61496122a00d7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8a8c2ffd95dbfc77de28178ea4b720c576f02a99": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7168c76fac984f7bfb7bbbf078a02d4ab54d3e4c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a10d7d3ed5e0cab9627ffcc8d81907aae5437b06": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:574f6659ee863f64af344d97da007ab20e6d200d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ab542e4ceda7bf0675458e612a2c6931b1d38413": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9883c27fc3529f83d9b09ff623ac639d5db954c8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b27fa6083ae60a60c229856162e1667fcd3a2f1d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7536384e409d4ae1cb8d22fa6c49ad8c41642c62": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fafa7ad3b1586aac4a7ba72d723d296832c82538": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6c9e11e27fc1d83112c52bc5915ff6cf1a84e976": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:10b1ac0b77f2703de468a3eb9ecd012bd92a225d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b4e4d12f6c2c3fc84fb3d2d6e0d9805b4d5f27c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:746709508d1d95cda5b8aeb9fcc7f8a51878ae09": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:742fbad5f177ae9018cd2ba2e0fcb1242b78345b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40f27a4f9b9a9214dba37bb25c473e33322c429e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:72a2c5f035c2907d5a47056c6f186068889f1e5b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c891b2bd1255524ed657f8afa5fae62e3728f626": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1317627c12fe07ece5c51adc88dd955403e6395f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ddead0abf8bf2755a7b3936f4dd0a6effd5184b8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8dd1099609515ce98f932072eb8225d9998afe6f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d3456dbba503cd0853d0d52e025346fc93c2743d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3a98458309275f3b284e07c4bcc676175020bb73": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a456ef2d31b50664ae37c30e791e6c5cff01a25": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1e6d4cdda238095fe10abbf4c3502803196d83e6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e6ef41e39ef4d26409dc64d1b93adc4832392c90": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:db7df8aa0379505530b891e781e289bd322a29c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7b027b4dee3963b7b5479c916d80a5285b6f7bbd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:536f32d320a054bc46ffd5e2ede29e28c715cd38": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:954935de8b9a9d4ea193663d5a40bb60e574b1eb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:86f102d687f2a77da86a1ed5659ff4a78ffcd1b0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:49eca85e425220d662260ed06175a7725672d1a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:988d26177f92ec6e85b47704fc0ebab5731546bd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ab78943976870e6b227514b5a24af32583a006d9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d9708d732efcef32f6494de03854b8502b34624": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:670030f035c78dd8a31938c0f69d7544ff18a248": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e6c88ae738c9fb076fadfa628456bb6a182f38e4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4109da642b56d823aa3d0a9729d481f06f799322": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4790b8ff2c889f465701e421df332b94715ff15b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a34194e5aecbb08d70a41c3b7df6f5f04e102300": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a058d109804b725789e69b1cd1d4193f2d6836f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:023309c9046f0879be8831d43a13b47bc218de96": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5a6a25384f8fbe3e8206b2584c23ac019c69af75": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:54fb834dac222f504bfe13e4349f83222eabeb33": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2ff7541ec6f1a586279697da0fa0c4c375704ed4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4f5af59f36a5ddf0c7f623b3ac231cdb8b3af708": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:691395dcd0d98aa5a6b1f00b8527c9c84d8510e9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:58712c6affff97e879525ccc3e56f20d8964d718": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b8b18032fd42a1c4d0cee1ad646b925f5762bf96": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3bd04005ef6624376da1e063a1325ff61bb4bcee": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1b8b2208743883ceddb3fdc88e1fdef6d3c54724": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d49fb24aa4e3984e891779c25f06fa035cc48779": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2fde16e91181af22bc850aedf7dc36f5e5289c40": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9ad0082d0d6520d3c6f011442a513874ecbeed32": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8e626b6a0a71bf8449a05cbfa767639f521ae78f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f4036c80be5f74bc88d0e0ad23eacefbc4964777": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bf5f5dd9b2da43da462cd10f372a6198b0a9f3a0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:edbd29c0db963383eb792ba022f01e38a3b393b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b31f3f03fbb99e6e3417695ff34b9f5af4b48f27": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:39bea7e953819b72eaac70cd30e085cc36d41969": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:89ff44b5d8d4f9466cd0d1196820e85955301ef4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:118474171c1c9cf41408736c5e715fc53aae2582": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4e86e3df39e983563ad1c7d735a2610011b38433": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:908de571b6e848b188d2102f214380bb0c6b1a47": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:80542f0489e88f39656d2083356589cf9d1e63d2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1c4992dc3111f39343c9522b9e87f7f4d0b08f4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c324e5e147cebb1074ce000bc9e31d5cddf9c829": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b1c7b1b0d9ebff3ad4db7a778438be6d068a8776": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84e2b7823a1161b995c2fb1441533557cb4a9b3b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:660b7db775190935e35854e0a4916ae6d00e0df5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:866383695ad9bdfab2961cbd0856a55564bc0717": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b720ece72172ae43a783bbea428163ca11fe6437": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:306f1b979839be7e9e497a02588656aeb5108687": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:34a6a2f99fcb81d19a3b89948e048703bbf20972": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:56cfc9582a0639533d65a12b9cc93d91e07d4a8c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:70a0ee3a43fd51a9d596bae55693541f535e6789": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:eefe8387b1b61fb34a0b9f9bcdbd6d1ec76b3f0b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b2ca07da6d5a3d1890aa13fb7ba3a55d1056c45a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:02bb5deb29329f3edcf6053b14a71d4723e3e846": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f3c8d78510b2b9bf221d83716c35288c1756017c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:76d32540b7b34c48b7758de00574003a1d0f2ccf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f1a76d3b77895e9f6c40731667d82bdab671eb2c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:266ff6cf953ac6f2faaadba8e647cdf06014dd6c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1462692981000ee17525d8b0c28d48530e6d618b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:300b7437ec50059a11db4155072d5d9f01762f88": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dbec690256afde610d539f95bb351153594516d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6afe29cc833ec6d95445fc202c67ef775bd7c822": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d33c787b5f692ac2d083a31f7859d8c6d2ab451c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ed63c37a57b33383974cb81c11eb839f1fec26c5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2a03f8fd541ff96b742f4152210e6b98c81730fc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:db14c79ac2bc120798ada4007d11876082f8fda2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8bb335944ccace4e0a02e95848325b16438deffe": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ca1d9c7f6a712c8f6a1a501f4c9bfd95f42c4956": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:edca40c8d17eaa0c19305ac266e34de1e2e6f419": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:00e39cb2625d4362e5abaf2dd9c2de4172193048": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3d5304a653b1525063004edebbd17fff76bbe8c9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:97a6c369e292cda19ec53a107a2aa194d81c51fd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:255f8df7094d7b74e21558dada6c3913fdbe7d18": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:36396108855bd7bb2bc55c606001e89f505034c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:938eec551d38c710e4c731c8c6e12337197ab055": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ade89dfa939dbba4a7a8b8f58d4379d2c656f7e6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a3dea7be6406cc72c65ef4a24022bd22db776ef6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f36b97106b9b89b12eb12cf6b4293ee9bf4e8256": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f93accba9974bd6a45529e3dea478c1c91e74f5f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6aa812e50444eb8b56340264828496772ad05456": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:98277122392a3ac657db818b81ab302e0be94e97": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9db3a92d2692ae1e653b07a160747e78d5e0ede5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ee657a5ec3e5deeea3da735de62a9a6bfbc8cb72": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f20e9f8a090119468a66da540af61abfe733183c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bc98041c156fc54e91fd32c1ad7db8c8b1332142": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:89fe92f91120fa49bd3adc0831cee75a708d65aa": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a5c8b06e92c370253fb6686dd2ce0654459a50a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2b4ee0178114acd441b848a2c529e2ef81d319f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e52e8aa4345b0c10890e66b3c5f0aee9174ee539": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cef8b24408169cd7bf2017899cdefed5f97ba52f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ce2d16e8c58bb8537d7a0350fd6473874b4e988c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3612225fed4b9289648eafe8a86429bf2e4ee741": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:95d2cb06e60a703d984941047852d2acbc6a9858": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d7bd81d59c3102c87db52bd06f74b28e4ef69c9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:df04832ded6087d00117b36b3c69f1dab92dff7d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ca2592efbb1d8c38accdabe6447c7206187100d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5b0483ab4b4f83c5e8ac25f6dfda128af629e606": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4bb6c418c3265fd9af8f8dc30c818c9f0afe63b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4defba5828294a1027e5f01915badb73031366d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ec2207c82efe2fea71ed1fcd4e602616871532a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0cb327a3adaecdf43182e57f850b4e9f98797f9e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e92df6ea656c4113eb43a36d715ab05027f28949": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e25aa82b7d0960040047bfbdc336c4641f367f10": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a8805f32c52c6e600d90423190459d9a8ae01e82": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:154b17e1e5e373ad44bbaf0435e1fea4117a2e35": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5f9f970f220e3a497649cda3ea1a131bfa116eef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4a9b54b92164e70d83faad3954d55496ac0772a8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5551a6e0d35817e32053db21bfcb6438360313b6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:30aaf691e2d26285bc660dd612d448dfe80106c5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d5056bd061fa0363d886c65d2a729d34dc5ecc98": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8932b843f9498439696e3f04b31cd67da9e0e55e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:870c6da63785727cc5788ddad9368a152e255c57": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0c93a5ca5d14d8a58b829ac4e9a036107f661df6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:af101dca340af612801a1b33210871b742d5a4a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:02a529ca84a8e38a81c0277f80e0ea1c6de8130e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1e92e7220ceb75d5fa1b2d1652a3a6cb5ed67474": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c9392ef304ff6cfd4883abd6372cc93a9762767b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0fde4dcbbdede286a9e9e518661247c598b070a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e7514b84077fafe2ec1ea83be75354e75b8e9c8d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:74250f1f06945bdc9c12a5399dba73bba75e71ef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7a59c484e481c195e83beb1365d80931682cea64": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d023f8f3da7681c5ad448c4c334f02e44a8fbcfd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1bf7c46465d07699fe6d5842f83f261f51273a51": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:91ea7cd71bf4a810b61afc849d2a40cee6f7aea1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6f8959f13864ea6aeb927876d3cda54d65f5ce77": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5c62e3813c26b36c5d456d89df92ade53a3dc51f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:245a223479f8267b9ba5d12651c109e7327b8852": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:826f12ae82717cdc45e5ec0348fe4e8008c7835d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:703bd60ab5dda460caca17c93f29665aaa53f664": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:42a6f936a5d8b7822ca8ef84de0b8a02e558ca28": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:33e64ca4d6646cc7897ced1f738a9e4da05d4cf9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7da11470d59dd4153df6ec2c90ce8f79ec6bb8d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7bceca5782fae0c2038ed1b95d5ce30186ae3ff0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f87dc5466e028997c3e8270a27480cb0a047c025": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0af7cf4a53cf107dfa4a2e277dd95e89b76c59e2": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a7a770dcc9d3c9a1d2c05de5f63b3b5e9cd88ece": {
+    "exclusions": [
+      {
+        "phrase": "excluding CRS",
+        "left_out": [
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:9546f132d8e2d711bf2c49ea71835618bc8b9f19": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:95a55a570c842cc2004b40d192d500ad49cfede1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:23ec54736746621733c3cecc2d3840945ff71c0e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1e4ac477f8992f7db392789555ef8d472282197": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e0b51c64a55b6337a388ee24e92c528b8d0569e4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6870389a22f8a9561b8b7ea79eb43ee7ad20e123": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2223be62c7c7fdc5d383a584a395a42ae3474e1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:65a0c692fb1ec3b25d84c08fe22c9952eb646876": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9787f1b975d2bb20ca260bada4677a6588150c46": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e8865131439ea7fb072245ab58f76cd86a95dc24": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9721b10249494d1a68dd477496b587590d809df2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:81f57ac640d2ae39f378966653347d5814ef8891": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d92f9b5e846bce9ea405870ea632fcacb36a3906": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9c4acc1c3bcbb7e200c7c34c016820c197d87dbb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b1d8c3e7c8a2a125843adc25c8a9dc37c6d6d371": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e745474373353f78fcc36c832be5c0d878b3aa0a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1db92ecb2b51afe499126cc301f55caa506b70eb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2d6752e912b6663ee2e1bf903722bf1a0055ea29": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:02850f5b5f5f28bf055d81a24111bc445eef29b9": {
+    "exclusions": [
+      {
+        "phrase": "excluding health",
+        "left_out": [
+          "health"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:6b85c39bb5d94fac7b415235e98d66d4476f4715": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94b05d8ca0bc70969ee16bd536df109ec01b0eea": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:453748e09d54b33dadb57dfcaffb5131e7832b6b": {
+    "exclusions": [
+      {
+        "phrase": "not from the OECD",
+        "left_out": [
+          "from the OECD"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:583795f4201fb61d58362e9bc2d15cbcd2dc69ad": {
+    "exclusions": [
+      {
+        "phrase": "not from the OECD",
+        "left_out": [
+          "from",
+          "the",
+          "OECD"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:b1f3be04e783a79534c42f05e58d36497ef19581": {
+    "exclusions": [
+      {
+        "phrase": "excluding CRS",
+        "left_out": [
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:29f4d806695a9e62b41b00994f47c521df816e02": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:789c78ca3f3374abf252e17627793253b2ab2fe7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0874ed5dc0b4b11217667ac18f14110cc7189f2d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f343d002d072ee50e2eb276f9311957d6b7fe56f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84f679071d15e03726735b32ff587bc8bc92ac9c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6fc9c6be0c20cd93677ae04701459904f696dbf0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a0d86483b6a92803e9fd5c8f04a5dcf3d5577c67": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:32656617b1e9c6e0f8e212460b6e828a0c7a44fc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2a7a1d60094f15de6244dd69d82ce0f39622e1f9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b2c3e7d9129e400e4b4dab77f6f8232f3c8e6a84": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aeddd1cf52ee19d7900f9fd9a4eb09bac93207d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fd8a2dca04293d17e08a951421c2c53e5b4d4872": {
+    "exclusions": []
   }
 }
