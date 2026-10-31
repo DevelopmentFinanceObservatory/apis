@@ -87,6 +87,7 @@ from datasets_api.current import (
     head_rendering,
     plan_stored_render,
     read_located_frame,
+    render_folds,
 )
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
@@ -289,15 +290,20 @@ def _render_renewed(
     aged_frame: StoredArtifactLocation,
     *,
     render: Callable[..., Manifest | None],
+    folds: bool,
     deps: DefinitionDeps,
 ) -> Manifest | None:
     """Renew `aged_frame`'s object (`_reupload`) and render the frame its renewed bytes read as
-    (`current.read_located_frame`, which drops the bytes once decoded) with `render`, on a
+    (`current.read_located_frame`, which drops the bytes once decoded and bounds them by
+    whether the render `folds` them) with `render`, on a
     coverage snapshot taken here, returning what `render` returns. Bytes that are gone render
     nothing and return `None`. The caller holds a materialise permit and binds no frame
     itself, so the frame is freed when this returns, before the permit is released."""
     frame = read_located_frame(
-        aged_frame, read=functools.partial(_reupload, aged_frame, deps=deps), deps=deps
+        aged_frame,
+        read=functools.partial(_reupload, aged_frame, deps=deps),
+        folds=folds,
+        deps=deps,
     )
     if frame is None:
         return None
@@ -357,7 +363,12 @@ def _render_from_stored_frame(
         wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
     ):
-        return _render_renewed(aged_frame, render=functools.partial(render, plan=plan), deps=deps)
+        return _render_renewed(
+            aged_frame,
+            render=functools.partial(render, plan=plan),
+            folds=render_folds(options, plan),
+            deps=deps,
+        )
 
 
 def render_version_from_frame(

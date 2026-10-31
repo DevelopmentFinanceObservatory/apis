@@ -172,7 +172,6 @@ from dfo_frame_grammar import (
 )
 from dfo_frame_grammar.grammar import (
     STAT_VAR_REF_PREFIX,
-    FrameError,
 )
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
@@ -255,6 +254,7 @@ from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
+    STORED_FRAME_DECODE_ERRORS,
     canonical_frame_document,
     read_canonical_frame_table,
     read_frame1,
@@ -432,9 +432,8 @@ def _io_failure(
     )
 
 
-# What the Parquet and Arrow readers raise for bytes they cannot read, a string's bytes that are
-# not UTF-8, and `FrameError` for content outside the grammar's forms.
-_MALFORMED_CONTENT = (FrameError, pa.ArrowException, OSError, UnicodeDecodeError)
+# The errors Datasets refuses the same bytes by (`materialise.formats.STORED_FRAME_DECODE_ERRORS`).
+_MALFORMED_CONTENT = STORED_FRAME_DECODE_ERRORS
 
 # How long a client waits before it retries a frame this instance had no memory to decode.
 _DECODE_RETRY_AFTER_S = 30

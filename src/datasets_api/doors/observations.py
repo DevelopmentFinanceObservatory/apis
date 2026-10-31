@@ -82,7 +82,11 @@ from datasets_api.manifest import (
 )
 from datasets_api.manifest_models import Manifest
 from datasets_api.refusals import classify_datasets_refusal
-from datasets_api.render import rendition_token, servable_frame_location
+from datasets_api.render import (
+    refuse_frame1_past_decode_bound,
+    rendition_token,
+    servable_frame_location,
+)
 from datasets_api.store_errors import stored_frame_rows
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
@@ -308,7 +312,9 @@ def _load_series_reads(
 ) -> dict[SeriesKey, SeriesRead]:
     """Read the stored frame at `frame`, decode it and group its rows (`_series_reads`). The
     caller holds a materialise permit and binds neither the bytes nor the decoded rows, so
-    both are freed when this returns, before the permit is released."""
+    both are freed when this returns, before the permit is released. A frame1 document past
+    `render.frame1_decode_max_bytes` refuses on its recorded size before it is read."""
+    refuse_frame1_past_decode_bound(frame, fold_max_rows=deps.settings.groupby_fold_max_rows)
     with phase("frame_load"):
         data = deps.artifact_store.get(artifact_digest=frame.artifact_digest, tier=Tier(frame.tier))
     with phase("frame_decode"):

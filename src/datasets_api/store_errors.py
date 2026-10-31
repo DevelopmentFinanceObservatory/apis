@@ -20,8 +20,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-import pyarrow as pa
-from dfo_frame_grammar import STATUS_COLUMN, FrameError
+from dfo_frame_grammar import STATUS_COLUMN
 
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
@@ -61,11 +60,6 @@ class StoredFrameUnreadable(Exception):
         super().__init__(f"stored frame artifact_digest {digest!r} does not read as a frame")
 
 
-_UNDECODABLE = (FrameError, pa.ArrowException, OSError, ValueError)
-"""What a reader of stored frame bytes raises for bytes that do not decode as a frame: the
-grammar's refusal, and the Parquet and JSON readers' own errors for bytes they cannot parse."""
-
-
 @contextmanager
 def _decoding(digest: str) -> Iterator[None]:
     """Refuse a failure of the block to decode the stored frame at `digest` as
@@ -75,7 +69,7 @@ def _decoding(digest: str) -> Iterator[None]:
         yield
     except MemoryError:
         raise
-    except _UNDECODABLE as exc:
+    except formats.STORED_FRAME_DECODE_ERRORS as exc:
         raise StoredFrameUnreadable(digest=digest) from exc
 
 

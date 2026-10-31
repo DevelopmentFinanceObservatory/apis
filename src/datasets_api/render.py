@@ -556,32 +556,39 @@ _FRAME1_MIN_BYTES_PER_ROW = 68
 whole value and null optional cells. A shorter row puts more rows, and more fold, in a byte."""
 
 
-def frame1_decode_max_bytes(fold_max_rows: int) -> int:
-    """The largest frame1 document a render decodes. Its decode and the Arrow fold of its rows
-    fit the memory a fold at the ceiling takes, `fold_max_rows` rows at
-    `_ARROW_FOLD_BYTES_PER_ROW`. Each document byte costs `_FRAME1_DECODE_BYTES_PER_BYTE` to
-    decode and a row's fold over `_FRAME1_MIN_BYTES_PER_ROW` bytes. At the default 2,000,000
-    rows that is 83,543,959 bytes: 1,228,587 rows of 68 bytes, or 494,342 of a CRS document's
-    169."""
+def frame1_decode_max_bytes(fold_max_rows: int, *, folds: bool) -> int:
+    """The largest frame1 document a read decodes, within the memory a fold at the ceiling
+    takes, `fold_max_rows` rows at `_ARROW_FOLD_BYTES_PER_ROW`. Each document byte costs
+    `_FRAME1_DECODE_BYTES_PER_BYTE` to decode, and a read that `folds` the rows, a groupby,
+    also pays a row's fold over `_FRAME1_MIN_BYTES_PER_ROW` bytes. At the default 2,000,000
+    rows a read that does not fold decodes up to 216,600,000 bytes, and a groupby up to
+    83,543,959: 1,228,587 rows of 68 bytes, or 494,342 of a CRS document's 169."""
+    budget = fold_max_rows * _ARROW_FOLD_BYTES_PER_ROW
+    if not folds:
+        return budget // _FRAME1_DECODE_BYTES_PER_BYTE
     return (
-        fold_max_rows
-        * _ARROW_FOLD_BYTES_PER_ROW
+        budget
         * _FRAME1_MIN_BYTES_PER_ROW
         // (_FRAME1_DECODE_BYTES_PER_BYTE * _FRAME1_MIN_BYTES_PER_ROW + _ARROW_FOLD_BYTES_PER_ROW)
     )
 
 
-def refuse_frame1_past_decode_bound(size_bytes: int, *, fold_max_rows: int) -> None:
-    """Raises `OverCeilingError` (`bytes`) when a frame1 document of `size_bytes` is past
-    `frame1_decode_max_bytes`, before it is read or decoded."""
-    cap = frame1_decode_max_bytes(fold_max_rows)
-    if size_bytes > cap:
+def refuse_frame1_past_decode_bound(
+    location: StoredArtifactLocation, *, fold_max_rows: int, folds: bool = False
+) -> None:
+    """Raises `OverCeilingError` (`bytes`) when `location` holds a frame1 document past
+    `frame1_decode_max_bytes`, on its recorded size, before it is read or decoded. A canonical
+    frame passes: its rows are bounded where they are read."""
+    if location.media_type != FRAME1_MEDIA_TYPE:
+        return
+    cap = frame1_decode_max_bytes(fold_max_rows, folds=folds)
+    if location.size_bytes > cap:
         raise OverCeilingError(
-            f"the stored frame holds more than {cap} bytes, past the ceiling of a render "
-            "that reads it. Narrow the identity (another slot binding, a shorter window) "
+            f"the stored frame holds more than {cap} bytes, past the ceiling of a read "
+            "that decodes it. Narrow the identity (another slot binding, a shorter window) "
             "to bring the frame under the ceiling.",
             ceiling_kind="bytes",
-            count=size_bytes,
+            count=location.size_bytes,
             cap=cap,
         )
 

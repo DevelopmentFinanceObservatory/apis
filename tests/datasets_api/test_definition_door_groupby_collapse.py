@@ -236,6 +236,45 @@ def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone(m
     assert hashed == []
 
 
+@pytest.mark.parametrize(
+    ("query", "status", "decoded"),
+    [
+        pytest.param("bundle=false", 200, [FRAME1_MEDIA_TYPE], id="plain-csv-decodes"),
+        pytest.param(_GROUPBY_QUERY, 422, [], id="groupby-refuses"),
+    ],
+)
+def test_a_frame1_head_hit_pays_the_decode_bound_of_what_it_does(
+    monkeypatch, query, status, decoded
+):
+    """A 100 MB frame1 document, by the size its location records, is under the bound of a
+    render that decodes it alone (216,600,000 bytes at the default ceiling) and past the bound
+    of a groupby, which also folds it (83,543,959 bytes). The groupby refuses before the read."""
+    spec_id, sidecar = _spec_id_and_sidecar()
+    client, version_store, artifact_store = _collapse_client()
+    base = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    digest = link_frame1_only(
+        version_store, artifact_store, subject_id=spec_id, content_version=base["content_version"]
+    )
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (100_000_000, digest),
+        )
+        # Without the mint's csv link, the plain request renders from the document.
+        tx.execute(
+            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND media_type = %s",
+            (spec_id, "text/csv"),
+        )
+    reads = _frame_reads(monkeypatch)
+
+    got = client.get(f"/api/datasets/{spec_id}?{query}")
+
+    assert got.status_code == status, got.text
+    assert reads == decoded
+    if status == 422:
+        assert (got.json()["code"], got.json()["ceiling_kind"]) == ("over_ceiling", "bytes")
+
+
 def _frame_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The media types of the stored frames a head hit decodes."""
     decoded: list[str] = []

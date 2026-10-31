@@ -19,8 +19,10 @@ from datasets_api.store_errors import (
     read_stored_frame,
     stored_frame_rows,
 )
+from materialise import formats
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, FRAME1_MEDIA_TYPE
 from tests.materialise._canonical_frame import canonical_frame_parquet
+from tests.presentation_store.test_frame_store import DECODE_FAILURES, _raises
 
 
 def read_stored_frame1(data: bytes, *, digest: str):
@@ -205,6 +207,19 @@ def test_a_stored_frames_rows_stream(media_type: str):
     assert [dict(zip(columns, row, strict=True))["value"] for row in rows] == [
         row["value"] for row in malaria_ethiopia_rows()
     ]
+
+
+@pytest.mark.parametrize("raised", DECODE_FAILURES)
+def test_a_stored_frame_that_does_not_decode_refuses_unreadable_on_both_readers(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    """Each failure Presentation refuses `missing_rendering` refuses unreadable here."""
+    monkeypatch.setattr(formats, "read_canonical_frame", _raises(raised))
+    monkeypatch.setattr(formats, "read_canonical_frame_table", _raises(raised))
+
+    for read in (read_stored_frame, _read_rows):
+        with pytest.raises(StoredFrameUnreadable):
+            read(b"", media_type=CANONICAL_FRAME_MEDIA_TYPE, digest="d")
 
 
 def test_no_datasets_door_classifies_an_unreadable_stored_frame():

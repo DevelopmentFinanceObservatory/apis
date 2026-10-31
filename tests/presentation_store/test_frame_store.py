@@ -915,6 +915,29 @@ def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering(
             assert refused.reason == "missing_rendering"
 
 
+DECODE_FAILURES = [
+    pytest.param(FrameError("schema_violation", "exemplar"), id="frame-error"),
+    pytest.param(pa.ArrowInvalid("exemplar"), id="arrow-invalid"),
+    pytest.param(OSError("exemplar"), id="os-error"),
+    pytest.param(ValueError("exemplar"), id="value-error"),
+]
+"""A failure of each kind a reader of stored frame bytes raises for bytes that do not decode,
+which Datasets refuses alike (`tests/datasets_api/test_stored_frame1.py`)."""
+
+
+@pytest.mark.parametrize("raised", DECODE_FAILURES)
+def test_a_stored_frame_that_does_not_decode_refuses_missing_rendering(
+    monkeypatch: pytest.MonkeyPatch, raised: Exception
+):
+    snapshots, artifacts, frame_ref, _ = _canonical_frame_fixture()
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", _raises(raised))
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
 @pytest.mark.parametrize(
     "raised",
     [

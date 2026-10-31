@@ -170,7 +170,6 @@ from materialise.dependencies import (
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.formats import (
-    FRAME1_MEDIA_TYPE,
     Frame,
     frame_entity_columns,
 )
@@ -513,21 +512,31 @@ class StoredFrame:
     frame: Frame
 
 
+def render_folds(options: MintOptions, plan: StoredRenderPlan) -> bool:
+    """Whether a render of `options` from a stored frame `plan` reads folds it: a groupby of a
+    frame it has not collapsed."""
+    return options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
+
+
 def read_located_frame(
-    location: StoredArtifactLocation, *, read: Callable[[], bytes | None], deps: DefinitionDeps
+    location: StoredArtifactLocation,
+    *,
+    read: Callable[[], bytes | None],
+    folds: bool,
+    deps: DefinitionDeps,
 ) -> StoredFrame | None:
     """The stored frame at `location`, its bytes read by `read`, or `None` when `read` finds
-    none. A frame1 document past `render.frame1_decode_max_bytes` refuses on its recorded size
-    before it is read. The bytes are dropped once decoded, so a render holds the frame alone.
+    none. A frame1 document past `render.frame1_decode_max_bytes` for a render that `folds`
+    it or not refuses on its recorded size before it is read. The bytes are dropped once
+    decoded, so a render holds the frame alone.
 
     Raises:
         OverCeilingError: `bytes`, for a frame1 document past the bound.
         StoredFrameUnreadable: The bytes do not read as a frame.
     """
-    if location.media_type == FRAME1_MEDIA_TYPE:
-        refuse_frame1_past_decode_bound(
-            location.size_bytes, fold_max_rows=deps.settings.groupby_fold_max_rows
-        )
+    refuse_frame1_past_decode_bound(
+        location, fold_max_rows=deps.settings.groupby_fold_max_rows, folds=folds
+    )
     data = read()
     if data is None:
         return None
@@ -757,7 +766,7 @@ def _render_frame(
         # with the stored one.
         base_frame_sha256=(
             functools.partial(stored_frame_sha256, table, recorded=plan.frame_sha256)
-            if options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
+            if render_folds(options, plan)
             else None
         ),
         frame_mode=plan.frame_mode,
@@ -854,7 +863,9 @@ def _render_located_frame(
         except (ArtifactNotFoundError, ArtifactIntegrityError):
             return None
 
-    stored_frame = read_located_frame(location, read=read, deps=deps)
+    stored_frame = read_located_frame(
+        location, read=read, folds=render_folds(options, plan), deps=deps
+    )
     if stored_frame is None:
         return None
     return _render_frame(

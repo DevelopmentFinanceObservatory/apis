@@ -64,6 +64,7 @@ from datasets_api.publish_models import Recipe
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.render import (
     frame_file_location,
+    refuse_frame1_past_decode_bound,
     render_and_store_frame_file,
     stored_frame_location,
 )
@@ -114,6 +115,9 @@ class DerivedReads:
     recipe_reader: RecipeReader
     enrichment: EnrichmentLookup
     now: Clock
+    fold_max_rows: int
+    """`DatasetsBuildSettings.groupby_fold_max_rows`, which bounds the frame1 document a read
+    decodes (`render.frame1_decode_max_bytes`)."""
 
 
 def root_rendering(options: Mapping[str, Any]) -> dict[str, Any]:
@@ -314,6 +318,8 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     Raises:
         SnapshotNotFound, SnapshotRevoked: The version has no record, or is taken down.
         ArtifactExpired: No servable stored frame is left, or its bytes are gone.
+        OverCeilingError: `bytes`, for a frame1 document past `render.frame1_decode_max_bytes`,
+            before it is read.
         StoredFrameUnreadable: The stored frame's bytes do not read as a frame.
     """
     stored = read_servable_version(
@@ -322,6 +328,7 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     location = stored_frame_location(stored.servable)
     if location is None:
         raise ArtifactExpired(id=spec_id, content_version=content_version)
+    refuse_frame1_past_decode_bound(location, fold_max_rows=reads.fold_max_rows)
     try:
         data = reads.artifact_store.get(
             artifact_digest=location.artifact_digest, tier=Tier(location.tier)
@@ -400,8 +407,8 @@ def render_derived_file(
     docstring.
 
     Raises:
-        SnapshotNotFound, SnapshotRevoked, ArtifactExpired, StoredFrameUnreadable: As
-            `_read_stored_frame`.
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired, OverCeilingError,
+            StoredFrameUnreadable: As `_read_stored_frame`.
         ExcelLimitError, ExcelIllegalCharacterError, ParquetSizeBoundError: The writer's.
     """
     frame = _read_stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)

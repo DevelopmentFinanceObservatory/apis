@@ -137,6 +137,7 @@ def derived_reads(current: Deps) -> DerivedReads:
         enrichment=current.enrichment,
         version_writer=current.version_writer,
         now=current.now,
+        fold_max_rows=current.settings.groupby_fold_max_rows,
     )
 
 

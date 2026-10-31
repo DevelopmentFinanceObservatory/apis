@@ -87,7 +87,11 @@ from datasets_api.manifest_models import ArtifactEntryModel, CoverageModel, Mani
 from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
-from datasets_api.render import is_statistics_rendering, stored_frame_location
+from datasets_api.render import (
+    is_statistics_rendering,
+    refuse_frame1_past_decode_bound,
+    stored_frame_location,
+)
 from datasets_api.store_errors import read_stored_frame
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
@@ -397,6 +401,9 @@ class LiveRootSource:
                 content_version=content_version,
                 reason="its stored frame has expired",
             )
+        refuse_frame1_past_decode_bound(
+            location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
+        )
         try:
             data = store.get(artifact_digest=location.artifact_digest, tier=Tier(location.tier))
         except ArtifactNotFoundError:

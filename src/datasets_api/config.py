@@ -85,7 +85,7 @@ class DatasetsBuildSettings(BaseSettings):
     # Frame rows a groupby that sums a frame folds as Arrow. A larger frame refuses over_ceiling
     # (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads (505 MiB over
     # spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB. A frame1 document
-    # a head hit decodes is held to that memory too (`render.frame1_decode_max_bytes`).
+    # a read decodes is held to that memory too (`render.frame1_decode_max_bytes`).
     groupby_fold_max_rows: int = Field(default=2_000_000, ge=1)
 
     # Groupby folds the process runs at once. Permits times the fold's 2 GiB at its ceiling must
