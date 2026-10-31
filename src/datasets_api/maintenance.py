@@ -132,6 +132,80 @@ line per version that fails and one `datasets_frame_summed_backfilled` line coun
 `sweep` reads. No deploy runs it, since a row that stays NULL would be read and cut again on
 every deploy.
 
+`backfill-within-sets [--apply]` runs by hand once per environment, after a deploy of this
+image has run `backfill-descriptions`. A record written before records held
+`DimensionFacts.within_set` holds a dimension its definition narrows to a set as if it were
+open, so its title leaves the set out ("Gross ODA" where a fresh mint says "Gross ODA for
+health and education"), and a computed version naming it as an input reads "X as a share of X".
+The task selects every `spec_` record whose stored definition binds a slot to a set of two or
+more codes while the record's dimension of that slot holds neither `within` nor `within_set`
+(`run_backfill_within_sets`), and writes one `datasets_within_set_backfill_planned` line per
+record with its old and new titles and one `datasets_within_sets_backfilled` line with the
+counts. Without `--apply` it writes nothing to the store. With it each line is
+`datasets_within_set_backfill_filled` and the set is filled through `fill_late_fields` with
+basis `backfill`, so a second run selects nothing. Titles and computed versions' descriptions
+are composed on read, so they change once the record does. A card revision keeps the
+description it was issued with. A Presentation instance that cached the frame keeps the old
+record until it restarts. It exits 1 when any record failed, and reads the runtime database
+settings and the served graph release's code index, as `backfill-descriptions` does.
+
+To run it, execute the environment's maintenance job as the deploy workflow does, with the
+`JOB_DATASETS_MAINTENANCE`, `REGION` and `PROJECT_ID` variables of the repository's `dev` or
+production GitHub environment (`northamerica-northeast1` and `dev-fin-observatory` in dev,
+`europe-west1` in production), once the job runs this image. The dry run:
+
+    gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" \
+      --project="$PROJECT_ID" --args=backfill-within-sets --wait
+
+then read the `datasets_within_set_backfill_planned` lines in the execution's logs. The apply
+is the same command with `--args=backfill-within-sets,--apply`, and a dry run after it reports
+`selected=0`. Run dev first and compare its titles before prod.
+
+`remint-card-descriptions [--apply]` runs by hand once per environment, after
+`backfill-within-sets --apply` and a restart of the Presentation service. A card revision stores
+the description it was issued with, so a card drawn from a record that lacked its set keeps the
+old words: a title without the set, and "X as a share of X" in the `sources` labels, `cite.text`
+and step text of a card drawn from a computed version over such a record. A Presentation
+instance that cached a frame before the fill keeps composing new cards from the old record
+until it restarts. The task selects each component whose head revision carries a description
+and whose frame's version record, or one of the input records a computed version's record
+names (`frame_store.input_versions`), holds a set the backfill filled
+(`DimensionFacts.within_set`, basis `backfill`), as `run_remint_card_descriptions` reads it. It reads no
+time, so a card written from a cached record after the fill is selected too. It revises each
+through the write path an owner's revise takes, with an empty patch and no write token
+(`assembler.pipeline.remint_component`), so the description is composed again from today's
+records by the one description builder. A card already worded from today's records comes out
+unchanged in everything a reader sees and writes nothing (`presentation_card_remint_unchanged`).
+Without `--apply` each revision is minted in the write transaction and not appended, and each
+card that would change gets one `presentation_card_remint_planned` line with its component id,
+head revision, and old and new `title`, `cite.text` and `about.measure.label`. With `--apply`
+each line is `presentation_card_reminted` and names the new revision. A card in a composition
+moves the composition's head with it, as any revise does. Older revisions keep their
+descriptions, and a snapshot share keeps the frozen copy it took. One
+`presentation_card_descriptions_reminted` line carries the counts, and the task exits 1 when
+any card failed.
+
+It reads both stores' runtime database settings, the served graph release and the origin
+catalogue, and loads each selected card's frame as the Presentation service does
+(`presentation_api.live.build_live_frame_store`), so it also needs the service's
+`DATASETS_GRAPH_BASE_URL`, `DATASETS_SDMX_BASE_URL` and `ORIGIN_CATALOGUE_URI`, which the job
+does not set. To run it:
+
+1. Apply `backfill-within-sets`, then restart the Presentation service, so no instance composes
+   from a record cached before the fill.
+2. Run the dry run, passing the three settings with the values the apis service carries:
+
+       gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" \
+         --project="$PROJECT_ID" --args=remint-card-descriptions --wait \
+         --update-env-vars="DATASETS_GRAPH_BASE_URL=$GRAPH,DATASETS_SDMX_BASE_URL=$SDMX,ORIGIN_CATALOGUE_URI=$CATALOGUE"
+
+   and read the `presentation_card_remint_planned` lines.
+3. Apply with the same command and `--args=remint-card-descriptions,--apply`.
+4. Run the dry run again. It succeeds with `revised=0`. `selected` stays above zero,
+   since every card over a filled record is selected and the revised ones are now no-ops.
+
+Run dev first and compare its lines before prod.
+
 `diff-recipes --report PATH` runs by hand against an environment to check the analysis runner
 against its stored frames. It computes every recipe in `datasets.frame_recipe` again on its own root versions through
 the analysis runner (`recipe_replay.replay_recipe`) and compares the result frame's `cv_` and
@@ -179,16 +253,19 @@ line and exits 1 without opening the store. It reads the Presentation store's ru
 settings.
 
 Each task builds only what it uses from the environment the Job sets, so none reads a setting
-of the API surfaces, such as `DFO_PUBLIC_SITE_URL`.
+of the API surfaces, such as `DFO_PUBLIC_SITE_URL`. `remint-card-descriptions` is the one
+exception: it loads frames as the Presentation service does, and its execution passes the
+service's graph and catalogue settings.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import traceback
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -239,8 +316,13 @@ from datasets_api.config import (
     DatasetsSettings,
     FoldCeilingSettings,
 )
-from datasets_api.description_record import backfill_record, computed_inputs
+from datasets_api.description_record import (
+    backfill_record,
+    computed_inputs,
+    unrecorded_sets,
+)
 from datasets_api.description_store import (
+    fill_late_fields,
     insert_description,
     read_description,
     validated_record,
@@ -281,6 +363,7 @@ from datasets_api.store_errors import (
     StoredFrameUnreadable,
     read_stored_frame,
 )
+from datasets_api.version_descriptions import mint_title
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
 from datasets_api.warning_backfill import (
@@ -290,7 +373,7 @@ from datasets_api.warning_backfill import (
     select_rows,
 )
 from dc_sdmx import SdmxClient
-from description.facts import SCHEMA_VERSION, DescriptionRecord
+from description.facts import SCHEMA_VERSION, DescriptionRecord, VariableFacts
 from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
@@ -315,7 +398,9 @@ from origin_catalogue.service import get_catalogue_service
 from series_coverage.shared import get_coverage_service
 
 if TYPE_CHECKING:
+    from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore, VocabularySource
     from presentation_store import ShareStore
+    from presentation_store.frame_store import DescriptionReader
 
 
 class MaintenanceSettings(BaseSettings):
@@ -1121,6 +1206,335 @@ def _backfill_warnings(dry_run: bool) -> int:
     return 1 if unfinished else 0
 
 
+def run_backfill_within_sets(
+    *, store: DatasetStore, code_index: CodeIndex, apply: bool = False, now: Clock = utc_now
+) -> int:
+    """Fill `within_set` on every stored `spec_` record whose definition binds a set its
+    dimension does not hold, emit one line per record with its title before and after, and
+    the counts, and return how many records failed.
+
+    A record is selected when a slot of its version's stored definition is bound to a set of
+    two or more codes, the record holds that slot's dimension, and the dimension holds neither
+    `within` nor `within_set` (`description_record.unrecorded_sets`), which marks a record written before
+    sets were recorded. The set is read from the definition as a mint reads it, and each title
+    is the one a mint composes (`version_descriptions.mint_title`), over today's code index and
+    the labels the record holds. Without `apply` the run writes nothing. With it each record
+    is filled through `description_store.fill_late_fields`, with basis `backfill`, and a
+    record holding a title composed at mint (`evidence.title`) takes the new one with it. A
+    filled record holds its set, so a second run selects nothing. A record of a later schema
+    version, or one failing validation, is left to `backfill-descriptions`.
+
+    A summed collapse made before sets were recorded summed the set's dimension away, which
+    no fill restores. Each is logged as `datasets_within_set_backfill_dropped` and counted.
+    """
+    selected = filled = dropped = failed = 0
+    after = ("", "")
+    while True:
+        with store.transaction() as tx:
+            page = tx.fetch_all(
+                "SELECT d.subject_id AS subject_id, d.content_version AS content_version, "
+                "d.schema_version AS schema_version, d.record AS record, "
+                "v.definition AS definition "
+                "FROM datasets.description_record d JOIN datasets.version_record v "
+                "ON v.subject_id = d.subject_id AND v.content_version = d.content_version "
+                "WHERE v.subject_kind = 'spec' AND v.definition IS NOT NULL "
+                "AND (d.subject_id, d.content_version) > (%s, %s) "
+                "AND d.schema_version <= %s "
+                "ORDER BY d.subject_id, d.content_version LIMIT %s",
+                (*after, SCHEMA_VERSION, _RECORD_SCAN_PAGE),
+            )
+        for row in page:
+            subject_id, content_version = str(row["subject_id"]), str(row["content_version"])
+            try:
+                record = validated_record(
+                    row["record"],
+                    schema_version=cast(int, row["schema_version"]),
+                    id=subject_id,
+                    content_version=content_version,
+                )
+                if record is None:
+                    continue
+                found = unrecorded_sets(
+                    record,
+                    definition=cast("Mapping[str, object]", row["definition"]),
+                    code_index=code_index,
+                )
+                if found.dropped:
+                    dropped += 1
+                    emit(
+                        "datasets_within_set_backfill_dropped",
+                        severity="WARNING",
+                        subject_id=subject_id,
+                        content_version=content_version,
+                        properties=found.dropped,
+                    )
+                if not found.fills:
+                    continue
+                selected += 1
+                old_title = _mint_title(record, code_index)
+                new_title = _mint_title(_with_sets(record, found.fills), code_index)
+                if apply:
+                    with store.transaction() as tx:
+                        written = fill_late_fields(
+                            tx,
+                            id=subject_id,
+                            content_version=content_version,
+                            values={
+                                f"variables.dimensions.{position}.within_set": refs
+                                for position, refs in found.fills.items()
+                            },
+                            arrived=now(),
+                            basis="backfill",
+                            derived=(
+                                {"evidence.title": new_title}
+                                if record.evidence.title is not None and new_title is not None
+                                else None
+                            ),
+                        )
+                    if not written:
+                        # A concurrent filler won; its run reports the record.
+                        continue
+                    filled += 1
+            except Exception as exc:
+                # One record that fails is skipped and the run carries on with the others.
+                failed += 1
+                emit(
+                    "datasets_within_set_backfill_failed",
+                    severity="ERROR",
+                    subject_id=subject_id,
+                    content_version=content_version,
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback=traceback.format_exc(),
+                )
+                continue
+            emit(
+                "datasets_within_set_backfill_filled"
+                if apply
+                else "datasets_within_set_backfill_planned",
+                subject_id=subject_id,
+                content_version=content_version,
+                old_title=old_title,
+                new_title=new_title,
+            )
+        if len(page) < _RECORD_SCAN_PAGE:
+            break
+        after = (str(page[-1]["subject_id"]), str(page[-1]["content_version"]))
+    emit(
+        "datasets_within_sets_backfilled",
+        severity="ERROR" if failed else "INFO",
+        applied=apply,
+        selected=selected,
+        filled=filled,
+        dropped=dropped,
+        failed=failed,
+        code_index=code_index.stamp.content_hash,
+    )
+    return failed
+
+
+def _with_sets(record: DescriptionRecord, fills: Mapping[int, list[str]]) -> DescriptionRecord:
+    """`record` with each dimension at a position in `fills` narrowed to its set."""
+    variables = cast("VariableFacts", record.variables)
+    dimensions = [
+        dimension.model_copy(update={"within_set": fills[position]})
+        if position in fills
+        else dimension
+        for position, dimension in enumerate(variables.dimensions or ())
+    ]
+    return record.model_copy(
+        update={"variables": variables.model_copy(update={"dimensions": dimensions})}
+    )
+
+
+def _mint_title(record: DescriptionRecord, code_index: CodeIndex) -> str | None:
+    """The title a mint composes for `record`, in the labels it holds and `code_index`."""
+    untitled = record.model_copy(
+        update={"evidence": record.evidence.model_copy(update={"title": None})}
+    )
+    labels = {label.ref: label.label for label in record.evidence.labels or ()}
+    return mint_title(untitled, labels=labels, code_index=code_index)
+
+
+def _backfill_within_sets(apply: bool) -> int:
+    # The run reads one code index, the served graph release's.
+    with bound_served_release(get_release_service()):
+        store = LiveDatasetStore(connections=shared_pool())
+        try:
+            failed = run_backfill_within_sets(store=store, code_index=get_index(), apply=apply)
+        finally:
+            close_shared_pool()
+    return 1 if failed else 0
+
+
+_WITHIN_SET_FIELD = re.compile(r"variables\.dimensions\.\d+\.within_set")
+"""The late field `run_backfill_within_sets` fills."""
+
+
+def _sets_filled(records: Iterable[DescriptionRecord]) -> bool:
+    """Whether `run_backfill_within_sets` filled a set in any of `records`."""
+    return any(
+        late.basis == "backfill" and _WITHIN_SET_FIELD.fullmatch(late.field)
+        for record in records
+        for late in record.late_fields
+    )
+
+
+def run_remint_card_descriptions(
+    *,
+    presentation: DatasetStore,
+    revision_store: RevisionStore,
+    frame_store: FrameStore,
+    release_registry: ReleaseRegistry,
+    vocabulary_source: VocabularySource,
+    descriptions: DescriptionReader,
+    apply: bool = False,
+) -> int:
+    """Revise each card whose head revision carries a description and is composed from a record
+    `run_backfill_within_sets` filled a set in, emit one line per card and the counts, and
+    return how many cards failed.
+
+    A card is selected when its head revision carries a description and the record of the
+    version its frame names, or of an input that record names
+    (`presentation_store.frame_store.input_versions`), holds a `within_set` late field with
+    basis `backfill`. These are the records the frame store composes its description from. Selection
+    reads no time, since a Presentation instance that cached a record before the fill keeps
+    composing from it until it restarts, so a card written after the fill can still carry the
+    old words. Each is revised through `assembler.pipeline.remint_component`, an owner's revise
+    with an empty patch. Without `apply` the revision is minted and not appended. A card whose
+    revision is unchanged in everything a reader sees is a no-op, logged as
+    `presentation_card_remint_unchanged`, so a card already worded from today's records,
+    including one this task revised, stays selected and writes nothing.
+    """
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from assembler.pipeline import remint_component
+    from presentation_store.frame_store import input_versions
+    from presentation_store.store import described_heads
+
+    filled: dict[tuple[str, str], bool] = {}
+
+    def frame_filled(spec_id: str, content_version: str) -> bool:
+        key = (spec_id, content_version)
+        if key not in filled:
+            record = descriptions.read_description(id=spec_id, content_version=content_version)
+            records = [] if record is None else [record]
+            if record is not None and (versions := input_versions(record)):
+                records += descriptions.read_descriptions(versions=versions).values()
+            filled[key] = _sets_filled(records)
+        return filled[key]
+
+    selected = revised = unchanged = failed = 0
+    for head in described_heads(presentation):
+        try:
+            if not frame_filled(head.spec_id, head.content_version):
+                continue
+            selected += 1
+            old = revision_store.read_revision(
+                component_id=head.component_id, revision=head.revision
+            )
+            reply = remint_component(
+                component_id=head.component_id,
+                frame_store=frame_store,
+                revision_store=revision_store,
+                release_registry=release_registry,
+                vocabulary_source=vocabulary_source,
+                apply=apply,
+            )
+        except Exception as exc:
+            # One card that fails is skipped and the run carries on with the others.
+            failed += 1
+            emit(
+                "presentation_card_remint_failed",
+                severity="ERROR",
+                component_id=head.component_id,
+                revision=head.revision,
+                error=f"{type(exc).__name__}: {exc}",
+                traceback=traceback.format_exc(),
+            )
+            continue
+        if reply.revision == head.revision:
+            unchanged += 1
+            emit(
+                "presentation_card_remint_unchanged",
+                component_id=head.component_id,
+                revision=head.revision,
+            )
+            continue
+        revised += 1
+        old_words = _card_words(old.resolved_payload if old is not None else {})
+        new_words = _card_words(reply.resolved_payload)
+        emit(
+            "presentation_card_reminted" if apply else "presentation_card_remint_planned",
+            component_id=head.component_id,
+            revision=head.revision,
+            new_revision=reply.revision,
+            **{f"old_{name}": word for name, word in old_words.items()},
+            **{f"new_{name}": word for name, word in new_words.items()},
+        )
+    emit(
+        "presentation_card_descriptions_reminted",
+        severity="ERROR" if failed else "INFO",
+        applied=apply,
+        selected=selected,
+        revised=revised,
+        unchanged=unchanged,
+        failed=failed,
+    )
+    return failed
+
+
+def _card_words(payload: Mapping[str, object]) -> dict[str, str | None]:
+    """The `title`, `cite.text` and `about.measure.label` of the description `payload`
+    carries."""
+    description = cast("Mapping[str, Any]", payload.get("description") or {})
+    measure = (description.get("about") or {}).get("measure") or {}
+    return {
+        "title": description.get("title"),
+        "cite": (description.get("cite") or {}).get("text"),
+        "measure": measure.get("label"),
+    }
+
+
+def _remint_card_descriptions(apply: bool) -> int:
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from assembler.catalogue import BakedReleaseRegistry
+    from datasets_api.description_store import LiveDescriptionStore
+    from presentation_api.config import PresentationSettings
+    from presentation_api.live import build_live_frame_store
+    from presentation_api.vocabulary import LiveVocabularySource
+    from presentation_store import LivePresentationStore
+    from presentation_store import provider as presentation_provider
+
+    # Each card's frame loads as the Presentation service loads it, under one catalogue
+    # snapshot and the served graph release.
+    with (
+        bound_catalogue(get_catalogue_service().snapshot()),
+        bound_served_release(get_release_service()),
+    ):
+        # The datasets pool is borrowed twice, once by the frame store and once for the
+        # description reads, so each borrow has its own `close_shared_pool()` below.
+        live = build_live_frame_store(settings=PresentationSettings.from_env(), allowances=None)
+        try:
+            datasets = LiveDatasetStore(connections=shared_pool())
+            presentation = LiveDatasetStore(connections=presentation_provider.shared_pool())
+            try:
+                failed = run_remint_card_descriptions(
+                    presentation=presentation,
+                    revision_store=LivePresentationStore(store=presentation),
+                    frame_store=live.frame_store,
+                    release_registry=BakedReleaseRegistry(),
+                    vocabulary_source=LiveVocabularySource(),
+                    descriptions=LiveDescriptionStore(store=datasets),
+                    apply=apply,
+                )
+            finally:
+                presentation_provider.close_shared_pool()
+                close_shared_pool()
+        finally:
+            live.graph.close()
+            close_shared_pool()
+    return 1 if failed else 0
+
+
 class FrameSummedOutcome(StrEnum):
     """What `run_backfill_frame_summed` found for one derived version holding no
     `frame_summed`. `SUMMED` and `CUT` are set on the row; every other outcome leaves it NULL."""
@@ -1649,6 +2063,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     warnings.add_argument("--dry-run", action="store_true")
     warnings.set_defaults(run=_backfill_warnings)
+    within_sets = tasks.add_parser(
+        "backfill-within-sets",
+        help="list, or with --apply fill, the sets records made before sets were recorded lack",
+    )
+    within_sets.add_argument("--apply", action="store_true")
+    within_sets.set_defaults(run=_backfill_within_sets)
+    remint = tasks.add_parser(
+        "remint-card-descriptions",
+        help="list, or with --apply revise, the cards described before backfill-within-sets",
+    )
+    remint.add_argument("--apply", action="store_true")
+    remint.set_defaults(run=_remint_card_descriptions)
     tasks.add_parser(
         "backfill-frame-summed",
         help="record whether each derived version recorded without it stores its collapse",

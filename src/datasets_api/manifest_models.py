@@ -548,6 +548,15 @@ class EnrichmentOptionModel(BaseModel):
     coverage: EnrichmentCoverageCountsModel
     missing: list[MissingEntityModel] = Field(default_factory=list)
     truncated: bool = False
+    in_long_layout: bool = Field(
+        default=False,
+        description=(
+            "true when a long-layout download writes this information with no columns token, "
+            "so naming the token there adds nothing: {role}_label, and the party fields of a "
+            "role on a flow axis, which its {role}_kind column reads in words. Pivot output and "
+            "the frame layout write the column only when the token asks for it"
+        ),
+    )
 
 
 class VaryingColumnModel(BaseModel):

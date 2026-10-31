@@ -24,9 +24,9 @@ reads as this image's version (`upgraded_record`). Reading it writes nothing, so
 its version until a write replaces or fills it, and every write stores the record's JSON and
 its `schema_version` column together.
 
-`fill_late_fields` sets members that are `null` in a stored record, once each, and notes the
-member's path, arrival time and basis in the record's `late_fields`. A member that holds a value
-is never changed, except a member derived from one the same write fills, such as the computed
+`fill_late_fields` sets members that are `null` or unset in a stored record, once each, and
+notes the member's path, arrival time and basis in the record's `late_fields`. A member that
+holds a value is never changed, except a member derived from one the same write fills, such as the computed
 inputs a late `steps` replaces. It takes an advisory lock on the version first, so concurrent fillers run one
 after another and each sees the previous filler's committed record.
 
@@ -240,8 +240,9 @@ def fill_late_fields(
     basis: Basis,
     derived: Mapping[FieldPath, JsonValue] | None = None,
 ) -> list[FieldPath]:
-    """Fill each member of the stored record that `values` names and that is `null`, and note
-    it in `late_fields` with `arrived` and `basis`. When this call fills any, it also sets each
+    """Fill each member of the stored record that `values` names and that is `null`, or
+    unset, as a member added after the record was written is, and note it in `late_fields`
+    with `arrived` and `basis`. When this call fills any, it also sets each
     `derived` member, replacing what it held, and notes it the same way. A record of an earlier
     schema version is filled as this version reads it (`upgraded_record`). The filled record is
     stored at the lowest version that describes it (`lowest_schema_version`), its column with
@@ -252,7 +253,8 @@ def fill_late_fields(
     Raises:
         DescriptionNotStored: The version holds no record.
         ValueError: A path names no member of the record, or the record with the filled
-            members fails its own validation. Nothing is written.
+            members fails its own validation, as one naming a member its type does not
+            declare does. Nothing is written.
     """
     _lock(tx, id=id, content_version=content_version)
     row = tx.fetch_one(
@@ -296,10 +298,11 @@ def _at_lowest_version(record: DescriptionRecord) -> DescriptionRecord:
 
 
 def _fill_member(record: dict[str, object], path: str, value: JsonValue) -> bool:
-    """Set the member at the dotted `path` when it is `null`. Return whether it was set. A
-    number in `path` names a list item by its position."""
+    """Set the member at the dotted `path` when it is `null` or unset. Return whether it was
+    set. A number in `path` names a list item by its position. An unset member the record's
+    type does not declare fails the record's validation once set."""
     node, leaf = _parent(record, path)
-    if node[leaf] is not None:
+    if node.get(leaf) is not None:
         return False
     node[leaf] = value
     return True
@@ -308,11 +311,14 @@ def _fill_member(record: dict[str, object], path: str, value: JsonValue) -> bool
 def _set_member(record: dict[str, object], path: str, value: JsonValue) -> None:
     """Set the member at the dotted `path`, whatever it holds."""
     node, leaf = _parent(record, path)
+    if leaf not in node:
+        raise ValueError(f"{path!r} names no member of the record")
     node[leaf] = value
 
 
 def _parent(record: dict[str, object], path: str) -> tuple[dict[str, object], str]:
-    """The mapping holding the member at the dotted `path`, and the member's name."""
+    """The mapping holding the member at the dotted `path`, and the member's name, which the
+    mapping may not hold."""
     *parents, leaf = path.split(".")
     node: object = record
     for name in parents:
@@ -324,10 +330,7 @@ def _parent(record: dict[str, object], path: str) -> tuple[dict[str, object], st
             raise ValueError(f"{path!r} names no member of the record")
     if not isinstance(node, dict):
         raise ValueError(f"{path!r} names no member of the record")
-    node = cast(dict[str, object], node)
-    if leaf not in node:
-        raise ValueError(f"{path!r} names no member of the record")
-    return node, leaf
+    return cast(dict[str, object], node), leaf
 
 
 def _stored_json(record: DescriptionRecord) -> dict[str, JsonValue]:

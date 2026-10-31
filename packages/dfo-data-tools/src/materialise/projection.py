@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import functools
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Literal
@@ -54,7 +54,7 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
 from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import is_party_role, is_whole_total, period_year
+from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import Table, TableLike
 from materialise.unit_cells import unit_cell_text
@@ -109,6 +109,27 @@ def long_layout_default_enrichments(entity_columns: Sequence[str]) -> tuple[str,
         if is_party_role(entity):
             columns.append(f"{entity}{KIND_SUFFIX}")
     return tuple(columns)
+
+
+def long_layout_written_tokens(
+    entity_columns: Sequence[str], *, table_columns: Collection[str]
+) -> dict[str, str]:
+    """The `options.columns` tokens whose information long output writes with no token, each
+    mapped to its role: every role's `<role>_label` and each party role's `<role>_kind`
+    (`long_layout_default_enrichments`), and each party role's party field tokens
+    (`<role>_party_kind`, `<role>_party_class`, `<role>_party_whole`), which `<role>_kind`
+    reads in words. A token naming a column of `table_columns` selects that column and is left
+    out. The render drops these tokens from a long output's list, and the options document
+    flags the enrichments among them (`in_long_layout`), so both read this one rule."""
+    tokens: dict[str, str] = {}
+    for role in entity_columns:
+        suffixes = (_LABEL_SUFFIX,)
+        if is_party_role(role):
+            suffixes += (KIND_SUFFIX, *(f"_{field}" for field in PARTY_FIELDS))
+        for suffix in suffixes:
+            if (token := f"{role}{suffix}") not in table_columns:
+                tokens[token] = role
+    return tokens
 
 
 def long_kind_cell(

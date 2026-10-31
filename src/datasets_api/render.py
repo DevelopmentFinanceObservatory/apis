@@ -181,7 +181,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, is_party_role
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup
 from materialise.errors import OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -212,11 +212,11 @@ from materialise.groupby_columnar import (
 )
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
-    KIND_SUFFIX,
     LongProjection,
     PriceBasis,
     UnitNaming,
     axis_source_column,
+    long_layout_written_tokens,
     long_output_selection,
     period_grain,
     plan_long_projection,
@@ -1721,19 +1721,11 @@ def _long_output_tokens(
 ) -> tuple[list[str], tuple[str, ...]]:
     """The `options.columns` tokens a long output parses, and the roles whose name or kind the
     list asked for. Long output writes `status` nowhere, and writes each role's `<role>_label`
-    and each party role's `<role>_kind` by default (`materialise.projection`), so those tokens
-    are dropped. `<role>_kind` reads every party field (`PARTY_FIELDS`), so their tokens, bare
-    or qualified, are dropped too. A list that selects keeps each named role's entity column,
-    which its name and kind sit beside."""
-    party_roles = [role for role in entity_columns if is_party_role(role)]
-    defaults = {
-        f"{role}_label": role for role in entity_columns if f"{role}_label" not in table_columns
-    } | {
-        column: role
-        for role in party_roles
-        for suffix in (KIND_SUFFIX, *(f"_{field}" for field in PARTY_FIELDS))
-        if (column := f"{role}{suffix}") not in table_columns
-    }
+    and each party role's `<role>_kind` by default, and `<role>_kind` reads every party field
+    (`PARTY_FIELDS`), so those tokens (`long_layout_written_tokens`) and the bare party field
+    tokens are dropped. A list that selects keeps each named role's entity column, which its
+    name and kind sit beside."""
+    defaults = long_layout_written_tokens(entity_columns, table_columns=table_columns)
     dropped = {_STATUS_COLUMN, *(field for field in PARTY_FIELDS if field not in table_columns)}
     tokens = [token for token in columns if token not in dropped and token not in defaults]
     named_roles = tuple(dict.fromkeys(defaults[t] for t in columns if t in defaults))

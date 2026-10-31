@@ -12,8 +12,9 @@ Every noun comes from data. An input is named by the vocabulary's label of its v
 the label stored with the step, and an earlier step by the name of what it produced. The two
 inputs of a comparison are told apart by the one role column of its `sides` (`{"left":
 {"donor": "dcid:country/GBR"}, ...}`) whose entity differs between them, each named by the
-vocabulary's label of its entity. A side the step itself narrows to one entity
-(`left_entity`) is named with that entity in brackets. Parties
+vocabulary's label of its entity. A side the step itself narrows (`left_entity`,
+`numerator_entity`) is named with the labels of the entities it narrows to in brackets
+(`_Words.side`), in every sentence and name built from that side. Parties
 are named by the role wording of the roles a step's parameters group by (`numerator_by:
 ["recipient"]` reads "recipients"), else by what a count counts ("entities"). Periods are named
 by the version's grain ("year"), else "period". Counts come from `kept`, `left_out` and the
@@ -175,8 +176,12 @@ _DCID_PREFIX: Final = "dcid:"
 
 
 def bound_entities(step: Step) -> list[str]:
-    """The bare dcids of the entities `step`'s sides hold, in role order (`_sides`)."""
-    return [dcid for side in _sides(step).values() for dcid in side.values()]
+    """The bare dcids of the entities `step`'s sides hold, in role order (`_sides`), then of
+    those its `<role>_entity` parameters narrow a side to (`_bindings`)."""
+    return [
+        *(dcid for side in _sides(step).values() for dcid in side.values()),
+        *(dcid for binding in _bindings(step).values() for dcid in binding.values()),
+    ]
 
 
 def _sides(step: Step) -> dict[str, dict[str, str]]:
@@ -188,6 +193,27 @@ def _sides(step: Step) -> dict[str, dict[str, str]]:
         role: {column: ref.removeprefix(_DCID_PREFIX) for column, ref in side.items()}
         for role, side in step.sides.items()
     }
+
+
+_ENTITY_SUFFIX: Final = "_entity"
+
+
+def _bindings(step: Step) -> dict[str, dict[str, str]]:
+    """Each side `step` narrows with a `<role>_entity` parameter, by role, with each column's
+    entity as a bare dcid (`{"numerator_entity": {"donor": "dcid:GBR"}}` reads `{"numerator":
+    {"donor": "GBR"}}`). An empty binding narrows nothing and is left out."""
+    bindings: dict[str, dict[str, str]] = {}
+    for name, binding in _params(step).items():
+        if not name.endswith(_ENTITY_SUFFIX) or not isinstance(binding, dict) or not binding:
+            continue
+        entities = {
+            str(column): ref.removeprefix(_DCID_PREFIX)
+            for column, ref in sorted(binding.items())
+            if isinstance(ref, str)
+        }
+        if len(entities) == len(binding):
+            bindings[name.removesuffix(_ENTITY_SUFFIX)] = entities
+    return bindings
 
 
 def _walk(
@@ -295,17 +321,32 @@ class _Words:
         return first_label, second_label
 
     def narrowed_to(self, role: str) -> str | None:
-        """The label of the entity the step itself narrowed its input in `role` to, the one
-        value of its `<role>_entity` parameter (`left_entity: {"donor": "dcid:FRA"}`). `None`
-        when the parameter is absent, binds more than one column, or no label names it. An
-        input retrieved for one entity holds it in `sides` but binds none here."""
-        binding = _params(self.step).get(f"{role}_entity")
-        if not isinstance(binding, dict) or len(binding) != 1:
+        """The labels of the entities the step itself narrowed its input in `role` to, the
+        values of its `<role>_entity` parameter (`left_entity: {"donor": "dcid:FRA"}`) in
+        column order, joined by ", ". `None` when the parameter is absent or empty, or a value
+        has no label. An input retrieved for one entity holds it in `sides` but binds none
+        here."""
+        binding = _bindings(self.step).get(role)
+        if binding is None:
             return None
-        (ref,) = binding.values()
-        return (
-            self.vocabulary.label(ref.removeprefix(_DCID_PREFIX)) if isinstance(ref, str) else None
-        )
+        labels = [self.vocabulary.label(dcid) for dcid in binding.values()]
+        if any(label is None for label in labels):
+            return None
+        return ", ".join(label for label in labels if label is not None)
+
+    def side(self, role: str, name: str) -> str:
+        """`name`, the words for the step's input in `role`, followed by the entities the step
+        narrowed that input to (`narrowed_to`) in brackets: "gross ODA disbursements (United
+        Kingdom)". Every sentence and name built from one side of a two-sided step reads that
+        side by this."""
+        entity = self.narrowed_to(role)
+        return f"{name} ({entity})" if entity is not None else name
+
+    def same_series(self, role: str, other: str) -> bool:
+        """Whether the step's inputs in two roles are one series: one variable (`same_variable`)
+        that the step narrows alike on both sides, or on neither."""
+        bindings = _bindings(self.step)
+        return self.same_variable(role, other) and bindings.get(role) == bindings.get(other)
 
     def input_words(self, role: str | None = None) -> str:
         """The input's name, else the id it is stored under."""
@@ -492,6 +533,8 @@ def _pooled_clause(words: _Words, role: str, gaps: Sequence[tuple[int, LeftOut]]
 def _reason_phrase(words: _Words, index: int, gap: LeftOut) -> str:
     """Why a count was left out, as a phrase that follows the count."""
     other = words.input_name("denominator")
+    if other is not None:
+        other = words.side("denominator", other)
     period = words.period()
     periods = words.period(2)
     match gap.reason, gap.of:
@@ -553,21 +596,26 @@ def _both_report(words: _Words) -> str:
 
 
 def _sum(words: _Words) -> str:
-    head = f"Added {words.input_words('left')} and {words.input_words('right')}"
+    left = words.side("left", words.input_words("left"))
+    right = words.side("right", words.input_words("right"))
+    head = f"Added {left} and {right}"
     return _sentence(f"{head} {_both_report(words)}", words)
 
 
 def _quotient(words: _Words) -> str:
-    head = f"Divided {words.input_words('numerator')} by {words.input_words('denominator')}"
+    numerator = words.side("numerator", words.input_words("numerator"))
+    denominator = words.side("denominator", words.input_words("denominator"))
+    head = f"Divided {numerator} by {denominator}"
     return _sentence(f"{head} {_both_report(words)}", words)
 
 
 def _share(words: _Words) -> str:
-    numerator = words.input_words("numerator")
-    if words.same_variable("numerator", "denominator"):
+    numerator = words.side("numerator", words.input_words("numerator"))
+    if words.same_series("numerator", "denominator"):
         head = f"Took each {words.entities(1)}'s share of the total of {numerator}"
         return _sentence(f"{head} for each {words.period()}", words)
-    head = f"Took {numerator} as a share of {words.input_words('denominator')}"
+    denominator = words.side("denominator", words.input_words("denominator"))
+    head = f"Took {numerator} as a share of {denominator}"
     return _sentence(f"{head} {_both_report(words)}", words)
 
 
@@ -811,11 +859,11 @@ def _output_name(words: _Words) -> str | None:
             denominator = words.input_name("denominator")
             if numerator is None or denominator is None:
                 return None
-            if words.step.op == "share":
-                if words.same_variable("numerator", "denominator"):
-                    return f"share of {numerator}"
-                return words.join(numerator, "as a share of", denominator)
-            return words.join(numerator, "per", denominator)
+            numerator = words.side("numerator", numerator)
+            if words.step.op == "share" and words.same_series("numerator", "denominator"):
+                return f"share of {numerator}"
+            joiner = "as a share of" if words.step.op == "share" else "per"
+            return words.join(numerator, joiner, words.side("denominator", denominator))
         case "compare":
             return _difference_name(words)
         case "sum" | "join":
@@ -823,7 +871,7 @@ def _output_name(words: _Words) -> str | None:
             if left is None or right is None:
                 return None
             joiner = {"sum": "plus", "join": "with"}[words.step.op]
-            return words.join(left, joiner, right)
+            return words.join(words.side("left", left), joiner, words.side("right", right))
         case _:
             return None
 
@@ -840,22 +888,17 @@ def _difference_name(words: _Words) -> str | None:
 def _difference(words: _Words, left: str, right: str) -> str | None:
     """A comparison's output in the order it subtracts, from the words `left` and `right`
     for its inputs. Each side reads as its words, followed by the entity the step itself
-    narrowed it to (`narrowed_to`) in brackets: "gross ODA disbursements (France)". Two
+    narrowed it to (`_Words.side`): "gross ODA disbursements (France)". Two
     versions whose sides read differently give "<right> minus <left>". One version, or two
     whose sides read alike, give "<variable>, <right entity> minus <left entity>" when one role
     column tells the sides apart (`entities_apart`). `None` when nothing tells them apart."""
-    left_side, right_side = _side_words(words, "left", left), _side_words(words, "right", right)
+    left_side, right_side = words.side("left", left), words.side("right", right)
     if not words.same_variable("left", "right") and left_side != right_side:
         return words.join(right_side, "minus", left_side)
     if (entities := words.entities_apart("left", "right")) is None:
         return None
     left_entity, right_entity = entities
     return f"{left}, {right_entity} minus {left_entity}"
-
-
-def _side_words(words: _Words, role: str, name: str) -> str:
-    entity = words.narrowed_to(role)
-    return f"{name} ({entity})" if entity is not None else name
 
 
 # Labels

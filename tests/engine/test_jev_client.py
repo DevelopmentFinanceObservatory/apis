@@ -9,6 +9,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import httpx2
 import pytest
@@ -27,6 +28,7 @@ from search.engine.binders.jev_client import (
     ask,
     build_client,
 )
+from search.engine.binders.jev_split import split_questions
 from search.engine.clients.loop_local import LoopLocal
 
 type Handler = Callable[[httpx2.Request], Awaitable[httpx2.Response]]
@@ -44,6 +46,30 @@ class _Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+class _FrozenLoop(asyncio.SelectorEventLoop):
+    """An event loop whose clock moves only through `advance`, so a timer fires when a test
+    says the loop stalled past it and never because the machine was slow. `advance` called
+    from a handler is a loop that stalled for that long: nothing runs until it returns, and
+    the next step finds every timer due by then. A test the clock never moves would wait
+    forever, so after `_FROZEN_LOOP_CAP_S` of real time the clock jumps far ahead, every
+    timer fires, and the test fails on its own assertion."""
+
+    _FROZEN_LOOP_CAP_S = 5.0
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._frozen_now = 0.0
+        self._started = time.monotonic()
+
+    def time(self) -> float:
+        if time.monotonic() - self._started > self._FROZEN_LOOP_CAP_S:
+            return self._frozen_now + 1e6
+        return self._frozen_now
+
+    def advance(self, seconds: float) -> None:
+        self._frozen_now += seconds
 
 
 class _Jev:
@@ -71,8 +97,14 @@ class _Jev:
             jev_client, "_CLIENT", build_client(self.settings, transport=transport)
         )
 
-    def ask(self, questions: dict = _QUESTIONS, state: object = _STATE) -> JevResponse:
-        return asyncio.run(ask(state, questions, settings=self.settings))
+    def ask(
+        self,
+        questions: dict = _QUESTIONS,
+        state: object = _STATE,
+        *,
+        loop_factory: Callable[[], asyncio.AbstractEventLoop] | None = None,
+    ) -> JevResponse:
+        return asyncio.run(ask(state, questions, settings=self.settings), loop_factory=loop_factory)
 
 
 @pytest.fixture
@@ -503,28 +535,38 @@ def test_split_answers_in_hand_at_the_ceiling_are_returned_only_when_every_chunk
     jev: _Jev,
 ) -> None:
     """After a stall every chunk has answered, so the call returns them all. With one chunk
-    still outstanding, the answered chunks complete nothing and the call fails."""
-    outstanding = [False]
-    answered = 0
-
-    async def stalled(request: httpx2.Request) -> httpx2.Response:
-        nonlocal answered
-        if outstanding[0] and "m|0" in _body(request)["questions"]:
-            await asyncio.sleep(30)
-        await asyncio.sleep(0.05)
-        if not answered:
-            time.sleep(0.3)
-        answered += 1
-        return _answers(request)
-
-    jev.serve(stalled, jev_ceiling_s=0.2)
+    still outstanding, the answered chunks complete nothing and the call fails. The loop's
+    clock is frozen, and the handler that sees every chunk arrive moves it past the ceiling
+    while the others are runnable, which is a loop stalled past the ceiling."""
     questions = _large_questions()
-    assert jev.ask(questions).nouls == dict.fromkeys(questions, 0.9)
-    assert len(jev.requests) > 2
+    chunks = len(split_questions(_STATE, questions))
+    assert chunks > 2
 
-    outstanding[0] = True
+    def serve(*, outstanding: bool) -> None:
+        arrived = 0
+        all_in = asyncio.Event()
+
+        async def handler(request: httpx2.Request) -> httpx2.Response:
+            nonlocal arrived
+            arrived += 1
+            if arrived == chunks:
+                all_in.set()
+                loop = cast(_FrozenLoop, asyncio.get_running_loop())
+                loop.advance(jev.settings.jev_ceiling_s)
+            await all_in.wait()
+            if outstanding and "m|0" in _body(request)["questions"]:
+                await asyncio.Event().wait()
+            return _answers(request)
+
+        jev.serve(handler, jev_ceiling_s=0.2, jev_max_concurrency=chunks)
+
+    serve(outstanding=False)
+    assert jev.ask(questions, loop_factory=_FrozenLoop).nouls == dict.fromkeys(questions, 0.9)
+    assert len(jev.requests) == chunks
+
+    serve(outstanding=True)
     with pytest.raises(JevError) as raised:
-        jev.ask(questions)
+        jev.ask(questions, loop_factory=_FrozenLoop)
     assert raised.value.kind == "timeout"
 
 
