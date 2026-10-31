@@ -309,22 +309,18 @@ def _extracted_axes(kenya: str, china: str) -> dict[str, list[str]]:
 
 
 @pytest.mark.parametrize(
-    ("query", "kenya", "over"),
+    ("query", "kenya"),
     [
-        # The creditors' end is named, so Kenya's possessive places it on the other end:
-        # Kenya and the rank swap as one.
-        ("Which creditors does Kenya's debt service go to", "destination", "origin"),
-        # No creditor is named, so the extraction's reading stands.
-        ("Which countries does Kenya's debt service go to", "origin", "destination"),
-        # The bare possessive sets Kenya's role, but names no creditor, so nothing swaps.
-        ("Kenya's debt service", "destination", "destination"),
+        # The query is the possessive and its measure alone, so Kenya is the debtor.
+        ("Kenya's debt service", "destination"),
+        # Any other words leave the extraction's reading standing.
+        ("Which creditors does Kenya's debt service go to", "origin"),
+        ("Which countries does Kenya's debt service go to", "origin"),
     ],
 )
-def test_a_debtor_possessive_moves_the_ranked_end_only_where_a_creditor_is_named(
-    query, kenya, over
-):
-    """An extraction that puts Kenya on origin and ranks over destination swaps both ends
-    only on the positive evidence of a creditor noun (`role_text.names_creditor_role`)."""
+def test_a_debtor_possessive_sets_its_role_and_swaps_no_end(query, kenya):
+    """An extraction that puts Kenya on origin and ranks over destination keeps the rank's
+    axis: a possessive debtor (`role_text.debtor_possessive`) sets Kenya's role alone."""
     extraction = Extraction(
         kind="resolution",
         variables=["debt service"],
@@ -342,7 +338,28 @@ def test_a_debtor_possessive_moves_the_ranked_end_only_where_a_creditor_is_named
     prep = _prepare_extraction(extraction, result, query=query)
 
     assert _occurrences(prep.entity_roles) == {"Kenya": [(kenya, "Kenya")]}
-    assert [op.over for ops in prep.per_variable_operations for op in ops] == [over]
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
+
+
+@pytest.mark.parametrize(
+    ("query", "france_span"),
+    [("French ODA received by Kenya", "French"), ("ODA received by Kenya, France", "France")],
+)
+def test_a_place_left_on_a_moved_places_axis_blocks_the_swap(query, france_span):
+    """Extracted with France and Kenya both on origin, the receipt wording moves Kenya alone.
+    France shares Kenya's extracted axis, so no end swaps and France keeps origin."""
+    roles = _prepared_roles(
+        [
+            ExtractedEntity(text="France", span=france_span, flow_role="origin"),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin"),
+        ],
+        query=query,
+        measures=["ODA"],
+    )
+    assert _occurrences(roles) == {
+        "France": [("origin", france_span)],
+        "Kenya": [("destination", "Kenya")],
+    }
 
 
 def test_a_place_whose_cue_states_its_direction_keeps_its_end():

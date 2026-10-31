@@ -105,7 +105,6 @@ from search.engine.role_text import (
     debt_axes,
     debtor_possessive,
     every_member_breakdown_axis,
-    names_creditor_role,
     receipt_axes,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
@@ -502,7 +501,9 @@ class _Wording:
 
     `stated` holds the axes its debt and receipt wording state (`role_text.debt_axes`,
     `role_text.receipt_axes`), and `read` those a lone debt possessive reads off the
-    measure (`role_text.debtor_possessive`), which state no direction of their own.
+    measure (`role_text.debtor_possessive`), which state no direction of their own. A
+    stated axis moves the extraction's ends (`_wording_ends`); a read axis sets its place's
+    role alone, since a bare possessive carries no other end to move.
     `extracted` holds the one axis the extraction gave each name; a name on both axes has
     none.
     """
@@ -541,31 +542,35 @@ def _read_wording(
 
 def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: str) -> Ends:
     """The permutation of ends the query's wording makes of the extraction's reading
-    (`flow_ends.end_permutation`), from each directed place it moves. A stated axis
-    (`_Wording.stated`) moves its place. A possessive debtor (`_Wording.read`) moves its
-    place only when the query names the creditors' end (`role_text.names_creditor_role`),
-    which places the possessor on the other end of every operation; a bare ``Kenya's debt``
-    sets Kenya's role and swaps nothing. A directed place the wording leaves alone whose
-    validated cue states its direction (`_cue_states_direction`: "from France", "funded by
-    France", "France funds") keeps its end, so the wording then moves only the places it
-    names. A cue whose preposition names the other end ("from
-    France" on destination, `role_text.contradicts`) shows the extraction read the flow
-    backwards, so it protects nothing. A verb cue names no end the code can check, so a
-    place the extraction set against its own verb cue ("funded by France" on destination)
-    still protects, and the wording then moves no place."""
-    swaps_read = names_creditor_role(query)
+    (`flow_ends.end_permutation`), from each place whose stated axis (`_Wording.stated`)
+    moves it off its extracted one.
+
+    No end moves when a directed place the wording leaves alone shares a moved place's
+    extracted axis: "French ODA received by Kenya" extracted with both on origin moves
+    Kenya alone, and France keeps origin. Nor when such a place's validated cue states
+    its direction (`_cue_states_direction`: "from France", "funded by France", "France
+    funds"), so the wording then moves only the places it names. A cue whose preposition
+    names the other end ("from France" on destination, `role_text.contradicts`) shows the
+    extraction read the flow backwards, so it protects nothing. A verb cue names no end
+    the code can check, so a place the extraction set against its own verb cue ("funded
+    by France" on destination) still protects, and the wording then moves no place."""
     moves = {
-        name: (wording.extracted[name], axis)
-        for name in wording.extracted
-        if (axis := wording.stated.get(name) or (wording.read.get(name) if swaps_read else None))
-        is not None
+        name: (extracted, axis)
+        for name, extracted in wording.extracted.items()
+        if (axis := wording.stated.get(name)) is not None
     }
-    if any(
-        (name := _entity_key(entity)) in wording.extracted
-        and name not in moves
-        and not contradicts(query, span=entity.span or entity.text, axis=wording.extracted[name])
-        and _cue_states_direction(entity, entities=entities, query=query)
+    moved_from = {extracted for extracted, axis in moves.values() if axis != extracted}
+    left = [
+        entity
         for entity in entities
+        if (name := _entity_key(entity)) in wording.extracted and name not in moves
+    ]
+    if any(wording.extracted[_entity_key(entity)] in moved_from for entity in left) or any(
+        not contradicts(
+            query, span=entity.span or entity.text, axis=wording.extracted[_entity_key(entity)]
+        )
+        and _cue_states_direction(entity, entities=entities, query=query)
+        for entity in left
     ):
         return {}
     return end_permutation(moves)

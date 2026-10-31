@@ -563,24 +563,21 @@ class TestDebtAxes:
         assert axes == {}
 
 
-# One place a possessive names over its own debt, with positive evidence that it owes it:
-# the possessive debt phrase alone, or a creditor noun.
+# One place a possessive names over its own debt in a query that is the possessive and its
+# measure alone.
 _ONE_POSSESSIVE_OVER_ITS_DEBT = [
     ("Kenya's debt", "debt", "Kenya"),
     ("Kenya's debt", "total debt", "Kenya"),
+    ("Kenya\u2019s debt", "debt", "Kenya"),
+    ("the Kenya's debt", "debt", "Kenya"),
     ("Kenya's external debt", "external debt", "Kenya"),
     ("Kenya's gross debt service", "gross debt service", "Kenya"),
+    ("Kenya's debt service", "debt service", "Kenya"),
+    ("Kenya's debt repayments", "debt repayments", "Kenya"),
+    ("Kenya's repayments", "debt repayments", "Kenya"),
+    ("Kenya's liabilities", "external liabilities", "Kenya"),
     ("Kenya's debt reduction target", "debt reduction target", "Kenya"),
     ("The World Bank's debt", "debt", "World Bank"),
-    ("Kenya's debt by creditor", "debt", "Kenya"),
-    ("Kenya\u2019s debt by creditor", "debt", "Kenya"),
-    ("Kenya's debt by year and creditor", "debt", "Kenya"),
-    ("Kenya's debt by lenders", "debt", "Kenya"),
-    ("Kenya's debt by creditor-country", "debt", "Kenya"),
-    ("Kenya's debt target by creditor", "debt", "Kenya"),
-    ("Kenya's debt by creditor destination", "debt", "Kenya"),
-    ("China's debt by creditor", "debt", "China"),
-    ("China's debt by lender", "debt", "China"),
 ]
 
 
@@ -629,7 +626,49 @@ class TestDebtorPossessive:
             ("China's lending to Africa", ["lending"], "China"),
             ("Germany's aid", ["aid"], "Germany"),
             ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
-            # A role noun of the debtor's end, hyphenated or not: the extraction's axis stands.
+            # A creditor or lender word, in any sense: the extraction's axis stands.
+            ("Kenya's debt by creditor", ["debt"], "Kenya"),
+            ("Kenya's debt by year and creditor", ["debt"], "Kenya"),
+            ("Kenya's debt by lenders", ["debt"], "Kenya"),
+            ("Kenya's debt by creditor-country", ["debt"], "Kenya"),
+            ("Kenya's debt target by creditor", ["debt"], "Kenya"),
+            ("Kenya's debt by creditor destination", ["debt"], "Kenya"),
+            ("China's debt by creditor", ["debt"], "China"),
+            ("China's debt by lender", ["debt"], "China"),
+            ("China's debt as a creditor", ["debt"], "China"),
+            ("China's debt as the largest bilateral creditor", ["debt"], "China"),
+            ("China's outstanding debt as lender", ["outstanding debt"], "China"),
+            ("IMF's debt as lender of last resort", ["debt"], "IMF"),
+            ("IMF's debt, lender of last resort", ["debt"], "IMF"),
+            ("China's creditor debt", ["debt"], "China"),
+            ("China's official creditor debt", ["debt"], "China"),
+            ("China's debt and creditor countries' share", ["debt"], "China"),
+            ("China's debt in creditor countries' share", ["debt"], "China"),
+            ("World Bank's debt as a multilateral lender", ["debt"], "World Bank"),
+            ("Paris Club's debt, creditor-country totals", ["debt"], "Paris Club"),
+            ("China's debt as top lender since 2010", ["debt"], "China"),
+            ("China's lender debt stock", ["debt stock"], "China"),
+            ("China's debt, top creditors excluded", ["debt"], "China"),
+            ("China's debt to recipients by creditor", ["debt"], "China"),
+            ("China's debt by destination and creditor", ["debt"], "China"),
+            ("China's debt by importer and lender", ["debt"], "China"),
+            ("China's debt lent to creditor nations", ["debt"], "China"),
+            ("Japan's debt from lenders", ["debt"], "Japan"),
+            ("China's debt receivable by creditor", ["debt"], "China"),
+            ("Japan's debt in the Creditor Reporting System", ["debt"], "Japan"),
+            ("Japan's debt, Creditor Reporting System", ["debt"], "Japan"),
+            ("Japan's debt relief in the Creditor Reporting System", ["debt relief"], "Japan"),
+            ("Japan's debt rescheduling by creditor", ["debt rescheduling"], "Japan"),
+            (
+                "Japan's debt forgiveness grants, Creditor Reporting System",
+                ["debt forgiveness"],
+                "Japan",
+            ),
+            ("Japan's debt from CRS creditor data", ["debt"], "Japan"),
+            ("Paris Club creditors' debt", ["debt"], "Paris Club creditors"),
+            ("Kenya's debt in USD", ["debt"], "Kenya"),
+            ("Kenya's debt by creditor and Japan", ["debt"], "Kenya"),
+            # A role noun of the debtor's end: the extraction's axis stands.
             ("China's debt by debtor country", ["debt"], "China"),
             ("China's debt for each debtor country", ["debt"], "China"),
             ("China's debt, every borrower", ["debt"], "China"),
@@ -681,7 +720,7 @@ class TestDebtorPossessive:
             ("Kenya's external debt by debtor country type", ["external debt"], "Kenya"),
             ("World Bank's debt to recipients", ["debt"], "World Bank"),
             ("Kenya's debt beneficiary", ["debt"], "Kenya"),
-            # A debtor named as `debt_axes` reads one: an active owe, or a debtor verb and by.
+            # A debtor named by an owe or a debtor verb and by.
             ("Which countries owe the most of China's debt", ["debt"], "China"),
             (
                 "Which African countries owe the most of China's outstanding debt",
@@ -693,8 +732,7 @@ class TestDebtorPossessive:
             ("China's debt owed by low-income countries", ["debt"], "China"),
             ("Which countries owe China's debt by creditor", ["debt"], "China"),
             ("China's debt by creditor owed by Africa", ["debt"], "China"),
-            # No evidence either way: the query is more than the possessive debt phrase and
-            # names no creditor, so the extraction's axis stands.
+            # Any other words beside the possessive debt phrase.
             ("China's debt extended to each country", ["debt"], "China"),
             ("China's debt extended to every country", ["debt"], "China"),
             ("China's debt disbursed to each country", ["debt"], "China"),
