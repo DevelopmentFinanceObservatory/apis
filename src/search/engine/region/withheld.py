@@ -30,7 +30,7 @@ from dfo_platform.named import named_capped
 from materialise.provenance_doc import ProvenanceNameReader
 from search.engine.concurrency import current_scope
 from search.engine.deadline import _await_bounded
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_deadline, note_degraded_read
 from search.engine.departures import unavailable_entity_facts, warning_key
 from search.engine.errors import GraphInfraError
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE, WITHHELD_BY_REGISTRY
@@ -61,11 +61,13 @@ class WithheldReader(ProvenanceNameReader, Protocol):
 async def _source_names(
     graph: WithheldReader, withheld: Sequence[str], *, deadline: float | None
 ) -> tuple[str, ...]:
-    """The names of the `withheld` provenances a name read finds by `deadline`, empty when
-    that read cannot finish by then (`refs.provenance_labels`)."""
-    read = asyncio.to_thread(provenance_labels, withheld, graph, deadline=deadline)
+    """The names of the `withheld` provenances a name read finds by `deadline` or
+    `fail_open_deadline`'s budget, whichever ends first, empty when that read fails or cannot
+    finish by then (`refs.provenance_labels`)."""
+    bound = fail_open_deadline(deadline)
+    read = asyncio.to_thread(provenance_labels, withheld, graph, deadline=bound)
     try:
-        labels = await (read if deadline is None else _await_bounded(read, deadline=deadline))
+        labels = await _await_bounded(read, deadline=bound)
     except TimeoutError:
         logger.info(
             "withheld_by_registry source labels skipped: they could not finish by the request "
@@ -107,8 +109,8 @@ async def with_withheld_warning(
     """`result` with `withheld_by_registry` naming the provenances the catalogue withholds at
     its elected series, when it is the request's first eligible no-data answer and there are
     any. A `graph` without the re-read reads nothing. The re-read ends `_HANDOFF_RESERVE_S`
-    before `deadline`, the request's, and `result` stands unwarned when it cannot finish by
-    then."""
+    before `deadline`, the request's, or `fail_open_deadline`'s budget after it starts,
+    whichever comes first, and `result` stands unwarned when it cannot finish by then."""
     if not isinstance(graph, WithheldReader):
         return result
     series = elected_series(result)
@@ -116,9 +118,10 @@ async def with_withheld_warning(
         return result
     variables, places = series
     bound = None if deadline is None else deadline - _HANDOFF_RESERVE_S
-    read = asyncio.to_thread(graph.withheld_provenances, variables, places, deadline=bound)
+    read_bound = fail_open_deadline(bound)
+    read = asyncio.to_thread(graph.withheld_provenances, variables, places, deadline=read_bound)
     try:
-        withheld = await (read if bound is None else _await_bounded(read, deadline=bound))
+        withheld = await _await_bounded(read, deadline=read_bound)
     except (TimeoutError, dc_graph.GraphDeadlineExceededError):
         logger.info(
             "withheld_by_registry re-read skipped: it could not finish by the request deadline "

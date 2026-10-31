@@ -733,6 +733,9 @@ def _dated_plan(
         )
         note_degraded_read("unit coverage dates")
         return None
+    # The read keeps the request deadline. Its failure leaves the span's refusal or omitted
+    # entities standing, so a healthy read slower than the fail-open budget would turn a
+    # served answer into a gap, and the aborted read is never cached.
     try:
         dated = reader.observation_facets_batch(
             stat_vars, entities, needs_dates=True, deadline=deadline

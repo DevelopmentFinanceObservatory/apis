@@ -50,7 +50,7 @@ from origin_catalogue.families import FamilyKey, FamilySummary
 from origin_catalogue.graph import arcs_mirrored
 from search.engine.clients.graph import EngineGraphClient, force_full_facets, stand_in
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_deadline, note_degraded_read
 from search.engine.errors import GraphCapExceededError, RoleSignatureError
 from search.engine.reading_coverage import ReadingCoverage, observed_years
 from search.engine.retrieval.bound_values import (
@@ -469,7 +469,8 @@ def _graph_facets_at(
     deadline: float | None,
 ) -> dict[str, dict[str, list[Facet]]] | None:
     """`svs`' facets at `places` in one graph batch, or None when the read fails
-    (`_probe_place_availability`)."""
+    (`_probe_place_availability`). The read fails open, so it runs under `deadline` or
+    `fail_open_deadline`'s budget, whichever ends first."""
     narrow_scope: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
     if full_facets_max_candidates is not None and len(svs) > full_facets_max_candidates:
         logger.info(
@@ -482,7 +483,9 @@ def _graph_facets_at(
         narrow_scope = force_full_facets(False)
     try:
         with narrow_scope:
-            return graph.observation_facets_batch(svs, places, False, deadline=deadline)
+            return graph.observation_facets_batch(
+                svs, places, False, deadline=fail_open_deadline(deadline)
+            )
     except GraphCapExceededError as exc:
         logger.warning(
             "derive_shapes: place-availability probe for %d candidates against "

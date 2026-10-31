@@ -5,6 +5,7 @@ to the failure it swallows."""
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
@@ -13,14 +14,20 @@ import pytest
 
 import search.engine.place as place
 from search.engine.bind import SlotBindingDraft
+from search.engine.clients.graph import EngineGraphClient
 from search.engine.degraded_reads import recording_degraded_reads
-from search.engine.errors import GraphInfraError, RoleSignatureError
+from search.engine.errors import GraphDeadlineFailure, GraphInfraError, RoleSignatureError
 from search.engine.region import grounding
 from search.engine.region import state as region_state
 from search.engine.region.phase_rank_bind import _stray_requirements
 from search.engine.region.state import ResolveState
 from search.engine.retrieval import derive
 from search.engine.unit import refs
+from tests.engine._fail_open_deadline import (
+    FAIL_OPEN_REQUESTS,
+    assert_fail_open_deadline,
+    request_deadline,
+)
 
 
 def _raise_graph_failure(*_args, **_kwargs):
@@ -147,3 +154,54 @@ def test_a_refused_relaxation_walk_notes_nothing(monkeypatch) -> None:
     with recording_degraded_reads() as lost:
         assert grounding._walked_relaxations(_relaxation_ctx(), [[]]) == [None]
     assert lost.reads == []
+
+
+class _FacetGraph:
+    """Records the deadline of each facet read it serves, and answers none."""
+
+    def __init__(self) -> None:
+        self.deadlines: list[float | None] = []
+
+    def observation_facets_batch(self, svs, places, _needs_dates, *, deadline=None):
+        self.deadlines.append(deadline)
+        return {sv: {place: [] for place in places} for sv in svs}
+
+
+@FAIL_OPEN_REQUESTS
+def test_the_place_availability_probe_reads_under_the_fail_open_budget(request_in_s) -> None:
+    graph = _FacetGraph()
+    requested = request_deadline(request_in_s)
+    started = time.monotonic()
+
+    derive._probe_place_availability(
+        {"Count_Person": {}},
+        place_dcids=["country/KEN"],
+        full_facets_max_candidates=None,
+        graph=cast(EngineGraphClient, graph),
+        deadline=requested,
+        coverage=None,
+    )
+
+    (deadline,) = graph.deadlines
+    assert_fail_open_deadline(deadline, requested=requested, started=started)
+
+
+def test_a_probe_read_past_its_deadline_is_a_lost_read_and_no_request_timeout() -> None:
+    """The client's deadline error is an `Exception` the probe catches. Its class sits outside
+    `TimeoutError`, which the request-level classifiers read as the request's 504."""
+    assert not issubclass(GraphDeadlineFailure, TimeoutError)
+
+    def expired(*_args, **_kwargs):
+        raise GraphDeadlineFailure("the read ran past its deadline")
+
+    with recording_degraded_reads() as lost:
+        read = derive._graph_facets_at(
+            ["Count_Person"],
+            ["country/KEN"],
+            full_facets_max_candidates=None,
+            graph=cast(EngineGraphClient, SimpleNamespace(observation_facets_batch=expired)),
+            deadline=None,
+        )
+
+    assert read is None
+    assert lost.reads == ["place-availability probe"]
