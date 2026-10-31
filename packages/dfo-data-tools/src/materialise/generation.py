@@ -6,19 +6,19 @@ once generation returns.
 
 from __future__ import annotations
 
-import io
 import logging
 import math
 import threading
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+import time
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from functools import cache, partial
 from typing import TYPE_CHECKING, Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.parquet as pq
+from dfo_frame_grammar import array_kernel
 
 from dc_sdmx import (
     DEFAULT_PLANNING_LANES,
@@ -30,7 +30,9 @@ from dc_sdmx import (
     observation_columns,
     observation_schema,
 )
+from dc_sdmx.errors import SdmxResponseError
 from dfo_platform.executor import submit_with_context
+from dfo_platform.timings import phase, record_elapsed
 from materialise import columnar
 from materialise.ceiling import check_ceiling
 from materialise.content_version import stream_frame_sha256
@@ -65,6 +67,7 @@ from materialise.facets import (
     admitted_candidates,
     cadences_by_member,
     continued_election,
+    continuing_facet_ids,
     dataset_candidates,
     declared_default_policies,
     default_scope_of,
@@ -72,6 +75,7 @@ from materialise.facets import (
     fetch_role_bindings,
     joint_dispatch_facet_ids,
     joint_matches,
+    overlaps_window,
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
@@ -83,6 +87,7 @@ from materialise.facets import (
 from materialise.frame_build import (
     Frame,
     ParquetFrameChunks,
+    ParquetFrameSink,
     build_frame_from_member_tables,
     build_frame_from_table,
     fold_method_periods,
@@ -322,24 +327,6 @@ def _omitted_rows(
     return tuple((role, entity) for entity in sorted({*currencies.unmapped, *also}))
 
 
-def _continuing_facet_ids(
-    candidates: Sequence[Facet], election: FacetElection, *, member: int
-) -> tuple[str, ...]:
-    """The dispatch IDs (`joint_dispatch_facet_ids`) of the method that continues the
-    selected series past its last year (`FacetSelection.continued_by`), none when nothing
-    continues it. A range window alone continues a series, and its rows serve only the
-    years after that series' last one (`columnar.continuation_mask`)."""
-    method = election.selections.get("measurementMethod")
-    if method is None or method.continued_by is None:
-        return ()
-    by_id = {c.facet_id: c for c in candidates}
-    return tuple(
-        facet_id
-        for facet_id in joint_dispatch_facet_ids(candidates, election, member=member)
-        if by_id[facet_id].measurement_method == method.continued_by
-    )
-
-
 def _read_series(
     dispatch_ids: Sequence[str], continuing_ids: Sequence[str], omitted: Sequence[tuple[str, str]]
 ) -> ReadSeries:
@@ -389,6 +376,7 @@ class _MemberOutcome:
     (`_convert_by_series`). `probe_empty` is true when the member's probe returned no
     candidate, and the outcome then holds no row and no selection. `provenance_refresh` holds
     the dispatched provenance's refresh dates, read before the fetch (`_dispatch_refresh`).
+    `candidate_provenances` holds the provenance of every candidate its election ranked.
     `coverage_gaps` holds the places a national-currency unit binding serves no row at
     (`_national_currency_probe`). `latest_years` holds the member's year under a `latest`
     window (`_latest_years`), and `read_series` the series its read holds under any window.
@@ -405,6 +393,7 @@ class _MemberOutcome:
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    candidate_provenances: frozenset[str | None] = frozenset()
     coverage_gaps: tuple[CoverageGap, ...] = ()
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
@@ -422,10 +411,12 @@ class _GroupOutcome:
     `None` when no arithmetic ran; recipe IDs are `None` for ref/unbound or
     native-satisfied units. `default_scope` is the group's default place
     scope, for members that bind no entity. `series_conversions` holds every
-    member's converted series' records (`_convert_by_series`). `off_cadence_members` is
-    `_GroupPlan.off_cadence_members`. `probe_empty` is true when no member's probe returned a
-    candidate, and the outcome then holds no row and no selection. `provenance_refresh` is
-    `_MemberOutcome.provenance_refresh` for the group's shared selection. `method_periods`
+    member's converted series' records (`_convert_by_series`). `off_cadence_members`,
+    `out_of_window_members` and `unserved_members` are `_GroupPlan`'s. `probe_empty` is true
+    when no member's probe returned a candidate, and the outcome then holds no row and no
+    selection. `provenance_refresh` is
+    `_MemberOutcome.provenance_refresh` for the group's shared selection, and
+    `candidate_provenances` every member's as `_MemberOutcome.candidate_provenances` holds it. `method_periods`
     maps each `measurementMethod` the rows name to the earliest and latest period its rows
     hold (`frame_build.fold_method_periods`). `latest_years` holds each member's year under
     a `latest` window (`_latest_years`), and `read_series` the series each member's read
@@ -446,8 +437,11 @@ class _GroupOutcome:
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
     off_cadence_members: tuple[str, ...] = ()
+    out_of_window_members: tuple[str, ...] = ()
+    unserved_members: tuple[str, ...] = ()
     probe_empty: bool = False
     provenance_refresh: Mapping[str, ProvenanceRefresh] = field(default_factory=dict)
+    candidate_provenances: frozenset[str | None] = frozenset()
     method_periods: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     latest_years: Mapping[str, LatestYear] = field(default_factory=dict)
     read_series: Mapping[str, ReadSeries] = field(default_factory=dict)
@@ -620,6 +614,7 @@ def _select_member_facets(
                 policies=policies,
                 breadth=breadth,
                 variable_breadth=variable_breadth,
+                requires_provenance=request.requires_provenance,
             )
         except NonCurrencyUnitError as exc:
             unit_error = exc
@@ -1205,6 +1200,7 @@ def _probe_member(
         declared_roles=request.declared_roles,
         role_bindings=request.role_bindings,
         coverage=coverage,
+        window=request.window,
         deadline=deadline,
     )
 
@@ -1419,11 +1415,12 @@ def _generate_member(
         default_scope=probe.scope,
     )
     read = _read_series(
-        dispatch_ids, _continuing_facet_ids(probe.candidates, election, member=0), omitted
+        dispatch_ids, continuing_facet_ids(probe.candidates, election, member=0), omitted
     )
     return replace(
         outcome,
         provenance_refresh=provenance_refresh,
+        candidate_provenances=frozenset(c.provenance_id for c in probe.candidates),
         coverage_gaps=coverage_gaps,
         latest_years=_latest_years(
             request, elected=year, applied_window=outcome.applied_window, read=read
@@ -1551,7 +1548,8 @@ class _MemberFetchPlan:
 
     Group plans carry the group's shared selections and each member's own admission.
     `continuing_ids` holds the dispatch IDs of the method continuing the selected series
-    (`_continuing_facet_ids`).
+    (`continuing_facet_ids`). `unserved` marks a group member the election leaves out
+    (`group_facets.GroupElection.unserved`): it dispatches no rows and plans no conversion.
     """
 
     selections: dict[str, FacetSelection]
@@ -1560,6 +1558,7 @@ class _MemberFetchPlan:
     conversion_plan: MemberConversionPlan | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     continuing_ids: tuple[str, ...] = ()
+    unserved: bool = False
 
 
 def request_batch_key(request: MaterialisationRequest) -> tuple[object, ...]:
@@ -1598,6 +1597,7 @@ def _plan_collection_chunks(
     *,
     places: Sequence[Sequence[str]],
     lanes: int = DEFAULT_PLANNING_LANES,
+    idle: Collection[int] = frozenset(),
 ) -> list[_ShapeChunk]:
     """Groups requests by `request_batch_key`, then splits each group into chunks.
 
@@ -1609,25 +1609,27 @@ def _plan_collection_chunks(
     empty for the rest. Such requests share a chunk only when their places
     match, and the chunk carries those places as its entity filter
     (`facets.fetch_role_bindings`).
+
+    `idle` holds the positions of requests that dispatch no facet
+    (`_MemberFetchPlan.dispatch_ids` is empty). They form chunks of their own, one per
+    group and split only at a repeated StatVar, which `_generate_chunk` answers with empty
+    tables and no request, so no request names their StatVars and the lane target spreads
+    only the requests that fetch.
     """
     groups: dict[tuple[object, ...], list[int]] = {}
-    group_order: list[tuple[object, ...]] = []
     for index, (_spec_id, request) in enumerate(requests):
-        key = (request_batch_key(request), tuple(places[index]))
-        if key not in groups:
-            groups[key] = []
-            group_order.append(key)
-        groups[key].append(index)
+        key = (index in idle, request_batch_key(request), tuple(places[index]))
+        groups.setdefault(key, []).append(index)
 
     chunks: list[_ShapeChunk] = []
-    for key in group_order:
-        indices = groups[key]
+    for (idle_group, *_), indices in groups.items():
         first = requests[indices[0]][1]
         role_bindings = fetch_role_bindings(
             first.role_bindings, first.declared_roles, places=places[indices[0]]
         )
         bare_stat_vars = [bare_stat_var_ref(requests[i][1].stat_var) for i in indices]
-        for position_group in stat_var_chunk_positions(bare_stat_vars, lanes=lanes):
+        group_lanes = 1 if idle_group else lanes
+        for position_group in stat_var_chunk_positions(bare_stat_vars, lanes=group_lanes):
             chunk_indices = [indices[position] for position in position_group]
             chunks.append(_build_shape_chunk(chunk_indices, requests, role_bindings=role_bindings))
 
@@ -1636,23 +1638,29 @@ def _plan_collection_chunks(
 
 
 def stat_var_chunk_positions(bare_stat_vars: Sequence[str], *, lanes: int) -> list[tuple[int, ...]]:
-    """Splits ordered positions at the lane target or a repeated bare StatVar.
+    """Splits ordered positions into `min(lanes, len(bare_stat_vars))` runs of consecutive
+    positions whose sizes differ by at most one, and cuts a run again at a repeated bare
+    StatVar, so each group holds one occurrence of each StatVar.
 
-    Each group has at most `ceil(len(bare_stat_vars) / lanes)` positions and
-    one occurrence of each StatVar. Admission estimates use the same rule.
+    Admission estimates use the same rule over a superset of the members a mint fetches
+    (`datasets_api.admission.sync_estimate`). Since `dispatch_lanes` never falls as members
+    are added, neither does the run count, so the estimate can only overshoot the requests
+    sent. Runs of `ceil(n / lanes)` positions would not hold this: under the lane floor of
+    four, five positions make three runs and four make four.
     """
-    target = max(1, math.ceil(len(bare_stat_vars) / lanes))
+    count = len(bare_stat_vars)
+    runs = min(max(1, lanes), count)
     groups: list[tuple[int, ...]] = []
-    current: list[int] = []
-    current_stat_vars: set[str] = set()
-    for position, bare_stat_var in enumerate(bare_stat_vars):
-        if len(current) >= target or bare_stat_var in current_stat_vars:
-            groups.append(tuple(current))
-            current = []
-            current_stat_vars = set()
-        current.append(position)
-        current_stat_vars.add(bare_stat_var)
-    if current:
+    for run in range(runs):
+        current: list[int] = []
+        current_stat_vars: set[str] = set()
+        for position in range(run * count // runs, (run + 1) * count // runs):
+            if bare_stat_vars[position] in current_stat_vars:
+                groups.append(tuple(current))
+                current = []
+                current_stat_vars = set()
+            current.append(position)
+            current_stat_vars.add(bare_stat_vars[position])
         groups.append(tuple(current))
     return groups
 
@@ -1713,17 +1721,19 @@ def _generate_chunk(
     a role-bearing member with no dispatch IDs is skipped outright, since its
     mask keeps every row.
 
-    Non-latest batches filter per member. Exceeding the member's `_streaming_ceiling`
-    raises `OverCeilingError`, with up to one batch of overshoot; a selection a method
+    Batches are routed in runs (`_BatchRouter`), each run masked once for the masks its
+    members share (`_batch_survivors`), and non-latest members keep the rows
+    `columnar.survivor_mask` keeps. Exceeding the member's `_streaming_ceiling` raises
+    `OverCeilingError`, with up to one SDMX batch of overshoot; a selection a method
     continues counts its rows once the continuation filters them, and a conversion that omits
     rows after omission (`_streaming_ceiling`). Latest chunks are
     homogeneous. SDMX returns one row per series, then the caller's `_servable_rows`
     reduces to the member's global latest period and checks its coverage.
 
     `raw_budget` is shared by every group chunk. Each stream
-    uses `raw_budget.total` as `max_rows`, while each arriving batch draws
-    from the shared total. A batch can overshoot that total before the check
-    raises `OverCeilingError`. An SDMX cap error raises the same error. A `latest`
+    uses `raw_budget.total` as `max_rows`, while each batch draws from the
+    shared total when `_BatchRouter` routes it. A batch can overshoot that
+    total before the check raises `OverCeilingError`. An SDMX cap error raises the same error. A `latest`
     member read again at the year it elected (`_MemberFetchResult.read_year`) is one more
     request naming that member alone, and its rows draw on the same total.
 
@@ -1848,56 +1858,52 @@ def _generate_chunk(
             for i in chunk.member_indices:
                 _check_role_divergence(roles, member_requests[i])
             schema = observation_schema(roles)
-            for batch in sdmx_batches:
-                draw(batch)
-                routed = columnar.split_by_variable(
-                    batch, index_by_bare_stat_var=chunk.index_by_stat_var
-                )
-                for index, member_batch in routed.items():
-                    plan = plans[index]
-                    if not plan.dispatch_ids and isinstance(plan.admission, CoverageAdmission):
-                        # A role-bearing member dispatching no facet serves nothing. Its
-                        # admission mask keeps every row, so a row naming no facet would
-                        # otherwise pass on the group's shared `selections` alone.
-                        continue
-                    # The fetch filters on every member's ids, so a member's variable can
-                    # come back under an id only another member dispatched.
-                    member_batch = columnar.dispatched_rows(
-                        member_batch, facet_ids=plan.dispatch_ids, admission=plan.admission
+
+            def admit(index: int, member_batches: list[pa.RecordBatch]) -> None:
+                """Adds one member's survivors and checks its streaming ceiling."""
+                parts[index].extend(member_batches)
+                if index in latest_indices:
+                    # Raw, pre-reduction rows for a `"latest"` member:
+                    # bounded by the shared `raw_budget` draw alone.
+                    # The caller's `_servable_rows` reduces this buffer
+                    # to its single latest period and checks the
+                    # resulting coverage against `ceiling` afterward.
+                    return
+                survivor_counts[index] += sum(part.num_rows for part in member_batches)
+                member_ceiling = streaming_ceilings[index]
+                if member_ceiling is not None and survivor_counts[index] > member_ceiling:
+                    message, detail = _mid_stream_ceiling_message(
+                        member_requests[index].stat_var,
+                        chunk_size=len(chunk.member_indices),
+                        ceiling=ceiling,
                     )
-                    if index in latest_indices:
-                        # Raw, pre-reduction rows for a `"latest"` member:
-                        # bounded by the shared `raw_budget` draw above
-                        # only. The caller's `_servable_rows` reduces this buffer
-                        # to its single latest period and checks the
-                        # resulting coverage against `ceiling` afterward.
-                        parts[index].append(member_batch)
-                        continue
-                    request = member_requests[index]
-                    member_table = pa.Table.from_batches([member_batch], schema=schema)
-                    mask = columnar.survivor_mask(
-                        member_table,
-                        selections=plans[index].selections,
-                        window=request.window,
-                        admission=plans[index].admission,
+                    raise OverCeilingError(
+                        message,
+                        detail=detail,
+                        ceiling_kind="rows",
+                        count=survivor_counts[index],
+                        cap=ceiling,
                     )
-                    survivor_table = member_table.filter(mask)
-                    survivor_counts[index] += survivor_table.num_rows
-                    parts[index].extend(survivor_table.to_batches())
-                    member_ceiling = streaming_ceilings[index]
-                    if member_ceiling is not None and survivor_counts[index] > member_ceiling:
-                        message, detail = _mid_stream_ceiling_message(
-                            member_requests[index].stat_var,
-                            chunk_size=len(chunk.member_indices),
-                            ceiling=ceiling,
-                        )
-                        raise OverCeilingError(
-                            message,
-                            detail=detail,
-                            ceiling_kind="rows",
-                            count=survivor_counts[index],
-                            cap=ceiling,
-                        )
+
+            router = _BatchRouter(
+                partial(
+                    _batch_survivors,
+                    index_by_bare_stat_var=chunk.index_by_stat_var,
+                    plans=plans,
+                    requests=member_requests,
+                    latest=latest_indices,
+                    schema=schema,
+                ),
+                admit,
+                ceilings=[
+                    (index, member_ceiling)
+                    for index, member_ceiling in streaming_ceilings.items()
+                    if member_ceiling is not None and index not in latest_indices
+                ],
+                survivor_counts=survivor_counts,
+            )
+            router.route(sdmx_batches, draw=draw)
+            record_elapsed("chunk_route", router.seconds)
             result = {
                 i: _MemberFetchResult(
                     table=pa.Table.from_batches(parts[i], schema=schema),
@@ -1923,6 +1929,221 @@ def _generate_chunk(
         raise
 
     return result
+
+
+# Rows routed together (`_BatchRouter`). The SDMX parser yields one batch per 64 KiB read
+# block, about 240 rows, and routing pays a fixed cost per batch for each member's masks.
+_ROUTE_BATCH_ROWS = 1 << 14
+
+
+type _Survivors = Callable[[pa.RecordBatch], Iterable[tuple[int, list[pa.RecordBatch]]]]
+
+
+class _BatchRouter:
+    """Routes a chunk's SDMX batches in runs of up to `_ROUTE_BATCH_ROWS` rows, with the result
+    routing each batch on arrival gives: the same survivors, draws, ceiling trip and refusal.
+
+    `survivors` gives each member's survivors of a batch (`_batch_survivors`), and `admit` adds
+    one member's survivors and raises on its streaming ceiling. A run is routed as one batch
+    only while its rows cannot carry a member in `ceilings` past its ceiling, since a member
+    survives at most a run's rows; a batch that could is routed alone, so a ceiling trips at
+    the batch and count it trips at batch by batch. Each batch is drawn when its run is routed,
+    so the shared budget holds up to a run of rows a draw has not counted yet. A joined run's
+    survivors are computed before any of its batches is drawn or admitted, so when the run
+    refuses (`SdmxResponseError`), its batches are drawn and routed again one at a time and the
+    refusal raised, with its counts, is the first refusing batch's, and no later batch of the
+    run draws. A run holding no row is routed batch by batch. A read error routes the pending
+    run first, as batch-by-batch routing met that run first."""
+
+    def __init__(
+        self,
+        survivors: _Survivors,
+        admit: Callable[[int, list[pa.RecordBatch]], None],
+        *,
+        ceilings: Sequence[tuple[int, int]],
+        survivor_counts: Mapping[int, int],
+    ) -> None:
+        self._survivors = survivors
+        self._admit = admit
+        self._ceilings = ceilings
+        self._survivor_counts = survivor_counts
+        self._pending: list[pa.RecordBatch] = []
+        self._pending_rows = 0
+        self.seconds = 0.0
+
+    def route(
+        self, batches: Iterable[pa.RecordBatch], *, draw: Callable[[pa.RecordBatch], None]
+    ) -> None:
+        """Routes every batch of `batches`, each drawn by `draw` just before it is routed."""
+        batch_iter = iter(batches)
+        while True:
+            try:
+                batch = next(batch_iter, None)
+            except Exception:
+                self._flush(draw)
+                raise
+            if batch is None:
+                self._flush(draw)
+                return
+            self._add(batch, draw)
+
+    def _may_trip(self, rows: int) -> bool:
+        return any(
+            self._survivor_counts[index] + rows > ceiling for index, ceiling in self._ceilings
+        )
+
+    def _add(self, batch: pa.RecordBatch, draw: Callable[[pa.RecordBatch], None]) -> None:
+        rows = self._pending_rows + batch.num_rows
+        if self._pending and (rows > _ROUTE_BATCH_ROWS or self._may_trip(rows)):
+            self._flush(draw)
+        self._pending.append(batch)
+        self._pending_rows += batch.num_rows
+        if self._may_trip(self._pending_rows):
+            self._flush(draw)
+
+    def _flush(self, draw: Callable[[pa.RecordBatch], None]) -> None:
+        batches, rows = self._pending, self._pending_rows
+        self._pending, self._pending_rows = [], 0
+        started = time.perf_counter()
+        try:
+            if len(batches) > 1 and rows:
+                (joined,) = pa.Table.from_batches(batches).combine_chunks().to_batches()
+                try:
+                    survivors = list(self._survivors(joined))
+                except SdmxResponseError:
+                    pass
+                else:
+                    for batch in batches:
+                        draw(batch)
+                    self._admit_all(survivors)
+                    return
+            for batch in batches:
+                draw(batch)
+                self._admit_all(self._survivors(batch))
+        finally:
+            self.seconds += time.perf_counter() - started
+
+    def _admit_all(self, survivors: Iterable[tuple[int, list[pa.RecordBatch]]]) -> None:
+        for index, member_batches in survivors:
+            self._admit(index, member_batches)
+
+
+def _batch_survivors(
+    batch: pa.RecordBatch,
+    *,
+    index_by_bare_stat_var: Mapping[str, int],
+    plans: Sequence[_MemberFetchPlan],
+    requests: Mapping[int, MaterialisationRequest],
+    latest: Collection[int],
+    schema: pa.Schema,
+) -> Iterator[tuple[int, list[pa.RecordBatch]]]:
+    """Each served member's rows of one SDMX `batch`, in `split_by_variable`'s member order:
+    the rows `_member_survivors` keeps. A role-bearing member dispatching no facet serves
+    nothing and is skipped: its admission mask keeps every row, so a row naming no facet would
+    otherwise pass on the group's shared `selections` alone.
+
+    The masks read each row alone, so the observed-value mask, and the selection and window
+    masks of each distinct selection and window, run once over the batch, and each member
+    filters the batch once for its rows and once for its survivors. The admission mask, which
+    refuses malformed rows, runs on the member's dispatched rows as `_member_survivors` runs it.
+    When any mask refuses, the members are masked one at a time instead, so the refusal, and
+    any ceiling the caller checks between members first, is the one a member-by-member pass
+    meets."""
+    served = [
+        index
+        for index in set(index_by_bare_stat_var.values())
+        if plans[index].dispatch_ids or not isinstance(plans[index].admission, CoverageAdmission)
+    ]
+    try:
+        survivors = _survivors_by_member(
+            batch,
+            members=served,
+            index_by_bare_stat_var=index_by_bare_stat_var,
+            plans=plans,
+            requests=requests,
+            latest=latest,
+            schema=schema,
+        )
+    except SdmxResponseError:
+        routed = columnar.split_by_variable(batch, index_by_bare_stat_var=index_by_bare_stat_var)
+        for index in served:
+            yield (
+                index,
+                _member_survivors(
+                    routed[index],
+                    plan=plans[index],
+                    request=requests[index],
+                    latest=index in latest,
+                    schema=schema,
+                ),
+            )
+        return
+    yield from survivors.items()
+
+
+def _survivors_by_member(
+    batch: pa.RecordBatch,
+    *,
+    members: Sequence[int],
+    index_by_bare_stat_var: Mapping[str, int],
+    plans: Sequence[_MemberFetchPlan],
+    requests: Mapping[int, MaterialisationRequest],
+    latest: Collection[int],
+    schema: pa.Schema,
+) -> dict[int, list[pa.RecordBatch]]:
+    """`_batch_survivors` with the batch-wide masks, `members` in order."""
+    table = pa.Table.from_batches([batch], schema=schema)
+    targets = columnar.member_indices(batch, index_by_bare_stat_var=index_by_bare_stat_var)
+    observed: pa.BooleanArray | None = None
+    shared: list[tuple[tuple[object, ...], pa.BooleanArray]] = []
+    survivors: dict[int, list[pa.RecordBatch]] = {}
+    for index in members:
+        plan, request = plans[index], requests[index]
+        mine = array_kernel(
+            "fill_null", array_kernel("equal", targets, pa.scalar(index, pa.int64())), False
+        )
+        dispatched = columnar.dispatched_mask(
+            batch, facet_ids=plan.dispatch_ids, admission=plan.admission
+        )
+        selected = pc.and_(mine, dispatched)
+        rows = batch.filter(selected)
+        if index in latest:
+            survivors[index] = [rows]
+            continue
+        key = (plan.selections, request.window)
+        row_mask = next((mask for shared_key, mask in shared if shared_key == key), None)
+        if row_mask is None:
+            if observed is None:
+                observed = columnar.observed_mask(table)
+            row_mask = columnar.selected_mask(
+                table, selections=plan.selections, window=request.window, observed=observed
+            )
+            shared.append((key, row_mask))
+        admitted = columnar.admission_mask(
+            pa.Table.from_batches([rows], schema=schema), admission=plan.admission
+        )
+        keep = pc.and_(row_mask.filter(selected), admitted)
+        survivors[index] = [rows.filter(keep)]
+    return survivors
+
+
+def _member_survivors(
+    rows: pa.RecordBatch,
+    *,
+    plan: _MemberFetchPlan,
+    request: MaterialisationRequest,
+    latest: bool,
+    schema: pa.Schema,
+) -> list[pa.RecordBatch]:
+    """The rows of `rows` a member with `plan` and `request` serves (`_batch_survivors`)."""
+    rows = columnar.dispatched_rows(rows, facet_ids=plan.dispatch_ids, admission=plan.admission)
+    if latest:
+        return [rows]
+    table = pa.Table.from_batches([rows], schema=schema)
+    mask = columnar.survivor_mask(
+        table, selections=plan.selections, window=request.window, admission=plan.admission
+    )
+    return table.filter(mask).to_batches()
 
 
 def _absent_stat_vars(
@@ -2030,24 +2251,57 @@ _FRAME_CHUNK_TARGET_ROWS = 100_000
 Members stay whole and sort by dcid. This keeps each chunk's row-sort keys
 above the previous chunk's keys, as required by streaming frame hashing."""
 
-_DISPATCH_CHUNK_TARGET_MEMBERS = 8
-"""Group fetches target eight members per combined request, regardless of concurrency.
+_DISPATCH_CHUNK_TARGET_MEMBERS = 16
+"""Group fetches target sixteen fetching members per combined request, regardless of
+concurrency.
 
 With one shared entity scope, using only `member_concurrency` lanes would
 place the whole group in its first dispatch wave and defeat row coalescing.
-`lanes = max(member_concurrency, ceil(request_count / 8))` bounds each
-chunk to about eight members and resident member tables to roughly
-`member_concurrency * 8`. Kenya-scale fetches use about 35 requests instead
-of 110."""
+`dispatch_lanes` bounds each chunk to about sixteen members that fetch. With the dispatch
+look-ahead (`_DISPATCH_LOOK_AHEAD_POOLS`), up to `2 * member_concurrency - 1`
+completed chunks wait ahead of the oldest one not yet consumed, so resident
+member tables reach about `(2 * member_concurrency - 1) * 16`, plus the members
+held in `pending_members` (`_GroupRowStreamer.stream_rows`). That product is the memory
+this target bounds.
+
+Sixteen halves the requests of eight at no cost in fetch time. The total-ODA composite's
+1,221 fetching members take 77 requests at sixteen against 154 at eight, its fetch window on
+16 workers against the dev mixer runs 4.6 to 5.5 s against 5.3 to 6.1 s, and its largest
+reply grows from 127 KB to 207 KB on the wire. Larger targets fetch no faster, since the
+slowest reply sets the window: 4.4 to 10.6 s at 32 and 4.5 to 5.1 s at 56, with replies of
+up to 379 KB and 654 KB and a resident bound that grows with the target. At 32 that mint's
+estimate also falls to 39 requests, inside the sync budget of 40
+(`DatasetsBuildSettings.sync_budget_requests`), so it would run inline. The URL byte budget
+(`dc_sdmx.client._DEFAULT_URL_BUDGET_BYTES`) splits any chunk whose StatVar list overruns
+it, so the target sets no URL length; sixteen CRS StatVars take about 2.3 KB of its 7.8 KB."""
+
+_DISPATCH_LANE_FLOOR = 4
+"""A group splits into at least this many requests, or `member_concurrency` when that is
+fewer, so a small group still spreads over the fetch workers. The floor stays apart from the
+worker count: the mixer answers a request of two members and one of eight in about the same
+0.09 s, and 16 workers send every chunk of a group under 256 fetching members in one wave
+whatever the floor, so a floor that rose with the workers would only add requests, and with
+them the sync estimate (`datasets_api.admission.sync_estimate`) that decides whether a mint
+runs inline."""
+
+_DISPATCH_LOOK_AHEAD_POOLS = 2
+"""A group fetch dispatches chunks only within two pools' worth of the oldest chunk not yet
+consumed (`_GroupRowStreamer.stream_rows`), so a stalled chunk lets the workers run that far
+ahead and the completed chunks waiting on it stay bounded."""
 
 
 def dispatch_lanes(member_concurrency: int, request_count: int) -> int:
-    """Returns the lane count used by group fetches.
+    """Returns the lane count used by group fetches: chunks of about
+    `_DISPATCH_CHUNK_TARGET_MEMBERS` members, and at least `_DISPATCH_LANE_FLOOR` of them, or
+    `member_concurrency` when that is fewer.
 
     Admission estimates use the same formula so predicted and dispatched
     request counts agree.
     """
-    return max(member_concurrency, math.ceil(request_count / _DISPATCH_CHUNK_TARGET_MEMBERS))
+    return max(
+        min(member_concurrency, _DISPATCH_LANE_FLOOR),
+        math.ceil(request_count / _DISPATCH_CHUNK_TARGET_MEMBERS),
+    )
 
 
 class _PooledCoverageTotals:
@@ -2089,33 +2343,6 @@ class _PooledCoverageTotals:
         return self.year_min, self.year_max
 
 
-class _CanonicalParquetSink:
-    """Writes each closed group chunk as a row group in an in-memory Parquet file.
-
-    The first chunk sets the shared schema. `_generate_group` always yields a
-    chunk, even when every member has zero rows. `finish()` returns a zero-copy
-    view; durable storage happens only after a successful materialisation.
-    """
-
-    def __init__(self) -> None:
-        self._sink = io.BytesIO()
-        self._writer: pq.ParquetWriter | None = None
-
-    def write(self, table: pa.Table) -> None:
-        if self._writer is None:
-            self._writer = pq.ParquetWriter(self._sink, table.schema)
-        self._writer.write_table(table)
-
-    def finish(self) -> memoryview:
-        assert self._writer is not None, (
-            "_CanonicalParquetSink.finish() called before any chunk was written"
-        )
-        self._writer.close()
-        # `getbuffer()` returns a zero-copy view and keeps the sink alive.
-        # The view blocks later writes, and `finish()` is the final call.
-        return self._sink.getbuffer()
-
-
 def _probe_group_members(
     requests: Sequence[MaterialisationRequest],
     *,
@@ -2151,14 +2378,22 @@ def _probe_group_members(
 @dataclass(frozen=True)
 class _GroupPlan:
     """Shared group selections and per-member fetch plans in request order.
-    `off_cadence_members` names, in request order, each member whose probe jointly matches
-    the selections and whom the election did not count (`FacetElection.members`): it holds no
-    facet at the group's cadence, or under a range window none with a point in it, so it
-    serves nothing."""
+    Each member whose probe jointly matches the selections and whom the election did not
+    count (`FacetElection.members`) serves nothing, and is named, in request order, in one of
+    two tuples. `off_cadence_members` holds those with a jointly matching facet holding a point
+    in the requested window (`facets.overlaps_window`, every facet under a window that is not
+    a range): their observations in those years are at another observation period than the
+    group's, so the frame leaves them out. `out_of_window_members` holds those with no such
+    facet: they hold observations only outside the requested years. `unserved_members` holds,
+    in request order, the populated members the elected group does not hold, with no facet
+    jointly matching its selections (`group_facets.GroupElection.unserved`): their
+    observations sit under another source, unit or method, so they serve nothing."""
 
     selections: dict[str, FacetSelection]
     plans: list[_MemberFetchPlan]
     off_cadence_members: tuple[str, ...] = ()
+    out_of_window_members: tuple[str, ...] = ()
+    unserved_members: tuple[str, ...] = ()
 
 
 def _plan_group_members(
@@ -2179,20 +2414,25 @@ def _plan_group_members(
 
     Each member dispatches only its facets at the group's one cadence
     (`FacetElection.cadence`, the one serving the most members). A member the election did
-    not count serves nothing and is named in `off_cadence_members`, for
+    not count, or that holds no facet of the elected group, serves nothing and is named in
+    `off_cadence_members`, `out_of_window_members` or `unserved_members` (`_GroupPlan`), for
     `finish._build_warnings` to report.
     """
     graph = _planning_graph(requests, graph=graph)
-    election = select_group_facets(
+    group = select_group_facets(
         requests,
         [probe.candidates for probe in probes],
         graph=graph,
         breadth=group_breadth(probes, window=requests[0].window),
         variable_breadth=group_variable_breadth(probes),
     )
+    election = group.election
     selections = election.selections
+    # A member the group leaves out dispatches no rows, so it has no conversion to plan.
     conversion_plans = [
-        _plan_conversion(
+        None
+        if index in group.unserved
+        else _plan_conversion(
             request=request,
             selections=selections,
             graph=graph,
@@ -2200,24 +2440,34 @@ def _plan_group_members(
             rate_cache=rate_cache,
             deadline=deadline,
         )
-        for request in requests
+        for index, request in enumerate(requests)
     ]
     plans = [
         _MemberFetchPlan(
             selections=selections,
-            dispatch_ids=joint_dispatch_facet_ids(probes[index].candidates, election, member=index),
+            dispatch_ids=group.dispatch_ids[index],
             admission=probes[index].admission,
             conversion_plan=conversion_plans[index],
-            continuing_ids=_continuing_facet_ids(probes[index].candidates, election, member=index),
+            continuing_ids=group.continuing_ids[index],
+            unserved=index in group.unserved,
         )
         for index in range(len(requests))
     ]
-    off_cadence_members = tuple(
-        request.stat_var
+    window = requests[0].window
+    # Each uncounted member's dcid, and whether a facet it matches holds a point in the window.
+    uncounted = [
+        (request.stat_var, any(overlaps_window(facet, window=window) for facet in matches))
         for index, (request, probe) in enumerate(zip(requests, probes, strict=True))
-        if index not in election.members and joint_matches(probe.candidates, selections)
+        if index not in election.members
+        and (matches := joint_matches(probe.candidates, selections))
+    ]
+    return _GroupPlan(
+        selections=selections,
+        plans=plans,
+        off_cadence_members=tuple(ref for ref, in_window in uncounted if in_window),
+        out_of_window_members=tuple(ref for ref, in_window in uncounted if not in_window),
+        unserved_members=tuple(requests[index].stat_var for index in group.unserved),
     )
-    return _GroupPlan(selections=selections, plans=plans, off_cadence_members=off_cadence_members)
 
 
 def _empty_group_plan(probes: Sequence[MemberProbe]) -> _GroupPlan:
@@ -2256,18 +2506,21 @@ def _order_group_by_dcid(
     Chunks group matching roles, entity scope, and latest-window status, with
     bounded width and one request per chunk. Scope or window differences
     produce singleton chunks. Group roles must agree, while entity bindings
-    may vary by member.
+    may vary by member. Members that dispatch no facet are chunked apart and fetch nothing
+    (`_plan_collection_chunks`), and the lanes (`dispatch_lanes`) count only the members
+    that fetch, as admission's estimate does (`datasets_api.admission.sync_estimate`).
     """
     dcid_order = sorted(range(len(requests)), key=lambda i: bare_stat_var_ref(requests[i].stat_var))
     dcid_requests = [
         (str(original_index), requests[original_index]) for original_index in dcid_order
     ]
     dcid_plans = [plans[original_index] for original_index in dcid_order]
-    lanes = dispatch_lanes(member_concurrency, len(requests))
+    idle = frozenset(position for position, plan in enumerate(dcid_plans) if not plan.dispatch_ids)
     chunks = _plan_collection_chunks(
         dcid_requests,
         places=[places[original_index] for original_index in dcid_order],
-        lanes=lanes,
+        lanes=dispatch_lanes(member_concurrency, len(requests) - len(idle)),
+        idle=idle,
     )
     return _DcidOrderedGroup(dcid_requests=dcid_requests, dcid_plans=dcid_plans, chunks=chunks)
 
@@ -2292,10 +2545,11 @@ class _GroupRowStreamer:
     pooled totals, and both Parquet sinks. Every group yields at least one
     chunk, including groups whose members have zero rows.
 
-    `member_concurrency` bounds in-flight fetches. The drain waits in dcid
-    order, so that order selects the visible fetch error; up to
-    `member_concurrency - 1` later chunks can issue requests before it surfaces.
-    Successful rows and pooled coverage stay independent of concurrency.
+    `member_concurrency` bounds in-flight fetches. Results are consumed in
+    dcid order, so that order selects the visible fetch error; chunks already
+    in flight when a fetch fails finish before it surfaces, and no chunk is
+    submitted after it. Successful rows and pooled coverage stay independent
+    of concurrency and of completion order.
     """
 
     def __init__(
@@ -2339,7 +2593,7 @@ class _GroupRowStreamer:
         self.grains: dict[str, str] = {}
         self.method_periods: dict[str, tuple[str, str]] = {}
         self.totals = _PooledCoverageTotals(shared_roles=shared_roles)
-        self.parquet_sink = _CanonicalParquetSink()
+        self.parquet_sink = ParquetFrameSink()
         self.statistics_sink = SeriesStatisticsSink(continuing=continuing)
 
     def _generate_one_chunk(self, chunk: _ShapeChunk) -> dict[int, _ConvertedMember]:
@@ -2352,18 +2606,23 @@ class _GroupRowStreamer:
         after every row chunk has closed). Keys its own returned dict, and
         reads `chunk.member_indices` in `dcid_requests`/`dcid_plans`'s own
         dcid-sorted position space, not `requests`' own.
+
+        Adds its worker time to the call's timings: `chunk_fetch` for the fetch, which holds
+        `chunk_route` (routing and masking each SDMX batch), and `chunk_convert` for the
+        per-series conversion. Workers run in parallel, so these sum past wall time.
         """
-        fetch_results = _generate_chunk(
-            chunk,
-            self._dcid_requests,
-            self._dcid_plans,
-            sdmx=self._sdmx,
-            graph=self._graph,
-            ceiling=self._ceiling,
-            raw_budget=self._raw_budget,
-            coverage=self._coverage_index,
-            deadline=self._deadline,
-        )
+        with phase("chunk_fetch"):
+            fetch_results = _generate_chunk(
+                chunk,
+                self._dcid_requests,
+                self._dcid_plans,
+                sdmx=self._sdmx,
+                graph=self._graph,
+                ceiling=self._ceiling,
+                raw_budget=self._raw_budget,
+                coverage=self._coverage_index,
+                deadline=self._deadline,
+            )
         outcomes: dict[int, _ConvertedMember] = {}
         for index, fetch_result in fetch_results.items():
             request = self._dcid_requests[index][1]
@@ -2409,9 +2668,10 @@ class _GroupRowStreamer:
                 conversion_plan=plan.conversion_plan,
                 ceiling=self._ceiling,
             )
-            table, conversion_record, series_conversions = _convert_by_series(
-                plan.conversion_plan, table, request=request, currencies=currencies
-            )
+            with phase("chunk_convert"):
+                table, conversion_record, series_conversions = _convert_by_series(
+                    plan.conversion_plan, table, request=request, currencies=currencies
+                )
             recipe_id = (
                 plan.conversion_plan.recipe.recipe_id
                 if plan.conversion_plan is not None and plan.conversion_plan.recipe is not None
@@ -2475,92 +2735,122 @@ class _GroupRowStreamer:
             self._progress.add(frame.table.num_rows)
         return frame
 
-    def stream_rows(self) -> Iterator[Frame]:
-        """Dispatches `self._chunks` (already `dcid:`-sorted) on a bounded
-        sliding-window pool: at most `member_concurrency` chunks' own
-        fetches in flight at once, primed with the first `max_workers`
-        submissions and refilled one at a time as each ahead of it is
-        consumed. The drain loop pops the front pending future and blocks
-        on `.result()` in chunk submission order, so the first
-        still-pending future is what raises, regardless of which chunk's
-        fetch actually finishes first. An out-of-order completion is
-        simply not observed until the drain reaches it, which is what
-        bounds how far ahead dispatch can get past the coalescing cursor
-        below.
+    def _record_member(self, index: int, member: _ConvertedMember) -> pa.Table:
+        """Records the member at dcid position `index`'s counts, conversion and read, and
+        returns its table. `stream_rows` records members in dcid order, so every mapping
+        this fills holds them in that order whichever chunk served them."""
+        request = self._dcid_requests[index][1]
+        table = member.table
+        self.observation_counts[request.stat_var] = table.num_rows
+        self.conversion_records[request.stat_var] = member.conversion_record
+        self.conversion_recipe_ids[request.stat_var] = member.recipe_id
+        self.series_conversions.update(member.series_conversions)
+        plan = self._dcid_plans[index]
+        read = _read_series(plan.dispatch_ids, plan.continuing_ids, member.omitted)
+        self.read_series[request.stat_var] = read
+        if request.window.kind == "latest":
+            applied_window = compute_applied_window(
+                request.window, columnar.served_year_bounds(table)
+            )
+            self.latest_windows.append(applied_window)
+            self.latest_years.update(
+                _latest_years(
+                    request, elected=member.elected_year, applied_window=applied_window, read=read
+                )
+            )
+        return table
 
-        Each drained chunk's own member outcomes are recorded into
+    def stream_rows(self) -> Iterator[Frame]:
+        """Dispatches `self._chunks` (already `dcid:`-sorted) on a pool kept
+        full: at most `member_concurrency` chunks' own fetches in flight,
+        and a new chunk submitted, in chunk order, whenever any in-flight
+        chunk completes. A slow chunk therefore holds one worker. Dispatch
+        stays within `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency`
+        chunks of the oldest chunk not yet consumed, so a stalled chunk
+        lets the pool run that far ahead and no further. Completed chunks
+        wait in `ready` until every chunk before them has been consumed, so
+        results are consumed in chunk order whatever order the fetches
+        finish in, and the first failed chunk in that order is what raises.
+        Every pass of the dispatch loop first moves each finished fetch out
+        of the in-flight set without blocking, so a finished fetch frees its
+        worker for the submissions of that pass and a failure is seen before
+        them: once any chunk has failed, no further chunk is submitted, even
+        while the head chunk is already waiting in `ready`.
+
+        Each consumed chunk's own member outcomes are put into
         `pending_members`, keyed by dcid position, and `cursor` then walks
         forward through however much of that keyspace has become
         contiguous: while `cursor` names a position `pending_members`
-        already carries, that member is folded into the row chunk
-        currently being assembled (closing and yielding it first, via
-        `_close_row_chunk`, when the next member would put it over
-        `_FRAME_CHUNK_TARGET_ROWS`), and its own table is dropped from
-        `pending_members` in the same step. Because `chunks` is
-        dcid-sorted and drained in that same order, `cursor` almost always
-        advances to the end of `pending_members` in one pass per drained
-        chunk; it can fall behind only when the group spans more than one
-        entity-scope/`"latest"`-ness group, which interleaves dcid
-        positions across chunks. `pending_members` is exactly the
-        bounded buffer that gap waits in, never larger than the members
-        `member_concurrency` chunks ahead of `cursor` can carry. Peak
-        memory during this whole pass is bounded by that in-flight window
-        plus the one row chunk currently being assembled, never by the
-        group's own total row count.
+        already carries, that member is recorded (`_record_member`) and
+        folded into the row chunk currently being assembled (closing and
+        yielding it first, via `_close_row_chunk`, when the next member
+        would put it over `_FRAME_CHUNK_TARGET_ROWS`), and its own table is
+        dropped from `pending_members` in the same step.
+        `_plan_collection_chunks` splits each entity-scope/`"latest"`-ness
+        batch into runs of the positions that fetch, puts the positions that
+        fetch nothing in one chunk of their own, and sorts the chunks by
+        first position. In a one-batch group only the chunk consumed just
+        before the idle chunk can hold positions above the idle chunk's
+        first, so `pending_members` holds at most that chunk's members and
+        the idle members' empty tables. When the group spans several batches
+        their positions interleave across chunks, and a consumed chunk's
+        members wait in `pending_members` until the chunk of every lower
+        position has been consumed.
 
-        `finally: pool.shutdown(wait=True, cancel_futures=True)` drops any
-        chunk never submitted and blocks for every already-submitted
-        chunk's own fetch to finish, past whichever future raised, before
-        this generator re-raises.
+        Peak memory is the sum of three parts. `ready` holds at most
+        `_DISPATCH_LOOK_AHEAD_POOLS * member_concurrency - 1` completed
+        chunks ahead of the oldest one not yet consumed. `pending_members`
+        holds, for a one-batch group, the members above, and up to every
+        member of the consumed chunks for a multi-batch group. The third
+        part is the one row chunk being assembled.
+
+        `finally: pool.shutdown(wait=True, cancel_futures=True)` blocks for
+        every already-submitted chunk's own fetch to finish, past whichever
+        future raised, before this generator re-raises.
         """
         chunks = self._chunks
-        pending_members: dict[int, tuple[MaterialisationRequest, pa.Table]] = {}
+        pending_members: dict[int, _ConvertedMember] = {}
         accumulator: list[tuple[MaterialisationRequest, pa.Table]] = []
         accumulator_rows = 0
         cursor = 0
 
-        def _submit(
-            pool: ThreadPoolExecutor, chunk_index: int
-        ) -> Future[dict[int, _ConvertedMember]]:
-            return submit_with_context(pool, self._generate_one_chunk, chunks[chunk_index])
-
         max_workers = max(1, min(self._member_concurrency, len(chunks)))
+        look_ahead = _DISPATCH_LOOK_AHEAD_POOLS * max_workers
         pool = ThreadPoolExecutor(max_workers=max_workers)
-        try:
-            pending = [_submit(pool, i) for i in range(min(max_workers, len(chunks)))]
-            next_chunk = len(pending)
+        in_flight: dict[Future[dict[int, _ConvertedMember]], int] = {}
+        ready: dict[int, Future[dict[int, _ConvertedMember]]] = {}
+        next_chunk = 0
+        failed = False
 
-            for _shape_chunk in chunks:
-                result = pending.pop(0).result()
-                if next_chunk < len(chunks):
-                    pending.append(_submit(pool, next_chunk))
-                    next_chunk += 1
-                for index, member in result.items():
-                    request = self._dcid_requests[index][1]
-                    table = member.table
-                    self.observation_counts[request.stat_var] = table.num_rows
-                    self.conversion_records[request.stat_var] = member.conversion_record
-                    self.conversion_recipe_ids[request.stat_var] = member.recipe_id
-                    self.series_conversions.update(member.series_conversions)
-                    plan = self._dcid_plans[index]
-                    read = _read_series(plan.dispatch_ids, plan.continuing_ids, member.omitted)
-                    self.read_series[request.stat_var] = read
-                    if request.window.kind == "latest":
-                        applied_window = compute_applied_window(
-                            request.window, columnar.served_year_bounds(table)
+        def collect(finished: set[Future[dict[int, _ConvertedMember]]]) -> bool:
+            for future in finished:
+                ready[in_flight.pop(future)] = future
+            return any(future.exception() is not None for future in finished)
+
+        try:
+            for head in range(len(chunks)):
+                while True:
+                    failed = collect(wait(in_flight, timeout=0)[0]) or failed
+                    dispatch_end = min(len(chunks), head + look_ahead)
+                    while not failed and next_chunk < dispatch_end and len(in_flight) < max_workers:
+                        future = submit_with_context(
+                            pool, self._generate_one_chunk, chunks[next_chunk]
                         )
-                        self.latest_windows.append(applied_window)
-                        self.latest_years.update(
-                            _latest_years(
-                                request,
-                                elected=member.elected_year,
-                                applied_window=applied_window,
-                                read=read,
-                            )
-                        )
-                    pending_members[index] = (request, table)
+                        in_flight[future] = next_chunk
+                        next_chunk += 1
+                    if head in ready:
+                        break
+                    completed, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                    failed = collect(completed) or failed
+                pending_members.update(ready.pop(head).result())
                 while cursor < len(self._dcid_requests) and cursor in pending_members:
-                    request, table = pending_members.pop(cursor)
+                    request = self._dcid_requests[cursor][1]
+                    table = self._record_member(cursor, pending_members.pop(cursor))
+                    if self._dcid_plans[cursor].unserved:
+                        # Its table holds no row, and with no conversion planned its `unit`
+                        # column stays a string where converted members' hold the struct.
+                        cursor += 1
+                        continue
                     if accumulator and accumulator_rows + table.num_rows > _FRAME_CHUNK_TARGET_ROWS:
                         yield self._close_row_chunk(accumulator)
                         accumulator = []
@@ -2582,6 +2872,8 @@ def _assemble_group_outcome(
     ceiling: int,
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE,
     off_cadence_members: tuple[str, ...] = (),
+    out_of_window_members: tuple[str, ...] = (),
+    unserved_members: tuple[str, ...] = (),
     probe_empty: bool = False,
 ) -> _GroupOutcome:
     """Drives `streamer`'s streaming fetch to completion, then assembles
@@ -2651,6 +2943,8 @@ def _assemble_group_outcome(
         default_scope=default_scope,
         series_conversions=streamer.series_conversions,
         off_cadence_members=off_cadence_members,
+        out_of_window_members=out_of_window_members,
+        unserved_members=unserved_members,
         probe_empty=probe_empty,
         method_periods=streamer.method_periods,
         latest_years=streamer.latest_years,
@@ -2758,9 +3052,17 @@ def _generate_group(
         ceiling=ceiling,
         default_scope=default_scope_of(probed),
         off_cadence_members=group_plan.off_cadence_members,
+        out_of_window_members=group_plan.out_of_window_members,
+        unserved_members=group_plan.unserved_members,
         probe_empty=probe_empty,
     )
-    return replace(outcome, provenance_refresh=provenance_refresh)
+    return replace(
+        outcome,
+        provenance_refresh=provenance_refresh,
+        candidate_provenances=frozenset(
+            candidate.provenance_id for member in probed for candidate in member.candidates
+        ),
+    )
 
 
 def _merge_latest_windows(windows: Sequence[AppliedWindow | None]) -> AppliedWindow | None:

@@ -57,6 +57,7 @@ from __future__ import annotations
 import contextvars
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any, Final, Protocol, Self, TypedDict, Unpack
@@ -73,6 +74,7 @@ from dc_graph import (
     ReadErrorFactory,
     SubjectPage,
     SubjectsCoverageFlag,
+    label_or_self_name,
     parse_arcs,
 )
 from graph_generation import (
@@ -88,8 +90,9 @@ from origin_catalogue.context import (
     note_un_blocked_places,
     record_un_read_failure,
 )
+from origin_catalogue.frozen_arcs import serves_arcs
 from origin_catalogue.origins import DFO, UN_ID_PREFIX, UN_SYSTEM
-from origin_catalogue.un_mirror import UnArc, import_added, wire_arcs
+from origin_catalogue.un_mirror import UnArc, wire_arcs
 
 UN_BASE_URL: Final[str] = "https://unsd-datacommons.gcp.un-icc.cloud/core/api"
 """The UN System Data Commons API root. It needs no token."""
@@ -130,22 +133,10 @@ class _Unmirrored(Enum):
 _LIVE: Final = _Unmirrored.LIVE
 _OMITTED: Final = _Unmirrored.OMITTED
 
-_CONSTRAINT_PROPERTIES: Final[str] = "constraintProperties"
 _SERIES_ARC: Final[str] = "populationType"
 _NAME_PROPERTIES: Final[tuple[str, str]] = ("name", "alternateName")
 _TOPIC_MEMBER_ARC: Final[str] = "relevantVariable"
 _TOPIC_TYPE: Final[str] = "Topic"
-
-
-def _wire(arcs: Iterable[UnArc]) -> dict:
-    """Table arc rows as `GraphClient.node_arcs_batch` returns them, without the
-    `import_added` targets, as the graph client leaves them out. The client keeps the
-    `constraintProperties` entry when it leaves out every target, and so does this."""
-    rows = tuple(arcs)
-    wire = wire_arcs(arc for arc in rows if not import_added(arc))
-    if any(arc.property == _CONSTRAINT_PROPERTIES for arc in rows):
-        wire.setdefault(_CONSTRAINT_PROPERTIES, {"nodes": []})
-    return wire
 
 
 def _topic_arcs(leaves: Iterable[tuple[str, list[str]]]) -> dict:
@@ -162,9 +153,49 @@ def _types(arcs: Iterable[UnArc]) -> list[str]:
     return [arc.dcid for arc in arcs if arc.property == "typeOf" and arc.dcid is not None]
 
 
+@dataclass(frozen=True, slots=True)
+class _HeldRows:
+    """The arc rows the tables hold for a dcid, whose `->*` answer is `served_arcs` of them
+    (`Catalogue.arc_answer`). With `absent_when_empty`, an answer holding no arc reads as
+    absent, `None`."""
+
+    rows: tuple[UnArc, ...]
+    absent_when_empty: bool
+
+
+def _table_entry(
+    catalogue: Catalogue, dcid: str
+) -> _HeldRows | Callable[[], dict] | None | _Unmirrored:
+    """What the catalogue's tables hold for a dcid's `->*` arcs, read without building its
+    answer: the rows that answer it, a topic's answer to build, `None` for a dcid the tables
+    hold absent, or `_LIVE` for one they do not hold (`_table_arcs`)."""
+    if is_un_dcid(dcid):
+        variable = catalogue.un_variable(dcid)
+        if variable is not None:
+            return _HeldRows(variable.arcs, absent_when_empty=False)
+        un_leaves = catalogue.un_topic_leaves(dcid)
+        if un_leaves is not None:
+            return lambda: _topic_arcs(
+                (leaf, _types(member.arcs))
+                for leaf in un_leaves
+                if (member := catalogue.un_variable(leaf)) is not None
+            )
+        return None if catalogue.superseded_by(dcid) is not None else _LIVE
+    held = catalogue.held_arcs(dcid)
+    if held is not None:
+        return _HeldRows(held, absent_when_empty=True)
+    leaves = catalogue.mixer_topic_leaves(dcid)
+    if leaves is not None:
+        return lambda: _topic_arcs(
+            (leaf, _types(catalogue.held_arcs(leaf) or ())) for leaf in leaves
+        )
+    return _LIVE
+
+
 def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
     """A dcid's `->*` arcs from the catalogue's tables, as
-    `GraphClient.node_arcs_batch` returns them.
+    `GraphClient.node_arcs_batch` returns them, read-only and built once per catalogue build
+    (`Catalogue.arc_answer`).
 
     A UN variable's arcs are the ones the catalogue job copied, and a variable of an
     excluded series is absent, `None`. A node the arc tables hold has the arcs they hold, and
@@ -173,31 +204,17 @@ def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
     has its type and its leaves as `relevantVariable` targets, and nothing else: a UN
     topic its admitted leaves, ours every leaf of the topic table. `_LIVE` for a dcid the
     tables do not hold."""
-    if is_un_dcid(dcid):
-        variable = catalogue.un_variable(dcid)
-        if variable is not None:
-            return _wire(variable.arcs)
-        un_leaves = catalogue.un_topic_leaves(dcid)
-        if un_leaves is not None:
-            return _topic_arcs(
-                (leaf, _types(member.arcs))
-                for leaf in un_leaves
-                if (member := catalogue.un_variable(leaf)) is not None
-            )
-        return None if catalogue.superseded_by(dcid) is not None else _LIVE
-    held = catalogue.held_arcs(dcid)
-    if held is not None:
-        return _wire(held) or None
-    leaves = catalogue.mixer_topic_leaves(dcid)
-    if leaves is not None:
-        return _topic_arcs((leaf, _types(catalogue.held_arcs(leaf) or ())) for leaf in leaves)
-    return _LIVE
+    entry = _table_entry(catalogue, dcid)
+    if isinstance(entry, _HeldRows):
+        answer = catalogue.arc_answer(dcid, entry.rows)
+        return None if entry.absent_when_empty and not answer else answer
+    return entry() if callable(entry) else entry
 
 
 def arcs_mirrored(dcid: str, *, catalogue: Catalogue) -> bool:
     """Whether `catalogue`'s tables answer `dcid`'s `->*` arcs, so
-    `OriginGraphClient.node_arcs_batch` reads it from neither backend."""
-    return _table_arcs(catalogue, dcid) is not _LIVE
+    `OriginGraphClient.node_arcs_batch` reads it from neither backend. Builds no answer."""
+    return _table_entry(catalogue, dcid) is not _LIVE
 
 
 def mirrored_arcs(dcid: str, *, catalogue: Catalogue) -> dict | None:
@@ -209,8 +226,14 @@ def mirrored_arcs(dcid: str, *, catalogue: Catalogue) -> dict | None:
 
 
 def _table_exists(catalogue: Catalogue, dcid: str) -> bool | _Unmirrored:
-    arcs = _table_arcs(catalogue, dcid)
-    return arcs if isinstance(arcs, _Unmirrored) else arcs is not None
+    """Whether the tables hold `dcid` present (`_table_arcs` is not `None`), read without
+    building its answer, so an existence check keeps no answer in `Catalogue.arc_answer`."""
+    entry = _table_entry(catalogue, dcid)
+    if isinstance(entry, _HeldRows):
+        return not entry.absent_when_empty or serves_arcs(entry.rows)
+    if isinstance(entry, _Unmirrored):
+        return entry
+    return entry is not None
 
 
 def _table_arc_values(
@@ -258,13 +281,14 @@ def _table_names(catalogue: Catalogue, dcid: str) -> tuple[str, ...] | _Unmirror
 
 
 def _table_label(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
-    """A dcid's label as `GraphClient.node_label` picks it: a held node's last `name`
-    value, the label the arc tables read for a node an arc of theirs names, or the name
-    a UN arc naming the node carries."""
+    """A dcid's label as `GraphClient.node_label` picks it: a held node's
+    `label_or_self_name`, the label the arc tables read for a node an arc of theirs names, or
+    the name a UN arc naming the node carries."""
     arcs = _node_arcs(catalogue, dcid)
     if arcs is not None:
         names = [arc.value for arc in arcs if arc.property == "name" and arc.value]
-        return names[-1] if names else _OMITTED
+        label = label_or_self_name(names, dcid)
+        return _OMITTED if label is None else label
     if _absent(catalogue, dcid):
         return _OMITTED
     if is_un_dcid(dcid):
@@ -545,6 +569,11 @@ class OriginGraphClient:
             tables=lambda catalogue, dcid: _table_arc_values(catalogue, dcid, properties),
         )
 
+    def arcs_complete(self, dcid: str) -> bool:
+        """Whether the bound catalogue's tables answer `dcid`'s arcs (`arcs_mirrored`), so a
+        read of them drops none (`statvar_members.CompleteArcReads`)."""
+        return arcs_mirrored(dcid, catalogue=current_catalogue())
+
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, tuple[str, ...]]:
@@ -741,6 +770,7 @@ class OriginGraphClient:
         *,
         stat_vars: Sequence[str],
         entities: Sequence[str],
+        needs_dates: bool = False,
         deadline: float | None = None,
         max_bytes: int | None = None,
     ) -> dict[str, dict[str, list[Facet]]]:
@@ -751,6 +781,7 @@ class OriginGraphClient:
             lambda backend, part, domains: backend.observation_facets_batch_many(
                 stat_vars=part,
                 entities=entities,
+                needs_dates=needs_dates,
                 deadline=deadline,
                 max_bytes=max_bytes,
                 domains=domains,
@@ -758,10 +789,15 @@ class OriginGraphClient:
         )
 
     def variable_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
+        self,
+        *,
+        stat_var: str,
+        entities: Sequence[str],
+        needs_dates: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, list[Facet]]:
         return self.observation_facets_batch_many(
-            stat_vars=[stat_var], entities=entities, deadline=deadline
+            stat_vars=[stat_var], entities=entities, needs_dates=needs_dates, deadline=deadline
         ).get(stat_var, {})
 
     def un_observation_reader(self) -> Self:

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
+from code_index.composites import table_identity
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.members import (
     DatasetFamily,
@@ -74,7 +75,8 @@ from code_index.members import (
     shared_pins,
 )
 from code_index.query import IndexFamily, row_five_tuple
-from code_index.shared import get_index, get_measure_index
+from code_index.scope_conventions import BASIS_MEASURES, NETTING_BASIS_SLOT, BasisMeasure
+from code_index.shared import get_index, get_measure_index, per_index
 from code_index.types import (
     Bound,
     BoundSet,
@@ -87,6 +89,7 @@ from code_index.types import (
     summable_axes,
 )
 from dc_graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.named import cut, named_capped
 from graph_release.context import served_origin_key
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
@@ -413,6 +416,61 @@ def _named_free_values(
     )
 
 
+def _most_named(
+    partitions: Sequence[MeasurePartition],
+    rows: Sequence[Sequence[StatVarRow]],
+    checks: Sequence[tuple[MeasureAxis, str]],
+) -> Sequence[MeasurePartition]:
+    """The partitions of a group, each read from its family `rows`, that carry the most of
+    the named values `checks`: first those the unit layer cannot convert an answer to,
+    then those it can (`is_price_basis`), since a price basis the elected partition lacks
+    is still served by conversion after election and any other value is not. All of
+    `partitions` when none carries a named value."""
+    carried = [
+        [check for check in checks if _rows_satisfy_all(family, (check,))] for family in rows
+    ]
+    scores = [
+        (
+            sum(not is_price_basis(axis.axis, value) for axis, value in held),
+            sum(is_price_basis(axis.axis, value) for axis, value in held),
+        )
+        for held in carried
+    ]
+    best = max(scores, default=(0, 0))
+    if best == (0, 0):
+        return partitions
+    return [partition for partition, score in zip(partitions, scores, strict=True) if score == best]
+
+
+# The axes whose value says which basis a measure is counted on: its shape's, its netting
+# slot and each basis's flow type property.
+_BASIS_AXES = frozenset(
+    {
+        "populationType",
+        "measuredProperty",
+        NETTING_BASIS_SLOT,
+        *(row.flow_type[0] for row in BASIS_MEASURES),
+    }
+)
+
+
+def _basis_values(
+    basis: BasisMeasure, axes: Sequence[MeasureAxis]
+) -> tuple[tuple[MeasureAxis, str], ...]:
+    """The values `basis` binds on the free axes among `axes`: its population type, its flow
+    type and its netting basis where it binds one."""
+    bound: dict[str, str | None] = {
+        axis: getattr(basis, field, None) for axis, field in _MEASURE_AXIS_SHAPE_FIELDS.items()
+    }
+    bound[basis.flow_type[0]] = basis.flow_type[1]
+    bound[NETTING_BASIS_SLOT] = basis.netting_basis
+    return tuple(
+        (axis, value)
+        for axis in axes
+        if axis.role == "free" and (value := bound.get(axis.axis)) is not None
+    )
+
+
 def _rows_satisfy_all(
     rows: Iterable[StatVarRow], checks: Sequence[tuple[MeasureAxis, str]]
 ) -> bool:
@@ -604,6 +662,7 @@ def collapse_measure_families(
     named: Sequence[QualifierMatch] = (),
     *,
     reading: DefaultReading | None = None,
+    basis: BasisMeasure | None = None,
 ) -> tuple[ShapeDraft, ...]:
     """Collapse indexed shape families to the partition best matching the query, and apply
     the default reading to shapes the index does not carry.
@@ -615,9 +674,15 @@ def collapse_measure_families(
     Only shapes the index carries compete in the partition election
     (`index_carries_shape`); other shapes pass through, a debt family on a five-tuple CRS
     flows share among them. `_family_key` keeps distinct non-measure and basis identities
-    separate. Named free-axis values filter each family using index rows,
-    including constraint axes. If no member matches every value, elect from
-    that family's full set. With no named values, the declared default wins.
+    separate. Named free-axis values, constraint axes included, steer each group's election
+    to its partitions that carry the most of them (`_most_named`), read from index rows,
+    and the declared default elects among those. A group none of whose partitions
+    carries a named value, and a query naming none, elects by the declared default.
+    `basis`, the basis the part's stated or carried scope entry names
+    (`scope.basis.entry_measure`), names its values on the free axes as the query's words
+    would (`_basis_values`) when the words name no value on an axis that says a basis
+    (`_BASIS_AXES`), so a carried "commitments" elects the FinancialObligation partition as
+    the stated word does, and "disbursements" asked under it keeps the disbursed one.
 
     Skip the partition election when there is no shape axis or a constraint
     basis axis; a constraint value never splits a shape, so grouping could merge two
@@ -647,6 +712,8 @@ def collapse_measure_families(
         groups[_family_key(shape, basis_shape_axes, index)].append(i)
 
     checks = _named_free_values(named, axes)
+    if basis is not None and all(axis.axis not in _BASIS_AXES for axis, _value in checks):
+        checks = (*checks, *_basis_values(basis, axes))
 
     for indices in groups.values():
         partitions = tuple(
@@ -659,16 +726,8 @@ def collapse_measure_families(
             )
             for i in indices
         )
-        eligible = (
-            tuple(
-                partition
-                for partition in partitions
-                if _rows_satisfy_all(targets[int(partition.members[0])], checks)
-            )
-            if checks
-            else partitions
-        )
-        election = elect_default_partition(eligible or partitions, shape_axes)
+        steered = _most_named(partitions, [targets[int(p.members[0])] for p in partitions], checks)
+        election = elect_default_partition(steered, shape_axes)
         assert election is not None  # indices, and so partitions, is never empty here
         survivor_index = int(election.elected.members[0])
         # The family's own best evidence, not the axis election's: every
@@ -877,14 +936,57 @@ def measure_family_partitions(
 
     Return empty when no rows match. Served rows determine their observed
     partition; do not substitute a query's preferred election. Optional
-    `cache` reuses results with the same key.
+    `cache` reuses results with the same key. Without one, the partitions are kept on
+    `index` (`_index_measure_families`), keyed on every input `_measure_family_rows`
+    reads, among them the query's dataset scope, so the phases of one resolve and later
+    requests against the same index read them once.
     """
-    if cache is None:
-        return _measure_family_partitions_uncached(shape, index, axes, query)
-    key = measure_family_cache_key(shape, axes, query)
-    if key not in cache:
-        cache[key] = _measure_family_partitions_uncached(shape, index, axes, query)
-    return cache[key]
+    if cache is not None:
+        key = measure_family_cache_key(shape, axes, query)
+        if key not in cache:
+            cache[key] = _measure_family_partitions_uncached(shape, index, axes, query)
+        return cache[key]
+    memo = _index_measure_families(index)
+    exact = _measure_family_memo_key(shape, index, axes, query)
+    found = memo.get(exact)
+    if found is None:
+        found = _measure_family_partitions_uncached(shape, index, axes, query)
+        memo.put(exact, found)
+    return found
+
+
+_MEASURE_FAMILY_MEMO_ENTRIES = 256
+"""How many measure families `_index_measure_families` keeps per index, the most recently
+read. The fixture index's CRS family holds 12,771 rows, whose partitions name each once."""
+
+
+@per_index
+def _index_measure_families(
+    _index: CodeIndex,
+) -> LruMemo[Hashable, tuple[MeasurePartition, ...]]:
+    """The measure families `measure_family_partitions` read from one index."""
+    return LruMemo(_MEASURE_FAMILY_MEMO_ENTRIES)
+
+
+def _measure_family_memo_key(
+    shape: ShapeDraft, index: CodeIndex, axes: Sequence[MeasureAxis], query: FamilyQuery
+) -> Hashable:
+    """Every input `_measure_family_rows` and the partition grouping read, apart from
+    the index: the axes, whether the index carries `shape` (`index_carries_shape`, which
+    reads its members), the shape's five-tuple and roles, and the whole query."""
+    return (
+        tuple(axes),
+        index_carries_shape(shape, index),
+        shape_five_tuple(shape),
+        shape.declared_roles,
+        shape.optional_roles,
+        query.five_tuple,
+        tuple(sorted(query.slots.items())),
+        query.source,
+        query.role_keys,
+        query.open_role_keys,
+        query.scope,
+    )
 
 
 def _measure_family_partitions_uncached(
@@ -1045,8 +1147,8 @@ class OpenAxisFact:
 
     `member_values` maps a member dcid to the value dcid it declares, or `None` when it
     declares none. Keying by member makes a union over overlapping member sets count
-    each member once. `value_names` maps a value dcid to the graph `name` a served
-    member's arc carries, for values the code index does not label.
+    each member once. `value_names` maps a value dcid to its label from the shape's value
+    labels (`ShapeDraft.value_labels`), for values the code index does not label.
     """
 
     property: str
@@ -1068,20 +1170,20 @@ class OpenAxisFact:
 
 
 def open_constraint_axes(
-    bound_values: Mapping[str, list[str]], members: Mapping[str, MemberFacts]
+    bound_values: Mapping[str, list[str]],
+    members: Mapping[str, MemberFacts],
+    *,
+    value_labels: Mapping[str, str],
 ) -> tuple[OpenAxisFact, ...]:
     """Return unbound constraint axes in first-observed member order.
 
     `members` maps each served member's dcid to its facts. Include unresolved
     properties. A member with no resolved value contributes `None`. Each fact carries
-    the members' graph names for its values. Return `()` when no open axis exists.
+    the labels `value_labels` holds for its values: the shape's value labels
+    (`ShapeDraft.value_labels`), which one batched label read gave every constraint value
+    of the shape's members and family. Return `()` when no open axis exists.
     """
     member_constraints = {dcid: m.read_constraints() for dcid, m in members.items()}
-    value_names = {
-        value: name
-        for m in members.values()
-        for value, name in m.read_constraint_value_names().items()
-    }
     order: list[str] = []
     seen: set[str] = set()
     for dcid, m in members.items():
@@ -1100,10 +1202,32 @@ def open_constraint_axes(
             OpenAxisFact(
                 property=prop,
                 member_values=member_values,
-                value_names={v: value_names[v] for v in member_values.values() if v in value_names},
+                value_names={
+                    v: label
+                    for v in member_values.values()
+                    if v is not None and (label := value_labels.get(v)) is not None
+                },
             )
         )
     return tuple(facts)
+
+
+def served_open_axes(
+    bindings: Sequence[SlotBindingDraft],
+    served: Sequence[str],
+    member_facts: Mapping[str, MemberFacts],
+    *,
+    value_labels: Mapping[str, str],
+) -> tuple[OpenAxisFact, ...]:
+    """The open constraint axes an answer states (`open_constraint_axes`): the axes
+    `bindings` leave unbound, over the members its read serves, `served`, in that order,
+    each read from `member_facts`. A first answer, its resubmit and a nearest-real
+    suggestion state the same facts because each reads them here."""
+    return open_constraint_axes(
+        bound_values_from_bindings(bindings),
+        {dcid: member_facts[dcid] for dcid in served},
+        value_labels=value_labels,
+    )
 
 
 def elect_measure_family(
@@ -1640,9 +1764,11 @@ def slot_expansions(bindings: Sequence[SlotBindingDraft]) -> dict[str, Expansion
     return expansions
 
 
-def _identity_document(identity: BaseIdentity) -> dict[str, object]:
-    """Return `identity` as the document the Datasets mint reads."""
-    return identity.model_dump(mode="json", exclude_none=True)
+def _identity_document(identity: BaseIdentity) -> Mapping[str, object]:
+    """Return `identity` as the document a reader of one table's family reads: the document
+    the Datasets mint reads, or for a composite the identity its option was set on
+    (`code_index.composites.table_identity`)."""
+    return table_identity(get_index(), identity.model_dump(mode="json", exclude_none=True))
 
 
 def identity_query(identity: BaseIdentity) -> FamilyQuery:
@@ -1650,7 +1776,8 @@ def identity_query(identity: BaseIdentity) -> FamilyQuery:
 
     The reader is the Datasets mint's, `code_index.members.identity_family_query`, over the
     document the mint reads: the identity's five-tuple, its slots widened to their
-    descendants, and the dataset its provenance facet names.
+    descendants, and the dataset its provenance facet names. A composite reads the family of
+    the identity its option was set on (`_identity_document`).
     """
     return identity_family_query(get_index(), _identity_document(identity))
 
@@ -2006,16 +2133,15 @@ def shape_family(shape: ShapeDraft, index: CodeIndex | None = None) -> IndexFami
     A shape with no recalled member reads the family its slot properties select
     (`CodeIndex.family_of`)."""
     index = index or get_index()
-    five_tuple = shape_five_tuple(shape)
+    member_five_tuple = _member_five_tuple(shape_five_tuple(shape))
     if not shape.sv_arc_facts:
-        return index.family_of(_member_five_tuple(five_tuple), shape_slot_properties(shape))
+        return index.family_of(member_five_tuple, shape_slot_properties(shape))
     families = {
         id(family): family
         for dcid, arcs in shape.sv_arc_facts.items()
         if (
-            family := member_family(
-                dcid, five_tuple, _dcids_for(arcs, "constraintProperties"), index
-            )
+            family := _row_family(dcid, member_five_tuple, index)
+            or _covering_family(member_five_tuple, _dcids_for(arcs, "constraintProperties"), index)
         )
         is not None
     }
@@ -2129,6 +2255,22 @@ def shape_part_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
     return _publishing_datasets(shape, index)
 
 
+def ratio_base_axis(shape: ShapeDraft, index: CodeIndex) -> RoleAxis | None:
+    """The flow axis whose party's own total ratio `shape` divides by, as the datasets it
+    answers from (`shape_part_datasets`) declare it (`DatasetDeclaration.ratio_base_axis`):
+    `origin` for DAC1's ODA as a share of the donor's GNI, `destination` for DAC2a's share
+    of the recipient's. `None` for a shape that divides by nothing, and where the datasets
+    declare no axis or disagree."""
+    if shape.meas_denom_dcid is None and not shape.meas_denom_unresolved:
+        return None
+    axes = {
+        dataset.ratio_base_axis
+        for provenance in shape_part_datasets(shape, index)
+        if (dataset := index.datasets.get(provenance)) is not None
+    }
+    return next(iter(axes)) if len(axes) == 1 else None
+
+
 def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
     """Every dataset publishing `shape`'s family (`shape_family`), else, for a shape the
     index does not carry, every dataset publishing its five-tuple, in serving order."""
@@ -2156,13 +2298,28 @@ type WalkKey = tuple[
 
 def walk_key(query: FamilyQuery) -> WalkKey:
     """What a member walk reads of `query`: its five-tuple, slots, and bound and open role
-    keys."""
+    keys. A walk admits a member stating any ref of a ``set`` binding, so the key holds
+    each set as the identity states it, sorted and deduplicated (`IdentityBindingSet`),
+    and a query built from the binder's order keys the walk of the identity minted from
+    it."""
     return (
         query.five_tuple,
-        tuple(sorted(query.slots.items())),
+        tuple(sorted((prop, _walked_binding(binding)) for prop, binding in query.slots.items())),
         query.role_keys,
         query.open_role_keys,
     )
+
+
+def _walked_binding(binding: SlotBinding) -> SlotBinding:
+    """`binding` as a walk reads it: a ``set`` binding's refs sorted and deduplicated, and
+    a set of one ref the ``value`` binding of it, as `slot_bindings_from_identity` maps
+    one."""
+    match binding:
+        case ("set", refs):
+            ordered = tuple(sorted(set(refs)))
+            return ("set", ordered) if len(ordered) > 1 else ("value", ordered[0])
+        case _:
+            return binding
 
 
 @dataclass(frozen=True)
@@ -2209,6 +2366,21 @@ class WalkedMembers:
         walked query does under its elected open role keys (`key`) or under the ones it
         asked (`asked`)."""
         return walk_key(query) in (self.key, self.asked)
+
+    def binding(self, prop: str, slot: SlotBinding) -> WalkedMembers:
+        """These members keyed with `prop` bound by `slot`, for a walk that read `prop`
+        open and whose every member asserts the value `slot` binds. The walk of the query
+        binding it admits exactly those members, so it settles the same members and
+        family."""
+
+        def bound(key: WalkKey) -> WalkKey:
+            five_tuple, slots, role_keys, open_role_keys = key
+            rebound = {**dict(slots), prop: _walked_binding(slot)}
+            return five_tuple, tuple(sorted(rebound.items())), role_keys, open_role_keys
+
+        return replace(
+            self, key=bound(self.key), asked=None if self.asked is None else bound(self.asked)
+        )
 
 
 def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> StatedMembers | None:
@@ -2404,6 +2576,30 @@ def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], 
     return {sv: ArcsMemberFacts(arcs=a) for sv, a in shape_population_arcs(shape).items()}, False
 
 
+def identity_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:
+    """The members of the family `shape`'s identity denotes, in the form
+    `five_tuple_member_facts` returns. A part naming a dataset (`ShapeDraft.named_dataset`)
+    denotes that dataset's rows (`part_member_rows`). A part naming none carries no source
+    in its identity, so it denotes every row of its family whatever dataset publishes it
+    (`index_member_rows`): a source exclusion acts on election, not on the identity. A
+    shape the index does not carry reads the members it stands for
+    (`shape_population_arcs`).
+
+    A claim that a slot forces one value is a claim about this family, so the readers that
+    judge one read it. The menu the binder sees stays narrowed to the part's datasets
+    (`shape_for_part`), so a slot the menu offers one code for stays open when a row of an
+    excluded dataset holds another."""
+    index = get_index()
+    rows = (
+        part_member_rows(shape, index)
+        if shape.named_dataset is not None
+        else index_member_rows(shape, index)
+    )
+    if rows:
+        return {row.dcid: IndexMemberFacts(row=row) for row in rows}, True
+    return {sv: ArcsMemberFacts(arcs=a) for sv, a in shape_population_arcs(shape).items()}, False
+
+
 def _exact_member_facts(shape: ShapeDraft, query: FamilyQuery) -> dict[str, MemberFacts]:
     """An exact member set as it stands, each member that is a row of the family the index
     elects for `query` carrying the elected dataset (`materialise.facets.ElectedDataset`, as
@@ -2507,7 +2703,9 @@ joins (`served_origin_key`), and the family."""
 # leaves about 1.7 GiB for everything else, and a smaller one evicts a family a menu reads
 # beside another. A request holds each family it reads until it ends, and requests share one
 # decode through `_held_decodes`, so six concurrent BLS questions hold one copy of each family
-# where they would otherwise hold six, about 830 MB. A family no request holds is freed.
+# where they would otherwise hold six, about 830 MB. A family no request holds is freed. A
+# decode's arcs are the catalogue's shared answers (`Catalogue.arc_answer`), so it keeps each
+# member's answer alive after the catalogue's memo drops it (`frozen_arcs.ARC_ANSWERS_HELD`).
 _held_family_memo: ContextVar[dict[_HeldKey, _HeldMembers] | None] = ContextVar(
     "search_held_family_memo", default=None
 )
@@ -2633,9 +2831,10 @@ def held_family_exact(shape: ShapeDraft) -> bool:
 async def read_held_families(shapes: Iterable[ShapeDraft]) -> None:
     """Read the family each of `shapes` stands for (`ShapeDraft.held_family`) into the
     request's memo (`held_family_memo`) off the event loop, so a reader that runs on it
-    finds the family read. The phases call it before their first on-loop reader: settling
-    the election reads the bind menu's, the elected shape's among them, which candidate
-    admission, the alternates' walks and refusals read after it. Reads nothing with no
+    finds the family read. The phases call it before their first on-loop reader: the bind
+    reads the menu's, the elected shape's among them, before the words it nominates read
+    their members' names, and settling the election reads any the bind did not, which
+    candidate admission, the alternates' walks and refusals read after it. Reads nothing with no
     memo bound or every family already read."""
     memo = _held_family_memo.get()
     if memo is None:
@@ -3334,7 +3533,10 @@ def walked_family_label(
             prop_labels=prop_labels,
             value_labels=value_labels,
         )
-    return next((name for arcs in members.values() if (name := read_name(arcs)) is not None), None)
+    return next(
+        (name for dcid, arcs in members.items() if (name := read_name(arcs, dcid)) is not None),
+        None,
+    )
 
 
 def _shape_held_family(shape: ShapeDraft) -> FamilySummary | None:
@@ -3401,7 +3603,11 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
         shape.label
         if shape.held_family is not None
         else next(
-            (name for sv in least_constrained if (name := read_name(population[sv])) is not None),
+            (
+                name
+                for sv in least_constrained
+                if (name := read_name(population[sv], sv)) is not None
+            ),
             shape.label,
         )
     )
@@ -3613,9 +3819,24 @@ def member_family(
     family."""
     index = index or get_index()
     member_five_tuple = _member_five_tuple(five_tuple)
+    return _row_family(dcid, member_five_tuple, index) or _covering_family(
+        member_five_tuple, constraint_properties, index
+    )
+
+
+def _row_family(
+    dcid: str, member_five_tuple: MemberFiveTuple, index: CodeIndex
+) -> IndexFamily | None:
+    """The family `member_family` reads for an index row of `member_five_tuple`."""
     family = index.family_by_dcid.get(dcid)
-    if family is not None and family.five_tuple == member_five_tuple:
-        return family
+    return family if family is not None and family.five_tuple == member_five_tuple else None
+
+
+def _covering_family(
+    member_five_tuple: MemberFiveTuple, constraint_properties: Collection[str], index: CodeIndex
+) -> IndexFamily | None:
+    """The family `member_family` reads for a StatVar that is no index row of
+    `member_five_tuple`, from its `constraint_properties`."""
     keys = frozenset(constraint_properties)
     family = index.family_of(member_five_tuple, keys)
     return family if family is not None and family.covers(keys) else None

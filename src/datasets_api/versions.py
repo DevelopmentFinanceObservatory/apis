@@ -14,7 +14,7 @@ fence refuses raises `HeadFenceLost`. The default null writers record or advance
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -25,6 +25,7 @@ from artifact_store.inventory import InventoryEntry
 from dataset_store.snapshot import StoredVersion, VersionFacts, VersionState
 from description.facts import Basis, DescriptionRecord
 from description.stored import FieldPath
+from materialise.enrichment import PARTY_FIELDS, is_party_role
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +38,80 @@ DESCRIPTION_BUILD_FAILED_MARKER = "description_record_build_failed"
 Trigger = Literal["mint", "get", "options", "refresh", "worker"]
 
 
+def carries_party_kind(rendering: Mapping[str, object]) -> bool:
+    """Whether the options of `rendering` ask for party-kind cells, which the code index's
+    party rows fill.
+
+    A requested rendering (`bundle` is always set on one; the canonical frame, a frame1 document
+    and the series statistics have none) asks for them in two cases. The long layout, which has
+    neither a `pivot` nor `layout: "frame"` (a bare long file records its layout version under
+    `layout`, so only the value `"frame"` marks the frame layout), writes a `{role}_kind`
+    column for every party role of its frame by default. Any other layout asks for them when its
+    `columns` name a party field (`party_kind`, `party_class` or `party_whole`), bare or
+    qualified as `{role}_{field}`. A frame with no party role gets no such cell either way
+    (`enrichment_stamp`).
+    """
+    if "bundle" not in rendering:
+        return False
+    if "pivot" not in rendering and rendering.get("layout") != "frame":
+        return True
+    columns = rendering.get("columns")
+    return isinstance(columns, list) and any(
+        isinstance(column, str)
+        and any(column == field or column.endswith(f"_{field}") for field in PARTY_FIELDS)
+        for column in columns
+    )
+
+
+NO_PARTY_ROLE = "no_party_role"
+"""The salt in place of a digest of a file whose rendering `carries_party_kind` and whose frame
+holds no party role. It holds no party-kind cell, so its bytes are the same under every code
+index and its key is the same under every digest. No digest, a hex SHA-256, equals it."""
+
+
+def enrichment_stamp(
+    rendering: Mapping[str, object], *, role_columns: Iterable[str], enrichment_digest: str | None
+) -> str | None:
+    """The code index `enrichment_digest` whose party kinds a file of `rendering`, rendered from
+    a frame whose role columns are `role_columns`, holds: the digest when the rendering
+    `carries_party_kind` and a role column is a party role (`is_party_role`), else `None`."""
+    if enrichment_digest is None or not carries_party_kind(rendering):
+        return None
+    return enrichment_digest if holds_party_role(role_columns) else None
+
+
+def holds_party_role(role_columns: Iterable[str]) -> bool:
+    """Whether a frame whose role columns are `role_columns` holds a party role
+    (`is_party_role`), so a file of it that `carries_party_kind` holds party-kind cells."""
+    return any(is_party_role(role) for role in role_columns)
+
+
+def link_digest(rendering: Mapping[str, object], *, stamp: str | None) -> str | None:
+    """The `ArtifactRecord.enrichment_digest` of a file of `rendering` rendered with `stamp`,
+    its `enrichment_stamp`: the stamp, else `NO_PARTY_ROLE` for a rendering that
+    `carries_party_kind` (its frame holds no party role), else `None`."""
+    if stamp is not None:
+        return stamp
+    return NO_PARTY_ROLE if carries_party_kind(rendering) else None
+
+
 @dataclass(frozen=True)
 class ArtifactRecord:
     """Rendering metadata for one artifact in a version record.
 
     `artifact_digest` joins to stored bytes and location.
     `rendering` and `media_type` preserve how the manifest entry was produced.
+    `enrichment_digest` salts the link key of a rendering that `carries_party_kind`
+    (`version_store.enriched_rendering_key`) and never enters `rendering`: the
+    `CodeIndex.enrichment_digest` the artifact holds the party kinds of, or
+    `NO_PARTY_ROLE` for a frame with no party role (`link_digest`).
+    `None` links under the unsalted key.
     """
 
     artifact_digest: str
     rendering: Mapping[str, object]
     media_type: str
+    enrichment_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -68,9 +132,20 @@ class VersionRecord:
     # The hash of the version's frame (`dfo_frame_grammar.frame_sha256`), which every writer
     # holds when it records the version.
     frame_sha256: str | None = None
+    # Whether a derived version's frame holds its summed rows (`render.DerivedVersion.summed`):
+    # set exactly when `base_content_version` is.
+    frame_summed: bool | None = None
     # Builds and settles the version's description record in the transaction that writes the
     # version row. `None` writes no record.
     describer: VersionDescriber | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if (self.base_content_version is None) != (self.frame_summed is None):
+            raise ValueError(
+                "frame_summed is set exactly when base_content_version is: "
+                f"base_content_version={self.base_content_version!r} "
+                f"frame_summed={self.frame_summed!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -240,6 +315,7 @@ def unlinked_state(record: VersionRecord) -> VersionState:
             facts=record.facts,
             base_content_version=record.base_content_version,
             frame_sha256=record.frame_sha256,
+            frame_summed=record.frame_summed,
         ),
         revocation=None,
         locations=[],
@@ -253,19 +329,47 @@ NULL_VERSION_RECORD_WRITER = NullVersionRecordWriter()
 class ListedVersion:
     """One stored version of a subject. `base_content_version` names the raw version a derived
     version (a full groupby collapse, a party-totals cut, or both) was rendered from, and is
-    `None` on every other version. `renderings` holds the rendering of each file linked under
-    the version, in the order `SnapshotReader.read_artifact_locations` returns them. A derived
-    version's options are read from them (`datasets_api.recorded_rendering`).
+    `None` on every other version. `recorded_at` is when its record was written. `renderings`
+    holds the rendering of each file linked under the version, in the order
+    `SnapshotReader.read_artifact_locations` returns them. A derived version's options are read
+    from them (`datasets_api.recorded_rendering`).
+
+    `holds_party_role` says whether the version's frame holds a party role (`holds_party_role`),
+    so whether a file of it that `carries_party_kind` holds party-kind cells. It is read from
+    the role columns of the output profile the version stored when it was written. A version
+    stored without one holds `False` when a file of it that `carries_party_kind` is linked
+    under the `NO_PARTY_ROLE` salt, which only a frame with no party role is linked under, and
+    `None` otherwise, since nothing it stores says.
     """
 
     content_version: str
     base_content_version: str | None
+    recorded_at: datetime
     renderings: tuple[Mapping[str, object], ...] = ()
+    holds_party_role: bool | None = None
+
+
+@dataclass(frozen=True)
+class VersionsPageKey:
+    """Where a page of a versions listing ends: the last listed version's `recorded_at` and
+    `content_version`, the listing's sort key."""
+
+    recorded_at: datetime
+    content_version: str
 
 
 class VersionLister(Protocol):
     def list_versions(self, subject_id: str) -> list[ListedVersion]:
         """Return the subject's stored versions, newest first. Empty when it holds none."""
+        ...
+
+    def list_servable_versions(
+        self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
+    ) -> list[ListedVersion]:
+        """Return at most `limit` versions recorded under any of `subject_ids`, newest first,
+        starting after `after`. A version lists once, from its record under the earliest of
+        `subject_ids` that records it, and is left out when that record's version or base
+        version is revoked under any of them."""
         ...
 
 

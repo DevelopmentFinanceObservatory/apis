@@ -190,6 +190,9 @@ _NAMED_FIRST = [
 _NAMED_RESUBMIT = [
     "node_arcs_batch",
     "node_labels_batch",
+    # The posted places are no party of the fixture index, so the role kind check types them
+    # (`search.role_kinds.check_role_kinds`).
+    "node_arcs_many",
     *["default_facet_policy"] * 3,
     "node_labels_batch",
     "node_types_batch",
@@ -478,6 +481,41 @@ def _three_recipient_rows() -> list:
 _DISCOVERED = CoverageForm(variables=True, open_axis=("recipients", "recipient"))
 
 
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_an_open_origin_counts_the_parties_its_plan_serves(
+    monkeypatch, search_settings, bulk: bool
+) -> None:
+    """Debt flows to Aland and Bland from an unnamed creditor, 2015 to 2020. The plan serves
+    `f1`, which Creditors A and B hold in those years. Creditor C holds only `f9`, which no
+    election serves, and Creditor D holds `f1` only before 2015, so the answer counts two
+    creditors, as its data holds, on a first answer and on its resubmit."""
+    rows = [
+        (_FLOW, "f1", creditor, place, list(range(2010, 2021)))
+        for creditor in (_CREDITOR, "country/CRB")
+        for place in (_ALAND, _BLAND)
+    ]
+    rows += [
+        (_FLOW, "f9", "country/CRC", _ALAND, list(range(2016, 2019))),
+        (_FLOW, "f1", "country/CRD", _ALAND, list(range(2000, 2006))),
+    ]
+    first, index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=False,
+        bulk=bulk,
+        rows=rows,
+        metadata=_TWO_SOURCES,
+    )
+    assert first.status == "definite", (first.status, first.no_data_reason)
+    again = _resubmit(first.specs[0], index)
+    assert again.status == "definite", (again.status, again.no_data_reason)
+
+    for spec in (first.specs[0], again.specs[0]):
+        facts = [(f.role, f.member_count) for f in spec.resolved.role_axis_facts or ()]
+        assert facts == [("origin", 2)]
+        assert " from 2 providers," in render_sentence(spec), render_sentence(spec)
+
+
 def _stated_scope(result) -> tuple[list[str], int, str]:
     """The scope a discovered answer lists, its coverage recipient count and the warning
     that counts the scope."""
@@ -487,7 +525,7 @@ def _stated_scope(result) -> tuple[list[str], int, str]:
     (warning,) = [
         w.message
         for w in result.warnings
-        if w.code == "role_scope_defaulted" and "no recipient was named" in w.message
+        if w.code == "role_scope_defaulted" and "No recipient was named" in w.message
     ]
     return [m.ref for m in resolved.scope.members], dims["recipients"], warning
 
@@ -518,7 +556,7 @@ def test_a_discovered_scope_lists_the_members_its_plan_serves(
     members, count, warning = _stated_scope(first)
     assert members == expected
     assert count == len(expected)
-    assert f"resolved across the {len(expected)} recipients with data" in warning
+    assert "covers both recipients with data" in warning
 
     resubmit_plans = _spy_plans(monkeypatch, promote_ground)
     again = _resubmit(first.specs[0], index)
@@ -563,11 +601,11 @@ def test_a_source_pin_lists_the_scope_members_the_pinned_source_serves(
     assert [(w.code, w.message) for w in pinned.warnings if w.code == "role_scope_defaulted"] == [
         (
             "role_scope_defaulted",
-            "no recipient was named; the answer was resolved across the 1 recipient with data.",
+            "No recipient was named, so the answer covers the one recipient with data.",
         ),
         (
             "role_scope_defaulted",
-            "no provider was named; the answer was resolved across every provider with data.",
+            "No provider was named, so the answer covers every provider with data.",
         ),
     ]
     assert requests == _DISCOVERED_PINNED_RESUBMIT
@@ -632,7 +670,7 @@ def test_candidates_serving_different_scopes_share_a_warning_without_a_count(
     assert scopes == {_FLOW: [_ALAND], cited_sources._ALT_FLOW: [_ALAND, _BLAND]}
     warnings = [w.message for w in result.warnings if w.code == "role_scope_defaulted"]
     assert warnings[0] == (
-        "no recipient was named; the answer was resolved across every recipient with data."
+        "No recipient was named, so the answer covers every recipient with data."
     )
 
 
@@ -689,8 +727,8 @@ def test_a_unit_request_dates_every_answer_from_its_narrowed_plan(
             assert {d.label: d.count for d in spec.resolved.coverage.dimensions}["recipients"] == 1
         warnings = [w.message for w in result.warnings if w.code == "role_scope_defaulted"]
         assert warnings == [
-            "no recipient was named; the answer was resolved across the 1 recipient with data.",
-            "no provider was named; the answer was resolved across every provider with data.",
+            "No recipient was named, so the answer covers the one recipient with data.",
+            "No provider was named, so the answer covers every provider with data.",
         ]
 
 
@@ -1106,8 +1144,8 @@ def _unsourced_bulk() -> FakeSdmxClient:
 def test_a_facet_without_provenance_is_read_by_its_facet_id(
     monkeypatch, search_settings, discovered: bool, bulk: bool
 ) -> None:
-    """The per-pair read binds the provenance axis to the null ref and fetches `f1` by its id
-    at each pair, one request per pair; the bulk read fetches it by id in one request. Both
+    """The per-pair read, which does not require provenance, fetches `f1` by its id at each
+    pair, one request per pair; the bulk read fetches it by id in one request. Both
     deliver the same 22 points."""
     urls: list[str] = []
     sdmx = _unsourced_bulk()

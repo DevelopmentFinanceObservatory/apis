@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import re
 
+from presentation_store.ids import SHARE_ID_PATTERN
+
 __all__ = [
     "PathParamInvalid",
     "require_component_id",
     "require_content_version",
+    "require_share_id",
     "require_spec_id",
 ]
 
@@ -47,3 +50,9 @@ def require_component_id(component_id: str) -> str:
     if not _COMPONENT_ID.fullmatch(component_id):
         raise PathParamInvalid(name="component_id", value=component_id)
     return component_id
+
+
+def require_share_id(share_id: str) -> str:
+    if not SHARE_ID_PATTERN.fullmatch(share_id):
+        raise PathParamInvalid(name="share_id", value=share_id)
+    return share_id

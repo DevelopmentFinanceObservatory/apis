@@ -4,6 +4,7 @@ The pack uses `domain="org"` and is registered with the shared resolver at start
 
 from __future__ import annotations
 
+import functools
 import importlib.resources
 import json
 import os
@@ -182,6 +183,33 @@ def build_alias_index(
     return AliasIndex(
         owners={key: tuple(candidates) for key, candidates in owners.items()},
         normalize=normalizer.normalize_name,
+    )
+
+
+@functools.cache
+def _committed_alias_index() -> AliasIndex:
+    return build_alias_index(records_path=records_path(), curated_path=curated_path())
+
+
+def is_organisation_name(text: str) -> bool:
+    """Whether `text` is a name the pack stores for an organisation ("IMF" for the
+    International Monetary Fund), read from the committed records and curated aliases the
+    shared resolver indexes, with no resolver started. Countries and other places are
+    outside the pack, so a place name is none."""
+    return any(
+        candidate.entity_type == ENTITY_TYPE_ORGANISATION
+        for candidate in _committed_alias_index().owners_of(text)
+    )
+
+
+@functools.cache
+def organisation_dcids() -> frozenset[str]:
+    """The dcids of the committed records of kind `organisation`: the nodes the graph types
+    `Organization`, multilaterals and private foundations alike."""
+    return frozenset(
+        record["dcid"]
+        for record in _load_records(records_path())
+        if record["kind"] == "organisation"
     )
 
 

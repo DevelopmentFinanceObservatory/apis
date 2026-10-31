@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from code_index.flow_family import flow_family
+from code_index.shared import get_index
 from dfo_platform.named import named_capped
+from dfo_platform.roles import FlowFamily
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, RoleEntityUnplaced
 from search.engine.place import read_default_presence
@@ -10,11 +13,13 @@ from search.engine.region.place_context import place_context
 from search.engine.region.place_roles import PlaceRoles
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
-from search.engine.region.refs import confirm_dcids_present
+from search.engine.region.refs import confirm_dcids_present, refuse_wrong_kind
 from search.engine.region.result import RegionResult
 from search.engine.region.state import identity_served_stat_vars, presence_stat_vars
 from search.engine.retrieval.bound_values import RoleKeys
-from search.engine.shape import entities_by_role, is_role_bearing
+from search.engine.retrieval.facts import read_constraints
+from search.engine.shape import ShapeDraft, entities_by_role, is_role_bearing
+from search.role_kinds import graph_types
 
 
 def _posted_entities(state: _PromoteState) -> dict[str, list[str]] | None:
@@ -101,13 +106,26 @@ def _posted_place_roles(
     )
 
 
+def _shape_family(shape: ShapeDraft) -> FlowFamily | None:
+    """The flow family of `shape`'s members (`code_index.flow_family.flow_family`), read from
+    their recalled arcs, which a refusal's role wording reads."""
+    arcs = shape.sv_arc_facts or {}
+    return flow_family(
+        index=get_index(),
+        population_type=shape.pop_type_dcid or None,
+        stat_vars=list(arcs),
+        members=[read_constraints(member_arcs) for member_arcs in arcs.values()],
+    )
+
+
 def _phase_where_places(state: _PromoteState) -> RegionResult | None:
     """Bind the posted places to the shape and derive its place context (`place_context`).
 
     Every read the context drives names the posted dcids themselves. A posted continent or
     subregion is read at its own node, as the Datasets mint reads it. Confirm every entity
     ref. A subject shape with no posted place reads the default-scope presence of its
-    StatVars. Missing refs raise `invalid_role_ref` (422), and a ref on a role the shape
+    StatVars. Missing refs raise `invalid_role_ref` (422), as does a role-bearing shape's ref
+    whose kind its role does not take (`refuse_wrong_kind`), and a ref on a role the shape
     cannot take raises `role_incompatible` (422). An entity on an axis the shape declares no
     role on returns `no_data` with `role_incompatible`, carrying the place warnings."""
     t0 = now_ms()
@@ -129,6 +147,13 @@ def _phase_where_places(state: _PromoteState) -> RegionResult | None:
             read=state.graph.node_labels_batch,
             pointer_for=lambda role, _absent: f"/input/identity/entities/{role}",
         )
+        if is_role_bearing(state.shape_draft):
+            refuse_wrong_kind(
+                role_dcids,
+                read_types=graph_types(state.graph),
+                family=_shape_family(state.shape_draft),
+                pointer_prefix="/input/identity",
+            )
 
         # A subject shape with no posted place probes the countries where its StatVars,
         # the resubmit's membership, have data. The shape holds its family exactly, so the

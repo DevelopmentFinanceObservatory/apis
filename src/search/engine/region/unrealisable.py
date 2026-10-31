@@ -30,14 +30,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 
 from code_index.shared import get_index
-from search.engine.bind import SlotBindingDraft
+from search.engine.bind import SlotBindingDraft, slot_label, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_election import _settle_sole_options
-from search.engine.region.phase_rank_bind import _resolve_query_qualifiers, model_only_values
+from search.engine.region.phase_rank_bind import model_only_values
 from search.engine.region.promote_state import _PromoteState
-from search.engine.region.requirements import record_reading
 from search.engine.region.state import (
     Requirement,
     ResolveState,
@@ -49,7 +48,6 @@ from search.engine.region.state import (
 from search.engine.retrieval.bound_values import without_values
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.engine.spec_build import slot_label
 from search.heading.departure_fact import DepartureFact
 from search.models import GraphRef, ResolvedQualifier, Warning
 
@@ -59,7 +57,7 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
 
     The set is `unrealisable.relaxation` with the engine-chosen properties (a declared
     default, the elected measure partition) and the ones bound as a slot's sole option
-    (`_sole_option_properties`) giving way before the request-named ones. Its properties of
+    (`sole_option_properties`) giving way before the request-named ones. Its properties of
     those two classes go silently, each slot shown unbound: the request's words named
     neither. What the engine derived from every unbound property goes with it
     (`ResolveState.forget_bound`). A request-named value no recorded term supports
@@ -72,13 +70,12 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     alone share one departure under their joined names. Each such value, and each value of
     a term naming no code, becomes a requirement of its own (`_value_requirements`), so binding one
     does not meet another. A value with no name departs under its slot's name
-    (`_unnamed_departure`), so no dcid reaches prose. The qualifier records are read again
-    over the remaining bindings
-    (`requirements.record_reading`), and a record of a phrase unbinding now requires adds
-    nothing.
+    (`_unnamed_departure`), so no dcid reaches prose. The caller reads the qualifier
+    records again over the remaining bindings (`requirements.record_reading`), where a
+    record of a phrase that unbinding makes a requirement adds nothing.
     """
     engine_chosen = state.measure_elected_properties | state.defaulted_properties
-    unnamed = _sole_option_properties(state.bindings)
+    unnamed = sole_option_properties(state.bindings)
     properties = unrealisable.relaxation(engine_chosen=engine_chosen, unnamed=unnamed)
     for prop in sorted(properties - engine_chosen - unnamed):
         bound = _bound_values(state.bindings, prop)
@@ -138,7 +135,6 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     state.admitted_qualifiers = tuple(
         match for match in state.admitted_qualifiers if match.code_system not in properties
     )
-    record_reading(state, _resolve_query_qualifiers(state))
 
 
 def _with_forced_values(
@@ -163,25 +159,6 @@ def _with_forced_values(
     ]
 
 
-def _sole_option_properties(bindings: Iterable[SlotBindingDraft]) -> frozenset[str]:
-    """The properties the bind reply bound to a value only because the slot offered no
-    other (`SlotBindingDraft.evidence` ``sole_option``, `drafted_by` the reply): the
-    request's words name none of them, and each claims that every member asserts its
-    value, which a member conflicting on it refutes. A ``sole_option`` value the engine
-    wrote makes no such claim: a partition value (`standard.bind_partition_values`) sits
-    on a slot the members differ on, and a series code's shared values
-    (`bound_values.bind_member_values`) are shared by that code's StatVars alone. Those
-    give way as values the request named."""
-    return frozenset(
-        b.property_dcid
-        for b in bindings
-        if b.kind == "value"
-        and b.evidence == "sole_option"
-        and b.drafted_by == "reply"
-        and b.property_dcid is not None
-    )
-
-
 def _unapplied(asked: str, prop: str) -> Departed:
     """The `measure_not_applied` departure for `asked`, the request's words, on `prop`."""
     return unapplied_departure(asked, asked=asked, property_dcid=prop)
@@ -204,7 +181,7 @@ def _unnamed_departure(slot: str, prop: str) -> Departed:
 
 
 def _slot_name(shape: ShapeDraft, prop: str) -> str:
-    """The label `shape`'s slot for `prop` carries (`spec_build.slot_label`)."""
+    """The label `shape`'s slot for `prop` carries (`bind.slot_label`)."""
     key = next(
         (key for key in shape.slot_keys if key.property_dcid == prop),
         SlotKeyDraft(axis="how", property_dcid=prop, label=prop),

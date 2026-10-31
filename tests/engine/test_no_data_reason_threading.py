@@ -59,7 +59,7 @@ _STD_NODE = {
 }
 _NODES: dict = {**_KEN_NODE, **_ELECTED_NODE, **_STD_NODE}
 _DETECT = {
-    "experimental census or healthcare expenditure in Kenya": {
+    "indicators in Kenya": {
         "svs": [_STD_SV, _ELECTED_SV],
         "cosine_scores": [0.85, 0.82],
     },
@@ -114,11 +114,11 @@ def _run(
     )
     return asyncio.run(
         resolve_variable(
-            "experimental census or healthcare expenditure in Kenya",
+            "indicators in Kenya",
             entities=["Kenya"],
             date_request=None,
-            detect_query="experimental census or healthcare expenditure in Kenya",
-            role_query="experimental census or healthcare expenditure in Kenya",
+            detect_query="indicators in Kenya",
+            role_query="indicators in Kenya",
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
@@ -287,7 +287,7 @@ _PC_POP_TYPE = "TestPerCapitaIncidenceEvent"
 _PC_MEAS_PROP = "testPerCapitaIncidence"
 _PC_STAT_TYPE = "measuredValue"
 
-_PC_NO_ENTITY_QUERY = "female urban test measure"
+_PC_NO_ENTITY_QUERY = "female urban test incidence"
 _PC_FULLY_ASSERTED_QUERY = "female test incidence per capita"
 
 

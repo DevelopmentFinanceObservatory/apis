@@ -41,8 +41,8 @@ from artifact_store.errors import (
     ArtifactNotFoundError,
     ArtifactWriteError,
 )
-from artifact_store.inventory import InventoryBatch, InventoryEntry
-from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, sign_get_url
+from artifact_store.inventory import ArtifactLocation, InventoryBatch, InventoryEntry
+from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, emulator_host, sign_get_url
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import working_tier_expired
 from dfo_platform.timings import count
@@ -174,6 +174,14 @@ class ArtifactStore(Protocol):
         """
         ...
 
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        """The location the inventory records for `digest` at `tier`, or `None` when it records
+        none. Tier retention can delete an object while its location row persists.
+
+        Raises `ArtifactInventoryError` if the read fails.
+        """
+        ...
+
     def signed_location_url(
         self,
         digest: str,
@@ -197,7 +205,7 @@ class ArtifactStore(Protocol):
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         """Copy to the destination bucket. An existing digest is a deduplication.
 
-        Raises `ArtifactNotFoundError` if the source location is absent or
+        Raises `ArtifactNotFoundError` if the source location or its object is absent, or
         `ArtifactWriteError` for another copy failure.
         """
         ...
@@ -544,6 +552,8 @@ class LiveArtifactStore:
                 f"buckets is missing an entry for tier(s): "
                 f"{[tier.value for tier in missing_tiers]!r}"
             )
+        # Refuse an emulator outside the local stack at start-up, before any link goes out.
+        emulator_host()
         self._buckets = dict(buckets)
         self._inventory = inventory
         self._client = client if client is not None else storage.Client()
@@ -611,6 +621,9 @@ class LiveArtifactStore:
             )
         return data
 
+    def location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        return self._inventory.get_location(digest, tier=tier)
+
     def signed_location_url(
         self,
         digest: str,
@@ -675,7 +688,11 @@ class LiveArtifactStore:
             )
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
-        """Copy from the recorded source location. Record the destination after success."""
+        """Copy from the recorded source location. Record the destination after success. A
+        source object the lifecycle rule deleted raises `ArtifactNotFoundError`. GCS also
+        answers 404 for a missing destination bucket, so a `NotFound` raises
+        `ArtifactNotFoundError` only when the source object is absent and
+        `ArtifactWriteError` otherwise."""
         location = self._inventory.get_location(digest, tier=from_tier)
         if location is None:
             raise ArtifactNotFoundError(digest=digest, tier=from_tier)
@@ -685,6 +702,7 @@ class LiveArtifactStore:
         dest_bucket = self._client.bucket(dest_bucket_name)
 
         deduplicated = False
+        source_missing = False
         copy_failed = False
         size_bytes: int | None = None
         try:
@@ -694,8 +712,16 @@ class LiveArtifactStore:
             size_bytes = dest_blob.size
         except PreconditionFailed:
             deduplicated = True
+        except NotFound:
+            try:
+                source_missing = source_bucket.get_blob(location.object_name) is None
+            except Exception:
+                source_missing = False
+            copy_failed = not source_missing
         except Exception:
             copy_failed = True
+        if source_missing:
+            raise ArtifactNotFoundError(digest=digest, tier=from_tier)
         if copy_failed:
             raise ArtifactWriteError(object_name=digest, digest=digest)
         if size_bytes is None:

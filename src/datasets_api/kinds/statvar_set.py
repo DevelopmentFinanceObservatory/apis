@@ -8,7 +8,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from datasets_api.adapter import build_identity_document, to_materialisation_request
-from datasets_api.kinds.spec_id import resolve_served_definition, serve_mint
+from datasets_api.kinds.spec_id import (
+    check_entity_kinds,
+    check_served_window,
+    resolve_served_definition,
+    serve_mint,
+)
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_deps import MintDeps
 from datasets_api.mint_models import MintOptions, Scope
@@ -28,12 +33,29 @@ def mint_statvar_set(
     """Mints the pinned spec of the one StatVar in `statvars`, which `StatVarSetInput` caps at
     one. The identity is the document the registration stores, so the mint materialises what
     the registry reads back, and `kinds.spec_id.serve_mint` serves it.
-    Resolution can raise `MemberNotResolvable`."""
+    Resolution can raise `MemberNotResolvable`, a role-bearing StatVar's window
+    `WindowOverCap` (`kinds.spec_id.check_served_window`), and a flow-role entity of a kind its
+    role does not take `EntityKindRefused` (`kinds.spec_id.check_entity_kinds`), all before the
+    registry write."""
     (stat_var,) = statvars
     with phase("resolve"):
         shape = resolve_shape(stat_var, graph=deps.graph)
         recomputed = recompute_identity(
             build_identity_document(shape, scope=scope, graph=deps.graph)
+        )
+        check_served_window(
+            recomputed.identity,
+            scope=scope,
+            shapes=(shape,),
+            coverage=deps.coverage,
+            identity_pointer="/input/scope/window",
+        )
+        check_entity_kinds(
+            recomputed.identity,
+            scope=scope,
+            shapes=(shape,),
+            deps=deps,
+            entities_pointer="/input/scope/entities",
         )
         deps.registry.register_definition(
             identity_definition=recomputed.identity,

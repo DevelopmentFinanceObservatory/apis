@@ -27,13 +27,17 @@ the responding app states for the spec (``base.served_stat_vars``). StatVars and
 listed twice count once. A non-role answer is counted from ``ctx.graph`` at each StatVar and
 served place (``_served_places``). A role-bearing answer is counted from
 ``ctx.coverage.snapshot()``, one series per StatVar and bound role tuple, as Search reads it.
+An answer served by a declared composite provenance, which no series carries, is the sum of
+its components' counts, each derived from the definition by the bound release's code index
+(``code_index.composites.component_identities``) and counted under its own table's provenance
+inside its own years (``_counted_reads``).
 
 A part the check cannot count is n/a, with the reason in the detail: a role-bearing answer
 confirmed against another coverage stamp, or mixing ``observationAbout`` with a flow role; a
 converted answer whose conversion left rows out of its count; a non-role answer with a
 partial preview whose planned places are not on the wire; a non-role answer naming no place
-at all; and a non-role answer at whose places the graph holds no records, as at a region
-node. A failed graph, coverage or members read (``base.READ_ERRORS``), or a missing client,
+at all; a non-role answer at whose places the graph holds no records, as at a region
+node; and a composite answer whose components the code index cannot derive. A failed graph, coverage or members read (``base.READ_ERRORS``), or a missing client,
 is an infrastructure result. Any other error propagates.
 
 The check reads the graph once per definite part, so it registers ``modal_only``: the driver
@@ -43,9 +47,18 @@ runs it on the modal sample alone.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
+from code_index.composites import (
+    DECLARED_COMPOSITES,
+    CompositeNotServable,
+    component_identities,
+)
+from code_index.members import SourceNotInFamily, identity_family_query, index_family
+from code_index.shared import get_index
 from dc_graph import Facet
+from graph_release.context import ReleaseNotBound
 from materialise.facets import Cadence, at_cadence, cadences_by_member, continuation
 from materialise.window import RequestedWindow, latest_period
 from search.engine.region.codes import (
@@ -59,6 +72,7 @@ from search.eval.cases import Case, StatusExpect
 from search.eval.checks.base import (
     PASS,
     READ_ERRORS,
+    MembersRefused,
     PartView,
     Result,
     ScoreContext,
@@ -122,7 +136,7 @@ def _stated_groups(
 ) -> dict[_FacetGroup, list[Facet]]:
     """The facets of one series that `stated` admits on every axis (`_axis_admits`), by
     group. A group is one cadence of one provenance, measurement method and unit, since a
-    dispatch serves its series at one observation period (`materialise.facets.served_facets`).
+    dispatch serves its series at one observation period (`materialise.group_facets.group_served`).
     A series whose admitted facets form several groups is one the answer does not pin to a
     single group."""
     (cadence_of,) = cadences_by_member([facets])
@@ -440,6 +454,82 @@ def _coverage_window(spec: SpecView, ctx: ScoreContext) -> TimeWindow | None:
     return TimeWindow(start_year=start, end_year=end)
 
 
+@dataclass(frozen=True)
+class _CountedRead:
+    """One read an exact count sums: the served StatVars it counts, the facets it admits on
+    each axis, and the window it counts inside."""
+
+    stat_vars: list[str]
+    stated: Mapping[str, _Stated]
+    window: TimeWindow | None
+
+
+def _counted_reads(
+    spec: SpecView,
+    stat_vars: list[str],
+    stated: Mapping[str, _Stated],
+    window: TimeWindow | None,
+    ctx: ScoreContext,
+) -> list[_CountedRead] | Result:
+    """The reads an exact count sums: one read of `stat_vars` under `stated` inside `window`,
+    or, for an answer whose provenance facet names a declared composite, one read per
+    component the bound release's code index derives from the definition
+    (`code_index.composites.component_identities`, as Search and the Datasets mint derive
+    them). No graph series carries a composite's provenance, so each component reads the
+    served StatVars of its own family under its own table's provenance, inside the answer's
+    window clipped to the component's. A composite whose components the index cannot derive,
+    or a component whose family it does not decide, is n/a with the reason; an unbound
+    release is an infrastructure result."""
+    composite = (stated.get("provenance") or (None, False))[0]
+    if composite not in DECLARED_COMPOSITES:
+        return [_CountedRead(stat_vars, stated, window)]
+    try:
+        index = get_index()
+    except ReleaseNotBound:
+        return infra_error(f"composite {composite!r} derives its components from a bound release")
+    try:
+        components = component_identities(index, spec.read("definition.identity", ctx))
+    except CompositeNotServable as exc:
+        return _unchecked("composite_not_servable", f"{composite}: {exc}")
+    if components is None:
+        return _unchecked(
+            "composite_not_bound", f"{composite} is stated but the definition binds no composite"
+        )
+    reads = []
+    for component in components:
+        try:
+            family = index_family(index, identity_family_query(index, component.identity))
+        except SourceNotInFamily:
+            family = None
+        if family is None or not family.rows:
+            return _unchecked(
+                "composite_component_unresolved",
+                f"the code index decides no family for {composite}'s {component.role} component",
+            )
+        members = {row.dcid for row in family.rows}
+        reads.append(
+            _CountedRead(
+                [sv for sv in stat_vars if sv in members],
+                {**stated, "provenance": (component.recipe.dataset, False)},
+                _clipped(window, component.identity.get("requested_window")),
+            )
+        )
+    return reads
+
+
+def _clipped(window: TimeWindow | None, requested: object) -> TimeWindow | None:
+    """`window` clipped to a component's `requested` window document; a window that is not a
+    range clips nothing."""
+    if not isinstance(requested, Mapping) or requested.get("kind") != "range":
+        return window
+    bounds = [(requested.get("start_year"), requested.get("end_year"))]
+    if window is not None:
+        bounds.append((window.start_year, window.end_year))
+    start = max((s for s, _ in bounds if isinstance(s, int)), default=None)
+    end = min((e for _, e in bounds if isinstance(e, int)), default=None)
+    return TimeWindow(start_year=start, end_year=end)
+
+
 def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Result:
     stated = _stated_facets(spec, ctx)
     warning_codes = _spec_warning_codes(response, spec.read("spec_id", ctx), ctx)
@@ -451,6 +541,8 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
     resolved = f"{spec.at}.resolved"
     try:
         served = served_stat_vars(spec, ctx)
+    except MembersRefused as exc:
+        return fail(str(exc))
     except READ_ERRORS as exc:
         return infra_error(f"members door: {type(exc).__name__}: {exc}")
     if served is None:
@@ -464,6 +556,9 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
         (read_path(e, "ref", ctx, at=entities_at), read_path(e, "role", ctx, at=entities_at))
         for e in spec.read("resolved.entities", ctx) or []
     ]
+    reads = _counted_reads(spec, stat_vars, stated, window, ctx)
+    if isinstance(reads, Result):
+        return reads
 
     if any(role in _COVERAGE_ROLE_FOR_AXIS for _ref, role in entities):
         if ctx.coverage is None:
@@ -487,22 +582,24 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
             if role != "observationAbout":
                 coverage_role = _COVERAGE_ROLE_FOR_AXIS[role]
                 bound[coverage_role] = bound.get(coverage_role, frozenset()) | {ref}
-        facets_by_series = _role_series_facets(stat_vars, bound, snapshot)
-        # The rows a conversion leaves out of the election make the answer unchecked above.
-        elected = (
-            snapshot.index.elected_years(
-                variables=stat_vars, bound=bound, admits=_stated_admits(stated, snapshot)
+        totals = 1
+        for read in reads:
+            facets_by_series = _role_series_facets(read.stat_vars, bound, snapshot)
+            # The rows a conversion leaves out of the election make the answer unchecked above.
+            elected = (
+                snapshot.index.elected_years(
+                    variables=read.stat_vars,
+                    bound=bound,
+                    admits=_stated_admits(read.stated, snapshot),
+                )
+                if latest
+                else {}
             )
-            if latest
-            else {}
-        )
-        # Coverage holding no row of the bound tuples reaches a total of 0 alone.
-        totals = (
-            _reachable_totals(
-                facets_by_series, stated, window=window, latest=latest, elected=elected
+            # Coverage holding no row of the bound tuples reaches a total of 0 alone.
+            served_totals = _reachable_totals(
+                facets_by_series, read.stated, window=read.window, latest=latest, elected=elected
             )
-            or 1
-        )
+            totals = _add_totals(totals, served_totals or 1)
         return _count_result(totals, expected_count)
 
     places = _served_places(spec, ctx, preview_complete=not warning_codes & _PARTIAL_PREVIEW_CODES)
@@ -519,13 +616,17 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
         by_sv = ctx.graph.observation_facets_batch(stat_vars, places, needs_dates=True)
     except READ_ERRORS as exc:
         return infra_error(f"graph observation_facets_batch: {type(exc).__name__}: {exc}")
-    totals = _reachable_totals(
-        [(sv, by_sv.get(sv, {}).get(place, [])) for sv in stat_vars for place in places],
-        stated,
-        window=window,
-        latest=latest,
-        elected={},
-    )
+    totals: int | None = None
+    for read in reads:
+        served_totals = _reachable_totals(
+            [(sv, by_sv.get(sv, {}).get(place, [])) for sv in read.stat_vars for place in places],
+            read.stated,
+            window=read.window,
+            latest=latest,
+            elected={},
+        )
+        if served_totals is not None:
+            totals = served_totals if totals is None else _add_totals(totals, served_totals)
     if totals is None:
         return _unchecked("no_records", f"the graph holds no facet at {len(places)} place(s)")
     return _count_result(totals, expected_count)

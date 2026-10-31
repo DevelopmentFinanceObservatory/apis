@@ -16,6 +16,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import MeasureValueRow
 from search.engine.bind import (
     _MAX_TAXONOMY_VALUES_SHOWN,
+    SlotBindingDraft,
     _display_taxonomy_values,
     _listed_slots,
     _qualifier_menu,
@@ -25,6 +26,13 @@ from search.engine.bind import (
 from search.engine.binders.base import BindRequest
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.shape import ShapeDraft
+from search.engine.stated_words_read import (
+    bound_values_label,
+    implied_values,
+    restricting,
+    served_series,
+    serves_beyond_label,
+)
 from search.models import Axis
 
 type Prop = tuple[Axis, str]
@@ -131,18 +139,45 @@ def prop_id(prop: Prop) -> str:
     return f"{prop[0]}:{prop[1]}"
 
 
-def describe(shape: ShapeDraft, fixed: Sequence[QualifierMatch] = ()) -> str:
-    """One shape as a question quotes it: its label, then what its five-tuple and fixed
-    values state beyond the label, and the slots that select parts of it."""
+def describe(
+    shape: ShapeDraft,
+    fixed: Sequence[QualifierMatch] = (),
+    *,
+    bindings: Sequence[SlotBindingDraft] = (),
+    definition: bool = False,
+    served: Sequence[str] = (),
+) -> str:
+    """One shape as a question quotes it: its label, then what its five-tuple, fixed values
+    and the values `bindings` restrict it to (`restricting`) state beyond the label, and the
+    slots left that select parts of it. A bound value reads by
+    `stated_words_read.bound_values_label`: a declared grouping by its label, another
+    set's values joined by "or". With
+    `definition`, it also quotes the values the measure's definition fixes on properties
+    `bindings` leave unrestricted (`stated_words_read.implied_values`), as the stated-word
+    questions and Gemini's stated-words prompt do. It also quotes the `served` series when
+    they differ from the label (`stated_words_read.serves_beyond_label`,
+    `stated_words_read.served_series`)."""
     reading = stated_reading(shape)
     parts = [f"{reading.measured_property} of {reading.population_type}"]
     if reading.qualifier:
         parts.append(reading.qualifier)
     if reading.denominator:
         parts.append(f"divided by {reading.denominator}")
-    if fixed:
-        parts.append("restricted to " + ", ".join(dict.fromkeys(m.label for m in fixed)))
-    slots = [s.label for s in shape.slot_keys if s.property_dcid and s.axis != "source"]
+    bound = restricting(bindings)
+    restricted = [m.label for m in fixed] + [
+        bound_values_label(shape, prop, values) for prop, values in bound.items()
+    ]
+    if restricted:
+        parts.append("restricted to " + ", ".join(dict.fromkeys(restricted)))
+    if definition and (implied := implied_values(shape, bindings)):
+        parts.append(f"its definition fixes {implied}")
+    if serves_beyond_label(shape, served):
+        parts.append(f"served as {served_series(served)}")
+    slots = [
+        s.label
+        for s in shape.slot_keys
+        if s.property_dcid and s.axis != "source" and s.property_dcid not in bound
+    ]
     if slots:
         parts.append("parts selectable by " + ", ".join(dict.fromkeys(slots)))
     return f"'{reading.label}' ({'; '.join(parts)})"

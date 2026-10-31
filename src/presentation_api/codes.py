@@ -23,11 +23,21 @@ Frame unavailability returns 404 or transient 503. Release mismatch and service 
 return 503. Timeout returns 504, and internal errors return 500.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
-`correct_and_retry`. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
+`correct_and_retry`, which `retryable_for` answers false. The request must change before it can
+succeed, and a client retries a retryable refusal unchanged. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
 refresh. Transient frame, release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
 `internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
 release manifest.
+
+The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
+`write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
+`share_not_replaceable` and `share_id_taken` at 409 and `payload_too_large` at 413, none
+retryable. A card create or revise and a share create refuse
+the platform's `allowance_exhausted` at 429, not retryable either, with `Retry-After` naming
+the reset (`WRITE_SERVED_PLATFORM_CODES`). The component catalogue's release manifest lists
+none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES` is every code the surface
+serves.
 
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists
 use `alternatives`, structured facet failures use `issues`, and details such as `minimal_intent`,
@@ -42,7 +52,10 @@ __all__ = [
     "CODE_CATALOG",
     "CODE_RETRY_MODE",
     "PRESENTATION_CODE_CATALOGUE",
+    "PRESENTATION_SERVED_CODES",
     "PRESENTATION_SERVED_PLATFORM_CODES",
+    "SHARE_CODE_CATALOGUE",
+    "WRITE_SERVED_PLATFORM_CODES",
     "replay_retryable",
     "retryable_for",
 ]
@@ -89,9 +102,40 @@ PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
 }
 
+# The shares door's own codes.
+SHARE_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
+    "write_token_required": (
+        "Write Token Required",
+        "A replace or delete of a share carries no x-dfo-write-token.",
+    ),
+    "write_token_invalid": (
+        "Write Token Invalid",
+        "The x-dfo-write-token sent is not the share's, or the share was made without one, "
+        "which no token can change.",
+    ),
+    "share_not_replaceable": (
+        "Share Not Replaceable",
+        "The share is a snapshot, whose cards are fixed for good. Only a live share takes new "
+        "cards.",
+    ),
+    "payload_too_large": (
+        "Payload Too Large",
+        "A share's request body is larger than the share routes accept.",
+    ),
+    "share_id_taken": (
+        "Share Id Taken",
+        "A share import names an id that holds another share, or holds this share under "
+        "another write token digest.",
+    ),
+    "share_import_not_permitted": (
+        "Share Import Not Permitted",
+        "The share import is restricted to its first-party principal.",
+    ),
+}
+
 # This catalogue adds presentation codes to the shared platform catalogue.
 CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
-    PLATFORM_CODE_CATALOGUE, PRESENTATION_CODE_CATALOGUE
+    PLATFORM_CODE_CATALOGUE, PRESENTATION_CODE_CATALOGUE, SHARE_CODE_CATALOGUE
 )
 
 # Headline retry mode per served code, mirrored in the baked release manifest.
@@ -127,6 +171,17 @@ PRESENTATION_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
     }
 )
 
+# Platform codes the card and share writes render that the component catalogue's manifest
+# does not list. Today that is the daily allowance's refusal.
+WRITE_SERVED_PLATFORM_CODES: frozenset[str] = frozenset({"allowance_exhausted"})
+
+PRESENTATION_SERVED_CODES: frozenset[str] = (
+    frozenset(PRESENTATION_CODE_CATALOGUE)
+    | PRESENTATION_SERVED_PLATFORM_CODES
+    | frozenset(SHARE_CODE_CATALOGUE)
+    | WRITE_SERVED_PLATFORM_CODES
+)
+
 _expected_codes = set(PRESENTATION_CODE_CATALOGUE) | (
     PRESENTATION_SERVED_PLATFORM_CODES - {"unsupported_schema_version"}
 )
@@ -139,23 +194,27 @@ if set(CODE_RETRY_MODE) != _expected_codes:
         "needs a matching entry on the other"
     )
 
-if not frozenset(PLATFORM_CODE_CATALOGUE) >= PRESENTATION_SERVED_PLATFORM_CODES:
+_served_platform_codes = PRESENTATION_SERVED_PLATFORM_CODES | WRITE_SERVED_PLATFORM_CODES
+if not frozenset(PLATFORM_CODE_CATALOGUE) >= _served_platform_codes:
     raise AssertionError(
-        f"PRESENTATION_SERVED_PLATFORM_CODES names code(s) "
-        f"{sorted(PRESENTATION_SERVED_PLATFORM_CODES - frozenset(PLATFORM_CODE_CATALOGUE))} "
+        f"the served platform codes name code(s) "
+        f"{sorted(_served_platform_codes - frozenset(PLATFORM_CODE_CATALOGUE))} "
         "absent from PLATFORM_CODE_CATALOGUE"
     )
 
 
-def retryable_for(code: str) -> bool:
-    """Return whether the headline mode allows retry. Classifiers handle
-    `schema_invalid`, `frame_unavailable`, and `request_invalid` per occurrence.
-    """
-    return CODE_RETRY_MODE[code] != "do_not_retry"
-
-
 # The modes under which a request repeated unchanged may succeed.
 _UNCHANGED_RETRY_MODES = frozenset({"retry_after_delay", "refresh_then_retry"})
+
+
+def retryable_for(code: str) -> bool:
+    """Return whether the same request, sent again, may succeed: true for a
+    `retry_after_delay` or `refresh_then_retry` code. A `correct_and_retry` code answers false,
+    since the caller must change its request first, and a client retries a retryable refusal
+    unchanged. Classifiers handle `schema_invalid`, `frame_unavailable`, and `request_invalid`
+    per occurrence.
+    """
+    return CODE_RETRY_MODE[code] in _UNCHANGED_RETRY_MODES
 
 
 def replay_retryable(code: str, *, retryable: bool) -> bool:

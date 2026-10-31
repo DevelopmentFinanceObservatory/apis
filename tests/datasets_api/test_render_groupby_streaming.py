@@ -11,9 +11,13 @@ import pytest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
+from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import _RenderReads, _reshape
+from materialise import reshape
 from materialise.enrichment import EnrichmentLookup
+from materialise.frame_build import build_frame
+from materialise.groupby_columnar import rows_table
 from materialise.reshape import RollupNotSummableError, Table
 
 from ._graph_doubles import FakeMintGraphReader
@@ -274,3 +278,47 @@ def test_distinct_measures_sharing_every_decoded_axis_value_still_refuse_when_st
         )
     assert exc_info.value.axis == "stat_var"
     assert exc_info.value.precondition == "stat_var_ambiguous"
+
+
+def test_a_collapse_over_frame_slices_folds_as_arrow_and_matches_the_row_fold(monkeypatch):
+    """Frame chunks collapse without a row read as Python. No slice builds its rows, the row
+    fold runs on none, and the result is the one the row fold gives the same rows."""
+    frame = build_frame(
+        role_keys=_ENTITY_COLUMNS,
+        rows=[
+            dict(zip(_TABLE_COLUMNS, (*row[:5], "unit/USD", row[6]), strict=True)) for row in _ROWS
+        ],
+    )
+    options = MintOptions(groupby=GroupbyOptions(by=["crsPurpose"], op="sum"))
+
+    def streamed(chunks: list[Table]) -> object:
+        return _reshape(
+            chunks[0],
+            options=options,
+            entity_columns=_ENTITY_COLUMNS,
+            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            code_index=_INDEX,
+            resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
+            provenance_refs=("p1",),
+            subject_id="family-spec",
+            frame_chunks=iter(chunks),
+            pivot_max_output_cells=5_000_000,
+        )
+
+    row_tables = [rows_table(frame.table.slice(start, 1)) for start in range(frame.table.num_rows)]
+    by_rows = streamed(row_tables)
+
+    monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", 2)
+    slices = list(render._reslice_chunks([frame]))
+    assert [type(chunk) for chunk in slices] == [render._FrameSlice, render._FrameSlice]
+    folded: list[tuple] = []
+    monkeypatch.setattr(
+        reshape._GroupbySumFold, "process_row", lambda _self, row: folded.append(row)
+    )
+    by_arrow = streamed(slices)
+
+    assert all("rows" not in vars(chunk) for chunk in slices[1:])
+    assert folded == []
+    assert by_arrow.table == by_rows.table
+    assert by_arrow.warnings == by_rows.warnings
+    assert by_arrow.collapse == by_rows.collapse

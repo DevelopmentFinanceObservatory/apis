@@ -213,9 +213,13 @@ def _client(
     coverage=None,
     settings: DatasetsBuildSettings | None = None,
     materialise_max_concurrency: int | None = None,
+    sdmx_hedge_after: float | None = None,
+    recipe_store=None,
+    version_lister=None,
 ):
     """Builds a composed client with separate spec and version stores. A version store wires
-    live readers and inventory-aware artifacts."""
+    live readers and inventory-aware artifacts. `sdmx_hedge_after` hedges its SDMX reads.
+    `recipe_store` and `version_lister` are `make_client`'s."""
     store = store if store is not None else FakeDatasetStore()
     if version_store is not None:
         from artifact_store import LiveArtifactInventory
@@ -239,6 +243,7 @@ def _client(
         sdmx=SdmxClient(
             base_url=_BASE_URL,
             transport=sdmx_transport if sdmx_transport is not None else _sdmx_transport(),
+            hedge_after=sdmx_hedge_after,
         ),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         version_writer=version_writer,
@@ -248,6 +253,8 @@ def _client(
         coverage=coverage if coverage is not None else _coverage_service(),
         settings=settings,
         materialise_max_concurrency=materialise_max_concurrency,
+        recipe_store=recipe_store,
+        version_lister=version_lister,
     )
 
 
@@ -1098,3 +1105,43 @@ def test_no_drift_register_then_get_round_trip_serves_200():
     resp = client.get(f"/api/datasets/{spec_id}")
 
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.parametrize(
+    ("route", "pointer"),
+    [
+        ("mint", "/input/definition/identity/requested_window"),
+        ("options", "/definition/identity/requested_window"),
+    ],
+)
+def test_a_sidecar_window_a_role_read_cannot_list_is_refused_before_registration(
+    search_settings, route: str, pointer: str
+) -> None:
+    """A posted definition's own role-bearing window is admitted by the rule Search's role
+    routes read years by (`search.scope_window.role_read_years`), on the mint and the
+    options route alike, before the registry write: the refused id stays unregistered."""
+    search_settings(scope_max_window_years=5)
+    client = _client(graph=_graph())
+    template = _mint_one_spec(client)
+    identity = {
+        **client.get(f"/api/datasets/{template}").json()["definition"]["identity"],
+        "requested_window": {"kind": "range", "start_year": 2000, "end_year": 2020},
+    }
+    spec_id = recompute_identity(identity).spec_id
+    definition = wire_definition_for(spec_id=spec_id, identity=identity)
+
+    if route == "mint":
+        resp = client.post(
+            "/api/datasets",
+            json={
+                "schema_version": 1,
+                "input": {"kind": "spec_id", "spec_id": spec_id, "definition": definition},
+                "options": {"bundle": False},
+            },
+        )
+    else:
+        resp = client.post(f"/api/datasets/{spec_id}/options", json={"definition": definition})
+
+    assert resp.status_code == 400, resp.text
+    assert (resp.json()["code"], resp.json()["pointer"]) == ("request_invalid", pointer)
+    assert client.get(f"/api/datasets/{spec_id}").json()["code"] == "spec_not_found"

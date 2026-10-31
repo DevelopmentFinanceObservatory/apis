@@ -781,7 +781,7 @@ def _selected_provenance(
         requests,
         [[_source_facet(shape, code_index)] for shape in shapes],
         graph=FakeMintGraphReader(arcs={}),
-    ).selections
+    ).election.selections
     return selections["provenance"].ref
 
 
@@ -846,22 +846,32 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
 
     selections = select_group_facets(
         requests, candidates, graph=FakeMintGraphReader(arcs={})
-    ).selections
+    ).election.selections
 
     assert selections["provenance"].ref == CRS_PROVENANCE
 
 
-def test_group_facet_selection_refuses_a_family_spanning_both_datasets():
-    """The members the mint resolved before the election: every row of both datasets."""
+def test_group_facet_selection_on_a_family_spanning_both_datasets_names_the_minority_unserved():
+    """The members the mint resolved before the election: every row of both datasets. The
+    dataset holding more of them serves, and the other dataset's members are named."""
     code_index = load_index(INDEX_FIXTURE)
     identity = education_aid_identity()
-    spanning = (
-        *_education_aid_members(identity, code_index).shapes,
-        *_education_aid_members(imputed_education_aid_identity(), code_index).shapes,
+    plain = _education_aid_members(identity, code_index).shapes
+    imputed = _education_aid_members(imputed_education_aid_identity(), code_index).shapes
+    spanning = (*plain, *imputed)
+    requests = [
+        to_materialisation_request(identity, shape=shape, code_index=code_index)
+        for shape in spanning
+    ]
+
+    group = select_group_facets(
+        requests,
+        [[_source_facet(shape, code_index)] for shape in spanning],
+        graph=FakeMintGraphReader(arcs={}),
     )
 
-    with pytest.raises(FacetNotAvailableError):
-        _selected_provenance(identity, spanning, code_index)
+    assert group.election.selections["provenance"].ref == CRS_PROVENANCE
+    assert group.unserved == tuple(range(len(plain), len(spanning)))
 
 
 # ---------------------------------------------------------------------------

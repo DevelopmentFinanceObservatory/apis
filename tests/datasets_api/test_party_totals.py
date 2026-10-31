@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pyarrow as pa
 import pytest
 from dfo_frame_grammar import Frame, frame_sha256
 
-from code_index.types import PartyRow
-from datasets_api.party_totals import cut_frame, cut_party_totals, open_party_roles
+from code_index.types import PartyRow, WholeMarker
+from datasets_api.party_totals import (
+    PartyTotalsCut,
+    cut_frame,
+    cut_party_totals,
+    open_party_roles,
+)
 
 _PROVIDER = "financingProvider"
 _RECIPIENT = "financingRecipient"
@@ -17,6 +24,8 @@ _DAC_TOTAL = "DACTotal"
 _G7 = "GroupOfSeven"
 _FRANCE = "country/FRA"
 _GERMANY = "country/DEU"
+_OFFICIAL = "DACOfficialDonors"
+_GATES = "GatesFoundation"
 _DEVELOPING = "DevelopingCountries"
 _AFRICA_REGIONAL = "AfricaRegional"
 _KENYA = "country/KEN"
@@ -28,9 +37,16 @@ _PARTIES = {
     for party in (
         PartyRow(dcid=_DAC_TOTAL, kind="total"),
         PartyRow(dcid=_G7, kind="total"),
+        PartyRow(
+            dcid=_OFFICIAL,
+            kind="total",
+            party_class="official",
+            whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
+        ),
+        PartyRow(dcid=_GATES, kind="party", party_class="private"),
         PartyRow(dcid=_FRANCE, kind="party"),
         PartyRow(dcid=_DEVELOPING, kind="total"),
-        PartyRow(dcid=_AFRICA_REGIONAL, kind="residual"),
+        PartyRow(dcid=_AFRICA_REGIONAL, kind="residual", party_class="residual"),
         PartyRow(dcid=_KENYA, kind="party"),
     )
 }
@@ -52,7 +68,9 @@ def _frame(pairs: list[tuple[str, str]]) -> Frame:
     )
 
 
-def _kept(frame: Frame, *, identity: dict[str, object]) -> tuple[set[tuple[str, str]], list]:
+def _kept(
+    frame: Frame, *, identity: dict[str, object]
+) -> tuple[set[tuple[object, object]], list[dict[str, object]]]:
     """The (provider, recipient) pairs a cut keeps of `frame` under `identity`, and its trace
     entries."""
     cut = cut_party_totals(
@@ -68,7 +86,7 @@ def _kept(frame: Frame, *, identity: dict[str, object]) -> tuple[set[tuple[str, 
 
 _EVERY_PAIR = [
     (provider, recipient)
-    for provider in (_DAC_TOTAL, _G7, _FRANCE, _GERMANY)
+    for provider in (_DAC_TOTAL, _G7, _OFFICIAL, _FRANCE, _GERMANY, _GATES)
     for recipient in (_DEVELOPING, _AFRICA_REGIONAL, _KENYA, _GHANA)
 ]
 
@@ -78,26 +96,26 @@ _EVERY_PAIR = [
     [
         pytest.param(
             {"entities": {}},
-            {_FRANCE, _GERMANY},
+            {_FRANCE, _GERMANY, _GATES},
             {_AFRICA_REGIONAL, _KENYA, _GHANA},
             [
-                {"role": _PROVIDER, "entities": [_DAC_TOTAL, _G7]},
-                {"role": _RECIPIENT, "entities": [_DEVELOPING]},
+                {"role": _PROVIDER, "provenance": None, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]},
+                {"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]},
             ],
             id="both-open",
         ),
         pytest.param(
             {"entities": {"destination": [_DEVELOPING, _KENYA]}},
-            {_FRANCE, _GERMANY},
+            {_FRANCE, _GERMANY, _GATES},
             {_DEVELOPING, _AFRICA_REGIONAL, _KENYA, _GHANA},
-            [{"role": _PROVIDER, "entities": [_DAC_TOTAL, _G7]}],
+            [{"role": _PROVIDER, "provenance": None, "entities": [_OFFICIAL, _DAC_TOTAL, _G7]}],
             id="recipient-bound-by-axis-label",
         ),
         pytest.param(
             {"entities": {"provider": [_DAC_TOTAL]}},
-            {_DAC_TOTAL, _G7, _FRANCE, _GERMANY},
+            {_DAC_TOTAL, _G7, _OFFICIAL, _FRANCE, _GERMANY, _GATES},
             {_AFRICA_REGIONAL, _KENYA, _GHANA},
-            [{"role": _RECIPIENT, "entities": [_DEVELOPING]}],
+            [{"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]}],
             id="provider-bound-by-caller-role",
         ),
     ],
@@ -105,8 +123,8 @@ _EVERY_PAIR = [
 def test_a_cut_leaves_out_the_totals_of_each_open_party_role(
     identity, kept_providers, kept_recipients, entries
 ):
-    """Totals leave an open role; parties, residuals and undeclared parties stay, and a bound
-    role keeps every party whatever its kind."""
+    """Totals, whole totals included, leave an open role; parties of either class, residuals
+    and undeclared parties stay, and a bound role keeps every party whatever its kind."""
     kept, trace = _kept(_frame(_EVERY_PAIR), identity=identity)
 
     assert kept == {
@@ -124,7 +142,7 @@ def test_a_role_whose_every_row_is_a_total_keeps_them():
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
     assert kept == {(_DAC_TOTAL, _KENYA), (_DAC_TOTAL, _GHANA)}
-    assert trace == [{"role": _RECIPIENT, "entities": [_DEVELOPING]}]
+    assert trace == [{"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]}]
 
 
 def test_each_role_reads_the_rows_the_roles_before_it_kept():
@@ -135,7 +153,7 @@ def test_each_role_reads_the_rows_the_roles_before_it_kept():
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
     assert kept == {(_FRANCE, _DEVELOPING)}
-    assert trace == [{"role": _PROVIDER, "entities": [_DAC_TOTAL]}]
+    assert trace == [{"role": _PROVIDER, "provenance": None, "entities": [_DAC_TOTAL]}]
 
 
 @pytest.mark.parametrize(
@@ -206,3 +224,109 @@ def test_the_cut_frame_counts_no_null_role_cell_as_a_value():
 
     assert kept.rows == 2
     assert kept.distinct == {_PROVIDER: 1, _RECIPIENT: 1, "years": 1}
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_CRS = "provenance/OECDCreditorReportingSystem"
+_IMF = "InternationalMonetaryFund"
+_TRUST_FUNDS = "IMFConcessionalTrustFunds"
+
+
+# Kenya 2020: DAC2A publishes the IMF and its Concessional Trust Funds at 756,055,477 each, and
+# the CRS, which never publishes the IMF, the trust funds alone.
+_KENYA_2020 = [
+    (_DAC2A, _IMF, 756_055_477.0),
+    (_DAC2A, _TRUST_FUNDS, 756_055_477.0),
+    (_DAC2A, _FRANCE, 100_000_000.0),
+    (_CRS, _TRUST_FUNDS, 756_055_477.0),
+]
+
+
+def _kenya_2020_frame() -> Frame:
+    return Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: _KENYA,
+                "provenance": provenance,
+                "time_period": "2020",
+                "value": value,
+            }
+            for provenance, provider, value in _KENYA_2020
+        ],
+    )
+
+
+def _kept_rows(cut: PartyTotalsCut, frame: Frame) -> list[tuple[Any, ...]]:
+    """The `(provenance, provider, value)` rows `cut` keeps of `frame`, sorted."""
+    at = [frame.columns.index(name) for name in ("provenance", _PROVIDER, "value")]
+    return sorted(
+        tuple(row[index] for index in at)
+        for chunk in cut.chunks(lambda: iter((frame,)))()
+        for row in chunk.rows
+    )
+
+
+def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone():
+    """A sum of DAC2A donors counted the IMF twice. The trust funds are a total in DAC2A and a
+    party in the CRS, so the cut drops their DAC2A row and keeps their CRS row."""
+    parties = {
+        **_PARTIES,
+        _IMF: PartyRow(dcid=_IMF, kind="party", party_class="official"),
+        _TRUST_FUNDS: PartyRow(
+            dcid=_TRUST_FUNDS,
+            kind="party",
+            party_class="official",
+            datasets=(_CRS, _DAC2A),
+            axes=("origin",),
+            dataset_kinds=((_DAC2A, "total"),),
+        ),
+    }
+    frame = _kenya_2020_frame()
+    cut = cut_party_totals(
+        lambda: iter((frame,)), roles=open_party_roles({}, _ROLES), parties=parties
+    )
+    kept = _kept_rows(cut, frame)
+
+    assert kept == sorted(_KENYA_2020[:1] + _KENYA_2020[2:])
+    assert sum(value for provenance, _, value in kept if provenance == _DAC2A) == 856_055_477.0
+    assert cut.trace_entries() == [
+        {"role": _PROVIDER, "provenance": _DAC2A, "entities": [_TRUST_FUNDS]}
+    ]
+    assert PartyTotalsCut.of_trace_entries(cut.trace_entries()) == cut
+
+
+@pytest.mark.parametrize(
+    ("entries", "kept"),
+    [
+        pytest.param(
+            [{"role": _PROVIDER, "entities": [_TRUST_FUNDS]}],
+            [0, 2],
+            id="recorded-without-provenance-cuts-every-dataset",
+        ),
+        pytest.param(
+            [{"role": _PROVIDER, "provenance": _DAC2A, "entities": [_TRUST_FUNDS]}],
+            [0, 2, 3],
+            id="recorded-with-provenance-cuts-that-dataset",
+        ),
+        pytest.param(
+            [
+                {"role": _PROVIDER, "provenance": _CRS, "entities": [_TRUST_FUNDS]},
+                {"role": _PROVIDER, "provenance": _DAC2A, "entities": [_IMF, _TRUST_FUNDS]},
+            ],
+            [2],
+            id="one-role-in-two-datasets",
+        ),
+    ],
+)
+def test_a_cut_rebuilt_from_a_trace_leaves_out_the_rows_it_recorded(
+    entries: list[dict[str, object]], kept: list[int]
+):
+    """A version recorded before its trace named the provenance left those parties out of
+    every dataset's rows, and a rebuilt cut writes back the entries it was rebuilt from."""
+    cut = PartyTotalsCut.of_trace_entries(entries)
+
+    assert _kept_rows(cut, _kenya_2020_frame()) == sorted(_KENYA_2020[index] for index in kept)
+    assert cut.trace_entries() == entries

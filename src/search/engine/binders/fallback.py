@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -37,12 +37,15 @@ from search.engine.binders.base import (
     BindResult,
     PolicyContractError,
     QuantityRequest,
+    StatedWordsRequest,
 )
 from search.engine.binders.house_policy import PolicyChoice, PolicyPool
 from search.engine.binders.jev import FallbackCause, JevCall, JevFailure
 from search.engine.binders.part_log import Call, elapsed_ms, log_binder_part
+from search.engine.errors import LLMInfraError
 
 if TYPE_CHECKING:
+    from search.engine.bind import SlotBindingDraft
     from search.engine.binders.base import Binder
     from search.engine.binders.jev import JevBinder
     from search.engine.clients.llm import SupportsLLM
@@ -151,10 +154,11 @@ class FallbackBinder:
             *,
             ratings: Mapping[int, float] | None = None,
             holds: Mapping[int, bool] | None = None,
+            drafts: Sequence[SlotBindingDraft] | None = None,
         ) -> PolicyChoice:
             nonlocal policies_ran
             policies_ran = True
-            return request.apply_policies(pool, ratings=ratings, holds=holds)
+            return request.apply_policies(pool, ratings=ratings, holds=holds, drafts=drafts)
 
         step: ApplyPolicies = apply_policies
         failure = self._earlier_failure(request.part)
@@ -189,6 +193,40 @@ class FallbackBinder:
             inherited=inherited,
         )
         return result, usage
+
+    async def rate_words_stated(
+        self, request: StatedWordsRequest, *, llm: SupportsLLM
+    ) -> tuple[Mapping[str, float], dict | None]:
+        """The rating of the binder that answered the bind call (`BindResult.binder`): the
+        primary's (`JevBinder.restated`), else the fallback's. A primary request logs a
+        ``binder_part`` line of its own. A failed one falls back on nothing: it raises
+        `LLMInfraError`, so each word it was asked counts as stated and the read is noted as
+        lost, since the bind's rating described the shape before any value was bound."""
+        decision = request.decision
+        if decision is None or decision.binder != self.primary.name:
+            return await self.fallback.rate_words_stated(request, llm=llm)
+        started = time.perf_counter()
+        try:
+            ratings, call = await self.primary.restated(request)
+        except Exception as exc:
+            failure = exc
+            if not isinstance(failure, JevFailure):
+                logger.error("jev stated call raised", exc_info=exc)
+                failure = JevFailure("error", type(exc).__name__, JevCall(ms=elapsed_ms(started)))
+            log_binder_part(
+                call="stated",
+                binder=self.name,
+                served_by="-",
+                ms=elapsed_ms(started),
+                failure=failure,
+            )
+            raise LLMInfraError(f"jev stated words read: {failure.kind}") from exc
+        if call is None:
+            return ratings, None
+        log_binder_part(
+            call="stated", binder=self.name, served_by=self.name, ms=elapsed_ms(started), jev=call
+        )
+        return ratings, call.usage
 
     def _earlier_failure(self, part: int | None) -> JevFailure | None:
         """The failure an earlier call of `part` fell back on, recorded for this call as one

@@ -10,6 +10,7 @@ catalogue job reads from the same rows.
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Collection
 from pathlib import Path
 
@@ -18,9 +19,11 @@ import pytest
 from code_index.export import content_hash
 from graph_release.context import current_release
 from graph_release.dfo import build_dfo_parts, dfo_inputs
-from graph_release.format import LoadedRelease, open_release
+from graph_release.format import DFO, LoadedRelease, PartRef, open_release
 from graph_release.origin import release_origin
 from graph_release.views import (
+    CODE_INDEX_PART,
+    DECLARATIONS_PART,
     ViewRefused,
     read_document,
     release_code_indexes,
@@ -43,6 +46,7 @@ from tests.graph_release.support import (
     build_test_release,
     origin_release,
     release_at_revision,
+    release_with,
     sample_tables,
     serving_release,
 )
@@ -203,3 +207,68 @@ def test_a_surface_built_while_serving_a_release_binds_it_and_the_session_s_afte
         assert surface.request_scope is not None
         with surface.request_scope():
             assert current_release() is served
+
+
+def _moved(name: str) -> dict[str, object]:
+    """Manifest changes giving the bound release's part `name` another hash, or adding it as a
+    JSON part of the DFO layer where the release holds none."""
+    parts = current_release().manifest.parts
+    if not any(ref.name == name for ref in parts):
+        added = PartRef(
+            name=name,
+            layer=DFO,
+            sha256="e" * 64,
+            bytes=2,
+            rows=None,
+            columns=(),
+            source="test",
+            produced_by_execution="execution",
+            suffix=".json",
+        )
+        return {"parts": (*parts, added)}
+    return {
+        "parts": tuple(
+            dataclasses.replace(ref, sha256="f" * 64) if ref.name == name else ref for ref in parts
+        )
+    }
+
+
+def _role_axes_moved() -> dict[str, object]:
+    declarations = json.loads(current_release().loaded.blobs[DECLARATIONS_PART])
+    role, axis = next(iter(sorted(declarations["role_axes"].items())))
+    declarations["role_axes"][role] = "destination" if axis != "destination" else "origin"
+    return {"blobs": {DECLARATIONS_PART: json.dumps(declarations).encode()}}
+
+
+def _declarations_text_moved() -> dict[str, object]:
+    declarations = json.loads(current_release().loaded.blobs[DECLARATIONS_PART])
+    declarations["unread_by_a_mint"] = True
+    return {
+        "blobs": {DECLARATIONS_PART: json.dumps(declarations).encode()},
+        "declarations_hash": "d" * 64,
+        **_moved(DECLARATIONS_PART),
+    }
+
+
+@pytest.mark.parametrize(
+    ("changes", "moves"),
+    [
+        pytest.param(lambda: {"dc_serving_revision": "revision-2"}, False, id="serving-revision"),
+        pytest.param(lambda: {"builder_code_hash": "c" * 64}, False, id="builder"),
+        pytest.param(_declarations_text_moved, False, id="declarations-text"),
+        pytest.param(lambda: _moved("base_parties"), False, id="base-parties"),
+        pytest.param(lambda: {"import_execution_id": "execution-2"}, True, id="import"),
+        pytest.param(lambda: _moved("series"), True, id="platform-part"),
+        pytest.param(lambda: _moved(CODE_INDEX_PART), True, id="code-index"),
+        pytest.param(_role_axes_moved, True, id="role-axes"),
+        pytest.param(
+            lambda: {"read_timestamp": "2031-01-01T00:00:00+00:00"}, True, id="build-year"
+        ),
+    ],
+)
+def test_the_import_key_moves_with_what_a_mint_reads_alone(changes, moves):
+    bound = current_release()
+
+    changed = release_with(**changes())
+
+    assert (changed.imported_data != bound.imported_data) is moves

@@ -1,4 +1,5 @@
-"""Every request logs the caller's claimed identity from its Cloud Run token and omits the token."""
+"""Every request logs the caller's claimed identity from its Cloud Run token and omits the token,
+and the SDK client its `X-DFO-Client` header names."""
 
 from __future__ import annotations
 
@@ -17,7 +18,11 @@ from starlette.responses import JSONResponse
 
 from dfo_platform import caller
 from dfo_platform.app import Surface, _trace_id_dispatch, create_app
-from dfo_platform.caller import CallerIdentity, caller_identity_from_headers
+from dfo_platform.caller import (
+    CallerIdentity,
+    caller_identity_from_headers,
+    client_fields_from_headers,
+)
 from dfo_platform.cloud_logging import JsonFormatter
 from dfo_platform.trace import get_cloud_trace_id, get_trace_id
 
@@ -128,6 +133,50 @@ def test_an_oversized_claim_is_clipped():
     assert len(identity.email) == 256
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "dfo-python/0.1.0 (CPython 3.14)",
+            {
+                "client_header": "dfo-python/0.1.0 (CPython 3.14)",
+                "client_name": "dfo-python",
+                "client_version": "0.1.0",
+                "client_runtime": "CPython 3.14",
+            },
+        ),
+        (
+            "dfo-ts/0.1.0",
+            {"client_header": "dfo-ts/0.1.0", "client_name": "dfo-ts", "client_version": "0.1.0"},
+        ),
+        ("my script", {"client_header": "my script"}),
+        ("dfo-ts/0.1.0 (browser) extra", {"client_header": "dfo-ts/0.1.0 (browser) extra"}),
+        (
+            "dfo-ts/0.1.0\x85\xad (browser)",
+            {
+                "client_header": "dfo-ts/0.1.0 (browser)",
+                "client_name": "dfo-ts",
+                "client_version": "0.1.0",
+                "client_runtime": "browser",
+            },
+        ),
+        ("", {}),
+        ("\x1b\x7f ", {}),
+    ],
+    ids=[
+        "full",
+        "no-runtime",
+        "unparsed",
+        "trailing-text",
+        "c1-control-and-soft-hyphen",
+        "empty",
+        "only-controls",
+    ],
+)
+def test_the_client_header_is_cleaned_and_parsed(value, expected):
+    assert client_fields_from_headers(Headers({"X-DFO-Client": value})) == expected
+
+
 @pytest.fixture
 def request_lines():
     stream = io.StringIO()
@@ -195,10 +244,35 @@ def test_the_token_never_reaches_the_log(request_lines, credential, secret):
     assert credential not in output
 
 
+def test_a_request_logs_the_sdk_client_it_names(request_lines):
+    _client().get("/api/t/ok", headers={"X-DFO-Client": "dfo-ts/0.1.0 (browser)"})
+
+    (entry,) = request_lines()
+    assert {k: v for k, v in entry.items() if k.startswith("client_")} == {
+        "client_header": "dfo-ts/0.1.0 (browser)",
+        "client_name": "dfo-ts",
+        "client_version": "0.1.0",
+        "client_runtime": "browser",
+    }
+
+
+def test_a_hostile_client_header_is_cleaned_and_clipped(request_lines):
+    hostile = "dfo-python/\x1b[31m0.1.0\x00\t (CPython 3.14)" + "x" * 1_000
+
+    _client().get("/api/t/ok", headers={"X-DFO-Client": hostile})
+
+    (entry,) = request_lines()
+    logged = entry["client_header"]
+    assert logged.startswith("dfo-python/[31m0.1.0 (CPython 3.14)xxx")
+    assert len(logged) == 256
+    assert all(ch.isprintable() for ch in logged)
+
+
 def test_a_request_without_a_token_logs_it_absent(request_lines):
     _client().get("/api/t/ok")
 
     (entry,) = request_lines()
+    assert not [k for k in entry if k.startswith("client_")]
     assert entry["caller_token_present"] is False
     assert entry["caller_email"] is None
     assert entry["caller_aud"] is None

@@ -2,9 +2,10 @@
 
 A text is a sequence of word and separator tokens with their offsets in the text.
 Whitespace is no token. A word is a run of letters and digits, joined across single
-inner hyphens and apostrophes ("non-concessional", "d'Ivoire"). Every other visible
-character is a separator token of its own: "HIV/AIDS" is the word "HIV", the separator
-"/" and the word "AIDS". A token's text writes a typographic apostrophe as a straight
+inner hyphens and apostrophes ("non-concessional", "d'Ivoire") and across a decimal point
+between two digits ("2.15"). Every other visible character is a separator token of its
+own: "HIV/AIDS" is the word "HIV", the separator "/" and the word "AIDS", and "$2.15" is
+the separator "$" and the word "2.15". A token's text writes a typographic apostrophe as a straight
 one (U+2019 as U+0027), so the two spellings of "d'Ivoire" are one word.
 
 A label matches a query span when their words are equal, casefolded, and each gap
@@ -24,7 +25,9 @@ from typing import Literal
 
 TokenKind = Literal["word", "sep"]
 
-_TOKEN_RE = re.compile(r"(?P<word>[^\W_]+(?:[-'\u2019][^\W_]+)*)|(?P<sep>[^\w\s]|_)")
+_TOKEN_RE = re.compile(
+    r"(?P<word>[^\W_]+(?:(?:[-'\u2019]|(?<=\d)\.(?=\d))[^\W_]+)*)|(?P<sep>[^\w\s]|_)"
+)
 
 
 @dataclass(frozen=True, slots=True)

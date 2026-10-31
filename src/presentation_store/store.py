@@ -7,8 +7,8 @@ composition row also stores the SHA-256 digest of its write token, written once 
 An unknown id raises `DraftNotFound`. A component's write-token digest is unique, and its create
 may also store the SHA-256 of the create request; `prior_create()` finds a component by digest.
 
-`allocate_component_id()` mints an ID without I/O or locking. The pipeline can pin a frame
-before `begin_write()` opens its transaction. `begin_write` holds one transaction across
+`allocate_component_id()` mints an ID without I/O or locking, before `begin_write()` opens
+its transaction. `begin_write` holds one transaction across
 composition locking, component checks, append, and commit. It locks compositions before
 components, making component and composition writes atomic. A create whose write-token
 digest another component stores becomes `WriteTokenInUse`; Postgres holds the insert until a
@@ -17,6 +17,9 @@ concurrent create with the same digest commits or rolls back. Other generated-ID
 become `EditConflict`. A revised component whose stored composition row is missing also
 raises `EditConflict`. Other store failures become `PresentationStoreUnavailable`, which
 records whether the driver failure meant a dead connection so the presentation pool discards it.
+
+`rehash_derived_rendering` moves the revisions drawing one derived frame from its recipe's old
+`normal_form_hash` to a new one, for `datasets-maintenance normalise-recipes`.
 """
 
 from __future__ import annotations
@@ -49,11 +52,11 @@ from presentation_store.store_errors import (
     violated_constraint,
 )
 
-__all__ = ["LivePresentationStore"]
+__all__ = ["LivePresentationStore", "rehash_derived_rendering"]
 
 _REVISION_COLUMNS = (
     "revision, stored_intent, resolved_payload, catalog_version, schema_version, "
-    "formatter_profile, series_coordinates, created_at"
+    "formatter_profile, series_coordinates, created_at, frame_rendering"
 )
 
 # Migration 0008's unique index on `presentation.component (write_token_sha256)`.
@@ -88,6 +91,7 @@ def _row_to_record(component_id: str, row: Mapping[str, object]) -> RevisionReco
         formatter_profile=cast(dict, row["formatter_profile"]),
         series_coordinates=cast("list[dict] | None", row["series_coordinates"]),
         created_at=cast(datetime, row["created_at"]),
+        frame_rendering=cast("dict | None", row["frame_rendering"]),
     )
 
 
@@ -410,6 +414,41 @@ class LivePresentationStore:
         )
 
 
+# The revisions drawing one frame (`stored_intent.frame_ref`) under one stored rendering.
+_RENDERING_REVISIONS = (
+    "WHERE frame_rendering = %s::jsonb AND stored_intent -> 'frame_ref' = %s::jsonb"
+)
+
+
+def rehash_derived_rendering(
+    store: DatasetStore,
+    *,
+    spec_id: str,
+    content_version: str,
+    old_hash: str,
+    new_hash: str,
+    dry_run: bool = False,
+) -> int:
+    """Rewrite the `frame_rendering` of every revision drawing the derived frame `spec_id`,
+    `content_version` under the recipe hash `old_hash` to `new_hash`, in one transaction, and
+    return how many revisions that is. `dry_run` counts them and changes nothing."""
+    pair = json.dumps({"spec_id": spec_id, "content_version": content_version})
+    old = json.dumps({"normal_form_hash": old_hash})
+    with store.transaction() as tx:
+        if dry_run:
+            rows = tx.fetch_all(
+                f"SELECT component_id FROM presentation.component_revision {_RENDERING_REVISIONS}",
+                (old, pair),
+            )
+        else:
+            rows = tx.fetch_all(
+                "UPDATE presentation.component_revision SET frame_rendering = %s::jsonb "
+                f"{_RENDERING_REVISIONS} RETURNING component_id",
+                (json.dumps({"normal_form_hash": new_hash}), old, pair),
+            )
+    return len(rows)
+
+
 def _insert_generated_subject(
     tx: Transaction, *, subject_kind: str, sql: str, params: Sequence[object]
 ) -> None:
@@ -491,8 +530,8 @@ class _LiveWriteContext:
             tx.execute(
                 "INSERT INTO presentation.component_revision "
                 "(component_id, revision, stored_intent, resolved_payload, catalog_version, "
-                "schema_version, formatter_profile, series_coordinates) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "schema_version, formatter_profile, series_coordinates, frame_rendering) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     self.component_id,
                     record.revision,
@@ -506,6 +545,7 @@ class _LiveWriteContext:
                         if record.series_coordinates is not None
                         else None
                     ),
+                    (dict(record.frame_rendering) if record.frame_rendering is not None else None),
                 ),
             )
         except Exception as exc:

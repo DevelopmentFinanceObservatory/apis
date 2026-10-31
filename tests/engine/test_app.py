@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from logging.handlers import BufferingHandler
@@ -20,6 +19,7 @@ from fastapi.testclient import TestClient
 from dfo_platform.build import build_commit
 from dfo_platform.request_deadline import bounded_deadline
 from search.engine.config import settings
+from search.engine.core import RequestBudget, request_budget
 from search.engine.extract import Extraction, ExtractionResult
 from search.engine.region import RegionResult
 from search.models import Resolution
@@ -1162,11 +1162,19 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
 ):
     """A leg blocked in a worker thread at the soft deadline is cancelled, and the partial
     answer lands inside the grace, before the hard cap's 504. The thread sees the request deadline,
-    so its reads are bounded by the hard cap."""
+    so its reads are bounded by the hard cap. The 2 s grace bounds only a slow runner's cancel and
+    thread hop, which fails the test red with a 504 and never passes it falsely."""
     search_settings(request_timeout_s=0.3, finalise_grace_s=2.0)
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _extract_two_variables)
     release = threading.Event()
     deadlines_seen: list[float | None] = []
+    budgets: list[RequestBudget] = []
+
+    def _recording_budget(*, kind: str) -> RequestBudget:
+        budgets.append(request_budget(kind=kind))
+        return budgets[-1]
+
+    monkeypatch.setattr("search.engine.app.request_budget", _recording_budget)
 
     def _blocked_read() -> None:
         deadlines_seen.append(bounded_deadline(None))
@@ -1191,7 +1199,6 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
 
     monkeypatch.setattr("search.engine.fanout.resolve_variable", _leg)
     client = make_client()
-    started = time.monotonic()
     try:
         with _resolve_log_lines() as lines:
             resp = client.post(
@@ -1200,25 +1207,46 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
     finally:
         release.set()
 
+    # A 200 means the partial answer landed before the hard cap, which answers 504.
     assert resp.status_code == 200, resp.text
     assert resp.json()["diagnostics"]["timed_out"] is True
-    # The cut leg is backfilled as variable_not_resolved; only `timed_out` tells it apart.
+    # The finished leg keeps its own reason and the cut leg reads `timed_out`.
     [logged] = lines
     assert logged["outcome"] == "no_data"
-    assert logged["no_data_reasons"] == ["variable_not_resolved", "variable_not_resolved"]
+    assert logged["no_data_reasons"] == ["variable_not_resolved", "timed_out"]
     assert logged["timed_out"] is True
-    assert time.monotonic() - started < 2.0
-    [seen] = deadlines_seen
-    assert seen is not None and started + 2.0 < seen < started + 2.6
+    [budget] = budgets
+    assert budget.hard - budget.soft == pytest.approx(2.0)
+    assert deadlines_seen == [budget.hard]
 
 
 def test_sse_route_ends_at_the_hard_cap_with_the_timeout_error_event(monkeypatch, search_settings):
     """A pipeline that never finishes ends at soft deadline plus grace with the 504 `timeout`
-    error event, and a worker thread inside the stream sees the hard cap as its deadline."""
-    search_settings(request_timeout_s=0.1, finalise_grace_s=0.2)
+    error event, and a worker thread inside the stream sees the hard cap as its deadline. The
+    stream arms its own timer at the hard cap too, not at the soft deadline."""
+    search_settings(request_timeout_s=0.1, finalise_grace_s=1.0)
     deadlines_seen: list[float | None] = []
+    budgets: list[RequestBudget] = []
+    armed: list[float] = []
 
-    async def _hanging_events(*_args: object, **_kwargs: object):
+    class _RecordingAsyncio:
+        """`search.engine.app.asyncio` with `timeout` recording when each timer fires, on the
+        loop clock, which is `time.monotonic()`."""
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(asyncio, name)
+
+        def timeout(self, delay: float | None) -> asyncio.Timeout:
+            timer = asyncio.timeout(delay)
+            when = timer.when()
+            assert when is not None
+            armed.append(when)
+            return timer
+
+    monkeypatch.setattr("search.engine.app.asyncio", _RecordingAsyncio())
+
+    async def _hanging_events(*_args: object, budget: RequestBudget, **_kwargs: object):
+        budgets.append(budget)
         deadlines_seen.append(await asyncio.to_thread(bounded_deadline, None))
         # Long past the cap. Bounded so a stream without the cap fails instead of hanging.
         await asyncio.sleep(5)
@@ -1227,18 +1255,18 @@ def test_sse_route_ends_at_the_hard_cap_with_the_timeout_error_event(monkeypatch
 
     monkeypatch.setattr("search.engine.app.resolve_events", _hanging_events)
     client = make_client()
-    started = time.monotonic()
     resp = client.post(
         "/api/search/resolve",
         json={"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}},
         headers={"Accept": "text/event-stream"},
     )
-    elapsed = time.monotonic() - started
 
     frames = _parse_sse(resp.text)
     assert [(event, data["code"], data["status"]) for event, data in frames] == [
         ("error", "timeout", 504)
     ]
-    assert 0.3 <= elapsed < 2.0
-    [seen] = deadlines_seen
-    assert seen is not None and started + 0.3 <= seen < started + 0.5
+    [budget] = budgets
+    assert budget.hard - budget.soft == pytest.approx(1.0)
+    assert deadlines_seen == [budget.hard]
+    # The timer is armed at the budget's hard deadline, less the time since the route read it.
+    assert armed == [pytest.approx(budget.hard, abs=0.1)]

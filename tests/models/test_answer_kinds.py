@@ -168,11 +168,11 @@ class TestPartOperations:
             Operation.model_validate(payload)
 
 
-class TestNoDataQuery:
-    def test_data_query_defaults_to_none(self):
-        assert NoData(reason="no_observations").data_query is None
+class TestNoDataOptions:
+    def test_options_default_to_empty(self):
+        assert NoData(reason="no_observations").options == []
 
-    def test_data_query_carries_a_parsed_input(self):
+    def test_an_option_carries_a_parsed_input(self):
         query = ParsedInput(
             parts=[
                 ParsedPart(
@@ -181,10 +181,16 @@ class TestNoDataQuery:
                 )
             ]
         )
-        no_data = NoData.model_validate(
-            {"reason": "entity_ambiguous", "data_query": query.model_dump(mode="json")}
-        )
-        assert no_data.data_query == query
+        option = {"mentions": ["Congo"], "label": "Congo [DRC]", "data_query": query}
+        no_data = NoData.model_validate({"reason": "entity_ambiguous", "options": [option]})
+        assert no_data.options[0].data_query == query
+
+    def test_a_refusal_carrying_data_query_fails_validation(self):
+        query = ParsedInput(parts=[ParsedPart(variable_text="ODA")])
+        with pytest.raises(ValidationError):
+            NoData.model_validate(
+                {"reason": "entity_ambiguous", "data_query": query.model_dump(mode="json")}
+            )
 
 
 class TestNoDataNearMatch:

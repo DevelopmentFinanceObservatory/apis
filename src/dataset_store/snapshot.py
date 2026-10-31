@@ -15,7 +15,8 @@ migration 0030's insert trigger fills a row written with only `immutable_body` f
 and migration 0031 fills the rows older than the trigger. A row holding neither, whose body
 names neither `prepared_at` nor `input_content_versions`, refuses with `VersionFactsMissing`.
 `frame_sha256` holds the hash of the version's frame, NULL on a row written before versions
-stored it.
+stored it. `frame_summed` says whether a derived version's frame holds its summed rows (migration
+0038).
 """
 
 from __future__ import annotations
@@ -95,10 +96,12 @@ class ManifestFacts:
     manifest member of that name as the wire model dumps it. `series_count` and
     `series_coverage_stamp` are `None` on a version minted before the manifest carried them.
     `output_profile` is the version's `OutputProfile` JSON, `None` on a version minted before
-    versions stored it. `series_conversions` holds one conversion record per converted series
-    (`materialise.series_conversion.encode_series_conversions`), `None` on an unconverted
-    version. `default_scope_plural` says whether the mint's default place scope held more than
-    one place, `None` on a collapse and on a version minted before versions stored it.
+    versions stored it. `series_conversions` holds one conversion record per converted series,
+    `None` on an unconverted version and on a derived one. Otherwise it is the list of
+    per-series entries `materialise.series_conversion.encode_series_conversions` gives, or the
+    packed object `decode_series_conversion_entries` also reads.
+    `default_scope_plural` says whether the mint's default place scope held more than one place,
+    `None` on a collapse and on a version minted before versions stored it.
     """
 
     prepared_at: datetime
@@ -110,7 +113,7 @@ class ManifestFacts:
     series_count: int | None = None
     series_coverage_stamp: str | None = None
     output_profile: Mapping[str, object] | None = None
-    series_conversions: Sequence[Mapping[str, object]] | None = None
+    series_conversions: dict[str, object] | list[Mapping[str, object]] | None = None
     default_scope_plural: bool | None = None
 
 
@@ -178,7 +181,7 @@ def version_fact_values(facts: VersionFacts) -> tuple[object, ...]:
         facts.series_count,
         facts.series_coverage_stamp,
         _json(None if facts.output_profile is None else dict(facts.output_profile)),
-        _json(None if facts.series_conversions is None else list(facts.series_conversions)),
+        _json(facts.series_conversions),
         facts.default_scope_plural,
         None,
         None,
@@ -221,7 +224,10 @@ def _version_facts(
             series_count=None if series_count is None else int(cast(int, series_count)),
             series_coverage_stamp=cast("str | None", row["series_coverage_stamp"]),
             output_profile=cast("Mapping[str, object] | None", row["output_profile"]),
-            series_conversions=cast("list[Mapping[str, object]] | None", row["series_conversions"]),
+            series_conversions=cast(
+                "dict[str, object] | list[Mapping[str, object]] | None",
+                row["series_conversions"],
+            ),
             default_scope_plural=(
                 None if default_scope_plural is None else bool(default_scope_plural)
             ),
@@ -248,6 +254,11 @@ class StoredVersion:
     # The hash of the version's frame (`dfo_frame_grammar.frame_sha256`), the same for every
     # encoding of the same rows. `None` on a version recorded before versions stored it.
     frame_sha256: str | None = None
+    # On a derived version (`base_content_version` set), whether its frame holds its summed
+    # rows: `True` for the groupby collapse, `False` for the party-totals cut frame. `None` on a
+    # version naming no base, and on a derived version not recorded with it, which renders from
+    # its base frame when it is a party-totals cut with a groupby.
+    frame_summed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -345,7 +356,7 @@ _LOCATIONS_SQL = (
 )
 
 _VERSION_SQL = (
-    "SELECT subject_kind, schema_version, base_content_version, frame_sha256, "
+    "SELECT subject_kind, schema_version, base_content_version, frame_sha256, frame_summed, "
     f"{', '.join(VERSION_FACT_COLUMNS)} "
     "FROM datasets.version_record WHERE subject_id = %s AND content_version = %s"
 )
@@ -368,6 +379,7 @@ def _stored_version(
         facts=_version_facts(row, subject_id=subject_id, content_version=content_version),
         base_content_version=cast("str | None", row["base_content_version"]),
         frame_sha256=cast("str | None", row["frame_sha256"]),
+        frame_summed=cast("bool | None", row["frame_summed"]),
     )
 
 
@@ -435,7 +447,7 @@ class LiveSnapshotReader:
         with self._store.transaction() as tx:
             rows = tx.fetch_all(
                 "SELECT subject_id, content_version, subject_kind, schema_version, "
-                f"base_content_version, frame_sha256, {', '.join(VERSION_FACT_COLUMNS)} "
+                f"base_content_version, frame_sha256, frame_summed, {', '.join(VERSION_FACT_COLUMNS)} "
                 "FROM datasets.version_record "
                 f"WHERE content_version IN ({', '.join(['%s'] * len(requested))})",
                 tuple(requested),
@@ -609,6 +621,7 @@ class ArtifactReferenceWriter(Protocol):
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> datetime:
         """Same write as `record_reference`, made in one statement that also checks
         `datasets.version_revocation` for the version and its base version, under `subject_id`
@@ -621,6 +634,9 @@ class ArtifactReferenceWriter(Protocol):
         version. A digest no longer linked, because a re-render replaced its expired link, raises
         `ArtifactNotFound` and writes nothing. A link write after
         this one commits sees the pinned location its caller recorded first, and keeps the link.
+
+        `require_link=False` skips the lock and that check, for a reference to a file its caller
+        serves by its own record, such as an export, which no snapshot reads by link.
         """
         ...
 
@@ -635,4 +651,9 @@ class ArtifactReferenceWriter(Protocol):
         now: datetime,
     ) -> None:
         """Set `removed_at` on a matching live row. Missing or removed rows are a no-op."""
+        ...
+
+    def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
+        """Whether any reference row names the version, live or removed, of any principal,
+        digest or kind."""
         ...

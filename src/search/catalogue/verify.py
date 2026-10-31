@@ -10,9 +10,10 @@ logs one `search_catalogue_verify` line with its outcome:
 - `no_uri`, exit 2: `SEARCH_CATALOGUE_URI` is unset.
 - `no_pointer`, exit 3: no build is published at this image's format root.
 
-It checks that a build exists, not which run built it, so a deploy after a refused build at an
-unchanged format passes on the previous build. The deploy runs it as an execution of the search
-catalogue job after the job's own run, before the services move (deploy/search-catalogue.md).
+It checks that a build exists, not which run built it, so a deploy whose own run is refused or
+fails at an unchanged format passes on the previous build. The deploy runs it as an execution of
+the search catalogue job after the job's own run, whatever that run's exit status, before the
+services move (deploy/search-catalogue.md).
 """
 
 from __future__ import annotations

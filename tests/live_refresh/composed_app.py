@@ -1,17 +1,24 @@
 """The Datasets and Presentation surfaces composed over one set of in-memory doubles, with a
 dataset whose data a test can move.
 
-`compose()` builds `dfo_platform.app.create_app` over both surfaces. The live stores
+`compose()` builds `dfo_platform.app.create_app` over both surfaces, as `dfo_apis.app` composes
+them: the Presentation surface checks a live share slot for newer data through the Datasets
+surface's dependency cell (`presentation_api.newest_frames.DatasetsNewestFrames`), and the share
+routes and the share pins spend the caller allowances and pin budgets the pin door spends,
+from one ledger. The live stores
 (`LiveVersionRecordWriter`, `LiveSnapshotReader`, `LiveHeadStore`, `LiveRecipeStore`,
 `LiveDescriptionStore`, `LiveVersionLister`, `LiveArtifactInventory`, `LiveArtifactReferenceWriter`,
-`LiveOperationStore`, `LiveArtifactStore`, `LiveFrameStore`) run their own SQL and storage calls
-against SQLite and a fake GCS client. The graph, coverage index, and SDMX endpoint are doubles
+`LiveOperationStore`, `LiveArtifactStore`, `LiveFrameStore`, `LiveAllowanceLedger`, `LiveShareStore`)
+run their own SQL and storage calls against SQLite, the presentation store fake and a fake GCS
+client. The graph, coverage index, and SDMX endpoint are doubles
 that read one `Observations` table, so a change to that table is what a new upstream release is
 to the service. Nothing reaches the network or a cloud service.
 
 The dataset is `DATASET`: two StatVars of one family (`MEMBER_A`, `MEMBER_B`) over the
 recipients in `RECIPIENTS`. It starts with `MEMBER_A` alone holding observations, for
-`INITIAL_YEARS`. Mint it with `ComposedApp.mint_body(options)`.
+`INITIAL_YEARS`. `GRANTS` is a second dataset of the same observations holding `MEMBER_A`
+alone, so `MEMBER_B`'s observations move `DATASET` and leave `GRANTS` as it was. Mint either
+with `ComposedApp.mint_body(options, spec_id=...)`.
 
 Serve it over HTTP from the repository root, with no environment variable set:
 
@@ -78,14 +85,19 @@ from assembler.ports import ReleaseRegistry
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.allowance import LiveAllowanceLedger, allowance_limits
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.deps import DepsCell
 from datasets_api.description_store import LiveDescriptionStore
+from datasets_api.doors.analysis import RunningAnalyses
 from datasets_api.doors.definition import DefinitionDeps
+from datasets_api.export_store import LiveExportStore
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
+from datasets_api.principals import Principals
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reference_store import LiveArtifactReferenceWriter
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
@@ -98,7 +110,9 @@ from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import bound_catalogue
 from presentation_api.app import presentation_surface
-from presentation_store import LiveFrameStore
+from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
+from presentation_api.newest_frames import DatasetsNewestFrames
+from presentation_store import LiveFrameStore, LiveShareStore
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
@@ -111,6 +125,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.graph_release.support import build_session_release
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
+from tests.presentation_store.conftest import FakePresentationStore
 from tests.series_coverage.support import coverage_table
 from tests.spec_registry.conftest import FakeDatasetStore
 
@@ -160,6 +175,12 @@ _IDENTITY = {
     "requested_window": {"kind": "all"},
 }
 DATASET = recompute_identity(_IDENTITY).spec_id
+_GRANTS_IDENTITY = {
+    **_IDENTITY,
+    "slots": [{"property": _AXIS, "binding": {"state": "set", "refs": [_AXIS_VALUES[MEMBER_A]]}}],
+}
+GRANTS = recompute_identity(_GRANTS_IDENTITY).spec_id
+_IDENTITIES = {DATASET: _IDENTITY, GRANTS: _GRANTS_IDENTITY}
 
 _CSV_HEADER = (
     "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,recipient,unit,measurementMethod,"
@@ -655,14 +676,21 @@ class ComposedApp:
     _operations_run: set[tuple[str, int]] = field(default_factory=set)
 
     @staticmethod
-    def mint_body(options: Mapping[str, object] = FRAME_OPTIONS) -> dict[str, object]:
-        """The `POST /api/datasets` body that mints `DATASET` under `options`."""
+    def mint_body(
+        options: Mapping[str, object] = FRAME_OPTIONS, *, spec_id: str = DATASET
+    ) -> dict[str, object]:
+        """The `POST /api/datasets` body that mints `spec_id`, `DATASET` or `GRANTS`, under
+        `options`."""
         return {
             "schema_version": 1,
             "input": {
                 "kind": "spec_id",
-                "spec_id": DATASET,
-                "definition": {"schema_version": 1, "spec_id": DATASET, "identity": _IDENTITY},
+                "spec_id": spec_id,
+                "definition": {
+                    "schema_version": 1,
+                    "spec_id": spec_id,
+                    "identity": _IDENTITIES[spec_id],
+                },
             },
             "options": dict(options),
         }
@@ -901,6 +929,9 @@ def compose(
         first_party_principal=PUBLISH_PRINCIPAL,
     )
     revision_store = FakeRevisionStore()
+    datasets_cell = DepsCell()
+    running_analyses = RunningAnalyses()
+    allowances = LiveAllowanceLedger(store=version_store, limits=allowance_limits(settings))
     frame_store = LiveFrameStore(
         snapshots=snapshot_reader,
         artifacts=artifact_store,
@@ -908,6 +939,8 @@ def compose(
         reference_writer=reference_writer,
         spec_reader=spec_reader,
         recipe_reader=recipe_store,
+        description_reader=description_store,
+        allowances=allowances,
         code_index=code_index,
     )
 
@@ -924,7 +957,9 @@ def compose(
                 head_writer=head_store,
                 snapshot_reader=snapshot_reader,
                 reference_writer=reference_writer,
+                allowances=allowances,
                 recipe_store=recipe_store,
+                export_store=LiveExportStore(store=version_store),
                 description_store=description_store,
                 version_lister=version_lister,
                 code_index=code_index,
@@ -933,6 +968,8 @@ def compose(
                 operation_store=operation_store,
                 task_client=task_client,
                 catalogue=fake_catalogue_service(),
+                deps_cell=datasets_cell,
+                running_analyses=running_analyses,
             ),
             presentation_surface(
                 revision_store=revision_store,
@@ -943,6 +980,16 @@ def compose(
                 snapshot_reader=snapshot_reader,
                 recipe_reader=recipe_store,
                 live_refresh=LiveRefreshPrincipal.resolve(settings=settings),
+                share_store=LiveShareStore(store=FakePresentationStore()),
+                allowances=allowances,
+                caller_settings=settings.caller,
+                principals=Principals.resolve(settings=settings),
+                # As `dfo_apis.app.build_presentation_surface` builds it over the same cell.
+                newest_frames=DatasetsNewestFrames(
+                    datasets_cell,
+                    running=running_analyses,
+                    budget_seconds=PRESENTATION_COMPONENTS_TIMEOUT_SECONDS / 2,
+                ),
             ),
         ]
     )
@@ -971,6 +1018,7 @@ def compose(
             rate_cache=rate_cache,
             coverage=coverage,
             version_writer=version_writer,
+            head_store=head_store,
             snapshot_reader=snapshot_reader,
             head_recheck_interval=timedelta(seconds=settings.head_recheck_seconds),
             head_max_age=timedelta(seconds=settings.head_max_age_seconds),

@@ -115,6 +115,7 @@ def scope_document(
     max_candidates: int,
     seam_default: bool,
     qualifier_coverage: Literal["log", "refuse"],
+    stated_word_bar: float,
     build_commit: str,
     binder: str,
     model: str,
@@ -131,14 +132,15 @@ def scope_document(
     """Build shared key material from caller-supplied values.
 
     Includes the schema, defaulted response options, effective candidate cap,
-    place-as-constraint default, qualifier coverage mode, build commit, the binder the
+    place-as-constraint default, qualifier coverage mode and the bar its rated words are
+    held to, build commit, the binder the
     request resolved to and the model it answers with, the engine's Gemini model, which
     runs extraction and every other model call whichever binder answers, seed, day, graph
     and coverage
     stamps, the revision of the conversion catalogue the request
     bound (None when it bound none), and the build of the origin catalogue it bound with
     its UN System setting, which decide what provenances an answer admits. The cap, the
-    place default and the coverage mode can change answers without changing the build
+    place default, the coverage mode and its bar can change answers without changing the build
     commit. A catalogue
     reload changes the revision or build and not the graph generation. Each stamp is
     captured once and invalidates both layers when it changes. `bundle` marks a request
@@ -151,6 +153,7 @@ def scope_document(
         "response_options": _resolved_options(options, max_candidates=max_candidates),
         "seam_default": seam_default,
         "qualifier_coverage": qualifier_coverage,
+        "stated_word_bar": stated_word_bar,
         "build_commit": build_commit,
         "binder": binder,
         "model": model,
@@ -258,9 +261,14 @@ def layer2_key(
     query_text_negated_stated_words: Sequence[str] = (),
     query_text_value_source: str | None = None,
     source_codes: Sequence[str | None] = (),
+    unit_texts: Sequence[str | None] = (),
     separate: Sequence[bool] = (),
     written_variable_phrases: Sequence[str | None] = (),
+    every_member_axes: Sequence[str | None] = (),
     extraction_warnings: Sequence[Warning] = (),
+    measure_qualifiers: Sequence[tuple[str, ...]] = (),
+    open_axes: Sequence[frozenset[str]] = (),
+    stated_scopes: Sequence[Mapping[str, object] | None] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -274,10 +282,24 @@ def layer2_key(
     the part echoes them, so "aid to Kenya" and "aid to Kenya excluding the CRS" keep
     separate entries. `source_codes` runs parallel to `variables` when given and holds the
     series code the query writes for each (`source_code.scan_source_codes`). The key states
-    them and adds nothing when none is written.
+    them and adds nothing when none is written. `unit_texts` runs parallel to `variables`
+    when given and holds the unit text extraction peeled from each
+    (`ExtractionResult.unit_texts`), the part's own unit request beside the request-wide
+    one `dropped_qualifiers` holds. The key states them and adds nothing when none is peeled.
+    `measure_qualifiers` runs parallel to `variables` when given and holds the words that
+    narrow each variable's measure, which only its part reads. The key states the
+    variables that have some and adds nothing when none has. `open_axes` runs parallel to
+    `variables` when given and holds the flow roles each part asks one value per member of
+    (`role_text.breakdown_axis`), read off phrases with the query's prepositions. The key
+    states the variables that have some and adds nothing when none has.
     `separate` runs parallel to `variables` when given and marks each variable compared
     with the others, which never folds (`same_shape.fold_key`). The key states the marked
     positions and adds nothing when none is marked.
+    `stated_scopes` runs parallel to `variables` when given and holds the scope entries and
+    total intent each part's words state (`stated_scope.intake_key_document`), None for a
+    part whose words state none, so "ODA to Kenya", "bilateral ODA to Kenya" and "net ODA
+    to Kenya" key apart whatever their extractions. The key states them and
+    adds nothing when no part states any.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -286,10 +308,12 @@ def layer2_key(
     slots with a declared default whose plain name the query names, the stretch of the query
     that writes each variable (`written_phrase.written_phrase`), which the key states only
     when one is given, and the words a dataset states of its rows that the query negates
-    (`bind_repair.stated_words_negated`), which the key states only when there is one, and the
-    warnings extraction adds to the answer (`extraction_warnings`): a relative date the parser
-    could not read, quoting its wording, and the variable and qualifier caps, counting what
-    the model named before them. The key states those only when there is one.
+    (`bind_repair.stated_words_negated`), which the key states only when there is one, the
+    flow axis each dropped qualifier asks every member of (`role_text.every_member_axis`),
+    which the key states only when one does, and the warnings extraction adds to the answer
+    (`extraction_warnings`): a relative date the parser could not read, quoting its wording,
+    and the variable and qualifier caps, counting what the model named before them. The key
+    states those only when there is one.
     `query_text_value_source` holds the single-variable query whose words ground drafted
     values. Their names can come from graph taxonomies known only after retrieval, so
     the whole source participates in the key.
@@ -318,10 +342,28 @@ def layer2_key(
         document["query_text_value_source"] = " ".join(query_text_value_source.split())
     if any(code is not None for code in source_codes):
         document["source_codes"] = list(source_codes)
+    if any(text is not None for text in unit_texts):
+        document["unit_texts"] = list(unit_texts)
+    if any(measure_qualifiers):
+        document["measure_qualifiers"] = {
+            variable: list(phrases)
+            for variable, phrases in zip(variables, measure_qualifiers, strict=True)
+            if phrases
+        }
+    if any(open_axes):
+        document["open_axes"] = {
+            variable: sorted(axes)
+            for variable, axes in zip(variables, open_axes, strict=True)
+            if axes
+        }
+    if any(stated is not None for stated in stated_scopes):
+        document["stated_scopes"] = list(stated_scopes)
     if separate_positions := [i for i, marked in enumerate(separate) if marked]:
         document["separate"] = separate_positions
     if any(phrase is not None for phrase in written_variable_phrases):
         document["written_variable_phrases"] = list(written_variable_phrases)
+    if any(axis is not None for axis in every_member_axes):
+        document["every_member_axes"] = list(every_member_axes)
     if extraction_warnings:
         document["extraction_warnings"] = [
             warning.model_dump(mode="json") for warning in extraction_warnings
@@ -329,12 +371,29 @@ def layer2_key(
     return _digest("l2", document)
 
 
-def parsed_key(*, parsed: ParsedInput, scope: dict) -> str:
-    """Key a parsed request's whole input over the shared scope, on layer 2.
+def parsed_key(
+    *,
+    parsed: ParsedInput,
+    scope: dict,
+    stated_scopes: Sequence[Mapping[str, object] | None] = (),
+) -> str:
+    """Key a parsed request's input over the shared scope, on layer 2.
 
     The posted parts are the extraction a raw-text request derives, and every field of
-    them, and the raw query its echo carries, reaches the answer."""
-    document = {"scope": scope, "parsed": parsed.model_dump(mode="json")}
+    them, and the raw query its echo carries, reaches the answer. The user's message and
+    the carried entries reach it only through the scope entries each part is posted with,
+    so they enter as `stated_scopes`, parallel to the deduplicated parts
+    (`stated_scope.intake_key_document`, None for a part posted with none), as the raw-text
+    door keys them (`layer2_key`). Two messages that state no scope share an entry; a
+    stated entry carries its words' offsets in the message (`Entry.origin`), so messages
+    worded apart key apart even where they state the same scope. The key states them and
+    adds nothing when no part is posted any."""
+    document: dict[str, object] = {
+        "scope": scope,
+        "parsed": parsed.model_dump(mode="json", exclude={"user_message", "carried_entries"}),
+    }
+    if any(stated is not None for stated in stated_scopes):
+        document["stated_scopes"] = list(stated_scopes)
     return _digest("l2", document)
 
 

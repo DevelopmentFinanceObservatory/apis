@@ -968,12 +968,25 @@ def test_a_collapse_is_backfilled_from_its_base_versions_record() -> None:
     assert record.steps == minted.steps
     assert record.variables == minted.variables
     assert record.variables is not None
-    assert record.variables.dimensions == []
+    assert [
+        (dimension.property, dimension.within_set, dimension.values)
+        for dimension in record.variables.dimensions or ()
+    ] == [("testAxis", ["TestAxisA", "TestAxisB"], [])]
 
 
-def test_a_party_totals_cut_is_backfilled_from_its_base_without_a_sum_step() -> None:
+@pytest.mark.parametrize(
+    ("groupby_recorded", "frame_summed_recorded"),
+    [(False, True), (True, True), (True, False)],
+    ids=["cut", "cut-with-a-groupby", "unrecorded-cut-with-both-files"],
+)
+def test_a_party_totals_cut_is_backfilled_from_its_base_without_a_sum_step(
+    groupby_recorded: bool, frame_summed_recorded: bool
+) -> None:
     """A cut version sums nothing, so its backfilled record keeps its base's steps, as the
-    record its mint wrote does."""
+    record its mint wrote does. Its record says so (`frame_summed`) even when its files record
+    a groupby, as they do when a groupby left the cut frame unchanged. A cut recorded without
+    `frame_summed` that links a file minted with no groupby beside the groupby file holds the
+    cut frame, as the frames that serve it read it (`recorded_rendering.own_frame_mode`)."""
     client, store, spec_id, sidecar = party_fixture._rig()
     cut = party_fixture._mint(client, spec_id=spec_id, sidecar=sidecar, options=party_fixture._CUT)
     content_version = cut["content_version"]
@@ -983,6 +996,46 @@ def test_a_party_totals_cut_is_backfilled_from_its_base_without_a_sum_step() -> 
     assert "sum_variables" not in [step.op for step in minted.known_steps]
     for version in version_rows(store, spec_id):
         forget_record(store, subject_id=spec_id, content_version=version)
+    if groupby_recorded:
+        with store.transaction() as tx:
+            (cut_file,) = [
+                row
+                for row in tx.fetch_all(
+                    "SELECT rendering_key, rendering FROM datasets.version_artifact "
+                    "WHERE subject_id = %s AND content_version = %s",
+                    (spec_id, content_version),
+                )
+                if row["rendering"].get("without_party_totals") is True
+            ]
+            if not frame_summed_recorded:
+                tx.execute(
+                    "UPDATE datasets.version_record SET frame_summed = NULL "
+                    "WHERE subject_id = %s AND content_version = %s",
+                    (spec_id, content_version),
+                )
+                tx.execute(
+                    "INSERT INTO datasets.version_artifact (subject_id, content_version, "
+                    "artifact_digest, rendering_key, rendering, media_type) "
+                    "SELECT subject_id, content_version, artifact_digest, %s, rendering, "
+                    "media_type FROM datasets.version_artifact "
+                    "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
+                    (
+                        "plain-" + cut_file["rendering_key"],
+                        spec_id,
+                        content_version,
+                        cut_file["rendering_key"],
+                    ),
+                )
+            tx.execute(
+                "UPDATE datasets.version_artifact SET rendering = %s "
+                "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
+                (
+                    {**cut_file["rendering"], "groupby": {"by": ["provider"], "op": "sum"}},
+                    spec_id,
+                    content_version,
+                    cut_file["rendering_key"],
+                ),
+            )
 
     assert (
         run_backfill_descriptions(
@@ -1046,11 +1099,18 @@ def test_a_collapse_whose_base_failed_waits_for_a_run_that_backfills_the_base(
     assert record.steps == minted.steps
 
 
-def test_the_maintenance_job_dispatches_backfill_descriptions(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("task", "run"),
+    [
+        ("backfill-descriptions", "_backfill_descriptions"),
+        ("backfill-frame-summed", "_backfill_frame_summed"),
+    ],
+)
+def test_the_maintenance_job_dispatches_a_backfill(
+    task: str, run: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ran: list[str] = []
-    monkeypatch.setattr(maintenance, "_backfill_descriptions", lambda: ran.append("backfill") or 0)
+    monkeypatch.setattr(maintenance, run, lambda: ran.append(task) or 0)
 
-    assert maintenance.main(["backfill-descriptions"]) == 0
-    assert ran == ["backfill"]
+    assert maintenance.main([task]) == 0
+    assert ran == [task]

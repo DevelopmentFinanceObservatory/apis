@@ -78,14 +78,21 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets/{id}/{content_version}",
         "/api/datasets/{id}/{content_version}/pin",
         "/api/datasets/{id}/{content_version}/observations",
+        "/api/datasets/{id}/{content_version}/file",
         "/api/datasets/{id}/{content_version}/files/{digest}",
         "/api/datasets/{id}/{content_version}/description",
         "/api/datasets/{id}/{content_version}/description/values",
         "/api/datasets/frames/publish",
         "/api/datasets/frames/refresh",
+        "/api/datasets/analysis",
+        "/api/datasets/analysis/anchor",
+        "/api/datasets/derived/{id}/{content_version}",
+        "/api/datasets/derived/{id}/{content_version}/file",
         "/api/datasets/frames/{spec_id}/{content_version}/recipe",
         "/api/datasets/recipes/replays/{replay_key}",
         "/api/datasets/{id}/versions",
+        "/api/datasets/exports",
+        "/api/datasets/exports/{export_id}",
     }
 
 
@@ -101,12 +108,17 @@ def test_every_datasets_operation_declares_its_runtime_response(app: FastAPI):
         assert two_xx or "Location" in redirect, f"{method.upper()} {path} declares no success"
 
 
+# Routes whose 200 is the bytes of a file, served in hand rather than by redirect.
+_FILE_BODY_PATHS = {"/api/datasets/derived/{id}/{content_version}/file"}
+
+
 def test_every_datasets_2xx_response_carries_a_non_empty_schema(app: FastAPI):
     schema = app.openapi()
     for path, method, operation in _datasets_operations(schema):
+        media_type = "application/octet-stream" if path in _FILE_BODY_PATHS else "application/json"
         for status, response in _two_xx_responses(operation):
-            body_schema = response.get("content", {}).get("application/json", {}).get("schema")
-            assert body_schema, f"{method.upper()} {path} {status} has no application/json schema"
+            body_schema = response.get("content", {}).get(media_type, {}).get("schema")
+            assert body_schema, f"{method.upper()} {path} {status} has no {media_type} schema"
 
 
 def test_register_2xx_response_is_the_definition_response_model(app: FastAPI):
@@ -123,3 +135,13 @@ def test_schema_route_2xx_response_matches_the_document_it_describes(app: FastAP
     assert set(body_schema["required"]) == set(build_schema_document())
     manifest_property = body_schema["properties"]["manifest"]
     assert manifest_property != schema["components"]["schemas"]["Manifest"]
+
+
+@pytest.mark.parametrize(
+    ("path", "method"), [("/api/datasets", "post"), ("/api/datasets/{id}", "get")]
+)
+def test_operation_submitting_routes_document_their_202(app: FastAPI, path: str, method: str):
+    response = app.openapi()["paths"][path][method]["responses"]["202"]
+    body_schema = response["content"]["application/json"]["schema"]
+    assert body_schema == {"$ref": "#/components/schemas/OperationResource"}
+    assert set(response["headers"]) == {"Location", "Retry-After"}

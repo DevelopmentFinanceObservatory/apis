@@ -318,6 +318,37 @@ class TestRoleRefusalsAreNonRetryable422:
         assert spec.issues[0].member == "DevelopmentFinanceRecipient"
 
 
+class TestUnknownFacetAxisListsTheAxes:
+    """An unknown `scope.facets` key is refused at that key, listing the facet axes and leading
+    with the nearest one when the posted name is close to it."""
+
+    @pytest.mark.parametrize(
+        ("axis", "alternatives"),
+        [
+            ("units", ["unit", "provenance", "measurementMethod"]),
+            ("dacTypeOfFinance", ["provenance", "measurementMethod", "unit"]),
+        ],
+    )
+    def test_refuses_request_invalid_with_the_axes_as_alternatives(self, axis, alternatives):
+        client = _client()
+        scope = {**_SCOPE, "facets": {axis: {"ref": "USD"}}}
+        body = {
+            "schema_version": 1,
+            "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": scope},
+        }
+
+        resp = client.post("/api/datasets", json=body)
+
+        assert resp.status_code == 400, resp.text
+        problem = resp.json()
+        pointer = f"/input/scope/facets/{axis}"
+        assert (problem["code"], problem["pointer"]) == ("request_invalid", pointer)
+        (issue,) = problem["issues"]
+        assert (issue["pointer"], issue["axis"]) == (pointer, axis)
+        assert [a["ref"] for a in issue["alternatives"]] == alternatives
+        assert issue["truncated"] is False
+
+
 class TestRoleSignatureIncompatibleIsNonRetryable422:
     """Described-arm members with different role signatures map to non-retryable 422 responses."""
 
@@ -387,7 +418,8 @@ class TestRoleSignatureIncompatibleIsNonRetryable422:
 
 
 class TestInconsistentCandidatesRefuseMemberNotResolvableNotASilentNarrowing:
-    """Candidates whose forward and reverse graph arcs disagree map to non-retryable 422 responses."""
+    """Candidates whose forward and reverse graph arcs disagree map to 422 responses. The
+    reads are a live graph's, which a later read can settle, so the refusal is retryable."""
 
     def test_inconsistent_candidate_refuses_member_not_resolvable_through_the_mint_door(self):
         store = FakeDatasetStore()
@@ -410,7 +442,7 @@ class TestInconsistentCandidatesRefuseMemberNotResolvableNotASilentNarrowing:
         assert resp.status_code == 422, resp.text
         problem = resp.json()
         assert problem["code"] == "member_not_resolvable"
-        assert problem["retryable"] is False
+        assert problem["retryable"] is True
         assert [issue["pointer"] for issue in problem["issues"]] == ["/input/spec_id"]
         assert [issue["member"] for issue in problem["issues"]] == [f"dcid:{_ODA_GRANTS}"]
         assert store.state.spec_registry == {}
@@ -441,7 +473,7 @@ class TestInconsistentCandidatesRefuseMemberNotResolvableNotASilentNarrowing:
         assert resp.status_code == 422, resp.text
         problem = resp.json()
         assert problem["code"] == "member_not_resolvable"
-        assert problem["retryable"] is False
+        assert problem["retryable"] is True
         assert [issue["member"] for issue in problem["issues"]] == [f"dcid:{_ODA_GRANTS}"]
 
 

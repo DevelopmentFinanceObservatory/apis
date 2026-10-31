@@ -12,6 +12,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import cast
 
 from dataset_store.errors import DatasetStoreError
 
@@ -23,6 +24,14 @@ class FakePresentationState:
     compositions: set[str] = field(default_factory=set)
     composition_write_token_digests: dict[str, bytes | None] = field(default_factory=dict)
     composition_revisions: dict[str, list[dict]] = field(default_factory=dict)
+    # `presentation.share` rows by id, `share_revision` rows by share id, and `share_slot` rows
+    # by (share id, revision). `share_slot_check` rows by (share id, slot, component id,
+    # component revision), and `served_frame` rows in insertion order.
+    shares: dict[str, dict] = field(default_factory=dict)
+    share_revisions: dict[str, list[dict]] = field(default_factory=dict)
+    share_slots: dict[tuple[str, int], list[dict]] = field(default_factory=dict)
+    slot_checks: dict[tuple[str, int, str, int], dict] = field(default_factory=dict)
+    served_frames: list[dict] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> FakePresentationState:
@@ -32,6 +41,11 @@ class FakePresentationState:
             compositions=set(self.compositions),
             composition_write_token_digests=dict(self.composition_write_token_digests),
             composition_revisions=copy.deepcopy(self.composition_revisions),
+            shares=copy.deepcopy(self.shares),
+            share_revisions=copy.deepcopy(self.share_revisions),
+            share_slots=copy.deepcopy(self.share_slots),
+            slot_checks=copy.deepcopy(self.slot_checks),
+            served_frames=copy.deepcopy(self.served_frames),
         )
 
     def restore_from(self, other: FakePresentationState) -> None:
@@ -40,6 +54,11 @@ class FakePresentationState:
         self.compositions = other.compositions
         self.composition_write_token_digests = other.composition_write_token_digests
         self.composition_revisions = other.composition_revisions
+        self.shares = other.shares
+        self.share_revisions = other.share_revisions
+        self.share_slots = other.share_slots
+        self.slot_checks = other.slot_checks
+        self.served_frames = other.served_frames
 
 
 class FakeTransaction:
@@ -159,7 +178,8 @@ class FakeTransaction:
 
         if sql.startswith(
             "SELECT revision, stored_intent, resolved_payload, catalog_version, schema_version, "
-            "formatter_profile, series_coordinates, created_at FROM presentation.component_revision"
+            "formatter_profile, series_coordinates, created_at, frame_rendering "
+            "FROM presentation.component_revision"
         ):
             revisions = s.component_revisions.get(params[0], [])
             if "AND revision = %s" in sql:
@@ -179,6 +199,7 @@ class FakeTransaction:
                 schema_version,
                 formatter_profile,
                 series_coordinates,
+                frame_rendering,
             ) = params
             revisions = s.component_revisions.setdefault(component_id, [])
             if any(row["revision"] == revision for row in revisions):
@@ -196,9 +217,29 @@ class FakeTransaction:
                     ),
                     # The column default, `now()` at insert.
                     "created_at": datetime.now(UTC),
+                    "frame_rendering": frame_rendering,
                 }
             )
             return []
+
+        if sql.startswith(
+            (
+                "SELECT component_id FROM presentation.component_revision WHERE frame_rendering",
+                "UPDATE presentation.component_revision SET frame_rendering",
+            )
+        ):
+            # `presentation_store.store.rehash_derived_rendering`.
+            *new, old, pair = (json.loads(cast(str, param)) for param in params)
+            matched = [
+                (component_id, row)
+                for component_id, rows in s.component_revisions.items()
+                for row in rows
+                if row["frame_rendering"] == old and row["stored_intent"].get("frame_ref") == pair
+            ]
+            for _component_id, row in matched:
+                if new:
+                    row["frame_rendering"] = new[0]
+            return [{"component_id": component_id} for component_id, _row in matched]
 
         if sql.startswith("SELECT revision, blocks FROM presentation.composition_revision"):
             (composition_id,) = params
@@ -223,11 +264,281 @@ class FakeTransaction:
                 if component_id in s.components
             ]
 
+        if (shares := self._dispatch_share(sql, params)) is not None:
+            return shares
+
         raise AssertionError(f"FakeTransaction has no handler for statement: {sql!r}")
+
+    def _dispatch_share(self, sql: str, params: Sequence[object]) -> list[dict] | None:
+        """The statements of `presentation_store.shares.LiveShareStore`, or `None` for others."""
+        s = self._state
+
+        if sql.startswith("INSERT INTO presentation.share (id, "):
+            assert "ON CONFLICT (id) DO NOTHING RETURNING id" in sql
+            create_request_sha256 = None
+            if "create_request_sha256" in sql:
+                (
+                    share_id,
+                    kind,
+                    mode,
+                    title,
+                    write_token_sha256,
+                    create_request_sha256,
+                    payload,
+                ) = params
+                owner, created_at = None, datetime.now(UTC)
+            else:
+                share_id, kind, mode, title, write_token_sha256, owner, payload, created_at = params
+            share_id = cast(str, share_id)
+            if share_id in s.shares:
+                return []
+            if write_token_sha256 is not None and any(
+                row["write_token_sha256"] == write_token_sha256 for row in s.shares.values()
+            ):
+                raise _unique_violation("share_write_token_sha256_key")
+            s.shares[share_id] = {
+                "id": share_id,
+                "kind": kind,
+                "mode": mode,
+                "title": title,
+                "write_token_sha256": write_token_sha256,
+                "create_request_sha256": create_request_sha256,
+                "owner": owner,
+                "payload": json.loads(cast(str, payload)) if payload is not None else None,
+                "created_at": created_at,
+                "deleted_at": None,
+            }
+            return [{"id": share_id}]
+
+        if sql.startswith(
+            "SELECT id, create_request_sha256 FROM presentation.share WHERE write_token_sha256 = %s"
+        ):
+            (write_token_sha256,) = params
+            return [
+                {"id": row["id"], "create_request_sha256": row["create_request_sha256"]}
+                for row in s.shares.values()
+                if row["write_token_sha256"] == write_token_sha256
+            ]
+
+        if sql.startswith(
+            "SELECT kind, created_at, write_token_sha256 FROM presentation.share WHERE id = %s"
+        ):
+            (share_id,) = params
+            row = s.shares.get(share_id)
+            return (
+                []
+                if row is None
+                else [
+                    {
+                        "kind": row["kind"],
+                        "created_at": row["created_at"],
+                        "write_token_sha256": row["write_token_sha256"],
+                    }
+                ]
+            )
+
+        if sql.startswith("UPDATE presentation.share SET mode = 'snapshot' WHERE id = %s"):
+            (share_id,) = params
+            s.shares[share_id]["mode"] = "snapshot"
+            return []
+
+        if sql.startswith(
+            "SELECT id, kind, mode, title, write_token_sha256, owner, payload, created_at "
+            "FROM presentation.share WHERE id = %s AND deleted_at IS NULL"
+        ):
+            (share_id,) = params
+            row = s.shares.get(share_id)
+            if row is None or row["deleted_at"] is not None:
+                return []
+            return [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in ("deleted_at", "create_request_sha256")
+                }
+            ]
+
+        if sql.startswith("UPDATE presentation.share SET deleted_at = now() WHERE id = %s"):
+            (share_id,) = params
+            row = s.shares.get(share_id)
+            if row is None or row["deleted_at"] is not None:
+                return []
+            row["deleted_at"] = datetime.now(UTC)
+            return [{"id": share_id}]
+
+        if sql.startswith("INSERT INTO presentation.share_revision (share_id, revision"):
+            share_id, revision, created_at = params
+            share_id, revision = cast(str, share_id), cast(int, revision)
+            created_at = created_at if created_at is not None else datetime.now(UTC)
+            if share_id not in s.shares:
+                raise _foreign_key_violation("share_revision_share_id_fkey")
+            revisions = s.share_revisions.setdefault(share_id, [])
+            if any(row["revision"] == revision for row in revisions):
+                raise _unique_violation("share_revision_pkey")
+            revisions.append({"revision": revision, "created_at": created_at})
+            return [{"created_at": created_at}]
+
+        if sql.startswith("SELECT revision, created_at FROM presentation.share_revision"):
+            (share_id,) = params
+            revisions = s.share_revisions.get(share_id, [])
+            return [max(revisions, key=lambda row: row["revision"])] if revisions else []
+
+        if sql.startswith("INSERT INTO presentation.share_slot ("):
+            share_id, revision, slot, component_id, component_revision, spec_id, cv = params
+            share_id, revision = cast(str, share_id), cast(int, revision)
+            if not any(row["revision"] == revision for row in s.share_revisions.get(share_id, [])):
+                raise _foreign_key_violation("share_slot_share_id_revision_fkey")
+            slots = s.share_slots.setdefault((share_id, revision), [])
+            if any(row["slot"] == slot for row in slots):
+                raise _unique_violation("share_slot_pkey")
+            slots.append(
+                {
+                    "slot": slot,
+                    "component_id": component_id,
+                    "component_revision": component_revision,
+                    "frame_spec_id": spec_id,
+                    "frame_content_version": cv,
+                }
+            )
+            return []
+
+        if sql.startswith(
+            "SELECT slot, component_id, component_revision, frame_spec_id, "
+            "frame_content_version FROM presentation.share_slot"
+        ):
+            share_id, revision = params
+            return sorted(s.share_slots.get((share_id, revision), []), key=lambda row: row["slot"])
+
+        if sql.startswith("SELECT frame_spec_id, frame_content_version, freshness, checked_at"):
+            key = cast("tuple[str, int, str, int]", tuple(params))
+            row = s.slot_checks.get(key)
+            return [] if row is None else [dict(row)]
+
+        if sql.startswith("INSERT INTO presentation.share_slot_check AS held ("):
+            share_id, slot, component_id, revision, spec_id, cv, claim_until, now = params
+            if share_id not in s.shares:
+                raise _foreign_key_violation("share_slot_check_share_id_fkey")
+            key = cast("tuple[str, int, str, int]", (share_id, slot, component_id, revision))
+            row = s.slot_checks.get(key)
+            if row is None:
+                s.slot_checks[key] = {
+                    "frame_spec_id": spec_id,
+                    "frame_content_version": cv,
+                    "freshness": "pending",
+                    "checked_at": None,
+                    "next_check_at": claim_until,
+                }
+            elif cast(datetime, row["next_check_at"]) <= cast(datetime, now):
+                row["next_check_at"] = claim_until
+            else:
+                return []
+            return [{"slot": slot}]
+
+        if sql.startswith("INSERT INTO presentation.share_slot_check ("):
+            (
+                share_id,
+                slot,
+                component_id,
+                revision,
+                spec_id,
+                cv,
+                freshness,
+                checked_at,
+                next_at,
+            ) = params
+            if share_id not in s.shares:
+                raise _foreign_key_violation("share_slot_check_share_id_fkey")
+            s.slot_checks[
+                cast("tuple[str, int, str, int]", (share_id, slot, component_id, revision))
+            ] = {
+                "frame_spec_id": spec_id,
+                "frame_content_version": cv,
+                "freshness": freshness,
+                "checked_at": checked_at,
+                "next_check_at": next_at,
+            }
+            return []
+
+        if sql.startswith(
+            "SELECT component_id, component_revision, frame_spec_id, frame_content_version "
+            "FROM presentation.served_frame WHERE share_id = %s AND slot = %s"
+        ):
+            share_id, slot = params
+            entries = [
+                row for row in s.served_frames if (row["share_id"], row["slot"]) == (share_id, slot)
+            ]
+            # Rows are appended in time order, so the slot's newest entry is its last one.
+            return [{name: entries[-1][name] for name in _SERVED_FRAME_SHOWN}] if entries else []
+
+        if sql.startswith("SELECT 1 FROM presentation.share WHERE id = %s FOR NO KEY UPDATE"):
+            (share_id,) = params
+            return [{"?column?": 1}] if share_id in s.shares else []
+
+        if sql.startswith("INSERT INTO presentation.served_frame ("):
+            share_id, slot, component_id, revision, spec_id, cv, rendering, at, *newest_of = params
+            shown = (component_id, revision, spec_id, cv)
+            assert newest_of == [share_id, slot, *shown]
+            if share_id not in s.shares:
+                raise _foreign_key_violation("served_frame_share_id_fkey")
+            # Rows are appended in time order, so the slot's newest entry is its last one.
+            newest = [
+                row for row in s.served_frames if (row["share_id"], row["slot"]) == (share_id, slot)
+            ]
+            if newest and tuple(newest[-1][name] for name in _SERVED_FRAME_SHOWN) == shown:
+                return []
+            s.served_frames.append(
+                {
+                    "id": len(s.served_frames) + 1,
+                    "share_id": share_id,
+                    "slot": slot,
+                    "component_id": component_id,
+                    "component_revision": revision,
+                    "frame_spec_id": spec_id,
+                    "frame_content_version": cv,
+                    "rendering": json.loads(cast(str, rendering))
+                    if rendering is not None
+                    else None,
+                    "first_served_at": at if at is not None else datetime.now(UTC),
+                }
+            )
+            return []
+
+        if sql.startswith(
+            "SELECT id, slot, component_id, component_revision, frame_spec_id, "
+            "frame_content_version, rendering, first_served_at FROM presentation.served_frame"
+        ):
+            if "(first_served_at, id) < (%s, %s)" in sql:
+                share_id, *before, limit = params
+            else:
+                (share_id, limit), before = params, None
+            rows = [
+                row
+                for row in s.served_frames
+                if row["share_id"] == share_id
+                and (before is None or (row["first_served_at"], row["id"]) < tuple(before))
+            ]
+            rows.sort(key=lambda row: (row["first_served_at"], row["id"]), reverse=True)
+            return [dict(row) for row in rows[:limit]]
+
+        return None
+
+
+_SERVED_FRAME_SHOWN = (
+    "component_id",
+    "component_revision",
+    "frame_spec_id",
+    "frame_content_version",
+)
 
 
 class _DriverError(Exception):
     """Driver-shaped error with PostgreSQL fields in `args[0]`."""
+
+
+def _foreign_key_violation(constraint: str) -> _DriverError:
+    return _DriverError(
+        {"C": "23503", "M": f'violates foreign key constraint "{constraint}"', "n": constraint}
+    )
 
 
 def _unique_violation(constraint: str) -> _DriverError:

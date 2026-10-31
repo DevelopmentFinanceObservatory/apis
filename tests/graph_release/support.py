@@ -389,10 +389,20 @@ def serving_index(
 def release_at_revision(revision: str) -> Release:
     """The bound release under the id DC serving revision `revision` gives it, with its parts and
     views, served by no service, for a test of what keys on the release id."""
+    return release_with(dc_serving_revision=revision)
+
+
+def release_with(
+    *, blobs: Mapping[str, bytes] | None = None, **manifest_changes: object
+) -> Release:
+    """The bound release with its manifest changed by `manifest_changes` and the blobs in
+    `blobs` replacing its own, its views unchanged, served by no service, for a test of what
+    keys on the release id or its import key."""
     release = current_release()
     loaded = dataclasses.replace(
         release.loaded,
-        manifest=dataclasses.replace(release.loaded.manifest, dc_serving_revision=revision),
+        manifest=dataclasses.replace(release.loaded.manifest, **manifest_changes),
+        blobs={**release.loaded.blobs, **(blobs or {})},
     )
     return dataclasses.replace(release, loaded=loaded, service=None)
 

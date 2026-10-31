@@ -1,10 +1,12 @@
 """Render the eval driver's JSON report as a Markdown summary or terminal text.
 
-``paired_markdown`` lists the blocking verdicts first, then what the change did to the case
-set against base. ``single_text`` prints, case by case, every check that did not pass on
-every sample. ``single_markdown`` is its Markdown form for a job summary. All three read
-the report ``scripts/eval_paired.py`` writes. Both Markdown forms name the report's shard,
-and say so when the selection holds no eligible case.
+``paired_markdown`` lists the blocking verdicts first, then the checks it could not judge
+(infrastructure failures, and base-inconclusive checks, where a base pass was degraded),
+then the checks base passed on a wrong answer, then what the change did to the case set
+against base. ``single_text`` prints, case by case, every check that did not pass on every
+sample. ``single_markdown`` is its Markdown form for a job summary. All three read the
+report ``scripts/eval_paired.py`` writes. Both Markdown forms name the report's shard, and
+say so when the selection holds no eligible case.
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any
+
+from search.eval.gate import CONTENT_CHECKS, Outcome
 
 # A list longer than this folds into a <details> block.
 _FOLD_AFTER = 15
@@ -32,13 +36,14 @@ def paired_markdown(report: Report) -> str:
     cases: Mapping[str, Any] = report["cases"]
     checks = list(_checks(cases))
     blocking = [(c, n, e) for c, n, e in checks if e["blocks"]]
-    infra = [(c, n, e) for c, n, e in checks if e["verdict"] == "infra"]
+    infra = [(c, n, e) for c, n, e in checks if e["verdict"] == Outcome.INFRA]
+    inconclusive = [(c, n) for c, n, e in checks if e["verdict"] == Outcome.BASE_INCONCLUSIVE]
     tally = Counter(e["verdict"] for _, _, e in checks)
 
     lines = [
         "## Search eval gate" + _shard_suffix(report),
         "",
-        _result_line(report["exit_code"], blocking, infra),
+        _result_line(report["exit_code"], blocking, infra, inconclusive),
         "",
     ]
     lines.append(
@@ -63,6 +68,18 @@ def paired_markdown(report: Report) -> str:
             "Infrastructure failures",
             [f"`{c}` {n}: {_detail(e) or _infra_error(cases[c])}" for c, n, e in infra],
         )
+    lines += _section(
+        "Base inconclusive",
+        [f"`{c}` {n}: a base pass was degraded" for c, n in inconclusive],
+    )
+    lines += _section(
+        "Wrong answers at base",
+        [
+            f"`{c}` {n}: head {_detail(e)}; base {_base_content_detail(cases[c])}"
+            for c, n, e in checks
+            if e["verdict"] == Outcome.WRONG_ANSWER_AT_BASE
+        ],
+    )
 
     changes = report["case_set"]
     lines += _section("Deleted cases", [f"`{c}`" for c in changes["deleted"]])
@@ -167,13 +184,16 @@ def _checks(cases: Mapping[str, Any]) -> Iterator[tuple[str, str, Mapping[str, A
             yield case_id, name, entry
 
 
-def _result_line(code: int, blocking: Sequence, infra: Sequence) -> str:
+def _result_line(code: int, blocking: Sequence, infra: Sequence, inconclusive: Sequence) -> str:
     if code == 1:
         return f"**Blocked:** {_count(len(blocking), 'blocking verdict')} (exit 1)."
     if code == 3:
-        return (
-            f"**Not judged:** {_count(len(infra), 'check')} hit infrastructure failures (exit 3)."
-        )
+        why = []
+        if infra or not inconclusive:
+            why.append(f"{_count(len(infra), 'check')} hit infrastructure failures")
+        if inconclusive:
+            why.append(f"{_count(len(inconclusive), 'check')} had a degraded base pass")
+        return f"**Not judged:** {'; '.join(why)} (exit 3)."
     return "**Passed:** nothing blocks (exit 0)."
 
 
@@ -205,6 +225,18 @@ def _detail(entry: Mapping[str, Any]) -> str:
     seen = [r for r in _rounds(entry) if r and r["verdict"] != "pass" and r["detail"]]
     seen.sort(key=lambda r: r["verdict"] in _CLEAN)
     return seen[0]["detail"] if seen else ""
+
+
+def _base_content_detail(case: Mapping[str, Any]) -> str:
+    """The first base-side failure of a content check (``search.eval.gate.CONTENT_CHECKS``),
+    named by its check: ``measure: parts[0]: shape population_type: ...``."""
+    for name in sorted(CONTENT_CHECKS & case["checks"].keys()):
+        entry = case["checks"][name]
+        for round_ in ("base", "confirm_base"):
+            for result in entry.get(round_, ()):
+                if result and result["verdict"] == "fail":
+                    return f"{name}: {result['detail']}"
+    return ""
 
 
 def _distinct_details(results: Iterable[Mapping[str, Any] | None]) -> list[str]:

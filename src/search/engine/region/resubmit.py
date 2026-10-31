@@ -15,7 +15,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import EngineInputError
-from search.engine.identity_edit import check_described_arm
+from search.engine.identity_edit import check_described_arm, check_not_composite
 from search.engine.region.resubmit_promote import _resolve_standard_promote
 from search.engine.region.resubmit_request import pinned_provenance_scope
 from search.engine.region.result import RegionResult
@@ -68,7 +68,8 @@ def resolve_spec_resubmit(
     member walk's full read of a deep-root family and every phase after it
     (`_resolve_standard_promote`).
 
-    Pinned StatVar identities raise `request_invalid` (400). Missing graph
+    Pinned StatVar identities and composite identities (`identity_edit.check_not_composite`)
+    raise `request_invalid` (400). Missing graph
     nodes produce `no_data`, except absent observationAbout role refs, which
     raise `invalid_role_ref` (422). An identity binding more places than a Spec holds
     raises `request_invalid` (400) in validation. Origin refs require a role-bearing shape.
@@ -77,6 +78,7 @@ def resolve_spec_resubmit(
     (`degraded_reads`).
     """
     check_described_arm(inp.identity.shape, pointer="/input/identity/shape")
+    check_not_composite(inp.identity, pointer="/input/identity/facets/provenance")
     _options = options if options is not None else EngineOptions()
 
     # `_phase_materialise` checks origins after rebuilding the shape.

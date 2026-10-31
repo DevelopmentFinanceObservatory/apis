@@ -120,9 +120,15 @@ class AxisConfirmingGraphReader:
     def node_label(self, dcid: str) -> str | None:
         return self._delegate("node_label", dcid)
 
-    def variable_facets_batch(self, *, stat_var: str, entities, deadline: float | None = None):
+    def variable_facets_batch(
+        self, *, stat_var: str, entities, needs_dates: bool = False, deadline: float | None = None
+    ):
         return self._delegate(
-            "variable_facets_batch", stat_var=stat_var, entities=entities, deadline=deadline
+            "variable_facets_batch",
+            stat_var=stat_var,
+            entities=entities,
+            needs_dates=needs_dates,
+            deadline=deadline,
         )
 
     def default_facet_policy(self, *, stat_var: str, axis: str):

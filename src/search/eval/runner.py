@@ -25,7 +25,7 @@ import httpx
 
 from search.eval.apis_auth import apis_auth
 from search.eval.cases import Case
-from search.eval.checks.base import MembersReader
+from search.eval.checks.base import MembersReader, MembersRefused
 from search.eval.dataset import resubmit_identity
 from search.models import ResolveRequest
 
@@ -57,6 +57,9 @@ _APP_ERROR_STATUS = 500
 
 # Problem codes the app returns when its own request model refuses the posted request.
 _REQUEST_REJECTED_CODES = frozenset({"request_invalid", "unsupported_schema_version"})
+
+# Statuses the members door refuses a definition with, as the mint refuses it.
+_DEFINITION_REFUSED_STATUSES = frozenset({409, 422})
 
 # Above the engine's 45-second request deadline, so the app answers before the client gives up.
 _DEFAULT_TIMEOUT_S = 90.0
@@ -160,9 +163,14 @@ async def fetch_schema(url: str, *, client: httpx.AsyncClient | None = None) -> 
 def members_door_reader(url: str) -> MembersReader:
     """Read the StatVars a mint of a Spec serves from the members door of the app at
     ``url``, posting the Spec's definition so an unregistered id resolves. Each Spec is
-    read once. A failed read raises ``httpx.HTTPError``, which a check scores as an
-    infrastructure error."""
-    read: dict[str, list[str]] = {}
+    read once, and a refusal is kept with its answer.
+
+    A 409 or 422 problem the app marks not retryable, other than one refusing the request's
+    shape, refuses the definition itself and raises ``MembersRefused``, which a check scores
+    as a failure of the answer. Any other failed read raises ``httpx.HTTPError``, which a
+    check scores as an infrastructure error; an error status's message carries the problem
+    ``code`` and ``detail``."""
+    read: dict[str, list[str] | MembersRefused] = {}
 
     def members(spec_id: str, definition: Mapping[str, Any]) -> list[str]:
         if spec_id not in read:
@@ -173,13 +181,43 @@ def members_door_reader(url: str) -> MembersReader:
                 timeout=_DEFAULT_TIMEOUT_S,
                 auth=apis_auth(),
             )
-            response.raise_for_status()
-            read[spec_id] = [
-                member["ref"].removeprefix("dcid:") for member in response.json()["members"]
-            ]
-        return read[spec_id]
+            if response.is_success:
+                read[spec_id] = [
+                    member["ref"].removeprefix("dcid:") for member in response.json()["members"]
+                ]
+            else:
+                read[spec_id] = _members_refusal(response)
+        found = read[spec_id]
+        if isinstance(found, MembersRefused):
+            raise found
+        return found
 
     return members
+
+
+def _members_refusal(response: httpx.Response) -> MembersRefused:
+    """The ``MembersRefused`` a refused members read states, or raise its
+    ``httpx.HTTPStatusError`` naming the problem ``code`` and ``detail``."""
+    try:
+        problem = response.json()
+    except ValueError:
+        problem = None
+    if not isinstance(problem, dict):
+        problem = {}
+    code, detail = problem.get("code"), problem.get("detail")
+    if (
+        response.status_code in _DEFINITION_REFUSED_STATUSES
+        and problem.get("retryable") is False
+        and isinstance(code, str)
+        and code not in _REQUEST_REJECTED_CODES
+    ):
+        return MembersRefused(code=code, detail=str(detail))
+    raise httpx.HTTPStatusError(
+        f"members door answered {response.status_code} for {response.request.url}: "
+        f"code={code!r} detail={detail!r}",
+        request=response.request,
+        response=response,
+    )
 
 
 async def run_cases(

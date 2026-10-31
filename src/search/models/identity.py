@@ -500,7 +500,13 @@ class BaseIdentity(StrictModel):
     shape: IdentityShape = Field(description="the shape this Spec was hashed under")
     slots: list[IdentitySlot] = Field(
         max_length=64,
-        description="the what/how slots that feed identity -- where/when/source are excluded",
+        description=(
+            "the what/how slots that feed identity -- where/when/source are excluded. A "
+            "what/how property the identity leaves out is one no member it serves asserts: "
+            "an identity over a family with no total carries only the slots the request "
+            "binds or opens, or its one breakdown, so a member asserting any other is "
+            "excluded"
+        ),
     )
     entities: dict[str, Annotated[list[IdentityString], Field(min_length=1, max_length=1024)]] = (
         Field(

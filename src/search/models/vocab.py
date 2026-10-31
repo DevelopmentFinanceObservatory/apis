@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal, get_args
 
+from code_index.scope_conventions import ProviderScope  # noqa: F401 -- re-exported by search.models
 from dfo_platform import RoleAxis  # noqa: F401 -- re-exported by search.models
 
 SCHEMA_VERSION = 1
@@ -30,7 +31,7 @@ Axis = Literal["what", "how", "where", "when", "source"]
 # "unit", the byline's unit of measure, and "method", the byline's measurement method,
 # which no request slot carries.
 SentenceAxis = Literal[Axis, "unit", "method"]
-SentenceSegment = Literal["heading", "byline", "departure"]
+SentenceSegment = Literal["coverage", "heading", "byline", "departure", "assumption"]
 CoverageKind = Literal["exact", "breadth", "bare"]
 
 # BindingProvenance records why a slot has its value, independently of its
@@ -38,8 +39,13 @@ CoverageKind = Literal["exact", "breadth", "bare"]
 # graph code named by the query. "measure_elected" comes from the elected
 # measure partition. "declared_default" fills an open slot from its code
 # system's declared default when another slot binds within that subtree, or
-# from the default its shape's population type declares.
-BindingProvenance = Literal["binder", "text_recognized", "measure_elected", "declared_default"]
+# from the default its shape's population type declares. "declared_grouping" is
+# a sector concept the query named, bound to the codes its declared grouping
+# reads it as (`code_index.scope_conventions.SECTOR_GROUPINGS`): "health" binds
+# CRS 120 and 130.
+BindingProvenance = Literal[
+    "binder", "text_recognized", "measure_elected", "declared_default", "declared_grouping"
+]
 
 # ---------------------------------------------------------------------------
 # FacetAxis describes observation facets. Axis describes request slots.
@@ -101,6 +107,7 @@ NoDataReason = Literal[
     "role_incompatible",
     "role_signature_incompatible",
     "qualifier_not_bound",
+    "timed_out",
 ]
 NoDataCategory = Literal["unresolved", "absent"]
 QuantityForm = Literal["per_person", "per_head_base", "per_area", "rate", "share"]
@@ -113,9 +120,12 @@ DepartureCode = Literal[
     "operation_not_applied",
     "breakdown_not_applied",
     "entity_unavailable",
+    "member_unavailable",
     "year_unavailable",
     "modelled_values",
     "group_read_as_members",
+    "whole_total_read",
+    "whole_total_unpublished",
     "direction_discarded",
     "direction_inferred",
     "scope_limited",
@@ -127,6 +137,47 @@ departure code is a `Warning.code` or a refusal code, so the platform
 code registry does not list them."""
 DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
 """`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
+ScopeAxis = Literal["sector", "region", "measure_basis", "provider"]
+"""Every axis a scope choice settles (see `models.scope.ScopeChoice`), in the order its
+default is derived: a provider scope fixes the basis a measure basis default follows."""
+SCOPE_AXES: tuple[ScopeAxis, ...] = get_args(ScopeAxis)
+"""`ScopeAxis` in derivation order."""
+EntryProvenance = Literal["explicit", "carried"]
+"""Where a scope entry comes from: the request's own words or switch (`explicit`), or a
+choice the conversation settled earlier (`carried`)."""
+ChoiceProvenance = Literal["explicit", "carried", "default"]
+"""What settled a scope choice, in precedence order: an explicit entry, a carried entry,
+or the declared default derived after both."""
+OptionStatus = Literal["available", "partial", "unavailable"]
+"""Whether a scope option can be served: in full, for some of the years asked, or not."""
+ScopeReasonCode = Literal[
+    "provider_not_offered",
+    "imputed_coverage",
+    "basis_not_published",
+    "residuals_need_summed_region",
+    "conflicts_with",
+    "carried_choice_not_applied",
+    "stated_choice_not_applied",
+    "option_not_covered",
+    "contributions_counted",
+]
+"""Every reason a scope option is partial or unavailable, or a carried or stated entry is
+not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary
+of its own, like `DepartureCode`, separate from `Warning.code` and the refusal codes. The
+two refusals a scope entry can draw, `requested_option_unavailable` and
+`conflicting_requested_options`, are registry codes in `engine.codes`."""
+ComponentRole = Literal["whole", "bilateral", "imputed", "headline_net", "headline_ge"]
+"""What one component of a compiled scope holds: the whole answer of a plain Spec, the
+bilateral or imputed multilateral part of a composite, or the net or grant-equivalent
+years of the OECD headline basis."""
+SCOPE_OPTION_ID_PATTERN = r"^(sector|region|measure_basis|provider):[A-Za-z0-9_+]+$"
+"""An option id: its axis, a colon and the option's declared value (`sector:120+130`,
+`region:members_and_residuals`, `measure_basis:gross`, `provider:inclusive`). One option
+has one id on every part, so carried entries and calculations compare ids."""
+AssumptionKind = Literal["name_corrected", "declared_default", "open_role", "place_scope"]
+"""Every kind of value an answer fills that its request did not ask for (see
+`models.assumption.Assumption`), in the order a part's `assumptions` lists them. A closed
+vocabulary of its own, like `DepartureCode`, outside the platform code registry."""
 ObservationsOmissionReason = Literal[
     "observations_timed_out",
     "observations_no_matching_source",
@@ -176,6 +227,7 @@ NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
     "denominator_not_available",
     "no_observations",
     "facet_not_available",
+    "timed_out",
 )
 """The contract's own no_data resolution order: source (a part's source words
 compile before anything else resolves, so an unmatched wording, then an ambiguous
@@ -190,15 +242,18 @@ confirmed identity whose expansion is unusable, to one confirmed identity
 whose role is wrong. An elected shape whose places exceed the bound gets
 `entity_set_too_large` only once elected, after the variable reasons),
 variable, role (the two
-role-compatibility codes sit at the role position), unit (`rate_coverage_gap`,
+role-compatibility codes sit at the role position; a whole population the request
+directs to the other side refuses role_incompatible once every entity resolves,
+before the variable reasons, since the conflict holds on every shape), unit (`rate_coverage_gap`,
 currency-conversion's own no_data reason, sits immediately after
 `unit_not_resolved`. `recipe_not_declared`, the other currency-conversion
 code, maps to `unsupported_code` rather than `no_data_reason` on the `raw_text`/`parsed`
 resolve doors, so a StatVar with no declared recipe surfaces as an
 `unsupported` part instead of reaching this order), slice
 (binding_mismatch sits at the slice position), denominator, observations,
-facet. When several reasons could apply, the first one in this order is what
-`reason` reports. This documents the contract sequence; it is not the
+facet, then timed_out, which only a part the request's deadline cut short carries, since
+it never ran far enough to meet another reason. When several reasons could apply, the first
+one in this order is what `reason` reports. This documents the contract sequence; it is not the
 enforcement mechanism. Each failure site in the pipeline returns immediately
 (region/pipeline.py, region/resubmit.py), so this constant can drift from
 actual behaviour if a check is reordered without updating it. Every site that picks one
@@ -231,6 +286,7 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
         "variable_not_resolved",
         "role_not_resolved",
         "unit_not_resolved",
+        "timed_out",
     }
 )
 """The NoDataReason values NoData._derive_category maps to category="unresolved"
@@ -256,14 +312,16 @@ reason stops short of a graph-confirmed identity, so elected_count stays
 None there."""
 Confidence = Literal["high", "medium", "low"]
 Ordering = Literal["broadest_first", "intent_rank"]
-CandidateBasis = Literal["structural", "nominated", "twin", "direction"]
+CandidateBasis = Literal["structural", "nominated", "twin", "direction", "breakdown"]
 """Why the status rule offers a reading as a candidate beside the elected one:
 `structural`, a reading of the same population type and measured property that differs
 only on a stat type, price basis or denominator the question leaves open; `nominated`, a
 reading the bind model named as a genuine reading of the phrase that the question does not
 rule out; `twin`, an equivalent reading of the elected one that answers where the elected
 one holds no data; `direction`, the same reading with the other direction for a place the
-question names without one, where both directions hold data."""
+question names without one, where both directions hold data; `breakdown`, the same measure
+broken down by another set of slots, offered when its family holds no total and the question
+names no breakdown that serves a member."""
 PreviewOrder = Literal["ranked", "fixed"]
 """How a role-bearing bulk preview chose its series: `ranked` reads every series and shows
 the first by `search.observations.series_rank`; `fixed` reads a selection made before any
@@ -287,6 +345,11 @@ PartyKind = Literal["party", "total", "residual"]
 of its own, a `total` holds other parties' figures ("Africa, Total", the G7), so a sum across a
 flow role that counts it counts its members twice, and a `residual` holds figures no other party
 does ("Africa, unallocated by country"). Mirrors `code_index.types.PartyKind` one-for-one."""
+PartyClass = Literal["official", "private", "residual"]
+"""Whose money a flow party's figures count: `private` for a private provider of development
+finance, `official` for any other party, and `residual` for a residual. A whole population
+covers classes (`EntityGroup.whole_of`): "Official Donors, Total" covers every `official`
+donor. Mirrors `code_index.types.PartyClass` one-for-one."""
 SlotOptionRelation = Literal["child", "parent", "root"]
 """Where a level-scoped `SlotOption` sits in its slot's menu. On a bound slot,
 `"child"`/`"parent"` narrow or widen one step from the bound value in a

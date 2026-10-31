@@ -21,11 +21,12 @@ A fact missing a value its code's text states raises `ValueError`. Every constru
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
 from code_index.labels import HOW_PHRASE_LEADS_WITH_PREPOSITION
+from code_index.types import PartyClass
 from dfo_platform.roles import GENERIC_ROLE_WORDING, FlowFamily, role_wording
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -34,10 +35,11 @@ from search.models import (
     DepartureCode,
     EntityGroup,
     OperationVerb,
+    RoleAxis,
     SentenceToken,
 )
 
-from .labels import _join_labels, group_members_text, group_text
+from .labels import group_members_text, group_text, join_labels
 
 _OPERATION_NOUNS: Final[Mapping[OperationVerb, tuple[str, str]]] = MappingProxyType(
     {
@@ -89,7 +91,7 @@ def no_data_limit_text(limits: Sequence[str]) -> str:
     """
     if not limits:
         raise ValueError("a no-data limit names at least one value")
-    return f"This check covered only {_join_labels(list(limits))}."
+    return f"This check covered only {join_labels(list(limits))}."
 
 
 def departure_tokens(texts: Sequence[str], *, after_text: bool) -> list[SentenceToken]:
@@ -137,7 +139,7 @@ def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_
     if fact.asked is None:
         if not fact.values:
             raise ValueError("measure_not_applied with nothing asked needs the values left out")
-        values = _join_labels(list(fact.values))
+        values = join_labels(list(fact.values))
         if shows_data:
             return f"This shows the measure without {values}."
         return f"This check left out {values}."
@@ -200,7 +202,7 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     elif fact.entities:
         named = "it" if len(fact.entities) == 1 else "them"
         sentences.append(
-            f"You asked for {_join_labels(list(fact.entities))}. "
+            f"You asked for {join_labels(list(fact.entities))}. "
             f"The data holds no values for {named}{period}."
         )
     if fact.sets:
@@ -210,16 +212,35 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
             for members in fact.sets
         ]
         if not fact.entities and fact.asked is not None:
-            sentences.append(f"You asked for {_join_labels([m.asked for m in fact.sets])}.")
-        sentences.append(f"The data holds no values{period} for {_join_labels(counts)}.")
+            sentences.append(f"You asked for {join_labels([m.asked for m in fact.sets])}.")
+        sentences.append(f"The data holds no values{period} for {join_labels(counts)}.")
     text = " ".join(sentences)
     if not fact.sources:
         return text
     holds = "holds" if len(fact.sources) == 1 else "hold"
     return (
-        f"{text} Search does not read {_join_labels(list(fact.sources))}, "
+        f"{text} Search does not read {join_labels(list(fact.sources))}, "
         f"which {holds} values for {pronoun}."
     )
+
+
+def _member_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
+    """The variables a reading's one group leaves out, by name. A group is one source, unit
+    and method, so the text says the source read (`shown`) holds no values for them under
+    the unit and method read, naming the unit (`DepartureFact.unit`) where the fact holds
+    it. Naming the source ties the text to its reading on a part showing several. It names
+    what the reading reads and gives no reason for the choice."""
+    if not fact.members:
+        raise ValueError("member_unavailable needs the variables the answer leaves out")
+    one = len(fact.members) == 1
+    unit = f" ({fact.unit})" if fact.unit else ""
+    if fact.shown:
+        held = f"{fact.shown} holds no values for {'it' if one else 'them'} under the unit and method read"
+    else:
+        held = (
+            f"{'It holds' if one else 'They hold'} no values under the source, unit and method read"
+        )
+    return f"You asked for {join_labels(list(fact.members))}. {held}{unit}."
 
 
 def _latest_period(years: tuple[int, int] | None) -> str:
@@ -242,6 +263,8 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     if fact.omitted_years or fact.omitted_unnamed or fact.omission_undecided:
         return _omitted_years(fact)
     lead = f"You asked for {_asked(fact)}. " if fact.asked is not None else ""
+    if fact.covered_years:
+        return lead + _scope_years(fact)
     if fact.limited_by is not None:
         return lead + _conversion_years(fact)
     if fact.requested_years is None:
@@ -294,6 +317,27 @@ def _conversion_years(fact: DepartureFact) -> str:
     return f"{table} {bound}, so this shows {fact.shown}."
 
 
+_SCOPE_LIMITS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "imputed_multilateral": "Imputed multilateral aid covers",
+        "published_total": "The published totals counting that scope cover",
+    }
+)
+
+
+def _scope_years(fact: DepartureFact) -> str:
+    """The sentence for a scope option the request's words asked for ("Imputed multilateral
+    aid covers only 2011 to 2024, so this shows those years."). It names what leaves out the
+    other years, the runs of years the option covers, and the run the answer shows."""
+    if fact.shown is None:
+        raise ValueError("year_unavailable on a scope option needs the years shown")
+    runs = [str(a) if a == b else f"{a} to {b}" for a, b in fact.covered_years]
+    covered = runs[0] if len(runs) == 1 else f"{', '.join(runs[:-1])} and {runs[-1]}"
+    subject = _SCOPE_LIMITS.get(fact.limited_by or "", "That scope covers")
+    shown = "those years" if runs == [fact.shown] else fact.shown
+    return f"{subject} only {covered}, so this shows {shown}."
+
+
 _MAX_OMITTED_NAMED: Final = 3
 """The most entities a deflator omission names before it counts the rest."""
 
@@ -320,7 +364,7 @@ def _omitted_years(fact: DepartureFact) -> str:
     if rest:
         named.append(f"{rest} {'other' if rest == 1 else 'others'}")
     return (
-        f"Constant prices leave out {_join_labels(named)}, which the price deflators do not cover."
+        f"Constant prices leave out {join_labels(named)}, which the price deflators do not cover."
     )
 
 
@@ -340,7 +384,7 @@ def _entity_years(name: str, lost: Sequence[int], kept: Sequence[int]) -> str:
         else:
             runs.append([year, year])
     spans = [str(first) if first == last else f"{first} to {last}" for first, last in runs]
-    return f"{name} in {_join_labels(spans)}"
+    return f"{name} in {join_labels(spans)}"
 
 
 def _those_years(fact: DepartureFact) -> str:
@@ -366,14 +410,20 @@ def _group_read_as_members(
     fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
 ) -> str:
     """The group asked for, read as its members, which a region group names as the places
-    in it (`labels.group_members_text`), and the residuals its total counts that the members
-    leave out (`DepartureFact.excluded`), separated by semicolons since each label holds a
-    comma, or that the source publishes its own figure for the group, which can differ from
+    in it (`labels.group_members_text`), the residuals the answer counts beside them
+    (`DepartureFact.included`), and the residuals its total counts that the members leave
+    out (`DepartureFact.excluded`), each list separated by semicolons since each label holds
+    a comma, or that the source publishes its own figure for the group, which can differ from
     one built from its members (`DepartureFact.sum_differs`). A door holding no words for the
     group (a resubmit, `asked` is `None`) states only the members shown, as the heading names
     them (`labels.group_text`)."""
     verb = "shows" if shows_data else "checked"
     left_out = (
+        f", with what the data allocates to no single country: {'; '.join(fact.included)}"
+        if fact.included
+        else ""
+    )
+    left_out += (
         f", and {'leaves' if shows_data else 'left'} out what the data allocates to no single "
         f"country: "
         f"{'; '.join(fact.excluded)}"
@@ -395,14 +445,121 @@ def _group_read_as_members(
     return f"This {verb} {members}, each on its own{left_out}."
 
 
+WHOLE_MEMBER_NOUNS: Final[Mapping[RoleAxis, str]] = MappingProxyType(
+    {"origin": "donor", "destination": "recipient"}
+)
+"""The `open_roles` word naming the members of each side a whole population is read on."""
+
+
+def private_outside(
+    axis: RoleAxis, whole_of: Collection[PartyClass], side_classes: Collection[PartyClass]
+) -> bool:
+    """Whether the private donors a dataset holds on a donor side (`side_classes`) are
+    outside a whole population covering the `whole_of` classes there."""
+    return axis == "origin" and "private" in side_classes and "private" not in whole_of
+
+
+def whole_population_text(axis: RoleAxis, whole_of: Collection[PartyClass]) -> str:
+    """The members a whole population covering the `whole_of` classes on `axis` holds:
+    "every official donor" for a donor side covering no private donor, else "every donor"
+    or "every recipient"."""
+    noun = WHOLE_MEMBER_NOUNS.get(axis, "member")
+    official = axis == "origin" and "private" not in whole_of
+    return f"every official {noun}" if official else f"every {noun}"
+
+
+def whole_residual_text(whole_of: Collection[PartyClass]) -> str:
+    """The clause saying a whole population covering the `whole_of` classes holds aid
+    allocated to no country, empty when it covers no residual."""
+    return ", which includes aid not allocated to a country" if "residual" in whole_of else ""
+
+
+def _whole_total_read(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
+    """The whole population the side shows (`DepartureFact.group`), what it holds, and the
+    way back to the side's members. A request that named nothing on the side reads "No donor
+    was named, so this shows ..."; one that named it ("all donors") is asked in its words,
+    and its way back replaces those words. A union of totals names each
+    (`DepartureFact.entities`). A donor total that holds no private donor says they are
+    outside it where the answer's dataset holds private donors on the side
+    (`DepartureFact.side_classes`), and a total holding residuals says it holds aid allocated
+    to no country. The way back takes the door's form (`_members_way_back`)."""
+    if fact.over is None or fact.group is None:
+        raise ValueError("whole_total_read needs the side and the population it shows")
+    noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
+    verb = "shows" if shows_data else "checked"
+    if fact.entities:
+        shown = " plus ".join(fact.entities)
+    else:
+        every = whole_population_text(fact.over, fact.whole_of)
+        holds = whole_residual_text(fact.whole_of)
+        outside = (
+            " Private donors are outside it."
+            if private_outside(fact.over, fact.whole_of, fact.side_classes)
+            else ""
+        )
+        shown = f"{fact.group}, the source's total for {every}{holds}.{outside}"
+    if not shown.endswith("."):
+        shown += "."
+    if fact.asked is not None:
+        lead = f"You asked for {_asked(fact)}. This {verb}"
+    elif fact.inferred:
+        lead = f"No {noun} was named, so this {verb}"
+    else:
+        lead = f"This {verb}"
+    return f"{lead} {shown} To list each {noun}, {_members_way_back(fact, noun)}."
+
+
+def _members_way_back(fact: DepartureFact, noun: str) -> str:
+    """How the request lists each member of a side read whole, in its door's form: on a
+    door that asks in the question's words (`members_in_words`), an each phrase, which the
+    raw-text door reads as the breakdown under any verb
+    (`role_text.every_member_breakdown_axis`), else `open_roles`. The each phrase takes the
+    place of the request's words for the population, where it gave some, so "ODA from
+    Germany to all recipients" becomes "ODA from Germany to each recipient"; otherwise
+    "for each recipient" joins the question. `open_roles` replaces those words likewise."""
+    if fact.members_in_words:
+        if fact.asked is not None:
+            return f'write "each {noun}" in place of "{_asked(fact)}"'
+        return f'add "for each {noun}" to the question'
+    instead = f" in place of {_asked(fact)}" if fact.asked is not None else ""
+    return f"search again with open_roles ['{noun}']{instead}"
+
+
+def _whole_total_unpublished(
+    fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
+) -> str:
+    """The whole population asked for, on a side the dataset (`DepartureFact.shown`)
+    publishes no total of, which the answer leaves unnamed: it covers every party the
+    dataset holds there with data, the private donors and the aid allocated to no country
+    among them where the dataset holds those (`DepartureFact.whole_of`). A part that shows
+    no data states it for the closest match it shows, which holds data
+    (`only_alternate_has_data`)."""
+    if fact.over is None or fact.shown is None:
+        raise ValueError("whole_total_unpublished needs the side and the dataset")
+    noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
+    among = ", private donors among them" if "private" in fact.whole_of else ""
+    holds = whole_residual_text(fact.whole_of)
+    subject = "this" if shows_data else "the closest match"
+    return (
+        f"You asked for {_asked(fact)}. {fact.shown} publishes no total of every {noun}, so "
+        f"{subject} covers every {noun} it holds with data{among}{holds}."
+    )
+
+
 def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
     if fact.over is None:
         raise ValueError("direction_discarded needs the flow axis the place was named on")
     # The answer's measure has no flow roles, so no family names them.
     noun = GENERIC_ROLE_WORDING.noun(fact.over)
+    asked = _asked(fact)
+    if not shows_data:
+        return (
+            f"You named {asked} as a {noun.singular}, but this measure has no "
+            f"{noun.plural}, so this checked {asked} itself."
+        )
     return (
-        f"You named {_asked(fact)} as a {noun.singular}. This measure has no "
-        f"{noun.plural}, so this {'shows' if shows_data else 'checked'} the place itself."
+        f"You named {asked} as a {noun.singular}. This measure has no "
+        f"{noun.plural}, so this shows the place itself."
     )
 
 
@@ -434,9 +591,12 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "operation_not_applied": _operation_not_applied,
         "breakdown_not_applied": _breakdown_not_applied,
         "entity_unavailable": _entity_unavailable,
+        "member_unavailable": _member_unavailable,
         "year_unavailable": _year_unavailable,
         "modelled_values": _modelled_values,
         "group_read_as_members": _group_read_as_members,
+        "whole_total_read": _whole_total_read,
+        "whole_total_unpublished": _whole_total_unpublished,
         "direction_discarded": _direction_discarded,
         "direction_inferred": _direction_inferred,
         "scope_limited": _scope_limited,

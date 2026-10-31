@@ -10,7 +10,8 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import search.engine.retrieval.read_plan as read_plan
-from materialise.facets import bound_variable_breadth, coverage_probe, served_facets
+from materialise.facets import bound_variable_breadth, coverage_probe
+from materialise.group_facets import group_served
 from materialise.series_conversion import series_key
 from search.engine.app import _note_breadth_fallback
 from search.engine.clients.graph import Facet
@@ -52,10 +53,12 @@ from search.engine.retrieval.role_resolve import _elect_role_class, _role_plan
 from search.engine.retrieval.role_scope import discover_role_scope, pair_series
 from search.models import CoverageBreadth, CoverageExact, TimeWindow
 from search.observations import observation_settings
+from search.scope_window import WindowTooLong
 from series_coverage.coverage_types import BoundRoles
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames, YearHorizon
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import CountingSdmxClient, FakeSdmxClient, plan_observations
+from tests.engine._harness import lead_selected
 from tests.fixtures import FakeGraph
 
 _TOTAL = "TEST/PreviewRoute_Total"
@@ -961,9 +964,7 @@ def test_a_bulk_election_ranks_the_span_and_count_a_mint_ranks(search_settings) 
     )
     probe = coverage_probe(stat_var=_FLOW, bound=bound, coverage=index)
     window = plan_window(years.years)
-    (minted,) = served_facets(
-        probe.candidates, stat_vars=[_FLOW], window=window, breadth=probe.breadth_in(window)
-    )
+    (minted,) = group_served({_FLOW: probe}, window=window)[_FLOW]
 
     assert isinstance(plan, BulkPlan)
     assert {
@@ -971,6 +972,204 @@ def test_a_bulk_election_ranks_the_span_and_count_a_mint_ranks(search_settings) 
         for facet_id, c in plan.candidates.items()
     } == {"fShort": (2018, 2020), "fLong": (2015, 2019)}
     assert plan.facet_id == minted.facet_id == "fLong"
+
+
+_FLOW_B = "TEST/PreviewRoute_FlowB"
+_FLOW_C = "TEST/PreviewRoute_FlowC"
+_GROUP_ROWS = [
+    *(
+        (_FLOW, "fWide", ABSENT_ENTITY, recipient, list(range(2015, 2021)))
+        for recipient in (_AAA, _BBB, _CCC)
+    ),
+    (_FLOW, "fShared", ABSENT_ENTITY, _AAA, list(range(2015, 2021))),
+    (_FLOW_B, "fShared", ABSENT_ENTITY, _AAA, list(range(2015, 2021))),
+    (_FLOW_C, "fOwn", ABSENT_ENTITY, _BBB, list(range(2015, 2021))),
+]
+
+
+@pytest.mark.parametrize("max_pairs", [1, 1_000], ids=["bulk", "pairs"])
+def test_a_plan_of_several_members_serves_the_group_a_mint_elects(
+    search_settings, max_pairs: int
+) -> None:
+    """`fWide` holds three of `_FLOW`'s pairs, `fShared` one pair each of `_FLOW` and
+    `_FLOW_B`, and `fOwn` one of `_FLOW_C`'s. The members serve one group, the facet held
+    by the most of them, `fShared`, as the mint's election over the same probes does,
+    though `fWide` holds the most pairs. `_FLOW_C` holds none of it and serves nothing, so
+    its series and the debtors only it and `fWide` hold go unserved, and the plan names it as
+    a member the group leaves out (`unserved_members`)."""
+    search_settings(obs_preview_max_pairs=max_pairs)
+    members = [_FLOW, _FLOW_B, _FLOW_C]
+    index = build_coverage_index(
+        _GROUP_ROWS,
+        role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in members},
+        facet_metadata={
+            facet_id: FacetMetadata(provenance_id=f"dc/base/{facet_id}")
+            for facet_id in ("fWide", "fShared", "fOwn")
+        },
+    )
+    bound: BoundRoles = {"recipient": frozenset({_AAA, _BBB, _CCC})}
+    years = read_plan.role_years(_WINDOW, index.horizon)
+    plan = _role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _Constraints()),
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB, _CCC],
+        origin_dcids=[],
+        bound_roles=bound,
+        years=years,
+        coverage_index=index,
+    )
+    minted = group_served(
+        {sv: coverage_probe(stat_var=sv, bound=bound, coverage=index) for sv in members},
+        window=plan_window(years.years),
+    )
+
+    assert {sv: [f.facet_id for f in facets] for sv, facets in minted.items()} == {
+        _FLOW: ["fShared"],
+        _FLOW_B: ["fShared"],
+        _FLOW_C: [],
+    }
+    if isinstance(plan, BulkPlan):
+        assert max_pairs == 1
+        assert (plan.facet_id, plan.served_members) == ("fShared", (_FLOW, _FLOW_B))
+    else:
+        assert max_pairs == 1_000
+        assert plan.selections == dict.fromkeys((_FLOW, _FLOW_B), frozenset({"fShared"}))
+        assert {s.key for s in plan.uncovered} == {
+            (_FLOW, _BBB),
+            (_FLOW, _CCC),
+            (_FLOW_C, _BBB),
+        }
+    assert read_plan.unserved_entities(plan) == {("destination", _BBB), ("destination", _CCC)}
+    # The mint names `_FLOW_C` in `coverage_below_scope`'s `unserved_members`, on both routes.
+    assert read_plan.unserved_members(plan) == (_FLOW_C,)
+
+
+def test_a_member_whose_candidates_carry_no_facet_id_is_not_populated() -> None:
+    """A member is populated by the test its mint applies (`group_facets.is_populated`): a
+    candidate carrying a facet id. `_FLOW_B`'s one candidate carries none, so the mint
+    dispatches it no rows and names it nowhere, and the plan names it in no unit
+    departure."""
+    series = tuple(
+        PlanSeries(
+            stat_var=sv,
+            role_tuple=(("observationAbout", _AAA),),
+            candidates=(
+                Facet(obs_count=2, earliest_date="2019", latest_date="2020", facet_id=facet_id),
+            ),
+        )
+        for sv, facet_id in ((_FLOW, "f1"), (_FLOW_B, None))
+    )
+    plan = PairPlan(members=(_FLOW, _FLOW_B), years=None, series=series)
+
+    assert read_plan.populated_members(plan) == {_FLOW}
+
+
+_METHOD_ROWS = [
+    *(
+        (_FLOW, "fM1", ABSENT_ENTITY, recipient, list(range(2015, 2021)))
+        for recipient in (_AAA, _BBB)
+    ),
+    (_FLOW_B, "fM2", ABSENT_ENTITY, _AAA, list(range(2015, 2021))),
+]
+
+
+@pytest.mark.parametrize(
+    ("index_sourced", "served", "unserved"),
+    [
+        pytest.param(True, (_FLOW, _FLOW_B), (), id="index-sourced"),
+        pytest.param(False, (_FLOW,), (_FLOW_B,), id="by-facet-id"),
+    ],
+)
+def test_a_bulk_plan_serves_every_member_holding_the_group_s_source_and_unit(
+    search_settings, index_sourced: bool, served: tuple[str, ...], unserved: tuple[str, ...]
+) -> None:
+    """`_FLOW` holds `fM1` and `_FLOW_B` `fM2`, one source, unit and annual cadence under
+    two methods. An
+    index-resolved family's group is that source and unit, so its bulk read serves each
+    member the facet it holds them under, as its mint dispatches, in its one read, and
+    names no member left out. A family grouped by facet id serves `fM1`'s holder alone and
+    names `_FLOW_B`."""
+    search_settings(obs_preview_max_pairs=1)
+    members = [_FLOW, _FLOW_B]
+    index = build_coverage_index(
+        _METHOD_ROWS,
+        role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in members},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
+        },
+    )
+    plan = _role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _Constraints()),
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB})},
+        years=read_plan.role_years(_WINDOW, index.horizon),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan)
+    plan = replace(plan, index_sourced=index_sourced).narrowed(lambda _sv, _candidate: True)
+
+    assert plan.served_members == served
+    assert {f.facet_id for f in read_plan.facets_served(plan)} == {
+        plan.selected[sv][0] for sv in served
+    }
+    assert read_plan.unserved_members(plan) == unserved
+
+
+def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects(
+    search_settings,
+) -> None:
+    """`_FLOW` holds `fM1` at `_AAA` and `_CCC` to 2019, so `fM1` leads, and `fM2`, one
+    source and unit under another method, at `_BBB` to 2021. An index-resolved family's
+    group selects both, so under `latest` the member's year is the newest either reaches,
+    2021, its dates are that year, and the facets its series state are those holding a pair
+    there: `fM2` alone. Both state a monthly period, so coverage elects the member no year
+    (`CoverageIndex.elected_years`) and it serves its own latest period."""
+    search_settings(obs_preview_max_pairs=1)
+    rows = [
+        *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2020))) for place in (_AAA, _CCC)),
+        (_FLOW, "fM2", ABSENT_ENTITY, _BBB, list(range(2015, 2022))),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="dc/base/Shared",
+                measurement_method=method,
+                unit="CurrencyUSD",
+                observation_period="P1M",
+            )
+            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
+        },
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: _Constraints()},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB, _CCC],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
+        years=read_plan.role_years(DateRequest(window=None, latest=True), index.horizon),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan)
+    plan = replace(plan, index_sourced=True).narrowed(lambda _sv, _candidate: True)
+
+    assert (plan.facet_id, set(plan.selected[_FLOW])) == ("fM1", {"fM1", "fM2"})
+    assert plan.member_year(_FLOW) == 2021
+    assert read_plan.served_dates(plan) == {_FLOW: ("2021", "2021")}
+    assert [f.facet_id for f in read_plan.series_facets(plan)] == ["fM2"]
+    assert [f.facet_id for f in read_plan.facets_served(plan)] == ["fM2"]
 
 
 def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
@@ -1215,7 +1414,7 @@ def test_role_years_refuse_a_range_longer_than_the_cap(search_settings) -> None:
     """A range whose year list passes `scope_max_window_years` raises `WindowTooLong`, which
     every role route refuses as `scope_too_broad`."""
     search_settings(scope_max_window_years=5)
-    with pytest.raises(read_plan.WindowTooLong):
+    with pytest.raises(WindowTooLong):
         _role_years(TimeWindow(start_year=2000, end_year=2020))
     assert _role_years(TimeWindow(start_year=2016, end_year=2020)).listed == tuple(
         str(y) for y in range(2016, 2021)
@@ -1572,23 +1771,32 @@ def test_a_bulk_plan_narrowed_per_statvar_serves_one_set_of_members(
 
 
 def test_a_plan_lists_its_served_facets_by_points_served_whatever_its_series_order() -> None:
-    """Four variables each serve one source: `fp` (Projections, ten points), `fw` (WDI,
-    eleven) and two of ten. The plan lists WDI first however its series were probed, and
-    sources tied on points by dcid."""
+    """A plan whose four series each serve one source: `fp` (Projections, ten points), `fw`
+    (WDI, eleven) and two of ten. The plan lists WDI first whatever its series' order, and
+    sources tied on points by dcid. The series' groups are set, since an election serves
+    one source per Spec."""
     by_series = {
-        ("V1", "country/ZZZ"): [_facet("fp", range(2021, 2031), provenance="dc/base/Proj")],
-        ("V2", "country/ZZZ"): [_facet("fw", range(2010, 2021), provenance="dc/base/Wdi")],
-        ("V3", "country/ZZZ"): [_facet("fa", range(2010, 2020), provenance="dc/base/B")],
-        ("V4", "country/ZZZ"): [_facet("fb", range(2010, 2020), provenance="dc/base/A")],
+        "V1": _facet("fp", range(2021, 2031), provenance="dc/base/Proj"),
+        "V2": _facet("fw", range(2010, 2021), provenance="dc/base/Wdi"),
+        "V3": _facet("fa", range(2010, 2020), provenance="dc/base/B"),
+        "V4": _facet("fb", range(2010, 2020), provenance="dc/base/A"),
     }
-    orders = [list(by_series.items()), list(reversed(by_series.items()))]
-    members = ["V1", "V2", "V3", "V4"]
+    series = [
+        PlanSeries(
+            stat_var=sv,
+            role_tuple=(("observationAbout", "country/ZZZ"),),
+            candidates=(facet,),
+            group=(facet,),
+        )
+        for sv, facet in by_series.items()
+    ]
+    orders = [series, list(reversed(series))]
 
     listed = [
         [
             f.provenance_id
             for f in read_plan.facets_served(
-                plan_standard(dict(order), members=members, years=None)
+                PairPlan(members=tuple(by_series), years=None, series=tuple(order))
             )
         ]
         for order in orders
@@ -1773,6 +1981,7 @@ def test_a_one_role_continuation_counts_the_observations_of_every_row_of_a_membe
         members=(sv,),
         years=TimeWindow(start_year=first, end_year=last),
         facet_id="rec",
+        selected=lead_selected(candidates, "rec"),
         continuing=("est",),
         candidates=candidates,
     )

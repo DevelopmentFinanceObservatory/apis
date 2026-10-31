@@ -3,7 +3,8 @@
 `FiveTuple` mirrors the five identity-shape fields. Missing fields mean absent
 arcs. `measured_property` anchors the reverse query. The frozen tuple also keys
 the member-group cache. Graph clients satisfy the `MemberArcReader` and `SubjectPage`
-protocols structurally.
+protocols structurally, and a reader whose reads of some nodes drop no arc also satisfies
+`CompleteArcReads`.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Final, Literal, Protocol
+from typing import Final, Literal, Protocol, runtime_checkable
 
 AbsentReading = Literal["not_declared", "aggregate"]
 """`not_declared` treats a missing constraint as distinct. `aggregate` covers every
@@ -81,4 +82,15 @@ class MemberArcReader(Protocol):
 
         `individual_probe_budget` limits follow-up reads for dcids unresolved after
         a batch retry. `None` probes all of them. Unprobed dcids map to `None`."""
+        ...
+
+
+@runtime_checkable
+class CompleteArcReads(Protocol):
+    """A `MemberArcReader` that knows which nodes it reads in full."""
+
+    def arcs_complete(self, dcid: str) -> bool:
+        """Whether every read of `dcid`'s out-arcs returns each arc the node holds. A batch
+        read of a live graph can drop an arc, so the walk re-reads a candidate it rejects for
+        an absent arc. An absent arc in a complete read is a verdict, and the walk trusts it."""
         ...

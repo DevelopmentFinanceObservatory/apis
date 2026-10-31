@@ -7,7 +7,9 @@ tag (`decode`): ``$tuple``, ``$frozenset``, ``$dataclass``, ``$namedtuple``, ``$
 and ``$dict``, each naming its class by module and qualified name.
 
 An item's answers are both rounds' of its bind (`jev_assemble.span_round`) when its first
-round calls for a second.
+round calls for a second. An item whose shapes the readers leave words unread on stores
+them as ``nominated_words`` (`BindRequest.nominated_words`) with Jev's ``unread|`` answers;
+an item without them nominates none.
 
 `replay` runs an item through the Jev request builders and `jev_assemble`, then through the
 steps the engine applies after a binder returns (`bind.split_stray_bindings`, the menu-rank
@@ -15,6 +17,11 @@ election among the house policies' survivors `phase_rank_bind._elected_index`, a
 settlement of the elected shape's bindings `phase_election._settle_bindings`), and reads
 the result in the form `expected` holds (`canonical`). The items store no query qualifier
 matches, so the settlement forces no query code.
+
+The expected output is engine output over the stored answers, so an engine change that
+moves it is re-recorded from `replay`: run the golden tests without xdist with
+``SEARCH_UPDATE_JEV_GOLDEN=1`` (`updating`), and each item's `expected` is rewritten
+(`store_expected`). The stored answers and arguments are never rewritten.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,6 +76,7 @@ _BIND_FIELDS = (
     "refused",
     "availability",
 )
+_UPDATE_ENV = "SEARCH_UPDATE_JEV_GOLDEN"
 # Stored answers to questions the bind request does not ask.
 _UNASKED_PREFIXES = ("topic", "within|")
 
@@ -148,6 +157,7 @@ def load_item(path: Path) -> GoldenItem:
     """The item `path` holds, its request asked with a query, as the stored answers were."""
     record = json.loads(path.read_text())
     args = {name: decode(record["args"][name]) for name in _BIND_FIELDS}
+    args["nominated_words"] = decode(record["args"].get("nominated_words", []))
     step = _HousePolicyStep(
         shapes=args["shapes"],
         frame=args["frame"],
@@ -173,7 +183,7 @@ def load_item(path: Path) -> GoldenItem:
 def ground(output: QuantityOutput, variable: str, shapes: Sequence[ShapeDraft]) -> QuantityOutput:
     """`output` as the engine keeps it (`_read_quantity_answer`): the index, and a rate or
     share on the quote, drop when the quote names no base in `variable` (`_names_base`)."""
-    state = SimpleNamespace(variable=variable, entities=(), entity_roles={})
+    state = SimpleNamespace(variable=variable, entity_texts=(), entity_roles={})
     # The stub holds the three fields `_names_base` reads.
     if _names_base(state, output.base_words, shapes):  # ty: ignore[invalid-argument-type]
         return output
@@ -304,3 +314,25 @@ def replay(
         "rules": conf.rules,
     }
     return out, conf
+
+
+def updating() -> bool:
+    """Whether this run re-records each item's `expected` (``SEARCH_UPDATE_JEV_GOLDEN=1``).
+    Recording under xdist is refused, since workers would write the files concurrently."""
+    if os.environ.get(_UPDATE_ENV) != "1":
+        return False
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        raise RuntimeError(f"{_UPDATE_ENV}=1 records golden items only without xdist")
+    return True
+
+
+def store_expected(path: Path, expected: dict[str, Any]) -> None:
+    """Rewrite the item file `path` with `expected` as its expected output, every other
+    field as stored, in the files' compact form. A file holding non-ASCII text keeps it
+    unescaped, as it was stored, and an item whose output has not moved is left as it is."""
+    text = path.read_text()
+    record = json.loads(text)
+    if record["expected"] == expected:
+        return
+    record["expected"] = expected
+    path.write_text(json.dumps(record, separators=(",", ":"), ensure_ascii=text.isascii()) + "\n")

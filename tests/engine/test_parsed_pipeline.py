@@ -748,7 +748,7 @@ class TestUnitCompletionFromDeclaredSources:
 
         materialise_graph, materialise_sdmx = materialise_double_from_obs(_fertility_ken_usd_obs())
         materialise_graph._arcs = _FERTILITY_MATERIALISE_ARCS
-        with patch("search.engine.region.phase_answer.decide_part_unit", _capture):
+        with patch("search.engine.region.phase_answer.decide_spec_unit", _capture):
             for unit_text in unit_texts:
                 _resolve_parsed(
                     [_fertility_kenya_part(unit_text=unit_text)],
@@ -1175,12 +1175,12 @@ class TestPinnedDcidC2:
             )
 
         named: dict[str, tuple[str, str]] = {}
-        for text, pin in pins.items():
+        for identity, pin in pins.items():
             assert isinstance(pin, PinnedResolved)
-            named[text] = (pin.entity.dcid, pin.entity.name)
+            named[identity] = (pin.entity.dcid, pin.entity.name)
         assert named == {
-            "Kenya": ("country/USA", "United States of America"),
-            "Somewhere": ("country/XYZ", "country/XYZ"),
+            "country/USA": ("country/USA", "United States of America"),
+            "country/XYZ": ("country/XYZ", "country/XYZ"),
         }
 
     def test_confirm_part_pins_falls_back_to_dcid_when_label_read_fails(self, caplog):
@@ -1213,7 +1213,7 @@ class TestPinnedDcidC2:
                 )
             )
 
-        assert pins["Kenya"].entity.name == "country/USA"
+        assert pins["country/USA"].entity.name == "country/USA"
         [record] = caplog.records
         message = record.getMessage()
         assert "GraphInfraError" in message
@@ -1304,20 +1304,6 @@ class TestPinnedDcidC2:
         }
         assert result.parts[1].status == "no_data", result.parts[1]
         assert result.parts[1].no_data.reason == "no_observations"
-
-    def test_one_part_pinning_one_text_to_two_dcids_refuses_request_invalid(self):
-        """Two pins for the same text in one part refuse `request_invalid`."""
-        part = ParsedPart(
-            variable_text="aid from Congo to Congo",
-            entities=[
-                ParsedEntity(text="Congo", role_text="from", dcid="country/COD"),
-                ParsedEntity(text="Congo", role_text="to", dcid="country/COG"),
-            ],
-        )
-        with pytest.raises(EngineInputError) as exc_info:
-            _resolve_parsed([part])
-        assert exc_info.value.code == "request_invalid"
-        assert exc_info.value.pointer == "/input/parts/0/entities"
 
     def test_one_part_posting_one_text_with_both_members_values_refuses_request_invalid(self):
         """One text asked for as its members and as a whole in one part refuses

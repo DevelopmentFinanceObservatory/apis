@@ -95,11 +95,11 @@ def test_compute_operation_id_is_deterministic() -> None:
     assert id_a.startswith("op_")
 
 
-def test_a_coverage_build_leaves_the_operation_and_its_completion_in_place(
+def test_a_coverage_build_leaves_the_operation_and_its_admitted_stamp_in_place(
     store: LiveOperationStore,
 ) -> None:
     """The coverage stamp stays out of the id, so a resubmission after a coverage build finds
-    the done operation."""
+    the done operation and resets it under the stamp it was admitted with."""
     first = store.create_or_get(
         request_identity=_IDENTITY,
         options=_OPTIONS,
@@ -126,7 +126,7 @@ def test_a_coverage_build_leaves_the_operation_and_its_completion_in_place(
 
     assert (after_build.id, after_build.state, after_build.coverage_stamp) == (
         first.id,
-        "done",
+        "pending",
         _STAMP,
     )
 
@@ -558,6 +558,90 @@ def test_create_or_get_skips_the_advisory_lock_for_an_existing_operation() -> No
         )
     finally:
         recording.close()
+
+
+_RESET_UPDATE = "UPDATE datasets.operation SET state = 'pending'"
+
+
+class _InterleavingTransaction:
+    """Runs `before` and `after` around the first reset update, inside the same transaction."""
+
+    def __init__(self, inner: Any, store: _InterleavingOperationDatasetStore) -> None:
+        self._inner = inner
+        self._store = store
+
+    def _around_reset(self, sql: str, run):
+        hooks = self._store.pending_hooks
+        if hooks is None or not sql.startswith(_RESET_UPDATE):
+            return run()
+        self._store.pending_hooks = None
+        before, after = hooks
+        before(self._inner)
+        result = run()
+        after(self._inner)
+        return result
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        self._around_reset(sql, lambda: self._inner.execute(sql, params))
+
+    def fetch_one(self, sql: str, params: Sequence[object] = ()):
+        return self._around_reset(sql, lambda: self._inner.fetch_one(sql, params))
+
+    def fetch_all(self, sql: str, params: Sequence[object] = ()):
+        return self._around_reset(sql, lambda: self._inner.fetch_all(sql, params))
+
+
+class _InterleavingOperationDatasetStore:
+    """Injects writes around the next reset update `create_or_get` sends."""
+
+    def __init__(self) -> None:
+        self._inner = FakeOperationDatasetStore()
+        self.pending_hooks: tuple[Any, Any] | None = None
+
+    def close(self) -> None:
+        self._inner.close()
+
+    @contextmanager
+    def transaction(self) -> Generator[_InterleavingTransaction, None, None]:
+        with self._inner.transaction() as tx:
+            yield _InterleavingTransaction(tx, self)
+
+
+def test_create_or_get_decides_again_when_a_claim_and_completion_land_around_its_reset() -> None:
+    """A redelivery claims the abandoned row after the locked read, so the reset matches
+    nothing, and the run completes before the call returns. The call resets the done row
+    and returns the pending row it wrote."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    fake = _InterleavingOperationDatasetStore()
+    try:
+        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
+        first = _create(store, "spec_a")
+        assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+        now_box["t"] += timedelta(seconds=61)
+
+        def _redelivery_claims(tx: Any) -> None:
+            tx.execute(
+                "UPDATE datasets.operation SET attempt_count = attempt_count + 1, "
+                "claimed_at = %s WHERE id = %s",
+                (now_box["t"], first.id),
+            )
+
+        def _redelivery_completes(tx: Any) -> None:
+            tx.execute(
+                "UPDATE datasets.operation SET state = 'done', subject_id = 'spec_a', "
+                "content_version = 'cv_1', confirmed_at = %s WHERE id = %s",
+                (now_box["t"], first.id),
+            )
+
+        fake.pending_hooks = (_redelivery_claims, _redelivery_completes)
+
+        resubmitted = _create(store, "spec_a")
+
+        assert fake.pending_hooks is None
+        assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
+        assert store.get(first.id) == resubmitted
+    finally:
+        fake.close()
 
 
 def test_claim_moves_pending_to_running(store: LiveOperationStore) -> None:
@@ -1191,6 +1275,43 @@ def test_create_or_get_resets_a_retryable_failed_row_to_pending() -> None:
         assert twice_resubmitted.submission_count == 2
     finally:
         fake.close()
+
+
+def test_create_or_get_resets_a_done_row(store: LiveOperationStore) -> None:
+    """A submission reaches the store only when the head could not answer it, so a done row
+    resets whatever version it holds and its next claim takes a new attempt."""
+    op = store.create_or_get(
+        request_identity=_IDENTITY,
+        options=_OPTIONS,
+        coverage_stamp=_STAMP,
+        origin_catalogue_build_id=_BUILD,
+        estimate=_ESTIMATE,
+    )
+    assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    assert store.complete(
+        op.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_1",
+        confirmed_at=_CONFIRMED_AT,
+    )
+
+    resubmitted = store.create_or_get(
+        request_identity=_IDENTITY,
+        options=_OPTIONS,
+        coverage_stamp=_STAMP,
+        origin_catalogue_build_id=_BUILD,
+        estimate=_ESTIMATE,
+    )
+
+    assert (resubmitted.id, resubmitted.state, resubmitted.submission_count) == (
+        op.id,
+        "pending",
+        1,
+    )
+    claimed = store.claim(op.id, submission_count=1, lease_seconds=60, final_delivery=False)
+    assert claimed is not None
+    assert claimed.attempt_count == 2
 
 
 def test_create_or_get_reset_of_a_retryable_failed_row_takes_the_backlog_lock() -> None:

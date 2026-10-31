@@ -47,12 +47,12 @@ _NODES = {
     _SV_A: {
         "label": "Slot values SourceA",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Slot values SourceA", _VAL_A),
+        "arcs": _sv_arcs("Arc derived slot values test variable, source A", _VAL_A),
     },
     _SV_B: {
         "label": "Slot values SourceB",
         "type": "StatisticalVariable",
-        "arcs": _sv_arcs("Slot values SourceB", _VAL_B),
+        "arcs": _sv_arcs("Arc derived slot values test variable, source B", _VAL_B),
     },
 }
 

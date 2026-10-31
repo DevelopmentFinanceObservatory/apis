@@ -56,6 +56,43 @@ just check       # lint, type check, and the full suite, as CI runs them
 
 `just check` and CI run the normative identity vector tests (`tests/engine/test_identity_vectors.py`) from the `spec-kit` repository. `just check` and `just test` find a clone at `../dfo-spec-kit`, or at the path in `DFO_SPEC_KIT_DIR`. A git worktree needs `DFO_SPEC_KIT_DIR` set explicitly, because the sibling fallback resolves relative to the worktree's own directory, not the main checkout's. `just check` fails when no clone resolves.
 
+### Invariant grids
+
+`tests/engine/test_answer_invariants.py` and `tests/engine/test_read_plan_grid.py` check the invariants of an answer and of its read plan on every cell of a grid of factors. `just check` and CI run a strength-4 covering array of the cells (`tests/engine/_grid_cells.py`). `.github/workflows/full-grids.yml` runs every cell (`DFO_FULL_GRIDS=1`, about 8,700 tests) against `dev` each night, and a failed nightly opens the issue "Nightly full grids: failing", or comments on it when it is open. The nightly checks every invariant on every cell except I9, which holds each door to the requests recorded for it in `tests/fixtures/answer_invariants_requests_c669cc874.json` and `tests/fixtures/answer_invariants_requests_uncompared.json`. I9 runs on the covering array's cells alone, and the second file holds those cells' doors alone. A pull request that changes a door's answer on purpose fails I9 with "has no door to be held to", and re-records the bound in that pull request:
+
+```bash
+uv run python -m tests.engine._answer_invariants_record measure <file>.jsonl
+uv run python -m tests.engine._answer_invariants_record write --branch <file>.jsonl --grow "<the answer that changed>"
+```
+
+`measure` runs the covering array, and the preview-off cells I9 runs to bound its preview-on cells. `write` rebuilds `answer_invariants_requests_uncompared.json`. It keeps each held record its door still passes under I9, drops the doors the base record now bounds, and refuses to add a door, lose a held door from the measurement, change a door's answer, or let a door request more or run deeper than its held record allows, unless `--grow` gives the reason. On an unchanged tree `write` needs no `--grow` and rewrites no record.
+
+### Changing what the clients read
+
+`tests/contract/test_client_contract.py` checks the app against the client contract spec-kit
+ships as `dfo-spec-kit-client-contract`. Each recorded scenario's requests and responses must
+validate against the app's OpenAPI document, every required member `strict-fields.json` lists
+must stay required and non-nullable, every enum value it lists must stay admitted, and every
+problem code a response carries must stay registered on its route at its status. When the test
+fails for a wire change you intend, commit the change, record the contract against your branch's
+local app with spec-kit's `tools/capture_client_contract.py`
+(`openapi --dfo-apis <checkout>`, then `record --base-url http://127.0.0.1:8083/api`), open the
+spec-kit PR, and cut a spec-kit release. Move all six spec-kit pins to that release's commit in
+the same dfo-apis PR as the change: `dfo-spec-kit` and `dfo-spec-kit-client-contract` in the root
+`pyproject.toml`, and the four in `packages/dfo-data-tools/pyproject.toml`. A change that keeps
+the shape and alters behaviour passes this test, and the sdk's scheduled end-to-end run catches
+it after merge.
+
+### Reading the dev graph locally
+
+`just dev`, `just sdmx-live`, and the scripts read the dev Data Commons service on Cloud Run (`SEARCH_GRAPH_BASE`), which admits only callers holding `roles/run.invoker`. `dfo_platform.cloud_run_auth` sends an ID token to every `*.run.app` host and raises `CloudRunAuthError` when it has none. Your own user credentials cannot mint one, so sign in as a service account you may impersonate, which mints and refreshes tokens:
+
+```bash
+gcloud auth application-default login --impersonate-service-account=<service account>
+```
+
+You need `roles/iam.serviceAccountTokenCreator` on the service account, and the account needs `roles/run.invoker` on the service.
+
 ### SDMX live tests
 
 `tests/dc_sdmx/` runs offline against recorded wire fixtures. `test_live.py` calls a real Data Commons deployment and is skipped unless `DFO_SDMX_LIVE_BASE` is set.
@@ -65,9 +102,9 @@ export SEARCH_GRAPH_TOKEN=<the x-graph-token shared secret>
 just sdmx-live
 ```
 
-The recipe points at the same graph as `just dev` (`SEARCH_GRAPH_BASE`) and appends the Data Commons service's `/core/api` prefix, because `SdmxClient` appends its own `/sdmx/v3/...` paths to the API root. It sets `DFO_SDMX_LIVE_REQUIRED=1`, so a missing base fails the run instead of skipping it. Two tests pass when the deployment serves the SDMX routes and returns observations for `Count_Person` in `country/USA`. A failure on an empty result means the deployment authenticated but served an empty graph. An `SdmxUnexpectedResponseShapeError` means the request was challenged before it reached the mixer, so the token is missing or wrong.
+The service needs an ID token, as in [Reading the dev graph locally](#reading-the-dev-graph-locally). The recipe points at the same graph as `just dev` (`SEARCH_GRAPH_BASE`) and appends the Data Commons service's `/core/api` prefix, because `SdmxClient` appends its own `/sdmx/v3/...` paths to the API root. It sets `DFO_SDMX_LIVE_REQUIRED=1`, so a missing base fails the run instead of skipping it. Two tests pass when the deployment serves the SDMX routes and returns observations for `Count_Person` in `country/USA`. A failure on an empty result means the deployment authenticated but served an empty graph. An `SdmxUnexpectedResponseShapeError` means the request was challenged before it reached the mixer, so the token is missing or wrong.
 
-`.github/workflows/sdmx-live.yml` runs the same suite on pull requests touching `packages/dfo-data-tools/src/dc_sdmx/` or `tests/dc_sdmx/` once they are out of draft, and on a weekday schedule.
+`.github/workflows/sdmx-live.yml` runs the same suite on pull requests touching `packages/dfo-data-tools/src/dc_sdmx/`, `packages/dfo-data-tools/src/dfo_platform/cloud_run_auth.py`, or `tests/dc_sdmx/` once they are out of draft, and on a weekday schedule.
 
 ### Database migrations
 
@@ -105,7 +142,7 @@ A change under `src/search/` is scored by the eval gate. The gate runs every eli
 - the check passes on all three base samples and again in a confirm round (a regression);
 - the check is `structural`.
 
-A check that fails at base too is reported as pre-existing and does not block. A check named in a case's `known_failure` is reported and does not block, and the report marks it fixed when every head sample passes it. `known_failure` carries the issue that tracks the fault, so a case that exposes an engine fault stays in the corpus with its correct expectation. The summary lists every case the pull request deleted, made ineligible, or gave a new `known_failure`, so a reviewer sees each silenced check.
+A check that fails at base too is reported as pre-existing and does not block. A base sample that stayed degraded after its retries (the app reported a degraded leg or a timeout) is a partial answer. Its failure still shows the base fails, but its pass is no baseline: a check whose base samples all pass, or whose confirm base sample passes, with one of those passes degraded, is reported as `base_inconclusive`, which counts as an infrastructure failure. A base sample that passes `disposition` or `answer` while the same sample fails `measure`, `entities` or `provenance` answered the right status on the wrong series or places. When every base sample that reached the check is such a pass, wrong on each part the head failed, a head that stops giving that answer is reported as `wrong_answer_at_base`. One base sample right in content keeps the verdict a regression. `wrong_answer_at_base` does not block, and the summary lists each one beside the base sample's content failure. The sample's own content verdicts decide, including a content check in the case's `known_failure`. A check named in a case's `known_failure` is reported and does not block, and the report marks it fixed when every head sample passes it. `known_failure` carries the issue that tracks the fault, so a case that exposes an engine fault stays in the corpus with its correct expectation. The summary lists every case the pull request deleted, made ineligible, or gave a new `known_failure`, so a reviewer sees each silenced check.
 
 `.github/workflows/eval-gate.yml` evaluates pull requests into `dev` and `main` that touch `src/`, `packages/`, `corpus/`, the eval scripts, `uv.lock`, or `pyproject.toml`. It runs when a non-draft pull request is opened or reopened and when a draft is marked ready for review. A push does not run it. To evaluate a new head commit, or a draft, add the `run-eval` label: `.github/workflows/eval-request.yml` removes the label and dispatches the eval on the pull request's head branch, and adding the label again asks for another run. The workflow stages the deployed coverage and catalogue artifacts with `scripts/stage_eval_data.py`, serves both apps with the eval profile (`just eval-app`), runs `scripts/eval_paired.py`, uploads the report and every response as an artifact, and posts the summary. The driver exits 0 when nothing blocks, 1 on a blocking verdict, and 3 on infrastructure failure. The `eval-override` label turns a 1 or a 3 into a pass for one commit: add it and re-run the failed `Eval gate` job, and the next eval run removes it. The summary records the override. Making the job a required status check is a branch-protection setting, configured per branch in the repository settings.
 
@@ -118,6 +155,7 @@ A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset 
 GitHub Actions validate pull requests and pushes to `dev`. A draft pull request runs nothing until it is marked ready for review. A push to `main` runs no CI, since `main` only moves to a commit `dev` has already tested. The jobs that need repository secrets skip on pull requests from forks.
 
 - `.github/workflows/ci.yml` runs `ruff check`, `ruff format --check`, `ty check`, `pytest` with identity vectors, and verifies container builds.
+- `.github/workflows/full-grids.yml` runs the invariant grids over every cell each night and opens an issue when they fail. See [Invariant grids](#invariant-grids).
 - `.github/workflows/eval-gate.yml` scores the eval cases on the head and base builds of a pull request, split by case id across parallel shard jobs, and blocks on a regression, a failing new case, or a structural failure in any shard.
 - `.github/workflows/sdmx-live.yml` validates `dc_sdmx` client operations against active Data Commons Cloud Run endpoints.
 - `.github/workflows/migrations.yml` runs database migrations and live tests against PostgreSQL service containers.

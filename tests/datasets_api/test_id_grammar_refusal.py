@@ -114,8 +114,9 @@ def test_well_formed_id_keeps_its_status_on_definition_and_snapshot_routes(versi
     assert snapshot_resp.json()["code"] == "spec_not_found"
 
 
-def test_well_formed_id_keeps_its_status_on_the_pin_route():
-    """A well-formed id reaches the pin permission check before registry lookup."""
+def test_well_formed_id_keeps_its_status_on_the_pin_route(monkeypatch: pytest.MonkeyPatch):
+    """A well-formed id reaches the pin door's own spec lookup."""
+    monkeypatch.setenv("DFO_CALLER_HMAC_KEY", "test-caller-key")
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
         spec_reader=FakeSpecReader(),
@@ -124,10 +125,14 @@ def test_well_formed_id_keeps_its_status_on_the_pin_route():
         reference_writer=_UnusedReferenceWriter(),
     )
 
-    resp = client.post(f"/api/datasets/{_UNREGISTERED_ID}/v1/pin", json=_PIN_BODY)
+    resp = client.post(
+        f"/api/datasets/{_UNREGISTERED_ID}/v1/pin",
+        json=_PIN_BODY,
+        headers={"x-forwarded-for": "203.0.113.7"},
+    )
 
-    assert resp.status_code == 403
-    assert resp.json()["code"] == "pin_not_permitted"
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "spec_not_found"
 
 
 def test_wrong_method_on_a_well_formed_path_still_refuses_405():

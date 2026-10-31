@@ -69,12 +69,21 @@ type RunFailure = Literal[
 
 
 DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
-    {"modelled_values", "group_read_as_members", "direction_inferred", "scope_limited"}
+    {
+        "modelled_values",
+        "group_read_as_members",
+        "whole_total_read",
+        "whole_total_unpublished",
+        "direction_inferred",
+        "scope_limited",
+    }
 )
 """Departures that describe the data the answer shows without changing what
 was asked: the values are modelled, a named group was read as its members, a
-place named without a direction was read in the one direction holding data
-there, a check covered only some values. An example may carry them."""
+flow side was read as the total its source publishes for its whole population, or as
+every party its source holds there where it publishes no such total, a place named
+without a direction was read in the one direction holding data there, a check covered
+only some values. An example may carry them."""
 
 REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
     {
@@ -83,13 +92,14 @@ REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
         "operation_not_applied",
         "breakdown_not_applied",
         "entity_unavailable",
+        "member_unavailable",
         "year_unavailable",
         "direction_discarded",
     }
 )
 """Departures that say the answer is for a different question than the
-sentence asked: another measure, no operation, no breakdown, a place or year
-without values, a dropped direction. An answer carrying one fails the example
+sentence asked: another measure, no operation, no breakdown, a place, variable or
+year without values, a dropped direction. An answer carrying one fails the example
 (`departed`). Together with `DATA_DESCRIBING_DEPARTURES` this is every
 `DepartureCode`, so a code added to the vocabulary fails a test until it is
 put on a side."""

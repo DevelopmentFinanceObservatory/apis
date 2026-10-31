@@ -9,13 +9,15 @@ from code_index.shared import get_index
 from dataset_store.clock import utc_now
 from datasets_api.admission import MaterialisePermits, RebuildFlights
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.deps import Deps, DepsCell, build_executors
+from datasets_api.deps import Deps, DepsCell, build_analysis_executor, build_executors
 from datasets_api.operation_store import NullOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
-from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
+from datasets_api.versions import NullHeadWriter
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
 from series_coverage.shared import get_coverage_service
+
+from ._snapshot_doubles import offline_version_pair
 
 
 class Unwired:
@@ -29,11 +31,12 @@ class Unwired:
 
 
 def fake_deps(**overrides: object) -> Deps:
-    """A `Deps` of offline doubles. Writers, the head store and the operation store are the null
-    implementations, the task client is a `FakeTaskClient`, and every other client or store is
-    `Unwired` unless `overrides` names it. A `code_index` override serves every read, and without
-    one each read takes `get_index()`. No breadth reader is bound, `now` defaults to `utc_now`,
-    and the executors and semaphore follow `settings`."""
+    """A `Deps` of offline doubles. The head store, the operation store and the other writers
+    are the null implementations, the version writer and snapshot reader follow
+    `offline_version_pair`, the task client is a `FakeTaskClient`, and every other client or
+    store is `Unwired` unless `overrides` names it. A `code_index` override serves every read,
+    and without one each read takes `get_index()`. No breadth reader is bound, `now` defaults to
+    `utc_now`, and the executors and semaphore follow `settings`."""
     settings = overrides.pop("settings", None) or DatasetsBuildSettings.from_env()
     assert isinstance(settings, DatasetsBuildSettings)
     read_executor, work_executor = build_executors(settings)
@@ -42,7 +45,6 @@ def fake_deps(**overrides: object) -> Deps:
     graph = overrides.get("graph", Unwired("graph"))
     defaults: dict[str, object] = {
         "settings": settings,
-        "version_writer": NullVersionRecordWriter(),
         "head_store": NullHeadWriter(),
         "operation_store": NullOperationStore(),
         "task_client": FakeTaskClient(),
@@ -57,7 +59,14 @@ def fake_deps(**overrides: object) -> Deps:
         "rebuilds": RebuildFlights(),
         "read_executor": read_executor,
         "work_executor": work_executor,
+        "analysis_executor": build_analysis_executor(settings),
     }
+    defaults.update(
+        offline_version_pair(
+            version_writer=overrides.pop("version_writer", None),
+            snapshot_reader=overrides.pop("snapshot_reader", None),
+        )
+    )
     values = {
         field.name: overrides.pop(field.name, defaults.get(field.name, Unwired(field.name)))
         for field in fields(Deps)

@@ -40,7 +40,6 @@ from search.engine.retrieval.read_plan import (
     PlanRoles,
     ReadPlan,
     RoleYears,
-    WindowTooLong,
     asked_years,
     in_elected_datasets,
     plan_role_read,
@@ -63,6 +62,7 @@ from search.engine.retrieval.role_scope import (
 from search.engine.retrieval.standard import _bind_aware_order
 from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
 from search.models import CoverageBare
+from search.scope_window import WindowTooLong
 from statvar_members import UNRESOLVED_NODE, constraints_resolve, elect_role_class
 
 if TYPE_CHECKING:
@@ -384,12 +384,14 @@ def _elect_role_class(
     )
     if election.tied:
         return None
-    kept = [sv for sv in surviving_svs if sv not in electing or sv in election.members]
-    if len(kept) < len(surviving_svs):
+    elected = frozenset(election.members)
+    dropped = frozenset(electing) - elected
+    kept = [sv for sv in surviving_svs if sv not in dropped]
+    if dropped:
         logger.info(
             "graph_confirm_resolve: dropped %d member(s) the role-class election reduces: %r",
             len(surviving_svs) - len(kept),
-            [sv for sv in surviving_svs if sv not in kept],
+            [sv for sv in surviving_svs if sv in dropped],
         )
     return kept
 

@@ -1,0 +1,770 @@
+"""End-to-end tests for a part's `assumptions` on the raw-text and dataset_resubmit doors.
+
+"aid flows to Kenya" leaves the flow slot open, so the election fixes it to its declared
+default, official development assistance (CRSTypeOfFlow10, short name "ODA"). Kenya binds
+the where slot, which the destination shares, so the heading names the recipient and reads
+the providers open ("to Kenya from all providers").
+A resubmit posts the identity whole, so the engine records the flow as posted, and the
+part keeps the default only through the entry's `assumptions` echo, matched to the rebuilt
+slot by its value dcids. A candidates entry posting the aid reading beside a loan reading,
+whose open creditors read "every creditor", shows a part whose readings
+share no item, each reading's own list in `reading_assumptions`.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from search.engine.bind import SlotBindingDraft
+from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
+from search.models import (
+    Assumption,
+    BaseIdentity,
+    CandidatesPart,
+    DatasetResubmitInput,
+    DefinitePart,
+    IdentityBindingValue,
+    IdentityWindowRange,
+    Operation,
+    RawTextInput,
+    ResolveOptions,
+    ResolveRequest,
+    ResolveResponse,
+    ResubmitCandidate,
+    ResubmitCandidatesEntry,
+    ResubmitIdentityEntry,
+    Spec,
+)
+from tests.engine._harness import make_request, offline_resolve
+from tests.engine.test_operations_e2e import (
+    _EMPTY_SDMX,
+    _QUERY,
+    _extraction,
+    _OpenFlowAndSectorBindLLM,
+    _ScriptedLLM,
+)
+from tests.engine.test_qualifier_suppression_and_provenance import (
+    _E2E_NODES,
+    _E2E_OBS,
+    _E2E_SV_DCID,
+    _e2e_graph_for,
+    _e2e_sv_arcs,
+)
+from tests.fixtures import FakeGraph
+
+_ASSUMED_ODA = Assumption(
+    kind="declared_default",
+    binding_ref="how:crsTypeOfFlow",
+    text="official development assistance",
+    refs=["CRSTypeOfFlow10"],
+)
+_ASSUMED_ROLES = [Assumption(kind="open_role", binding_ref="origin:", text="every provider")]
+_ASSUMED_CLAUSE = " Assumed: official development assistance; every provider."
+# A parametrize row's echo that is the first answer's own list.
+_FIRST = "first"
+
+
+def _raw_text_answer(query: str, entity: ExtractedEntity) -> ResolveResponse:
+    """The raw-text answer to `query`, whose extraction names `entity` beside "aid flows"."""
+    return offline_resolve(
+        ResolveRequest(input=RawTextInput(query=query), response_options=ResolveOptions()),
+        graph=_e2e_graph_for("aid flows"),
+        llm=_OpenFlowAndSectorBindLLM(
+            Extraction(kind="resolution", variables=["aid flows"], entities=[entity])
+        ),
+        sdmx=_EMPTY_SDMX,
+    )
+
+
+def _first_answer() -> DefinitePart:
+    response = _raw_text_answer("aid flows to Kenya", ExtractedEntity(text="Kenya"))
+    assert response.rendered_sentence is not None
+    assert response.rendered_sentence.startswith(
+        "Test grant equivalent flow to Kenya from all providers in 2020."
+    )
+    assert response.rendered_sentence.endswith(_ASSUMED_CLAUSE)
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    return part
+
+
+# The grant equivalent of private sector instruments in Kenya, the series a flow edit from
+# ODA to private sector instruments reads, held beside the fixture's ODA series.
+_PSI_SV_DCID = (
+    "GrantEquivalent_FinancialFlow_Disbursement_CRSTypeOfFlow60_CRSTypeOfFinance1101_"
+    "CRSCooperationModalityC01_CRSPurposeCode24030_Nominal"
+)
+
+
+def _graph_with_psi(detect: dict | None = None) -> FakeGraph:
+    """The fixture graph with the private sector instruments series beside the ODA one,
+    with ``detect`` as its detect entries."""
+    return FakeGraph(
+        nodes={
+            **_E2E_NODES,
+            _PSI_SV_DCID: {
+                "label": "test private sector instruments flow",
+                "type": "StatisticalVariable",
+                "arcs": _e2e_sv_arcs(_PSI_SV_DCID),
+            },
+            "CRSTypeOfFlow60": {"label": "private sector instruments"},
+        },
+        detect=detect or {},
+        resolve={"Kenya": "country/KEN"},
+        obs={
+            **_E2E_OBS,
+            f"{_PSI_SV_DCID}|country/KEN": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+            ],
+        },
+    )
+
+
+def _bound(identity: BaseIdentity, prop: str, ref: str) -> BaseIdentity:
+    """`identity` with slot `prop` bound to `ref`."""
+    slots = [
+        slot.model_copy(update={"binding": IdentityBindingValue(ref=ref)})
+        if slot.property == prop
+        else slot
+        for slot in identity.slots
+    ]
+    return identity.model_copy(update={"slots": slots})
+
+
+def _resubmit(
+    identity: BaseIdentity, *, echo: list[Assumption] | None, graph: FakeGraph | None = None
+) -> DefinitePart:
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text="aid flows", identity=identity, assumptions=echo
+                    )
+                ]
+            ),
+            response_options=ResolveOptions(),
+        ),
+        graph=graph or _e2e_graph_for("aid flows"),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    return part
+
+
+def test_a_first_answer_lists_its_declared_default_and_every_open_role():
+    """The flow default and the providers no request word named are the part's assumptions,
+    in clause order, and the envelope sentence closes with them. The recipient the request
+    named is no assumption."""
+    assert _first_answer().assumptions == [_ASSUMED_ODA, *_ASSUMED_ROLES]
+
+
+_KENYA_CORRECTED = Assumption(
+    kind="name_corrected",
+    binding_ref="where:",
+    text='"Kenyaa" read as Kenya',
+    refs=["country/KEN"],
+    asked="Kenyaa",
+)
+
+
+@pytest.mark.parametrize(
+    ("query", "span", "expected"),
+    [
+        pytest.param("aid flows to Kenyaa", "Kenyaa", [_KENYA_CORRECTED], id="misspelling"),
+        # "Kenia" is a listed alias of Kenya: a translation, no correction.
+        pytest.param("aid flows to Kenia", "Kenia", [], id="alias"),
+        # A translation the query writes no words of carries a null span.
+        pytest.param("aid flows to the Kenyan state", None, [], id="null-span translation"),
+    ],
+)
+def test_a_misspelt_place_is_assumed_read_as_the_entity(
+    query: str, span: str | None, expected: list[Assumption]
+):
+    """The extraction names Kenya. Typed words that list no name or alias of it lead the
+    assumptions and the clause; an alias or a translation with no words of its own does
+    not."""
+    response = _raw_text_answer(query, ExtractedEntity(text="Kenya", span=span))
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    assert part.assumptions == [*expected, _ASSUMED_ODA, *_ASSUMED_ROLES]
+    clause = "; ".join(item.text for item in part.assumptions)
+    assert response.rendered_sentence is not None
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}.")
+
+
+def test_a_resubmit_echoing_a_name_correction_keeps_it():
+    """A resubmit posts no typed words; the echoed correction holds while Kenya is bound."""
+    response = _raw_text_answer("aid flows to Kenyaa", ExtractedEntity(text="Kenya", span="Kenyaa"))
+    first = response.parts[0]
+    assert isinstance(first, DefinitePart)
+    part = _resubmit(first.spec.definition.identity, echo=first.assumptions)
+    assert part.assumptions == first.assumptions
+
+
+class _PsiFlowBindLLM(_OpenFlowAndSectorBindLLM):
+    """Bind fixes the flow to private sector instruments for "psi flows" and leaves it open
+    for every other phrase."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        result, usage = await super().generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if schema.__name__ == "_UniversalBindOutput" and "Variable phrase: psi flows" in prompt:
+            result.bindings = [
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="crsTypeOfFlow",
+                    kind="value",
+                    value_dcids=["CRSTypeOfFlow60"],
+                ),
+                SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound"),
+            ]
+        return result, usage
+
+
+_MERGED_DETECT = {
+    "aid flows": {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]},
+    "psi flows": {"svs": [_PSI_SV_DCID], "cosine_scores": [0.9]},
+}
+
+
+def _merged_answer() -> ResolveResponse:
+    """ "aid flows and psi flows to Kenya", whose two parts merge into one Spec."""
+    return offline_resolve(
+        ResolveRequest(
+            input=RawTextInput(query="aid flows and psi flows to Kenya"),
+            response_options=ResolveOptions(),
+        ),
+        graph=_graph_with_psi(_MERGED_DETECT),
+        llm=_PsiFlowBindLLM(
+            Extraction(
+                kind="resolution",
+                variables=["aid flows", "psi flows"],
+                entities=[ExtractedEntity(text="Kenya")],
+            )
+        ),
+        sdmx=_EMPTY_SDMX,
+    )
+
+
+def test_a_merged_part_keeps_the_default_its_own_request_left():
+    """ "aid flows" leaves the flow open and "psi flows" names private sector instruments.
+    On grant equivalents the ODA default binds CRS flows 10 and 60, which already hold the
+    private sector instruments, so the two parts stay separate Specs: merging them would
+    count flow 60 twice. Each part keeps what its own request left: the first states the ODA
+    default, the second asked for its flow and states none."""
+    response = _merged_answer()
+    first, second = response.parts
+    assert isinstance(first, DefinitePart)
+    assert isinstance(second, DefinitePart)
+    assert first.spec.spec_id != second.spec.spec_id
+    assert [_flow_refs(part.spec) for part in (first, second)] == [
+        ["CRSTypeOfFlow10", "CRSTypeOfFlow60"],
+        ["CRSTypeOfFlow60"],
+    ]
+    assert "slot_defaulted" in [warning.code for warning in first.warnings]
+    assert "slot_defaulted" not in [warning.code for warning in second.warnings]
+    assert [part.assumptions for part in response.parts] == [[_ASSUMED_ODA], []]
+
+
+def _flow_refs(spec: Spec) -> list[str]:
+    """The flow values `spec`'s trace records its flow slot as binding."""
+    (flow,) = (
+        slot_filter
+        for slot_filter in spec.resolved.trace.slot_filters
+        if slot_filter.key.as_ref() == "how:crsTypeOfFlow"
+    )
+    return [value.ref for value in flow.refs]
+
+
+@pytest.mark.parametrize("reposted", [2, 1], ids=["both-parts", "first-part"])
+def test_an_unchanged_repost_of_a_merged_part_keeps_its_default(reposted: int):
+    """A merged part posts the merged identity, whose flow slot binds ODA and private sector
+    instruments, and echoes its own list, which names ODA alone. The slot still binds the
+    echoed ODA, so the repost states it again."""
+    parts = _merged_answer().parts[:reposted]
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text=part.variable_text or "",
+                        identity=part.spec.definition.identity,
+                        assumptions=part.assumptions,
+                    )
+                    for part in parts
+                    if isinstance(part, DefinitePart)
+                ]
+            ),
+            response_options=ResolveOptions(),
+        ),
+        graph=_graph_with_psi(_MERGED_DETECT),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+    assert [part.assumptions for part in response.parts] == [[_ASSUMED_ODA], []][:reposted]
+    assert response.rendered_sentence is not None
+    assert response.rendered_sentence.endswith(" Assumed: official development assistance.")
+
+
+@pytest.mark.parametrize(
+    ("over", "expected"),
+    [
+        # The reply leaves the flow open, so the CRS binds ODA by its declared default.
+        pytest.param(None, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="no-operation"),
+        # "top 5 donors" ranks over the providers, so the request asked every one of them.
+        pytest.param("origin", [_ASSUMED_ODA], id="rank-over-origin"),
+        # Kenya names the recipient, so a rank over it leaves the providers open.
+        pytest.param("destination", [_ASSUMED_ODA, *_ASSUMED_ROLES], id="rank-over-destination"),
+        # An operation over places asks no flow role (`asked_open_axes`).
+        pytest.param("place", [_ASSUMED_ODA, *_ASSUMED_ROLES], id="rank-over-place"),
+    ],
+)
+def test_a_role_an_operation_runs_over_is_asked(over: str | None, expected: list[Assumption]):
+    """A rank over a flow axis asks every member of it, so that role is no open-role
+    assumption, in the part's list or in the sentence's clause."""
+    operations = (
+        []
+        if over is None
+        else [ExtractedOperation(verb="rank", variable=0, phrase="top 5 donors", over=over)]
+    )
+    response = offline_resolve(
+        make_request("top 5 donors for standard grants in Kenya"),
+        graph=_e2e_graph_for(_QUERY),
+        llm=_ScriptedLLM(_extraction(operations=operations)),
+        sdmx=_EMPTY_SDMX,
+    )
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    assert part.assumptions == expected
+    assert response.rendered_sentence is not None
+    clause = "; ".join(item.text for item in expected)
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}." if expected else ".")
+    assert ("Assumed:" in response.rendered_sentence) == bool(expected)
+
+
+@pytest.mark.parametrize(
+    ("edit", "echo", "expected"),
+    [
+        pytest.param(None, _FIRST, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="unchanged"),
+        pytest.param("year", _FIRST, [_ASSUMED_ODA, *_ASSUMED_ROLES], id="year-edited"),
+        # The echo of a part that stated none states none, whatever a fresh request yields.
+        pytest.param("year", [], [], id="year-edited-empty-echo"),
+        # The echo's words differ from the rebuilt ones, as after a label change between
+        # deploys. The refs still match, so the default holds in the rebuilt words.
+        pytest.param(
+            None,
+            [_ASSUMED_ODA.model_copy(update={"text": "ODA"})],
+            [_ASSUMED_ODA],
+            id="echo-words-differ",
+        ),
+        # The echo names a value the slot does not bind.
+        pytest.param(
+            None,
+            [_ASSUMED_ODA.model_copy(update={"refs": ["CRSTypeOfFlow60"]}), *_ASSUMED_ROLES],
+            _ASSUMED_ROLES,
+            id="echo-refs-differ",
+        ),
+        # An item the echo lacks is not stated.
+        pytest.param(None, [_ASSUMED_ODA], [_ASSUMED_ODA], id="echo-without-roles"),
+        # An unsigned echo can state an item for a slot the engine never defaulted. The
+        # item holds while its refs match the posted value, stated in the rebuilt words.
+        pytest.param(
+            "finance",
+            [
+                Assumption(
+                    kind="declared_default",
+                    binding_ref="how:crsTypeOfFinance",
+                    text="forged",
+                    refs=["CRSTypeOfFinance110"],
+                )
+            ],
+            [
+                Assumption(
+                    kind="declared_default",
+                    binding_ref="how:crsTypeOfFinance",
+                    text="standard grant",
+                    refs=["CRSTypeOfFinance110"],
+                )
+            ],
+            id="echo-for-a-posted-slot",
+        ),
+    ],
+)
+def test_a_resubmit_states_the_echoed_assumptions_that_still_hold(
+    edit: str | None, echo: list[Assumption] | str, expected: list[Assumption]
+):
+    """Each echoed item holds while the rebuilt answer still yields it, matched by kind,
+    binding and value dcids, and is worded from the rebuilt answer. With no edit to the
+    flow slot, a repost or a new year keeps the official development assistance default.
+    The rebuilt trace records the flow as posted, whatever the echo states."""
+    first = _first_answer()
+    identity = first.spec.definition.identity
+    if edit == "year":
+        identity = identity.model_copy(
+            update={"requested_window": IdentityWindowRange(start_year=2020, end_year=2020)}
+        )
+    elif edit == "finance":
+        identity = _bound(identity, "crsTypeOfFinance", "CRSTypeOfFinance110")
+    part = _resubmit(identity, echo=first.assumptions if isinstance(echo, str) else echo)
+    assert part.assumptions == expected
+    assert _provenance(part)["how:crsTypeOfFlow"] == "binder"
+
+
+def _provenance(part: DefinitePart) -> dict[str, str]:
+    """Each slot's provenance in the part's trace, by its binding ref."""
+    return {f.key.as_ref(): f.provenance for f in part.spec.resolved.trace.slot_filters}
+
+
+def test_a_resubmit_with_no_echo_states_the_roles_alone():
+    """The posted identity binds the flow, so with no echo the engine records it as posted
+    and assumes only what the identity leaves open. The first answer bound the flow type,
+    whose family holds one value, as its sole option, so the identity posts it and every
+    posted slot reads `binder`."""
+    first = _first_answer()
+    part = _resubmit(first.spec.definition.identity, echo=None)
+    assert part.assumptions == _ASSUMED_ROLES
+    assert {ref: p for ref, p in _provenance(part).items() if p != "binder"} == {}
+
+
+def test_an_edit_that_changes_the_defaulted_slot_drops_its_assumption():
+    """The echo names ODA. The flow slot edited to private sector instruments binds another
+    value, so the rebuilt answer states no flow default."""
+    first = _first_answer()
+    edited = _bound(first.spec.definition.identity, "crsTypeOfFlow", "CRSTypeOfFlow60")
+    part = _resubmit(edited, echo=first.assumptions, graph=_graph_with_psi())
+    flow = next(
+        f for f in part.spec.resolved.trace.slot_filters if f.key.as_ref() == "how:crsTypeOfFlow"
+    )
+    assert [value.ref for value in flow.refs] == ["CRSTypeOfFlow60"]
+    assert [item.kind for item in part.assumptions if item.kind == "declared_default"] == []
+
+
+def _graph_with_ghana() -> FakeGraph:
+    """The fixture graph with the fixture's series also held at Ghana."""
+    return FakeGraph(
+        nodes={**_E2E_NODES, "country/GHA": {"label": "Ghana", "type": "Country"}},
+        detect={},
+        resolve={"Kenya": "country/KEN"},
+        obs={
+            **_E2E_OBS,
+            **{key.replace("country/KEN", "country/GHA"): value for key, value in _E2E_OBS.items()},
+        },
+    )
+
+
+def test_a_folded_part_states_only_its_own_assumptions():
+    """Entries for Kenya and Ghana fold into one Spec. The first echoes the flow default
+    and the providers, the second echoes none. The clause names both items under the
+    first part alone, and no token claims them for the second."""
+    first = _first_answer()
+    identity = first.spec.definition.identity
+    ghana = identity.model_copy(update={"entities": {"observationAbout": ["country/GHA"]}})
+    echo = [_ASSUMED_ODA, *_ASSUMED_ROLES]
+    response = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    ResubmitIdentityEntry(
+                        variable_text="aid flows", identity=identity, assumptions=echo
+                    ),
+                    ResubmitIdentityEntry(
+                        variable_text="aid flows", identity=ghana, assumptions=[]
+                    ),
+                ]
+            ),
+            response_options=ResolveOptions(),
+        ),
+        graph=_graph_with_ghana(),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+    assert [part.assumptions for part in response.parts] == [echo, []]
+    assert "binding_folded" in [warning.code for warning in response.parts[1].warnings]
+    assert response.sentence_plan is not None
+    items = {item.text for item in echo}
+    assert [
+        token.part_index
+        for token in response.sentence_plan
+        if token.segment == "assumption" and token.text in items
+    ] == [0, 0]
+
+
+# A loan disbursement series outside the code index. Its `financialFlowType` puts it in the
+# debt lending family, whose open origin reads "every creditor" where the aid series reads
+# "every provider".
+_LOAN_SV_DCID = "TESTFIXTURE/AnswerAssumptionsE2E/LoanDisbursement"
+_ASSUMED_LOAN_ROLES = [Assumption(kind="open_role", binding_ref="origin:", text="every creditor")]
+
+
+def _graph_with_loans() -> FakeGraph:
+    """The fixture graph with the loan series beside the aid one, both held at Kenya."""
+    return FakeGraph(
+        nodes={
+            **_E2E_NODES,
+            _LOAN_SV_DCID: {
+                "label": "test loan disbursements",
+                "type": "StatisticalVariable",
+                "arcs": {
+                    "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+                    "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
+                    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+                    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+                    "constraintProperties": {"nodes": [{"dcid": "financialFlowType"}]},
+                    "financialFlowType": {"nodes": [{"dcid": "Disbursement"}]},
+                },
+            },
+            "Disbursement": {"label": "disbursement"},
+        },
+        detect={"loans": {"svs": [_LOAN_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Kenya": "country/KEN"},
+        obs={
+            **_E2E_OBS,
+            f"{_LOAN_SV_DCID}|country/KEN": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+            ],
+        },
+    )
+
+
+def _loan_identity() -> BaseIdentity:
+    """The identity a fresh "loans to Kenya" answers with."""
+    response = offline_resolve(
+        make_request("loans to Kenya"),
+        graph=_graph_with_loans(),
+        llm=_ScriptedLLM(
+            Extraction(
+                kind="resolution", variables=["loans"], entities=[ExtractedEntity(text="Kenya")]
+            )
+        ),
+        sdmx=_EMPTY_SDMX,
+    )
+    part = response.parts[0]
+    assert isinstance(part, DefinitePart)
+    assert part.assumptions == _ASSUMED_LOAN_ROLES
+    return part.spec.definition.identity
+
+
+def _post(entry: ResubmitIdentityEntry | ResubmitCandidatesEntry):
+    """The response to a dataset_resubmit of ``entry`` alone, on the loan graph."""
+    return offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(entries=[entry]), response_options=ResolveOptions()
+        ),
+        graph=_graph_with_loans(),
+        llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
+        sdmx=_EMPTY_SDMX,
+    )
+
+
+def _aid_or_loans(operations: list[Operation]) -> CandidatesPart:
+    """The candidates part a dataset_resubmit of the aid and loan readings answers with."""
+    response = _post(
+        ResubmitCandidatesEntry(
+            variable_text="aid flows",
+            ordering="intent_rank",
+            truncated=False,
+            candidates=[
+                ResubmitCandidate(identity=_first_answer().spec.definition.identity),
+                ResubmitCandidate(identity=_loan_identity()),
+            ],
+            operations=operations,
+        )
+    )
+    part = response.parts[0]
+    assert isinstance(part, CandidatesPart)
+    assert response.rendered_sentence is not None
+    assert "Assumed:" not in response.rendered_sentence
+    return part
+
+
+@pytest.mark.parametrize(
+    ("operations", "aid", "loans"),
+    [
+        pytest.param([], _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-operation"),
+        # A rank over the origin asks it on every reading.
+        pytest.param(
+            [Operation(verb="rank", phrase="top 5 donors", over="origin")],
+            [],
+            [],
+            id="rank-over-origin",
+        ),
+    ],
+)
+def test_a_candidates_part_lists_each_reading_s_own_assumptions(
+    operations: list[Operation], aid: list[Assumption], loans: list[Assumption]
+):
+    """The aid reading assumes every provider where the loan reading assumes every creditor,
+    so the readings share no item. The part and its clause state none, and
+    reading_assumptions holds what each reading assumes once picked, read with the part's
+    operations."""
+    part = _aid_or_loans(operations)
+    assert part.assumptions == []
+    aid_spec, loan_spec = part.candidates.specs
+    assert part.reading_assumptions == {aid_spec.spec_id: aid, loan_spec.spec_id: loans}
+
+
+@pytest.mark.parametrize(
+    ("echo", "expected"),
+    [
+        pytest.param("reading", _ASSUMED_LOAN_ROLES, id="reading-assumptions"),
+        # The part's shared list leaves out every item the readings word differently.
+        pytest.param("part", [], id="part-assumptions"),
+    ],
+)
+def test_a_picked_reading_echoing_its_own_list_states_it(echo: str, expected: list[Assumption]):
+    """A client picks the loan reading and posts its identity with an echo. The reading's
+    own list states what that reading assumed, and the part's shared list states none."""
+    part = _aid_or_loans([])
+    loan_spec = part.candidates.specs[1]
+    echoed = part.reading_assumptions[loan_spec.spec_id] if echo == "reading" else part.assumptions
+    response = _post(
+        ResubmitIdentityEntry(
+            variable_text="aid flows",
+            identity=loan_spec.definition.identity,
+            assumptions=echoed,
+        )
+    )
+    picked = response.parts[0]
+    assert isinstance(picked, DefinitePart)
+    assert picked.spec.spec_id == loan_spec.spec_id
+    assert picked.assumptions == expected
+    assert response.rendered_sentence is not None
+    clause = "; ".join(item.text for item in expected)
+    assert response.rendered_sentence.endswith(f" Assumed: {clause}." if expected else ".")
+    assert ("Assumed:" in response.rendered_sentence) == bool(expected)
+
+
+def _in_2020(identity: BaseIdentity) -> BaseIdentity:
+    """`identity` with its years edited to 2020 alone."""
+    return identity.model_copy(
+        update={"requested_window": IdentityWindowRange(start_year=2020, end_year=2020)}
+    )
+
+
+def _post_edited(
+    identities: list[BaseIdentity], echoes: list[list[Assumption] | None]
+) -> ResolveResponse:
+    """The response a dataset_resubmit answers with when it posts each of ``identities``
+    edited to 2020 with its echo, as one candidates entry."""
+    response = _post(
+        ResubmitCandidatesEntry(
+            variable_text="aid flows",
+            ordering="intent_rank",
+            truncated=False,
+            candidates=[
+                ResubmitCandidate(identity=_in_2020(identity), assumptions=echo)
+                for identity, echo in zip(identities, echoes, strict=True)
+            ],
+        )
+    )
+    assert response.rendered_sentence is not None
+    return response
+
+
+def _edited_set(
+    identities: list[BaseIdentity], echoes: list[list[Assumption] | None]
+) -> tuple[CandidatesPart, str]:
+    """The candidates part, and its response's sentence, a dataset_resubmit answers with
+    when it posts each of ``identities`` edited to 2020 with its echo."""
+    response = _post_edited(identities, echoes)
+    part = response.parts[0]
+    assert isinstance(part, CandidatesPart)
+    return part, response.rendered_sentence
+
+
+@pytest.mark.parametrize(
+    ("aid_echo", "reposts", "loan_echo", "aid", "loans"),
+    [
+        pytest.param(
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            [],
+            _ASSUMED_LOAN_ROLES,
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            _ASSUMED_LOAN_ROLES,
+            id="each-reading-echoes-its-list",
+        ),
+        # The echo of a reading that stated none states none for that reading alone.
+        pytest.param([], [], _ASSUMED_LOAN_ROLES, [], _ASSUMED_LOAN_ROLES, id="aid-echoes-empty"),
+        # With no echo the posted identity binds the flow, so no reading states its default.
+        pytest.param(None, [], None, _ASSUMED_ROLES, _ASSUMED_LOAN_ROLES, id="no-echo"),
+        # The aid reading posted again rebuilds to its spec_id, so the set keeps the first
+        # with its own echo.
+        pytest.param(
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            [[]],
+            _ASSUMED_LOAN_ROLES,
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            _ASSUMED_LOAN_ROLES,
+            id="aid-posted-twice",
+        ),
+        # With no loan reading posted, the two aid candidates rebuild to one reading, so the
+        # part is that reading's definite answer, stated with the first candidate's echo.
+        pytest.param(
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            [[]],
+            None,
+            [_ASSUMED_ODA, *_ASSUMED_ROLES],
+            None,
+            id="aid-posted-twice-alone",
+        ),
+    ],
+)
+def test_an_edited_candidates_set_restates_each_reading_s_echo(
+    aid_echo: list[Assumption] | None,
+    reposts: list[list[Assumption] | None],
+    loan_echo: list[Assumption] | None,
+    aid: list[Assumption],
+    loans: list[Assumption] | None,
+):
+    """A year edit of the aid-or-loans set keeps the official development assistance
+    default on the aid reading that echoes it, each reading read with its own echo. The
+    aid reading is posted again after the first with each of ``reposts`` as its echo, and
+    the loan reading is posted last unless ``loans`` is None."""
+    aid_identity = _first_answer().spec.definition.identity
+    identities = [aid_identity, *(aid_identity for _ in reposts)]
+    echoes = [aid_echo, *reposts]
+    if loans is None:
+        response = _post_edited(identities, echoes)
+        (part,) = response.parts
+        assert isinstance(part, DefinitePart)
+        assert part.assumptions == aid
+        assert response.rendered_sentence.endswith(_ASSUMED_CLAUSE)
+        (warning,) = (w for w in part.warnings if w.code == "candidates_collapsed_definite")
+        assert warning.message == (
+            "2 candidates were posted; 2 still resolve and rebuild to 1 reading, so the part "
+            "is reported as that answer and not as the posted candidate set."
+        )
+        return
+    part, sentence = _edited_set([*identities, _loan_identity()], [*echoes, loan_echo])
+    aid_spec, loan_spec = part.candidates.specs
+    assert part.reading_assumptions == {aid_spec.spec_id: aid, loan_spec.spec_id: loans}
+    assert part.assumptions == []
+    assert "Assumed:" not in sentence
+
+
+@pytest.mark.parametrize(
+    ("echo", "shared"),
+    [
+        pytest.param([_ASSUMED_ODA, *_ASSUMED_ROLES], [_ASSUMED_ODA, *_ASSUMED_ROLES], id="echoed"),
+        # With no echo the posted identity binds the flow, so the readings share the roles.
+        pytest.param(None, _ASSUMED_ROLES, id="no-echo"),
+    ],
+)
+def test_an_edited_candidates_set_states_the_default_and_roles_its_readings_share(
+    echo: list[Assumption] | None, shared: list[Assumption]
+):
+    """Two aid readings, one binding the standard grant the other leaves to the series,
+    both echo the official development assistance default and both read every provider.
+    After a year edit the part and its clause state each item every reading's own list
+    holds."""
+    identity = _first_answer().spec.definition.identity
+    part, sentence = _edited_set(
+        [identity, _bound(identity, "crsTypeOfFinance", "CRSTypeOfFinance110")], [echo, echo]
+    )
+    assert list(part.reading_assumptions.values()) == [shared, shared]
+    assert part.assumptions == shared
+    assert sentence.endswith(f" Assumed: {'; '.join(item.text for item in shared)}.")

@@ -38,7 +38,7 @@ from materialise.rate_tables import RateTableInvalidError
 from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import Binder
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
@@ -52,6 +52,7 @@ from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import identity_dataset, identity_query
 from search.engine.spec_id import mint_identity
+from search.engine.stated_words_read import StatedWordsOutput
 from search.models import (
     CandidatesPart,
     DefinitePart,
@@ -59,6 +60,7 @@ from search.models import (
     Operation,
     ParsedInput,
     ParsedPart,
+    RawTextInput,
     ResolveRequest,
     ResolveResponse,
     SourceMention,
@@ -81,11 +83,11 @@ from tests.code_index.aid_identity import (
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import ReplyBinder, nominee_ratings
+from tests.engine._binders import RatingBinder, ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph, FakeLLM
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -123,8 +125,9 @@ _IMPUTED_LABEL = "ONE Imputed Multilateral Sectors"
 # Every CRS member of the aid five-tuple under official development assistance, gross
 # disbursements, with the purpose open.
 _PLAIN_AID_MEMBER_COUNT = 3687
-# The CRS education members under every flow, which a part with no bound flow resolves.
-_PLAIN_CRS_EDUCATION_MEMBERS = 434
+# The CRS education members under official development assistance, the flow the CRS
+# declares as its default.
+_ODA_CRS_EDUCATION_MEMBERS = 257
 
 
 def _arcs(dcid: str) -> dict:
@@ -189,13 +192,13 @@ def _graph(
     )
 
 
-def _un_node(dcid: str) -> dict:
+def _un_node(dcid: str, *, name: str | None = None) -> dict:
     return {
         "label": dcid,
         "type": "StatisticalVariable",
         "arcs": {
             "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-            "name": {"nodes": [{"value": dcid}]},
+            "name": {"nodes": [{"value": name or dcid}]},
             "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
             "measuredProperty": {"nodes": [{"dcid": "amount"}]},
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -373,6 +376,25 @@ def test_a_question_naming_no_dataset_answers_the_crs(
         plain["open_roles"] = open_roles
     assert spec.definition.identity.open_roles == open_roles
     assert spec.spec_id == _spec_id(plain)
+
+
+def test_a_recipient_total_on_a_crs_only_shape_is_counted_on_the_crs_convention():
+    """A recipient's all-sector total is counted net by DAC2a's convention, which applies
+    only to a shape DAC2a publishes. The shape here is the CRS's alone, so the part takes the
+    CRS's own convention, gross disbursements, and its choice names that convention as the
+    rule that settled the basis."""
+    response, _llm = _resolve("total aid to Kenya", "aid")
+
+    (spec,) = _specs(response)
+    assert _bound(spec)["nettingBasis"] == "Gross"
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    assert (choice.active, choice.provenance, choice.rule) == (
+        "measure_basis:gross",
+        "default",
+        "measure_basis_convention",
+    )
 
 
 def test_a_ranked_education_aid_question_asks_every_donor_and_keeps_its_operation():
@@ -926,14 +948,27 @@ def test_the_reply_reports_the_model_usage_of_every_reading(
     assert usage["input_tokens"] == usage["output_tokens"] == sum(llm.calls.values())
 
 
+# The words of "contributions to multilateral organisations" the coverage rule leaves for
+# the binder to rate on DAC1's multilateral contributions, whose graph name is its dcid.
+_CONTRIBUTION_WORDS = ("contributions", "multilateral", "organisations")
+
+
 @pytest.mark.parametrize(
-    ("variable", "entities"),
+    ("variable", "entities", "drafted"),
     [
         pytest.param(
             "contributions to multilateral organisations",
             (
                 ExtractedEntity(
                     text="Germany", span="Germany", flow_role="origin", role_span="from"
+                ),
+            ),
+            (
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="dac1AidType",
+                    kind="value",
+                    value_dcids=["DAC1AidType2100"],
                 ),
             ),
             id="the-phrase-in-the-variable",
@@ -951,18 +986,23 @@ def test_the_reply_reports_the_model_usage_of_every_reading(
                     text="Germany", span="Germany", flow_role="origin", role_span="from"
                 ),
             ),
+            (),
             id="the-phrase-as-a-recipient",
         ),
     ],
 )
 def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
-    monkeypatch: pytest.MonkeyPatch, variable, entities
+    monkeypatch: pytest.MonkeyPatch, variable, entities, drafted
 ):
     """ "Contributions to multilateral organisations from Germany" states no party word:
     "multilateral" follows a preposition. Kept in the variable, the phrase reads DAC1's
-    multilateral contributions from Germany; lifted as a recipient, the alias names the
-    multilaterals total as the recipient. Either reply equals the one read without party
-    words, so the party reading leaves the question alone."""
+    multilateral contributions from Germany, and the reply drafts the aid type the phrase
+    names, as a live binder does; a reply leaving the slot open binds DAC1's declared
+    default aid type, which the member does not hold. Lifted as a recipient, the alias
+    names the multilaterals total as the recipient. Either reply equals the one read
+    without party words, so the party reading leaves the question alone. Kept in the
+    variable, the bound aid type's label reads "contributions" and "multilateral", and the
+    binder rates "organisations", the one word no reader reads, stating on that series."""
     patch_coverage(
         monkeypatch,
         [(_DAC1_CONTRIBUTIONS, "dac1", _DEU, ABSENT_ENTITY, [2019, 2020, 2021])],
@@ -986,11 +1026,15 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
             resolve={"Germany": _DEU},
             obs={},
         )
-        llm = _ScriptedLLM(variable, entities=entities)
+        llm = _ScriptedLLM(variable, entities=entities, drafted=drafted)
         return _resolve_scripted(
-            "contributions to multilateral organisations from Germany", llm, graph=graph
+            "contributions to multilateral organisations from Germany",
+            llm,
+            graph=graph,
+            binder=binder,
         )
 
+    binder = RatingBinder(GeminiBinder(), dict.fromkeys(_CONTRIBUTION_WORDS, 1.0))
     response = resolve()
     with monkeypatch.context() as patched:
         patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
@@ -999,6 +1043,7 @@ def test_contributions_to_multilateral_organisations_keep_their_dac1_reading(
         (spec,) = _specs(response)
         assert _sources(spec) == [_DAC1]
         assert spec.definition.identity.entities == {"origin": [_DEU]}
+        assert {request.words for request in binder.requests} == {("organisations",)}
 
 
 @pytest.mark.parametrize(
@@ -1151,6 +1196,8 @@ class _ScriptedLLM:
                 dropped_qualifiers=self._dropped,
                 operations=self._operations,
             ), None
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         self.bind_prompts.append(prompt)
@@ -1199,57 +1246,120 @@ def test_the_un_pass_reads_without_the_party_word(monkeypatch: pytest.MonkeyPatc
     assert graph.party_type_reads == 1
 
 
-@pytest.mark.parametrize(
-    ("variable", "un_pass"),
-    [
-        pytest.param(
-            "multilateral ODA", "answers-then-a-step-fails", id="failing-after-the-un-pass"
-        ),
-        pytest.param("multilateral aid", "refuses", id="the-un-pass-refuses"),
-    ],
-)
 def test_a_withdrawn_party_reading_reports_the_usage_of_its_un_pass(
-    monkeypatch: pytest.MonkeyPatch, variable, un_pass
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """A party reading withdrawn after its UN pass made model calls reports them with the
-    rest, one token per call made: whether a later step fails, or the UN pass itself refuses
-    the request, as on a UN series declaring a default unit."""
+    rest, one token per call made, when a later step fails."""
     _party_coverage(monkeypatch, from_the_party=False)
-    without_word = variable.removeprefix("multilateral ")
-    recalled = _party_graph(variable, without_word)
-    un = _graph(variable, without_word, members=(), un_members=(_UN_ODA,))
-    default_unit = FacetDefaultPolicy(
-        resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
-    )
+    recalled = _party_graph("multilateral ODA", "ODA")
+    un = _graph("multilateral ODA", "ODA", members=(), un_members=(_UN_ODA,))
     graph = FakeGraph(
         nodes={**recalled._nodes, **un._nodes},
         detect=recalled._detect,
         un_detect=un._un_detect,
         resolve={"Kenya": _KEN},
         obs=un._obs,
-        facet_policies={(f"dcid:{_UN_ODA}", "unit"): default_unit}
-        if un_pass == "refuses"
-        else None,
     )
-    if un_pass == "answers-then-a-step-fails":
-        warn = pipeline_module.with_un_unavailable_warning
-        calls = 0
+    warn = pipeline_module.with_un_unavailable_warning
+    calls = 0
 
-        def failing_once(result, blocked):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                raise ValueError("defect after the UN pass")
-            return warn(result, blocked)
+    def failing_once(result, blocked):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("defect after the UN pass")
+        return warn(result, blocked)
 
-        monkeypatch.setattr(pipeline_module, "with_un_unavailable_warning", failing_once)
-    llm = _CountingLLM(variable)
+    monkeypatch.setattr(pipeline_module, "with_un_unavailable_warning", failing_once)
+    llm = _CountingLLM("multilateral ODA")
+    binder = RatingBinder(GeminiBinder(), {"multilateral": 0.0})
 
-    response = _resolve_scripted(f"{variable} to Kenya", llm, graph=graph)
+    response = _resolve_scripted("multilateral ODA to Kenya", llm, graph=graph, binder=binder)
 
     usage = response.diagnostics.llm_usage
     assert usage is not None
     assert usage["input_tokens"] == sum(llm.calls.values())
+
+
+class _PoolRatingBinder(RatingBinder):
+    """`RatingBinder` rating each word from `stated_by_pool` under the pool the request
+    reads, 1.0 where the pool's ratings hold no word."""
+
+    def __init__(self, binder: Binder, stated_by_pool: Mapping[str, Mapping[str, float]]):
+        super().__init__(binder)
+        self.stated_by_pool = stated_by_pool
+
+    async def rate_words_stated(self, request, *, llm):
+        self.requests.append(request)
+        stated = self.stated_by_pool.get(request.pool, {})
+        return {word: stated.get(word, 1.0) for word in request.words}, None
+
+
+@pytest.mark.parametrize(
+    ("pool", "states_the_word"),
+    [
+        pytest.param("un_system", False, id="unread-on-the-un-series"),
+        pytest.param("un_system", True, id="stated-by-the-un-series"),
+        pytest.param("ours", False, id="unread-on-our-series"),
+        pytest.param("ours", True, id="stated-by-our-series"),
+    ],
+)
+def test_a_declared_default_refuses_the_request_only_on_a_series_the_part_answers_on(
+    monkeypatch: pytest.MonkeyPatch, pool, states_the_word
+):
+    """The series `pool` elects for "multilateral aid" declares a default unit: the UN
+    total-ODA series, or the CRS series our pass elects. A UN pass reads the part without
+    the party word, so the party reading's UN pass rates the word as the reading without
+    party words does. Where the defaulted series leaves the word unread, as the binder
+    rates it, its pass answers nothing on it and refuses `qualifier_not_bound` before the
+    default can refuse the request (`pipeline._run_phases`), and the reading without party
+    words refuses on the word. With the UN series defaulted, our pass refuses on the word
+    too, and of the two refusals ours stands (`pipeline._fill_gap`). Where the defaulted
+    series states the word, its pass answers on it and the declared default refuses the
+    whole request."""
+    _party_coverage(monkeypatch, from_the_party=False)
+    unread = {"multilateral": 0.0}
+    stated_by_pool = {"ours": unread, "un_system": unread, pool: {} if states_the_word else unread}
+
+    def resolve(*, declares_default: bool) -> ResolveResponse:
+        recalled = _party_graph("multilateral aid", "aid")
+        un_members = (_UN_ODA,) if pool == "un_system" else ()
+        un = _graph("multilateral aid", "aid", members=(), un_members=un_members)
+        defaulted = _UN_ODA if pool == "un_system" else _CRS_MEMBER
+        default_unit = FacetDefaultPolicy(
+            resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
+        )
+        graph = FakeGraph(
+            nodes={**recalled._nodes, **un._nodes},
+            detect=recalled._detect,
+            un_detect=un._un_detect,
+            resolve={"Kenya": _KEN},
+            obs=un._obs,
+            facet_policies={(f"dcid:{defaulted}", "unit"): default_unit}
+            if declares_default
+            else None,
+        )
+        return _resolve_scripted(
+            "multilateral aid to Kenya",
+            _ScriptedLLM("multilateral aid"),
+            graph=graph,
+            binder=_PoolRatingBinder(GeminiBinder(), stated_by_pool),
+        )
+
+    if states_the_word:
+        with pytest.raises(DeclaredDefaultUnsupportedError):
+            resolve(declares_default=True)
+        return
+    (part,) = resolve(declares_default=True).parts
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "qualifier_not_bound"
+    assert [term.text for term in part.no_data.unbound_qualifiers] == ["multilateral"]
+    # The refusal flags the series the part refuses on where no series declares a default.
+    (undefaulted,) = resolve(declares_default=False).parts
+    assert isinstance(undefaulted, NoDataPart)
+    assert undefaulted.no_data.reason == "qualifier_not_bound"
+    assert _held_spec(part).spec_id == _held_spec(undefaulted).spec_id
 
 
 def _stream(query: str, variable: str) -> list[dict]:
@@ -1334,7 +1444,7 @@ def test_a_withdrawn_party_reading_leaves_the_withheld_re_read_to_the_answer(
     def resolve() -> tuple[dict, _WithholdingGraph]:
         graph = _WithholdingGraph(
             nodes={
-                _SUBJECT_ONLY: _un_node(_SUBJECT_ONLY),
+                _SUBJECT_ONLY: _un_node(_SUBJECT_ONLY, name="Multilateral ODA received"),
                 _KEN: {"label": "Kenya", "type": "Country"},
                 _WITHHELD_SOURCE: {"label": "Excluded Survey"},
             },
@@ -1525,6 +1635,100 @@ def test_the_opt_in_measure_alternative_mints_the_identity_electing_it():
     )
     assert alternative.definition.spec_id == elected.spec_id
     assert alternative.definition.identity == elected.definition.identity
+
+
+# DAC2a's imputed multilateral ODA line, on the five-tuple of the imputed table's rows.
+_DAC2A_IMPUTED_MEMBER = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal"
+_IMPUTED_LINES = (_IMPUTED_MEMBER, _DAC2A_IMPUTED_MEMBER)
+
+
+def _imputed_lines_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The imputed table's member and DAC2a's imputed line each hold France's series to
+    Kenya under their own dataset."""
+    patch_coverage(
+        monkeypatch,
+        [
+            (_IMPUTED_MEMBER, "imputed", _FRA, _KEN, [2019, 2020, 2021]),
+            (_DAC2A_IMPUTED_MEMBER, "dac2a", _FRA, _KEN, [2019, 2020, 2021]),
+        ],
+        role_names=dict.fromkeys(
+            _IMPUTED_LINES, RoleNames(donor="financingProvider", recipient="financingRecipient")
+        ),
+        facet_metadata={
+            "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+        },
+    )
+
+
+_RANK_SECTORS = ExtractedOperation(
+    verb="rank", variable=0, phrase="which sectors get the most", over="category"
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "members", "operations", "source"),
+    [
+        pytest.param("imputed multilateral ODA", _IMPUTED_LINES, (), _DAC2A, id="imputed-first"),
+        pytest.param(
+            "imputed multilateral ODA", _IMPUTED_LINES[::-1], (), _DAC2A, id="dac2a-first"
+        ),
+        pytest.param(
+            "imputed multilateral aid to education",
+            _IMPUTED_LINES,
+            (),
+            IMPUTED_PROVENANCE,
+            id="sector",
+        ),
+        pytest.param(
+            "imputed multilateral ODA",
+            _IMPUTED_LINES,
+            (_RANK_SECTORS,),
+            IMPUTED_PROVENANCE,
+            id="sector-breakdown",
+        ),
+    ],
+)
+def test_an_unnamed_imputed_question_answers_from_dac2a_unless_it_asks_a_sector(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    members: tuple[str, ...],
+    operations: tuple[ExtractedOperation, ...],
+    source: str,
+):
+    """The scripted bind elects the first shape it is offered. A question naming no table
+    answers from DAC2a's own imputed line, whichever line recall finds first, so the bind
+    is offered no imputed table. A question naming a sector, or ranking the sectors, a
+    breakdown only the imputed table holds, answers from it."""
+    _imputed_lines_coverage(monkeypatch)
+    llm = _ScriptedLLM(variable, operations=operations)
+    prefix = f"{operations[0].phrase} " if operations else ""
+
+    response = _resolve_scripted(
+        f"{prefix}{variable} to Kenya", llm, graph=_graph(variable, members=members)
+    )
+
+    (spec,) = _specs(response)
+    assert identity_dataset(spec.definition.identity) == source
+    offered = any(_IMPUTED_LABEL in prompt for prompt in llm.bind_prompts)
+    assert offered == (source == IMPUTED_PROVENANCE)
+
+
+def test_a_question_naming_the_imputed_table_answers_from_it(monkeypatch: pytest.MonkeyPatch):
+    """A part naming the imputed table answers from it with DAC2a's imputed line recalled
+    first."""
+    _imputed_lines_coverage(monkeypatch)
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+    variable = "imputed multilateral ODA"
+
+    response = _resolve_scripted(
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable),
+        graph=_graph(variable, members=_IMPUTED_LINES[::-1]),
+    )
+
+    (spec,) = _specs(response)
+    assert identity_dataset(spec.definition.identity) == IMPUTED_PROVENANCE
 
 
 def test_a_parsed_part_naming_no_dataset_answers_the_crs():
@@ -2012,13 +2216,18 @@ def test_a_no_data_part_without_a_flagged_match_restates_the_table_its_run_settl
 
 
 @pytest.mark.parametrize(
-    ("provenance", "member_count"),
-    [(CRS_PROVENANCE, _PLAIN_CRS_EDUCATION_MEMBERS), (IMPUTED_PROVENANCE, IMPUTED_MEMBER_COUNT)],
+    ("provenance", "member_count", "flow_provenance"),
+    [
+        (CRS_PROVENANCE, _ODA_CRS_EDUCATION_MEMBERS, "declared_default"),
+        (IMPUTED_PROVENANCE, IMPUTED_MEMBER_COUNT, "binder"),
+    ],
     ids=["crs", "imputed"],
 )
 def test_a_named_dataset_binds_the_source_and_resolves_the_mints_family(
-    monkeypatch: pytest.MonkeyPatch, provenance: str, member_count: int
+    monkeypatch: pytest.MonkeyPatch, provenance: str, member_count: int, flow_provenance: str
 ):
+    """The CRS declares official development assistance as its flow default, so a reply
+    leaving the flow out binds it by that default and the family is the ODA members."""
     _name_dataset(monkeypatch, provenance)
 
     response = _resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), _E)
@@ -2030,6 +2239,12 @@ def test_a_named_dataset_binds_the_source_and_resolves_the_mints_family(
     assert identity.facets is not None
     assert identity.facets["provenance"].ref == provenance
     assert identity_dataset(identity) == provenance
+    (flow,) = [
+        (slot.binding_kind, [ref.ref for ref in slot.refs], slot.provenance)
+        for slot in spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "crsTypeOfFlow"
+    ]
+    assert flow == ("value", ["CRSTypeOfFlow10"], flow_provenance)
     _assert_search_family_is_the_mints(spec, member_count=member_count)
 
 
@@ -2469,3 +2684,89 @@ def test_of_tables_reading_a_question_alike_one_without_series_at_its_places_lea
     )
 
     assert menus == [menu]
+
+
+_DEU = "country/DEU"
+
+
+def _dac2a_aid_type_siblings() -> list[str]:
+    """DAC2a's gross disbursement members that differ from `_DAC2A_MEMBER` (ODA,
+    `DAC2aAidType206`) in their aid type alone, so the elected shape offers that slot."""
+    index = get_index()
+    base = next(row for row in index.statvars if row.dcid == _DAC2A_MEMBER)
+
+    def rest(row: Any) -> dict[str, str]:
+        return {k: v for k, v in row.constraint_properties.items() if k != "dac2aAidType"}
+
+    return [
+        row.dcid
+        for row in index.statvars
+        if row.provenances == (_DAC2A,)
+        and row_five_tuple(row) == row_five_tuple(base)
+        and rest(row) == rest(base)
+    ]
+
+
+@pytest.mark.parametrize(
+    "drafted",
+    [
+        pytest.param((), id="reply-leaves-the-slot-out"),
+        pytest.param(
+            (SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound"),),
+            id="reply-leaves-the-slot-open",
+        ),
+    ],
+)
+def test_the_aid_type_default_binds_a_slot_the_reply_leaves_out(
+    monkeypatch: pytest.MonkeyPatch, drafted: tuple[SlotBindingDraft, ...]
+):
+    """DAC2a's aid type defaults to ODA on every open slot. A bind reply that lists no
+    binding for the slot leaves it as open as one that drafts it unbound, so "German aid to
+    Kenya" binds ODA by the default and warns `slot_defaulted` either way."""
+    members = _dac2a_aid_type_siblings()
+    assert _DAC2A_MEMBER in members and len(members) > 1
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [(member, "dac2a", _DEU, _KEN, [2021]) for member in members],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    graph = FakeGraph(
+        nodes={
+            _DEU: {"label": "Germany", "type": "Country"},
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _DAC2A: {"label": "OECD DAC2a"},
+            **{m: {"label": m, "type": "StatisticalVariable", "arcs": _arcs(m)} for m in members},
+        },
+        detect={
+            "aid": {
+                "svs": members,
+                "cosine_scores": [0.9 - 0.01 * rank for rank in range(len(members))],
+            }
+        },
+        resolve={"Germany": _DEU, "Kenya": _KEN},
+        obs={},
+    )
+    germany = ExtractedEntity(text="Germany", span="German", flow_role="origin", role_span="German")
+
+    response = offline_resolve(
+        ResolveRequest(input=RawTextInput(query="German aid to Kenya")),
+        graph=graph,
+        llm=_ScriptedLLM("aid", entities=(germany, _TO_KENYA), drafted=drafted),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (aid_type,) = [
+        slot
+        for slot in part.spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "dac2aAidType"
+    ]
+    assert (aid_type.binding_kind, [ref.ref for ref in aid_type.refs], aid_type.provenance) == (
+        "value",
+        ["DAC2aAidType206"],
+        "declared_default",
+    )
+    assert "slot_defaulted" in [warning.code for warning in part.warnings]

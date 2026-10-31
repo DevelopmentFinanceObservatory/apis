@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+
+from code_index.types import PartyRow
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.retrieval.role_scope import open_role_axis_members
@@ -90,11 +93,15 @@ def test_bound_destination_open_origin_publishes_a_role_axis_fact(monkeypatch):
     result = _bound_destination_open_origin_result(monkeypatch)
 
     facts = _role_axis_facts(
-        [RoleAxisFactInput(role="origin", member_dcids=result.open_origin_dcids)]
+        [RoleAxisFactInput(role="origin", member_dcids=result.open_origin_dcids)],
+        parties={},
+        datasets=(),
     )
 
     assert facts == [
-        RoleAxisFact(role="origin", member_count=2, members_available=True),
+        RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        ),
     ]
 
 
@@ -179,15 +186,21 @@ def test_both_axes_open_derives_the_same_fact_from_role_index_by_sv(monkeypatch)
     )
     assert members == frozenset({"country/FRA", "country/USA"})
 
-    facts = _role_axis_facts([RoleAxisFactInput(role="origin", member_dcids=members)])
-    assert facts == [RoleAxisFact(role="origin", member_count=2, members_available=True)]
+    facts = _role_axis_facts(
+        [RoleAxisFactInput(role="origin", member_dcids=members)], parties={}, datasets=()
+    )
+    assert facts == [
+        RoleAxisFact(
+            role="origin", member_count=2, members_available=True, holds_multilaterals=False
+        )
+    ]
 
 
 # Role-axis facts adapter.
 
 
 def test_role_axis_facts_none_when_empty():
-    assert _role_axis_facts([]) is None
+    assert _role_axis_facts([], parties={}, datasets=()) is None
 
 
 def test_role_axis_facts_reports_both_roles_when_both_open():
@@ -195,9 +208,56 @@ def test_role_axis_facts_reports_both_roles_when_both_open():
         [
             RoleAxisFactInput(role="destination", member_dcids=frozenset({"country/KEN"})),
             RoleAxisFactInput(role="origin", member_dcids=frozenset()),
-        ]
+        ],
+        parties={},
+        datasets=(),
     )
     assert facts == [
         RoleAxisFact(role="destination", member_count=1, members_available=True),
-        RoleAxisFact(role="origin", member_count=0, members_available=True),
+        RoleAxisFact(
+            role="origin", member_count=0, members_available=True, holds_multilaterals=False
+        ),
+    ]
+
+
+_DAC = "TESTFIXTURE/Dataset/DAC"
+_CRS = "TESTFIXTURE/Dataset/CRS"
+_PARTIES = {
+    "country/FRA": PartyRow(dcid="country/FRA", kind="party"),
+    "country/DEU": PartyRow(dcid="country/DEU", kind="party"),
+    "DACGroup/DAC": PartyRow(dcid="DACGroup/DAC", kind="total"),
+    "DACGroup/EU": PartyRow(
+        dcid="DACGroup/EU",
+        kind="party",
+        datasets=(_CRS, _DAC),
+        dataset_kinds=((_CRS, "party"), (_DAC, "total")),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("members", "datasets", "count"),
+    [
+        # A total beside its members is left out, as the default download leaves it out.
+        ({"country/FRA", "country/DEU", "DACGroup/DAC"}, (), 2),
+        # A party the index does not list stays.
+        ({"country/FRA", "TESTFIXTURE/Unlisted"}, (), 2),
+        # A total in the served dataset alone is left out there.
+        ({"country/FRA", "DACGroup/EU"}, (_DAC,), 1),
+        # A party of differing kinds across the served datasets has no one kind and stays.
+        ({"country/FRA", "DACGroup/EU"}, (_DAC, _CRS), 2),
+        # A side holding totals alone keeps them all.
+        ({"DACGroup/DAC"}, (), 1),
+    ],
+)
+def test_role_axis_facts_count_parties_beside_totals(members, datasets, count):
+    facts = _role_axis_facts(
+        [RoleAxisFactInput(role="origin", member_dcids=frozenset(members))],
+        parties=_PARTIES,
+        datasets=datasets,
+    )
+    assert facts == [
+        RoleAxisFact(
+            role="origin", member_count=count, members_available=True, holds_multilaterals=False
+        )
     ]

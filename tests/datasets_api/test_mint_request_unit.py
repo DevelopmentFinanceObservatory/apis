@@ -302,7 +302,7 @@ def test_a_role_the_spec_lacks_refuses_request_invalid():
     assert resp.status_code == 400, resp.text
     problem = resp.json()
     assert problem["code"] == "request_invalid"
-    assert problem["alternatives"] == [{"ref": "recipient", "label": "recipient"}]
+    assert problem["alternatives"] == [{"ref": "destination", "label": "destination"}]
 
 
 def test_a_constant_price_request_without_base_year_refuses_request_invalid():

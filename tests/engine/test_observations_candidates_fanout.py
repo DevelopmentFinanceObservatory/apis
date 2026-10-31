@@ -81,14 +81,14 @@ _UNIT_CAND_NODES = {
         "label": "Candidate unit SV A",
         "type": "StatisticalVariable",
         "arcs": _candidate_unit_std_arcs(
-            "Candidate unit SV A", pop_type="EconomicActivity", meas_prop="amountA"
+            "Candidate unit test variable A", pop_type="EconomicActivity", meas_prop="amountA"
         ),
     },
     _UNIT_CAND_SV_B: {
         "label": "Candidate unit SV B",
         "type": "StatisticalVariable",
         "arcs": _candidate_unit_std_arcs(
-            "Candidate unit SV B", pop_type="EconomicActivity", meas_prop="amountB"
+            "Candidate unit test variable B", pop_type="EconomicActivity", meas_prop="amountB"
         ),
     },
 }
@@ -324,7 +324,9 @@ def test_candidates_bound_unit_graph_failure_raises_infra_error_not_definite():
     """
 
     class _RaisingGraphReader(FakeGraphReader):
-        def variable_facets_batch(self, *, stat_var, entities, deadline: float | None = None):
+        def variable_facets_batch(
+            self, *, stat_var, entities, needs_dates: bool = False, deadline: float | None = None
+        ):
             raise GraphInfraError("graph down")
 
         def default_facet_policy(self, *, stat_var, axis):
@@ -623,7 +625,7 @@ def _constrained_survivor_graph() -> FakeGraph:
     """SV_A as a constrained member: one constraint property whose value has a label."""
     arcs = {
         **_candidate_unit_std_arcs(
-            "Candidate unit SV A", pop_type="EconomicActivity", meas_prop="amountA"
+            "Candidate unit test variable A", pop_type="EconomicActivity", meas_prop="amountA"
         ),
         "constraintProperties": {"nodes": [{"dcid": "crsPurpose"}]},
         "crsPurpose": {"nodes": [{"dcid": _PURPOSE}]},

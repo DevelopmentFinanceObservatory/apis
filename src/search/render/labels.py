@@ -243,7 +243,8 @@ def _entity_token(
     )
 
 
-def _join_labels(labels: list[str]) -> str:
+def join_labels(labels: list[str]) -> str:
+    """`labels` as a reader lists them: "a", "a and b", "a, b, and c", empty for none."""
     if not labels:
         return ""
     if len(labels) == 1:
@@ -290,7 +291,12 @@ def group_text(count: int, group: EntityGroup) -> str:
     donors", "the 27 EU member states"). That word is one of `_MEMBER_NOUNS`, compared as
     text. The heading and the `entity_unavailable` and `group_read_as_members` departures
     all read this.
+
+    A side read as its whole population (`EntityGroup.whole_of`) names it by its label
+    alone: "all donors including private" holds two published totals, not two members.
     """
+    if group.whole_of:
+        return group.label
     if _is_region(group.ref):
         return f"the {count} countries in {group.label}"
     last_word = group.label.rsplit(" ", 1)[-1].lower()

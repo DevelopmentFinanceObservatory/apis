@@ -16,7 +16,7 @@ from origin_catalogue.origins import UN_ID_PREFIX
 from search.engine.axis import classify_axis
 from search.engine.errors import RoleEntityUnplaced
 from search.engine.reading_coverage import ReadingCoverage
-from search.engine.unit.count import is_count_unit
+from search.engine.unit.count import is_count_unit, is_person_count_unit
 
 # search.models.Axis is the binder's slot axis (what/how/where/when), unrelated
 # to materialise.roles.RoleAxis (origin/destination) imported above.
@@ -108,6 +108,11 @@ class ShapeDraft:
     # stood for (`bound_values.narrowed_to`), the ones it held before, so a walk is seeded
     # with recalled members and never with a held family's. None seeds every member.
     walk_seeds: frozenset[str] | None = field(default=None, compare=False)
+    # The what and how slot properties a breakdown decision left out of slot_keys
+    # (`phase_election._narrow_to_breakdown`). A member asserting one is no member of the
+    # identity minted from the shape, so admission leaves it out
+    # (`standard._admit_standard_members`). Empty on a shape no decision narrowed.
+    omitted_slots: frozenset[str] = field(default=frozenset(), compare=False)
     # Per-shape bind taxonomy: "axis:property_dcid" -> a list of values a
     # member asserts (facts.read_slot_taxonomy).
     slot_taxonomy: dict[str, list[str]] | None = field(default=None, compare=False)
@@ -181,6 +186,12 @@ class ShapeDraft:
     # cut (`clients.graph.with_rival_families`). Such a shape displaces only shapes of its
     # own five-tuple (`place_roles.without_unasked_axes`).
     rival: bool = field(default=False, compare=False)
+    # When every confirmed member is a row recall added for another convention basis of
+    # recalled families (`clients.graph.with_rival_families`), those families
+    # (`clients.graph.family_ref`). The binder does not read such a shape while a shape of
+    # one of them stands on the menu, and the house policies' pool takes it only beside one
+    # (`phase_rank_bind._HousePolicyStep`).
+    basis_of: frozenset[str] = field(default=frozenset(), compare=False)
     # The resolver whose recall reached the shape (`Pool`). A variable our resolver recalls
     # under a superseded dcid derives as its UN successor and stays in our pool.
     pool: Pool = field(default="ours", compare=False)
@@ -320,6 +331,17 @@ def measures_count(shape: ShapeDraft) -> bool:
         return True
     units = shape.place_units
     return bool(units) and all(is_count_unit(unit) for unit in units)
+
+
+def counts_persons(shape: ShapeDraft) -> bool:
+    """True when the group's values count persons: its population type is ``Person`` and
+    it measures a count (`measures_count`), or every facet holding its data at the queried
+    place carries a unit counting persons (`unit.count.is_person_count_unit`), as a UN
+    System series says it does."""
+    if shape.pop_type_dcid == "Person" and measures_count(shape):
+        return True
+    units = shape.place_units
+    return bool(units) and all(is_person_count_unit(unit) for unit in units)
 
 
 def is_un_shape(shape: ShapeDraft) -> bool:

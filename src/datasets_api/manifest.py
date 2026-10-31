@@ -83,6 +83,7 @@ from datasets_api.versions import (
     VersionDescriber,
     VersionRecord,
     VersionRecordWriter,
+    link_digest,
     unlinked_state,
 )
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
@@ -108,6 +109,7 @@ from materialise.series_conversion import (
     decode_series_conversion_entries,
     encode_series_conversions,
 )
+from materialise.trace import ManifestTrace
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
 from series_coverage.coverage_types import YearCount
@@ -125,12 +127,9 @@ _PROCESSING_LEVEL_UNDECLARED_TITLE, _PROCESSING_LEVEL_UNDECLARED_DETAIL = BUNDLE
 
 
 def warning_model(warning: Mapping[str, object]) -> WarningModel:
-    """Converts a complete `{code, severity, message}` warning mapping without reformatting it."""
-    return WarningModel(
-        code=cast(str, warning["code"]),
-        severity=cast(str, warning["severity"]),
-        message=cast(str, warning["message"]),
-    )
+    """Converts a complete `{code, severity, message}` warning mapping, with any structured
+    fields it carries (`materialise.codes.MaterialisationWarning`), without reformatting it."""
+    return WarningModel.model_validate(warning)
 
 
 def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[WarningModel, ...]:
@@ -601,7 +600,8 @@ def assemble_manifest(
 
     Uses the caller's `CodeIndex` for rendering and the trace stamp. `coverage_stamp` is
     admission-time lineage, excluded from `content_version`. `None` leaves it unset.
-    `prepared_at` is the version's first-mint instant.
+    `prepared_at` is the version's first-mint instant. `provenance_refs` are the sources the
+    citation names (`source_refs_of`): a composite's component tables.
 
     `warnings` holds the materialisation's warnings, then `extra_warnings`. `diagnostics` holds
     the citation's (`citation_diagnostics`), then a stale origin catalogue's. A choice of source,
@@ -656,7 +656,7 @@ def assemble_manifest(
             identity=stored.identity,
             capabilities=capabilities,
             parties=code_index.parties,
-            datasets=provenance_refs_of(materialisation.trace.facets),
+            datasets=source_refs_of(materialisation.trace),
         ),
         series_coverage_stamp=coverage_stamp,
     )
@@ -704,6 +704,30 @@ def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
     materialisation dispatched, and none for one whose facet probe was empty
     (`MaterialisationResult.probe_empty`), which selects no facet."""
     return [cast(str, facet["ref"]) for facet in facets if facet["axis"] == "provenance"]
+
+
+def source_refs_of(trace: ManifestTrace | Mapping[str, object]) -> list[str]:
+    """The provenance refs a version's figures come from, in first-seen order: for a composite
+    each component's (`trace.components`), whose tables its citation names, and otherwise the
+    one its rows carry (`provenance_refs_of`). A live `ManifestTrace` or a stored or wire
+    trace mapping. The citation cites these, and the parties of their datasets decide which
+    rows are totals; `provenance_refs_of` gives what the rows carry, which the render's source
+    guards read."""
+    if isinstance(trace, ManifestTrace):
+        components: Sequence[Mapping[str, object]] = trace.components
+        facets: Iterable[Mapping[str, object]] = trace.facets
+    else:
+        components = cast("Sequence[Mapping[str, object]]", trace.get("components") or ())
+        facets = cast("Iterable[Mapping[str, object]]", trace.get("facets", ()))
+    if components:
+        return list(
+            dict.fromkeys(
+                cast(str, component["provenance"])
+                for component in components
+                if component.get("provenance") is not None
+            )
+        )
+    return provenance_refs_of(facets)
 
 
 def stored_manifest_facts(stored: StoredVersion) -> ManifestFacts:
@@ -771,11 +795,11 @@ def stored_series_conversions(facts: ManifestFacts) -> dict[SeriesKey, SeriesCon
 
 def version_document(stored: StoredVersion) -> dict[str, object]:
     """The JSON document a Presentation frame carries as its manifest: a dataset version's
-    manifest without `artifacts`, `output_options` and `diagnostics`, or a published frame's
-    `op_spec_hash` (its subject id), `input_content_versions` and `continuations`
-    (`FrameLineage.continuations`): its entries when it stores any, `null` while they are
-    unknown, on a version recorded before versions stored them until `backfill-descriptions`
-    fills them, and left out when nothing continues its series."""
+    manifest without `artifacts`, `output_options`, `diagnostics` and `retention`, or a
+    published frame's `op_spec_hash` (its subject id), `input_content_versions` and
+    `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
+    they are unknown, on a version recorded before versions stored them until
+    `backfill-descriptions` fills them, and left out when nothing continues its series."""
     if isinstance(stored.facts, FrameLineage):
         document: dict[str, object] = {
             "op_spec_hash": stored.subject_id,
@@ -788,16 +812,17 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
             document["continuations"] = [dict(entry) for entry in continuations]
         return document
     return stored_manifest(stored).model_dump(
-        mode="json", exclude={"artifacts", "output_options", "diagnostics"}
+        mode="json", exclude={"artifacts", "output_options", "diagnostics", "retention"}
     )
 
 
 def version_body(record: VersionRecord) -> dict[str, object]:
     """The `immutable_body` `record`'s facts encode, the JSON an image reading bodies reads.
 
-    A dataset version's body is its `version_document` with `output_profile`, a non-empty
-    `series_conversions` and a non-null `default_scope_plural` added. A published frame's body is
-    its `version_document`, which holds its `continuations` when they are known and some continue
+    A dataset version's body is its `version_document` with `output_profile` and a non-null
+    `default_scope_plural` added. The `series_conversions` column alone holds the per-series
+    conversion records, which run to tens of megabytes on a wide converted mint. A published
+    frame's body is its `version_document`, which holds its `continuations` when they are known and some continue
     its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Nothing in this image reads the
     body.
     """
@@ -812,8 +837,6 @@ def version_body(record: VersionRecord) -> dict[str, object]:
         return body
     if facts.output_profile is not None:
         body["output_profile"] = dict(facts.output_profile)
-    if facts.series_conversions:
-        body["series_conversions"] = [dict(entry) for entry in facts.series_conversions]
     if facts.default_scope_plural is not None:
         body["default_scope_plural"] = facts.default_scope_plural
     return body
@@ -865,10 +888,17 @@ def definition_version_record(
     artifacts: Sequence[ArtifactEntryModel],
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     base_content_version: str | None = None,
+    frame_summed: bool | None = None,
 ) -> VersionRecord:
     """The version record of a definition materialisation, linking `artifacts` and
-    `record_only_artifacts`. A groupby collapse stores the raw version it was rendered from as
-    `base_content_version`."""
+    `record_only_artifacts`. A derived version stores the raw version it was rendered from as
+    `base_content_version`, and whether its frame holds its summed rows as `frame_summed`
+    (`render.DerivedVersion.summed`). A raw version passes neither. Only a raw version stores
+    the per-series conversion records. A derived version's rows are not those series, and the
+    observations door, their reader, serves raw versions alone.
+
+    Each of `artifacts`, rendered by this call, is linked under the key its `enrichment_stamp`
+    salts (`versions.link_digest`). `record_only_artifacts` carry their own salt."""
     return VersionRecord(
         subject_id=stored.spec_id,
         subject_kind="spec",
@@ -877,7 +907,9 @@ def definition_version_record(
         facts=manifest_facts(
             manifest,
             output_profile=materialisation.output_profile,
-            series_conversions=materialisation.series_conversions,
+            series_conversions=(
+                materialisation.series_conversions if base_content_version is None else None
+            ),
             default_scope=materialisation.default_scope,
         ),
         artifacts=tuple(
@@ -885,6 +917,7 @@ def definition_version_record(
                 artifact_digest=artifact.artifact_digest,
                 rendering=artifact.rendering,
                 media_type=artifact.media_type,
+                enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
             )
             for artifact in artifacts
         )
@@ -892,6 +925,7 @@ def definition_version_record(
         base_content_version=base_content_version,
         frame_grammar_version=materialisation.trace.frame_grammar_version,
         frame_sha256=materialisation.frame_sha256,
+        frame_summed=frame_summed,
     )
 
 
@@ -955,6 +989,7 @@ def record_collapsed_head_version(
     base_content_version: str,
     output_profile: OutputProfile,
     frame_sha256: str,
+    frame_summed: bool,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
@@ -964,10 +999,12 @@ def record_collapsed_head_version(
     the record already existed.
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
-    `output_profile` and `frame_sha256` are the collapsed frame's. `ON CONFLICT DO NOTHING` makes repeated writes
-    idempotent. `describer_for` gives the describer that writes the version's description record
-    in the same transaction, from the record this call stores; `None`, or a describer of
-    `None`, writes none.
+    `output_profile`, `frame_sha256` and `frame_summed` (`render.DerivedVersion.summed`) are the
+    collapsed frame's. The artifacts in `manifest`
+    are linked as `definition_version_record` links its `artifacts`. `ON CONFLICT DO NOTHING`
+    makes repeated writes idempotent. `describer_for` gives the describer that writes the
+    version's description record in the same transaction, from the record this call stores;
+    `None`, or a describer of `None`, writes none.
     """
     record = VersionRecord(
         subject_id=subject_id,
@@ -980,6 +1017,7 @@ def record_collapsed_head_version(
                 artifact_digest=artifact.artifact_digest,
                 rendering=artifact.rendering,
                 media_type=artifact.media_type,
+                enrichment_digest=link_digest(artifact.rendering, stamp=artifact.enrichment_stamp),
             )
             for artifact in manifest.artifacts
         )
@@ -987,6 +1025,7 @@ def record_collapsed_head_version(
         base_content_version=base_content_version,
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         frame_sha256=frame_sha256,
+        frame_summed=frame_summed,
     )
     if describer_for is not None:
         record = replace(record, describer=describer_for(record))

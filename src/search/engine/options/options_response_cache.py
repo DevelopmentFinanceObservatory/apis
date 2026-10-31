@@ -152,7 +152,7 @@ def options_response_cache_key(
     """The `OptionsResponseCache` key for `req`/`target`. See the module
     docstring for every ingredient and why each is there. `build_commit`,
     `coverage` and `catalogue` are passed in by the caller (`app.py`'s
-    `options_endpoint`, which takes one `get_coverage_service().snapshot()` read and
+    `list_options`, which takes one `get_coverage_service().snapshot()` read and
     one `current_catalogue()` read per request and threads them here and into
     `compute_options`, rather than this function reading either again on its own)
     rather than read here, keeping this function pure -- no I/O, no config import --

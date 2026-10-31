@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -23,7 +24,7 @@ import pg8000.exceptions
 import pytest
 
 from artifact_store.inventory import LiveArtifactInventory
-from artifact_store.store import Tier
+from artifact_store.store import StoredArtifact, Tier
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
@@ -34,6 +35,7 @@ from dataset_store.snapshot import (
     SnapshotRevoked,
     VersionFactsMissing,
 )
+from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger, Spend
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.doors.pin import pin_artifact
@@ -47,7 +49,15 @@ from datasets_api.operations import worker as worker_module
 from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.worker import OperationSuperseded, run_operation
 from datasets_api.principals import Principal
+from datasets_api.recipe_store import (
+    AnswerRecord,
+    LiveRecipeStore,
+    RecipeRecord,
+    ReplayedFrame,
+    ReplayKeyHeld,
+)
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import (
     ArtifactRecord,
@@ -56,6 +66,7 @@ from datasets_api.versions import (
     SubjectHead,
     VersionRecord,
 )
+from dfo_platform.caller import Caller
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -64,6 +75,7 @@ from spec_registry import (
     SpecRegistryStoreError,
     recompute_identity,
 )
+from tests.datasets_api._app_factories import offline_allowances
 from tests.datasets_api._legacy_conversion_trace import (
     LEGACY_CONVERSION,
     LEGACY_DEFLATED_CONVERSION,
@@ -554,6 +566,14 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
                 size_bytes=7,
                 uploaded=True,
             )
+            return StoredArtifact(
+                digest=digest,
+                tier=to_tier,
+                bucket="pinned-bucket",
+                object_name=digest,
+                size_bytes=7,
+                deduplicated=False,
+            )
 
     with pytest.raises(ArtifactNotFound):
         pin_artifact(
@@ -565,7 +585,7 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
             snapshot_reader=LiveSnapshotReader(store=live_store),
             artifact_store=_RerenderDuringCopy(),
             reference_writer=LiveArtifactReferenceWriter(store=live_store),
-            daily_max=1_000_000,
+            allowances=offline_allowances(),
             now=lambda: pinned_at,
         )
 
@@ -799,6 +819,76 @@ def test_version_revocation_fk_rejects_an_unknown_version(live_store):
             "(subject_id, content_version, revoked_at) VALUES (%s, %s, now())",
             ("spec:does-not-exist", "cv1"),
         )
+
+
+def test_an_analysis_answer_is_replaced_under_its_key_and_names_a_stored_version(live_store):
+    subject_id = f"ops_{uuid4().hex}"
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record "
+            "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+            "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+            (subject_id, "spec", "ocv1", 1, {"prepared_at": "2026-01-01T00:00:00Z"}),
+        )
+    answers = LiveRecipeStore(store=live_store)
+    key = uuid4().hex
+    answers.write_answer(
+        AnswerRecord(request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 1})
+    )
+    answers.write_answer(
+        AnswerRecord(request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 2})
+    )
+
+    assert answers.read_answer(request_key=key) == AnswerRecord(
+        request_key=key, spec_id=subject_id, content_version="ocv1", body={"rows": 2}
+    )
+    assert answers.read_answer(request_key=uuid4().hex) is None
+    with pytest.raises(DatasetsStoreUnavailable):
+        answers.write_answer(
+            AnswerRecord(
+                request_key=uuid4().hex,
+                spec_id="ops_does-not-exist",
+                content_version="ocv1",
+                body={},
+            )
+        )
+
+
+def test_a_superseded_recipe_gives_its_replay_key_to_another_pair(live_store):
+    """The replay index holds the key once among recipes not superseded, so a second pair
+    takes it only after the first gives it up, and the first keeps its recipe."""
+    old, new = f"ops_{uuid4().hex}", f"ops_{uuid4().hex}"
+    with live_store.transaction() as tx:
+        for subject_id in (old, new):
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+                (subject_id, "spec", "ocv1", 1, {"prepared_at": "2026-01-01T00:00:00Z"}),
+            )
+    recipes = LiveRecipeStore(store=live_store)
+    replay_key = f"rpk_{uuid4().hex}"
+
+    def record(subject_id: str) -> RecipeRecord:
+        return RecipeRecord(
+            spec_id=subject_id,
+            content_version="ocv1",
+            normal_form_hash="rnf_" + "0" * 32,
+            replay_key=replay_key,
+            body={"replay_key": replay_key},
+        )
+
+    assert recipes.write_recipe(record(old))
+    with pytest.raises(ReplayKeyHeld):
+        recipes.write_recipe(record(new))
+    recipes.supersede_replay(replay_key=replay_key, spec_id=old, content_version="ocv1")
+
+    assert recipes.write_recipe(record(new))
+    assert not recipes.write_recipe(record(old))
+    assert recipes.read_replay(replay_key=replay_key) == ReplayedFrame(
+        spec_id=new, content_version="ocv1"
+    )
+    assert recipes.read_recipe(spec_id=old, content_version="ocv1") == record(old)
 
 
 def test_subject_head_table_exists_after_migration(live_store):
@@ -1155,6 +1245,102 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
         loser_pool.close_all()
 
 
+class _InterleavingTransaction:
+    """Commits `before` and `after` on another connection around the first reset update."""
+
+    def __init__(self, inner, store: _InterleavingDatasetStore) -> None:
+        self._inner = inner
+        self._store = store
+
+    def _around_reset(self, sql: str, run):
+        hooks = self._store.pending_hooks
+        if hooks is None or not sql.startswith("UPDATE datasets.operation SET state = 'pending'"):
+            return run()
+        self._store.pending_hooks = None
+        before, after = hooks
+        before()
+        result = run()
+        after()
+        return result
+
+    def execute(self, sql: str, params=()) -> None:
+        self._around_reset(sql, lambda: self._inner.execute(sql, params))
+
+    def fetch_one(self, sql: str, params=()):
+        return self._around_reset(sql, lambda: self._inner.fetch_one(sql, params))
+
+    def fetch_all(self, sql: str, params=()):
+        return self._around_reset(sql, lambda: self._inner.fetch_all(sql, params))
+
+
+class _InterleavingDatasetStore:
+    """Wraps each real transaction in `_InterleavingTransaction`."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.pending_hooks = None
+
+    @contextmanager
+    def transaction(self):
+        with self._inner.transaction() as tx:
+            yield _InterleavingTransaction(tx, self)
+
+
+def test_operation_store_create_or_get_decides_again_when_its_reset_matches_nothing(live_store):
+    """A redelivery claims the abandoned row after the locked read and commits, so the reset
+    re-checks the new version and matches nothing. The run completes before the call returns.
+    Under READ COMMITTED a final read would see `done`. The call resets the done row instead."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    run_id = uuid4().hex
+    subject_id = f"spec-test-live-operation-redecide-{run_id}"
+    identity = {"input": {"spec_id": subject_id}}
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    interleaving = _InterleavingDatasetStore(live_store)
+    store = LiveOperationStore(store=interleaving, now=lambda: now_box["t"], backlog_max=10_000)
+    # The redelivery commits on its own connection while the submission's transaction is open.
+    worker_pool = _pool(size=1)
+    worker = LiveOperationStore(
+        store=LiveDatasetStore(connections=worker_pool), now=lambda: now_box["t"]
+    )
+
+    try:
+
+        def _submit():
+            return store.create_or_get(
+                request_identity=identity,
+                options={"format": "parquet"},
+                coverage_stamp=f"cov-test-live-operation-redecide-{run_id}",
+                origin_catalogue_build_id="fake-catalogue",
+                estimate=Estimate(rows=1, requests=1),
+            )
+
+        first = _submit()
+        assert worker.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+        now_box["t"] += timedelta(seconds=61)
+
+        def _redelivery_claims() -> None:
+            assert worker.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+
+        def _redelivery_completes() -> None:
+            assert worker.complete(
+                first.id,
+                attempt=2,
+                subject_id=subject_id,
+                content_version="cv1",
+                confirmed_at=now_box["t"],
+            )
+
+        interleaving.pending_hooks = (_redelivery_claims, _redelivery_completes)
+
+        resubmitted = _submit()
+
+        assert interleaving.pending_hooks is None
+        assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
+        assert worker.get(first.id) == resubmitted
+    finally:
+        worker_pool.close_all()
+
+
 def test_operation_insert_predating_submitted_at_still_succeeds(live_store):
     """An insert without `submitted_at` receives the database's `now()` default.
 
@@ -1379,6 +1565,43 @@ def test_operation_store_complete_keeps_the_runs_confirmed_instant(live_store):
     assert (done.confirmed_at, done.updated_at) == (confirmed_at, t0)
     stored = operations.get(op.id)
     assert stored is not None and stored.confirmed_at == confirmed_at
+
+
+def test_operation_store_create_or_get_resets_a_done_row(live_store):
+    """The reset `UPDATE`'s `_RESETTABLE` admits a done row on PostgreSQL, so it returns to
+    pending under a new submission and its next claim takes a new attempt."""
+    run_id = uuid4().hex
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    operations = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
+    op = _new_operation(operations, run_id, "done-reset")
+    claimed = operations.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
+    assert claimed is not None
+    subject_id = f"spec-test-live-done-reset-{run_id}"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    assert operations.complete(
+        op.id,
+        attempt=claimed.attempt_count,
+        subject_id=subject_id,
+        content_version="cv1",
+        confirmed_at=t0,
+    )
+
+    resubmitted = operations.create_or_get(
+        request_identity=op.request_identity,
+        options=op.options,
+        coverage_stamp=op.coverage_stamp,
+        origin_catalogue_build_id="fake-catalogue",
+        estimate=op.estimate,
+    )
+
+    assert (resubmitted.id, resubmitted.state, resubmitted.submission_count) == (
+        op.id,
+        "pending",
+        1,
+    )
+    reclaimed = operations.claim(op.id, submission_count=1, lease_seconds=30, final_delivery=False)
+    assert reclaimed is not None
+    assert reclaimed.attempt_count == claimed.attempt_count + 1
 
 
 def _materialisation_count(live_store, subject_id: str) -> int:
@@ -1777,6 +2000,10 @@ def _subject_operation(store: LiveOperationStore, run_id: str):
     )
 
 
+_PLAIN_DEFINITION = SimpleNamespace(identity={})
+"""A stored definition whose identity binds no composite, as the worker reads one."""
+
+
 def _must_not_serve(*_, **__):
     raise AssertionError("an over-ceiling or superseded run must not materialise")
 
@@ -1790,9 +2017,13 @@ def test_worker_fails_over_ceiling_when_the_execution_estimate_breaches_it(live_
     claimed = store.claim(op.id, submission_count=0, lease_seconds=600, final_delivery=False)
     assert claimed is not None
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", lambda **_: (object(), []))
     monkeypatch.setattr(
-        worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
+        worker_module, "_resolve_spec_requests", lambda **_: (_PLAIN_DEFINITION, [])
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "sync_estimate",
+        lambda requests, *, index, member_concurrency, composite: over,
     )
     monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
@@ -1824,9 +2055,13 @@ def test_worker_a_stale_attempt_cannot_fail_the_reclaimed_row_over_ceiling(live_
     first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert first is not None
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", lambda **_: (object(), []))
     monkeypatch.setattr(
-        worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
+        worker_module, "_resolve_spec_requests", lambda **_: (_PLAIN_DEFINITION, [])
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "sync_estimate",
+        lambda requests, *, index, member_concurrency, composite: over,
     )
     monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
@@ -2084,57 +2319,125 @@ def test_artifact_reference_upsert_repeat_pin_of_a_live_row_keeps_the_original_c
     assert row["removed_at"] is None
 
 
-def test_pinned_copy_count_counts_each_pin_door_promotion_once(live_store):
-    """The pin budget reads this count. Two `pin` references to one pinned copy add one, and so
-    does a copy whose only `pin` reference was removed, since unpinning leaves the copy stored. A
-    working copy, a pinned copy older than the window, and a frame-store pin add nothing."""
+@pytest.mark.parametrize("together", [False, True], ids=["allowance", "budget-and-allowance"])
+def test_concurrent_allowance_spends_stop_at_the_limit(live_store, together: bool):
+    """Spends racing on one caller's day pass the limit by none, under Postgres row locking. A
+    pin's budget and allowance spent together stop at the tighter limit, and a refused pin
+    spends neither."""
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    budget = Spend(f"test-budget-{uuid4().hex}", AllowanceKind.open_pin_budget)
+    ledger = LiveAllowanceLedger(
+        store=live_store, limits={AllowanceKind.pin: 3, AllowanceKind.open_pin_budget: 3}
+    )
     now = datetime.now(UTC)
-    since = now - timedelta(hours=24)
-    writer = LiveArtifactReferenceWriter(store=live_store)
+    outcomes: list[str] = []
 
-    def count() -> int:
-        return writer.count_pinned_copies_since(reference_kind=PIN_REFERENCE_KIND, since=since)
+    def spend() -> None:
+        try:
+            if together:
+                ledger.spend_together([budget, Spend(caller.key, AllowanceKind.pin)], now)
+            else:
+                ledger.spend(caller, AllowanceKind.pin, now)
+            outcomes.append("spent")
+        except AllowanceExhausted:
+            outcomes.append("refused")
 
-    baseline = count()
-    suffix = uuid4().hex
-    seeds = {
-        "shared": ("pinned", now - timedelta(hours=1), PIN_REFERENCE_KIND),
-        "removed": ("pinned", now - timedelta(hours=1), PIN_REFERENCE_KIND),
-        "working": ("working", now, PIN_REFERENCE_KIND),
-        "old": ("pinned", now - timedelta(hours=25), PIN_REFERENCE_KIND),
-        "frame": ("pinned", now - timedelta(hours=1), "presentation_draft"),
-    }
-    subjects = (f"spec:test-live-pinned-count-{suffix}", f"col_test_live_count_{suffix}")
-    for name, (tier, stored_at, kind) in seeds.items():
-        digest = f"sha256:test-live-pinned-count-{name}-{suffix}"
-        for subject_id in subjects if name == "shared" else subjects[:1]:
-            _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
-            writer.record_reference(
-                principal="first-party",
-                artifact_digest=digest,
-                subject_id=subject_id,
-                content_version="cv1",
-                reference_kind=kind,
-                now=now,
-            )
-            if name == "removed":
-                writer.remove_reference(
-                    principal="first-party",
-                    artifact_digest=digest,
-                    subject_id=subject_id,
-                    content_version="cv1",
-                    reference_kind=kind,
-                    now=now,
-                )
+    threads = [threading.Thread(target=spend) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert sorted(outcomes) == ["refused"] * 3 + ["spent"] * 3
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT day, count FROM datasets.caller_allowance WHERE caller_key = %s",
+            (caller.key,),
+        )
+    assert row == {"day": now.date(), "count": 3}
+    if together:
         with live_store.transaction() as tx:
-            tx.execute(
-                "INSERT INTO datasets.artifact_location "
-                "(artifact_digest, tier, bucket, object_name, stored_at) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (digest, tier, "bucket", digest, stored_at),
+            spent = tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s",
+                (budget.key,),
+            )
+        assert spent == {"count": 3}
+
+
+def test_a_card_unit_refund_takes_one_back_and_deletes_a_day_left_at_zero(live_store):
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    ledger = LiveAllowanceLedger(store=live_store, limits={AllowanceKind.card: 2})
+    now = datetime.now(UTC)
+
+    def held() -> object:
+        with live_store.transaction() as tx:
+            return tx.fetch_one(
+                "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+                (caller.key, AllowanceKind.card.value),
             )
 
-    assert count() == baseline + 2
+    ledger.spend(caller, AllowanceKind.card, now)
+    ledger.spend(caller, AllowanceKind.card, now)
+    ledger.refund(caller, AllowanceKind.card, now)
+    after_one = held()
+    ledger.refund(caller, AllowanceKind.card, now)
+    ledger.refund(caller, AllowanceKind.card, now)
+
+    assert after_one == {"count": 1}
+    assert held() is None
+
+
+def test_a_refund_racing_a_spend_takes_its_unit_back(live_store):
+    """A refund that reads the day's last unit while a spend holds the row uncommitted waits for
+    the spend, then takes one from the count the spend leaves."""
+    caller = Caller(kind="address", key="ip:" + uuid4().hex)
+    limits = {AllowanceKind.card: 5}
+    now = datetime.now(UTC)
+    LiveAllowanceLedger(store=live_store, limits=limits).spend(caller, AllowanceKind.card, now)
+    spend_pool = _pool(size=1)
+    refund_pool = _pool(size=1)
+    try:
+        holder = _HoldBeforeCommitStore(
+            LiveDatasetStore(connections=spend_pool),
+            hold_when=lambda sql: sql.startswith("INSERT INTO datasets.caller_allowance"),
+        )
+        spender = LiveAllowanceLedger(store=holder, limits=limits)
+        refunder = LiveAllowanceLedger(
+            store=LiveDatasetStore(connections=refund_pool), limits=limits
+        )
+
+        spend = _Call(lambda: spender.spend(caller, AllowanceKind.card, now))
+        assert holder.held.wait(timeout=5), "the spend never reached its commit"
+        refund = _Call(lambda: refunder.refund(caller, AllowanceKind.card, now))
+        deadline = time.monotonic() + 5
+        while not _waits_on_a_lock(live_store, table="datasets.caller_allowance"):
+            assert time.monotonic() < deadline, "the refund never waited on the spend's row"
+            time.sleep(0.02)
+        holder.release.set()
+        spend.join()
+        refund.join()
+    finally:
+        spend_pool.close_all()
+        refund_pool.close_all()
+
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count FROM datasets.caller_allowance WHERE caller_key = %s AND kind = %s",
+            (caller.key, AllowanceKind.card.value),
+        )
+    assert row == {"count": 1}
+
+
+def _waits_on_a_lock(store, *, table: str) -> bool:
+    """Whether another session waits on a lock in a statement naming `table`."""
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
+            "AND pid <> pg_backend_pid()",
+            (table,),
+        )
+    return row is not None and row["n"] > 0
 
 
 def test_artifact_reference_upsert_reactivates_a_soft_deleted_row(live_store):
@@ -3620,6 +3923,7 @@ def test_a_row_the_previous_image_inserts_stores_the_facts_of_its_body(live_stor
             assert stored is not None
             assert stored.facts == facts_from_body(case["body"]), name
             assert stored.frame_sha256 is None, name
+            assert stored.frame_summed is None, name
             stored_columns = _stored_fact_columns(
                 live_store, subjects[name], case["content_version"]
             )
@@ -3745,6 +4049,106 @@ def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_stor
             tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
             tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
         _delete_versions(live_store, [factless, legacy, pinned])
+
+
+def test_settle_leaves_labels_and_caller_keys_as_they_are(live_store):
+    """Only a raw secret is rewritten. An open caller's `ip:` key and a principal's label stay
+    as stored over two runs, so a caller's repeat pin still matches its own reference."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    pinned = f"spec_settle_keys_{suffix}"
+    digest = f"sha256:test-live-settle-keys-{suffix}"
+    caller_key = "ip:" + suffix
+    label = _principal_label(f"settle-keys-secret-{suffix}")
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    with live_store.transaction() as tx:
+        for principal in (caller_key, label):
+            tx.execute(
+                "INSERT INTO datasets.artifact_reference (principal, artifact_digest, "
+                "subject_id, content_version, reference_kind, created_at) "
+                "VALUES (%s, %s, %s, 'cv1', %s, now())",
+                (principal, digest, pinned, PIN_REFERENCE_KIND),
+            )
+
+    try:
+        for _ in range(2):
+            assert run_settle(store=live_store) == 0
+            with live_store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                    (pinned,),
+                )
+            assert sorted(row["principal"] for row in rows) == sorted([caller_key, label])
+    finally:
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [pinned])
+
+
+def test_settle_waits_for_a_pin_in_flight_and_folds_the_raw_row_into_it(live_store):
+    """A pin under the label of a raw row, uncommitted when settle starts, would collide with
+    settle's rewrite of that row. Settle queues behind it, then folds the raw row into the
+    pin's and counts nothing left."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    pinned = f"spec_settle_race_{suffix}"
+    digest = f"sha256:test-live-settle-race-{suffix}"
+    secret = f"settle-race-secret-{suffix}"
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    insert = (
+        "INSERT INTO datasets.artifact_reference (principal, artifact_digest, subject_id, "
+        "content_version, reference_kind, created_at) VALUES (%s, %s, %s, 'cv1', %s, now())"
+    )
+    with live_store.transaction() as tx:
+        tx.execute(insert, (secret, digest, pinned, PIN_REFERENCE_KIND))
+
+    observer_pool = _pool(size=1)
+    observer = LiveDatasetStore(connections=observer_pool)
+    settled: list[int | BaseException] = []
+
+    def _settle() -> None:
+        try:
+            settled.append(run_settle(store=live_store))
+        except BaseException as exc:  # The test reads it below.
+            settled.append(exc)
+
+    try:
+        with live_store.transaction() as pin:
+            pin.execute(insert, (_principal_label(secret), digest, pinned, PIN_REFERENCE_KIND))
+            settling = threading.Thread(target=_settle)
+            settling.start()
+            deadline = time.monotonic() + 10
+            while not _settle_is_waiting_on_a_lock(observer):
+                assert time.monotonic() < deadline, "settle never waited on the pin"
+                time.sleep(0.05)
+        settling.join(timeout=10)
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                (pinned,),
+            )
+    finally:
+        observer_pool.close_all()
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [pinned])
+
+    assert settled == [0]
+    assert [row["principal"] for row in rows] == [_principal_label(secret)]
+
+
+def _settle_is_waiting_on_a_lock(store) -> bool:
+    with store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
+            "AND pid <> pg_backend_pid()"
+        )
+    return row is not None and row["n"] > 0
 
 
 _STRIP_DOCUMENTATION_MIGRATION = "0035_strip_backfilled_documentation.sql"

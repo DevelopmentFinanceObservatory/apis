@@ -396,7 +396,7 @@ _RESOLVE_RESPONSES: dict[int | str, dict[str, object]] = {
 
 
 class _PipelineDeps(TypedDict):
-    """The keywords `resolve_endpoint` passes `resolve_events` and `resolve_async` from the
+    """The keywords `resolve` passes `resolve_events` and `resolve_async` from the
     app's dependencies and the request. The binder is left to `Settings.binder`."""
 
     graph: EngineGraphClient
@@ -416,7 +416,7 @@ class _PipelineDeps(TypedDict):
     caller: str | None
 
 
-async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
+async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -> Response:
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
         raise EngineInputError(
@@ -492,7 +492,7 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
     return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)
 
 
-async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Response:
+async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
     """The options door: on-demand candidate enumeration for one resolved
     entity role (origin, destination, or observationAbout) of a posted
     identity, queried independently of the /resolve pipeline and fetched
@@ -578,15 +578,15 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     return JSONResponse(result.model_dump(mode="json", by_alias=True, exclude_none=True))
 
 
-async def healthz() -> HealthResponse:
+async def get_health() -> HealthResponse:
     return health_response(capability_version=settings().capability_version)
 
 
-async def schema(request: Request, deps: SearchDepsDep) -> Response:
+async def get_schema(request: Request, deps: SearchDepsDep) -> Response:
     return deps.documents.schema.respond(request)
 
 
-async def capabilities(request: Request, deps: SearchDepsDep) -> Response:
+async def get_capabilities(request: Request, deps: SearchDepsDep) -> Response:
     # Deployment configuration can change capabilities without changing the contract schema.
     return deps.documents.capabilities(get_index()).respond(request)
 
@@ -599,7 +599,7 @@ class SearchCatalogueUnavailable(EngineInfraError):
 _CATALOGUE_CACHE_CONTROL = "public, max-age=300"
 
 
-async def catalogue_endpoint(
+async def get_catalogue(
     deps: SearchDepsDep,
     place: Annotated[
         str | None,
@@ -726,6 +726,15 @@ async def _open_search_deps(
     reverse registration order. Exit generation registrations first so refresh callbacks cannot
     reach closed caches. Injected instances are neither registered nor released.
     """
+    # The Gemini key check runs beside the rest of startup and is awaited before the app
+    # serves. A startup step that fails first cancels it; the done callback reads its outcome
+    # so that a failed check left unawaited logs nothing.
+    key_check: asyncio.Task[None] | None = None
+    if llm is None:
+        key_check = asyncio.create_task(_llm_mod.warm())
+        key_check.add_done_callback(lambda task: task.cancelled() or task.exception())
+        owned.callback(key_check.cancel)
+
     # Acquire the provider before its caches. The source read can block.
     if generation is None:
         generation = await asyncio.to_thread(
@@ -914,26 +923,6 @@ async def _open_search_deps(
         owned.push_async_callback(_release_skills_index, skills_index)
         logger.info("SharedSkillsIndex started")
 
-    if llm is None:
-        # Check `GEMINI_API_KEY` before building the LLM. A zero memo limit disables the memo,
-        # and `SEARCH_EXTRACT_STORE=off` the extraction store.
-        try:
-            _llm_mod.warm()
-        except LLMInfraError:
-            logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
-            raise
-        llm = LLM(
-            memo=build_memo(),
-            extraction_store=build_extraction_store(settings().extract_store),
-        )
-        logger.info(
-            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
-            settings().llm_memo_max_bytes,
-            settings().llm_memo_max_entry_bytes,
-            settings().llm_memo_ttl_s,
-            settings().extract_store,
-        )
-
     variable_breadth: VariableBreadthReader | None = None
     if live_graph is not None and materialise_graph is None:
         # An answer naming one place breaks a facet tie on each facet's places across the
@@ -959,6 +948,30 @@ async def _open_search_deps(
             profiles,
         )
         variable_breadth = profiles.breadth(get_coverage_service().snapshot)
+
+    if llm is None:
+        assert key_check is not None
+        # A missing key, or one Gemini rejects, fails startup, so Cloud Run keeps serving the
+        # previous revision. Any other failure of the check logs a WARNING and the app serves,
+        # its searches answering 503 until Gemini answers (`llm.warm`).
+        try:
+            await key_check
+        except LLMInfraError:
+            logger.critical("LLM warm-up failed; check GEMINI_API_KEY", exc_info=True)
+            raise
+        # A zero memo limit disables the memo, and `SEARCH_EXTRACT_STORE=off` the extraction
+        # store.
+        llm = LLM(
+            memo=build_memo(),
+            extraction_store=build_extraction_store(settings().extract_store),
+        )
+        logger.info(
+            "LLM memo built (max_bytes=%d max_entry_bytes=%d ttl_s=%.0f), extraction store %s",
+            settings().llm_memo_max_bytes,
+            settings().llm_memo_max_entry_bytes,
+            settings().llm_memo_ttl_s,
+            settings().extract_store,
+        )
 
     if conversion_loading is not None:
         await _wait_for_conversion_catalogue(conversion_loading)
@@ -1184,20 +1197,21 @@ def search_surface(
     # documents the body in /openapi.json.
     router.post(
         "/api/search/resolve", response_model=ResolveResponse, responses=_RESOLVE_RESPONSES
-    )(resolve_endpoint)
-    router.post("/api/search/options", response_model=OptionsResponse)(options_endpoint)
-    router.get("/api/search/healthz", response_model=HealthResponse)(healthz)
+    )(resolve)
+    router.post("/api/search/options", response_model=OptionsResponse)(list_options)
+    router.get("/api/search/healthz", response_model=HealthResponse)(get_health)
     router.get(
         "/api/search/schema",
         responses={
             200: {"content": {"application/json": {"schema": _schema_payload_response_schema()}}}
         },
-    )(schema)
-    router.get("/api/search/capabilities", response_model=Capabilities)(capabilities)
-    router.get("/api/search/catalogue", response_model=CatalogueResponse)(catalogue_endpoint)
+    )(get_schema)
+    router.get("/api/search/capabilities", response_model=Capabilities)(get_capabilities)
+    router.get("/api/search/catalogue", response_model=CatalogueResponse)(get_catalogue)
 
     return Surface(
         name="search",
+        description="Resolve a plain-language data question to dataset definitions and their options.",
         prefix="/api/search",
         router=router,
         capability_version=settings().capability_version,
@@ -1234,6 +1248,10 @@ def search_surface(
             UpstreamVersionChangedError("exemplar rate table changed version during its load"),
         ),
         lifespan=lifespan,
+        registry_endpoints={
+            "/api/search/resolve": "search.resolve",
+            "/api/search/options": "search.options",
+        },
         request_scope=lambda: _request_scope(catalogue, release, conversions, variable_breadth),
     )
 

@@ -476,7 +476,12 @@ def test_bundle_validates_and_documents_its_sources_columns_and_codes(
         "component_id": created.component_id,
         "revision": 1,
         "frame_ref": _frame_ref_body(_FRAME_REF),
-        "select": _INTENTS["table"]["select"],
+        # The stored select lists each dimension's values in one order.
+        "select": {
+            "stat_var": _STAT_VAR,
+            "recipient": ["country/ETH", "country/GHA"],
+            "provenance": ["src_imf", "src_oecd_dac"],
+        },
         "window": _INTENTS["table"]["window"],
     }
     assert _FRAME_REF.spec_id in readme and _FRAME_REF.content_version in readme

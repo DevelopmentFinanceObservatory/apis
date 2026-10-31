@@ -29,6 +29,7 @@ import httpx
 
 from dc_graph import GraphClient
 from dc_sdmx import SdmxClient
+from dfo_platform.cloud_run_auth import cloud_run_auth
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _FIXTURES_DIR = _REPO_ROOT / "tests" / "materialise" / "fixtures" / "rate_tables"
@@ -56,7 +57,9 @@ def _record_csv(base_url: str, token: str | None, *, stat_var: str, entities: li
         "c[variableMeasured]": stat_var,
         f"c[{_SUBJECT_ROLE}]": ",".join(entities),
     }
-    with httpx.Client(base_url=base_url, headers=headers, timeout=60.0) as client:
+    with httpx.Client(
+        base_url=base_url, headers=headers, timeout=60.0, auth=cloud_run_auth()
+    ) as client:
         response = client.get(_DATA_PATH, params=params)
         response.raise_for_status()
         return response.content

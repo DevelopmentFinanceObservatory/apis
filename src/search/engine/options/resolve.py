@@ -91,6 +91,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
+from code_index.flow_family import flow_family
+from code_index.shared import get_index
 from dfo_platform import Alternative
 from dfo_platform.named import cut, named_capped
 from materialise import GraphReader
@@ -99,13 +101,14 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import (
     check_described_arm,
+    composite_table_identity,
     open_requested_role,
     refuse_over_place_bound,
     validate_edited_identity,
 )
 from search.engine.options.population import OptionsPopulation, options_population
 from search.engine.options.population_memo import OptionsPopulationMemo
-from search.engine.region.refs import confirm_dcids_present
+from search.engine.region.refs import confirm_dcids_present, refuse_wrong_kind
 from search.engine.region.resubmit_request import _requested_window_from_identity
 from search.engine.retrieval.bound_values import (
     canonicalise_identity,
@@ -115,10 +118,12 @@ from search.models import (
     BaseIdentity,
     EntityRoleKey,
     IdentityFacetBinding,
+    IdentityShapeSchema,
     OptionsRequest,
     RequestedWindow,
     ResolvedEntity,
 )
+from search.role_kinds import graph_types
 
 
 def _typed_anchors(
@@ -274,7 +279,8 @@ def resolve_options_target(
 
     Raises:
         EngineInputError: `request_invalid` (400) for a pinned-ask shape
-            (`check_described_arm`) or an identity that fails the
+            (`check_described_arm`), a composite whose components cannot be derived
+            (`composite_table_identity`) or an identity that fails the
             authoritative identity core (`validate_edited_identity`) --
             duplicate slot properties chief among what this catches that
             `BaseIdentity`'s own schema does not, or an identity binding more
@@ -293,7 +299,9 @@ def resolve_options_target(
             for a population whose declared roles conflict on one flow axis
             (`_declared_axis_roles`); `role_incompatible` (422) for an
             entity bound to an axis the resolved population does not serve
-            (`_check_entity_role_admission`); `option_target_invalid` (422)
+            (`_check_entity_role_admission`); `invalid_role_ref` (422) for a
+            flow-role entity whose kind the role does not take
+            (`region.refs.refuse_wrong_kind`); `option_target_invalid` (422)
             when `req.for_.role` names a role the population does not
             accept (`_check_role_target`).
         options.population_memo.PopulationInFlight: only when
@@ -311,6 +319,9 @@ def resolve_options_target(
     # /input/identity -- the same door-own-field reasoning.
     check_described_arm(identity.shape, pointer="/identity/shape")
     validate_edited_identity(identity, pointer="/identity")
+    # A composite's options are those of the identity its option was set on, whose one
+    # table every read names.
+    identity = composite_table_identity(identity, pointer="/identity")
     refuse_over_place_bound(identity.entities, pointer="/identity/entities")
     # A pin posted bound and one posted unbound denote one population.
     identity = canonicalise_identity(identity)
@@ -341,6 +352,22 @@ def resolve_options_target(
     )
     role_names_by_axis = _declared_axis_roles(population)
     _check_entity_role_admission(identity, role_names_by_axis)
+    if role_names_by_axis:
+        refuse_wrong_kind(
+            identity.entities,
+            read_types=graph_types(graph),
+            family=flow_family(
+                index=get_index(),
+                population_type=(
+                    identity.shape.population_type
+                    if isinstance(identity.shape, IdentityShapeSchema)
+                    else None
+                ),
+                stat_vars=population.stat_var_dcids,
+                members=(),
+            ),
+            pointer_prefix="/identity",
+        )
     _check_role_target(req, role_names_by_axis)
 
     return ResolvedOptionsTarget(

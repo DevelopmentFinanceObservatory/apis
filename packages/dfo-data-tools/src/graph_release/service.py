@@ -64,6 +64,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Protocol
 
@@ -82,7 +83,12 @@ from graph_release.format import (
     read_pointer,
 )
 from graph_release.origin import ReleaseOrigin, release_origin
-from graph_release.views import ViewRefused, release_code_indexes, release_coverage_index
+from graph_release.views import (
+    ViewRefused,
+    imported_data_digest,
+    release_code_indexes,
+    release_coverage_index,
+)
 from series_coverage.index import CoverageIndex
 
 logger = logging.getLogger(__name__)
@@ -218,6 +224,14 @@ class Release:
     @property
     def release_id(self) -> str:
         return self.loaded.manifest.release_id
+
+    @cached_property
+    def imported_data(self) -> str:
+        """What a mint reads from this release that only an import or a serving-view change
+        moves (`graph_release.views.imported_data_digest`). A head keyed on it serves across
+        releases that differ only in their builder, declarations text or DC serving
+        revision."""
+        return imported_data_digest(self.loaded)
 
 
 class _LocalFiles:

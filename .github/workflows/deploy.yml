@@ -374,12 +374,17 @@ jobs:
       # Every serving process fails startup without a release it can open, so
       # the step runs on every deploy. Verify runs first. A format bump
       # has no pointer in the new format, and a release the new view code
-      # refuses fails too, so the build job (`python -m graph_release.job`)
-      # runs once on the new image and a second verify checks what it
-      # published. A tick exits 0 on a gate finding, an unavailable dependency
-      # or a scheduled tick holding the lease, so the second verify decides. A
-      # build failure, or a second verify failure, fails the step and stops the
-      # deploy with both services on their current image.
+      # refuses fails too, so the build job runs once on the new image and a
+      # second verify checks what it published. The build runs with
+      # `--wait-for-lease`. While a scheduled tick holds the lease, it runs the
+      # tick again every 30 seconds for up to 1830 seconds (one lease and one
+      # poll). It then builds once the holder is done, or exits `inputs_built`
+      # when the holder published these inputs. `--task-timeout=3630s` is that wait
+      # plus the 1800-second build the lease allows. A tick exits 0 on a gate
+      # finding, an unavailable dependency or a wait that ran out, so the
+      # second verify decides. A build failure, or a second verify failure,
+      # fails the step and stops the deploy with both services on their
+      # current image.
       - name: Ensure a compatible graph release is published
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -395,7 +400,9 @@ jobs:
             gcloud run jobs execute "${{ vars.JOB_GRAPH_RELEASE }}" \
               --region="${{ vars.REGION }}" \
               --project="${{ vars.PROJECT_ID }}" \
-              --wait
+              --wait \
+              --task-timeout=3630s \
+              --args=-m,graph_release.job,--wait-for-lease
             verify
           fi
 
@@ -420,21 +427,25 @@ jobs:
       # seconds, or exits at once when the new image's root already carries its
       # key. A run started by a graph release publish may hold the lease; this
       # run waits for it and then builds what the pointers name. A refused or
-      # failed build exits non-zero. Some runs exit 0 without publishing (a key
-      # refused within six hours, a wait that ran out, a lapsed lease), so
+      # failed build exits non-zero, and some runs exit 0 without publishing (a
+      # key refused within six hours, a wait that ran out, a lapsed lease), so
+      # the run's exit status decides nothing. A failed run logs a warning, and
       # `python -m search.catalogue.verify`, an execution of the same job with
-      # its args overridden, then decides: it exits non-zero unless a loadable
-      # build is published at the new image's format root. Either failure stops
-      # the deploy with both services on their current image
+      # its args overridden, decides. It exits non-zero unless a loadable build
+      # is published at the new image's format root, which stops the deploy
+      # with both services on their current image. A run that fails at an
+      # unchanged format therefore passes on the previous build
       # (deploy/search-catalogue.md).
       - name: Build the search catalogue on the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
-          gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
+          if ! gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
-            --wait
+            --wait; then
+            echo "::warning::The search catalogue build failed; verify decides whether a published build serves."
+          fi
           gcloud run jobs execute "${{ vars.JOB_SEARCH_CATALOGUE }}" \
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
@@ -481,8 +492,9 @@ jobs:
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
-      # statements, which touch only rows still in the old shape, so a repeat
-      # run changes nothing. A version row the previous image writes needs no
+      # statements for a pin principal that is neither a label nor an open
+      # caller's `ip:` key, under a table lock that holds pins back until it
+      # commits, so a repeat run changes nothing. A version row the previous image writes needs no
       # repair, also for a request an old revision finishes after this step:
       # the insert trigger of migration 0030 fills the facts of a row written
       # with only immutable_body, and that of migration 0033 renames the

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import httpx
 import pyarrow.parquet as pq
@@ -21,6 +23,12 @@ from materialise import (
     materialise_spec,
 )
 from materialise import finish as finish_module
+from materialise.codes import (
+    CountedEntityYears,
+    CountedRefs,
+    MaterialisationWarning,
+    YearRange,
+)
 from materialise.content_version import mint_version
 from materialise.errors import (
     DefaultFacetUndefinedError,
@@ -865,7 +873,7 @@ def test_latest_window_over_a_huge_raw_response_does_not_early_refuse_and_succee
 
 
 @pytest.mark.parametrize(
-    ("csv_body", "role_bindings", "window", "expected_origin", "expected_message"),
+    ("csv_body", "role_bindings", "window", "expected_origin", "expected_message", "years"),
     [
         pytest.param(
             _CSV_HEADER + _csv_row(recipient="country/TGO", year="2015", value="1000"),
@@ -873,7 +881,8 @@ def test_latest_window_over_a_huge_raw_response_does_not_early_refuse_and_succee
             RequestedWindow(kind="all"),
             "default",
             "The served coverage falls short of the requested scope. "
-            "No observations were served for country/KEN.",
+            "No observations were served for 1 requested entity.",
+            None,
             id="entity_shortfall",
         ),
         pytest.param(
@@ -883,7 +892,9 @@ def test_latest_window_over_a_huge_raw_response_does_not_early_refuse_and_succee
             {"recipient": ["country/TGO"]},
             RequestedWindow(kind="range", start_year=2010, end_year=2020),
             "coverage_clamp",
-            "The served coverage falls short of the requested scope.",
+            "The served coverage falls short of the requested scope. "
+            "Requested 2010 to 2020; the data covers 2015 to 2016.",
+            ({"start": 2010, "end": 2020}, {"start": 2015, "end": 2016}),
             id="window_clamp",
         ),
     ],
@@ -894,6 +905,7 @@ def test_coverage_below_scope_warning(
     window: RequestedWindow,
     expected_origin: str,
     expected_message: str,
+    years: tuple[dict[str, int], dict[str, int]] | None,
 ):
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
@@ -919,9 +931,46 @@ def test_coverage_below_scope_warning(
     warning = warnings_by_code["coverage_below_scope"]
     assert warning["severity"] == "warn"
     assert warning["message"] == expected_message
+    assert (warning.get("requested_years"), warning.get("served_years")) == (years or (None, None))
 
 
-def test_coverage_below_scope_names_only_the_unserved_entity():
+@pytest.mark.parametrize(
+    ("requested", "years", "sentence"),
+    [
+        pytest.param(
+            RequestedWindow(kind="range", start_year=1990, end_year=2030, end_unstated=True),
+            ({"start": 1990}, {"start": 2000, "end": 2024}),
+            "Requested 1990 onward; the data covers 2000 to 2024.",
+            id="unstated-end",
+        ),
+        pytest.param(
+            RequestedWindow(kind="range", end_year=2030),
+            ({"end": 2030}, {"start": 2000, "end": 2024}),
+            "Requested up to 2030; the data covers 2000 to 2024.",
+            id="open-start",
+        ),
+    ],
+)
+def test_a_window_clamp_states_an_open_bound_of_the_requested_range(
+    requested: RequestedWindow, years: tuple[YearRange, YearRange], sentence: str
+):
+    applied = AppliedWindow(kind="range", start_year=2000, end_year=2024, origin="coverage_clamp")
+
+    clamped = finish_module._clamped_years(requested, applied)
+    assert clamped == years
+    warning = _coverage_warning(years=clamped)
+
+    assert warning["message"].endswith(sentence)
+    assert (warning["requested_years"], warning["served_years"]) == years
+
+
+def test_an_unclamped_window_states_no_years():
+    applied = AppliedWindow(kind="range", start_year=2000, end_year=2024, origin="query")
+
+    assert finish_module._clamped_years(RequestedWindow(kind="range"), applied) is None
+
+
+def test_coverage_below_scope_carries_only_the_unserved_entity():
     csv_body = _CSV_HEADER + _csv_row(recipient="country/TGO", year="2015", value="1000")
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
@@ -942,11 +991,10 @@ def test_coverage_below_scope_names_only_the_unserved_entity():
     )
 
     warning = {w["code"]: w for w in result.warnings}["coverage_below_scope"]
-    assert "country/SEN" in warning["message"]
-    assert "country/TGO" not in warning["message"]
+    assert warning["unserved_entities"] == {"count": 1, "refs": ["dcid:country/SEN"]}
 
 
-def test_coverage_below_scope_caps_named_entities_at_five():
+def test_coverage_below_scope_caps_carried_entities_at_five():
     bound = ["country/TGO"] + [f"country/Unserved{i}" for i in range(6)]
     csv_body = _CSV_HEADER + _csv_row(recipient="country/TGO", year="2015", value="1000")
     sdmx, _requests = _sdmx_client(csv_body)
@@ -967,9 +1015,90 @@ def test_coverage_below_scope_caps_named_entities_at_five():
     warning = {w["code"]: w for w in result.warnings}["coverage_below_scope"]
     assert warning["message"] == (
         "The served coverage falls short of the requested scope. "
-        "No observations were served for country/Unserved0, country/Unserved1, "
-        "country/Unserved2, country/Unserved3, country/Unserved4 and 1 more."
+        "No observations were served for 6 requested entities."
     )
+    assert warning["unserved_entities"] == {
+        "count": 6,
+        "refs": [f"dcid:country/Unserved{i}" for i in range(5)],
+    }
+
+
+def _coverage_warning(
+    *,
+    unserved: Sequence[str] = (),
+    off_cadence: Sequence[str] = (),
+    out_of_window: Sequence[str] = (),
+    unserved_members: Sequence[str] = (),
+    years: tuple[YearRange, YearRange] | None = None,
+) -> MaterialisationWarning:
+    return finish_module._coverage_below_scope_warning(
+        unserved,
+        countries_fallback=False,
+        off_cadence=off_cadence,
+        out_of_window=out_of_window,
+        unserved_members=unserved_members,
+        member_count=9,
+        years=years,
+    )
+
+
+# The writer of each counted field `MaterialisationWarning` declares, given the refs, bare
+# entity dcids or member `dcid:` refs, that it is to count.
+_COUNTED_FIELD_WRITERS: dict[str, Callable[[Sequence[str]], MaterialisationWarning]] = {
+    "unserved_entities": lambda refs: _coverage_warning(unserved=refs),
+    "off_cadence_members": lambda refs: _coverage_warning(off_cadence=refs),
+    "out_of_window_members": lambda refs: _coverage_warning(out_of_window=refs),
+    "unserved_members": lambda refs: _coverage_warning(unserved_members=refs),
+    "omitted_entities": finish_module.currency_unmapped_omitted_warning,
+    "omitted_entity_years": lambda refs: finish_module.deflator_missing_omitted_warning(
+        (entity, 2020) for entity in refs
+    ),
+}
+_COUNTED_FIELDS = frozenset(
+    key
+    for key, hint in get_type_hints(MaterialisationWarning).items()
+    if hint in (CountedRefs, CountedEntityYears)
+)
+_PIN_REFS = {
+    "off_cadence_members": ["dcid:YouthRate", "dcid:AdultRate"],
+    "out_of_window_members": ["dcid:YouthRate", "dcid:AdultRate"],
+    "unserved_members": ["dcid:YouthRate", "dcid:AdultRate"],
+}
+
+
+def test_every_counted_warning_field_has_a_pinned_writer():
+    """A new counted field on `MaterialisationWarning` fails here until its writer joins
+    `test_a_stored_warning_message_names_none_of_its_refs`."""
+    assert set(_COUNTED_FIELD_WRITERS) == _COUNTED_FIELDS
+
+
+@pytest.mark.parametrize("field", sorted(_COUNTED_FIELD_WRITERS))
+def test_a_stored_warning_message_names_none_of_its_refs(field: str):
+    """A stored message that names a ref keeps that name after the label changes, so each
+    writer of a counted field counts its refs in the message and carries them in the field."""
+    refs = _PIN_REFS.get(field, ["africaRegion", "country/PSE"])
+
+    warning = _COUNTED_FIELD_WRITERS[field](refs)
+
+    assert field in warning
+    assert not [ref for ref in refs if ref.removeprefix("dcid:") in warning["message"]]
+
+
+def test_a_deflator_warning_carries_the_first_ten_entities_with_their_years_as_runs():
+    """The ten entities the old message named survive, each with its years as runs."""
+    omitted = [("country/TWN", year) for year in (2004, 1990, 1991, 1992)]
+    omitted += [(f"country/C{i:02d}", 2022) for i in range(11)]
+
+    warning = finish_module.deflator_missing_omitted_warning(omitted)
+
+    assert warning["omitted_entity_years"] == {
+        "count": 12,
+        "entities": [{"ref": f"dcid:country/C{i:02d}", "years": ["2022"]} for i in range(10)],
+    }
+    assert finish_module.deflator_missing_omitted_warning(omitted[:4])["omitted_entity_years"] == {
+        "count": 1,
+        "entities": [{"ref": "dcid:country/TWN", "years": ["1990-1992", "2004"]}],
+    }
 
 
 def test_as_issue_carries_the_wrapped_errors_code_and_message():

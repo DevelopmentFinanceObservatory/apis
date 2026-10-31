@@ -58,7 +58,8 @@ from search.engine.response_cache_keys import (
     to_entry,
 )
 from search.engine.response_cache_memo import PartMemo
-from search.engine.role_text import DoorRole, contradicts
+from search.engine.role_text import DoorRole, contradicts, every_member_axis
+from search.engine.stated_scope import intake_key_document
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.engine.written_phrase import written_phrase
 from search.models import (
@@ -67,9 +68,11 @@ from search.models import (
     ResolveRequest,
     ResolveResponse,
     ResubmitIdentityPayload,
+    RoleAxis,
     SourceMention,
     Warning,
 )
+from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -82,9 +85,11 @@ type ReplayedPlaceOptions = Callable[
 
 
 # ---------------------------------------------------------------------------
-# Raw-text inputs absent from Extraction: one `role_query` reader checks each
-# DoorRole occurrence on every leg. Single-variable requests also read qualifier
-# vocabulary, defaults, written phrases, negated dataset words and graph value names.
+# Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
+# checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
+# every member of (`role_text.every_member_axis`). Single-variable requests also read
+# qualifier vocabulary, defaults, written phrases, negated dataset words and graph value
+# names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Graph value names are known only after retrieval, so their signal keeps the whole
 # query. The other signals reuse the pipeline helpers and index.
@@ -108,6 +113,7 @@ class Layer2Signals:
     declared_default_slots_named: tuple[str, ...]
     written_variable_phrases: tuple[str | None, ...]
     query_text_negated_stated_words: tuple[str, ...]
+    every_member_axes: tuple[str | None, ...]
     query_text_value_source: str | None
 
 
@@ -128,10 +134,13 @@ def compute_layer2_signals(
     entity_roles: Mapping[str, Sequence[DoorRole]],
     query_text: str | None,
     variables: Sequence[str] = (),
+    dropped_qualifiers: Sequence[str] = (),
 ) -> Layer2Signals:
-    """`query` supplies every leg's raw role signal; `entity_roles` lists its
-    door-provided occurrences in mention order. `query_text` is set only for a
-    single-variable request, matching the pipeline's own raw-text readers. Each of
+    """`query` supplies every leg's raw role signals; `entity_roles` lists its
+    door-provided occurrences in mention order, and each of `dropped_qualifiers` gives the
+    flow axis it asks every member of, read with the preposition `query` puts before it.
+    `query_text` is set only for a single-variable request, matching the pipeline's own
+    raw-text readers. Each of
     `variables` gives the stretch of `query_text` that writes it (`written_phrase`), which
     the named-member binding reads.
     """
@@ -139,6 +148,9 @@ def compute_layer2_signals(
         _role_contradiction(name, role, query=query)
         for name, roles in entity_roles.items()
         for role in roles
+    )
+    every_member_axes = tuple(
+        every_member_axis(phrase, query=query) for phrase in dropped_qualifiers
     )
     if query_text is None:
         return Layer2Signals(
@@ -152,6 +164,7 @@ def compute_layer2_signals(
             declared_default_slots_named=(),
             written_variable_phrases=(),
             query_text_negated_stated_words=(),
+            every_member_axes=every_member_axes,
             query_text_value_source=None,
         )
     index = get_index()
@@ -182,6 +195,7 @@ def compute_layer2_signals(
             written_phrase(variable, query_text) for variable in variables
         ),
         query_text_negated_stated_words=stated_words_negated(query_text, index=index),
+        every_member_axes=every_member_axes,
         query_text_value_source=query_text,
     )
 
@@ -266,6 +280,7 @@ class CacheScope:
                 max_candidates=max_candidates,
                 seam_default=seam_default,
                 qualifier_coverage=config.settings().qualifier_coverage,
+                stated_word_bar=config.settings().stated_word_bar,
                 build_commit=build_commit,
                 binder=binder.name,
                 model=binder.model,
@@ -381,16 +396,26 @@ class CacheScope:
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
         source_codes: Sequence[str | None] = (),
+        unit_texts: Sequence[str | None] = (),
         separate: Sequence[bool] = (),
         extraction_warnings: Sequence[Warning] = (),
+        measure_qualifiers: Sequence[tuple[str, ...]] = (),
+        open_axes: Sequence[frozenset[RoleAxis]] = (),
+        stated_scopes: Sequence[ScopeIntake] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
         and `sources` are required to build a complete key. `source_codes` runs parallel to
-        `variables` and holds the series code the query writes for each. `separate` runs parallel to
+        `variables` and holds the series code the query writes for each. `unit_texts` runs
+        parallel to `variables` and holds the unit text extraction peeled from each
+        (`ExtractionResult.unit_texts`). `separate` runs parallel to
         `variables` and marks each one the raw query compares with another.
+        `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
+        one's measure. `open_axes` runs parallel to `variables` and holds the flow roles each
+        one asks one value per member of. `stated_scopes` runs parallel to `variables`
+        and holds the scope entries and total intent each one's words state.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
@@ -404,7 +429,11 @@ class CacheScope:
             return None
         assert self._scope is not None
         signals = compute_layer2_signals(
-            query=query, entity_roles=entity_roles, query_text=query_text, variables=variables
+            query=query,
+            entity_roles=entity_roles,
+            query_text=query_text,
+            variables=variables,
+            dropped_qualifiers=dropped_qualifiers,
         )
         key = layer2_key(
             variables=variables,
@@ -415,6 +444,7 @@ class CacheScope:
             operations=operations,
             sources=sources,
             source_codes=source_codes,
+            unit_texts=unit_texts,
             role_contradictions=signals.role_contradictions,
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,
@@ -425,10 +455,14 @@ class CacheScope:
             declared_default_slots_named=signals.declared_default_slots_named,
             written_variable_phrases=signals.written_variable_phrases,
             query_text_negated_stated_words=signals.query_text_negated_stated_words,
+            every_member_axes=signals.every_member_axes,
             query_text_value_source=signals.query_text_value_source,
             scope=self._scope,
             separate=separate,
             extraction_warnings=extraction_warnings,
+            measure_qualifiers=measure_qualifiers,
+            open_axes=open_axes,
+            stated_scopes=[intake_key_document(intake) for intake in stated_scopes],
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)
@@ -436,8 +470,11 @@ class CacheScope:
             return None
         return self._hit_layer2(value, query=query, llm_usage=llm_usage)
 
-    async def lookup_parsed_input(self, parsed: ParsedInput) -> ResolveResponse | None:
-        """Look up layer 2 by a parsed request's whole input (`parsed_key`).
+    async def lookup_parsed_input(
+        self, parsed: ParsedInput, *, stated_scopes: Sequence[ScopeIntake] = ()
+    ) -> ResolveResponse | None:
+        """Look up layer 2 by a parsed request's input (`parsed_key`) and the scope each
+        part is posted with, `stated_scopes`, in part order (`stated_scope.part_scope_intakes`).
 
         A hit skips binding, keeps the stored echo and spends no
         tokens. The first miss owns the layer-2 lease (`_acquire`).
@@ -446,7 +483,11 @@ class CacheScope:
             return None
         assert self._scope is not None
         value, self._layer2_lease = await self._acquire(
-            parsed_key(parsed=parsed, scope=self._scope)
+            parsed_key(
+                parsed=parsed,
+                scope=self._scope,
+                stated_scopes=[intake_key_document(intake) for intake in stated_scopes],
+            )
         )
         if value is None:
             return None

@@ -1,10 +1,12 @@
 """Apply declared defaults to draft bindings, and read the slots they bind.
 
 ``apply_declared_defaults`` binds an open slot to its declared default code when the
-variable, the raw query or another binding triggers it, and ``apply_shape_slot_defaults``
-binds the code index's default for a slot of a population type. The helpers that match a
-value's label as a whole word outside a negation or exclusion serve the bind phase too, and
-so does the test of whether a part states a word a dataset declares (`word_stated`).
+variable, the raw query or another binding triggers it, ``apply_shape_slot_defaults``
+binds the code index's default for a slot of a population type, and ``apply_broad_readings``
+reads a bound value as the broader value the code index declares for it. The helpers that
+match a value's label as a whole word outside a negation or exclusion serve the bind phase
+too, and so does the test of whether a part states a word a dataset declares
+(`word_stated`).
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from collections.abc import Set as AbstractSet
 
 from code_index.query import CodeIndex
 from code_index.tokens import tokenize
-from code_index.types import ShapeSlotDefault
+from code_index.types import BroadReading, ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import (
@@ -75,16 +77,23 @@ def _label_negated_in_text(label: str, text: str) -> bool:
 def _label_has_negated_occurrence(label: str, text: str) -> bool:
     """Whether any whole-word occurrence is negated, including mixed wording."""
     pattern = r"\b" + re.escape(label) + r"\b"
-    for match in re.finditer(pattern, text, re.IGNORECASE):
-        prefix = text[: match.start()]
-        prefix_words = list(re.finditer(r"[\w']+", prefix))
-        context_start = prefix_words[-3].start() if len(prefix_words) >= 3 else 0
-        context = prefix[context_start:]
-        context = re.sub(pattern, "", context, flags=re.IGNORECASE)
-        context = f"{context}{text[match.start() : match.end()]}"
-        if _label_negated_in_text(label, context):
-            return True
-    return False
+    return any(
+        occurrence_negated(text, match.start(), match.end())
+        for match in re.finditer(pattern, text, re.IGNORECASE)
+    )
+
+
+def occurrence_negated(text: str, start: int, end: int) -> bool:
+    """Whether the occurrence of a word at `text[start:end]` is negated or excluded: a
+    negator or exclusion phrase among the three words before it, or a fused or spaced
+    ``non`` prefix. Other occurrences of the word in those three words are ignored."""
+    label = text[start:end]
+    pattern = r"\b" + re.escape(label) + r"\b"
+    prefix = text[:start]
+    prefix_words = list(re.finditer(r"[\w']+", prefix))
+    context_start = prefix_words[-3].start() if len(prefix_words) >= 3 else 0
+    context = re.sub(pattern, "", prefix[context_start:], flags=re.IGNORECASE)
+    return _label_negated_in_text(label, f"{context}{label}")
 
 
 def stated_words_negated(text: str, *, index: CodeIndex) -> tuple[str, ...]:
@@ -142,12 +151,17 @@ def _slot_open_to_default(
         return False
     if binding.evidence == "requested_all":
         return False
-    slot = next((s for s in shape_draft.slot_keys if s.property_dcid == code_system), None)
+    return _taxonomy_holds(shape_draft, code_system, default_code)
+
+
+def _taxonomy_holds(shape_draft: ShapeDraft, property_dcid: str, value_dcid: str) -> bool:
+    """Whether ``shape_draft`` has a slot on ``property_dcid`` whose taxonomy holds
+    ``value_dcid``."""
+    slot = next((s for s in shape_draft.slot_keys if s.property_dcid == property_dcid), None)
     if slot is None:
         return False
-    taxonomy_key = f"{slot.axis}:{code_system}"
-    taxonomy_values = (shape_draft.slot_taxonomy or {}).get(taxonomy_key, [])
-    return default_code in taxonomy_values
+    taxonomy_values = (shape_draft.slot_taxonomy or {}).get(f"{slot.axis}:{property_dcid}", [])
+    return value_dcid in taxonomy_values
 
 
 def _some_binding_triggers_default(
@@ -332,6 +346,60 @@ def apply_shape_slot_defaults(
             update={"kind": "value", "value_dcids": [default.value_dcid]}
         )
     return result, defaulted, relaxed
+
+
+def apply_broad_readings(
+    bindings: Sequence[SlotBindingDraft], shape_draft: ShapeDraft, *, index: CodeIndex
+) -> tuple[list[SlotBindingDraft], list[BroadReading]]:
+    """Read each bound value the code index declares a broad reading for
+    (``CodeIndex.broad_readings``) as the broader value it declares.
+
+    A ``value`` or ``set`` binding holding ``BroadReading.value_dcid`` holds
+    ``BroadReading.reads_as`` in its place unless a ``value`` or ``set`` binding on
+    ``BroadReading.unless_bound`` the query mentions holds ``BroadReading.held_with``, the
+    value every series of the narrow value holds, and when the slot's taxonomy holds the
+    broader value. Another value on ``unless_bound`` ("publicly guaranteed government debt")
+    names no narrow series, so the reading fires. A set that collapses to one value becomes a
+    ``value`` binding.
+
+    Returns the repaired bindings and the readings that fired, in declaration order.
+    """
+    result = list(bindings)
+    fired: list[BroadReading] = []
+    for reading in index.broad_readings:
+        target_index = next(
+            (
+                i
+                for i, b in enumerate(result)
+                if b.property_dcid == reading.property_dcid
+                and b.kind in ("value", "set")
+                and reading.value_dcid in b.value_dcids
+            ),
+            None,
+        )
+        if target_index is None:
+            continue
+        if any(
+            b.property_dcid == reading.unless_bound
+            and b.kind in ("value", "set")
+            and b.evidence == "mentioned"
+            and reading.held_with in b.value_dcids
+            for b in result
+        ):
+            continue
+        if not _taxonomy_holds(shape_draft, reading.property_dcid, reading.reads_as):
+            continue
+        values = list(
+            dict.fromkeys(
+                reading.reads_as if value == reading.value_dcid else value
+                for value in result[target_index].value_dcids
+            )
+        )
+        result[target_index] = result[target_index].model_copy(
+            update={"kind": "value" if len(values) == 1 else "set", "value_dcids": values}
+        )
+        fired.append(reading)
+    return result, fired
 
 
 def _default_has_no_data(shape_draft: ShapeDraft, default: ShapeSlotDefault) -> bool:

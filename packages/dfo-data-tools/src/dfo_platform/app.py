@@ -24,9 +24,9 @@ from typing import Any
 from dfo_spec_kit.registry import REGISTRY
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.routing import BaseRoute, Match
@@ -35,7 +35,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
 from dfo_platform.build import build_commit
-from dfo_platform.caller import log_request
+from dfo_platform.caller import CLIENT_HEADER, log_request
 from dfo_platform.codes import (
     PLATFORM_CODE_CATALOGUE,
     CodeCatalogue,
@@ -44,6 +44,7 @@ from dfo_platform.codes import (
 )
 from dfo_platform.compression import BufferedGzipMiddleware
 from dfo_platform.config import executor_max_workers as _default_executor_max_workers
+from dfo_platform.cors import PlatformCORSMiddleware
 from dfo_platform.executor import SaturationTrackingExecutor, current_thread_is_owned_by
 from dfo_platform.problem import (
     PROBLEM_JSON,
@@ -115,6 +116,15 @@ class Surface:
     Surfaces pass private pools to `run_in_executor`. Changing the loop's
     default executor is rejected. The guard covers the serving loop. Separate
     loops in other threads keep their own executors.
+
+    `public_paths` names the route paths any origin may read with `GET`. The CORS layer gives
+    every `GET` reply on one `Access-Control-Allow-Origin: *`, a refusal sent before routing
+    included, and its preflights allow any origin and `If-None-Match` whatever `cors_origins`
+    lists (`dfo_platform.cors`).
+
+    `description` is the one line the OpenAPI document gives the surface's tag. Every
+    route the surface serves carries that one tag, `name` capitalised, and the operation
+    id `{name}_{handler}`, so a new route leaves every other route's id as it was.
     """
 
     name: str
@@ -129,6 +139,25 @@ class Surface:
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
     registry_endpoints: Mapping[str, str] = field(default_factory=dict)
     request_scope: Callable[[], AbstractContextManager[object]] | None = None
+    public_paths: frozenset[str] = frozenset()
+    description: str = ""
+
+    @property
+    def tag(self) -> str:
+        """The OpenAPI tag every route of this surface carries."""
+        return self.name.capitalize()
+
+
+_CODES_TAG = "Codes"
+
+
+def _surface_operation_id(surface_name: str) -> Callable[[APIRoute], str]:
+    """Name each of a surface's operations `{surface}_{handler}`."""
+
+    def operation_id(route: APIRoute) -> str:
+        return f"{surface_name}_{route.name}"
+
+    return operation_id
 
 
 class SurfaceConfigurationError(Exception):
@@ -246,6 +275,17 @@ def _validate_surfaces(surfaces: Sequence[Surface]) -> None:
             raise SurfaceConfigurationError(
                 f"surface {surface.name!r} names registry endpoints for {unrouted!r}, which "
                 "no route on its router declares, so no request would bind them."
+            )
+        get_paths = {
+            route.path
+            for route in surface.router.routes
+            if isinstance(route, APIRoute) and "GET" in (route.methods or ())
+        }
+        unread = sorted(surface.public_paths - get_paths)
+        if unread:
+            raise SurfaceConfigurationError(
+                f"surface {surface.name!r} names public paths {unread!r}, which no GET route "
+                "on its router declares."
             )
 
 
@@ -435,7 +475,7 @@ def _install_cors_outermost_middleware_stack(app: FastAPI, *, cors_kwargs: dict[
     base_build_middleware_stack = app.build_middleware_stack
 
     def _build_middleware_stack() -> ASGIApp:
-        return CORSMiddleware(base_build_middleware_stack(), **cors_kwargs)
+        return PlatformCORSMiddleware(base_build_middleware_stack(), **cors_kwargs)
 
     app.build_middleware_stack = _build_middleware_stack  # ty: ignore[invalid-assignment]
 
@@ -511,7 +551,8 @@ async def _trace_id_dispatch(
 
     Also binds the Cloud Trace ID parsed from the request's trace headers,
     which `dfo_platform.cloud_logging` stamps on every log record, and logs one
-    line per request with the caller's claimed identity (`dfo_platform.caller`).
+    line per request with the caller's claimed identity and SDK client
+    (`dfo_platform.caller`).
 
     This outermost layer also runs on CORS preflights. Only non-cacheable
     responses receive the request's trace ID. HSTS and build commit stamp
@@ -926,7 +967,7 @@ def _code_registry_route(ctx: _AppContext) -> Callable[[str], Any]:
     render through the envelope and carry `PLATFORM_CAPABILITY_VERSION`.
     """
 
-    async def code_registry_entry(code: str) -> CodeRegistryEntry | JSONResponse:
+    async def get_code(code: str) -> CodeRegistryEntry | JSONResponse:
         catalogue_entry = ctx.registry.get(code)
         registry_entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
         if catalogue_entry is None and registry_entry is None:
@@ -935,7 +976,7 @@ def _code_registry_route(ctx: _AppContext) -> Callable[[str], Any]:
             code=code, registry_entry=registry_entry, catalogue_entry=catalogue_entry
         )
 
-    return code_registry_entry
+    return get_code
 
 
 def create_app(
@@ -943,7 +984,7 @@ def create_app(
     *,
     cors_origins: Sequence[str] = (),
     cors_methods: Sequence[str] = ("GET", "POST", "OPTIONS"),
-    cors_headers: Sequence[str] = ("Content-Type",),
+    cors_headers: Sequence[str] = ("Content-Type", CLIENT_HEADER),
     cors_expose_headers: Sequence[str] = (TRACE_ID_HEADER, COMMIT_HEADER, "Server-Timing"),
     executor_max_workers: int | None = None,
     title: str = "DFO APIs",
@@ -991,15 +1032,20 @@ def create_app(
     app = FastAPI(
         title=title,
         version=version,
+        openapi_tags=[
+            *({"name": surface.tag, "description": surface.description} for surface in surfaces),
+            {"name": _CODES_TAG, "description": "Look up a problem code's registry entry."},
+        ],
         lifespan=functools.partial(
             _lifespan, surfaces=surfaces, executor_max_workers=executor_max_workers
         ),
     )
     _install_problem_details_openapi(app)
 
-    # Empty origins disable CORS. `expose_headers` controls which response
-    # headers browser scripts can read. `allow_headers` controls request headers.
-    # Install CORS outside ServerErrorMiddleware to cover catch-all responses.
+    # Empty origins disable CORS outside the surfaces' public paths. `expose_headers`
+    # controls which response headers browser scripts can read, beside each response's own.
+    # `allow_headers` controls request headers. Install CORS outside ServerErrorMiddleware to
+    # cover catch-all responses.
     _install_cors_outermost_middleware_stack(
         app,
         cors_kwargs={
@@ -1007,6 +1053,7 @@ def create_app(
             "allow_methods": list(cors_methods),
             "allow_headers": list(cors_headers),
             "expose_headers": list(cors_expose_headers),
+            "public_paths": [path for surface in surfaces for path in surface.public_paths],
         },
     )
 
@@ -1040,7 +1087,11 @@ def create_app(
         app.add_exception_handler(exc_type, dispatch)
 
     for surface in surfaces:
-        app.include_router(surface.router)
+        app.include_router(
+            surface.router,
+            tags=[surface.tag],
+            generate_unique_id_function=_surface_operation_id(surface.name),
+        )
 
     platform_router = APIRouter()
     platform_router.add_api_route(
@@ -1048,6 +1099,8 @@ def create_app(
         _code_registry_route(ctx),
         methods=["GET"],
         response_model=CodeRegistryEntry,
+        tags=[_CODES_TAG],
+        generate_unique_id_function=_surface_operation_id("codes"),
     )
     app.include_router(platform_router)
 

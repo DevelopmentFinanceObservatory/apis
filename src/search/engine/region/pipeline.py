@@ -7,11 +7,13 @@ import dataclasses
 import functools
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from typing import Final
 
 import dc_graph
+from code_index.composites import composite_ref
+from code_index.shared import get_index
 from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
@@ -21,12 +23,13 @@ from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.conjoin import NESTED_SHAPE_STEPS
+from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
     DegradedReads,
     note_degraded_read,
     recording_degraded_reads,
 )
+from search.engine.departures import served_datasets
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
@@ -42,7 +45,7 @@ from search.engine.region.candidate_admission import alternates_unevaluated_warn
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
-from search.engine.region.phase_election import _phase_settle
+from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
 from search.engine.region.phase_intake import (
     _phase_check_entities,
     _phase_derive_shapes,
@@ -54,6 +57,7 @@ from search.engine.region.phase_place_materialise import (
     _phase_facet_requests,
     _phase_materialise,
     _phase_place_bindings,
+    refuse_unread_answer,
 )
 from search.engine.region.phase_rank_bind import (
     _admitted_qualifier_phrases,
@@ -62,10 +66,24 @@ from search.engine.region.phase_rank_bind import (
     exclusion_records,
 )
 from search.engine.region.phase_shared import settle_unjudged_refusal
-from search.engine.region.place_roles import group_request_names, stated_party_words
+from search.engine.region.phase_timing import book_unbooked_time, booked_ms
+from search.engine.region.place_roles import (
+    bound_entity_refs,
+    group_request_names,
+    stated_party_words,
+)
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
-from search.engine.region.requirements import unbinding_phrases, with_requirement_departures
-from search.engine.region.result import RegionResult
+from search.engine.region.requirements import (
+    met_measure_phrases,
+    refusal_terms,
+    unbinding_phrases,
+    with_requirement_departures,
+)
+from search.engine.region.result import (
+    RegionResult,
+    every_member_phrases,
+    with_composite_answer,
+)
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -75,13 +93,24 @@ from search.engine.region.source_choice import (
 from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.weak_score import _representative_score_is_weak
+from search.engine.region.whole_totals import whole_total_unpublished_facts
 from search.engine.region.withheld import elected_series, with_withheld_warning
 from search.engine.retrieval.bound_values import RoleClassWalks, elects_within, held_family_memo
 from search.engine.role_text import DoorRole
-from search.engine.shape import Pool
+from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
-from search.models import EntryPath, Operation, RoleAxis, Warning
+from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
+from search.scope.basis import basis_dataset, identity_basis_record, unbound_basis_record
+from search.scope.build import build_part_scope
+from search.scope.composite import assemble_composite
+from search.scope.provider import (
+    settle_provider,
+    with_summed_provider,
+    without_unoffered_multilateral,
+)
+from search.scope.state import ScopeIntake, ScopeState
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -149,6 +178,7 @@ async def resolve_variable(
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None = None,
     entity_surfaces: dict[str, str] | None = None,
+    entity_words: dict[str, str] | None = None,
     variable_index: int = 0,
     emit: EventSink | None = None,
     unit_text: str | None = None,
@@ -158,6 +188,7 @@ async def resolve_variable(
     coverage: CoverageSnapshot,
     options: EngineOptions | None = None,
     door: EntryPath = "parsed",
+    scope_intake: ScopeIntake | None = None,
 ) -> RegionResult:
     """Run recall, binding, materialisation, and answer assembly for one variable.
 
@@ -181,7 +212,9 @@ async def resolve_variable(
     `Admission(graph=graph)`. The request path supplies a shared instance. `resolver` resolves
     named entities during recall and place expansion. `pre_resolved` avoids per-variable
     resolver calls for shared entities. `entity_surfaces` maps an entity name to the query
-    words recall resolves it through (`surface_resolution.resolve_names`). `pac` enables place-as-constraint. `coverage` is the
+    words recall resolves it through (`surface_resolution.resolve_names`). `entity_words`
+    maps an entity name to the request's own words for it, which bind
+    reads as the entity's in the variable phrase (`ResolveState.entity_texts`). `pac` enables place-as-constraint. `coverage` is the
     required request snapshot, shared with materialisation, unit decisions, and observation
     dispatch.
 
@@ -202,6 +235,8 @@ async def resolve_variable(
     `options` configures enrichment, streaming, clients, caches, and the deadline. `None` uses default `EngineOptions()` settings.
     `door` is the door the part was posted on, which decides who states each field of the
     part's frame (`ResolveState.frame`); a direct caller states them as the parsed door's does.
+    `scope_intake` is the part's posted scope entries and total intent, which every
+    resolution of the part starts its `ResolveState.scope_selection` from; None posts none.
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
@@ -212,14 +247,16 @@ async def resolve_variable(
 
     Recall runs once. Our pass elects over our candidates first, while the UN System Data
     Commons' resolve and shape derivation run beside it (`ResolveState.un_leg`). When our
-    pass ends `no_data`, a UN pass elects over the UN pool's shapes (`_fill_gap`). A part
-    answered on our pass never waits for the UN leg. A part whose UN leg failed or was late
-    and that ends `no_data` carries `un_system_unavailable`, which keeps the response out of
-    the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no strong shape of
-    its own waits for the UN leg and its menu also holds the UN pool's shapes
-    (`phase_intake._merge_un_pool`); when the leg failed or was late, the part carries
-    `un_system_unavailable` whatever its status. A part with a strong shape never takes the
-    UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass.
+    pass ends `no_data`, or answers on a pick its binder rated "none of the shapes" above,
+    a UN pass elects over the UN pool's shapes (`_fill_gap`). Any other part answered on
+    our pass never waits for the UN leg. A part whose UN leg failed or was late and that
+    the UN pass could have changed carries `un_system_unavailable`, which keeps the
+    response out of the response cache. With `SEARCH_UN_ON_FIRST_MENU`, a part holding no
+    strong shape of its own waits for the UN leg and its menu also holds the UN pool's
+    shapes (`phase_intake._merge_un_pool`); when the leg failed or was late, the part
+    carries `un_system_unavailable` whatever its status. A part with a strong shape never
+    takes the UN pool on its pass. A merged pass that ends `no_data` still runs the UN pass,
+    and a doubted answer on a merged pass runs it over the UN shapes our menu left unseated.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,
@@ -278,6 +315,7 @@ async def resolve_variable(
             deadline=deadline,
             pre_resolved=pre_resolved,
             entity_surfaces=entity_surfaces or {},
+            entity_words=entity_words or {},
             variable_index=variable_index,
             emit=emit,
             include_option_coverage=_options.include_option_coverage,
@@ -306,6 +344,7 @@ async def resolve_variable(
             # spec identity, fetch facet filter, and resolved unit request basis.
             bound_unit_outcome=None,
             unit_facet_filter=None,
+            scope_selection=(scope_intake or ScopeIntake()).state(),
         )
 
     async def attempt(
@@ -508,6 +547,148 @@ def _excluded_from_the_place(result: RegionResult, state: ResolveState) -> Regio
     )
 
 
+def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result` holding, for each of its Specs, each whole population a text names whose
+    side the Spec's dataset publishes no total of and reads as unnamed
+    (`whole_totals.whole_total_unpublished_facts`), by `spec_id`
+    (`RegionResult.unpublished_whole_facts`), and so for the alternate a no-data answer
+    shows in its place (`RegionResult.alternate_match`). Such a side warns no
+    `role_scope_defaulted` (`PlaceRoles.unnamed_wholes`)."""
+    if not state.whole_named:
+        return result
+    shown = (*result.specs, *([result.alternate_match] if result.alternate_match else []))
+    facts = {
+        spec.spec_id: tuple(found)
+        for spec in shown
+        if (found := whole_total_unpublished_facts(spec, state.whole_named))
+    }
+    return dataclasses.replace(result, unpublished_whole_facts=facts) if facts else result
+
+
+def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
+    built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
+    and the provider scope settled over the answer's identity (`provider.settle_provider`),
+    after words summing the bilateral and multilateral lines are read as the answer's
+    dataset sums them (`provider.with_summed_provider`) and words naming multilateral ODA
+    are dropped where that dataset offers no such option
+    (`provider.without_unoffered_multilateral`). Only the entries a binder applied
+    compile (`AxisRecord.entry`), so every choice states the option the answer serves. The
+    other entries that attach to the part (`ScopeState.attached`: those on an axis a binder
+    settled, for the concept it was asked for, and the stated ones on an axis the part
+    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite
+    states none, and so does one whose answer the recorded axes do not reach, as a region
+    read at its published total. The scope is built in memory,
+    and the rules read the bound release's code index, the request's coverage snapshot and
+    the part's operations, groups and served datasets (`scope_facts`). A part whose binders
+    settled no axis, such as one naming no place, states the scope of its served identity
+    where the measure-basis axis applies to it, with the stated or carried basis that
+    identity holds applied (`basis.unbound_basis_record`), so it states what a resubmit
+    of that identity with the part's entries states. A fresh search does
+    not refuse its scope (`build_part_scope` with `refuse` false). Only a dataset_resubmit's
+    posted `scope_entries` refuse 422.
+
+    When the binders settle a composite option (the inclusive provider scope, the OECD
+    headline per year), the scope's base is the composite, and the answer is restated as it
+    (`composite.assemble_composite`)."""
+    selection = state.scope_selection
+    if result.status != "definite":
+        return result
+    spec = result.spec
+    identity = spec.definition.identity
+    records = dict(selection.records)
+    if not records:
+        # No binder settled an axis, as on a part naming no place. Where the basis axis
+        # applies to the served identity, the scope reads it and the part's entries.
+        if basis_dataset(identity, get_index()) is None:
+            return result
+        stated = selection.entries_on("measure_basis")
+        if (basis := unbound_basis_record(identity, get_index(), stated)) is not None:
+            records[basis.axis] = basis
+    facts = scope_facts(spec, operations=state.operations, coverage=state.coverage)
+    # Words summing the bilateral and multilateral lines ask for the dataset's own sum.
+    selection = with_summed_provider(identity, selection, facts)
+    # "Multilateral ODA" names DAC1's row only on a dataset that publishes it.
+    selection = without_unoffered_multilateral(identity, selection, facts)
+    settled = ScopeState(entries=selection.entries, records=records)
+    provider = settle_provider(identity, selection, facts)
+    if provider is not None:
+        settled.write(provider)
+    built = build_part_scope(
+        base=spec.definition.identity,
+        entries=[],
+        records=settled.records,
+        facts=facts,
+        read=settled.attached(),
+        refuse=False,
+    )
+    assert isinstance(built, PartScope)
+    if not built.choices:
+        return result
+    if composite_ref(built.compiled.identity.model_dump(mode="json", include={"facets"})) is None:
+        return dataclasses.replace(result, scope_choices=built)
+    composite, _ = assemble_composite(
+        spec,
+        built.compiled.identity,
+        built.compiled.spec_id,
+        facts=facts,
+    )
+    return dataclasses.replace(with_composite_answer(result, composite), scope_choices=built)
+
+
+def scope_facts(
+    spec: Spec, *, operations: Sequence[Operation], coverage: CoverageSnapshot
+) -> ScopeFacts:
+    """What the axis rules read of the part `spec` answers: the bound release's code index,
+    `coverage`, the part's `operations`, the groups its roles stand for and the datasets it
+    is served from."""
+    return ScopeFacts(
+        index=get_index(),
+        coverage=coverage,
+        part=PartFacts(
+            operations=tuple(operations),
+            entity_groups=spec.resolved.entity_groups or {},
+            datasets=tuple(sorted(served_datasets(spec))),
+        ),
+    )
+
+
+def merged_scope_choices(
+    merged: RegionResult, group: Sequence[RegionResult], *, coverage: CoverageSnapshot
+) -> PartScope | None:
+    """The scope of `merged`, the region a same-shape merge folded `group` into, built as a
+    resubmit of its identity builds it: over the merged identity, with the union of the
+    members' applied entries and the basis record its identity reads
+    (`basis.identity_basis_record`). None when no member states a scope,
+    or the merged identity settles no axis. An entry the merged identity cannot take is
+    reported in `PartScope.dropped_entries`."""
+    scopes = [region.scope_choices for region in group if region.scope_choices is not None]
+    if not scopes:
+        return None
+    spec = merged.spec
+    identity = spec.definition.identity
+    entries = _union(entry for scope in scopes for entry in scope.entries)
+    basis = identity_basis_record(identity, get_index(), entries)
+    built = build_part_scope(
+        base=identity,
+        entries=entries,
+        records={} if basis is None else {"measure_basis": basis},
+        facts=scope_facts(spec, operations=merged.operations, coverage=coverage),
+        refuse=False,
+    )
+    assert isinstance(built, PartScope)
+    return built if built.choices else None
+
+
+def _union(entries: Iterable[Entry]) -> list[Entry]:
+    """`entries` in order, each once."""
+    union: list[Entry] = []
+    for entry in entries:
+        if entry not in union:
+            union.append(entry)
+    return union
+
+
 def _stating_unevaluated(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result`, stating `alternates_unevaluated` when the pass left an alternate
     unevaluated, on every path that reached admission, a capped alternate's refusal
@@ -527,37 +708,46 @@ async def _fill_gap(
     deadline: float | None,
     un_state: Callable[[float | None], ResolveState],
 ) -> RegionResult:
-    """`result`, our pass's answer, or the UN pass's answer when `result` is `no_data` and
-    the UN System Data Commons may fill the gap (`_un_pass_skip`).
+    """`result`, our pass's answer, or the UN pass's answer when the UN System Data Commons
+    may fill a gap in it (`_un_pass_skip`): `result` is `no_data`, or it answers on a pick
+    its binder rated "none of the shapes" above (`_doubted`).
 
     The UN pass runs the phases again over the shapes the UN leg derived beside our pass
-    (`ResolveState.un_leg`), sharing recall, less the shape our pass elected and found
-    without observations: a superseded variable stands in our pass as the UN variable the
-    UN resolve may recall too. It waits for the leg no longer than
-    `SEARCH_UN_FIRST_PASS_WAIT_S` from the start of our derivation, and ends
-    `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands when it is `definite` or
-    `candidates`, or when it is `no_data` carrying an `alternate_match` and `result`
-    carries none. Of two refusals, the one offering a reading with data at the place
-    stands, as status rule 1 has a nominee ride on a refusal. Otherwise `result` stands
-    with its reason. A `result` holding an
+    (`ResolveState.un_leg`), sharing recall, less the shape our pass elected when it found
+    it without observations or answered on it doubted: a superseded variable stands in our
+    pass as the UN variable the UN resolve may recall too, and the UN pass would elect it
+    again. It waits for the leg no longer than `SEARCH_UN_FIRST_PASS_WAIT_S` from the start
+    of our derivation, and ends `_UN_PASS_RESERVE_S` before `deadline`. Its answer stands
+    when it is `definite` or `candidates`, unless both binders doubted their picks, or when
+    both passes refuse and it carries an `alternate_match` and `result` carries none. Of
+    two refusals, the one offering a reading with data at the place stands, as status rule
+    1 has a nominee ride on a refusal, and so does a UN refusal on a shape it elected with a
+    measured score that is not weak (`_representative_score_is_weak`) over ours
+    `variable_not_resolved`:
+    "no data for Japan" says more than "could not match". Otherwise `result` stands with its reason. A `result` holding an
     `alternate_match`, a reading the model nominated from our pool with data at the place,
     also stands when the UN pass's elected shape matches the phrase only weakly
     (`_representative_score_is_weak`): such an answer has no better claim to the question
     than the alternate. The answer carries both passes' step timings and model usage, and
-    states `alternates_unevaluated` when either pass left an alternate unevaluated.
+    states `alternates_unevaluated` when either pass left an alternate unevaluated. The
+    dropped answer's trailing tasks are cancelled (`deadline._cancel_trailing_tasks`).
 
     A UN leg that failed, or was not in by its wait, and a UN pass that fails upstream
     (`_UPSTREAM_FAILURES`) or has no time to start, leave `result` standing with
-    `un_system_unavailable`, only ever on a `no_data` answer, the one case where the UN
-    pool could have changed it. A leg our pass waited for and missed
+    `un_system_unavailable`, only ever on an answer the UN pool could have changed: a
+    `no_data` one or a doubted one. A leg our pass waited for and missed
     (`ResolveState.un_pool`) is the exception: the menu lacked the pool, so every answer
     carries the warning and no UN pass runs. A pool merged onto our pass's menu is the UN
-    pass's pool when ours ends `no_data`. What the leg's reads could not serve
+    pass's pool when ours ends `no_data`; after a doubted answer the UN pass runs over the
+    merged shapes that took no seat on our menu (`_unseated_un_shapes`), since the binder
+    rated "none" above only the ones it saw. What the leg's reads could not serve
     (`UnPool.unserved`, `UnPool.lost`) joins the part's records only when the pool reaches
     a menu, so an answer our pass serves without it carries none of it. A declared-default refusal
     (`DeclaredDefaultUnsupportedError`), an index-sourced shape meeting a default scope
     (`DefaultScopeIndexSourcedError`) or a conversion-table refusal (`RATE_TABLE_REFUSALS`)
-    in the UN pass propagates, since each refuses the request on every door; any other
+    in the UN pass propagates, since each refuses the request on every door; a UN answer
+    leaving terms unmet refuses `qualifier_not_bound` before any of them (`_run_phases`),
+    and that refusal meets ours by the rules above. Any other
     failure is a defect, logged, and leaves `result` standing. Cancellation propagates. The UN pass sends no events: the frame, shape and
     step events on the stream describe our pass.
     """
@@ -576,9 +766,10 @@ async def _fill_gap(
     if pool.missed is not None:
         _log_gap_fill(first, result, un_pass="skipped:un_unavailable")
         return _with_un_search_warning(result, pool.missed)
-    shapes = pool.shapes
+    doubted = _doubted(result, first)
+    shapes = _unseated_un_shapes(first) if merged is not None and doubted else pool.shapes
     elected = first.shape_draft
-    if result.no_data_reason == "no_observations" and elected is not None:
+    if (result.no_data_reason == "no_observations" or doubted) and elected is not None:
         read = set(elected.sv_arc_facts or {})
         shapes = [
             shape
@@ -625,21 +816,39 @@ async def _fill_gap(
         un_pass=f"ran:{second.status}/{second.no_data_reason}",
         un_ms=now_ms() - t0,
     )
-    displaces_alternate = result.alternate_match is None or not _representative_score_is_weak(
-        None if un_elected is None else un_elected.measured_score
+    un_score = None if un_elected is None else un_elected.measured_score
+    un_weak = _representative_score_is_weak(un_score)
+    displaces_alternate = result.alternate_match is None or (un_elected is not None and not un_weak)
+    un_doubted = state.bind_decision is not None and state.bind_decision.none_first
+    answers = (
+        second.status in ("definite", "candidates")
+        and displaces_alternate
+        and not (doubted and un_doubted)
     )
-    answers = second.status in ("definite", "candidates") and displaces_alternate
+    refused = result.status == "no_data" and second.status == "no_data"
     # Of two refusals, the one carrying a nominee with data stands (status rule 1).
     offers_alternate = (
-        second.status == "no_data"
-        and second.alternate_match is not None
-        and result.alternate_match is None
+        refused and second.alternate_match is not None and result.alternate_match is None
     )
-    chosen = second if answers or offers_alternate else result
+    # A UN refusal that matched a variable says more than ours that matched none, and the
+    # shape it elected is the evidence of the match. Its reason is none: the UN pass can
+    # refuse `denominator_not_available` before it elects any shape, as on a count recalled
+    # for a rate. A shape with no measured score, or a weak one, says no more than ours:
+    # "measles incidence rate" is no burden-of-disease rate.
+    matched_further = (
+        refused
+        and result.no_data_reason == "variable_not_resolved"
+        and second.no_data_reason != "variable_not_resolved"
+        and un_score is not None
+        and not un_weak
+    )
+    chosen = second if answers or offers_alternate or matched_further else result
     timing = dict(result.timing_by_step)
     for step, ms in second.timing_by_step.items():
         timing[step] = timing.get(step, 0) + ms
     other = result if chosen is second else second
+    # The dropped answer's trailing reads serve a Spec the response never names.
+    await _cancel_trailing_tasks([other])
     carried = (
         ()
         if chosen.alternates_left_out
@@ -654,10 +863,28 @@ async def _fill_gap(
     )
 
 
+def _doubted(result: RegionResult, first: ResolveState) -> bool:
+    """Whether our pass's `result` answers on a pick its binder rated "none of the shapes"
+    above (`BindResult.none_first`), on the resolution without party words
+    (`ResolveState.party_words_off`). A UN answer binds no party, so on the resolution with
+    them it could only fail `binds_each_party` and send the part to the other one."""
+    decision = first.bind_decision
+    return (
+        result.status in ("definite", "candidates")
+        and first.party_words_off
+        and decision is not None
+        and decision.none_first
+    )
+
+
 def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     """Why the UN pass does not run after our pass's `result`, or `None` when it runs.
 
-    Only a `no_data` answer has a gap to fill. A refusal about the request's entities or a
+    Only a `no_data` answer has a gap to fill, and an answer its binder doubted
+    (`_doubted`) one the UN pool may fill better, unless our pass's menu seated every shape
+    of the UN pool merged onto it (`ResolveState.un_pool`, `_unseated_un_shapes`): the
+    binder rated "none" above those shapes too, and a UN pass would only elect again among
+    them. A refusal about the request's entities or a
     `source_ambiguous` one stands, since the UN pool resolves neither. So does the answer of
     a part whose series code named its StatVars (`ResolveState.source_code`), which answers
     from those alone, and that of a part whose
@@ -669,7 +896,10 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     the refusal; whether its UN pass runs is `allows_un_system`'s to say, so a part naming a
     UN System Data Commons source still reaches it."""
     if result.status != "no_data":
-        return "answered"
+        if not _doubted(result, first):
+            return "answered"
+        if first.un_pool is not None and not _unseated_un_shapes(first):
+            return "merged"
     if result.no_data_reason in _ENTITY_TERMINALS:
         return "entity"
     if result.no_data_reason == "source_ambiguous":
@@ -679,6 +909,18 @@ def _un_pass_skip(result: RegionResult, first: ResolveState) -> str | None:
     if first.scope_settled or not allows_un_system(first.scope):
         return "source_scope"
     return None
+
+
+def _unseated_un_shapes(first: ResolveState) -> list[ShapeDraft]:
+    """The shapes of the UN pool merged onto our pass's menu (`ResolveState.un_pool`) that
+    took no seat on it (`ResolveState.capped_shapes`): our shapes are seated first
+    (`seating.seat_menu`), so a menu of `bind_top_k` shapes of ours shows the binder none
+    of them."""
+    merged = first.un_pool
+    if merged is None:
+        return []
+    seated = {shape.shape_id for shape in first.capped_shapes}
+    return [shape for shape in merged.shapes if shape.shape_id not in seated]
 
 
 def _with_un_search_warning(result: RegionResult, message: str) -> RegionResult:
@@ -693,13 +935,15 @@ def _log_gap_fill(
     (`ShapeDraft.pool`, `-` when it elected none), what the UN pass did (why it was
     skipped, or the status it reached and its time), whether our pass's bind asked
     (`_UniversalBindOutput.ask`), which its status alone does not show once a declined
-    reading or a source-named term refuses in its place, and whether our pass's menu held
-    the UN pool (`ResolveState.un_pool`)."""
+    reading or a source-named term refuses in its place, whether our pass's menu held
+    the UN pool (`ResolveState.un_pool`), and whether its binder doubted its answer
+    (`_doubted`), which runs the UN pass on an answered part."""
     elected = first.shape_draft
     bind = first.bind_result
     merged = first.un_pool
     logger.info(
-        "gap_fill part=%d status=%s/%s pool=%s un_pass=%s un_ms=%d bind_asked=%s un_merged=%s",
+        "gap_fill part=%d status=%s/%s pool=%s un_pass=%s un_ms=%d bind_asked=%s un_merged=%s "
+        "doubted=%s",
         first.variable_index,
         result.status,
         result.no_data_reason,
@@ -708,6 +952,7 @@ def _log_gap_fill(
         un_ms,
         "true" if bind is not None and bind.ask is not None else "false",
         "true" if merged is not None and merged.missed is None else "false",
+        "true" if _doubted(result, first) else "false",
     )
 
 
@@ -718,7 +963,14 @@ async def _run_phases(state: ResolveState) -> RegionResult:
     unscoped and reads scoped from election on. However the pass ends, it then cancels what
     it queued (`_cancel_queued_reads`) and ends its related-measures reads
     (`_end_related_reads`). Each phase's time that no step booked lands under
-    `phase_<name>` (`_book_unbooked_time`)."""
+    `phase_<name>` (`phase_timing.book_unbooked_time`). A refusal of the whole request
+    (`_REQUEST_REFUSALS`) a phase raises once the bindings are final, on an elected answer
+    leaving terms unmet, gives way to the part's `qualifier_not_bound` refusal
+    (`refuse_unread_answer`). Stated-word coverage is judged once
+    (`phase_election.judge_coverage`): when materialisation has read the answer, or
+    before a refusal returned once the bindings are final is first judged. Each candidate
+    offered beside or in place of it is judged on its own read at assembly
+    (`phase_election.judge_answer_coverage`)."""
     scoped = False
     settled = False
     unbooked: dict[str, int] = {}
@@ -728,8 +980,20 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 # Every `_PHASES` entry is a plain function, but `Callable` hides its `__name__`.
                 name = phase.__name__.removeprefix("_phase_")  # ty: ignore[unresolved-attribute]
                 enter_phase(f"{state.pool}:{name}")
-                t0, booked_before = now_ms(), _booked_ms(state)
-                result = await phase(state)
+                t0, booked_before = now_ms(), booked_ms(state)
+                try:
+                    result = await phase(state)
+                except _REQUEST_REFUSALS:
+                    # A refusal of the whole request comes only from a series the part
+                    # answers on. Once the bindings are final, an elected answer leaving
+                    # terms unmet answers nothing, so the part refuses on them instead
+                    # (`refuse_unread_answer`).
+                    if not settled:
+                        raise
+                    await judge_coverage(state)
+                    if not refusal_terms(state, state.shape_draft, state.bindings):
+                        raise
+                    result = await refuse_unread_answer(state)
                 # A refusal once the bindings are final that judged no answer is judged
                 # on the elected answer, so each requirement is named or departs
                 # (`settle_unjudged_refusal`).
@@ -739,45 +1003,57 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     and state.judgement is None
                     and result.status in ("no_data", "unsupported")
                 ):
+                    await judge_coverage(state)
                     result = await settle_unjudged_refusal(state, result)
-                _book_unbooked_time(
+                # The read has served the answer's members, so stated-word coverage is
+                # judged on them before the outcome judges the answer.
+                if result is None and phase is _phase_materialise:
+                    await judge_coverage(state)
+                book_unbooked_time(
                     state,
                     unbooked,
                     f"phase_{name}",
                     elapsed=now_ms() - t0,
-                    booked=_booked_ms(state) - booked_before,
+                    booked=booked_ms(state) - booked_before,
                 )
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
                     # Only a vetted election can report qualifier matches: earlier terminals
                     # may hold pre-bind candidates without a forced binding or elected shape.
-                    admitted = (
-                        _admitted_qualifier_phrases(state.admitted_qualifiers)
-                        | state.satisfied_measure_phrases
-                        | state.elected_tie_phrases
-                        | state.applied_dropped_qualifier_phrases
-                        | unbinding_phrases(state.requirements)
-                        | state.slot_default_phrases
+                    every_member = (
+                        every_member_phrases(
+                            result, state.dropped_qualifier_phrases, query=state.role_query
+                        )
                         if state.shape_draft is not None
-                        else _refused_pinned_phrases(state, result)
+                        else {}
                     )
+                    admitted = _admitted_phrases(state, result, every_member)
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
-                    return _stating_unevaluated(
+                    log_would_refuse(state, result)
+                    result = _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(
                                 result, state.requirements, state.judgement
                             ),
                             admitted_qualifier_phrases=admitted,
+                            every_member_axes=frozenset(every_member.values()),
                             timing_by_step={**result.timing_by_step, **unbooked},
                             scope_unsettled=_scope_unsettled(state),
                             entity_words=group_request_names(state),
+                            entity_refs=bound_entity_refs(state),
+                            listed_axes=frozenset(state.whole_listed.values()),
                             inferred_facts=(
                                 tuple(state.inferred_facts) if result.status == "definite" else ()
                             ),
                         ),
                         state,
+                    )
+                    # The scope build reads coverage and scans families, so it runs off
+                    # the event loop.
+                    return await asyncio.to_thread(
+                        _with_scope_choices, _stating_unpublished_wholes(result, state), state
                     )
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
@@ -789,34 +1065,28 @@ async def _run_phases(state: ResolveState) -> RegionResult:
         await _end_related_reads(state)
 
 
-def _booked_ms(state: ResolveState) -> int:
-    """The ms `state.timing` books, leaving out the stages inside `shape`
-    (`conjoin.NESTED_SHAPE_STEPS`), since `shape` already spans them."""
-    return sum(ms for step, ms in state.timing.items() if step not in NESTED_SHAPE_STEPS)
-
-
-def _book_unbooked_time(
-    state: ResolveState,
-    unbooked: dict[str, int],
-    step: str,
-    *,
-    elapsed: int,
-    booked: int,
-) -> None:
-    """Book under `step` the part of a phase's `elapsed` ms that its own steps (`booked`)
-    left out, so no millisecond is counted twice. A step that books from before its phase
-    began (`shape` starts in `_phase_derive_shapes` and ends in `_phase_prune_and_rank`)
-    books more than the phase ran; the excess comes off the latest earlier phases
-    already booked in `unbooked`, whose entries `state.timing` mirrors."""
-    excess = booked - elapsed
-    for earlier in reversed(unbooked):
-        if excess <= 0:
-            break
-        taken = min(unbooked[earlier], excess)
-        unbooked[earlier] -= taken
-        state.timing[earlier] -= taken
-        excess -= taken
-    unbooked[step] = state.timing[step] = max(0, elapsed - booked)
+def _admitted_phrases(
+    state: ResolveState, result: RegionResult, every_member: Mapping[str, RoleAxis]
+) -> frozenset[str]:
+    """The phrases the part's `result` admits, which no dropped-qualifier warning names
+    (`assemble._surviving_qualifier_warnings`). Only a vetted election can report qualifier
+    matches: earlier terminals may hold pre-bind candidates without a forced binding or
+    elected shape, and admit only what their refusal names. A measure value is admitted
+    when the elected shape carries it or every final answer meets it
+    (`met_measure_phrases`), and a phrase of `every_member`, which asks for every member of
+    a flow role the answer represents (`every_member_phrases`)."""
+    if state.shape_draft is None:
+        return _refused_pinned_phrases(state, result)
+    return (
+        _admitted_qualifier_phrases(state.admitted_qualifiers)
+        | state.satisfied_measure_phrases
+        | met_measure_phrases(state.judgement)
+        | state.elected_tie_phrases
+        | state.applied_dropped_qualifier_phrases
+        | unbinding_phrases(state.requirements)
+        | state.slot_default_phrases
+        | frozenset(every_member)
+    )
 
 
 def _refused_pinned_phrases(state: ResolveState, result: RegionResult) -> frozenset[str]:
@@ -870,7 +1140,10 @@ async def _end_related_reads(state: ResolveState) -> None:
 # Entity errors come from `_phase_check_entities`, which runs before shape derivation and
 # the bind call. Each name with no place set mints `entity_not_resolved`, `entity_ambiguous`
 # (an Ambiguous resolution) or `entity_set_too_large` (a Group with more members than a
-# Spec binds), and `elect_no_data_reason` picks the part's reason from them.
+# Spec binds), and `elect_no_data_reason` picks the part's reason from them. Where every name
+# resolved, it mints `role_incompatible` for a whole population the request directs to the
+# other side, ahead of the variable reasons: the conflict is the request's own and holds on
+# every shape.
 # `_phase_place_bindings` mints `entity_set_too_large` too, for an
 # elected shape whose places exceed that bound. The count depends on the elected shape's
 # roles, so it is known only once a shape is elected. A request whose variable does not
@@ -895,8 +1168,10 @@ async def _end_related_reads(state: ResolveState) -> None:
 # requirements only an answer can meet (`requirements.settle_unanswered`); from
 # `_phase_materialise` for a declined reading's pinned codes (`_declined_refusal`); and
 # from definite assembly after identity confirmation or candidates' single-survivor
-# collapse. The last two call `requirements.settle_answer`, so each value bind drafted on
-# a slot the elected shape lacks is among the terms they name. A later refusal that judged
+# collapse; and from `_run_phases` when a later phase raises a refusal of the whole request
+# on an elected answer leaving terms unmet (`refuse_unread_answer`). The last three call
+# `requirements.settle_answer`, so each value bind drafted on a slot the elected shape
+# lacks is among the terms they name. A later refusal that judged
 # no answer and whose reason ranks after `qualifier_not_bound` gives way to it when the
 # elected answer leaves terms unmet (`phase_shared.settle_unjudged_refusal`).
 # Materialise can mint `no_matching_slice`, deferred to the place-less mint, or `binding_mismatch`.

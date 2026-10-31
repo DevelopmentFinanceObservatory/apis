@@ -1,0 +1,533 @@
+"""The stated-words read: its prompt, its fixed schema, its answers as ratings, Gemini's call
+of it, and a part that refuses or answers on its answer."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+
+import pytest
+
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import BindResult, GeminiBinder, JevBinder, StatedWordsRequest
+from search.engine.binders.jev_request import restated_request
+from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.errors import LLMInfraError
+from search.engine.region.phase_rank_bind import _phase_bind
+from search.engine.region.state import ResolveState
+from search.engine.shape import SlotKeyDraft
+from search.engine.stated_words_read import (
+    STATED_WORDS_SYSTEM_PROMPT,
+    StatedWord,
+    StatedWordsOutput,
+    build_stated_words_prompt,
+    word_ratings,
+)
+from tests.engine._binders import FakeAsk, FixedBinder
+from tests.engine._harness import make_request, offline_resolve
+from tests.engine.test_bind import _shape
+from tests.engine.test_qualifier_guard import _READER_PERSONS, _run, _served, _state
+from tests.fixtures import FakeLLM
+
+_PERSONS = replace(
+    _shape("Total population"),
+    pop_type_dcid="Person",
+    meas_prop_dcid="count",
+    stat_type_dcid="measuredValue",
+)
+
+
+_SEX = SlotKeyDraft(axis="how", property_dcid="undataSex", label="Sex")
+_AGE = SlotKeyDraft(axis="how", property_dcid="undataAge", label="Age")
+_COMPLETION = replace(
+    _PERSONS,
+    label="School completion rate",
+    slot_keys=(_SEX, _AGE),
+    value_labels={
+        "undata/SEX-F": "Female (Sex)",
+        "undataSex": "Sex",
+        "undata/AGE-Y15T19": "15 to 19 years",
+        "undata/AGE-Y20T24": "20 to 24 years",
+    },
+)
+_FEMALE = SlotBindingDraft(
+    axis="how", property_dcid="undataSex", kind="value", value_dcids=["undata/SEX-F"]
+)
+# The code index declares the measure's headline series to mean age 0
+# (`CodeIndex.implied_values_of`).
+_LIFE_EXPECTANCY = replace(
+    _PERSONS,
+    label="Life Expectancy",
+    meas_prop_dcid="lifeExpectancy",
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid="age", label="Age"),),
+    value_labels={"Years60": "Years 60"},
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "bindings", "restricted"),
+    [
+        (_PERSONS, (), ""),
+        (
+            _COMPLETION,
+            (_FEMALE, SlotBindingDraft(axis="how", property_dcid="undataAge", kind="unbound")),
+            "  restricted to, on its breakdowns: Sex=Female\n",
+        ),
+        (
+            _COMPLETION,
+            (
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="undataAge",
+                    kind="set",
+                    value_dcids=["undata/AGE-Y15T19", "undata/AGE-Y20T24"],
+                ),
+                _FEMALE,
+            ),
+            "  restricted to, on its breakdowns: Age=15 to 19 years or 20 to 24 years; Sex=Female\n",
+        ),
+        (
+            _COMPLETION,
+            (
+                SlotBindingDraft(
+                    axis="source",
+                    property_dcid="provenance",
+                    kind="value",
+                    value_dcids=["dc/base/UNESCO"],
+                ),
+                _FEMALE,
+            ),
+            "  restricted to, on its breakdowns: Sex=Female\n",
+        ),
+        (_LIFE_EXPECTANCY, (), "  fixed by the measure's definition: Age=years 0\n"),
+        (
+            _LIFE_EXPECTANCY,
+            (
+                SlotBindingDraft(
+                    axis="how", property_dcid="age", kind="value", value_dcids=["Years60"]
+                ),
+            ),
+            "  restricted to, on its breakdowns: Age=Years 60\n",
+        ),
+        (
+            _LIFE_EXPECTANCY,
+            (
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="age",
+                    kind="unbound",
+                    evidence="requested_all",
+                    requested_all_phrase="by age",
+                ),
+            ),
+            "",
+        ),
+    ],
+    ids=[
+        "no-binding",
+        "bound-female",
+        "set-and-value",
+        "source-binding",
+        "implied-value",
+        "implied-value-bound-elsewhere",
+        "implied-value-opened",
+    ],
+)
+def test_the_prompt_states_the_series_then_numbers_the_words(shape, bindings, restricted):
+    """`StatedWord.index` indexes the WORDS list, in the order the request holds them. The
+    series lists the values its value and set bindings restrict it to, each by its graph
+    label less its property's name, so the read can answer that a series bound to Sex=Female
+    states "girls". It lists the value its measure's definition fixes on a property no
+    binding restricts or opens, which its headline series states nothing on."""
+    assert build_stated_words_prompt(
+        "stateless refugee population", shape, ("stateless", "refugee"), bindings=bindings
+    ) == (
+        "Variable phrase: stateless refugee population\n"
+        "\n"
+        "SERIES:\n"
+        f"  label: {shape.label}\n"
+        "  family: standard Data Commons\n"
+        f"  five_tuple: populationType=Person, measuredProperty={shape.meas_prop_dcid}, "
+        "statType=measuredValue\n"
+        f"{restricted}"
+        "\n"
+        "WORDS (words of the variable phrase):\n"
+        "  0: stateless\n"
+        "  1: refugee\n"
+    )
+
+
+_PURPOSE = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="Purpose")
+_AID = replace(_PERSONS, label="Official development assistance", slot_keys=(_PURPOSE,))
+
+
+@pytest.mark.parametrize(
+    ("codes", "named"),
+    [
+        (
+            ["CRSPurposeCode120", "CRSPurposeCode130"],
+            "health incl. population and reproductive health (CRS 120 + 130)",
+        ),
+        (["CRSPurposeCode110", "CRSPurposeCode120"], "education or health"),
+    ],
+    ids=["declared-grouping", "other-set"],
+)
+def test_both_judges_name_a_declared_grouping_by_its_label(codes, named):
+    """A set the declared grouping holds is the grouping the part asked for, so the stated-word
+    judges, Gemini's prompt and Jev's restated question, quote its label; another set reads
+    each code's label joined by "or"."""
+    bindings = (
+        SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="set", value_dcids=codes),
+    )
+
+    prompt = build_stated_words_prompt("Gates funding", _AID, ("gates",), bindings=bindings)
+    _, questions = restated_request("Gates funding", _AID, 0, ("gates",), bindings=bindings)
+
+    assert f"Purpose={named}\n" in prompt
+    instructions = questions["unread|0|0"].get("instructions")
+    assert isinstance(instructions, str)
+    assert f"restricted to {named})" in instructions
+
+
+@pytest.mark.parametrize(
+    ("served", "line"),
+    [
+        ((), ""),
+        (("Total population",), ""),
+        (("Refugee population",), "  the answer serves the series 'Refugee population'\n"),
+        (
+            ("Total population", "Refugee population"),
+            "  the answer serves each of these series: 'Total population'; 'Refugee population'\n",
+        ),
+    ],
+    ids=["none", "the-label", "one-other", "several"],
+)
+def test_the_prompt_names_the_served_series_that_differ_from_the_label(served, line):
+    """The bind elected the series by its label, so the prompt names the series the answer
+    serves wherever they differ from it, one as several, and is unchanged where the answer
+    serves the label's series alone."""
+    unserved = build_stated_words_prompt("refugee population", _PERSONS, ("refugee",), bindings=())
+    head, words = unserved.split("\n\nWORDS")
+
+    assert (
+        build_stated_words_prompt(
+            "refugee population", _PERSONS, ("refugee",), bindings=(), served=served
+        )
+        == f"{head}\n{line}\nWORDS{words}"
+    )
+
+
+def test_the_schema_holds_no_menu_and_the_bind_schema_no_rating():
+    """The answer is a list of numbered booleans whatever the menu and the word count, so a
+    recorded answer is keyed by the prompt alone, and bind's schema keeps its own fields."""
+    assert set(StatedWordsOutput.model_fields) == {"words"}
+    assert set(StatedWord.model_fields) == {"index", "stated"}
+    assert not set(StatedWordsOutput.model_fields) & set(_UniversalBindOutput.model_fields)
+
+
+@pytest.mark.parametrize(
+    ("answers", "ratings"),
+    [
+        ([(0, False), (1, True)], {"stateless": 0.0, "refugee": 1.0}),
+        ([(1, False)], {"refugee": 0.0}),
+        ([], {}),
+        ([(0, True), (2, False), (-1, False)], {"stateless": 1.0}),
+        ([(1, False), (1, True), (0, True)], {"stateless": 1.0}),
+        ([(1, False), (1, False)], {"refugee": 0.0}),
+    ],
+    ids=["both", "missing-index", "none", "index-out-of-range", "answered-both-ways", "repeated"],
+)
+def test_each_answer_rates_the_word_its_index_names(answers, ratings):
+    """Stated reads 1.0 and not stated 0.0. A word with no answer, or answered both ways,
+    stays unrated, and an index naming no word rates nothing."""
+    output = StatedWordsOutput(words=[StatedWord(index=i, stated=s) for i, s in answers])
+    assert word_ratings(output, ("stateless", "refugee")) == ratings
+
+
+_USAGE = {"input_tokens": 3, "output_tokens": 2}
+
+
+class _StatedLLM:
+    """Answers the stated-words read with `answers`, or raises `fail`, recording each call."""
+
+    def __init__(
+        self, answers: list[tuple[int, bool]] | None = None, fail: Exception | None = None
+    ) -> None:
+        self.answers = answers or []
+        self.fail = fail
+        self.calls: list[tuple[str, str, type]] = []
+
+    async def generate_structured(self, *, prompt, system, schema):
+        self.calls.append((prompt, system, schema))
+        if self.fail is not None:
+            raise self.fail
+        words = [StatedWord(index=i, stated=s) for i, s in self.answers]
+        return StatedWordsOutput(words=words), _USAGE
+
+
+def _request(words: tuple[str, ...]) -> StatedWordsRequest:
+    return StatedWordsRequest(
+        variable="stateless refugee population",
+        shape=_COMPLETION,
+        shape_index=0,
+        words=words,
+        bindings=(_FEMALE,),
+        decision=None,
+    )
+
+
+def test_gemini_rates_the_words_in_one_call_of_its_own():
+    llm = _StatedLLM([(0, True), (1, False)])
+    ratings, usage = asyncio.run(
+        GeminiBinder().rate_words_stated(_request(("stateless", "refugee")), llm=llm)
+    )
+
+    assert ratings == {"stateless": 1.0, "refugee": 0.0}
+    assert usage == _USAGE
+    assert llm.calls == [
+        (
+            build_stated_words_prompt(
+                "stateless refugee population",
+                _COMPLETION,
+                ("stateless", "refugee"),
+                bindings=(_FEMALE,),
+            ),
+            STATED_WORDS_SYSTEM_PROMPT,
+            StatedWordsOutput,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answers", "fail", "records", "ratings", "usage", "degraded"),
+    [
+        ([(0, False)], None, ["refugee"], {"refugee": 0.0}, _USAGE, []),
+        ([(0, True)], None, [], {"refugee": 1.0}, _USAGE, []),
+        ([], None, [], {}, _USAGE, ["stated words unrated"]),
+        ([], LLMInfraError("read failed"), [], {}, None, ["stated words read"]),
+    ],
+    ids=["not-stated", "stated", "unanswered", "failed-read"],
+)
+def test_binding_repair_reads_gemini_s_rating(
+    search_settings, answers, fail, records, ratings, usage, degraded
+):
+    """Binding repair asks Gemini once for "refugee" on the count of all persons and keeps
+    its rating: not stated is a record, stated or unanswered is read. The read's usage
+    joins the part's. A failed read raises out of the binder, so it rates nothing, and
+    `phase_election._rate_unread_words` notes it as lost once, as it notes a read that
+    leaves the word unrated."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
+    )
+    state.capped_shapes = [_READER_PERSONS]
+    state.binder = GeminiBinder()
+    state.llm = llm = _StatedLLM(answers, fail)
+    with recording_degraded_reads() as lost:
+        qualifiers = _run(state)
+
+    assert len(llm.calls) == 1
+    assert llm.calls[0][0].endswith("  0: refugee\n")
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
+    assert state.stated_word_ratings == ratings
+    assert state.var_usage == usage
+    assert lost.reads == degraded
+
+
+@pytest.mark.parametrize(
+    ("rated", "menu", "records", "degraded"),
+    [
+        ({"refugee": 0.1}, [_READER_PERSONS], ["refugee"], []),
+        ({"refugee": 0.9}, [_READER_PERSONS], [], []),
+        ({}, [_READER_PERSONS], [], ["stated words unrated"]),
+        ({"refugee": 0.1}, [], [], ["stated words unrated"]),
+    ],
+    ids=["not-stated", "stated", "unanswered", "off-menu"],
+)
+def test_binding_repair_reads_jev_s_rating(search_settings, rated, menu, records, degraded):
+    """Binding repair reads Jev's bind rating of "refugee" on the count of all persons,
+    sending no request while no binding restricts the shape. A bind that left the word's
+    question unanswered, or an elected shape outside the menu, leaves it unrated: it reads
+    as stated and the read is noted as lost once."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
+    )
+    state.capped_shapes = menu
+    state.binder = JevBinder(ask=(ask := FakeAsk({})))
+    state.bind_decision = BindResult(
+        output=_UniversalBindOutput(chosen_shape_index=0),
+        binder="jev",
+        stated_words={(0, word): rating for word, rating in rated.items()},
+    )
+    with recording_degraded_reads() as lost:
+        qualifiers = _run(state)
+
+    assert ask.requests == []
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == records
+    assert state.stated_word_ratings == (rated if menu else {})
+    assert lost.reads == degraded
+
+
+def test_a_shape_a_later_phase_seats_after_the_menu_keeps_the_bind_s_rating(search_settings):
+    """A later phase seats a shape after the binder's menu, as a breakdown, a direction or a
+    stand-in does. Only the basis sibling the house policies moved to is off the binder's
+    menu (`StatedWordsRequest.on_bind_menu`), so Jev sends no request for this one and its
+    words stay unrated as the bind left them."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="refugee population", shape_draft=_READER_PERSONS, bindings=[], unplaced=[]
+    )
+    state.capped_shapes = [replace(_READER_PERSONS, shape_id="menu")]
+    state.binder = FixedBinder(_UniversalBindOutput(chosen_shape_index=0))
+    assert asyncio.run(_phase_bind(state)) is None
+    state.binder = JevBinder(ask=(ask := FakeAsk({})))
+    state.capped_shapes.append(_READER_PERSONS)
+
+    _run(state)
+
+    assert ask.requests == []
+    assert state.stated_word_ratings == {}
+
+
+# The bind elects "Refugee population", and the read serves the total population alone.
+_REFUGEES_SERVING_PERSONS = replace(
+    _READER_PERSONS,
+    label="Refugee population",
+    sv_arc_facts={
+        "refugees": {"name": {"nodes": [{"value": "Refugee population"}]}},
+        "persons": {"name": {"nodes": [{"value": "Total population"}]}},
+    },
+)
+
+
+def _serving_persons(binder: GeminiBinder | JevBinder, served: str = "persons") -> ResolveState:
+    """The part "refugee population" electing `_REFUGEES_SERVING_PERSONS`, whose read
+    served `served` alone, the total population unless named, rated by `binder`."""
+    state = _state(
+        variable="refugee population",
+        shape_draft=_REFUGEES_SERVING_PERSONS,
+        bindings=[],
+        unplaced=[],
+    )
+    state.capped_shapes = [_REFUGEES_SERVING_PERSONS]
+    state.binder = binder
+    state.mat_result = _served(served)
+    return state
+
+
+def test_gemini_rates_the_words_on_the_one_series_the_read_served(search_settings):
+    """The read serves "Total population" behind the label "Refugee population", so the
+    prompt names it, and the rating of "refugee" on it decides the record."""
+    search_settings(qualifier_coverage="refuse")
+    state = _serving_persons(GeminiBinder())
+    state.llm = llm = _StatedLLM([(0, False)])
+
+    qualifiers = _run(state)
+
+    ((prompt, _system, _schema),) = llm.calls
+    assert "  the answer serves the series 'Total population'\n" in prompt
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == ["refugee"]
+
+
+# The shape holds one series, labelled by the family read and named otherwise in the graph.
+_LONE_SERIES = replace(
+    _READER_PERSONS,
+    label="Refugee population (female)",
+    sv_arc_facts={"women": {"name": {"nodes": [{"value": "Women"}]}}},
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "served", "named"),
+    [(_LONE_SERIES, "women", False), (_REFUGEES_SERVING_PERSONS, "persons", True)],
+    ids=["the-labelled-series", "another-series"],
+)
+def test_a_read_serving_the_labelled_series_names_no_series(search_settings, shape, served, named):
+    """The read serves the one series the shape holds, so the label names it, and the
+    prompt rates the words on the label alone though the series' own name differs. A shape
+    that also holds the series the label names serves another, which the prompt names."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(variable="refugee population", shape_draft=shape, bindings=[], unplaced=[])
+    state.capped_shapes = [shape]
+    state.binder = GeminiBinder()
+    state.mat_result = _served(served)
+    state.llm = llm = _StatedLLM([(0, True), (1, True)])
+
+    _run(state)
+
+    ((prompt, _system, _schema),) = llm.calls
+    assert ("the answer serves" in prompt) == named
+
+
+@pytest.mark.parametrize(
+    ("served", "quoted", "rating"),
+    [("persons", "the series 'Total population'", 0.1), ("sdg/XYZ", None, 0.9)],
+    ids=["named", "unnamed"],
+)
+def test_jev_rates_its_words_again_on_the_one_series_the_read_served(
+    search_settings, served, quoted, rating
+):
+    """Jev's bind rated "refugee" stated on the label "Refugee population". The read serves
+    "Total population" alone, so Jev asks again on that series, and its answer decides. A
+    served member with no name sends no served series, so the bind's rating stands."""
+    search_settings(qualifier_coverage="refuse")
+    ask = FakeAsk({}, stated={"refugee": 0.1})
+    state = _serving_persons(JevBinder(ask=ask), served)
+    state.bind_decision = BindResult(
+        output=_UniversalBindOutput(chosen_shape_index=0),
+        binder="jev",
+        stated_words={(0, "refugee"): 0.9},
+    )
+
+    qualifiers = _run(state)
+
+    assert [
+        f"served as {quoted}" in questions["unread|0|0"]["instructions"]
+        for _request_state, questions in ask.requests
+    ] == ([True] if quoted else [])
+    assert state.stated_word_ratings == {"refugee": rating}
+    assert [q.text for q in qualifiers if q.evidence == "uncovered"] == (
+        ["refugee"] if quoted else []
+    )
+
+
+class _RatedOutLLM(FakeLLM):
+    """The recorded bank, with every stated-words read answering each word `stated`."""
+
+    def __init__(self, *, stated: bool) -> None:
+        super().__init__()
+        self.stated = stated
+        self.prompts: list[str] = []
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            self.prompts.append(prompt)
+            count = sum(line.startswith("  ") for line in prompt.split("WORDS")[-1].splitlines())
+            words = [StatedWord(index=i, stated=self.stated) for i in range(count)]
+            return StatedWordsOutput(words=words), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+@pytest.mark.parametrize(
+    ("stated", "status", "unbound"),
+    [(False, "no_data", ["participation"]), (True, "definite", None)],
+    ids=["rated-not-stated", "rated-stated"],
+)
+def test_a_gemini_part_refuses_on_a_word_its_series_does_not_state(stated, status, unbound):
+    """The part "female labor force participation rate in Bangladesh" elects the percent of
+    female working-age population in the labour force, whose members' names leave
+    "participation" unread. Gemini's read rating it not stated refuses the part
+    ``qualifier_not_bound`` on it, and rating it stated answers."""
+    llm = _RatedOutLLM(stated=stated)
+    response = offline_resolve(
+        make_request("female labor force participation rate in Bangladesh"), llm=llm
+    )
+
+    assert len(llm.prompts) == 1
+    assert llm.prompts[0].endswith("WORDS (words of the variable phrase):\n  0: participation\n")
+    part = response.parts[0]
+    assert part.status == status
+    if unbound is not None:
+        assert part.no_data.reason == "qualifier_not_bound"
+        assert [q.text for q in part.no_data.unbound_qualifiers] == unbound

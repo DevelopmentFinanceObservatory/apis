@@ -17,6 +17,7 @@ import search.engine.extract as extract_module
 from search.engine.bind import _UniversalBindOutput, bind_schema
 from search.engine.extract import Extraction
 from search.engine.quantity_read import QuantityOutput
+from search.engine.stated_words_read import StatedWordsOutput
 from tests._harvest_outcome_plugin import (
     OUTCOME_PATH_ENV,
     SCHEMA_VERSION,
@@ -213,6 +214,7 @@ def test_schema_and_stage_known_schemas():
     assert m._schema_and_stage("Extraction") == (Extraction, "extract")
     assert m._schema_and_stage("_UniversalBindOutput") == (_UniversalBindOutput, "bind")
     assert m._schema_and_stage("QuantityOutput") == (QuantityOutput, "quantity")
+    assert m._schema_and_stage("StatedWordsOutput") == (StatedWordsOutput, "stated_words")
 
 
 def test_schema_and_stage_unknown_name_fails_closed():

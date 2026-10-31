@@ -12,10 +12,11 @@ import asyncio
 from search.engine.bind import SlotBindingDraft
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
+from search.engine.stated_words_read import StatedWordsOutput
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _QUERY = "domestic government health spending in Kenya"
@@ -109,6 +110,8 @@ class _AbsentMisclassifyLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(
             0,

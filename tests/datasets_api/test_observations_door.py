@@ -4,7 +4,7 @@ refusal, each preview mode, labels, conversion, and a pinned version read past e
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -39,8 +39,10 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import build_observations_planned
 from tests.fixtures import FakeGraph
 from tests.materialise._canonical_frame import canonical_frame_of_frame1
+from tests.materialise._packed_series_conversions import pack_series_conversions
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
+from ._app_factories import offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
@@ -190,6 +192,7 @@ def _body(
     window: str = "all",
     unit_request: Mapping[str, object] | None = None,
     conversions: Mapping | None = None,
+    encode: Callable[[Mapping], object] = encode_series_conversions,
     default_scope_plural: bool | None = False,
 ) -> dict[str, object]:
     """A definition version body. `default_scope_plural=None` leaves the key out, as a body
@@ -225,7 +228,7 @@ def _body(
         "series_count": series_count,
     }
     if conversions:
-        body["series_conversions"] = encode_series_conversions(conversions)
+        body["series_conversions"] = encode(conversions)
     if default_scope_plural is not None:
         body["default_scope_plural"] = default_scope_plural
     return body
@@ -447,7 +450,12 @@ def test_a_groupby_collapse_refuses_observations_unavailable():
     assert world.store.gets == []
 
 
-def _converted_body(conversions: Mapping | None, *, places_named: bool = True) -> dict[str, object]:
+def _converted_body(
+    conversions: Mapping | None,
+    *,
+    places_named: bool = True,
+    encode: Callable[[Mapping], object] = encode_series_conversions,
+) -> dict[str, object]:
     return _body(
         entities={"observationAbout": ["country/KEN", "country/GHA"]} if places_named else {},
         roles=["observationAbout"],
@@ -456,6 +464,7 @@ def _converted_body(conversions: Mapping | None, *, places_named: bool = True) -
         series_count=2,
         unit_request={"currency": "EUR", "prices": "current"},
         conversions=conversions,
+        encode=encode,
         default_scope_plural=not places_named,
     )
 
@@ -874,10 +883,15 @@ def test_the_door_and_the_live_role_bulk_preview_agree_on_each_series_axes(
     assert [s["axes"] for s in door["series"]] == [[axes[sv]] for sv, _recipient in expected]
 
 
-def test_a_converted_per_series_version_carries_each_series_conversion():
+@pytest.mark.parametrize(
+    "encode", [encode_series_conversions, pack_series_conversions], ids=["entries", "packed"]
+)
+def test_a_converted_per_series_version_carries_each_series_conversion(encode):
     conversions = {_KEN_KEY: _conversion(1), _GHA_KEY: _conversion(0)}
     payload = (
-        _World(_converted_body(conversions), _frame(_COLUMNS_STANDARD, _CONVERTED_ROWS))
+        _World(
+            _converted_body(conversions, encode=encode), _frame(_COLUMNS_STANDARD, _CONVERTED_ROWS)
+        )
         .get()
         .json()
     )
@@ -996,7 +1010,7 @@ def test_a_version_pinned_then_read_31_days_later_returns_its_observations():
         snapshot_reader=reader,
         artifact_store=store,
         reference_writer=FakeArtifactReferenceWriter(),
-        daily_max=1_000_000,
+        allowances=offline_allowances(),
         now=lambda: _NOW,
     )
     world.now = _NOW + timedelta(days=31)

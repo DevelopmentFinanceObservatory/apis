@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import series_coverage.index as coverage_index_module
+from origin_catalogue import bound_catalogue
 from series_coverage.coverage_types import ServedExtent
 from series_coverage.index import (
     BoundRoles,
@@ -24,6 +25,7 @@ from series_coverage.index import (
     elected_year,
 )
 from series_coverage.schema import FacetMetadata, RoleNames, YearHorizon
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 from tests.series_coverage.support import (
     _ROWS,
     BUILD_EPOCH_YEAR,
@@ -34,6 +36,7 @@ from tests.series_coverage.support import (
     FACET_PROJECTED,
     FRA,
     KEN,
+    ROLE_NAMES,
     UNICEF,
     V1,
     V2,
@@ -44,6 +47,8 @@ from tests.series_coverage.support import (
     slice_index,
     with_repeated_dictionaries,
 )
+
+_CRS_PROVENANCE = "provenance/OECDCreditorReportingSystem"
 
 
 @pytest.fixture
@@ -1848,3 +1853,118 @@ def test_series_years_or_each_series_facets(read, expected, kept) -> None:
         key: sum(1 << (year - epoch) for year in years) for key, years in expected.items()
     }
     assert found.variables == {_WINDOW_SV: kept}
+
+
+def test_a_scoped_read_keeps_the_admitted_provenances_facets_judging_each_provenance_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admission judges each provenance alone, so a scoped read keeps every row whose
+    facet's provenance the scope admits, asks the catalogue once per provenance, whatever
+    the number of series, and builds the facet set of each admitted set of provenances
+    once."""
+    other = "provenance/Other"
+    table, horizon = coverage_table(_ROWS)
+    idx = CoverageIndex(
+        table,
+        ROLE_NAMES,
+        {
+            FACET_ACTUALS: FacetMetadata(provenance_id=_CRS_PROVENANCE, observation_period="P1Y"),
+            FACET_PROJECTED: FacetMetadata(provenance_id=other, observation_period="P1Y"),
+        },
+        horizon=horizon,
+    )
+    asked: list[str] = []
+    admits = FakeCatalogue.admits_in_scope
+
+    def counted(self: FakeCatalogue, provenance: str) -> bool:
+        asked.append(provenance)
+        return admits(self, provenance)
+
+    monkeypatch.setattr(FakeCatalogue, "admits_in_scope", counted)
+    built: list[object] = []
+    array = coverage_index_module.pa.array
+    monkeypatch.setattr(
+        coverage_index_module.pa, "array", lambda *a, **k: built.append(a[0]) or array(*a, **k)
+    )
+
+    with bound_catalogue(FakeCatalogue().scoped(frozenset({_CRS_PROVENANCE}))):
+        crs = idx.admitted_pairs(variable=V1)
+    with bound_catalogue(FakeCatalogue().scoped(frozenset({_CRS_PROVENANCE}))):
+        again = idx.admitted_pairs(variable=V1)
+    with bound_catalogue(FakeCatalogue().scoped(frozenset({other}))):
+        projected = idx.admitted_pairs(variable=V1)
+
+    assert crs == again == {FACET_ACTUALS: frozenset({(FRA, KEN), (DEU, KEN), (FRA, ETH)})}
+    assert projected == {FACET_PROJECTED: frozenset({(FRA, KEN)})}
+    assert sorted(asked) == sorted([_CRS_PROVENANCE, other] * 3)
+    assert built == [[FACET_ACTUALS], [FACET_PROJECTED]]
+
+
+# Rows spanning two mask words (1960 to 2049): a dense run from 1960 to 2030, sparse years
+# on both sides of the word boundary at 2024, two facets per variable under two
+# provenances, and rows posted out of `(variable, facet_id)` order.
+_YEARS_HELD_ROWS: list[tuple[str, str, str, str, list[int]]] = [
+    (_SECOND_SV, _OTHER_FACET, FRA, KEN, [2049]),
+    (_WINDOW_SV, _WINDOW_FACET, FRA, KEN, list(range(1960, 2031))),
+    (_WINDOW_SV, _OTHER_FACET, DEU, KEN, [1961, 2023, 2024, 2040]),
+    (_SECOND_SV, _WINDOW_FACET, DEU, ETH, [1975, 2010]),
+    (_WINDOW_SV, _WINDOW_FACET, DEU, ETH, [2000, 2024, 2025]),
+    (_SECOND_SV, _WINDOW_FACET, FRA, KEN, [1975, 2047]),
+]
+_YEARS_HELD_PROVENANCES = {_WINDOW_FACET: _CRS_PROVENANCE, _OTHER_FACET: "provenance/Other"}
+
+
+def _reference_years(variables: Sequence[str], facets: Sequence[str]) -> dict[int, int]:
+    """Each year's count of `(variable, recipient, donor)` series of `variables` holding it,
+    over rows in `facets`, counted row by row."""
+    series: dict[int, set[tuple[str, str, str]]] = {}
+    for variable, facet, donor, recipient, years in _YEARS_HELD_ROWS:
+        if variable in variables and facet in facets:
+            for year in years:
+                series.setdefault(year, set()).add((variable, recipient, donor))
+    return {year: len(held) for year, held in series.items()}
+
+
+@pytest.mark.parametrize(
+    ("variables", "scope"),
+    [
+        ([_WINDOW_SV], None),
+        ([_SECOND_SV], None),
+        ([_SECOND_SV, _WINDOW_SV, "Unknown"], None),
+        (["Unknown"], None),
+        ([_WINDOW_SV, _SECOND_SV], _CRS_PROVENANCE),
+        ([_WINDOW_SV, _SECOND_SV], "provenance/Other"),
+    ],
+)
+def test_years_held_and_series_by_year_match_a_row_by_row_count(
+    variables: list[str], scope: str | None
+) -> None:
+    """`years_held` reads the years from per-pair masks and `series_by_year` counts each held
+    year from one word column; both match a count over the rows themselves, across both mask
+    words, and under a source scope keep only the facets it admits."""
+    table, horizon = coverage_table(_YEARS_HELD_ROWS)
+    idx = CoverageIndex(
+        table,
+        _ELECTION_ROLE_NAMES,
+        {
+            facet: FacetMetadata(provenance_id=provenance, observation_period="P1Y")
+            for facet, provenance in _YEARS_HELD_PROVENANCES.items()
+        },
+        horizon=horizon,
+    )
+    facets = [f for f, p in _YEARS_HELD_PROVENANCES.items() if scope is None or p == scope]
+    expected = _reference_years(variables, facets)
+    window = range(horizon.epoch_year - 1, horizon.max_year + 2)
+
+    def read() -> tuple[frozenset[int], dict[int, int]]:
+        counts = idx.series_by_year(variables=variables, first_year=window[0], last_year=window[-1])
+        return idx.years_held(variables=variables), counts
+
+    if scope is None:
+        held, counts = read()
+    else:
+        with bound_catalogue(FakeCatalogue().scoped(frozenset({scope}))):
+            held, counts = read()
+
+    assert held == frozenset(expected)
+    assert counts == {year: expected.get(year, 0) for year in window}

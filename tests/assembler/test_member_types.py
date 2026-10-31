@@ -261,10 +261,10 @@ def test_note_narration_revise_updates_text(frame_store, revision_store, release
 # -- source_card -------------------------------------------------------------
 
 
-def test_source_card_create_pins_the_frame_and_names_its_sources(
+def test_source_card_create_names_its_sources_and_pins_nothing(
     frame_store, revision_store, release_registry
 ):
-    """`source_card` resolves and pins its frame but binds no series."""
+    """`source_card` resolves its frame but binds no series, and pins nothing."""
     frame = malaria_ethiopia_resolved_frame()
     frame_store.put(resolved_frame=frame)
 
@@ -282,8 +282,7 @@ def test_source_card_create_pins_the_frame_and_names_its_sources(
         revision_store=revision_store,
         release_registry=release_registry,
     )
-    assert len(frame_store.pins) == 1
-    assert frame_store.pins[0][0] == frame.frame_ref
+    assert frame_store.pins == ()
 
     record = revision_store.read_revision(component_id=reply.component_id, revision=1)
     assert record.resolved_payload["component"] == {

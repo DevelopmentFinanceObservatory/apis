@@ -54,7 +54,9 @@ def _fold_measure_sibling_candidates(
 
     Keep a sibling as a separate candidate when it lacks a partition or a matching label.
     A folded sibling shares the retained Spec's price basis, so it is a measure option
-    (axis "what"), labelled without the price basis.
+    (axis "what"), labelled without the price basis. A sibling of another measure basis is
+    an option too, until a scope choice offering that basis attaches to the Spec
+    (`assemble.with_scope_choices`).
     """
     measure_index = get_measure_index()
     consumed: set[str] = set()

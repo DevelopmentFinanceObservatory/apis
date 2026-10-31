@@ -92,8 +92,9 @@ def catalogue_counts(
     """Counts over `catalogue`'s admitted provenances and base variable
     table and every row of `coverage`. `datasets` holds the provenances of
     the declared datasets (`CodeIndex.datasets`). Their coverage rows are
-    the aid rows. `totals` holds the parties that total other parties
-    (`CodeIndex.parties` of kind `total`), which the aid counts leave out."""
+    the aid rows. `totals` holds the parties that total other parties in every
+    dataset that publishes them (`PartyRow.kind_over` of `total`), which the aid
+    counts leave out."""
     provenances = catalogue.provenance_rows()
     source_of = {row.id: row.source.ref for row in provenances}
     base = _base_by_country(catalogue, source_of)

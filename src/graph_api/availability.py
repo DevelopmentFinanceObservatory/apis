@@ -12,9 +12,9 @@ Two readers supply the facets, each admitted per facet by the request's catalogu
   (`materialise.facet_profile.FacetProfile`): the facets the graph admitted at its default place
   scope and the places each was admitted at. Its entities are places counted by kind.
 
-The default is the profile's `default`, the facets `materialise.facets.served_facets` elects for
-a request naming no place, years or facet, so the card and that request cannot disagree. For a
-role-bearing variable it is the coverage election the same probe gives.
+The default is the profile's `default`, the facets `materialise.group_facets.group_served`
+elects for a request naming no place, years or facet, so the card and that request cannot
+disagree. For a role-bearing variable it is the coverage election the same probe gives.
 
 Within a source, facets group into series by measurement method, period and scaling. A unit
 folds into a series' `national_currency` when it is a currency and the graph's
@@ -87,6 +87,7 @@ class EntityCounts(ResponseModel):
     model_config = ConfigDict(title="GraphAvailabilityEntityCounts")
 
     parties: int = Field(description="entities with figures of their own")
+    private: int = Field(description="the parties whose class is private, a subset of parties")
     totals: int = Field(description="entities that hold other entities' figures")
     residual: int = Field(description="entities holding figures no other entity does")
     unclassified: int = Field(description="entities the code index does not list")
@@ -696,6 +697,7 @@ def _entities(fold: _Fold, held: Iterable[_Held]) -> dict[str, EntityCounts] | N
 def _entity_counts(counts: PartyCounts) -> EntityCounts:
     return EntityCounts(
         parties=counts.parties,
+        private=counts.private,
         totals=counts.totals,
         residual=counts.residual,
         unclassified=counts.unclassified,

@@ -12,6 +12,8 @@ from typing import ClassVar
 import pyarrow as pa
 import pytest
 
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import CRS_INCLUSIVE
 from dc_graph.client import SubjectPage
 from materialise.convert import require_conversion_coverage
 from materialise.errors import UpstreamResponseError
@@ -447,6 +449,31 @@ def test_no_recipe_offers_nothing(spec: Spec, members):
     assert _offer(spec, members) is None
 
 
+def test_a_composite_offers_the_recipe_its_component_tables_share():
+    """A composite answer's provenance facet names the composite, which names no recipe; its
+    component tables do, and they share one."""
+    composite = DECLARED_COMPOSITES[CRS_INCLUSIVE]
+    catalogue = ConversionCatalogue(
+        recipes=MappingProxyType(
+            {recipe.dataset: "ConversionRecipeDAC" for recipe in composite.components}
+        ),
+        tables=_CATALOGUE.tables,
+        national_currencies=_CATALOGUE.national_currencies,
+        default_base_year=2024,
+    )
+    plan = _plan((1990, 2024), (("observationAbout", "country/GTM"),))
+
+    offer = unit_conversion(
+        _usd(composite.provenance, served=(1990, 2024)),
+        members=_members(),
+        plans=(plan,),
+        catalogue=catalogue,
+    )
+
+    assert offer is not None
+    assert [currency.code for currency in offer.currencies] == ["EUR", "GTQ", "USD"]
+
+
 def test_a_role_bound_to_one_entity_offers_its_national_currency():
     offer = _offer(
         _usd(entities=[_entity_from("country/DEU", "Germany"), _entity_to("country/GTM", "G")])
@@ -577,6 +604,8 @@ class _Graph:
                 unit: {"typeOf": ("CurrencyUnit",), "nationalCurrencyOf": places}
                 for unit, places in self._CURRENCIES.items()
             },
+            "DACCountriesTotal": {"name": ("DAC countries, total",)},
+            "country/GTM": {"name": ("Guatemala",)},
             **(extra or {}),
         }
 
@@ -588,12 +617,6 @@ class _Graph:
             node = self._nodes.get(dcid, {"typeOf": ("Provenance",)})
             arcs[dcid] = {prop: node[prop] for prop in properties if prop in node} or None
         return arcs
-
-    def node_names_many(
-        self, dcids: Sequence[str], *, deadline: float | None = None
-    ) -> dict[str, tuple[str, ...]]:
-        names = {"DACCountriesTotal": ("DAC countries, total",), "country/GTM": ("Guatemala",)}
-        return {dcid: names[dcid] for dcid in dcids if dcid in names}
 
     def node_subjects(
         self,

@@ -31,10 +31,15 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_rows,
 )
+from dataset_store.snapshot import Revocation
+from datasets_api.doors.refresh import StoredRendering
 from datasets_api.live_refresh import LiveRefreshPrincipal
 from datasets_api.recipe_store import RecipeRecord
+from datasets_api.render import CANONICAL_FRAME_RENDERING
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
+from presentation_api.refusals import EXPIRED_FRAME_FIX
 from tests.assembler.test_accept_card_descriptions import _record as _description_record
 from tests.datasets_api._snapshot_doubles import FakeSnapshotReader, _location, _version
 
@@ -114,7 +119,8 @@ class _Recipes:
 def _record(
     snapshots: FakeSnapshotReader, frame: FrameRef, *, groupby: dict[str, object] | None = None
 ) -> None:
-    """Record `frame` as a plain version, or as a collapse with `groupby`."""
+    """Record `frame` as a plain version, or as a collapse with `groupby`, linking its
+    canonical frame and one Parquet file."""
     key = (frame.spec_id, frame.content_version)
     snapshots.versions[key] = dataclasses.replace(
         _version(content_version=frame.content_version),
@@ -124,7 +130,10 @@ def _record(
     rendering: dict[str, object] = {"format": "parquet", "bundle": False}
     if groupby is not None:
         rendering["groupby"] = groupby
-    snapshots.locations[key] = [_location(rendering=rendering)]
+    snapshots.locations[key] = [
+        _location(digest="sha256:frame", rendering=CANONICAL_FRAME_RENDERING),
+        _location(rendering=rendering),
+    ]
 
 
 @pytest.fixture
@@ -286,7 +295,7 @@ def test_the_composed_app_passes_the_configured_principal_to_the_render_routes(
     answers = {}
     for configured in (_PRINCIPAL, ""):
         monkeypatch.setenv("LIVE_REFRESH_PRINCIPAL", configured)
-        surface = dfo_apis_app._presentation_factory(RateTableCache())
+        surface = dfo_apis_app.build_presentation_surface(RateTableCache())
         # No lifespan runs, so no live store is built. Both answers come before any store read.
         client = TestClient(create_app([surface]), raise_server_exceptions=False)
         answers[configured] = client.post(url, json={"frame": _body(_STORED)}, headers=_AUTH)
@@ -296,6 +305,82 @@ def test_the_composed_app_passes_the_configured_principal_to_the_render_routes(
         "request_invalid",
     )
     assert (answers[""].status_code, answers[""].json()["code"]) == (403, "refresh_not_permitted")
+
+
+# -- retention --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tier", "retention"),
+    [
+        ("working", {"pinned": False, "held_until": "2026-07-01T00:00:00Z"}),
+        ("pinned", {"pinned": True}),
+    ],
+)
+def test_a_card_create_and_read_state_its_frames_retention_counted_from_storage(
+    client: TestClient, snapshots: FakeSnapshotReader, tier: str, retention: dict
+):
+    """The stored frame was stored on 1 June 2026, so a working copy is held for 30 days from
+    then, whenever the card was made. The create reply states what a read states."""
+    key = (_STORED.spec_id, _STORED.content_version)
+    snapshots.locations[key] = [
+        dataclasses.replace(location, tier=tier) for location in snapshots.locations[key]
+    ]
+    created = client.post(
+        "/api/presentation/components", json={"intent": _intent("line_chart")}
+    ).json()
+    note_created = client.post(
+        "/api/presentation/components", json={"intent": _intent("note_narration")}
+    ).json()
+
+    read = client.get(f"/api/presentation/components/{created['component_id']}")
+    note_read = client.get(f"/api/presentation/components/{note_created['component_id']}")
+
+    assert created["retention"] == read.json()["retention"] == retention
+    assert note_created["retention"] is None
+    assert note_read.json()["retention"] is None
+
+
+def _store_outage(snapshots: FakeSnapshotReader, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(*_args: object, **_kwargs: object):
+        raise DatasetsStoreUnavailable("datasets store unavailable", sqlstate="08006")
+
+    monkeypatch.setattr(snapshots, "read_version_state", unavailable)
+
+
+def _revoked(snapshots: FakeSnapshotReader, monkeypatch: pytest.MonkeyPatch) -> None:
+    for frame in (_STORED, _TARGET):
+        snapshots.revocations[(frame.spec_id, frame.content_version)] = Revocation(
+            reason="takedown", revoked_at=datetime(2026, 6, 2, tzinfo=UTC)
+        )
+
+
+def _unlinked(snapshots: FakeSnapshotReader, monkeypatch: pytest.MonkeyPatch) -> None:
+    for frame in (_STORED, _TARGET):
+        snapshots.locations[(frame.spec_id, frame.content_version)] = []
+
+
+@pytest.mark.parametrize("unreadable", [_store_outage, _revoked, _unlinked])
+def test_a_create_read_and_render_state_no_retention_when_it_cannot_be_read(
+    client: TestClient,
+    snapshots: FakeSnapshotReader,
+    revision_store: FakeRevisionStore,
+    monkeypatch: pytest.MonkeyPatch,
+    unreadable,
+):
+    """Retention is advisory: a stored card is answered, and a stored and charged create is
+    answered 201, so a retry never makes a second card."""
+    unreadable(snapshots, monkeypatch)
+    # The render accepts the target from its version record, which the outage leaves readable.
+    created = client.post("/api/presentation/components", json={"intent": _intent("line_chart")})
+    component_id = created.json()["component_id"]
+    read = client.get(f"/api/presentation/components/{component_id}")
+    rendered = _render(client, component_id, _TARGET)
+
+    assert (created.status_code, created.json()["retention"]) == (201, None)
+    assert (read.status_code, read.json()["retention"]) == (200, None)
+    assert (rendered.status_code, rendered.json()["retention"]) == (200, None)
+    assert list(revision_store._revisions) == [component_id]
 
 
 # -- the answer -------------------------------------------------------------
@@ -333,7 +418,8 @@ def test_render_answers_a_component_read_drawn_on_the_target_and_appends_nothing
     ]
     assert client.get(f"/api/presentation/components/{component_id}").json() == read
     assert len(revision_store._revisions[component_id]) == 1
-    assert frame_store.pins.count((_TARGET, component_id)) == 1
+    assert frame_store.pins == ()
+    assert rendered["retention"]["pinned"] is False
 
 
 def test_create_stores_a_description_and_render_composes_one_live(
@@ -464,6 +550,65 @@ def test_a_frame_that_was_both_renderings_accepts_one_like_it_and_refuses_a_coll
     assert (collapse.status_code, collapse.json()["code"]) == (409, "render_target_mismatch")
 
 
+def test_a_dataset_card_renders_by_the_rendering_it_recorded_at_creation(
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    snapshots: FakeSnapshotReader,
+    recipes: _Recipes,
+):
+    """The card recorded the plain rendering when it was made. The stored version's records
+    read as a collapse now, which alone would refuse a plain target."""
+    plain = StoredRendering(base_content_version=_STORED.content_version, minting=None)
+    frame_store.put(
+        resolved_frame=dataclasses.replace(_frame(_STORED), rendering=plain.to_record())
+    )
+    _record(snapshots, _STORED, groupby=_BY_RECIPIENT)
+    app = _app(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        snapshot_reader=snapshots,
+        recipe_reader=recipes,
+        live_refresh=LiveRefreshPrincipal(header="x-dfo-principal", principal=_PRINCIPAL),
+    )
+    with TestClient(app) as client:
+        component_id = _create(client)
+        response = _render(client, component_id, _TARGET)
+
+    assert response.status_code == 200, response.text
+    record = revision_store.read_revision(component_id=component_id, revision=1)
+    assert record.frame_rendering == plain.to_record()
+
+
+def test_a_derived_card_renders_by_the_normal_form_it_recorded_at_creation(
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    snapshots: FakeSnapshotReader,
+    recipes: _Recipes,
+):
+    """The recipe store holds no recipe for the stored frame, so only the recorded normal form
+    can accept the target."""
+    recorded = {"normal_form_hash": "rnf_" + "a" * 32}
+    frame_store.put(resolved_frame=dataclasses.replace(_frame(_OPS_STORED), rendering=recorded))
+    recipes.hashes = {_OPS_TARGET: "rnf_" + "a" * 32}
+    _record(snapshots, _OPS_TARGET)
+    app = _app(
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        snapshot_reader=snapshots,
+        recipe_reader=recipes,
+        live_refresh=LiveRefreshPrincipal(header="x-dfo-principal", principal=_PRINCIPAL),
+    )
+    with TestClient(app) as client:
+        component_id = _create(client, frame=_OPS_STORED)
+        response = _render(client, component_id, _OPS_TARGET)
+
+    assert response.status_code == 200, response.text
+
+
 @pytest.mark.parametrize(
     ("stored_groupby", "target", "target_groupby"),
     [
@@ -499,9 +644,10 @@ def test_a_dataset_card_refuses_a_target_that_is_not_its_dataset_rendering(
 
 
 def test_a_derived_card_renders_on_a_frame_of_the_same_recipe(
-    client: TestClient, recipes: _Recipes
+    client: TestClient, recipes: _Recipes, snapshots: FakeSnapshotReader
 ):
     recipes.hashes = {_OPS_STORED: "rnf_" + "a" * 32, _OPS_TARGET: "rnf_" + "a" * 32}
+    _record(snapshots, _OPS_TARGET)
     component_id = _create(client, frame=_OPS_STORED)
 
     response = _render(client, component_id, _OPS_TARGET)
@@ -613,6 +759,7 @@ def test_a_target_frame_that_does_not_load_refuses_frame_unavailable_at_409(
 
     assert (response.status_code, response.json()["code"]) == (409, "frame_unavailable")
     assert response.json()["retryable"] is True
+    assert response.json()["detail"].endswith(EXPIRED_FRAME_FIX)
 
 
 @pytest.mark.parametrize(

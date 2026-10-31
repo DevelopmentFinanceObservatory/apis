@@ -20,6 +20,8 @@ from tests.code_index.aid_identity import (
 )
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
+_HEADLINE = "provenance/ONEOECDHeadlineODA"
+
 
 @pytest.fixture(scope="module")
 def index():
@@ -39,6 +41,56 @@ def index():
 )
 def test_a_family_label_leads_with_the_measure_partition_label(index, identity, expected):
     assert family_label(identity, index=index, measure_index=get_measure_index()) == expected
+
+
+_HEADLINE_IDENTITY = {
+    "identity_version": "spec1",
+    "shape": {
+        "kind": "statvar_schema",
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+        "measurement_qualifier": "Nominal",
+    },
+    "slots": [
+        {"property": "dac1AidType", "binding": {"state": "value", "ref": "DAC1AidType1010"}},
+        {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+        {"property": "nettingBasis", "binding": {"state": "value", "ref": "Net"}},
+    ],
+    "entities": {"origin": ["country/USA"]},
+    "requested_window": {"kind": "range", "start_year": 2015, "end_year": 2020},
+}
+
+
+@pytest.mark.parametrize(
+    ("identity", "plain"),
+    [
+        (
+            education_aid_identity(source="provenance/ONEBilateralAndImputedMultilateral"),
+            education_aid_identity(),
+        ),
+        (
+            {**_HEADLINE_IDENTITY, "facets": {"provenance": {"state": "value", "ref": _HEADLINE}}},
+            _HEADLINE_IDENTITY,
+        ),
+    ],
+    ids=["stacked", "spliced"],
+)
+def test_a_composite_is_named_by_its_declaration(index, identity, plain):
+    """A stacked composite's components share the measure, so its label follows the measure
+    label with the composite's; a spliced one's measure changes between its periods, so the
+    composite's label replaces it."""
+    measures = get_measure_index()
+    composite = index.composite(identity["facets"]["provenance"]["ref"])
+    assert composite is not None
+    plain_label = family_label(plain, index=index, measure_index=measures)
+    assert plain_label is not None
+    measure, _, slots = plain_label.partition(", ")
+
+    label = family_label(identity, index=index, measure_index=measures)
+
+    lead = [measure, composite.label] if composite.kind == "stacked" else [composite.label]
+    assert label == ", ".join([*lead, *([slots] if slots else [])])
 
 
 def test_the_imputed_label_leaves_out_every_slot_its_five_tuple_pins(index):

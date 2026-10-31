@@ -21,14 +21,14 @@ from datasets_api.doors.snapshot import build_snapshot_door
 from datasets_api.kinds import spec_id as spec_id_kind
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
-from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
+from datasets_api.versions import NullHeadWriter
 from dc_sdmx import SdmxClient
 from materialise import finish as finish_module
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
 
-from ._app_factories import make_client
+from ._app_factories import make_client, offline_allowances
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
@@ -37,6 +37,7 @@ from ._operation_store import FakeOperationDatasetStore
 from ._snapshot_doubles import (
     FakeSnapshotReader,
     FakeSpecReader,
+    RecordingVersionWriter,
     _location,
     _store_and_locate,
     _version,
@@ -124,6 +125,7 @@ def test_mint_response_carries_server_timing_with_every_expected_phase():
         "store_frame",
         "record",
         "head_advance",
+        "retention",
         "handoff",
     }
     counts = _server_timing_counts(resp.headers["server-timing"])
@@ -164,6 +166,7 @@ def test_definition_retrieval_response_carries_server_timing_and_keeps_no_store(
         "store_frame",
         "record",
         "head_advance",
+        "retention",
     }
 
 
@@ -219,6 +222,7 @@ def _spec_id_mint_client(delay: _Delay):
     store and calls nothing.
     """
     store = FakeDatasetStore()
+    reader = FakeSnapshotReader()
     return make_client(
         registry=_Delayed(LiveSpecRegistry(store=store), delay=delay),
         spec_reader=_Delayed(LiveSpecReader(store=store), delay=delay),
@@ -227,8 +231,8 @@ def _spec_id_mint_client(delay: _Delay):
         artifact_store=_Delayed(
             FakeArtifactStore(), delay=delay, exempt=frozenset({"open_put", "deferred"})
         ),
-        snapshot_reader=_Delayed(FakeSnapshotReader(), delay=delay),
-        version_writer=_Delayed(NullVersionRecordWriter(), delay=delay),
+        snapshot_reader=_Delayed(reader, delay=delay),
+        version_writer=_Delayed(RecordingVersionWriter(reader=reader), delay=delay),
         head_writer=_Delayed(NullHeadWriter(), delay=delay),
         reference_writer=FakeArtifactReferenceWriter(),
         coverage=_Delayed(_coverage_service(), delay=delay),
@@ -290,6 +294,7 @@ def test_spec_id_mint_server_timing_names_every_stage():
         "store_frame",
         "record",
         "head_advance",
+        "retention",
         "handoff",
     }
 
@@ -452,6 +457,7 @@ def test_head_hit_mint_server_timing_names_the_version_state_read():
         "coverage",
         "head_read",
         "snapshot_state",
+        "retention",
         "handoff",
     }
     assert {"coverage", "head_read", "snapshot_state"} <= _server_timing_metric_names(
@@ -500,7 +506,7 @@ def test_snapshot_response_carries_server_timing_and_keeps_no_store():
     assert resp.status_code == 200, resp.text
     assert resp.headers["cache-control"] == "no-store"
     names = _server_timing_metric_names(resp.headers["server-timing"])
-    assert names == {"total"}
+    assert names == {"total", "retention"}
 
 
 def _register_client():
@@ -537,6 +543,7 @@ def _pin_client():
             snapshot_reader=reader,
             artifact_store=store,
             reference_writer=FakeArtifactReferenceWriter(),
+            allowances=offline_allowances(),
             now=lambda: _NOW,
         ),
         settings=DatasetsBuildSettings.from_env(),

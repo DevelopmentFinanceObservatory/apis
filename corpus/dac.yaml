@@ -64,13 +64,12 @@
 
 - id: dq-dac-007
   query: ODA from G7 countries
-  why: '"G7 countries" asks for the members, so the seven donors answer; DAC1''s G7 total answers "the G7" (dq-dac-036).'
+  why: '"G7 countries" asks for the members, so the seven donors answer on the OECD headline per year; DAC1''s G7 total answers "the G7" (dq-dac-036).'
   tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
-  # Known failure: "ODA" reads DAC1's ODA amount, not its grant equivalent.
-  known_failure: {issue: 1186, checks: [measure]}
   expect:
     definite:
-      measure: {family: dac1.oda_grant_equivalent}
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
       entities: [{dcid: GroupOfSeven, role: origin, expands: true}]
 
 - id: dq-dac-008
@@ -161,11 +160,9 @@
 
 - id: dq-dac-016
   query: GNI of Denmark
-  why: DAC1 carries GNI only as the denominator of the ODA ratio; a plain GNI question elects the World Bank series.
+  why: The DFO series carries the World Bank indicator NY.GNP.MKTP.CD, and DAC1 serves it for Denmark.
   tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [dac1], probe: [source_election]}
-  # Known failure: "GNI of Denmark" returns candidates, not a definite answer.
-  known_failure: {issue: 1249, checks: [disposition]}
-  expect: {definite: {measure: {family: base.gni}, entities: [{dcid: country/DNK, role: observationAbout}]}}
+  expect: {definite: {measure: {family: dac1.gni}, entities: [{dcid: country/DNK, role: observationAbout}]}}
 
 - id: dq-dac-017
   query: oda gni ratio swedan
@@ -222,7 +219,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      entities: [{dcid: country/ETH, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       window: {kind: range, start: 1965, end: 1965}
 
 - id: dq-dac-019
@@ -243,7 +240,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
 
 - id: dq-dac-020
@@ -293,7 +290,7 @@
     overlap: [dac2a]
     probe: [source_election]
   expect:
-    entities: [{dcid: country/KEN, role: destination}]
+    entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
     window: {kind: range, start: 2022, end: 2022}
     definite: {measure: {family: [mls.imputed, dac2a.imputed_multilateral]}}
     candidates: {include_families: [mls.imputed, dac2a.imputed_multilateral]}
@@ -303,7 +300,7 @@
   why: CRS cooperation modality D01/D02 also answers; candidates naming both families fit.
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: modality, door: raw_text, phrasing: technical, overlap: [crs]}
   expect:
-    entities: [{dcid: country/MWI, role: destination}]
+    entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/MWI, role: destination}]
     definite: {measure: {family: dac2a.technical_cooperation}}
     candidates: {include_families: [dac2a.technical_cooperation]}
 
@@ -314,7 +311,7 @@
   expect:
     definite:
       measure: {family: dac2a.food_aid}
-      entities: [{dcid: country/HTI, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/HTI, role: destination}]
       window: {kind: range, start: 1995, end: 1995}
 
 - id: dq-dac-026
@@ -324,7 +321,7 @@
   expect:
     definite:
       measure: {family: dac2b.oof_gross}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
 - id: dq-dac-027
@@ -334,7 +331,7 @@
   expect:
     definite:
       measure: {family: dac2b.oof_gross}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
 - id: dq-dac-028
@@ -344,7 +341,7 @@
   expect:
     definite:
       measure: {family: dac2b.non_concessional_net}
-      entities: [{dcid: country/IND, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/IND, role: destination}]
       window: {kind: range, start: 2015, end: 2015}
 
 - id: dq-dac-029
@@ -354,7 +351,7 @@
   expect:
     definite:
       measure: {family: dac2b.export_credits_gross}
-      entities: [{dcid: country/IDN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/IDN, role: destination}]
       window: {kind: range, start: 2010, end: 2010}
 
 - id: dq-dac-030
@@ -364,16 +361,16 @@
   expect:
     definite:
       measure: {family: dac2b.interest_received}
-      entities: [{dcid: country/KEN, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2015, end: 2015}
 
 - id: dq-dac-035
   query: aid from the G7 to Africa
-  why: DAC2a publishes the G7 total as a provider and DAC's Africa total as a recipient, so each group reads as its published total.
+  why: DAC2a publishes the G7 total as a provider and DAC's Africa total as a recipient, counted in net disbursements, the OECD's convention for a recipient total.
   tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: dac2a.oda_gross_received}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: GroupOfSeven, role: origin}, {dcid: DACAfrica, role: destination}]
 
 - id: dq-dac-036
@@ -401,17 +398,17 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      entities: [{dcid: DACFarEastAsia, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACFarEastAsia, role: destination}]
 
 - id: dq-dac-039
   query: ODA from France to Asia (DAC) for health
-  why: CRS answers the sector question using the DAC region's members and states the regional allocations they omit.
+  why: The CRS answers health, CRS 120 and 130 by the declared grouping, over the DAC region's members plus the regional and unspecified buckets it publishes.
   tags: {theme: health, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure:
         family: crs.disbursement_gross
-        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]}
       entities: [{dcid: country/FRA, role: origin}, {label: Asia (DAC), role: destination, expands: true}]
 
 - id: dq-dac-040

@@ -47,13 +47,14 @@ _E2E_SV_DCID = (
 _E2E_KEN_DCID = "country/KEN"
 
 
-def _e2e_sv_arcs() -> dict:
+def _e2e_sv_arcs(dcid: str = _E2E_SV_DCID) -> dict:
+    """The graph arcs of the packaged index's StatVar `dcid`."""
     from code_index.shared import get_index
 
-    row = next(r for r in get_index().statvars if r.dcid == _E2E_SV_DCID)
+    row = next(r for r in get_index().statvars if r.dcid == dcid)
     return {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-        "name": {"nodes": [{"value": _E2E_SV_DCID}]},
+        "name": {"nodes": [{"value": dcid}]},
         "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
         "measuredProperty": {"nodes": [{"dcid": "grantEquivalent"}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
@@ -164,24 +165,30 @@ def test_two_dropped_qualifiers_keeps_only_the_unadmitted_one():
     ] == [("measure_not_applied", "an entirely unrelated qualifier")]
 
 
-def test_unadmitted_dropped_qualifier_survives_unchanged():
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "a phrase naming nothing in the index",
+        # Asks for every member of a flow role, which a subject-only answer has none of.
+        "from all donors",
+    ],
+)
+def test_unadmitted_dropped_qualifier_survives_unchanged(phrase):
     """A dropped qualifier no region admitted survives unchanged -- the
     regression guard that behaviour still works unchanged."""
     response = offline_resolve(
         make_request(_E2E_QUERY),
         graph=_e2e_graph(),
-        llm=_ExtractAndBindLLM(dropped_qualifiers=["a phrase naming nothing in the index"]),
+        llm=_ExtractAndBindLLM(dropped_qualifiers=[phrase]),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
     warnings = [w for w in response.diagnostics.warnings if w.code == QUERY_QUALIFIER_DROPPED]
     assert len(warnings) == 1
-    assert warnings[0].message == (
-        'The requested qualifier "a phrase naming nothing in the index" was not applied.'
-    )
+    assert warnings[0].message == f'The requested qualifier "{phrase}" was not applied.'
     assert warnings[0].message not in response.parts[0].spec.resolved.rendered_sentence
     assert [
         (d.code, d.asked) for d in response.parts[0].departures if d.code == "measure_not_applied"
-    ] == [("measure_not_applied", "a phrase naming nothing in the index")]
+    ] == [("measure_not_applied", phrase)]
 
 
 def test_terminal_before_election_reports_no_admitted_phrases():
@@ -456,15 +463,16 @@ def test_spec_id_is_byte_identical_with_and_without_provenance_populated():
 
 
 def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
-    """The three provenances build_spec can stamp: a property in
+    """The provenances build_spec can stamp: a property in
     measure_elected_properties gets "measure_elected", one in
-    text_recognized_properties keeps "text_recognized", and every other
-    slot's property gets "binder"."""
+    text_recognized_properties keeps "text_recognized", one grouped as well reads
+    "declared_grouping", and every other slot's property gets "binder"."""
     shape = _PERSON_SHAPE
     slots = [
         value_slot("what", "textProp", "textProp", "val1"),
         value_slot("what", "measureProp", "measureProp", "val2"),
         value_slot("what", "binderProp", "binderProp", "val3"),
+        value_slot("what", "groupedProp", "groupedProp", "val4"),
     ]
     stat_vars = [
         StatVar(ref=_gr("sv"), shape_id=shape.shape_id, slot_values=[], constraint_properties=[])
@@ -476,7 +484,8 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
         stat_vars=stat_vars,
         entities=[],
         coverage=CoverageBare(has_data=True),
-        text_recognized_properties=frozenset({"textProp"}),
+        text_recognized_properties=frozenset({"textProp", "groupedProp"}),
+        grouped_properties=frozenset({"groupedProp"}),
         measure_elected_properties=frozenset({"measureProp"}),
     )
 
@@ -488,6 +497,7 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
     assert _provenance("textProp") == "text_recognized"
     assert _provenance("measureProp") == "measure_elected"
     assert _provenance("binderProp") == "binder"
+    assert _provenance("groupedProp") == "declared_grouping"
 
 
 def test_measure_elected_and_text_recognized_overlap_raises():
@@ -515,15 +525,18 @@ def test_measure_elected_and_text_recognized_overlap_raises():
         )
 
 
-def test_merged_spec_keeps_provenance_through_collapse_same_shape():
+@pytest.mark.parametrize("grouped", [False, True], ids=["text-recognised", "grouped"])
+def test_merged_spec_keeps_provenance_through_collapse_same_shape(grouped):
     """The same merged spec keeps the provenance through
     collapse_same_shape -- unioned across the group, so a property only ONE
-    member forced still reads text_recognized on the merged spec."""
+    member forced still reads text_recognized on the merged spec, and one a member's
+    sector concept bound to its grouping still reads declared_grouping."""
     spec_a = _spec(
         _PERSON_SHAPE,
         "ValA",
         sv_dcid="sv",
         text_recognized_properties=frozenset({"constraintProp"}),
+        grouped_properties=frozenset({"constraintProp"}) if grouped else None,
     )
     spec_b = _spec(_PERSON_SHAPE, "ValB", sv_dcid="sv")  # binder (the default)
     region_a = RegionResult(
@@ -551,7 +564,7 @@ def test_merged_spec_keeps_provenance_through_collapse_same_shape():
     merged_filter = next(
         f for f in merged_spec.resolved.trace.slot_filters if f.key.property.ref == "constraintProp"
     )
-    assert merged_filter.provenance == "text_recognized"
+    assert merged_filter.provenance == ("declared_grouping" if grouped else "text_recognized")
 
 
 def test_merged_spec_keeps_measure_elected_provenance_through_collapse_same_shape():

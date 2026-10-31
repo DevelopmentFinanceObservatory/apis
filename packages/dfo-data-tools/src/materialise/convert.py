@@ -414,6 +414,8 @@ def _term_values(
     term records its row and key in `terms.projected`."""
     missing_cause = "rate_missing" if kind == "exchange_rate" else "deflator_missing"
     refused_cause = "base_year_projected" if at_base_year else missing_cause
+    # Rows repeat a few (entity, year) keys, so each distinct key is looked up once.
+    outcomes: dict[tuple[str | None, int | None], _TermOutcome] = {}
     values: list[float | None] = []
     for index, (key_entity, year, is_skipped) in enumerate(
         zip(keys, years, terms.skip, strict=True)
@@ -421,31 +423,58 @@ def _term_values(
         if is_skipped:
             values.append(None)
             continue
-        key = f"{key_entity}@{year}"
-        found = (
-            lookup.get((key_entity, year)) if key_entity is not None and year is not None else None
-        )
-        if found is None:
-            if kind == "exchange_rate":
-                terms.gaps[missing_cause].add(key)
-            elif key_entity is None or year is None:
-                terms.gaps[_DEFLATOR_UNKEYED].add(key)
-            else:
-                terms.gaps[missing_cause].add(key)
-                terms.deflator_gap_rows.add(index)
-            values.append(None)
-            continue
-        value, facet = found
-        if facet not in terms.converted:
-            terms.gaps[refused_cause].add(key)
-            if refused_cause == "deflator_missing":
-                terms.deflator_gap_rows.add(index)
-            values.append(None)
-            continue
-        if facet == "projected":
-            terms.projected.append((index, key))
+        outcome = outcomes.get((key_entity, year))
+        if outcome is None:
+            outcome = outcomes[key_entity, year] = _term_outcome(
+                lookup,
+                terms,
+                key_entity=key_entity,
+                year=year,
+                kind=kind,
+                missing_cause=missing_cause,
+                refused_cause=refused_cause,
+            )
+        value, leaves_row_out, projected_key = outcome
+        if leaves_row_out:
+            terms.deflator_gap_rows.add(index)
+        if projected_key is not None:
+            terms.projected.append((index, projected_key))
         values.append(value)
     return values
+
+
+type _TermOutcome = tuple[float | None, bool, str | None]
+
+
+def _term_outcome(
+    lookup: Mapping[tuple[str, int], tuple[float, str]],
+    terms: _Terms,
+    *,
+    key_entity: str | None,
+    year: int | None,
+    kind: Literal["exchange_rate", "deflator"],
+    missing_cause: str,
+    refused_cause: str,
+) -> _TermOutcome:
+    """The term `_term_values` reads at `key_entity` and `year`, adding its gap to
+    `terms.gaps`: its value, whether a row reading it is left out for a missing deflator, and
+    its key when the term is projected."""
+    key = f"{key_entity}@{year}"
+    found = lookup.get((key_entity, year)) if key_entity is not None and year is not None else None
+    if found is None:
+        if kind == "exchange_rate":
+            terms.gaps[missing_cause].add(key)
+            return None, False, None
+        if key_entity is None or year is None:
+            terms.gaps[_DEFLATOR_UNKEYED].add(key)
+            return None, False, None
+        terms.gaps[missing_cause].add(key)
+        return None, True, None
+    value, facet = found
+    if facet not in terms.converted:
+        terms.gaps[refused_cause].add(key)
+        return None, refused_cause == "deflator_missing", None
+    return value, False, key if facet == "projected" else None
 
 
 def _raise_if_gaps(gaps: Mapping[str, set[str]], *, causes: Sequence[str] = _GAP_PRIORITY) -> None:

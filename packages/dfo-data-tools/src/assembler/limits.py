@@ -30,7 +30,7 @@ LABEL_MAX = 200
 MAX_ENVELOPE_BYTES = 2 * 1024 * 1024
 """UTF-8 bytes allowed for `component` and `provenance`, using compact JSON with
 `ensure_ascii=False`. Checked after minting and again on an in-transaction
-rebuild, before a create pins its frame.
+rebuild, before the write.
 
 The four envelope scalars add under 200 bytes. Replies also carry a fact
 summary capped at 2,000 approximate tokens. Readback trusts revisions stored

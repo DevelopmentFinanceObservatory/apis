@@ -27,6 +27,12 @@ def _fresh_process_credentials(monkeypatch):
     monkeypatch.setattr(signing, "_process_credentials", signing._ProcessCredentials())
 
 
+@pytest.fixture(autouse=True)
+def _no_storage_emulator(monkeypatch):
+    """Sign as production does, even in a shell that has sourced the local stack's env."""
+    monkeypatch.delenv(signing.STORAGE_EMULATOR_ENV, raising=False)
+
+
 class _BufferedSink(io.BytesIO):
     """A plain in-memory `ArtifactSink` stand-in: `io.BytesIO` already
     satisfies `write`/`tell`/`flush`/`readable`/`writable`/`seekable`, so
@@ -419,6 +425,8 @@ class FakeGCSBucket:
         self.raise_on_next_copy: Exception | None = None
         # Most recent staging writer opened in this bucket.
         self.last_writer: FakeGCSBlobWriter | None = None
+        # GCS answers 404 to a copy into a bucket that does not exist.
+        self.missing = False
 
     def blob(self, name: str) -> FakeGCSBlob:
         return FakeGCSBlob(self, name)
@@ -441,6 +449,8 @@ class FakeGCSBucket:
             raise exc
         if blob.name not in self.objects:
             raise NotFound(f"source object {blob.name!r} not found in bucket {self.name!r}")
+        if destination_bucket.missing:
+            raise NotFound(f"bucket {destination_bucket.name!r} not found")
         dest_name = new_name if new_name is not None else blob.name
         exists = dest_name in destination_bucket.objects
         if if_generation_match == 0 and exists:

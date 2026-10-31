@@ -11,10 +11,14 @@ from pydantic import BaseModel
 
 import search.models
 from search.models import (
+    ChoiceOrigin,
     ConversionCurrency,
+    Entry,
     GraphRef,
     IdentityFacetValueAbsent,
+    LedgerStep,
     RoleAxisFact,
+    ShapeBinding,
     StatVar,
 )
 from search.models.base import required_nullable_fields
@@ -31,7 +35,19 @@ _NULL_INSTANCES: dict[type[BaseModel], BaseModel] = {
         base_year_max=None,
     ),
     IdentityFacetValueAbsent: IdentityFacetValueAbsent(ref=None),
+    LedgerStep: LedgerStep(
+        axis="measure_basis",
+        prior=None,
+        applied=Entry(
+            axis="measure_basis",
+            option_id="measure_basis:net",
+            provenance="explicit",
+            origin=ChoiceOrigin(choice_id="choice"),
+        ),
+        revision=0,
+    ),
     RoleAxisFact: RoleAxisFact(role="destination", member_count=None, members_available=False),
+    ShapeBinding: ShapeBinding(measured_property="grantEquivalent", netting_basis=None),
     StatVar: StatVar(
         ref=GraphRef(ref="Count_Person", label="Population"),
         shape_id="shape",

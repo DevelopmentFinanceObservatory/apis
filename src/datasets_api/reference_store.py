@@ -8,9 +8,10 @@ failures and empty `RETURNING` results raise `DatasetsStoreUnavailable`.
 under the subject id and every id in `revoked_under`, in the upsert statement, and under
 `lock_version_links` checks that the version still links the digest, so a pin completes only
 for a digest the version keeps. A pin naming a served id honours revocations under it, and a
-pin naming a posted id passes both ids. `remove_reference` soft-deletes a live row.
-`count_pinned_copies_since` counts pinned-tier locations by `stored_at` whose digest holds a
-reference of one kind, which the pin door's daily budget reads.
+pin naming a posted id passes both ids. An export's reference (`EXPORT_REFERENCE_KIND`) passes
+`require_link=False`, since its record names its file and a derived frame's file is linked to no
+version. `remove_reference` soft-deletes a live row. `holds_reference` asks whether any row, live
+or removed, names a version.
 `list_live_reference_principals` is a read-only diagnostic query.
 """
 
@@ -19,12 +20,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, cast
+from typing import cast
 
 from dataset_store import DatasetStore
 from dataset_store.snapshot import (
     ArtifactNotFound,
-    ArtifactReferenceWriter,
     SnapshotRevoked,
     revoking_subjects_sql,
 )
@@ -34,6 +34,10 @@ from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
 # The pin door writes `pin` to the free-text kind column.
 PIN_REFERENCE_KIND = "pin"
+
+# The exports door writes `export`, under the principal `export:<export_id>`, so every deletion
+# keyed on references keeps an export's pinned copy.
+EXPORT_REFERENCE_KIND = "export"
 
 # Alerts use this marker when a pinned copy succeeds but its reference write fails. A retry writes
 # the reference without copying again. Keep the marker stable for alert policies.
@@ -54,15 +58,6 @@ def _revocations(
         "WHERE subject_id = %s AND content_version = %s))"
     )
     return sql, (*subjects, content_version, subject_id, content_version)
-
-
-class PinReferenceWriter(ArtifactReferenceWriter, Protocol):
-    """A reference writer that can also count the pinned copies the budget limits."""
-
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
-        """Count pinned-tier locations stored at or after `since` whose digest holds a
-        `reference_kind` reference."""
-        ...
 
 
 @dataclass(frozen=True)
@@ -136,6 +131,7 @@ class LiveArtifactReferenceWriter:
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> datetime:
         return self.claim_reference_unless_revoked(
             principal=principal,
@@ -145,6 +141,7 @@ class LiveArtifactReferenceWriter:
             reference_kind=reference_kind,
             now=now,
             revoked_under=revoked_under,
+            require_link=require_link,
         ).created_at
 
     def claim_reference_unless_revoked(
@@ -157,6 +154,7 @@ class LiveArtifactReferenceWriter:
         reference_kind: str,
         now: datetime,
         revoked_under: Sequence[str] = (),
+        require_link: bool = True,
     ) -> ReferenceWrite:
         failure: str | None = None
         revocations_sql, revocations_params = _revocations(
@@ -167,21 +165,23 @@ class LiveArtifactReferenceWriter:
         changed = False
         try:
             with self._store.transaction() as tx:
-                # Under the lock, a re-render either replaced the link already, and this refuses,
-                # or sees the pinned location this reference's caller wrote, and keeps the link.
-                lock_version_links(tx, subject_id=subject_id, content_version=content_version)
-                linked = tx.fetch_one(
-                    "SELECT 1 AS linked FROM datasets.version_artifact "
-                    "WHERE subject_id = %s AND content_version = %s AND artifact_digest = %s "
-                    "LIMIT 1",
-                    (subject_id, content_version, artifact_digest),
-                )
-                if linked is None:
-                    raise ArtifactNotFound(
-                        id=subject_id,
-                        content_version=content_version,
-                        artifact_digest=artifact_digest,
+                if require_link:
+                    # Under the lock, a re-render either replaced the link already, and this
+                    # refuses, or sees the pinned location this reference's caller wrote, and
+                    # keeps the link.
+                    lock_version_links(tx, subject_id=subject_id, content_version=content_version)
+                    linked = tx.fetch_one(
+                        "SELECT 1 AS linked FROM datasets.version_artifact "
+                        "WHERE subject_id = %s AND content_version = %s AND artifact_digest = %s "
+                        "LIMIT 1",
+                        (subject_id, content_version, artifact_digest),
                     )
+                    if linked is None:
+                        raise ArtifactNotFound(
+                            id=subject_id,
+                            content_version=content_version,
+                            artifact_digest=artifact_digest,
+                        )
                 # Revocation check and upsert share a statement snapshot, and the check covers
                 # the version and its base version. Removed rows reactivate. Live rows remain
                 # unchanged and return no row.
@@ -259,37 +259,6 @@ class LiveArtifactReferenceWriter:
             )
         return ReferenceWrite(created_at=cast(datetime, row["created_at"]), changed=changed)
 
-    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
-        """Count pinned-tier locations stored at or after `since` whose digest holds a
-        `reference_kind` reference, removed ones too, since their copy was made.
-
-        One location exists per digest and tier, and a deduplicated copy keeps its `stored_at`,
-        so this counts promotions: a second reference to a pinned digest, a repaired reference,
-        and a repeat pin add nothing. Copies only another kind references, such as a
-        presentation pin's, are left out.
-        """
-        failure: str | None = None
-        sqlstate: str | None = None
-        row = None
-        try:
-            with self._store.transaction() as tx:
-                row = tx.fetch_one(
-                    "SELECT count(*) AS n FROM datasets.artifact_location al "
-                    "WHERE al.tier = 'pinned' AND al.stored_at >= %s "
-                    "AND al.artifact_digest IN (SELECT r.artifact_digest "
-                    "FROM datasets.artifact_reference r WHERE r.reference_kind = %s)",
-                    (since, reference_kind),
-                )
-        except Exception as exc:
-            failure = (
-                f"counting pinned artifact_location rows referenced by kind {reference_kind!r} "
-                f"since {since.isoformat()} failed: {safe_diagnostics(exc)}"
-            )
-            sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return cast(int, row["n"]) if row is not None else 0
-
     def remove_reference(
         self,
         *,
@@ -320,6 +289,26 @@ class LiveArtifactReferenceWriter:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+
+    def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
+        failure: str | None = None
+        sqlstate: str | None = None
+        try:
+            with self._store.transaction() as tx:
+                row = tx.fetch_one(
+                    "SELECT 1 FROM datasets.artifact_reference "
+                    "WHERE subject_id = %s AND content_version = %s LIMIT 1",
+                    (subject_id, content_version),
+                )
+        except Exception as exc:
+            failure = (
+                f"reading artifact_reference for subject_id {subject_id!r} content_version "
+                f"{content_version!r} failed: {safe_diagnostics(exc)}"
+            )
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return row is not None
 
 
 def list_live_reference_principals(*, store: DatasetStore, reference_kind: str) -> tuple[str, ...]:

@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 from code_index.shared import get_index
+from materialise import GraphReader
 from search.engine.bind import (
     DraftBindingEvidence,
     DraftBindingKind,
@@ -16,14 +17,17 @@ from search.engine.bind import (
 from search.engine.bind_repair import apply_shape_slot_defaults
 from search.engine.errors import GraphInfraError
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.codes import SLOT_DEFAULT_NOT_APPLIED
+from search.engine.region.codes import MEMBERSHIP_UNVERIFIED, SLOT_DEFAULT_NOT_APPLIED
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.shape import ShapeDraft, shape_draft_from
+from search.engine.stated_words_read import StatedWordsOutput
+from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._harness import member_walk_reader
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _ETH = "country/ETH"
@@ -116,6 +120,8 @@ class _RecordedBirthRateLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         self.prompts.append(prompt)
         recorded = _UniversalBindOutput.model_validate_json(
@@ -127,7 +133,14 @@ class _RecordedBirthRateLLM:
         return recorded, {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
 
 
-def _resolve(graph: FakeGraph, *, query: str, entities: list[str], llm) -> RegionResult:
+def _resolve(
+    graph: FakeGraph,
+    *,
+    query: str,
+    entities: list[str],
+    llm,
+    materialise_graph: GraphReader | None = None,
+) -> RegionResult:
     return asyncio.run(
         resolve_variable(
             query,
@@ -142,7 +155,7 @@ def _resolve(graph: FakeGraph, *, query: str, entities: list[str], llm) -> Regio
             llm=llm,
             base_timing={},
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(deadline=None),
+            options=EngineOptions(deadline=None, materialise_graph=materialise_graph),
         )
     )
 
@@ -185,10 +198,11 @@ def _status(
     )
 
 
-def test_births_declare_live_birth_as_the_medical_status_default() -> None:
+def test_the_index_declares_live_births_and_debt_outstanding_as_slot_defaults() -> None:
     defaults = get_index().shape_slot_defaults
     assert [(d.population_type, d.property_dcid, d.value_dcid) for d in defaults] == [
-        ("BirthEvent", "medicalStatus", "LiveBirth")
+        ("BirthEvent", "medicalStatus", "LiveBirth"),
+        ("FinancialPosition", "financialPositionType", "AmountOutstanding"),
     ]
 
 
@@ -363,3 +377,56 @@ def test_a_default_no_member_with_data_holds_is_not_applied_and_the_total_answer
     assert [w.code for w in result.warnings if w.code == SLOT_DEFAULT_NOT_APPLIED] == [
         SLOT_DEFAULT_NOT_APPLIED
     ]
+
+
+class _OpenStatusBindLLM:
+    """Elects the one births shape and drafts `medicalStatus` unbound, as a reply naming no
+    status does."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
+        assert schema.__name__ == "_UniversalBindOutput"
+        return elected_reply(0, bindings=[_status()], also_plausible=None), None
+
+
+def test_a_status_a_live_birth_sample_claims_yields_to_the_live_birth_default() -> None:
+    """Recall holds the crude birth rate alone, so settle claims `LiveBirth` as the status's
+    sole option on that sample, and the walk finds the births total beside it. The slot
+    default binds `LiveBirth` over the claim, so the walk reads the status bound and the
+    crude birth rate answers. Read as bound, the claim kept the default off the slot, the
+    walk refuted it on the total, and total births answered with the status unbound."""
+    births = {"population_type": "BirthEvent", "meas_prop": "count", "denominator": "Count_Person"}
+    graph = FakeGraph(
+        nodes={
+            _ETH: {"label": "Ethiopia", "type": "Country"},
+            _BIRTHS_PER_CAPITA: _constrained_sv_node(_BIRTHS_PER_CAPITA, constraints={}, **births),
+            _CRUDE_BIRTH_RATE: _constrained_sv_node(
+                _CRUDE_BIRTH_RATE, constraints={"medicalStatus": "LiveBirth"}, **births
+            ),
+        },
+        obs={f"{sv}|{_ETH}": [_FACET] for sv in (_BIRTHS_PER_CAPITA, _CRUDE_BIRTH_RATE)},
+        detect={_BIRTH_RATE_QUERY: _leg((_CRUDE_BIRTH_RATE, 1.0))},
+        un_detect={},
+        resolve={"Ethiopia": _ETH},
+    )
+
+    result = _resolve(
+        graph,
+        query=_BIRTH_RATE_QUERY,
+        entities=["Ethiopia"],
+        llm=_OpenStatusBindLLM(),
+        materialise_graph=member_walk_reader(graph),
+    )
+
+    assert result.status == "definite", result.no_data_reason
+    (spec,) = result.specs
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_CRUDE_BIRTH_RATE]
+    assert [
+        (f.key.property.ref, [ref.ref for ref in f.refs], f.provenance)
+        for f in spec.resolved.trace.slot_filters
+        if f.key.property is not None
+    ] == [("medicalStatus", ["LiveBirth"], "declared_default")]
+    assert MEMBERSHIP_UNVERIFIED not in {w.code for w in result.warnings}

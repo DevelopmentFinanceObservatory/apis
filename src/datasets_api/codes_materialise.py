@@ -18,12 +18,15 @@ series at some of its places.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
 from dfo_platform.named import named_capped
 from dfo_platform.problem import Alternative, ProblemIssue, Refusal
+from dfo_platform.roles import axis_for_role, declared_role_for
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
 from materialise.errors import MaterialisationError
 from materialise.formats import FORMATS_CODE_CATALOGUE
+from materialise.recipes import RecipeNotDeclaredError, SpecRole, graph_role_for_spec_role
 
 MATERIALISE_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "excluded_by_registry": (
@@ -124,13 +127,41 @@ class UnSystemUnavailable(MaterialisationError):
         super().__init__(detail, detail=detail)
 
 
+def _role_keys(declared_roles: tuple[str, ...]) -> list[str]:
+    """Every `scope.entities` key that binds one of `declared_roles`.
+
+    The `origin` and `destination` aliases come first, in declared order, for each role an
+    alias resolves to alone; the declared role names follow."""
+    aliases = [
+        axis
+        for role in declared_roles
+        if (axis := axis_for_role(role)) is not None
+        and declared_role_for(axis, declared_roles) == role
+    ]
+    return [*aliases, *declared_roles]
+
+
+def _currency_role_keys(declared_roles: tuple[str, ...]) -> list[str]:
+    """The `_role_keys` a unit request's role-shaped `currency` accepts for `declared_roles`:
+    those `graph_role_for_spec_role` maps to one declared role."""
+    keys: list[str] = []
+    for key in _role_keys(declared_roles):
+        try:
+            # A key outside `SpecRole` raises `ValueError`, which skips it.
+            graph_role_for_spec_role(spec_role=cast("SpecRole", key), declared_roles=declared_roles)
+        except (RecipeNotDeclaredError, ValueError):
+            continue
+        keys.append(key)
+    return keys
+
+
 def _scope_role_issue(role: str, declared_roles: tuple[str, ...]) -> ProblemIssue:
-    """The issue for a `scope.entities` role, listing the declared roles as alternatives."""
+    """The issue for a `scope.entities` role, listing the keys that bind a declared role."""
     return ProblemIssue(
         pointer=f"/input/scope/entities/{role}",
         member=role,
         axis=role,
-        alternatives=[Alternative(ref=r, label=r) for r in declared_roles],
+        alternatives=[Alternative(ref=key, label=key) for key in _role_keys(declared_roles)],
         truncated=False,
     )
 
@@ -140,7 +171,9 @@ class MemberNotResolvable(Refusal):
 
     This maps to `member_not_resolvable` with one issue per member at `issue_pointer`, which
     `kinds.spec_id` sets and which defaults to `kinds.statvar_set`'s `/input/statvars`.
-    `truncated` marks a capped list of disagreeing members.
+    `truncated` marks a capped list of disagreeing members. `retryable` marks members a
+    member walk left unsettled on reads that can drop an arc
+    (`MemberGroup.undismissed_rereadable`), which a later walk can settle.
     """
 
     code = "member_not_resolvable"
@@ -150,9 +183,12 @@ class MemberNotResolvable(Refusal):
     def issues(self) -> tuple[ProblemIssue, ...]:
         return tuple(ProblemIssue(pointer=self.issue_pointer, member=m) for m in self.members)
 
-    def __init__(self, *, members: tuple[str, ...], truncated: bool = False) -> None:
+    def __init__(
+        self, *, members: tuple[str, ...], truncated: bool = False, retryable: bool = False
+    ) -> None:
         self.members = members
         self.truncated = truncated
+        self.retryable = retryable
         detail = f"member(s) did not resolve to exactly one registered shape: {members!r}"
         if truncated:
             detail += "; more members disagreed than are named here"
@@ -206,7 +242,8 @@ class InvalidRoleRef(Refusal):
 
     `declared_roles` carries the shape's role list, or is empty when no shape is available. A
     custom `message` can describe an ambiguous-axis binding. `role` and `declared_roles` remain
-    available to the wire mapper. The issue lists the declared roles as alternatives.
+    available to the wire mapper. The issue's alternatives are the keys that bind a declared
+    role: the `origin` and `destination` aliases, then the declared role names.
     """
 
     code = "invalid_role_ref"
@@ -236,8 +273,8 @@ class RoleIncompatible(Refusal):
     absent from the shape. It maps to `role_incompatible`, 422, with one issue per role.
 
     `declared_roles` carries the shape's roles. A custom `message` describes colliding spellings
-    or ambiguous axes. The wire fields remain set. The issue lists the declared roles as
-    alternatives.
+    or ambiguous axes. The wire fields remain set. The issue's alternatives are the keys that
+    bind a declared role: the `origin` and `destination` aliases, then the declared role names.
     """
 
     code = "role_incompatible"
@@ -276,7 +313,8 @@ class CurrencyRoleUndeclared(Refusal):
     Request kinds attach `pointer`. Stored-spec retrieval leaves `pointer` unset. A custom message
     can name conflicting roles. This concerns a role inside the unit value. `InvalidRoleRef` and
     `RoleIncompatible` cover `scope.entities`. Roles outside `_CURRENCY_ROLES` fail identity
-    validation first. The declared roles appear as top-level alternatives.
+    validation first. The top-level alternatives are the currency roles that bind a declared
+    role (`origin`, `destination`, `observationAbout`).
     """
 
     code = "request_invalid"
@@ -291,7 +329,9 @@ class CurrencyRoleUndeclared(Refusal):
     ) -> None:
         self.role = role
         self.declared_roles = declared_roles
-        self.alternatives = [Alternative(ref=r, label=r) for r in declared_roles]
+        self.alternatives = [
+            Alternative(ref=key, label=key) for key in _currency_role_keys(declared_roles)
+        ]
         super().__init__(
             message
             if message is not None
@@ -299,6 +339,37 @@ class CurrencyRoleUndeclared(Refusal):
                 f"stat_var {stat_var!r} does not declare role {role!r}, named by a unit "
                 "request's role-shaped currency"
             )
+        )
+
+
+class CompositeUnservable(Refusal):
+    """A composite identity whose components cannot be served
+    (`code_index.composites.CompositeNotServable`), because it binds a slot a component's rows
+    do not declare, pins a StatVar, names its composite in a provenance set, or has a
+    component that resolves off the code index or from another table than its recipe names.
+    Wire mapping:
+    `request_invalid`, 400. `identity_pointer` names the identity member at fault, relative to
+    the identity, and a door that knows where the identity sits sets `pointer`."""
+
+    code = "request_invalid"
+
+    def __init__(self, message: str, *, identity_pointer: str | None = None) -> None:
+        self.identity_pointer = identity_pointer
+        super().__init__(message)
+
+
+class CompositeWindowUnsupported(Refusal):
+    """A composite identity with a `latest` window. Its components could elect different
+    latest years, so the composite serves a range or every year. Wire mapping:
+    `request_invalid`, 400."""
+
+    code = "request_invalid"
+
+    def __init__(self, *, composite: str) -> None:
+        self.composite = composite
+        super().__init__(
+            f"composite {composite!r} serves a range of years or every year; a latest window "
+            "could elect a different year for each of its components"
         )
 
 

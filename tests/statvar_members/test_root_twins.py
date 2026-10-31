@@ -8,6 +8,7 @@ from statvar_members.enumerate import (
     _REPROBE_BUDGET,
     _TWIN_PROBE_BUDGET,
     MemberRoleDisagreement,
+    _arcs_unproven,
     _ProvisionalDenominatorReader,
     _read_root_twins,
     enumerate_members,
@@ -114,9 +115,11 @@ def test_a_twin_read_missing_a_filtered_arc_settles_only_a_caller_supplied_twin(
         arcs=_CONTRADICTED_TWIN, drop_always={"Count_Person_Z": "statType"}
     )
 
-    confirmed, still_unsettled = _read_root_twins(
+    confirmed, still_unsettled, _ = _read_root_twins(
         ["Count_Person_Z"],
         walked=walked,
+        arcs_by_dcid={},
+        arcs_complete=_arcs_unproven,
         five_tuple=_COUNT,
         slots={},
         graph=reader,
@@ -177,9 +180,11 @@ def test_the_twin_pass_adds_a_type_read_for_each_unseen_denominator_target():
         arcs[f"Denominator{i:02d}"] = {"typeOf": ("ProvisionalNode",)}
     reader = FakeMemberArcReader(arcs=arcs)
 
-    confirmed, unsettled = _read_root_twins(
+    confirmed, unsettled, _ = _read_root_twins(
         twins,
         walked=frozenset(twins),
+        arcs_by_dcid={},
+        arcs_complete=_arcs_unproven,
         five_tuple=ask,
         slots={},
         graph=_ProvisionalDenominatorReader(reader),

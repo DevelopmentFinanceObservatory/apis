@@ -16,8 +16,12 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, SourceCodeRow
 from datasets_api.adapter import resolve_definition_members
+from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
+from search.engine.binders import Binder, GeminiBinder
 from search.engine.core import resolve_async
+from search.engine.entry import parsed as parsed_entry
+from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
 from search.engine.region.pipeline import resolve_variable
@@ -34,14 +38,23 @@ from search.engine.source_code import (
     without_code_words,
 )
 from search.engine.source_scope import SourceReference, SourceScope
-from search.models import ParsedEntity, ParsedInput, ParsedPart, ResolveRequest, SourceMention
+from search.engine.stated_words_read import StatedWordsOutput
+from search.models import (
+    ParsedEntity,
+    ParsedInput,
+    ParsedPart,
+    RawTextInput,
+    ResolveRequest,
+    SourceMention,
+)
 from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._binders import RatingBinder
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 from tests.origin_catalogue.support import build_arc_tables
@@ -68,6 +81,8 @@ _CONCESSIONAL_NET = {
     "nettingBasis": "Net",
 }
 _KEN = "country/KEN"
+_BRA = "country/BRA"
+_GHA = "country/GHA"
 _YEARS = [2020, 2021, 2022]
 _GG = {
     "financialFlowType": "ServicingPayment",
@@ -187,10 +202,12 @@ def _graph(recalled: Sequence[str] = ()) -> FakeGraph:
                 ),
             },
             _KEN: {"label": "Kenya", "type": "Country"},
+            _BRA: {"label": "Brazil", "type": "Country"},
+            _GHA: {"label": "Ghana", "type": "Country"},
         },
         obs={f"{sv}|{_KEN}": [facet] for sv in _ROLE_NAMES},
         detect={"debt service": {"svs": list(recalled)}} if recalled else {},
-        resolve={"Kenya": _KEN},
+        resolve={"Kenya": _KEN, "Brazil": _BRA, "Ghana": _GHA},
     )
 
 
@@ -225,16 +242,18 @@ def _coverage():
 
 
 def _answer(
-    part: ParsedPart,
+    part: ParsedPart | RawTextInput,
     monkeypatch: pytest.MonkeyPatch,
     llm: _BindLLM | None = None,
     *,
     recalled: Sequence[str] = (),
     read: str = _IDS,
+    binder: Binder | None = None,
 ):
-    """`part`'s answer through the parsed door, over a graph recalling `recalled` and
-    coverage holding every StatVar's observations under the provenance `read`, IDS as the
-    graph holds them."""
+    """`part`'s answer through the parsed door, or a query's through the raw-text door,
+    over a graph recalling `recalled` and coverage holding every StatVar's observations
+    under the provenance `read`, IDS as the graph holds them, bound by `binder`, the
+    configured one by default."""
     metadata = {
         facet_id: FacetMetadata(provenance_id=read, observation_period="P1Y")
         for _, facet_id, *_ in _COVERAGE_ROWS
@@ -243,24 +262,27 @@ def _answer(
     graph = _graph(recalled)
     response = asyncio.run(
         resolve_async(
-            ResolveRequest(input=ParsedInput(parts=[part])),
+            ResolveRequest(
+                input=part if isinstance(part, RawTextInput) else ParsedInput(parts=[part])
+            ),
             graph=graph,
             resolver=make_resolver(graph),
             llm=llm or _BindLLM(),
             sdmx=FakeSdmxClient(observations={}),
+            binder=binder,
         )
     )
     (answer,) = response.parts
     return answer
 
 
-def _minted_members(answer) -> set[str]:
-    """The StatVars the Datasets mint resolves `answer`'s identity to over the fixture
-    index, as the orchestrator's fetch by its spec_id reads them."""
-    identity = answer.spec.definition.identity.model_dump(mode="json", exclude_none=True)
+def _minted_members(spec) -> set[str]:
+    """The StatVars the Datasets mint resolves `spec`'s identity to over the fixture index,
+    as the orchestrator's fetch by its spec_id reads them."""
+    identity = spec.definition.identity.model_dump(mode="json", exclude_none=True)
     resolved = resolve_definition_members(
         identity,
-        spec_id=answer.spec.spec_id,
+        spec_id=spec.spec_id,
         graph=FakeMintGraphReader(arcs={}),
         enumerator=MemberEnumerator(),
         code_index=get_index(),
@@ -279,6 +301,8 @@ class _BindLLM:
         self.prompts: list[str] = []
 
     async def generate_structured(self, *, prompt, system, schema):
+        if schema is StatedWordsOutput:
+            return NO_RATING
         if schema is QuantityOutput:
             return NO_QUANTITY
         assert schema.__name__ == "_UniversalBindOutput"
@@ -289,6 +313,24 @@ class _BindLLM:
             ask=self.ask,
             measuring=[ShapeRating(index=0, rating=1.0)],
         ), None
+
+
+class _ExtractLLM(_BindLLM):
+    """Extracts the measure `variable` and the place `place` from a raw-text query, then
+    binds as `_BindLLM` does."""
+
+    def __init__(self, variable: str, place: str) -> None:
+        super().__init__()
+        self.extraction = Extraction(
+            kind="resolution",
+            variables=[variable],
+            entities=[ExtractedEntity(text=place, span=place)],
+        )
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            return self.extraction, None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 
 
 _STAMP = IndexStamp(
@@ -369,12 +411,37 @@ def test_the_parsed_door_answers_a_code_from_its_statvars(
         assert answer.status == "definite", answer
         assert answer.restatement.source_code == _DEGG
         assert answer.spec.definition.identity.open_roles == (["origin"] if open_roles else None)
-        assert _minted_members(answer) == {_BY_CREDITOR if open_roles else _AGGREGATE}
+        assert _minted_members(answer.spec) == {_BY_CREDITOR if open_roles else _AGGREGATE}
         return
     assert answer.no_data.reason == reason
     assert answer.no_data.category == "unresolved"
     if source_code is not None:
         assert answer.no_data.source_terms == [source_code]
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "place", "code"),
+    [
+        ("NY.GDP.MKTP.KD for Brazil", "NY.GDP.MKTP.KD", "Brazil", "NY.GDP.MKTP.KD"),
+        ("SH.DYN.NMRT for Ghana", "SH.DYN.NMRT", "Ghana", "SH.DYN.NMRT"),
+        ("neonatal mortality in Ghana, sh.dyn.nmrt", "neonatal mortality", "Ghana", "SH.DYN.NMRT"),
+        ("DT.TDS.DEGG.CD for Kenya", _DEGG, "Kenya", None),
+    ],
+    ids=["unheld-gdp", "unheld-neonatal", "unheld-beside-words", "held"],
+)
+def test_the_raw_text_door_refuses_a_code_shaped_token_the_index_does_not_hold(
+    query, variable, place, code, monkeypatch
+):
+    """A query writing a World Bank code the index does not hold refuses naming it, where
+    the rest of the phrase would otherwise answer without it. A held code still answers."""
+    answer = _answer(RawTextInput(query=query), monkeypatch, _ExtractLLM(variable, place))
+
+    if code is None:
+        assert answer.status == "definite", answer
+        assert answer.restatement.source_code == _DEGG
+        return
+    assert (answer.no_data.reason, answer.no_data.source_terms) == ("source_code_not_held", [code])
+    assert code in answer.no_data.message
 
 
 def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
@@ -392,18 +459,19 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
 
 
 @pytest.mark.parametrize(
-    ("source_code", "recalled", "bound", "open_roles", "exact"),
+    ("source_code", "recalled", "bound", "open_roles", "exact", "unread"),
     [
-        (_DEGG, (), {}, None, {_DEGG: True}),
-        (None, (_AGGREGATE, _BY_CREDITOR), _GG, None, {_DEGG: True}),
-        (None, (_AGGREGATE, _TOTAL), _ALL_DEBTORS, None, {"DT.TDS.DECT.CD": True}),
-        (_DPPG, (), {}, None, {_DPPG: True}),
+        (_DEGG, (), {}, None, {_DEGG: True}, ()),
+        (None, (_AGGREGATE, _BY_CREDITOR), _GG, None, {_DEGG: True}, ()),
+        (None, (_AGGREGATE, _TOTAL), _ALL_DEBTORS, None, {"DT.TDS.DECT.CD": True}, ()),
+        (_DPPG, (), {}, None, {_DPPG: True}, ("service",)),
         (
             None,
             (_AGGREGATE, _CENTRAL_BANK),
             _TWO_DEBTOR_TYPES,
             None,
             {_DEGG: False, "DT.TDS.DECB.CD": False},
+            (),
         ),
         (
             None,
@@ -411,6 +479,7 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
             _CONCESSIONAL_NET,
             ["creditor"],
             {"DT.NFL.IMFC.CD": False, "DT.NFL.MIDA.CD": False},
+            ("service",),
         ),
     ],
     ids=[
@@ -423,7 +492,7 @@ def _mentioned(values: dict[str, str | list[str]]) -> list[SlotBindingDraft]:
     ],
 )
 def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
-    source_code, recalled, bound, open_roles, exact, monkeypatch, bind_catalogue
+    source_code, recalled, bound, open_roles, exact, unread, monkeypatch, bind_catalogue
 ):
     """A Spec lists the codes of the StatVars it serves, and marks one exact only where a
     part naming that code answers with the same Spec: the members a Datasets mint of its
@@ -432,7 +501,9 @@ def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
     dominates each debtor type's series, so the mint serves DT.TDS.DECT.CD's StatVar alone.
     DT.DOD.DPPG.CD's family holds a variable-rate PPG stock outside the code, which its
     aggregate dominates, so the code part answers. Two debtor types, each its own code,
-    serve a StatVar of each, so neither code is exact."""
+    serve a StatVar of each, so neither code is exact. Neither the PPG debt stock nor the
+    concessional net flows state "service", as the binder rates them, so those parts refuse
+    on it and the Spec each flags lists its codes alike."""
     # The catalogue holds the PPG stock family, as the deployed one does, so a PPG stock
     # shape declares every slot of its family and its identity leaves the variable rate open.
     stocks = (_PPG_STOCK, _PPG_STOCK_BY_CREDITOR, _VARIABLE_PPG_STOCK)
@@ -445,16 +516,30 @@ def test_a_served_code_is_exact_where_a_search_for_it_accepts_the_spec(
         open_roles=open_roles,
     )
 
-    answer = _answer(part, monkeypatch, _BindLLM(bindings=_mentioned(bound)), recalled=recalled)
+    answer = _answer(
+        part,
+        monkeypatch,
+        _BindLLM(bindings=_mentioned(bound)),
+        recalled=recalled,
+        binder=RatingBinder(GeminiBinder(), {"debt": 0.0, "service": 0.0}),
+    )
 
-    assert answer.status == "definite", answer
-    assert served_members(answer.spec.definition.identity) == _minted_members(answer)
-    resolved = answer.spec.resolved
+    if unread:
+        assert answer.no_data.reason == "qualifier_not_bound"
+        assert [(q.text, q.disposition, q.evidence) for q in answer.no_data.unbound_qualifiers] == [
+            (word, "no_vocabulary", "uncovered") for word in unread
+        ]
+        spec = answer.no_data.flagged_match
+    else:
+        assert answer.status == "definite", answer
+        spec = answer.spec
+    assert served_members(spec.definition.identity) == _minted_members(spec)
+    resolved = spec.resolved
     assert resolved.facets["provenance"].ref == _IDS
     assert {(c.provenance, c.code): c.exact for c in resolved.stat_vars.source_codes} == {
         (_IDS, code): flag for code, flag in exact.items()
     }
-    wire = answer.spec.model_dump(mode="json", exclude_none=True)["resolved"]["stat_vars"]
+    wire = spec.model_dump(mode="json", exclude_none=True)["resolved"]["stat_vars"]
     assert ["exact" in entry for entry in wire["source_codes"]] == list(exact.values())
 
 
@@ -853,6 +938,13 @@ _SCAN_INDEX = _index(
             [_DEGG, None],
         ),
         ("DT.TDS.DEGG.CD by creditor, DT.TDS.DEGG.CD", [_DEGG], [_DEGG]),
+        ("NY.GDP.MKTP.KD for Brazil", ["GDP"], ["NY.GDP.MKTP.KD"]),
+        ("neonatal mortality, sh.dyn.nmrt.", ["neonatal mortality"], ["SH.DYN.NMRT"]),
+        (
+            "aid to the U.S. under SDG 3.3.1, e.g. OECD.DCD.FSD data from www.oecd.org",
+            ["aid"],
+            [None],
+        ),
     ],
     ids=[
         "no-code",
@@ -862,10 +954,27 @@ _SCAN_INDEX = _index(
         "short-capitals",
         "two-measures",
         "code-as-measure",
+        "unheld-code",
+        "unheld-lower-case",
+        "dotted-prose",
     ],
 )
-def test_the_query_scan_fills_a_held_code(query, measures, expected):
+def test_the_query_scan_fills_a_code(query, measures, expected):
+    """A token fills its measure's code when it writes a held code or has a series code's
+    shape; other dotted words fill none."""
     assert scan_source_codes(query, measures=measures, index=_SCAN_INDEX) == expected
+
+
+def test_every_held_code_reads_as_a_code_to_an_index_without_it():
+    """Every code the fixture index holds has the shape the scan reads an unheld code by,
+    so the shape never misses a code a release could hold."""
+    codes = sorted({row.code for row in get_index().source_codes})
+    empty = _index([])
+
+    missed = [c for c in codes if scan_source_codes(c, measures=[c], index=empty) != [c]]
+
+    assert codes
+    assert missed == []
 
 
 @pytest.mark.parametrize(
@@ -878,3 +987,59 @@ def test_the_query_scan_fills_a_held_code(query, measures, expected):
 )
 def test_a_codes_words_leave_the_variable_text(variable, expected):
     assert without_code_words(variable, _DEGG) == expected
+
+
+class _TwoHolderIndex:
+    """The packaged index, with DT.TDS.DEGG.CD's StatVars also filed under the CRS, so
+    two provenances hold the code."""
+
+    def __init__(self, index: CodeIndex) -> None:
+        self._index = index
+
+    def __getattr__(self, name: str):
+        return getattr(self._index, name)
+
+    def source_code_members(self, code: str):
+        members = self._index.source_code_members(code)
+        return {**members, _CRS: members[_IDS]} if code.upper() == _DEGG else members
+
+
+def test_a_code_two_named_sources_hold_offers_each_as_the_only_included_source(
+    monkeypatch, bind_catalogue
+):
+    """Both holders are named, and included sources union, so the code is ambiguous between
+    them. Each option names one holder as the part's only included source and keeps the
+    exclusion; posted back, neither refuses source_code_ambiguous again."""
+    rows = [
+        ProvenanceRow(
+            id=ref,
+            data_commons=DFO,
+            source=SourceRef(ref=f"dc/s/{label}", label=label),
+            name=label,
+            url="https://example.org",
+        )
+        for ref, label in ((_IDS, "IDS"), (_CRS, "CRS"), ("dc/base/Other", "Other"))
+    ]
+    bind_catalogue(FakeCatalogue(provenances={row.id: row for row in rows}))
+    monkeypatch.setattr(parsed_entry, "get_index", lambda: _TwoHolderIndex(get_index()))
+    excluded = SourceMention(ref="dc/base/Other", polarity="exclude")
+    part = ParsedPart(
+        variable_text="debt service",
+        entities=[ParsedEntity(text="Kenya")],
+        source_code=_DEGG,
+        sources=[SourceMention(ref=_IDS), SourceMention(ref=_CRS), excluded],
+    )
+
+    answer = _answer(part, monkeypatch)
+
+    assert answer.no_data.reason == "source_code_ambiguous"
+    options = answer.no_data.options
+    assert [(o.mentions, o.data_query.parts[0].sources) for o in options] == [
+        ([_DEGG], [excluded, SourceMention(ref=ref)]) for ref in (_IDS, _CRS)
+    ]
+    # The coverage holds the code's observations under IDS alone, so the CRS option reads
+    # none and refuses on its data, with the choice settled.
+    ids, crs = (_answer(o.data_query.parts[0], monkeypatch) for o in options)
+    assert ids.status == "definite"
+    assert crs.status == "no_data"
+    assert crs.no_data.reason != "source_code_ambiguous"

@@ -51,6 +51,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Literal, Self
 
+from code_index.composites import provenance_datasets
 from materialise.convert import TermKey, row_terms
 from materialise.facets import native_currency_iso
 from materialise.recipe_bodies import ConversionRecipe
@@ -516,12 +517,23 @@ def conversion_period(*, served: YearRun, converted: ConvertedYears) -> Conversi
     return ConversionPeriod(served=served, years=run, limited_by=limited_by)
 
 
+def served_prices(spec: Spec) -> PriceBasis | None:
+    """The price basis of the unit request the answer's identity binds its unit through,
+    served natively or converted. None when no unit request binds it."""
+    return bound_prices(spec.definition.identity.facets)
+
+
+def bound_prices(facets: Mapping[str, IdentityFacetBinding] | None) -> PriceBasis | None:
+    """The price basis of the unit request identity `facets` bind the unit through, None
+    when no unit request binds it."""
+    unit = (facets or {}).get("unit")
+    return unit.request.prices if isinstance(unit, IdentityFacetValueRequest) else None
+
+
 def _unit_requested(spec: Spec) -> bool:
     """Whether the answer's identity binds its unit through a unit request, served natively
     or converted."""
-    return isinstance(
-        (spec.definition.identity.facets or {}).get("unit"), IdentityFacetValueRequest
-    )
+    return served_prices(spec) is not None
 
 
 def _states_currency(spec: Spec) -> bool:
@@ -621,11 +633,12 @@ def _window(run: YearRun | None) -> TimeWindow | None:
 
 
 def _provenances(spec: Spec) -> list[str]:
-    """The served provenances: the provenance facet's one ref, else every resolved
+    """The served provenances: the datasets of the provenance facet's one ref, a composite's
+    component tables (`code_index.composites.provenance_datasets`), else every resolved
     source."""
     provenance = spec.resolved.facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
-        return [provenance.ref]
+        return list(provenance_datasets(provenance.ref))
     return [source.ref for source in spec.resolved.trace.resolved_sources]
 
 

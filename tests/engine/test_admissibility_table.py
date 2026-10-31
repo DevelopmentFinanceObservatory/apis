@@ -50,6 +50,7 @@ from search.engine.region.alternate_guard import (
 from search.engine.region.candidates import alternate_representative
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
+from search.engine.region.qualifier_readings import shape_carries_measure_match
 from search.engine.region.state import ResolveState
 from search.engine.region.status_rule import CLOSED_AXES, OpenAxes
 from search.engine.retrieval.bound_values import (
@@ -58,7 +59,9 @@ from search.engine.retrieval.bound_values import (
     index_member_rows,
     price_basis_order,
 )
+from search.engine.retrieval.derive import derive_shapes
 from search.engine.role_text import DoorRole
+from search.engine.series_declarations import declared_measurement_qualifier
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import DefinitePart, Operation, Resolution, RoleAxis, TimeWindow
 from tests.engine._binders import FixedBindReplyLLM, ReplyBinder, elected_reply
@@ -104,8 +107,18 @@ def _shape(
     units: frozenset[str | None] | None = None,
     place_available: bool | None = None,
 ) -> ShapeDraft:
-    """A shape. `members` maps member dcids to arcs, or lists dcids with no constraint arcs."""
+    """A shape. `members` maps member dcids to arcs, or lists dcids with no constraint arcs.
+    Its value labels are the names the member arcs give their values, as the shape's one
+    batched label read would."""
     facts = {dcid: {} for dcid in members} if isinstance(members, tuple) else members
+    value_labels = {
+        node["dcid"]: node["name"]
+        for arcs in facts.values()
+        for prop, entry in arcs.items()
+        if prop != "constraintProperties"
+        for node in entry["nodes"]
+        if "name" in node
+    }
     return ShapeDraft(
         shape_id=label or f"{pop}/{prop}/{qual}/{denom}",
         label=label,
@@ -117,6 +130,7 @@ def _shape(
         slot_keys=(),
         meas_denom_unresolved=unresolved,
         sv_arc_facts=facts or None,
+        value_labels=value_labels or None,
         declared_roles=roles,
         place_units=units,
         place_available=place_available,
@@ -2514,7 +2528,8 @@ def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_un_pass():
     US dollar series is `worldBank/NY_GDP_MKTP_KD`, which declares no qualifier and is not
     recalled. The qualifier pin refuses every Nominal sibling, so nominal GDP, which has
     Zambia data, is kept out, and the UN pass answers with UNIDO's constant-price
-    series. UN series declare no qualifier, so "real" reads as not applied. The reply rates
+    series, whose price basis the origin registry declares RealValue, so "real" reads as
+    applied (`shape_carries_measure_match`). The reply rates
     the current-price series it nominates below the nomination bar, so it is no rival."""
     result = offline_resolve(make_request("real GDP of Zambia"))
 
@@ -2522,7 +2537,36 @@ def test_real_gdp_of_zambia_keeps_its_named_price_basis_in_the_un_pass():
     part = result.parts[0]
     assert isinstance(part, DefinitePart)
     assert ref_dcid(part.spec.resolved.shape.population_type) == "undata/unido/SERIES-NA_GDPCOD"
-    assert QUERY_QUALIFIER_DROPPED in [warning.code for warning in part.warnings]
+    assert QUERY_QUALIFIER_DROPPED not in [warning.code for warning in part.warnings]
+
+
+@pytest.mark.parametrize(
+    ("variable", "qualifier"),
+    [
+        pytest.param("undata/unido/NA_GDPCOD", "RealValue", id="constant-2015-dollars"),
+        pytest.param("undata/unido/NA_GDPCUD", None, id="current-prices-undeclared"),
+    ],
+)
+def test_a_un_series_shape_carries_the_price_basis_the_registry_declares(
+    variable: str, qualifier: str | None
+):
+    """UNIDO's "Gross domestic product at constant prices of 2015 in US dollars" asserts no
+    `measurementQualifier`, so its shape's own field is empty and the origin registry's
+    declaration states its price basis, which carries "constant US dollars". The
+    current-price series declares none and carries neither."""
+    (shape,) = derive_shapes(confirmed_svs=[variable], graph=FakeGraph())
+    constant = QualifierMatch(
+        code_system="measurementQualifier",
+        code_dcid="RealValue",
+        label="Real value",
+        source="synonym",
+        matched_text="constant US dollars",
+    )
+
+    assert shape.pop_type_dcid == variable.replace("unido/", "unido/SERIES-")
+    assert shape.meas_qual_dcid is None
+    assert declared_measurement_qualifier(shape) == qualifier
+    assert shape_carries_measure_match(shape, constant) is (qualifier is not None)
 
 
 # Interpretation admissibility: each rule refuses one reading of a corpus question and admits

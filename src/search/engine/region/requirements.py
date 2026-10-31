@@ -1,8 +1,8 @@
 """The request's requirements, judged against the part's final answers.
 
 Each term the request names is recorded once in the part's ledger
-(`state.ResolveState.requirements`): a code term the bindings leave unapplied, a value the
-request names by its graph label, a query record of the elected reading no binding covers,
+(`state.ResolveState.requirements`): a code term the bindings leave unapplied, a measure
+value the elected shape does not carry, a value the request names by its graph label, a query record of the elected reading no binding covers,
 a value the bind drafted on a slot the elected reading lacks, a value unbinding drops and a
 value a resubmit posts (`state.Requirement`). Nothing departs when a requirement is
 recorded. Once the final answer is known, `judge` judges each final answer, the one answer,
@@ -22,6 +22,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from code_index.labels import PRICE_BASIS_AXIS, PRICES_BY_QUALIFIER
+from code_index.shared import get_measure_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.departures import (
     WarningKey,
@@ -32,9 +34,11 @@ from search.engine.departures import (
 from search.engine.qualifier_match import _normalize
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_rank_bind import judge_value_requirements
+from search.engine.region.qualifier_readings import answer_reads_measure
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     CodeRule,
+    MeasureRule,
     Requirement,
     RequirementRule,
     ResolveState,
@@ -45,6 +49,7 @@ from search.engine.region.state import (
 )
 from search.engine.retrieval.bound_values import applies_value
 from search.engine.shape import ShapeDraft
+from search.engine.unit.conversion import PriceBasis
 from search.models import GraphRef, ResolvedQualifier
 
 if TYPE_CHECKING:
@@ -86,6 +91,21 @@ class Judgement:
             for phrase, held in by_phrase.items()
         }
 
+    def met_phrases(self) -> frozenset[str]:
+        """The phrases every judged answer meets, empty when no answer was judged."""
+        if not self.outcomes:
+            return frozenset()
+        return frozenset.intersection(
+            *(
+                frozenset(
+                    phrase
+                    for phrase, outcome in self._phrase_outcomes(i).items()
+                    if outcome == "met"
+                )
+                for i in range(len(self.outcomes))
+            )
+        )
+
     def terms(self, answer: int) -> tuple[ResolvedQualifier, ...]:
         """The phrases answer `answer` leaves unmet, in ledger order, each named by the term
         of its most specific requirement the answer leaves unmet."""
@@ -122,18 +142,7 @@ class Judgement:
         With no answer, what the bindings leave unapplied departs: every requirement but a
         query record of the elected reading and a value that refuses, which are unmet only
         against an answer."""
-        settled = {_normalize(term.text) for term in self.refused}
-        if self.outcomes:
-            settled |= set.intersection(
-                *(
-                    {
-                        phrase
-                        for phrase, outcome in self._phrase_outcomes(i).items()
-                        if outcome == "met"
-                    }
-                    for i in range(len(self.outcomes))
-                )
-            )
+        settled = {_normalize(term.text) for term in self.refused} | self.met_phrases()
         needing = {
             requirement.phrase
             for requirement in self.requirements
@@ -223,10 +232,10 @@ def _met_only_by_an_answer(rule: RequirementRule) -> bool:
 
 
 def _specificity(rule: RequirementRule) -> int:
-    """How specifically a requirement of `rule` names its phrase: a code on a slot, then a
-    query record of the elected reading, then a value named by its graph label, then a term
-    no answer is judged on."""
-    if isinstance(rule, CodeRule):
+    """How specifically a requirement of `rule` names its phrase: a code or measure value on
+    a slot, then a query record of the elected reading, then a value named by its graph
+    label, then a term no answer is judged on."""
+    if isinstance(rule, CodeRule | MeasureRule):
         return 3
     if rule == "unbound":
         return 2
@@ -238,25 +247,49 @@ def judge(
     answers: Iterable[Answer],
     *,
     state: ResolveState | None = None,
+    served: Sequence[PriceBasis | None] = (),
+    uncovered: Sequence[tuple[ResolvedQualifier, ...] | None] = (),
 ) -> Judgement:
     """Judge each of `answers` on its own shape and bindings against every requirement.
+    `served[i]` is the price basis of the unit request answer `i` is served under, None
+    when it is served under none. An empty `served` serves every answer under none.
+    `uncovered[i]` holds the records of the words answer `i` leaves unread, its coverage
+    records read on the members its own read served (`phase_election.judge_answer_coverage`),
+    None for the elected answer's, which are those of `state`'s query records. An empty
+    `uncovered` reads every answer on the elected answer's.
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,
-    and outside an answer whose shape lacks it. A `ValueRule` is met or unmet as
+    and outside an answer whose shape lacks it. A `MeasureRule` is met when the answer's
+    shape or a value its bindings bind carries the measure value (`answer_reads_measure`),
+    else judged as its `CodeRule`. A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
+    also met by an answer served under a unit request whose price basis reads as one of its
+    codes (`_serves_price_basis`). A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
     names it by its slot when its shape has one (`_value_term`). A value of a drafted set
     (origin ``set_value``) is met when the answer's bindings or some selected member hold
     it, or the answer leaves its set unmet, and is outside an answer that meets the set by
-    membership without it, so it departs and refuses nothing. A query record of the elected reading no binding covers ("unbound")
-    is unmet on every answer, and a term no answer is judged on (`None`) is outside every
-    answer. A requirement that does not refuse (`Requirement.refuses`) is outside an
+    membership without it, so it departs and refuses nothing. A query record of the elected
+    reading no binding covers ("unbound") is unmet on every answer, but for a coverage
+    record, which an answer names by its own record of the phrase (`_unbound_outcome`), and
+    a term no answer is judged on (`None`) is outside
+    every answer. A requirement that does not refuse (`Requirement.refuses`) is outside an
     answer that leaves it unmet, so it departs and refuses nothing."""
     requirements = tuple(requirements)
+    answers = tuple(answers)
+    served = tuple(served) or (None,) * len(answers)
+    uncovered = tuple(uncovered) or (None,) * len(answers)
+    elected_uncovered = (
+        tuple(q for q in state.query_qualifiers if q.evidence == "uncovered")
+        if state is not None
+        else None
+    )
     values = [r for r in requirements if isinstance(r.rule, ValueRule)]
     outcomes: list[tuple[Outcome, ...]] = []
     slot_terms: list[dict[int, ResolvedQualifier]] = []
-    for shape, bindings in answers:
+    for (shape, bindings), prices, own in zip(answers, served, uncovered, strict=True):
+        records = elected_uncovered if own is None else own
+        by_phrase = None if records is None else {_normalize(r.text): r for r in records}
         held = shape_vocabulary(shape)
         bound: dict[str, set[str]] = {}
         for binding in bindings:
@@ -277,7 +310,13 @@ def judge(
         for j, requirement in enumerate(requirements):
             rule = requirement.rule
             if isinstance(rule, CodeRule):
-                answer.append(_code_outcome(rule, held, bound))
+                met_by_unit = prices is not None and _serves_price_basis(rule, prices)
+                answer.append("met" if met_by_unit else _code_outcome(rule, held, bound))
+            elif isinstance(rule, MeasureRule):
+                met = answer_reads_measure(shape, rule.match, bindings) or (
+                    prices is not None and _serves_price_basis(rule.code, prices)
+                )
+                answer.append("met" if met else _code_outcome(rule.code, held, bound))
             elif isinstance(rule, ValueRule) and requirement.origin == "set_value":
                 # A value of a drafted set: met when the answer applies it or leaves the
                 # whole set unmet, which the refusal names; else disclosed, never refused.
@@ -291,8 +330,13 @@ def judge(
                         named[j] = term
                 else:
                     answer.append("met")
+            elif rule == "unbound":
+                outcome, record = _unbound_outcome(requirement, by_phrase)
+                answer.append(outcome)
+                if record is not None:
+                    named[j] = record
             else:
-                answer.append("unmet" if rule == "unbound" else "outside")
+                answer.append("outside")
             if not requirement.refuses and answer[-1] == "unmet":
                 # A value only the bind model read is disclosed and refuses nothing.
                 answer[-1] = "outside"
@@ -302,6 +346,21 @@ def judge(
     return Judgement(
         requirements=requirements, outcomes=tuple(outcomes), slot_terms=tuple(slot_terms)
     )
+
+
+def _unbound_outcome(
+    requirement: Requirement, records: Mapping[str, ResolvedQualifier] | None
+) -> tuple[Outcome, ResolvedQualifier | None]:
+    """How an answer stands on a query record of the elected reading no binding covers,
+    and the answer's own record it names the phrase by, if any: unmet, but for a coverage
+    record (evidence ``"uncovered"``), which an answer meets unless the coverage rule
+    records its phrase on the answer's own read, `records` by phrase, and names by that
+    record, so each answer names the codes of its own vocabulary. With no read judged
+    (`records` None) it is unmet and named by the ledger's term."""
+    if requirement.term.evidence != "uncovered" or records is None:
+        return "unmet", None
+    record = records.get(requirement.phrase)
+    return ("met", None) if record is None else ("unmet", record)
 
 
 def _value_term(
@@ -327,6 +386,21 @@ def _value_term(
             "slot": slots[0],
             "disposition": "unbound",
         }
+    )
+
+
+def _serves_price_basis(rule: CodeRule, prices: PriceBasis) -> bool:
+    """Whether an answer served under a unit request at `prices` meets the price-basis
+    `rule`: the reading of one of its codes holds the measure value that states those
+    prices (`PRICES_BY_QUALIFIER`). Constant prices meet `RealValue` and `InflationAdjusted`,
+    current prices meet `Nominal`, and no unit request meets `PurchasingPowerParity`."""
+    if rule.property_dcid != PRICE_BASIS_AXIS:
+        return False
+    index = get_measure_index()
+    return any(
+        PRICES_BY_QUALIFIER.get(value) == prices
+        for code in rule.codes
+        for value in index.reading_set(code)
     )
 
 
@@ -360,12 +434,25 @@ def _reading(state: ResolveState, bindings: Sequence[SlotBindingDraft]) -> list[
 
 
 def answer_terms(
-    state: ResolveState, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    served: PriceBasis | None = None,
+    uncovered: tuple[ResolvedQualifier, ...] | None = None,
 ) -> list[ResolvedQualifier]:
-    """The query terms the trace of an answer of `shape` read under `bindings` records: the
-    elected reading's bound records when `bindings` are the elected ones, and the term of
-    each requirement the answer leaves unmet (`judge`)."""
-    unmet = judge(state.requirements, [(shape, bindings)], state=state).terms(0)
+    """The query terms the trace of an answer of `shape` read under `bindings`, served
+    under a unit request at `served` prices (None for none) and whose coverage records hold
+    `uncovered` (None for the elected answer's, `judge`) records: the elected reading's
+    bound records when `bindings` are the elected ones, and the term of each requirement
+    the answer leaves unmet (`judge`)."""
+    unmet = judge(
+        state.requirements,
+        [(shape, bindings)],
+        state=state,
+        served=(served,),
+        uncovered=(uncovered,),
+    ).terms(0)
     return _in_reading_order(_reading(state, bindings), unmet)
 
 
@@ -382,26 +469,44 @@ def _unbound(terms: Iterable[ResolvedQualifier]) -> tuple[ResolvedQualifier, ...
 
 
 def settle_answer(
-    state: ResolveState, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    served: PriceBasis | None = None,
+    uncovered: tuple[ResolvedQualifier, ...] | None = None,
 ) -> tuple[ResolvedQualifier, ...]:
-    """Judge the part's one final answer, of `shape` read under `bindings`, and keep the
-    judgement for the part's departures (`ResolveState.judgement`). Return the terms its
-    refusal names (`refusal_terms`), empty when the answer meets every requirement it can
-    be judged on. A refused term departs nothing beside the refusal."""
-    judgement = judge(state.requirements, [(shape, bindings)], state=state)
+    """Judge the part's one final answer, of `shape` read under `bindings`, served under
+    a unit request at `served` prices (None for none, as a refusal serving no Spec) and
+    whose coverage records hold `uncovered` (None for the elected answer's, `judge`), and
+    keep the judgement for the part's departures (`ResolveState.judgement`). Return the
+    terms its refusal names (`refusal_terms`), empty when the answer meets every requirement
+    it can be judged on. A refused term departs nothing beside the refusal."""
+    judgement = judge(
+        state.requirements,
+        [(shape, bindings)],
+        state=state,
+        served=(served,),
+        uncovered=(uncovered,),
+    )
     refused = _unbound(_in_reading_order(_reading(state, bindings), judgement.terms(0)))
     state.judgement = dataclasses.replace(judgement, refused=refused)
     return refused
 
 
 def settle_flagged(
-    state: ResolveState, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    uncovered: tuple[ResolvedQualifier, ...] | None = None,
 ) -> list[ResolvedQualifier]:
     """Judge the flagged or alternate match a refusal other than `qualifier_not_bound`
-    carries, of `shape` read under `bindings`, and keep the judgement for the part's
+    carries, of `shape` read under `bindings` and whose coverage records hold `uncovered`
+    (None for the elected answer's, `judge`), and keep the judgement for the part's
     departures. The refusal names no term, so each requirement the match leaves unmet
     departs. Return the terms its trace records (`answer_terms`)."""
-    judgement = judge(state.requirements, [(shape, bindings)], state=state)
+    judgement = judge(state.requirements, [(shape, bindings)], state=state, uncovered=(uncovered,))
     state.judgement = judgement
     return _in_reading_order(_reading(state, bindings), judgement.terms(0))
 
@@ -432,12 +537,21 @@ def settle_unanswered(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
     return refused
 
 
-def settle_candidate_set(state: ResolveState, answers: Sequence[Answer]) -> None:
-    """Judge a candidate set, each surviving answer on its own shape and bindings, and keep
-    the judgement for the part's departures. The client chooses among the answers and can
-    weigh an omission, so the set refuses nothing, and a requirement departs unless every
-    answer meets it."""
-    state.judgement = judge(state.requirements, answers, state=state)
+def settle_candidate_set(
+    state: ResolveState,
+    answers: Sequence[Answer],
+    *,
+    served: Sequence[PriceBasis | None] = (),
+    uncovered: Sequence[tuple[ResolvedQualifier, ...] | None] = (),
+) -> None:
+    """Judge a candidate set, each surviving answer on its own shape and bindings, served
+    under a unit request at its `served` prices and on its own coverage records, `uncovered`
+    (`judge`), and keep the judgement for the part's departures. The client chooses among
+    the answers and can weigh an omission, so the set refuses nothing, and a requirement
+    departs unless every answer meets it."""
+    state.judgement = judge(
+        state.requirements, answers, state=state, served=served, uncovered=uncovered
+    )
 
 
 def settle_posted(state: _PromoteState) -> tuple[ResolvedQualifier, ...]:
@@ -482,14 +596,36 @@ def with_requirement_departures(
 def record_reading(state: ResolveState, records: Sequence[ResolvedQualifier]) -> None:
     """Set `records`, the elected shape's query records over the final bindings
     (`phase_rank_bind._resolve_query_qualifiers`), as `state.query_qualifiers`, and record
-    each one no binding covers as a requirement unmet on every answer, replacing the
-    previous reading's. A record whose phrase a code or value requirement holds adds
+    each one no binding covers as a requirement (`_record_unbound`), replacing the previous
+    reading's."""
+    state.query_qualifiers = list(records)
+    state.requirements = _record_unbound(
+        tuple(r for r in state.requirements if r.rule != "unbound"), state.query_qualifiers
+    )
+
+
+def record_coverage(state: ResolveState, records: Sequence[ResolvedQualifier]) -> None:
+    """Record each of `records`, the coverage records of a candidate the part offers
+    beside or in place of the elected answer (`phase_election.judge_answer_coverage`), as
+    the elected reading's are (`_record_unbound`), unless a requirement already holds its
+    phrase, where that requirement judges the words on each answer (`judge`)."""
+    held = {r.phrase for r in state.requirements}
+    state.requirements = _record_unbound(
+        state.requirements, [record for record in records if _normalize(record.text) not in held]
+    )
+
+
+def _record_unbound(
+    requirements: tuple[Requirement, ...], records: Iterable[ResolvedQualifier]
+) -> tuple[Requirement, ...]:
+    """`requirements` with each of `records` no binding covers recorded as a requirement
+    (rule "unbound", `judge`). A record whose phrase a code or value requirement holds adds
     nothing: that requirement judges the words on each answer. Each departs
     `measure_not_applied` cleared by the slot of the one property its rows name."""
-    state.query_qualifiers = list(records)
-    requirements = tuple(r for r in state.requirements if r.rule != "unbound")
-    judged = {r.phrase for r in requirements if isinstance(r.rule, CodeRule | ValueRule)}
-    for record in state.query_qualifiers:
+    judged = {
+        r.phrase for r in requirements if isinstance(r.rule, CodeRule | MeasureRule | ValueRule)
+    }
+    for record in records:
         if record.disposition == "bound" or _normalize(record.text) in judged:
             continue
         requirements = with_requirement(
@@ -506,7 +642,7 @@ def record_reading(state: ResolveState, records: Sequence[ResolvedQualifier]) ->
                 ),
             ),
         )
-    state.requirements = requirements
+    return requirements
 
 
 def _strays(requirements: Iterable[Requirement]) -> list[Requirement]:
@@ -543,6 +679,16 @@ def meets_stray_values(
     every member of which applies one of them (`bound_values.applies_one_of`), which is the
     alternate guard's rule for a member (`AlternateJudge._stray_refusal`)."""
     return not judge_value_requirements(_strays(requirements), shape, bindings)
+
+
+def met_measure_phrases(judgement: Judgement | None) -> frozenset[str]:
+    """The phrases of the measure values every final answer `judgement` judged carries
+    (`MeasureRule`), which binding repair can bind after election. The part admits them, so
+    no raw-text warning names a measure value its answer applies."""
+    if judgement is None:
+        return frozenset()
+    measures = {r.phrase for r in judgement.requirements if isinstance(r.rule, MeasureRule)}
+    return judgement.met_phrases() & measures
 
 
 def unbinding_phrases(requirements: Iterable[Requirement]) -> frozenset[str]:

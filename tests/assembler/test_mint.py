@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+from typing import get_args
 
 import pytest
 
 from assembler.bind import BoundSeries, bind_all
 from assembler.errors import BindingInvalid, SchemaInvalid
 from assembler.limits import LABEL_MAX
-from assembler.mint import default_window, mint_component, stamp_envelope
-from assembler.mint.provenance import _WARNING_KIND_BY_CODE, DESCRIPTION_PROVENANCE_MEMBERS
+from assembler.mint import default_window, mint_component, stamp_envelope, warned_refs
+from assembler.mint.provenance import (
+    _REF_FIELDS,
+    _WARNING_KIND_BY_CODE,
+    DESCRIPTION_PROVENANCE_MEMBERS,
+)
 from assembler.ports import FrameRef
 from assembler.resolve import ResolvedSeries, resolve_selectors
 from assembler.select import normalize_select
@@ -22,6 +27,7 @@ from assembler.testing import (
     malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
+from datasets_api.manifest_models import CountedEntityYearsModel, CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from presentation_api.refusals import binding_invalid_spec
 
@@ -1659,6 +1665,104 @@ def test_source_keeps_ref_only_when_the_raw_ref_can_stand_for_a_dcid(release, ra
     stamp_envelope(minted=minted, component_id="cmp_" + "s" * 20, revision=1, release=release)
 
 
+_DAC2A_REF = "dc/base/OECD_DAC2a"
+_DERIVED_FRAME_REF = FrameRef(spec_id="ops_" + "c" * 32, content_version="ocv_" + "d" * 32)
+_ROOTS_CITATION = {
+    "text": "OECD DAC2a.\n\nWorld Development Indicators.",
+    "sources": [
+        {"ref": _DAC2A_REF, "label": "OECD DAC2a", "license": None, "url": "https://oecd.org"},
+        {"ref": _WDI_REF, "label": "World Development Indicators", "license": None, "url": ""},
+    ],
+}
+"""The citation `datasets_api.derived.recipe_citation` gives a quotient of an OECD DAC2a root
+over a WDI root."""
+
+
+def _mint_on_a_quotient_frame(member, *, release, frame_ref=_DERIVED_FRAME_REF):
+    """`member` drawn on a frame at `frame_ref` whose rows name no provenance, as a quotient of
+    two roots' figures has no one source, under a citation of two sources."""
+    rows = [
+        {
+            "stat_var": "dcid:ops_quotient",
+            "recipient": "country/KEN",
+            "time_period": period,
+            "value": value,
+            "unit": None,
+            "measurementMethod": None,
+            "provenance": None,
+        }
+        for period, value in (("2020", 1.5), ("2021", 2.5))
+    ]
+    resolved_frame = build_resolved_frame(
+        frame_ref=frame_ref,
+        role_keys=("recipient",),
+        rows=rows,
+        manifest={"schema_version": 1, "citation": _ROOTS_CITATION},
+    )
+    if member == "source_card":
+        return _mint_source_card(resolved_frame=resolved_frame, release=release)
+    selectors = [
+        {
+            "bindings": [
+                {"dimension": "stat_var", "values": ["dcid:ops_quotient"]},
+                {"dimension": "recipient", "values": ["country/KEN"]},
+            ]
+        }
+    ]
+    series, bound = _resolve_and_bind(resolved_frame=resolved_frame, selectors=selectors)
+    intent = {
+        "type": member,
+        "frame_ref": {
+            "spec_id": frame_ref.spec_id,
+            "content_version": frame_ref.content_version,
+        },
+        "select": {"stat_var": "dcid:ops_quotient", "recipient": "country/KEN"},
+    }
+    return mint_component(
+        member=member,
+        merged_intent=intent,
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+
+
+@pytest.mark.parametrize("member", ["table", "line_chart", "source_card"])
+def test_a_card_on_a_derived_frame_cites_its_roots_sources(release, member):
+    """A row naming no provenance stands for every source its frame cites, so the card lists
+    the roots' sources and names one of them on each value, where it once named an
+    unattributed source."""
+    minted = _mint_on_a_quotient_frame(member, release=release)
+
+    sources = minted.provenance["sources"]
+    assert [(source["name"], source["ref"]) for source in sources] == [
+        ("OECD DAC2a", _DAC2A_REF),
+        ("World Development Indicators", _WDI_REF),
+    ]
+    listed = {source["id"] for source in sources}
+    component = minted.component
+    named = {
+        *(entry["source_ref"] for key in ("rows", "series") for entry in component.get(key, ())),
+        *component.get("source_refs", ()),
+    }
+    assert named and named <= listed
+    assert minted.provenance["citation"].startswith("OECD DAC2a and World Development Indicators")
+    stamp_envelope(minted=minted, component_id="cmp_" + "s" * 20, revision=1, release=release)
+
+
+@pytest.mark.parametrize("member", ["table", "line_chart", "source_card"])
+def test_a_card_on_a_dataset_frame_leaves_a_row_with_no_provenance_unattributed(release, member):
+    """A dataset row with no provenance names none of its version's sources, so the card
+    names the unattributed source for it rather than the first source cited."""
+    dataset_frame = FrameRef(spec_id="spec_" + "c" * 32, content_version="cv_" + "d" * 32)
+
+    minted = _mint_on_a_quotient_frame(member, release=release, frame_ref=dataset_frame)
+
+    assert [source["name"] for source in minted.provenance["sources"]] == ["Unattributed source"]
+
+
 def test_sources_carry_the_citation_s_source_and_data_commons_as_id_and_name(release):
     """A citation entry's `source` and `data_commons` become the envelope source's
     `{id, name}` members. A ref with no entry, like a version minted before the origin
@@ -1723,12 +1827,12 @@ def test_freshness_data_through_is_null_when_the_manifest_records_no_window(rele
 # -- provenance warnings -------------------------------------------------
 
 
-def _resolved_frame_with_warnings(warnings):
+def _resolved_frame_with_warnings(warnings, *, labels=()):
     return build_resolved_frame(
         frame_ref=malaria_ethiopia_frame_ref(),
         role_keys=("recipient",),
         rows=malaria_ethiopia_rows(),
-        labels={"country/ETH": "Ethiopia"},
+        labels={"country/ETH": "Ethiopia", **dict(labels)},
         manifest={"schema_version": 1, "warnings": list(warnings)},
     )
 
@@ -1800,6 +1904,152 @@ def test_provenance_warnings_translate_independently_and_preserve_order(release)
         {"kind": "provisional", "detail": "no live revision"},
         {"kind": "coverage_gap", "detail": "short of scope"},
     ]
+
+
+def _long_label(index: int) -> str:
+    return f"{index}".ljust(LABEL_MAX, "x")
+
+
+_LONG = {f"dcid:Long{i}": _long_label(i) for i in range(10)}
+
+
+@pytest.mark.parametrize(
+    ("members", "expected"),
+    [
+        pytest.param(
+            {"off_cadence_members": {"count": 2, "refs": ["dcid:Health", "dcid:Water"]}},
+            "Short of scope. At a different frequency: Basic health, Water.",
+            id="other-frequency",
+        ),
+        pytest.param(
+            {"unserved_members": {"count": 1, "refs": ["dcid:Water"]}},
+            "Short of scope. Under another source, unit or method: Water.",
+            id="unserved-members",
+        ),
+        # A member the labels hold no name for reads as its bare dcid, and the members the
+        # field counts past its refs as a count.
+        pytest.param(
+            {"out_of_window_members": {"count": 7, "refs": ["dcid:Health", "dcid:Roads"]}},
+            "Short of scope. No observations in the requested years: "
+            "Basic health, Roads and 5 more.",
+            id="out-of-window",
+        ),
+        # Long names share the room the message leaves: each field names the whole labels
+        # that fit and counts the rest, and a field fitting none states its count alone.
+        pytest.param(
+            {
+                "off_cadence_members": {"count": 6, "refs": [f"dcid:Long{i}" for i in range(5)]},
+                "out_of_window_members": {
+                    "count": 6,
+                    "refs": [f"dcid:Long{i}" for i in range(5, 10)],
+                },
+            },
+            f"Short of scope. At a different frequency: {_long_label(0)} and 5 more. "
+            "No observations in the requested years: 6 series.",
+            id="both-long",
+        ),
+        # Entities lead the members, as the message counts them first, and a field fitting
+        # no name counts them in its own noun.
+        pytest.param(
+            {
+                "unserved_entities": {"count": 1, "refs": ["dcid:country/KEN"]},
+                "off_cadence_members": {"count": 1, "refs": ["dcid:Health"]},
+            },
+            "Short of scope. Not served: Kenya. At a different frequency: Basic health.",
+            id="unserved-entities",
+        ),
+        pytest.param(
+            {
+                "unserved_entities": {"count": 2, "refs": ["dcid:Long0", "dcid:Long1"]},
+                "off_cadence_members": {
+                    "count": 6,
+                    "refs": [f"dcid:Long{i}" for i in range(2, 7)],
+                },
+                "out_of_window_members": {"count": 1, "refs": ["dcid:Long7"]},
+            },
+            "Short of scope. Not served: 2 entities. At a different frequency: 6 series. "
+            f"No observations in the requested years: {_long_label(7)}.",
+            id="entities-long",
+        ),
+    ],
+)
+def test_a_coverage_warning_names_its_members_by_label(release, members, expected):
+    resolved_frame = _resolved_frame_with_warnings(
+        [
+            {
+                "code": "coverage_below_scope",
+                "severity": "warn",
+                "message": "Short of scope.",
+                "member_count": 9,
+                **members,
+            }
+        ],
+        labels={
+            "dcid:Health": "Basic health",
+            "dcid:Water": "Water",
+            "dcid:country/KEN": "Kenya",
+            **_LONG,
+        },
+    )
+
+    provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
+
+    assert provenance["warnings"] == [{"kind": "coverage_gap", "detail": expected}]
+    assert warned_refs(manifest=resolved_frame.manifest) == [
+        ref for field in members.values() for ref in field["refs"]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "field", "named"),
+    [
+        pytest.param(
+            "currency_unmapped_omitted",
+            {"omitted_entities": {"count": 3, "refs": ["dcid:country/KEN", "dcid:XYZ"]}},
+            "Kenya, XYZ",
+            id="currency",
+        ),
+        # Each entity's name carries the years its rows were left out.
+        pytest.param(
+            "deflator_missing_omitted",
+            {
+                "omitted_entity_years": {
+                    "count": 3,
+                    "entities": [
+                        {"ref": "dcid:country/KEN", "years": ["1990-2001", "2004"]},
+                        {"ref": "dcid:XYZ", "years": ["2020"]},
+                    ],
+                }
+            },
+            "Kenya (1990-2001, 2004), XYZ (2020)",
+            id="deflator",
+        ),
+    ],
+)
+def test_a_conversion_warning_names_the_entities_it_left_out_by_label(release, code, field, named):
+    resolved_frame = _resolved_frame_with_warnings(
+        [{"code": code, "severity": "warn", "message": "It left out 3 entities.", **field}],
+        labels={"dcid:country/KEN": "Kenya"},
+    )
+
+    provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
+
+    assert provenance["warnings"] == [
+        {"kind": "coverage_gap", "detail": f"It left out 3 entities. Left out: {named} and 1 more."}
+    ]
+    assert warned_refs(manifest=resolved_frame.manifest) == ["dcid:country/KEN", "dcid:XYZ"]
+
+
+def test_a_card_names_every_counted_field_a_stored_warning_holds():
+    """Each `WarningModel` field holding counted refs has a `_REF_FIELDS` row, so the frame
+    store labels its refs and a card names them; a field without one would go unnamed."""
+    counted = {
+        name
+        for name, field in WarningModel.model_fields.items()
+        if {CountedRefsModel, CountedEntityYearsModel} & set(get_args(field.annotation))
+    }
+
+    assert counted == {field.key for field in _REF_FIELDS}
 
 
 def test_provenance_warnings_refuses_a_code_absent_from_the_translation_table(release):

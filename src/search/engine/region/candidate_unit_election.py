@@ -1,7 +1,8 @@
 """Elect and memoise each candidate's bound unit for the also-plausible fan-out.
 
-Every candidate decides through `convertibility.decide_part_unit`, the decision a resubmit
-of it runs, over its own read plan's probes. The fan-out can include ``max_candidates - 1``
+Every candidate is one Spec and decides through `convertibility.decide_spec_unit`, the
+decision a resubmit of it runs: one group across its members, over its own read plan's
+probes. The fan-out can include ``max_candidates - 1``
 alternates, so shared decisions avoid repeating probes. ``state.unit_elected_selections`` is
 not filled yet when the fan-out runs, so this module keeps its own memo. ``bound_facets``
 stays empty, as in the elected-shape path.
@@ -30,18 +31,18 @@ from materialise.facets import (
 )
 from materialise.facets import UnitRequest as MaterialiseUnitRequest
 from materialise.graph import Facet
-from search.engine.region.convertibility import decide_part_unit, unit_request_for_materialise
+from search.engine.region.convertibility import decide_spec_unit, unit_request_for_materialise
 from search.engine.region.phase_shared import UNIT_CONVERSION_REFUSALS
 from search.engine.retrieval.elected_dataset import NO_DATASETS, ElectedDatasets
 from search.engine.retrieval.read_plan import PlanYears, plan_window
 from search.models import IdentityUnitRequest
 from series_coverage.index import CoverageIndex
 
-# A candidate StatVar refused for one of these reasons definitely cannot serve the unit, so the
-# fan-out omits it and keeps the refusal for the no-survivor answer. Every other
+# A candidate refused for one of these reasons definitely cannot serve the unit, so the
+# fan-out omits its members and keeps the refusal for the no-survivor answer. Every other
 # `MaterialisationError` (an upstream version change, a ceiling that stops the member count,
 # members the deployment does not hold, a dataset disagreement) propagates, as it does on the
-# elected shape's `decide_part_unit`. The caller drops an alternate whose election raises a
+# elected shape's `decide_spec_unit`. The caller drops an alternate whose election raises a
 # dataset disagreement (`candidate_grounding._prepare_candidate_context`).
 _DEFINITE_UNIT_REFUSALS = (
     FacetNotAvailableError,
@@ -49,12 +50,12 @@ _DEFINITE_UNIT_REFUSALS = (
     *UNIT_CONVERSION_REFUSALS,
 )
 
-# Key by what one StatVar's election reads: the StatVar, its role/DCID bindings, declared
-# roles, the window its years read (`plan_window`), unit request, elected dataset, and its
-# probe with the probe's series counts under that window (`_probe_key`). The value is the
-# election or the refusal that ended it. Role/DCID pairs distinguish candidates that share
-# entities on different axes; the probe distinguishes candidates whose read plans give the
-# StatVar different facets.
+# Key by what one candidate's election reads: its members, their role/DCID bindings, declared
+# roles, the window its years read (`plan_window`), unit request, each member's elected
+# dataset, and each member's probe with the probe's series counts under that window
+# (`_probe_key`). The value is the election or the refusal that ended it. Role/DCID pairs
+# distinguish candidates that share entities on different axes; the probes distinguish
+# candidates whose read plans give a member different facets.
 type _ProbeKey = tuple[
     tuple[Facet, ...],
     frozenset[tuple[str, frozenset[str]]] | CoverageAdmission,
@@ -64,22 +65,24 @@ type _ProbeKey = tuple[
     frozenset[tuple[str, int]] | BreadthUnread | PendingBreadth | None,
 ]
 _CandidateUnitElectionKey = tuple[
-    str,
+    tuple[str, ...],
     frozenset[tuple[str, tuple[str, ...]]],
     tuple[str, ...],
     RequestedWindow,
     MaterialiseUnitRequest,
-    ElectedDataset | None,
-    _ProbeKey | None,
+    tuple[ElectedDataset | None, ...],
+    tuple[_ProbeKey | None, ...],
 ]
 _CandidateUnitElectionMemo = dict[
-    _CandidateUnitElectionKey, Mapping[str, FacetSelection] | MaterialisationError
+    _CandidateUnitElectionKey,
+    Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | MaterialisationError,
 ]
 
 
 @dataclass(frozen=True)
 class CandidateUnitElections:
-    """One candidate's elections and refusals, each keyed by StatVar in election order."""
+    """One candidate's elections, keyed by the members its group serves, and its refusal,
+    keyed by every member, each in member order."""
 
     elected: dict[str, tuple[Mapping[str, FacetSelection], ...]]
     refusals: dict[str, MaterialisationError]
@@ -100,44 +103,37 @@ def _candidate_unit_elections(
     deadline: float | None,
     datasets: ElectedDatasets = NO_DATASETS,
 ) -> CandidateUnitElections:
-    """Elect a unit per StatVar: one selection tuple for each success, and the refusal of
-    each StatVar the election proved cannot serve the unit.
+    """Elect one group across the candidate's members, `sv_dcids`: one selection tuple for
+    each member the group serves, and, when the election proves the candidate cannot serve
+    the unit, its refusal under each member.
 
-    Empty ``role_bindings`` elects nothing. Memo hits skip the decision. Each StatVar
-    decides on its own through ``decide_part_unit`` over ``probes``, the candidate's read
-    plan probes, within its elected dataset in ``datasets``. A definite refusal
-    (``_DEFINITE_UNIT_REFUSALS``) leaves that StatVar out of ``elected``, records it in
-    ``refusals`` and memoises it. Any other ``MaterialisationError`` propagates and memoises
+    Empty ``role_bindings`` elects nothing. A memo hit skips the decision. The candidate
+    decides through ``decide_spec_unit`` over ``probes``, the candidate's read plan probes,
+    each member within its elected dataset in ``datasets``. A member the group leaves out is
+    absent from ``elected`` and from ``refusals``: the candidate stays, serving the rest. A
+    definite refusal (``_DEFINITE_UNIT_REFUSALS``) elects nothing, records the refusal under
+    every member and memoises it. Any other ``MaterialisationError`` propagates and memoises
     nothing. The caller passes the request's single coverage index unchanged to every
     decision.
     """
-    elected: dict[str, tuple[Mapping[str, FacetSelection], ...]] = {}
-    refusals: dict[str, MaterialisationError] = {}
-    if not role_bindings:
-        return CandidateUnitElections(elected=elected, refusals=refusals)
-    entity_key = frozenset((role, tuple(dcids)) for role, dcids in role_bindings.items())
-    materialise_unit_request = unit_request_for_materialise(unit_request)
+    if not role_bindings or not sv_dcids:
+        return CandidateUnitElections(elected={}, refusals={})
     window = plan_window(years)
-    for sv in sv_dcids:
-        key: _CandidateUnitElectionKey = (
-            sv,
-            entity_key,
-            declared_roles,
-            window,
-            materialise_unit_request,
-            datasets.get(sv),
-            _probe_key(probes.get(sv) if probes is not None else None, window),
-        )
-        if key in memo:
-            cached = memo[key]
-            if isinstance(cached, MaterialisationError):
-                refusals[sv] = cached
-            else:
-                elected[sv] = (cached,)
-            continue
+    key: _CandidateUnitElectionKey = (
+        tuple(sv_dcids),
+        frozenset((role, tuple(dcids)) for role, dcids in role_bindings.items()),
+        declared_roles,
+        window,
+        unit_request_for_materialise(unit_request),
+        tuple(datasets.get(sv) for sv in sv_dcids),
+        tuple(
+            _probe_key(probes.get(sv) if probes is not None else None, window) for sv in sv_dcids
+        ),
+    )
+    if key not in memo:
         try:
-            (selections,) = decide_part_unit(
-                [sv],
+            memo[key] = decide_spec_unit(
+                sv_dcids,
                 unit_request=unit_request,
                 role_bindings=role_bindings,
                 declared_roles=declared_roles,
@@ -148,14 +144,13 @@ def _candidate_unit_elections(
                 probes=probes,
                 datasets=datasets,
                 deadline=deadline,
-            )[sv]
+            )
         except _DEFINITE_UNIT_REFUSALS as exc:
             memo[key] = exc
-            refusals[sv] = exc
-            continue
-        memo[key] = selections
-        elected[sv] = (selections,)
-    return CandidateUnitElections(elected=elected, refusals=refusals)
+    decided = memo[key]
+    if isinstance(decided, MaterialisationError):
+        return CandidateUnitElections(elected={}, refusals=dict.fromkeys(sv_dcids, decided))
+    return CandidateUnitElections(elected=dict(decided), refusals={})
 
 
 def _probe_key(probe: MemberProbe | None, window: RequestedWindow) -> _ProbeKey | None:

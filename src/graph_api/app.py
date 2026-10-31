@@ -26,8 +26,10 @@ Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
-by its own door, and the platform renders RFC 9457 responses. The fronting Data access proxy handles request
-authentication and enforces `401`, `413`, `415`, and `429`.
+by its own door, and the platform renders RFC 9457 responses. Callers reach the API through the
+website's proxy, which answers `429` once an IP passes its allowance, 120 calls a minute on
+`/api/*` by default, counted in a fixed window that every proxy instance shares in Postgres. A
+call whose count fails goes through. The proxy passes `Authorization` upstream unread.
 """
 
 from __future__ import annotations
@@ -393,6 +395,7 @@ def graph_surface(
 
     return Surface(
         name="graph",
+        description="Resolve names to graph nodes and read nodes, members, sources and documentation.",
         prefix="/api/graph",
         router=router,
         capability_version=GRAPH_CAPABILITY_VERSION,

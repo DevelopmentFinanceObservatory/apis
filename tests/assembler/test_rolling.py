@@ -445,7 +445,7 @@ def test_left_out_series_are_named_once_ahead_of_the_frame_warnings(write):
     reply = write(frame, intent)
 
     assert _warnings(reply) == [
-        {"kind": "coverage_gap", "detail": "2 series have no 2024 value: Chad, Kenya"},
+        {"kind": "coverage_gap", "detail": "2 series have no 2024 value: Kenya, Chad"},
         {"kind": "provisional", "detail": "No revision endpoint."},
     ]
     assert len(_component(reply)["series"]) == 4

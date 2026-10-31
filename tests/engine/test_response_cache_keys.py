@@ -19,7 +19,10 @@ from search.engine.response_cache_keys import (
     parsed_key,
     scope_document,
 )
+from search.engine.stated_scope import intake_key_document, part_scope_intakes
 from search.models import (
+    ChoiceOrigin,
+    Entry,
     Operation,
     ParsedEntity,
     ParsedInput,
@@ -36,6 +39,7 @@ def _scope(
     max_candidates: int = 6,
     seam_default: bool = True,
     qualifier_coverage: Literal["log", "refuse"] = "log",
+    stated_word_bar: float = 0.5,
     build_commit: str = "commit-a",
     binder: str = "gemini",
     model: str = "model-a",
@@ -54,6 +58,7 @@ def _scope(
         max_candidates=max_candidates,
         seam_default=seam_default,
         qualifier_coverage=qualifier_coverage,
+        stated_word_bar=stated_word_bar,
         build_commit=build_commit,
         binder=binder,
         model=model,
@@ -124,8 +129,13 @@ def _layer2_key(
     query_text_value_source: str | None = None,
     scope: dict | None = None,
     source_codes: list[str | None] | None = None,
+    unit_texts: list[str | None] | None = None,
     separate: list[bool] | None = None,
     written_variable_phrases: list[str | None] | None = None,
+    every_member_axes: list[str | None] | None = None,
+    measure_qualifiers: list[tuple[str, ...]] | None = None,
+    open_axes: list[frozenset[str]] | None = None,
+    stated_scopes: list[dict[str, object] | None] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -170,10 +180,15 @@ def _layer2_key(
         ),
         query_text_value_source=query_text_value_source,
         source_codes=source_codes if source_codes is not None else (),
+        unit_texts=unit_texts if unit_texts is not None else (),
         separate=separate if separate is not None else (),
         written_variable_phrases=(
             written_variable_phrases if written_variable_phrases is not None else ()
         ),
+        every_member_axes=every_member_axes if every_member_axes is not None else (),
+        measure_qualifiers=measure_qualifiers if measure_qualifiers is not None else (),
+        open_axes=open_axes if open_axes is not None else (),
+        stated_scopes=stated_scopes if stated_scopes is not None else (),
     )
 
 
@@ -612,6 +627,18 @@ def test_a_separate_variable_changes_layer2_key() -> None:
     assert unmarked == _layer2_key(variables=variables, separate=[False, False])
 
 
+def test_a_measure_qualifier_changes_layer2_key() -> None:
+    """A word narrowing one variable's measure reaches that part alone, so the same word on
+    another variable keys apart. None on any variable keys as an extraction without the
+    field."""
+    variables = ["bilateral aid", "imputed multilateral aid"]
+    plain = _layer2_key(variables=variables)
+    first = _layer2_key(variables=variables, measure_qualifiers=[("bilateral",), ()])
+    second = _layer2_key(variables=variables, measure_qualifiers=[(), ("bilateral",)])
+    assert len({plain, first, second}) == 3
+    assert plain == _layer2_key(variables=variables, measure_qualifiers=[(), ()])
+
+
 def test_a_series_code_changes_layer2_key() -> None:
     """A code the query writes names the variable's StatVars, so a variable with one keys
     apart from the same variable without, and a code on another variable keys apart too.
@@ -622,6 +649,20 @@ def test_a_series_code_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, source_codes=[None, "DT.TDS.DEGG.CD"])
     assert len({plain, first, second}) == 3
     assert plain == _layer2_key(variables=variables, source_codes=[None, None])
+
+
+def test_a_peeled_unit_text_changes_layer2_key() -> None:
+    """ "GDP in euros and population" peels "in euros" onto GDP alone, and a phrase the model
+    dropped reaches both parts, so the two key apart, as does the phrase on the other
+    variable. Peeling none keys as an extraction without the field."""
+    variables = ["GDP", "population"]
+    shared = _layer2_key(variables=variables, dropped_qualifiers=["in euros"])
+    first = _layer2_key(variables=variables, unit_texts=["in euros", None])
+    second = _layer2_key(variables=variables, unit_texts=[None, "in euros"])
+    assert len({shared, first, second, _layer2_key(variables=variables)}) == 4
+    assert _layer2_key(variables=variables) == _layer2_key(
+        variables=variables, unit_texts=[None, None]
+    )
 
 
 def test_the_written_stretch_of_a_variable_changes_layer2_key() -> None:
@@ -638,6 +679,83 @@ def test_the_written_stretch_of_a_variable_changes_layer2_key() -> None:
     )
     assert len({plain, as_named, reordered}) == 3
     assert plain == _layer2_key(variables=variables, written_variable_phrases=[None])
+
+
+def test_the_axis_a_dropped_phrase_asks_every_member_of_changes_layer2_key() -> None:
+    """ "aid to Ethiopia from all countries" and "aid to Ethiopia to all countries" can
+    extract alike, and only the first asks for every provider. A phrase asking for no
+    axis keys as an extraction without the field."""
+    dropped = ["all countries"]
+    plain = _layer2_key(dropped_qualifiers=dropped)
+    origin = _layer2_key(dropped_qualifiers=dropped, every_member_axes=["origin"])
+    destination = _layer2_key(dropped_qualifiers=dropped, every_member_axes=["destination"])
+    assert len({plain, origin, destination}) == 3
+    assert plain == _layer2_key(dropped_qualifiers=dropped, every_member_axes=[None])
+
+
+def test_the_role_a_part_lists_member_by_member_changes_layer2_key() -> None:
+    """ "aid to Kenya by donor" leaves extraction no operation and opens the donor side, so
+    it keys apart from "aid to Kenya", and the side opened on another variable keys apart
+    too. No open side keys as an extraction without the field."""
+    variables = ["aid", "GDP"]
+    plain = _layer2_key(variables=variables)
+    first = _layer2_key(variables=variables, open_axes=[frozenset({"origin"}), frozenset()])
+    second = _layer2_key(variables=variables, open_axes=[frozenset(), frozenset({"origin"})])
+    assert len({plain, first, second}) == 3
+    assert plain == _layer2_key(variables=variables, open_axes=[frozenset(), frozenset()])
+
+
+def test_the_scope_a_query_states_changes_layer2_key() -> None:
+    """Queries whose extractions match but whose words state another scope ("bilateral",
+    "net") or a total key apart; a query stating none keys as one that omits the field."""
+
+    def stated(text: str) -> dict[str, object] | None:
+        return intake_key_document(part_scope_intakes(message=text, part_texts=[text])[0])
+
+    keys = {
+        _layer2_key(stated_scopes=[stated(text)])
+        for text in (
+            "ODA to Kenya",
+            "bilateral ODA to Kenya",
+            "net ODA to Kenya",
+            "net bilateral ODA to Kenya",
+            "total ODA to Kenya",
+        )
+    }
+    assert len(keys) == 5
+    assert _layer2_key(stated_scopes=[stated("ODA to Kenya")]) == _layer2_key()
+
+
+def test_the_parsed_key_states_the_scope_the_message_and_carried_entries_post() -> None:
+    """The parsed door keys the scope each part is posted with, not the message's words:
+    two messages that state no scope share a key, and a stated or carried entry keys apart."""
+    part = ParsedPart(variable_text="health aid")
+    carried = Entry(
+        axis="measure_basis",
+        option_id="measure_basis:net",
+        provenance="carried",
+        origin=ChoiceOrigin(choice_id="spec:measure_basis"),
+    )
+
+    def key(*, user_message: str | None = None, carried: list[Entry] | None = None) -> str:
+        parsed = ParsedInput(parts=[part], user_message=user_message, carried_entries=carried)
+        intakes = part_scope_intakes(
+            message=user_message, part_texts=[part.variable_text], carried=carried or ()
+        )
+        return parsed_key(
+            parsed=parsed,
+            scope=_scope(),
+            stated_scopes=[intake_key_document(intake) for intake in intakes],
+        )
+
+    plain = key(user_message="health aid to Kenya in 2023?")
+    assert plain == key(user_message="what about health aid to Kenya in 2023") == key()
+    keys = {
+        plain,
+        key(user_message="bilateral health aid to Kenya in 2023"),
+        key(carried=[carried]),
+    }
+    assert len(keys) == 3
 
 
 def test_both_spellings_of_a_series_code_share_the_parsed_key() -> None:
@@ -748,6 +866,14 @@ def test_different_qualifier_coverage_changes_key() -> None:
     assert log != refuse
 
 
+def test_different_stated_word_bar_changes_key() -> None:
+    """SEARCH_STATED_WORD_BAR decides which rated word refuses, with no per-request
+    override, so it changes the answer without moving build_commit."""
+    low = layer1_key(query="gdp kenya", scope=_scope(stated_word_bar=0.4))
+    high = layer1_key(query="gdp kenya", scope=_scope(stated_word_bar=0.6))
+    assert low != high
+
+
 def test_different_today_changes_key() -> None:
     """The current day changes an open-ended window's result and belongs in the key."""
     day_one = layer1_key(query="gdp kenya", scope=_scope(today="2026-09-20"))
@@ -839,6 +965,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         max_candidates=5,
         seam_default=True,
         qualifier_coverage="log",
+        stated_word_bar=0.5,
         build_commit="commit-a",
         binder="gemini",
         model="model-a",
@@ -860,6 +987,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         build_commit="commit-a",
         seam_default=True,
         qualifier_coverage="log",
+        stated_word_bar=0.5,
         max_candidates=5,
         options=ResolveOptions(include_skills=True),
         schema_version=1,

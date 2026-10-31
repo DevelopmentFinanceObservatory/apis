@@ -30,6 +30,8 @@ Gated by `DFO_DATASETS_SURFACE=true` (or `1`). Requires PostgreSQL persistence (
 | `GET`  | `/api/datasets/{id}`                       | Serves the latest dataset manifest for a canonical subject ID (`spec_...`). It rechecks the head and can materialise a new version.                                                                                    |
 | `GET`  | `/api/datasets/{id}/{content_version}`     | Fetches metadata and artifact download links (CSV, Parquet, XLSX) for a versioned snapshot.                                                                                                                            |
 | `POST` | `/api/datasets/{id}/{content_version}/pin` | Promotes a working-tier snapshot to pinned durability. Requires first-party principal authentication.                                                                                                                  |
+| `POST` | `/api/datasets/exports`                    | Prepares one frame version as a file in the pinned tier and answers its facts. A repeat request spends nothing.                                                                                                        |
+| `GET`  | `/api/datasets/exports/{export_id}`        | Answers 302 to the prepared file, signed for five minutes. Never renders.                                                                                                                                              |
 | `GET`  | `/api/datasets/operations/{operation_id}`  | Polls a pending or running operation, or returns its completed manifest. Failed operations return a problem response. Unknown IDs return 404 `operation_not_found`.                                                    |
 | `GET`  | `/api/datasets/healthz`                    | Liveness probe returning status and materialiser build metadata.                                                                                                                                                       |
 | `GET`  | `/api/datasets/schema`                     | JSON Schema for dataset envelopes, manifests, mint requests, and snapshots.                                                                                                                                            |
@@ -59,6 +61,7 @@ Gated by `DFO_PRESENTATION_SURFACE=true` (or `1`). Reads from `presentation_stor
 | Method  | Endpoint                                               | Description                                                                       |
 | :------ | :----------------------------------------------------- | :-------------------------------------------------------------------------------- |
 | `GET`   | `/api/presentation/frames/{spec_id}/{content_version}` | Retrieves assembled presentation frame data for a rendered dataset specification. |
+| `GET`   | `/api/presentation/frames/{spec_id}`                   | The same frame data for a dataset's newest version, naming the version read.      |
 | `POST`  | `/api/presentation/components`                         | Creates a presentation component record and returns its write token once.         |
 | `GET`   | `/api/presentation/components/{component_id}`          | Retrieves a stored presentation component record.                                 |
 | `PATCH` | `/api/presentation/components/{component_id}`          | Modifies component layout, properties, or bindings. Needs `x-dfo-write-token`.    |
@@ -127,26 +130,27 @@ Configuration variables load from environment variables or `.env` at boot.
 
 ### Datasets API and persistence
 
-| Variable                             | Default           | Purpose                                                                                                                      |
-| :----------------------------------- | :---------------- | :--------------------------------------------------------------------------------------------------------------------------- |
-| `DATASETS_SYNC_BUDGET_ROWS`          | `100000`          | Row budget for inline materialisation. Over-budget requests can become operations within the asynchronous ceilings.          |
-| `DATASETS_SYNC_BUDGET_REQUESTS`      | `40`              | SDMX request budget for inline materialisation. Over-budget requests can become operations within the asynchronous ceilings. |
-| `DATASETS_ASYNC_MAX_ROWS`            | `2000000`         | Row ceiling for an asynchronous operation.                                                                                   |
-| `DATASETS_ASYNC_MAX_REQUESTS`        | `800`             | SDMX request ceiling for an asynchronous operation.                                                                          |
-| `DATASETS_SDMX_TIMEOUT_SECONDS`      | `90`              | Independent httpx transport timeout for SDMX calls. The door deadline applies when lower.                                    |
-| `DATASETS_GRAPH_BASE_URL`            | _None_            | Graph endpoint for dataset materialisation readers.                                                                          |
-| `DATASETS_SDMX_BASE_URL`             | _None_            | SDMX endpoint for observation retrieval in datasets.                                                                         |
-| `DATASETS_GRAPH_TOKEN`               | `""`              | Optional `x-graph-token` header for dataset graph and SDMX calls.                                                            |
-| `DATASETS_ARTIFACT_BUCKET_WORKING`   | _None_            | GCS bucket for working-tier materialised files.                                                                              |
-| `DATASETS_ARTIFACT_BUCKET_PINNED`    | _None_            | GCS bucket for pinned-tier materialised files.                                                                               |
-| `DATASETS_PRINCIPAL_HEADER`          | `x-dfo-principal` | Request header containing caller identity for pin and publish operations.                                                    |
-| `DATASETS_FIRST_PARTY_PRINCIPAL`     | `""`              | Authorized principal permitted to publish datasets.                                                                          |
-| `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`.                             |
-| `LIVE_REFRESH_PRINCIPAL`             | `""`              | Authorized principal permitted to refresh a dataset frame and render a component on another frame.                           |
-| `DATASET_STORE_HOST`                 | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                                                         |
-| `DATASET_STORE_PORT`                 | `5432`            | PostgreSQL port for `dataset_store`.                                                                                         |
-| `DATASET_STORE_DATABASE`             | `datasets`        | PostgreSQL database name for `dataset_store`.                                                                                |
-| `DATASET_STORE_RUNTIME_DB_USER`      | _None_            | Runtime IAM/DB user for dataset persistence.                                                                                 |
+| Variable                              | Default           | Purpose                                                                                                                      |
+| :------------------------------------ | :---------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `DATASETS_SYNC_BUDGET_ROWS`           | `100000`          | Row budget for inline materialisation. Over-budget requests can become operations within the asynchronous ceilings.          |
+| `DATASETS_SYNC_BUDGET_REQUESTS`       | `40`              | SDMX request budget for inline materialisation. Over-budget requests can become operations within the asynchronous ceilings. |
+| `DATASETS_ASYNC_MAX_ROWS`             | `2000000`         | Row ceiling for an asynchronous operation.                                                                                   |
+| `DATASETS_ASYNC_MAX_REQUESTS`         | `800`             | SDMX request ceiling for an asynchronous operation.                                                                          |
+| `DATASETS_SDMX_TIMEOUT_SECONDS`       | `90`              | Independent httpx transport timeout for SDMX calls. The door deadline applies when lower.                                    |
+| `DATASETS_GRAPH_BASE_URL`             | _None_            | Graph endpoint for dataset materialisation readers.                                                                          |
+| `DATASETS_SDMX_BASE_URL`              | _None_            | SDMX endpoint for observation retrieval in datasets.                                                                         |
+| `DATASETS_GRAPH_TOKEN`                | `""`              | Optional `x-graph-token` header for dataset graph and SDMX calls.                                                            |
+| `DATASETS_ARTIFACT_BUCKET_WORKING`    | _None_            | GCS bucket for working-tier materialised files.                                                                              |
+| `DATASETS_ARTIFACT_BUCKET_PINNED`     | _None_            | GCS bucket for pinned-tier materialised files.                                                                               |
+| `DATASETS_PRINCIPAL_HEADER`           | `x-dfo-principal` | Request header containing caller identity for pin and publish operations.                                                    |
+| `DATASETS_FIRST_PARTY_PRINCIPAL`      | `""`              | Authorized principal permitted to publish datasets.                                                                          |
+| `DATASETS_PIN_FIRST_PARTY_PRINCIPAL`  | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`.                             |
+| `LIVE_REFRESH_PRINCIPAL`              | `""`              | Authorized principal permitted to refresh a dataset frame and render a component on another frame.                           |
+| `PRESENTATION_SHARE_IMPORT_PRINCIPAL` | `""`              | Authorized principal permitted to import a website share under its own id.                                                   |
+| `DATASET_STORE_HOST`                  | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                                                         |
+| `DATASET_STORE_PORT`                  | `5432`            | PostgreSQL port for `dataset_store`.                                                                                         |
+| `DATASET_STORE_DATABASE`              | `datasets`        | PostgreSQL database name for `dataset_store`.                                                                                |
+| `DATASET_STORE_RUNTIME_DB_USER`       | _None_            | Runtime IAM/DB user for dataset persistence.                                                                                 |
 
 ### Graph and Presentation APIs
 

@@ -133,7 +133,7 @@ def test_a_passing_gate_that_omits_entities_warns_once(monkeypatch, module, gate
 
     assert result is None
     assert [(w.code, w.severity) for w in warnings] == [("currency_unmapped_omitted", "warn")]
-    assert warnings[0].message.endswith("2 entities: africaRegion, southOfSahara")
+    assert warnings[0].message.endswith("It left out 2 entities.")
 
 
 def test_a_bulk_latest_gate_reads_the_plan_its_read_serves(monkeypatch, search_settings):

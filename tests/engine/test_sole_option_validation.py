@@ -86,9 +86,10 @@ def test_a_binding_its_slot_or_the_phrase_supports_stays(evidence, pop_type):
 # ---------------------------------------------------------------------------
 
 _DATASET = "provenance/SoleOptionValidation"
+_OTHER = "provenance/SoleOptionValidationOther"
 
 
-def _row(dcid: str, **constraints: str) -> StatVarRow:
+def _row(dcid: str, *, provenance: str = _DATASET, **constraints: str) -> StatVarRow:
     return StatVarRow(
         dcid=dcid,
         population_type="FinancialFlow",
@@ -98,7 +99,7 @@ def _row(dcid: str, **constraints: str) -> StatVarRow:
         measurement_denominator=None,
         observation_properties=("financingProvider",),
         constraint_properties=constraints,
-        provenances=(_DATASET,),
+        provenances=(provenance,),
     )
 
 
@@ -115,17 +116,18 @@ def _use_index(monkeypatch: pytest.MonkeyPatch, *rows: StatVarRow) -> None:
         declarations=(),
         codes=(),
         statvars=rows,
-        datasets=(
+        datasets=tuple(
             DatasetDeclaration(
-                provenance=_DATASET,
-                label=_DATASET,
+                provenance=provenance,
+                label=provenance,
                 description="A test table.",
                 opt_in=False,
                 absent_observation="zero",
                 account="provider",
-                rank=0,
+                rank=rank,
                 invariants={},
-            ),
+            )
+            for rank, provenance in enumerate((_DATASET, _OTHER))
         ),
     )
     packaged = code_index_shared.get_index
@@ -164,6 +166,34 @@ def test_a_sole_option_claim_on_an_index_family_stands_only_when_every_row_asser
 
     assert (validated == binding) is kept
     assert validated.kind == ("value" if kept else "unbound")
+    assert validated.sampled is False
+
+
+@pytest.mark.parametrize(
+    ("named", "kept"),
+    [
+        pytest.param(None, False, id="an-unnamed-part-under-an-exclusion"),
+        pytest.param(_DATASET, True, id="a-part-naming-its-dataset"),
+    ],
+)
+def test_a_sole_option_claim_is_judged_on_the_family_the_identity_denotes(monkeypatch, named, kept):
+    """The part answers from one of two tables of the family, the other excluded, so its
+    menu offers one flow. A part naming no dataset mints the identity of the whole family,
+    where the excluded table's row holds another flow, so the slot stays open. A part
+    naming its dataset denotes that table's rows alone, which all hold the flow."""
+    _use_index(
+        monkeypatch,
+        _row("Flow_Oda", crsTypeOfFlow="CRSTypeOfFlow10"),
+        _row("Flow_Oof", provenance=_OTHER, crsTypeOfFlow="CRSTypeOfFlow20"),
+    )
+    shape = replace(_shape(), datasets=(_DATASET,), named_dataset=named)
+    binding = _flow("CRSTypeOfFlow10", "sole_option")
+
+    (validated,) = _validate_sole_option_bindings([binding], shape)
+
+    assert (validated.kind, validated.value_dcids) == (
+        ("value", ["CRSTypeOfFlow10"]) if kept else ("unbound", [])
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +274,7 @@ def test_a_sole_option_claim_on_a_held_family_stands_only_when_every_member_asse
 
     assert (validated == binding) is kept
     assert validated.kind == ("value" if kept else "unbound")
+    assert validated.sampled is False
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +295,9 @@ _NET_TRANSFERS = "Amount_FinancialFlow_Net_Disbursement_ServicingPayment_Nominal
 _NET_TRANSFERS_CONCESSIONAL = (
     "Amount_FinancialFlow_Net_Disbursement_ServicingPayment_IDSConcessional_Nominal"
 )
+_CONCESSION = ("idsConcessionality", "IDSConcessional")
+_GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+_GVA_AGRICULTURE = "Amount_EconomicActivity_GrossValueAdded_Agriculture_Nominal"
 
 
 def _debt_service_arcs(**constraints: str) -> dict:
@@ -282,7 +316,7 @@ def _debt_service_arcs(**constraints: str) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("members", "bound", "kept"),
+    ("members", "bound", "claim", "kept"),
     [
         pytest.param(
             {
@@ -292,6 +326,7 @@ def _debt_service_arcs(**constraints: str) -> dict:
                 ),
             },
             {},
+            _CONCESSION,
             False,
             id="a-member-asserts-none",
         ),
@@ -302,6 +337,7 @@ def _debt_service_arcs(**constraints: str) -> dict:
                 ),
             },
             {},
+            _CONCESSION,
             True,
             id="every-member-asserts-the-value",
         ),
@@ -315,6 +351,7 @@ def _debt_service_arcs(**constraints: str) -> dict:
                 ),
             },
             {},
+            _CONCESSION,
             True,
             id="a-member-narrows-on-another-property",
         ),
@@ -335,6 +372,7 @@ def _debt_service_arcs(**constraints: str) -> dict:
                 ),
             },
             {"maturityBand": "LongTermMaturity"},
+            _CONCESSION,
             False,
             id="a-bound-member-is-the-total",
         ),
@@ -353,13 +391,26 @@ def _debt_service_arcs(**constraints: str) -> dict:
                 ),
             },
             {},
+            _CONCESSION,
             False,
             id="a-sample-split-on-an-open-slot-holds-a-broader-member",
+        ),
+        pytest.param(
+            {
+                _GDP: _debt_service_arcs(activitySource="GrossDomesticProduction"),
+                _GVA_AGRICULTURE: _debt_service_arcs(
+                    activitySource="GrossValueAdded", economicSector="Agriculture"
+                ),
+            },
+            {},
+            ("economicSector", "Agriculture"),
+            False,
+            id="a-member-asserting-none-splits-on-a-property-both-state",
         ),
     ],
 )
 def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_value(
-    members, bound, kept
+    members, bound, claim, kept
 ):
     """ "Debt service" names no concessionality. A recalled sample is part of the family, so
     its by-creditor total, which states only the flow type every member shares, leaves the
@@ -370,24 +421,21 @@ def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_v
     the long-term maturity band named, the long-term member stating no concessionality is
     the total. A sample that splits on what a flow is net of holds no total, and the net
     transfers member stating no concessionality is the reading without one beside the
-    member that states it. The shape holds no held family and the index carries none of
-    its rows."""
+    member that states it. "GDP" recalls gross domestic product, which states no economic
+    sector, beside the gross value added of agriculture: the two differ on the activity
+    source both state, so they are siblings across a split, and the side without the
+    sector is a reading of the part without it. The shape holds no held family and the
+    index carries none of its rows, so a claim the sample does not refute stands marked
+    sampled, for the walk of the family to judge."""
+    prop, value = claim
     shape = replace(
         _shape("UnindexedFlow"),
-        slot_keys=(
-            SlotKeyDraft(
-                axis="how", property_dcid="idsConcessionality", label="IDS concessionality"
-            ),
-        ),
+        slot_keys=(SlotKeyDraft(axis="how", property_dcid=prop, label=prop),),
         sv_arc_facts=members,
     )
     assert shape.held_family is None
     binding = SlotBindingDraft(
-        axis="how",
-        property_dcid="idsConcessionality",
-        kind="value",
-        value_dcids=["IDSConcessional"],
-        evidence="sole_option",
+        axis="how", property_dcid=prop, kind="value", value_dcids=[value], evidence="sole_option"
     )
 
     stated = [
@@ -399,8 +447,9 @@ def test_a_sole_option_claim_on_a_recalled_sample_falls_to_a_total_lacking_the_v
 
     *_, validated = _validate_sole_option_bindings([*stated, binding], shape)
 
-    assert (validated == binding) is kept
-    assert validated.kind == ("value" if kept else "unbound")
+    assert (validated.kind, validated.value_dcids, validated.sampled) == (
+        ("value", [value], True) if kept else ("unbound", [], False)
+    )
 
 
 # ---------------------------------------------------------------------------

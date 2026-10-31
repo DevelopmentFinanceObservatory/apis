@@ -31,7 +31,8 @@ from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.artifact import load_catalogue
 from origin_catalogue.catalogue import CatalogueSnapshot
 from origin_catalogue.families import FamilyKey, FamilySummary, family_tables, summarise_table
-from origin_catalogue.graph import _table_arcs, _wire
+from origin_catalogue.frozen_arcs import served_arcs
+from origin_catalogue.graph import _table_arcs
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnVariable
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.bind import SlotBindingDraft
@@ -426,7 +427,7 @@ def test_a_shape_reads_its_family_summary_without_reading_the_members_it_did_not
 def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -> None:
     """The catalogue job reads each variable's five-tuple, role class, constraints and name
     from its arc rows. Over variables that exercise each reading, its summaries equal those
-    built from the same variables' arcs as the catalogue serves them (`graph._wire`) with
+    built from the same variables' arcs as the catalogue serves them (`frozen_arcs.served_arcs`) with
     derive's own readers."""
     provisional = {"nodes": [{"dcid": "dangling", "types": ["ProvisionalNode"]}]}
     variables = {
@@ -451,7 +452,7 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
 
     by_family: dict[FamilyKey, list[dict]] = {}
     for dcid in sorted(tables.base):
-        arcs = _wire(tables.base[dcid])
+        arcs = served_arcs(tables.base[dcid])
         role_bearing, _ = member_group_class(dcid, read_five_tuple(arcs), arcs)
         key = FamilyKey(*read_five_tuple(arcs), role_bearing)
         by_family.setdefault(key, []).append({"dcid": dcid, "arcs": arcs})
@@ -462,7 +463,11 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
             for prop, value in read_constraints(member["arcs"]).items():
                 values.setdefault(prop, {})[value] = None
         total = next(
-            (m for m in members if not read_constraints(m["arcs"]) and read_name(m["arcs"])),
+            (
+                m
+                for m in members
+                if not read_constraints(m["arcs"]) and read_name(m["arcs"], m["dcid"])
+            ),
             None,
         )
         expected[key] = FamilySummary(
@@ -474,7 +479,7 @@ def test_the_family_tables_summarise_each_family_as_derive_reads_its_members() -
                 if len(found) == 1 and all(prop in read_constraints(m["arcs"]) for m in members)
             },
             total=None if total is None else total["dcid"],
-            total_name=None if total is None else read_name(total["arcs"]),
+            total_name=None if total is None else read_name(total["arcs"], total["dcid"]),
             un_only=False,
         )
 
@@ -682,7 +687,9 @@ def _flagged_member_constraint_properties(shape: ShapeDraft) -> list[list[str] |
     materialise elected, which recall did not find, under a request's memo. The state holds
     what the refusal reads; the rest are placeholders."""
     graph = FakeGraph(
-        nodes={dcid: {"label": read_name(arcs), "arcs": arcs} for dcid, arcs in _DEBT.items()},
+        nodes={
+            dcid: {"label": read_name(arcs, dcid), "arcs": arcs} for dcid, arcs in _DEBT.items()
+        },
         obs={},
         detect={},
         resolve={},
@@ -714,6 +721,8 @@ def _flagged_member_constraint_properties(shape: ShapeDraft) -> list[list[str] |
         warnings=[],
         shape_draft=shape,
         coverage=empty_coverage_snapshot(),
+        # The pass judges coverage before it builds the refusal (`judge_coverage`).
+        coverage_judged=True,
     )
     with held_family_memo():
         spec = asyncio.run(_elected_flagged_match(state, members=[_IMF_GG]))
@@ -772,7 +781,7 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             shape_draft=shape,
             variable_spans_by_vocabulary={},
             variable_spans_in_every_system=[],
-            entities=[],
+            entity_texts=(),
             entity_roles={},
         ),
     )
@@ -787,7 +796,9 @@ def _value_state(shape: ShapeDraft) -> ResolveState:
             id="pre-bind-members",
         ),
         pytest.param(
-            lambda shape: [read_name(arcs) for arcs in _selected_members(shape, [_imf()])],
+            lambda shape: [
+                read_name(arcs, dcid) for dcid, arcs in _selected_members(shape, [_imf()]).items()
+            ],
             ["Outstanding external debt to the IMF, general government"],
             id="requirement-judging",
         ),

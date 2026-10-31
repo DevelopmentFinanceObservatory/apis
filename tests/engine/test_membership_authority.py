@@ -53,6 +53,7 @@ from statvar_members import (
     MemberEnumerator,
     MemberGroup,
     five_tuple_from_identity,
+    member_digest,
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader, _FakeSubjectPage
 from tests.datasets_api._member_bounds import mint_bounds
@@ -65,6 +66,8 @@ from tests.engine.test_place_scope_default import (
     _DETECT_QUERY,
     _EARTH_CHILDREN,
     _TOTAL_AND_PART_NODES,
+    _FixedBindLLM,
+    _OpenSlotsBindLLM,
     _scope_sdmx,
 )
 from tests.engine.test_place_scope_default import _SV as _POPULATION
@@ -374,8 +377,13 @@ def test_a_resubmit_whose_walk_fails_fails_retryably(walk, failure):
 
 def test_a_resubmit_whose_family_is_past_the_ceiling_answers_scope_too_broad():
     """A filtered set the full read cannot finish under the subject ceiling is a family the
-    mint refuses as too broad; the part says so, pointing at the identity."""
+    mint refuses as too broad; the part says so, pointing at the identity. The first answer
+    binds the position type every debt member asserts, and the total, whose one constraint
+    is that slot, then proves a truncated page complete, so the resubmit leaves the slot
+    open."""
     identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+    assert [slot.property for slot in identity.slots] == ["positionType"]
+    identity = identity.model_copy(update={"slots": []})
 
     result = _resubmit(identity, member_graph=_TruncatedWalkReader())
 
@@ -710,14 +718,22 @@ def test_a_posted_set_that_is_the_walked_family_is_kept():
     )
 
 
+@pytest.mark.parametrize(
+    "llm",
+    [_FixedBindLLM(), _OpenSlotsBindLLM("gender")],
+    ids=["slot-left-out", "slot-drafted-unbound"],
+)
 @pytest.mark.parametrize("walk", list(_UNSETTLED_POPULATION_WALKS))
-def test_a_subject_only_answer_whose_walk_settles_nothing_answers_its_recall_and_warns(walk):
+def test_a_subject_only_answer_whose_walk_settles_nothing_answers_its_recall_and_warns(walk, llm):
     """Recall holds the female part alone. With no walk, or one that settles nothing, the part
-    answers, and the answer carries `membership_unverified`."""
+    answers, and the answer carries `membership_unverified`. A reply drafting `gender`
+    unbound has it claimed as `Female` from the sample, and with no family read the claim
+    stands on the sample."""
     graph = _population_graph(_POPULATION_FEMALE)
 
     result = _run_place_less(
         graph=graph,
+        llm=llm,
         sdmx=_scope_sdmx(graph),
         materialise_graph=_UNSETTLED_POPULATION_WALKS[walk](),
     )
@@ -725,6 +741,37 @@ def test_a_subject_only_answer_whose_walk_settles_nothing_answers_its_recall_and
     assert result.status == "definite"
     assert [sv.ref.ref for sv in result.specs[0].resolved.members] == [_POPULATION_FEMALE]
     assert MEMBERSHIP_UNVERIFIED in _codes(result)
+
+
+def test_a_sampled_claim_the_walked_family_confirms_states_the_members_the_mint_serves():
+    """The family holds the female part alone, and a reply drafting `gender` unbound has it
+    claimed as `Female` from the sample. The walk reads `gender` open and settles the part,
+    which asserts `Female`, so the claim stands and the walk is keyed to the identity that
+    binds it: the answer states the digest of the family the mint serves."""
+    graph = _population_graph(_POPULATION_FEMALE)
+    member_graph = member_walk_reader(graph, stat_vars=[_POPULATION_FEMALE])
+
+    result = _run_place_less(
+        graph=graph,
+        llm=_OpenSlotsBindLLM("gender"),
+        sdmx=_scope_sdmx(graph),
+        materialise_graph=member_graph,
+    )
+
+    assert result.status == "definite", result.no_data_reason
+    (spec,) = result.specs
+    assert [sv.ref.ref for sv in spec.resolved.members] == [_POPULATION_FEMALE]
+    assert MEMBERSHIP_UNVERIFIED not in _codes(result)
+    minted = resolve_definition_members(
+        spec.definition.identity.model_dump(mode="json", exclude_none=True),
+        spec_id=spec.spec_id,
+        graph=member_graph,
+        enumerator=MemberEnumerator(),
+        code_index=get_index(),
+        bounds=mint_bounds(),
+    )
+    assert [shape.stat_var.removeprefix("dcid:") for shape in minted.shapes] == [_POPULATION_FEMALE]
+    assert spec.resolved.shape.member_digest == member_digest([_POPULATION_FEMALE])
 
 
 # ---------------------------------------------------------------------------

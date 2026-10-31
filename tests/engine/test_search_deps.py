@@ -168,7 +168,7 @@ def test_shutdown_releases_what_the_lifespan_built_in_order(monkeypatch):
 def test_startup_failure_releases_what_was_built_in_order(monkeypatch):
     events, generation = _record_releases(monkeypatch)
 
-    def _fail() -> None:
+    async def _fail() -> None:
         raise LLMInfraError("no key")
 
     monkeypatch.setattr(app_module._llm_mod, "warm", _fail)

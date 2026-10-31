@@ -426,18 +426,20 @@ class _MintGraph(FakeMintGraphReader):
         if any(stat_var.startswith("undata/") for stat_var in stat_vars):
             note_un_blocked_places(e for e in entities if e in self.un_refused)
 
-    def variable_facets_batch(self, *, stat_var, entities, deadline=None):
+    def variable_facets_batch(self, *, stat_var, entities, needs_dates=False, deadline=None):
         self._recorder.add("materialise.facets", [stat_var], {"observationAbout": entities})
         self._note_refused([stat_var], entities)
         return super().variable_facets_batch(
-            stat_var=stat_var, entities=entities, deadline=deadline
+            stat_var=stat_var, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
-    def observation_facets_batch_many(self, *, stat_vars, entities, deadline=None):
+    def observation_facets_batch_many(
+        self, *, stat_vars, entities, needs_dates=False, deadline=None
+    ):
         self._recorder.add("materialise.facets", stat_vars, {"observationAbout": entities})
         self._note_refused(stat_vars, entities)
         return super().observation_facets_batch_many(
-            stat_vars=stat_vars, entities=entities, deadline=deadline
+            stat_vars=stat_vars, entities=entities, needs_dates=needs_dates, deadline=deadline
         )
 
     def entities_with_data_by_variable(self, variable_dcids, entity_dcids, *, deadline=None):
@@ -711,8 +713,10 @@ class Doors:
         operations: Sequence[Operation] = (),
     ) -> ResolveResponse:
         """The parsed door's answer to one part whose text recalls each of `stat_vars`, in
-        that order, where bind elects the first and names the rest as other readings."""
-        text = " or ".join(VARIABLE_TEXT[stat_var] for stat_var in stat_vars)
+        that order, where bind elects the first and names the rest as other readings. The
+        text is a noun naming data itself (`function_words.DATA_WORDS`), so each reading
+        reads every word of it."""
+        text = "indicators"
         self._graph.recall(text, stat_vars)
         return self._ask(
             "first_answer",

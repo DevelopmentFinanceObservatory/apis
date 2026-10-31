@@ -61,9 +61,9 @@ from .labels import (
     _humanize,
     _humanize_ref,
     _humanize_source_label,
-    _join_labels,
     axis_ref,
     group_text,
+    join_labels,
 )
 from .what import (
     _authored_measure_noun,
@@ -331,7 +331,7 @@ def _bound_method_text(spec: Spec) -> str | None:
     served = spec.resolved.facets.get("measurementMethod")
     if served is not None and served.ref is not None and served.ref in refs:
         return _humanize_ref(served.ref, served.label)
-    return _join_labels([_humanize_ref(ref, None) for ref in refs])
+    return join_labels([_humanize_ref(ref, None) for ref in refs])
 
 
 def declared_axis_names() -> dict[str, str]:
@@ -527,7 +527,7 @@ def heading_from_parts(
         if noun.stated
         else " ".join(text for text in (*(v.text for v in modifiers), noun.text, *extras) if text)
     )
-    unit_phrase = _unit_heading_phrase(shape, facets, graph_text)
+    unit_phrase = _unit_heading_phrase(shape, facets, graph_text, wording=wording)
     heading = Heading(
         lead=lead,
         modifiers=tuple(modifiers),
@@ -571,7 +571,7 @@ def _resolve_noun(
     what_slot = _find_slot(slots, axis="what")
     what_labels = _binding_labels(what_slot.binding) if what_slot else []
     if what_labels:
-        return MeasureNoun(_join_labels(what_labels), "bound", what_slot)
+        return MeasureNoun(join_labels(what_labels), "bound", what_slot)
     if measure_label is not None:
         return _stated_noun(
             measure_label,
@@ -725,7 +725,7 @@ def _entities_text(labels: list[str], *, group: EntityGroup | None, plural: str)
         return group_text(len(labels), group)
     if len(labels) > _MAX_NAMED_ENTITIES:
         return f"{len(labels)} {plural}"
-    return _join_labels(labels)
+    return join_labels(labels)
 
 
 def _open_role_reading(
@@ -781,20 +781,24 @@ def _role_phrases(
 
     A role with entities names them (`_entities_text`). An open role reads its count or
     "all" (`_open_role_reading`). The destination carries the where slot, which it shares
-    with the subject.
+    with the subject, so a destination with no entities of its own that the heading states
+    names the places that slot binds, the subject entities. A destination the role scope
+    default filled (`scope` on the destination) keeps its scope reading.
     """
+    subject = (
+        []
+        if scope is not None and scope.axis == "destination"
+        else [entity for entity in norm_entities if entity.axis is None]
+    )
     phrases: dict[RoleAxis, RolePhrase] = {}
     for axis in _ROLE_ORDER:
         noun = wording.noun(axis)
         entities = [entity for entity in norm_entities if entity.axis == axis]
-        group: EntityGroup | None = None
-        if entities:
-            group = entity_groups.get(axis) if len(entities) > 1 else None
-            labels = [_entity_name(e.dcid, e.label) for e in entities]
-            text = _entities_text(labels, group=group, plural=noun.plural)
-            possessable = len(entities) == 1 and axis not in entity_groups
-        else:
-            reading = _open_role_reading(
+        group_key: str = axis
+        reading = (
+            None
+            if entities
+            else _open_role_reading(
                 axis,
                 noun,
                 role_axis_facts=role_axis_facts,
@@ -802,8 +806,17 @@ def _role_phrases(
                 coverage=coverage,
                 states_all=states_all,
             )
-            if reading is None:
-                continue
+        )
+        if reading is not None and axis == "destination" and subject:
+            entities, group_key, reading = subject, "observationAbout", None
+        if entities:
+            group = entity_groups.get(group_key) if len(entities) > 1 else None
+            labels = [_entity_name(e.dcid, e.label) for e in entities]
+            text = _entities_text(labels, group=group, plural=noun.plural)
+            possessable = len(entities) == 1 and group_key not in entity_groups
+        elif reading is None:
+            continue
+        else:
             text, entities = reading
             possessable = False
         phrases[axis] = RolePhrase(
@@ -965,7 +978,7 @@ def _source_phrase(
     source_labels = _binding_labels(source_slot.binding) if source_slot else []
     if source_labels:
         # Humanise before joining because source-identifier matching uses the full label.
-        text = _join_labels([_humanize_source_label(label) for label in source_labels])
+        text = join_labels([_humanize_source_label(label) for label in source_labels])
         return SourcePhrase(text, source_slot)
     resolved_source = _resolved_source_text(resolved_sources)
     if resolved_source:
@@ -1013,4 +1026,4 @@ def _resolved_source_text(resolved_sources: Sequence[GraphRef] | None) -> str:
         return ""
     if len(resolved_sources) >= 4:
         return f"{len(resolved_sources)} sources"
-    return _join_labels([_humanize_source_label(_humanize(ref)) for ref in resolved_sources])
+    return join_labels([_humanize_source_label(_humanize(ref)) for ref in resolved_sources])

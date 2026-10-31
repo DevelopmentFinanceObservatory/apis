@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -13,12 +13,14 @@ from fastapi.testclient import TestClient
 
 from artifact_store import LiveArtifactInventory
 from code_index.shared import get_index
+from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api import current as current_module
 from datasets_api import kinds
 from datasets_api.admission import MaterialisePermits
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
-from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operation_store import LiveOperationStore, Operation
 from datasets_api.operations.oidc import FakeOidcVerifier
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker_app import build_worker_app
@@ -27,6 +29,7 @@ from dc_sdmx import SdmxClient
 from graph_release.service import ReleaseService
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
+from series_coverage.index import Estimate
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
@@ -50,12 +53,15 @@ _INVOKER = "worker-invoker@example.iam.gserviceaccount.com"
 _PRINCIPAL = "e2e-test-principal"
 
 
-def _sdmx_transport(requests: list[httpx.Request]):
+def _sdmx_transport(requests: list[httpx.Request], body: Callable[[], str] = lambda: _CSV_BODY):
+    """Answers every SDMX request with `body()`, read per request so a test can change the
+    data between runs."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(
             200,
-            text=_CSV_BODY,
+            text=body(),
             headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
         )
 
@@ -69,16 +75,20 @@ def api_and_worker(
     coverage: Callable[[], FakeCoverageService],
     worker_permits: MaterialisePermits | None = None,
     worker_release: ReleaseService | None = None,
+    now: Clock = utc_now,
+    deferred: list[Callable[[], None]] | None = None,
 ) -> tuple[TestClient, LiveOperationStore, list[tuple[str, int]]]:
     """The API app and a worker app sharing stores, head store and graph, as the two services
     do in deployment. The fake queue runs each enqueued operation on the worker inline and
     records it in the returned list. `worker_permits` replaces the worker's one permit.
-    `worker_release` is the graph release service each run binds from."""
+    `worker_release` is the graph release service each run binds from. Both apps and the
+    the head and operation stores read `now`. With `deferred` the queue appends each run there for the test
+    to call, so the 202 answers before the worker runs."""
     store = FakeDatasetStore()
     version_store = FakeVersionRecordDatasetStore()
-    head_store = LiveHeadStore(store=version_store)
+    head_store = LiveHeadStore(store=version_store, now=now)
     # One database holds operations and heads, so the worker's fenced head advance reads the row.
-    operation_store = LiveOperationStore(store=version_store)
+    operation_store = LiveOperationStore(store=version_store, now=now)
     artifact_store = _InventoryRecordingArtifactStore(
         inventory=LiveArtifactInventory(store=version_store)
     )
@@ -107,6 +117,7 @@ def api_and_worker(
         ),
         head_recheck_interval=timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds),
         head_max_age=timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds),
+        now=now,
     )
     worker_client = TestClient(
         build_worker_app(
@@ -116,19 +127,26 @@ def api_and_worker(
             worker_url=_WORKER_URL,
             worker_invoker_service_account=_INVOKER,
             release=worker_release,
+            now=now,
         )
     )
 
     forwarded: list[tuple[str, int]] = []
 
-    def _forward_to_worker(operation_id: str, submission_count: int) -> None:
-        forwarded.append((operation_id, submission_count))
+    def _run(operation_id: str, submission_count: int) -> None:
         resp = worker_client.post(
             f"/internal/datasets/operations/{operation_id}/run",
             json={"operation_id": operation_id, "submission_count": submission_count},
             headers={"Authorization": "Bearer t"},
         )
         assert resp.status_code == 200, resp.text
+
+    def _forward_to_worker(operation_id: str, submission_count: int) -> None:
+        forwarded.append((operation_id, submission_count))
+        if deferred is None:
+            _run(operation_id, submission_count)
+        else:
+            deferred.append(lambda: _run(operation_id, submission_count))
 
     api_client = make_client(
         registry=LiveSpecRegistry(store=store),
@@ -144,6 +162,7 @@ def api_and_worker(
         task_client=FakeTaskClient(on_enqueue=_forward_to_worker),
         pin_allowed_principals=frozenset({_PRINCIPAL}),
         coverage=coverage(),
+        now=now,
     )
     return api_client, operation_store, forwarded
 
@@ -194,6 +213,206 @@ def test_local_end_to_end_over_budget_mint_completes_through_the_worker(
         headers={"x-dfo-principal": _PRINCIPAL},
     )
     assert pin_resp.status_code == 200, pin_resp.text
+
+
+def test_a_resubmit_after_the_head_aged_out_restarts_the_done_operation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A done operation whose head then passes `head_max_age` answers the next submit with a
+    fresh 202 that reads pending, and its poll reaches done with a manifest. Before, the submit
+    returned the done row unchanged, so the 202 read done with nothing behind it."""
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    runs: list[Callable[[], None]] = []
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+
+    first = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+    assert first.status_code == 202, first.text
+    runs.pop()()
+    operation_id = first.json()["operation"]["operation_id"]
+    done = operation_store.get(operation_id)
+    assert done is not None and done.state == "done"
+
+    clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+    resubmitted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+
+    assert resubmitted.status_code == 202, resubmitted.text
+    assert resubmitted.json()["operation"] == {
+        "operation_id": operation_id,
+        "status": "pending",
+        "poll": f"/api/datasets/operations/{operation_id}",
+        "retry_after_ms": 1_500,
+    }
+    assert forwarded == [(operation_id, 0), (operation_id, 1)]
+    runs.pop()()
+    polled = api_client.get(resubmitted.headers["location"])
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["operation"]["status"] == "done"
+    assert polled.json()["manifest"]["content_version"].startswith("cv_")
+    rebuilt = operation_store.get(operation_id)
+    assert rebuilt is not None and rebuilt.confirmed_at == clock["t"]
+
+
+def test_a_resubmit_after_another_rendering_moved_the_head_serves_the_new_head(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Rendering A completes at V1. The head ages out, the data changes, and rendering B's
+    operation rebuilds the head to V2, which does not link A. A resubmit of A resets its done
+    operation, so the 202 reads pending and the poll serves V2. Before, the 202 read done and
+    the poll served V1."""
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    data = {"body": _CSV_BODY}
+    runs: list[Callable[[], None]] = []
+    api_client, _operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(
+            base_url=_BASE_URL, transport=_sdmx_transport([], lambda: data["body"])
+        ),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+    body_a = {**_HAPPY_PATH_BODY, "options": {"bundle": False}}
+    body_b = {**_HAPPY_PATH_BODY, "options": {"bundle": False, "format": "parquet"}}
+
+    first_a = api_client.post("/api/datasets", json=body_a)
+    assert first_a.status_code == 202, first_a.text
+    runs.pop()()
+    op_a = first_a.json()["operation"]["operation_id"]
+    v1 = api_client.get(first_a.headers["location"]).json()["manifest"]["content_version"]
+
+    clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+    data["body"] = _CSV_BODY.replace(",2016,2000,", ",2016,3000,")
+    first_b = api_client.post("/api/datasets", json=body_b)
+    assert first_b.status_code == 202, first_b.text
+    runs.pop()()
+    v2 = api_client.get(first_b.headers["location"]).json()["manifest"]["content_version"]
+    assert v2 != v1
+
+    again_a = api_client.post("/api/datasets", json=body_a)
+
+    assert again_a.status_code == 202, again_a.text
+    assert again_a.json()["operation"]["status"] == "pending"
+    assert forwarded[-1] == (op_a, 1)
+    runs.pop()()
+    polled = api_client.get(again_a.headers["location"])
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["manifest"]["content_version"] == v2
+
+
+def _complete_then_fill_backlog(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_store: LiveOperationStore,
+    runs: list[Callable[[], None]],
+) -> None:
+    """Delays the next submission between its head read and the store: the deferred run
+    completes its operation, and another submission takes the backlog's one place."""
+    create_or_get = operation_store.create_or_get
+
+    def _delayed(**submission) -> Operation:
+        runs.pop()()
+        create_or_get(
+            request_identity={"subject_id": "spec_other", "member_dcids": []},
+            options={},
+            coverage_stamp="stamp_other",
+            origin_catalogue_build_id="build_other",
+            estimate=Estimate(rows=1, requests=1),
+        )
+        return create_or_get(**submission)
+
+    monkeypatch.setattr(operation_store, "create_or_get", _delayed)
+
+
+@pytest.mark.parametrize("door", ["mint", "definition"])
+def test_a_submission_that_finds_its_operation_just_completed_serves_the_head_when_the_backlog_is_full(
+    monkeypatch: pytest.MonkeyPatch, door: str
+):
+    """A second submission reads the head before the first one's run completes and reaches the
+    store after it, with the backlog full. It answers 200 from the head that run advanced, and
+    resubmits nothing. Before, it reset the done operation into backlog admission and answered
+    503 for a result the head served."""
+    monkeypatch.setenv("DATASETS_OPERATION_BACKLOG_MAX", "1")
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    runs: list[Callable[[], None]] = []
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+        deferred=runs,
+    )
+    if door == "mint":
+        monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+        submit = lambda: api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)  # noqa: E731
+    else:
+        minted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+        assert minted.status_code == 200, minted.text
+        # The head ages out, so the definition door rebuilds, over budget, as an operation.
+        clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+        monkeypatch.setattr(current_module, "within_sync_budget", lambda estimate, **_: False)
+        spec_id = minted.json()["definition"]["spec_id"]
+        submit = lambda: api_client.get(f"/api/datasets/{spec_id}")  # noqa: E731
+
+    first = submit()
+    assert first.status_code == 202, first.text
+    operation_id = first.json()["operation"]["operation_id"]
+    _complete_then_fill_backlog(monkeypatch, operation_store, runs)
+
+    second = submit()
+
+    assert second.status_code == 200, second.text
+    done = operation_store.get(operation_id)
+    assert done is not None and (done.state, done.submission_count) == ("done", 0)
+    assert second.json()["trace"]["served_from"] == "head"
+    assert second.json()["content_version"] == done.content_version
+    assert forwarded == [(operation_id, 0)]
+
+
+@pytest.mark.parametrize("door", ["mint", "definition"])
+def test_a_run_that_completes_during_dispatch_leaves_the_202_pending(
+    monkeypatch: pytest.MonkeyPatch, door: str
+):
+    """The fake queue runs the worker inside the enqueue, so the operation is done before the
+    submission records its dispatch. The 202 reads the state the submission recorded, pending,
+    and the poll serves the manifest. Before, `mark_dispatched` returned the done row and the
+    202 read done with no manifest."""
+    clock = {"t": datetime(2026, 10, 24, tzinfo=UTC)}
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+        now=lambda: clock["t"],
+    )
+    if door == "mint":
+        monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
+        submit = lambda: api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)  # noqa: E731
+    else:
+        minted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+        assert minted.status_code == 200, minted.text
+        # The head ages out, so the definition door rebuilds, over budget, as an operation.
+        clock["t"] += timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds + 1)
+        monkeypatch.setattr(current_module, "within_sync_budget", lambda estimate, **_: False)
+        spec_id = minted.json()["definition"]["spec_id"]
+        submit = lambda: api_client.get(f"/api/datasets/{spec_id}")  # noqa: E731
+
+    submitted = submit()
+
+    assert submitted.status_code == 202, submitted.text
+    operation_id = submitted.json()["operation"]["operation_id"]
+    assert forwarded == [(operation_id, 0)]
+    stored = operation_store.get(operation_id)
+    assert stored is not None and stored.state == "done"
+    assert submitted.json()["operation"]["status"] == "pending"
+    polled = api_client.get(submitted.headers["location"])
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["manifest"]["content_version"] == stored.content_version
 
 
 def _rendered(manifest: dict) -> list[tuple[str, str]]:

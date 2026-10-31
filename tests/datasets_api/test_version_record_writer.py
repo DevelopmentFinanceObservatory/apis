@@ -343,11 +343,12 @@ def test_live_writer_persists_the_record_and_its_artifact_links(version_store):
     assert record_row["base_content_version"] is None
 
 
+@pytest.mark.parametrize("frame_summed", [True, False], ids=["collapse", "cut"])
 def test_live_writer_round_trips_base_content_version_and_frame_sha256_off_their_columns(
-    version_store,
+    version_store, frame_summed
 ):
-    """`base_content_version` and `frame_sha256` persist in their own columns and read back
-    from them. The body holds no `frame_sha256`."""
+    """`base_content_version`, `frame_sha256` and `frame_summed` persist in their own columns
+    and read back from them. The body holds no `frame_sha256`."""
     writer = LiveVersionRecordWriter(
         store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     )
@@ -361,6 +362,7 @@ def test_live_writer_round_trips_base_content_version_and_frame_sha256_off_their
             facts=_FACTS,
             base_content_version="cv_base",
             frame_sha256="a" * 64,
+            frame_summed=frame_summed,
         )
     )
 
@@ -377,12 +379,34 @@ def test_live_writer_round_trips_base_content_version_and_frame_sha256_off_their
     assert stored is not None
     assert stored.base_content_version == "cv_base"
     assert stored.frame_sha256 == "a" * 64
+    assert stored.frame_summed is frame_summed
+
+
+@pytest.mark.parametrize(
+    ("base_content_version", "frame_summed"),
+    [("cv_base", None), (None, True)],
+    ids=["derived-without-it", "raw-with-it"],
+)
+def test_a_version_record_holds_frame_summed_exactly_when_it_names_a_base(
+    base_content_version, frame_summed
+):
+    with pytest.raises(ValueError, match="frame_summed"):
+        VersionRecord(
+            subject_id="spec_a",
+            subject_kind="spec",
+            content_version="cv1",
+            schema_version=1,
+            facts=_FACTS,
+            base_content_version=base_content_version,
+            frame_summed=frame_summed,
+        )
 
 
 @pytest.mark.parametrize("name", ["definition", "collapsed", "conversions", "published"])
 def test_live_writer_stores_facts_as_columns_and_the_body_they_encode(version_store, name):
     """A new version stores its facts in their own columns and, in `immutable_body`, the body
-    the previous writer stored for them, and reads back the facts it stored."""
+    the previous writer stored for them less the per-series conversion records, which only the
+    `series_conversions` column holds. It reads back the facts it stored."""
     case = golden_cases()[name]
     facts = facts_from_body(case["body"])
     LiveVersionRecordWriter(store=version_store).record_version(
@@ -393,6 +417,7 @@ def test_live_writer_stores_facts_as_columns_and_the_body_they_encode(version_st
             schema_version=1,
             facts=facts,
             base_content_version=case["base_content_version"],
+            frame_summed=None if case["base_content_version"] is None else True,
         )
     )
 
@@ -402,7 +427,8 @@ def test_live_writer_stores_facts_as_columns_and_the_body_they_encode(version_st
             "WHERE subject_id = %s AND content_version = %s",
             (case["subject_id"], case["content_version"]),
         )
-    assert record_row == {"immutable_body": case["body"]}
+    body = {key: value for key, value in case["body"].items() if key != "series_conversions"}
+    assert record_row == {"immutable_body": body}
     stored = LiveSnapshotReader(store=version_store).read_version(
         case["subject_id"], case["content_version"]
     )

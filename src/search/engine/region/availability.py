@@ -10,14 +10,20 @@ presence read (`place.read_default_presence`): data anywhere in that scope. A ro
 reading with no place leaves D unknown, and its own read decides.
 
 Derive reads the named countries for every recalled StatVar (`ShapeDraft.place_available`),
-so a part naming only countries makes no further read. A part naming a set makes one more
-at every place the part names (`read_menu_availability`), over the menu's subject-only
+so a part naming only countries makes no further read for D. A part naming a set makes one
+more at every place the part names (`read_menu_availability`), over the menu's subject-only
 StatVars. That read covers every member of every set: a sample can show data present but
 never absent. The request deadline and a response byte cap bound it.
 Each read stamps the places it covered on the shape (`ShapeDraft.availability_places`), and
 a read that found no data settles D as absent only when it covered every place the part
 names (`asked_places`). A failed read, a slow or oversized one among them, leaves D unknown,
 which is no evidence either way, and so does a read of fewer places than the part names.
+
+One more read settles no D. Where `max_candidates` cuts the breakdowns of a family with no
+total, the family's members recall did not return are read at the shape's
+`availability_places`, countries alone included, so the cut ranks each breakdown by its
+data in the years asked for (`phase_place_materialise._breakdown_coverage`). That read
+stamps nothing on the shape, and a part naming no place makes none.
 """
 
 from __future__ import annotations
@@ -27,28 +33,29 @@ import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
-from code_index.shared import get_index
 from materialise.place_scope import DefaultPresence
-from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.extract import DateRequest
-from search.engine.reading_coverage import ReadingCoverage, observed_years
+from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
+from search.engine.region.coverage_series import holds_series, requested_window
 from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.state import ResolveState
-from search.engine.retrieval.bound_values import index_carries_shape, part_member_rows
-from search.engine.retrieval.role_scope import _COVERAGE_ROLE_FOR_AXIS
+from search.engine.retrieval.bound_values import index_carries_shape
+from search.engine.retrieval.standard import _facet_reads
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import TimeWindow
 
 logger = logging.getLogger(__name__)
 
-type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool]
+type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool, frozenset[str]]
 
 
 def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
-    """Return a collision-free key for one derived shape group."""
+    """Return a collision-free key for one derived shape group. Each copy of a shape
+    narrowed to another breakdown (`ShapeDraft.omitted_slots`) is a group of its own."""
     return (
         shape.shape_id,
         shape.pop_type_dcid,
@@ -57,6 +64,7 @@ def _shape_group_key(shape: ShapeDraft) -> _ShapeGroupKey:
         shape.meas_qual_dcid,
         shape.meas_denom_dcid,
         shape.meas_denom_unresolved,
+        shape.omitted_slots,
     )
 
 
@@ -103,32 +111,11 @@ def read_menu_availability(
     stat_vars = list(dict.fromkeys(sv for shape in subject for sv in (shape.sv_arc_facts or {})))
     if not stat_vars or not places:
         return list(shapes), False
-    try:
-        probe = graph.observation_facets_batch(
-            stat_vars,
-            list(places),
-            False,
-            max_bytes=settings().sdmx_max_bytes,
-            deadline=deadline,
-        )
-    except Exception:
-        logger.warning(
-            "availability read failed for %d menu shape(s) at %d place(s); their "
-            "availability stays unknown",
-            len(subject),
-            len(places),
-            exc_info=True,
-        )
-        note_degraded_read("menu availability")
+    coverage = read_coverage(
+        stat_vars, graph=graph, places=places, deadline=deadline, read="menu availability"
+    )
+    if coverage is None:
         return list(shapes), True
-    coverage: dict[str, ReadingCoverage] = {
-        sv: {
-            place: years
-            for place, facets in by_place.items()
-            if (years := observed_years(facets)) is not None
-        }
-        for sv, by_place in probe.items()
-    }
     read: list[ShapeDraft] = []
     for shape in shapes:
         if is_role_bearing(shape):
@@ -143,6 +130,52 @@ def read_menu_availability(
     return read, False
 
 
+def read_coverage(
+    stat_vars: Sequence[str],
+    *,
+    graph: EngineGraphClient,
+    places: Sequence[str],
+    deadline: float | None,
+    read: str,
+) -> dict[str, ReadingCoverage] | None:
+    """The places among `places` at which each of `stat_vars` has observations, each with
+    the years its facets there hold (`reading_coverage.observed_years`), from batched facet
+    reads in the chunks standard retrieval reads (`standard._facet_reads`), each bounded by
+    `deadline` and the response byte cap (`sdmx_max_bytes`). `None` when a read fails, a
+    slow or oversized one among them, noted as the lost `read`
+    (`degraded_reads.note_degraded_read`)."""
+    probe: dict[str, dict[str, list[Facet]]] = {}
+    try:
+        for chunk in _facet_reads(stat_vars, places):
+            probe.update(
+                graph.observation_facets_batch(
+                    chunk,
+                    list(places),
+                    False,
+                    max_bytes=settings().sdmx_max_bytes,
+                    deadline=deadline,
+                )
+            )
+    except Exception:
+        logger.warning(
+            "%s read failed for %d StatVar(s) at %d place(s); their availability stays unknown",
+            read,
+            len(stat_vars),
+            len(places),
+            exc_info=True,
+        )
+        note_degraded_read(read)
+        return None
+    return {
+        sv: {
+            place: years
+            for place, facets in by_place.items()
+            if (years := observed_years(facets)) is not None
+        }
+        for sv, by_place in probe.items()
+    }
+
+
 class SeriesReader(Protocol):
     """Reads whether a role-bearing shape holds a series at the part's places
     (`series_at_places`)."""
@@ -155,15 +188,8 @@ class SeriesReader(Protocol):
 def series_at_places(state: ResolveState) -> SeriesReader:
     """Whether each role-bearing shape's family holds a series at the places the part
     names, on the roles an assignment binds them to, else on those `bind_place_roles`
-    gives, read from the request's coverage snapshot within the requested years. A set
-    gives its node and its members. The family is the rows its part may answer from
-    (`part_member_rows`), else its recalled members. `None` when the shape is subject-only,
-    refuses the places, binds none, or has no member the coverage index holds."""
-    coverage = state.coverage.index
-    index = get_index()
-    window = _requested_window(state.date_request)
-    first_year = window.start_year if window is not None else None
-    last_year = window.end_year if window is not None else None
+    gives (`coverage_series.holds_series`). `None` when the shape is subject-only, refuses
+    the places, binds none, or has no member the coverage index holds."""
 
     def read(shape: ShapeDraft, assignment: PlaceAssignment | None = None) -> bool | None:
         if not is_role_bearing(shape):
@@ -171,43 +197,15 @@ def series_at_places(state: ResolveState) -> SeriesReader:
         bound_roles = bind_place_roles(state, shape) if assignment is None else assignment
         if isinstance(bound_roles, str) or bound_roles.binds_no_place:
             return None
-        bound = {
-            _COVERAGE_ROLE_FOR_AXIS[axis]: frozenset(
-                dcid
-                for place_set in sets
-                for dcid in (*place_set.dcids("default"), *place_set.dcids("members"))
-            )
-            for axis, sets in bound_roles.sets.items()
-            if axis in _COVERAGE_ROLE_FOR_AXIS and sets
-        }
-        members = [row.dcid for row in part_member_rows(shape, index)] or list(
-            shape.sv_arc_facts or ()
-        )
-        covered = [dcid for dcid in members if coverage.covers(dcid)]
-        if not bound or not covered:
-            return None
-        return bool(
-            coverage.filter_candidates(
-                variables=covered, bound=bound, first_year=first_year, last_year=last_year
-            )
-        )
+        return holds_series(state, shape, bound_roles.sets)
 
     return read
-
-
-def _requested_window(date_request: DateRequest | None) -> TimeWindow | None:
-    """The years a part asks for, `None` when it names none or asks for the latest."""
-    return None if date_request is None or date_request.latest else date_request.window
 
 
 def _in_window(coverage: Mapping[str, ReadingCoverage], window: TimeWindow) -> bool:
     """Whether some member holds a point at some place inside `window`, or may: a span the
     probe states without its years counts when it overlaps the window."""
-    return any(
-        years.requested(window) != frozenset()
-        for by_place in coverage.values()
-        for years in by_place.values()
-    )
+    return any(holds_in(by_place, window) for by_place in coverage.values())
 
 
 def _subject_has_data(
@@ -235,7 +233,7 @@ def _subject_has_data(
         return None
     if not available:
         return available
-    window = _requested_window(date_request)
+    window = requested_window(date_request)
     if window is None or coverage is None or _in_window(coverage, window):
         return True
     return False if covered else None

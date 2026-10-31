@@ -24,6 +24,8 @@ from dc_graph import (
 )
 from graph_generation import FakeGeneration
 from graph_release.context import bound_release
+from materialise.arc_memo import MemoGraphReader
+from materialise.graph import GraphReader
 from origin_catalogue import (
     BASE,
     DFO,
@@ -34,6 +36,7 @@ from origin_catalogue import (
     ProvenanceRow,
     SourceRef,
     bound_catalogue,
+    frozen_arcs,
     recording_un_blocked_places,
 )
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
@@ -44,6 +47,8 @@ from origin_catalogue.graph import (
     is_un_dcid,
 )
 from origin_catalogue.topic_walk import walk_topics
+from search.engine.clients.graph_client import LiveGraphClient
+from statvar_members.enumerate import _candidate_properties
 from tests.graph_release.support import origin_release
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
 from tests.origin_catalogue.support import build_arc_tables
@@ -800,11 +805,57 @@ def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
     assert client.stats() == before
 
 
+def test_a_table_answer_is_built_once_per_build_and_release_and_shared_read_only(
+    client: OriginGraphClient, bind_catalogue
+) -> None:
+    """Every read of a dcid the tables hold serves the answer the build's first read built,
+    the release's DFO arcs among them, until a release holding other rows binds."""
+    bind_catalogue(_catalogue(arcs=_ARCS))
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        first = client.node_arcs_batch([_CRS_VARIABLE, _GDP])
+        again = client.node_arcs_batch([_GDP, _CRS_VARIABLE])
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        released = client.node_arcs_batch([_CRS_VARIABLE, _GDP])
+
+    assert again[_CRS_VARIABLE] is first[_CRS_VARIABLE]
+    assert again[_GDP] is first[_GDP]
+    assert released[_GDP] is first[_GDP]
+    assert released[_CRS_VARIABLE] == first[_CRS_VARIABLE]
+    assert released[_CRS_VARIABLE] is not first[_CRS_VARIABLE]
+    with pytest.raises(TypeError):
+        first[_GDP]["typeOf"]["nodes"].append({"dcid": "Place"})
+
+
+def test_an_existence_check_builds_no_answer_and_agrees_with_the_arc_read(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`exists`, `exists_batch` and `arcs_complete` read the rows the tables hold without
+    building an answer, so they keep none in the build's memo, and each says of a held node,
+    an empty one, a UN variable, an excluded one and a topic what the arc read says."""
+    bind_catalogue(_catalogue(arcs=_ARCS))
+    built: list[object] = []
+    build = frozen_arcs.served_arcs
+    monkeypatch.setattr(frozen_arcs, "served_arcs", lambda rows: built.append(rows) or build(rows))
+    dcids = [_CRS_VARIABLE, _GDP, _POPULATION, _UN_MORTALITY, _UN_AID, _UN_TOPIC, _OUR_TOPIC]
+
+    with bound_release(origin_release({_CRS_VARIABLE: _CRS_ARCS})):
+        found = client.exists_batch(dcids)
+        each = {dcid for dcid in dcids if client.exists(dcid)}
+        complete = [dcid for dcid in dcids if client.arcs_complete(dcid)]
+        assert built == []
+        arcs = client.node_arcs_batch(dcids)
+
+    assert found == each == {dcid for dcid, answer in arcs.items() if answer is not None}
+    assert found == {_CRS_VARIABLE, _GDP, _UN_MORTALITY, _UN_TOPIC, _OUR_TOPIC}
+    assert complete == dcids
+    assert graph.requests == []
+
+
 def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_name(
     graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
     """The graph's `->*` read names a nameless node by its dcid and a node of several names
-    by its first, and `node_label` gives the first no label and the second its last name.
+    by its first, and `node_label` gives the first no label and the second its `display_name`.
     The release and the tables answer each read as the graph does, with no request."""
     age, alcohol = "Years0", "Alcohol"
     crs = {
@@ -835,6 +886,28 @@ def test_a_node_an_arc_names_takes_its_label_from_the_labels_and_keeps_its_arc_n
         age: age,
         alcohol: "Alcohol",
     }
+    assert graph.requests == []
+
+
+def test_a_node_held_with_only_member_of_reads_as_a_whole_body_with_no_definition_arc(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """Dev's base table holds `Count_Person_15OrMoreYears_Female_Unmarried` as one `memberOf`
+    arc. The member walk reads only the arcs that define a StatVar and its slots
+    (`_candidate_properties`), so its read is a held body with every requested arc empty, not
+    an absence, and the tables answer it whole (`arcs_complete`), with no request."""
+    stub = "Count_Person_15OrMoreYears_Female_Unmarried"
+    group = "dc/g/Person_Gender-Female_MaritalStatus-Unmarried"
+    arcs = build_arc_tables(
+        dfo={}, base={stub: {"memberOf": {"nodes": [{"dcid": group}]}}}, schema={}
+    )
+    bind_catalogue(_catalogue(arcs=arcs))
+    properties = _candidate_properties({"gender": ("unbound",), "maritalStatus": ("unbound",)})
+
+    assert client.node_arcs_many([stub], properties=properties) == {
+        stub: dict.fromkeys(properties, ())
+    }
+    assert client.arcs_complete(stub)
     assert graph.requests == []
 
 
@@ -1442,3 +1515,52 @@ def test_a_refused_place_the_catalogue_found_is_noted_once_a_read_names_it(
     assert record.places() == ("country/USA",)
     client.observation_facets_batch([_UN_MORTALITY], ["country/USA"])
     assert record.places() == ("country/USA",)
+
+
+# -- dated facet reads through the wrappers --
+
+
+def _wrapped(
+    wrapper: str, graph: _Graph, client: OriginGraphClient, monkeypatch: pytest.MonkeyPatch
+) -> GraphReader:
+    """The reader `wrapper` names over `graph`: the origin client, the memo a mint reads
+    through over it, or Search's live client, whose own transport `graph` answers."""
+    if wrapper == "origin":
+        return client
+    if wrapper == "memo":
+        return MemoGraphReader(client, properties=())
+
+    def send(_client: httpx.Client, request: httpx.Request, **_kwargs: object) -> httpx.Response:
+        return graph.handler(request)
+
+    monkeypatch.setattr(httpx.Client, "send", send)
+    return LiveGraphClient(base=f"https://{_OURS_HOST}", un_base_url=f"https://{_UN_HOST}/core/api")
+
+
+@pytest.mark.parametrize("needs_dates", [False, True])
+@pytest.mark.parametrize("method", ["variable_facets_batch", "observation_facets_batch_many"])
+@pytest.mark.parametrize("wrapper", ["origin", "memo", "live"])
+def test_a_wrapped_facet_read_selects_dates_only_when_asked(
+    graph: _Graph,
+    client: OriginGraphClient,
+    bind_catalogue,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper: str,
+    method: str,
+    needs_dates: bool,
+) -> None:
+    bind_catalogue(_catalogue())
+    reader = _wrapped(wrapper, graph, client, monkeypatch)
+
+    if method == "variable_facets_batch":
+        reader.variable_facets_batch(
+            stat_var=_POPULATION, entities=["country/USA"], needs_dates=needs_dates
+        )
+    else:
+        reader.observation_facets_batch_many(
+            stat_vars=[_POPULATION], entities=["country/USA"], needs_dates=needs_dates
+        )
+
+    (request,) = graph.observation_requests(_OURS_HOST)
+    select = set(json.loads(request.content)["select"])
+    assert ({"date", "value"} <= select) is needs_dates
