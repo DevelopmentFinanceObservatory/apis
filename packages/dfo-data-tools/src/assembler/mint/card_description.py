@@ -8,9 +8,11 @@ words; a stat card's change is the step after its selection. A source card takes
 
 A card with a description keeps lineage alone in provenance (`lineage_only`), and names each
 source by its dcid, a `description.sources[].ref` (`assembler.mint.source_refs`). A series of a
-computed version whose rows name no source was computed from the version's inputs: the card's
-description lists them as sources, and the series names the first input whose id the record
-knows. The version's caveats reach it through its record. The card adds caveats only for facts
+computed version whose rows name no source was computed from the inputs its variable was
+computed from (`description.blocks.drawn_inputs`): the card's description lists the sources
+those inputs' records credit (`ResolvedFrame.input_records`) and then those inputs as sources,
+its citation line names those sources, and the series names the first of those inputs whose id
+the record knows. The version's caveats reach it through its record. The card adds caveats only for facts
 about its selection: the series a rolling card leaves out make `coverage_gap` caveats on its
 `select` step, at the period they hold no value at, one per set of entities they are about,
 naming those entities and the variables left out for them, which the composer words. A caveat
@@ -63,13 +65,14 @@ from assembler.mint.selection import selection_facts
 from assembler.mint.source_refs import renamed_source_refs, source_dcids, source_refs
 from assembler.ports import ResolvedFrame, VocabularySource
 from assembler.resolve import ResolvedSeries
+from description.blocks import drawn_inputs
 from description.compose import (
     SELECT_OP,
     describe_card,
     describe_source_card,
     version_title,
 )
-from description.facts import CaveatFact, DescriptionRecord
+from description.facts import CaveatFact, DescriptionRecord, SelectionFacts
 from description.steps import VersionRef
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 
@@ -109,12 +112,23 @@ def with_card_description(
     if record is None:
         return minted
     assert resolved_frame is not None  # a record comes from the frame
+    selection = (
+        selection_facts(
+            merged_intent=merged_intent,
+            resolved_frame=resolved_frame,
+            series=series,
+            bound_series=bound_series,
+        )
+        if member != "source_card" and bound_series
+        else None
+    )
     names = source_dcids(minted.provenance)
     unattributed = minted.source_ids.get(None)
     if unattributed is not None:
         # A row naming no source shares the id of the first source its frame cites
-        # (`assembler.mint.provenance`), and the description names it by the first input.
-        computed_from = _computed_from(record) if member != "source_card" else None
+        # (`assembler.mint.provenance`), and the description names it by the first input it
+        # lists.
+        computed_from = _computed_from(record, selection) if member != "source_card" else None
         if computed_from is None or any(
             bound.source_ref is not None and minted.source_ids[bound.source_ref] == unattributed
             for bound in bound_series
@@ -145,13 +159,7 @@ def with_card_description(
             revision=described.revision,
             frame=frame,
         )
-    elif bound_series:
-        selection = selection_facts(
-            merged_intent=merged_intent,
-            resolved_frame=resolved_frame,
-            series=series,
-            bound_series=bound_series,
-        )
+    elif selection is not None:
         drawn_variables = {
             coordinate.value
             for one in selection.series
@@ -169,6 +177,7 @@ def with_card_description(
             caveats=_left_out_caveats(left_out, drawn_variables=drawn_variables)
             if left_out is not None
             else [],
+            inputs=resolved_frame.input_records,
         )
     else:
         return minted
@@ -180,13 +189,15 @@ def with_card_description(
     )
 
 
-def _computed_from(record: DescriptionRecord) -> str | None:
-    """The id of a computed version's first input the record knows the id of, which a series
-    naming no source of its own names; `None` for a dataset version or where no input id is
-    known."""
+def _computed_from(record: DescriptionRecord, selection: SelectionFacts | None) -> str | None:
+    """The id a series naming no source of its own names: of the first input the series the
+    card draws were computed from (`description.blocks.drawn_inputs`), which its description
+    lists, else of the version's first, whose id the record knows. `None` for a dataset
+    version or where no such input id is known."""
     if record.computed is None:
         return None
-    return next((one.id for one in record.computed.inputs if one.id is not None), None)
+    inputs = record.computed.inputs if selection is None else drawn_inputs(record, selection)
+    return next((one.id for one in inputs if one.id is not None), None)
 
 
 def _left_out_caveats(left_out: LeftOut, *, drawn_variables: Set[str]) -> list[CaveatFact]:

@@ -284,6 +284,7 @@ __all__ = [
     "DescriptionReader",
     "LiveFrameStore",
     "frame_reads_bounded_by",
+    "input_versions",
 ]
 
 logger = logging.getLogger(__name__)
@@ -368,6 +369,20 @@ _DERIVED_SPEC_PREFIX = "ops_"
 _door_deadline: ContextVar[float | None] = ContextVar(
     "presentation_frame_read_deadline", default=None
 )
+
+
+def input_versions(record: DescriptionRecord) -> list[tuple[str, str]]:
+    """The `(id, content_version)` of each version a computed version's record names as an
+    input, once each, in its order: the inputs a card drawn from it is described with. An
+    input recorded without an id, and every input of a dataset version's record, is left
+    out."""
+    if record.computed is None:
+        return []
+    return list(
+        dict.fromkeys(
+            (one.id, one.content_version) for one in record.computed.inputs if one.id is not None
+        )
+    )
 
 
 class DescriptionReader(Protocol):
@@ -692,8 +707,8 @@ def _named_refs(
 
 
 def _step_entities(record: DescriptionRecord | None) -> Iterator[str]:
-    """The bare dcids of the entities a computed version's steps record on their sides
-    (`bound_entities`), which a comparison names its sides by."""
+    """The bare dcids of the entities a computed version's steps record on their sides or
+    narrow a side to (`bound_entities`), which a two-sided step names its sides by."""
     if record is not None and record.computed is not None:
         for step in record.steps or ():
             yield from bound_entities(step)
@@ -1231,15 +1246,7 @@ class LiveFrameStore:
         later. An input record that is not settled (`_settled`) is held, not final, since a
         later publish fills its steps. A stored input record that fails validation is logged as an error and leaves
         none, finally. A failed read raises `DatasetsStoreUnavailable`."""
-        if record.computed is None:
-            return (), True
-        versions = list(
-            dict.fromkeys(
-                (one.id, one.content_version)
-                for one in record.computed.inputs
-                if one.id is not None
-            )
-        )
+        versions = input_versions(record)
         if not versions:
             return (), True
         try:

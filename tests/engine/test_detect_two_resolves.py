@@ -8,15 +8,18 @@ import json
 import logging
 import threading
 import time
+import types
 from collections.abc import Callable
 
 import httpx
 import pytest
 
 import dc_graph
+import dc_graph.client as dc_graph_client
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp, StatVarRow
 from origin_catalogue import BASE, DFO, UN_SYSTEM, note_un_blocked_places
+from search.engine.clients import graph_client
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import _UN_RESOLVE_WORKERS, LiveGraphClient
 from search.engine.errors import GraphDeadlineFailure, GraphInfraError
@@ -451,6 +454,17 @@ def test_un_resolves_past_the_pool_bound_queue_on_its_threads(monkeypatch, bind_
     assert resolves.hosts().count(_UN_HOST) == _UN_RESOLVE_WORKERS + 4
 
 
+class _FrozenMonotonic:
+    """A `time.monotonic` that reads `now` until a test moves it."""
+
+    def __init__(self) -> None:
+        self.now = time.monotonic()
+
+    def time_module(self) -> types.SimpleNamespace:
+        """The `time` module with this clock as its `monotonic`."""
+        return types.SimpleNamespace(monotonic=lambda: self.now, sleep=time.sleep)
+
+
 def test_a_un_resolve_that_expires_in_the_queue_sends_no_request(
     monkeypatch, bind_catalogue
 ) -> None:
@@ -469,6 +483,12 @@ def test_a_un_resolve_that_expires_in_the_queue_sends_no_request(
         return httpx.Response(200, json=_body((_UN_MORTALITY, 0.8)))
 
     monkeypatch.setattr(httpx.Client, "post", post)
+    # The deadline reads `time.monotonic` in the client that sets it and the one that checks it.
+    # Both read a clock that moves only when the test moves it, so the running resolves cannot
+    # expire before they send, however slowly their workers start.
+    clock = _FrozenMonotonic()
+    for module in (graph_client, dc_graph_client):
+        monkeypatch.setattr(module, "time", clock.time_module())
     client = LiveGraphClient(
         base=f"https://{_OURS_HOST}",
         un_base_url=f"https://{_UN_HOST}/core/api",
@@ -479,7 +499,7 @@ def test_a_un_resolve_that_expires_in_the_queue_sends_no_request(
     for _ in range(_UN_RESOLVE_WORKERS):
         assert un_started.acquire(timeout=5), "a worker never started its UN resolve"
     queued = client.detect_svs("expires in the queue")
-    time.sleep(0.4)
+    clock.now += 0.4
     release.set()
 
     assert queued.un.result(timeout=5) is None

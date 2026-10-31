@@ -1073,6 +1073,46 @@ def _bindings(
     return fixed, open_slots
 
 
+class UnrecordedSets(NamedTuple):
+    """The sets a `spec_` record written before sets were recorded leaves out
+    (`unrecorded_sets`)."""
+
+    fills: dict[int, list[str]]
+    """Each dimension the record holds without its set, by its position in
+    `variables.dimensions`, with the set a fresh record narrows it to."""
+    dropped: list[str]
+    """Each property the definition narrows to a set that the record holds no dimension for,
+    as a summed collapse made before sets were recorded sums the set's dimension away."""
+
+
+def unrecorded_sets(
+    record: DescriptionRecord, *, definition: Mapping[str, object], code_index: CodeIndex
+) -> UnrecordedSets:
+    """The sets `definition`, the `spec_` version's stored definition, narrows a dimension of
+    `record` to that `record` does not hold.
+
+    A slot bound to a set of two or more codes narrows its dimension to that set, read as
+    `variable_facts` reads it (`_bindings`). A dimension of that property holding neither
+    `within` nor `within_set` was recorded before sets were, and is in `fills`. A
+    property with no dimension in a record that holds dimensions is in `dropped`. A record
+    whose dimensions are unknown, or a computed one, leaves out none."""
+    variables = record.variables
+    if variables is None or variables.dimensions is None or record.computed is not None:
+        return UnrecordedSets(fills={}, dropped=[])
+    identity = cast("Mapping[str, object]", definition["identity"])
+    _, open_slots = _bindings(identity, code_index, declared=())
+    sets = {prop: refs for prop, refs in open_slots.items() if len(refs) > 1}
+    fills = {
+        position: sets[dimension.property]
+        for position, dimension in enumerate(variables.dimensions)
+        if dimension.property in sets
+        and dimension.within is None
+        and dimension.within_set is MISSING
+    }
+    held = {dimension.property for dimension in variables.dimensions}
+    return UnrecordedSets(fills=fills, dropped=[prop for prop in sets if prop not in held])
+
+
 def role_dimensions(
     identity: Mapping[str, object], roles: Sequence[RoleFigure]
 ) -> list[DimensionFacts]:
@@ -1468,8 +1508,9 @@ def source_evidence(citation: Mapping[str, object]) -> list[SourceEvidence]:
 def named_refs(record: DescriptionRecord) -> list[str]:
     """The dcids a record's facts name, sorted: its one variable, fixed values, dimension
     values and the codes they narrow to, the refs inside its steps and the entities their
-    sides hold (`bound_entities`), the variables a unit counts, such as the population of a
-    per-capita denominator, and the series and entities its caveats name."""
+    sides hold or are narrowed to (`bound_entities`), the variables a unit counts, such as
+    the population of a per-capita denominator, and the series and entities its caveats
+    name."""
     refs: set[str] = set()
     if (variables := record.variables) is not None:
         if variables.variable is not None:
