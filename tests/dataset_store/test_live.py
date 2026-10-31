@@ -1422,6 +1422,7 @@ class _HoldBeforeCommitStore:
 
     def __init__(self, inner, *, hold_when=lambda sql: sql.startswith("UPDATE")) -> None:
         self._inner = inner
+        self.bounds = inner.bounds
         self._hold_when = hold_when
         self.held = threading.Event()
         self.release = threading.Event()

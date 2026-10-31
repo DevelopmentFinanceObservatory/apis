@@ -29,7 +29,7 @@ from datasets_api.allowance import (
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.render import CANONICAL_FRAME_RENDERING
-from datasets_api.retention_admission import SWEEP_BUDGET, sweep_copy_claims
+from datasets_api.retention_admission import sweep_budget, sweep_copy_claims
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from materialise.formats import (
@@ -193,7 +193,7 @@ def test_the_sweep_starts_no_claim_whose_read_could_outrun_its_budget():
     ledger.begin_copy(
         _held(ledger, "exp_b"), "sha256:a", clock=lambda: _SPENT_AT, lease=timedelta(0)
     )
-    room = (SWEEP_BUDGET - ExistsRead.long.within).total_seconds()
+    room = (sweep_budget(ledger.bounds) - ExistsRead.long.within).total_seconds()
     elapsed = iter([0.0, 0.0, room + 1])
 
     swept = sweep_copy_claims(
@@ -211,7 +211,7 @@ def test_the_sweep_starts_no_claim_whose_read_could_outrun_its_budget():
 def test_the_sweep_reserves_a_ledger_write_before_starting_any_claim():
     ledger = _claims()
     _held(ledger, "exp_a")
-    elapsed = iter([0.0, SWEEP_BUDGET.total_seconds() + 1])
+    elapsed = iter([0.0, sweep_budget(ledger.bounds).total_seconds() + 1])
 
     swept = sweep_copy_claims(
         allowances=ledger,

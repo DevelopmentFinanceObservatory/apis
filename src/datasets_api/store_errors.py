@@ -28,11 +28,15 @@ class DatasetsStoreUnavailable(Exception):
     The original exception and its bound SQL parameters stay out of caller
     and log text. `sqlstate` is `None` when the driver supplied none. The classifier
     maps permanent failures to non-retryable 500 and transient failures to
-    retryable 503 responses.
+    retryable 503 responses. `connection_broken` says the connection itself failed
+    (`dataset_store.default_is_broken`), so a retry on a fresh one can pass.
     """
 
-    def __init__(self, message: str, *, sqlstate: str | None = None) -> None:
+    def __init__(
+        self, message: str, *, sqlstate: str | None = None, connection_broken: bool = False
+    ) -> None:
         self.sqlstate = sqlstate
+        self.connection_broken = connection_broken
         super().__init__(message)
 
 

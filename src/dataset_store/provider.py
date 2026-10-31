@@ -42,6 +42,7 @@ def shared_pool() -> ConnectionPool:
             _pool = ConnectionPool(
                 connect=settings.connect_callable(connector=_connector),
                 size=settings.pool_size,
+                connect_timeout=settings.connect_timeout,
             )
         _borrowers += 1
         return _pool

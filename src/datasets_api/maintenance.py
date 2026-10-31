@@ -17,10 +17,11 @@ database settings `dataset_store.provider.shared_pool` reads.
 `sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each claim an
 export or a pin left past its lease by itself (`retention_admission.sweep_copy_claims`), `held`
 ones before `copying` ones, so a claim that fails leaves the rest settled. It starts no claim
-whose worst case, a bucket read included, would run past `retention_admission.SWEEP_BUDGET`, so
+whose worst case, a bucket read included, would run past `retention_admission.sweep_budget`, so
 one run ends before the next. It writes one `datasets_copy_claims_swept` line with the settled,
 failed and deferred counts, and exits non-zero when any failed or were deferred, so a backlog
-alerts. Every settlement names the claim's generation, so a second run changes nothing. A refund lands on the UTC day that spent the unit.
+alerts. Every settlement names the claim's generation, so a second run changes nothing. A refund
+lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or

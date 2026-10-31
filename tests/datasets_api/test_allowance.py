@@ -651,12 +651,23 @@ def test_a_pin_spends_and_settles_in_two_ledger_transactions_and_refuses_in_one(
         assert tx.fetch_all("SELECT claim_key FROM datasets.copy_claim") == []
 
 
-@pytest.mark.parametrize(("failures", "units"), [(1, {}), (2, {(BUDGET_KEY, "pin_budget"): 1})])
-def test_a_pin_retries_a_failed_refund_once_and_names_the_claim_it_leaves(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failures: int, units: dict
+@pytest.mark.parametrize(
+    ("failures", "broken", "units"),
+    [
+        pytest.param(1, True, {}, id="broken-once-retried"),
+        pytest.param(2, True, {(BUDGET_KEY, "pin_budget"): 1}, id="broken-twice-left"),
+        pytest.param(1, False, {(BUDGET_KEY, "pin_budget"): 1}, id="not-broken-left"),
+    ],
+)
+def test_a_pin_retries_a_refund_on_a_broken_connection_once_and_names_the_claim_it_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failures: int,
+    broken: bool,
+    units: dict,
 ):
     """A deduplicated copy's claim left behind is one the sweep keeps the units of, since the
-    pinned object stands, so the second failure logs the claim's key at ERROR."""
+    pinned object stands, so a failure left that way logs the claim's key at ERROR."""
     ledger = LiveAllowanceLedger(
         store=FakeVersionRecordDatasetStore(), limits={AllowanceKind.pin_budget: 5}
     )
@@ -669,7 +680,7 @@ def test_a_pin_retries_a_failed_refund_once_and_names_the_claim_it_leaves(
     def flaky(claim: CopyClaim, *, landed: bool = False) -> bool:
         if left[0]:
             left[0] -= 1
-            raise DatasetsStoreUnavailable("closing failed")
+            raise DatasetsStoreUnavailable("closing failed", connection_broken=broken)
         return close_claim(claim, landed=landed)
 
     monkeypatch.setattr(ledger, "close_claim", flaky)
@@ -686,9 +697,40 @@ def test_a_pin_retries_a_failed_refund_once_and_names_the_claim_it_leaves(
 
     assert _counts(ledger) == units
     left_behind = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(left_behind) == failures - 1
+    assert len(left_behind) == (1 if units else 0)
     if left_behind:
         assert left_behind[0].args[0].startswith("pin_")
+
+
+def test_a_pin_counts_its_day_before_its_spends_and_its_lease_after_them(claims):
+    """The spends lock the rows of the day the first read names, and their waits sit outside the
+    lease."""
+    reads = iter([_NOON, _NOON + timedelta(seconds=7)])
+
+    claim = claims.begin_pin_copy(
+        "pin_a", _UNITS[:1], _DIGEST, clock=lambda: next(reads), lease=_LEASE - _NOON
+    )
+
+    assert claim.spent_at == _NOON
+    assert claim.expires_at == _LEASE + timedelta(seconds=7)
+
+
+class _Unreachable:
+    bounds = FakeVersionRecordDatasetStore.bounds
+
+    @contextmanager
+    def transaction(self):
+        raise OSError("connection reset")
+        yield
+
+
+def test_a_broken_connection_is_named_on_the_failure_it_raises():
+    ledger = LiveAllowanceLedger(store=_Unreachable(), limits={AllowanceKind.pin: 1})
+
+    with pytest.raises(DatasetsStoreUnavailable) as failed:
+        ledger.refund(_ALICE, AllowanceKind.pin, _NOON)
+
+    assert failed.value.connection_broken
 
 
 def test_a_copy_reads_its_source_before_it_begins(claims):

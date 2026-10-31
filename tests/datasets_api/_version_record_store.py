@@ -13,6 +13,7 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 
+from dataset_store import DEFAULT_TRANSACTION_BOUNDS
 from datasets_api.version_store import _ROLE_COLUMNS_SQL
 from datasets_api.versions import MaterialisationRecord, Trigger
 
@@ -290,6 +291,8 @@ class _VersionRecordFakeTransaction:
 
 class FakeVersionRecordDatasetStore:
     """Share one SQLite connection across transactions so committed writes remain visible."""
+
+    bounds = DEFAULT_TRANSACTION_BOUNDS
 
     def __init__(self) -> None:
         # The mint worker uses this connection from a different thread.

@@ -61,10 +61,9 @@ row before any of its units.
 it is below the limit, so spends racing on one row cannot pass it. A claim's units are upserted in
 the claim's own transaction, which rolls them all back when one finds its row at the limit. A
 refund locks the day's row, then takes one from it or deletes the row it would leave at zero, so
-a spend racing the refund waits for its commit. `hold_claim` and `begin_copy` read the time
-inside their transaction after the claim's row lock, and `begin_pin_copy` as its first statement,
-since that time names the day whose rows its spends lock, so the wait for a connection sits
-outside the lease each writes and the lease check it makes.
+a spend racing the refund waits for its commit. `hold_claim`, `begin_copy` and `begin_pin_copy`
+read the time for a lease inside their transaction after its row locks, so the waits for a
+connection and a lock sit outside the lease each writes and the lease check it makes.
 """
 
 from __future__ import annotations
@@ -81,7 +80,12 @@ from types import MappingProxyType
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from dataset_store import DatasetStore, Transaction
+from dataset_store import (
+    DatasetStore,
+    Transaction,
+    TransactionBounds,
+    default_is_broken,
+)
 from dataset_store.clock import Clock
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.store_errors import DatasetsStoreUnavailable
@@ -216,6 +220,11 @@ def spending(
 
 
 class SharedAllowanceLedger(AllowanceLedger, Protocol):
+    @property
+    def bounds(self) -> TransactionBounds:
+        """The bounds the ledger's transactions run under, as its store is configured."""
+        ...
+
     def read_claim(self, key: str) -> CopyClaim | None:
         """The claim `key` holds, or `None`.
 
@@ -292,9 +301,9 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         self, key: str, spends: Sequence[Spend], digest: str, *, clock: Clock, lease: timedelta
     ) -> CopyClaim:
         """Spend one unit of each of `spends`, all or none, and write a `copying` claim of them
-        under `key` for `digest`, in one transaction. One read of `clock`, the transaction's
-        first statement, names the units' day, `spent_at` and the start of the `lease`, so the
-        wait for a connection sits outside it. A pin knows its digest before it spends, so its
+        under `key` for `digest`, in one transaction. A read of `clock` before the spends names
+        their day and `spent_at`, and the `lease` runs from a read once they hold their rows, so
+        the waits for a connection and for those rows sit outside it. A pin knows its digest before it spends, so its
         claim begins its copy.
 
         Raises:
@@ -376,6 +385,10 @@ class LiveAllowanceLedger:
         self._store = store
         self._limits = dict(limits)
 
+    @property
+    def bounds(self) -> TransactionBounds:
+        return self._store.bounds
+
     def spend(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
         with self._spending(f"spending {kind} of {caller.key!r}") as tx:
             self._spend_in(tx, [Spend(caller.key, kind)], now)
@@ -386,6 +399,7 @@ class LiveAllowanceLedger:
         exits, so the wrapped error has no `__context__`."""
         failure: str | None = None
         sqlstate: str | None = None
+        broken = False
         try:
             with self._store.transaction() as tx:
                 yield tx
@@ -394,8 +408,9 @@ class LiveAllowanceLedger:
         except Exception as exc:
             failure = f"{doing} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
+            broken = default_is_broken(exc)
         if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate, connection_broken=broken)
 
     def _spend_in(self, tx: Transaction, spends: Sequence[Spend], now: datetime) -> None:
         for spend in _in_lock_order(spends):
@@ -599,8 +614,8 @@ class LiveAllowanceLedger:
         self, key: str, spends: Sequence[Spend], digest: str, *, clock: Clock, lease: timedelta
     ) -> CopyClaim:
         with self._spending(f"beginning the pin copy {key!r}") as tx:
-            # One read names the day the spends count under, `spent_at` and the lease, so it
-            # comes before the upserts that choose the day's rows.
+            # This read names the day whose rows the spends lock, so it comes before them. The
+            # lease starts from a read after them, so their lock waits sit outside it.
             now = clock()
             self._spend_in(tx, spends, now)
             row = tx.fetch_one(
@@ -611,7 +626,7 @@ class LiveAllowanceLedger:
                     key,
                     uuid4().hex,
                     ClaimState.copying.value,
-                    now + lease,
+                    clock() + lease,
                     {spend.kind.value: spend.key for spend in spends},
                     now,
                     digest,
