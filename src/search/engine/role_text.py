@@ -360,7 +360,6 @@ def debtor_possessive(
     measures: Sequence[str],
     places: Mapping[str, Sequence[str]],
     directed: Mapping[str, RoleAxis],
-    phrases: Sequence[str],
 ) -> dict[str, RoleAxis]:
     """Return the debtor's axis for the one place a possessive names over its own debt.
 
@@ -372,11 +371,10 @@ def debtor_possessive(
     external debt``), a place with no possessive, and a creditor cue whose object is no
     place (``Kenya's debt to GDP ratio``, a debt measured against a quantity) set nothing,
     and a debt noun followed by a claim word (``China's debt exposure``) names no debt. A
-    query that opens the debtors as a breakdown reads its possessor as the creditor and
-    sets nothing: ``China's debt by debtor country``, ``China's debt for each debtor
-    country``. `breakdown_axis` reads each of the extraction's ``phrases`` (its operation
-    phrases, dropped qualifiers and breakdown entities) and each of the query's own
-    `breakdown_segments`.
+    query with any role noun of the debtor's end (`role_axis_for_text`: ``debtor``,
+    ``borrowers``, ``recipient``) may make its possessor the creditor, so it sets nothing
+    and the extraction's axis stands: ``China's debt by debtor country``, ``Kenya's
+    external debt by debtor type``.
 
     The possessive reads the measure, so the axis states no direction of its own
     (``FramePlace.direction_stated``).
@@ -386,11 +384,9 @@ def debtor_possessive(
     query_tokens = _tokenize(query.replace("\u2019", "'"))
     if any(_follows_creditor_cue(query_tokens, start) for start in range(len(query_tokens))):
         return {}
-    # A query that opens the debtors as a breakdown ("China's debt by debtor country") asks
-    # for a creditor's lending, so its possessor is the creditor.
     if any(
-        breakdown_axis(phrase, query=query) == "destination"
-        for phrase in (*phrases, *breakdown_segments(query))
+        _noun_axis(token.removesuffix(_POSSESSIVE).removesuffix("'")) == "destination"
+        for token in query_tokens
     ):
         return {}
     possessors = _debt_possessors(query_tokens, places) or set()
@@ -504,20 +500,7 @@ _EVERY_WORDS: frozenset[str] = frozenset({"all", "every", "each"})
 _BREAKDOWN_WORDS: frozenset[str] = frozenset({"every", "each"})
 # Nouns that name the places on either side of a flow without naming the side: "all
 # countries". The preposition that governs them names it.
-_PLACE_NOUNS: frozenset[str] = frozenset(
-    {
-        "country",
-        "countries",
-        "nation",
-        "nations",
-        "economy",
-        "economies",
-        "state",
-        "states",
-        "government",
-        "governments",
-    }
-)
+_PLACE_NOUNS: frozenset[str] = frozenset({"country", "countries"})
 # The axis each role preposition names.
 _ROLE_PREP_AXES: dict[str, RoleAxis] = {
     prep: _ROLE_TEXT_TO_AXIS[prep] for prep in _DONOR_PREPS | _RECIPIENT_PREPS
@@ -601,66 +584,6 @@ def _nouns_axes(tokens: list[str]) -> set[RoleAxis] | None:
 # Connectives that ask for one value per member of the role nouns after them: "by donor",
 # "across recipients". "for" asks it only before "each" or "every" ("for each donor").
 _BREAKDOWN_CONNECTIVES: frozenset[str] = frozenset({"by", "across"})
-# The words that open a phrase `breakdown_axis` reads: "by donor", "across recipients", "for
-# each donor", "from every provider", "to each recipient".
-_SEGMENT_OPENERS: frozenset[str] = _BREAKDOWN_CONNECTIVES | {"for", *_ROLE_PREP_AXES}
-
-
-# English's closed word classes: the prepositions, conjunctions and determiners, with the
-# words that open a window ("last decade", "past five years"). After a breakdown's role
-# nouns, one of these, a numeral, punctuation or the end of the query closes the phrase.
-# Any other word is a content word that modifies the nouns ("by debtor type").
-_FUNCTION_WORDS: frozenset[str] = frozenset(
-    {
-        # Prepositions.
-        "about", "above", "across", "after", "against", "along", "amid", "among", "around",
-        "as", "at", "before", "behind", "below", "beneath", "beside", "besides", "between",
-        "beyond", "by", "despite", "down", "during", "except", "excluding", "for", "from",
-        "in", "including", "inside", "into", "like", "near", "of", "off", "on", "onto",
-        "out", "outside", "over", "per", "since", "than", "through", "throughout", "till",
-        "to", "toward", "towards", "under", "until", "up", "upon", "versus", "via", "vs",
-        "with", "within", "without",
-        # Conjunctions.
-        "although", "and", "because", "but", "if", "nor", "or", "so", "though", "unless",
-        "whereas", "whether", "while", "yet",
-        # Determiners.
-        "a", "all", "an", "any", "both", "each", "either", "every", "her", "his", "its",
-        "my", "neither", "no", "our", "some", "that", "the", "their", "these", "this",
-        "those", "what", "which", "whose", "your",
-        # Window determiners.
-        "last", "next", "past", "previous", "recent",
-    }
-)  # fmt: skip
-# The query's words, numerals and punctuation marks, each its own token.
-_SEGMENT_TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]|\d+|[^\w\s]")
-
-
-def breakdown_segments(query: str) -> list[str]:
-    """The query's phrases that ask for a breakdown, each read whole by `breakdown_axis`.
-
-    After each opener (``by``, ``across``, ``for``, ``from``, ``to``), the longest run of
-    words that names an axis opens it when the query ends there or the next token is a
-    numeral, punctuation or a function word (`_FUNCTION_WORDS`). ``China's debt by debtor
-    country between 2010 and 2020`` gives ``by debtor country``. A content word after the
-    nouns modifies them, so ``Kenya's external debt by debtor type`` gives none.
-    """
-    tokens = _SEGMENT_TOKEN_RE.findall(query.lower().replace("\u2019", "'"))
-    segments: list[str] = []
-    for start, token in enumerate(tokens):
-        if token not in _SEGMENT_OPENERS:
-            continue
-        words_end = next(
-            (i for i in range(start + 1, len(tokens)) if not tokens[i][0].isalpha()),
-            len(tokens),
-        )
-        for end in range(words_end, start + 1, -1):
-            phrase = " ".join(tokens[start:end])
-            if breakdown_axis(phrase, query=query) is None:
-                continue
-            if end == len(tokens) or not tokens[end][0].isalpha() or tokens[end] in _FUNCTION_WORDS:
-                segments.append(phrase)
-            break
-    return segments
 
 
 def breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:

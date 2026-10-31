@@ -519,10 +519,8 @@ def _read_wording(
     *,
     query: str,
     measures: Sequence[str],
-    phrases: Sequence[str],
 ) -> _Wording:
-    """The query's wording about the ends of `entities` (`_Wording`), read once.
-    ``phrases`` are the extraction's breakdown candidates (`role_text.debtor_possessive`)."""
+    """The query's wording about the ends of `entities` (`_Wording`), read once."""
     places: dict[str, list[str]] = {}
     axes_by_place: dict[str, set[RoleAxis]] = {}
     for entity in entities:
@@ -532,9 +530,7 @@ def _read_wording(
     extracted = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=extracted)
     stated = receipt_axes(query, places=places) | debt
-    read = debtor_possessive(
-        query, measures=measures, places=places, directed=extracted, phrases=phrases
-    )
+    read = debtor_possessive(query, measures=measures, places=places, directed=extracted)
     return _Wording(
         stated=stated,
         read={name: axis for name, axis in read.items() if name not in stated},
@@ -1059,16 +1055,7 @@ def _prepare_extraction(
             entity_breakdowns.append(words)
     # Where the query's wording shows the extraction read the flow backwards, every end the
     # parse names swaps with it: places, and the axes operations run over.
-    wording = _read_wording(
-        extracted_entities,
-        query=query,
-        measures=unique,
-        phrases=[
-            *entity_breakdowns,
-            *(op.phrase for op in extraction.operations),
-            *extraction.dropped_qualifiers,
-        ],
-    )
+    wording = _read_wording(extracted_entities, query=query, measures=unique)
     ends = _wording_ends(extracted_entities, wording, query=query)
     extraction, extract_result, extracted_entities = permute_ends(
         (extraction, extract_result, extracted_entities), ends
