@@ -2001,12 +2001,14 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
 
 
 @pytest.mark.parametrize(
-    ("code", "field", "named"),
+    ("code", "field", "lead", "named", "refs"),
     [
         pytest.param(
             "currency_unmapped_omitted",
             {"omitted_entities": {"count": 3, "refs": ["dcid:country/KEN", "dcid:XYZ"]}},
+            "Left out",
             "Kenya, XYZ",
+            ["dcid:country/KEN", "dcid:XYZ"],
             id="currency",
         ),
         # Each entity's name carries the years its rows were left out.
@@ -2021,23 +2023,48 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
                     ],
                 }
             },
+            "Left out",
             "Kenya (1990-2001, 2004), XYZ (2020)",
+            ["dcid:country/KEN", "dcid:XYZ"],
             id="deflator",
+        ),
+        pytest.param(
+            "withheld_by_registry",
+            {"withheld_members": {"count": 3, "refs": ["dcid:Water", "dcid:XYZ"]}},
+            "Withheld series",
+            "Water, XYZ",
+            ["dcid:Water", "dcid:XYZ"],
+            id="withheld-members",
+        ),
+        # A provenance ref reaches `labels` under its `dcid:` ref, like an entity's.
+        pytest.param(
+            "withheld_by_registry",
+            {"withheld_provenances": {"count": 3, "refs": ["dcid:OECD_DAC2A", "dcid:XYZ"]}},
+            "Withheld sources",
+            "OECD DAC2a, XYZ",
+            ["dcid:OECD_DAC2A", "dcid:XYZ"],
+            id="withheld-provenances",
         ),
     ],
 )
-def test_a_conversion_warning_names_the_entities_it_left_out_by_label(release, code, field, named):
+def test_a_counted_field_warning_names_what_it_counts_by_label(
+    release, code, field, lead, named, refs
+):
     resolved_frame = _resolved_frame_with_warnings(
-        [{"code": code, "severity": "warn", "message": "It left out 3 entities.", **field}],
-        labels={"dcid:country/KEN": "Kenya"},
+        [{"code": code, "severity": "warn", "message": "The message.", **field}],
+        labels={
+            "dcid:country/KEN": "Kenya",
+            "dcid:Water": "Water",
+            "dcid:OECD_DAC2A": "OECD DAC2a",
+        },
     )
 
     provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
 
     assert provenance["warnings"] == [
-        {"kind": "coverage_gap", "detail": f"It left out 3 entities. Left out: {named} and 1 more."}
+        {"kind": "coverage_gap", "detail": f"The message. {lead}: {named} and 1 more."}
     ]
-    assert warned_refs(manifest=resolved_frame.manifest) == ["dcid:country/KEN", "dcid:XYZ"]
+    assert warned_refs(manifest=resolved_frame.manifest) == refs
 
 
 def test_a_card_names_every_counted_field_a_stored_warning_holds():

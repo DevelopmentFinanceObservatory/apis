@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, datetime
+
 import pytest
+from pydantic import ValidationError
 
 from datasets_api.manifest import warning_model
-from datasets_api.manifest_models import WarningModel
+from datasets_api.manifest_models import (
+    CitationModel,
+    CoverageModel,
+    DefinitionModel,
+    Manifest,
+    WarningModel,
+)
 
 
 def _summed(*, label: str | None) -> dict[str, object]:
@@ -105,6 +115,17 @@ def test_a_stored_stat_vars_summed_warning_without_a_label_omits_the_label_key()
             },
             id="deflator-omitted-entities",
         ),
+        pytest.param(
+            {
+                "code": "withheld_by_registry",
+                "severity": "warn",
+                "message": "m",
+                "unserved_entities": {"count": 1, "refs": ["dcid:country/PSE"]},
+                "withheld_members": {"count": 2, "refs": ["dcid:MemberA", "dcid:MemberB"]},
+                "withheld_provenances": {"count": 1, "refs": ["dcid:OECD_DAC2A"]},
+            },
+            id="withheld-by-registry",
+        ),
     ],
 )
 def test_a_stored_warning_with_counted_refs_reads_back_unchanged(stored):
@@ -127,3 +148,37 @@ def test_a_coverage_warning_keeps_the_members_it_names_through_the_manifest():
     dumped = warning_model(warning).model_dump(mode="json")
 
     assert dumped == warning
+
+
+def _manifest(warning: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "definition": DefinitionModel(schema_version=1, spec_id="spec_a", identity={}),
+        "content_version": "cv1",
+        "prepared_at": datetime(2026, 10, 4, 12, 0, tzinfo=UTC),
+        "coverage": CoverageModel(rows=0, dimensions=[]),
+        "citation": CitationModel(text="", sources=[]),
+        "trace": {},
+        "artifacts": [],
+        "warnings": [warning],
+    }
+
+
+def test_a_manifest_keeps_the_withheld_fields_of_its_warning_through_validation_and_dump():
+    warning = {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": "m",
+        "withheld_members": {"count": 1, "refs": ["dcid:MemberA"]},
+        "withheld_provenances": {"count": 1, "refs": ["dcid:OECD_DAC2A"]},
+    }
+
+    manifest = Manifest.model_validate(_manifest(warning))
+
+    assert manifest.model_dump(mode="json")["warnings"] == [warning]
+
+
+def test_a_manifest_warning_with_an_unknown_field_is_refused():
+    warning = {"code": "withheld_by_registry", "severity": "warn", "message": "m", "extra": 1}
+
+    with pytest.raises(ValidationError):
+        Manifest.model_validate(_manifest(warning))

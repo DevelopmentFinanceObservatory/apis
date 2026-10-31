@@ -313,7 +313,8 @@ class WarningModel(BaseModel):
     """One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
-    `omitted_entities`, and `deflator_missing_omitted` `omitted_entity_years`. A `None` field
+    `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
+    `withheld_by_registry` `withheld_members` and `withheld_provenances`. A `None` field
     is left out of every dump, so other codes' warnings, on the wire and in stored version
     bodies, stay exactly `{code, severity, message}`.
     """
@@ -405,6 +406,18 @@ class WarningModel(BaseModel):
         description=(
             "coverage_below_scope only: the years the data covers, both bounds set, beside "
             "requested_years; absent otherwise"
+        ),
+    )
+    withheld_members: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="withheld_by_registry only: the series the registry withheld",
+    )
+    withheld_provenances: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "withheld_by_registry only: the provenances holding data for the withheld series"
         ),
     )
     omitted_entities: CountedRefsModel | None = Field(
