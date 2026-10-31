@@ -12,8 +12,8 @@ from search.engine.entry.parsed import (
     _role_query_for_part,
     interpret_parts,
 )
-from search.engine.entry.raw_text import _entity_roles
-from search.engine.extract import ExtractedEntity, _validate_role_spans
+from search.engine.entry.raw_text import _entity_roles, _prepare_extraction
+from search.engine.extract import ExtractedEntity, _validate_role_spans, extract
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole, contradicts
@@ -29,7 +29,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_role_bearing_pipeline_e2e import _SV_DCID, _declaring_arcs
-from tests.fixtures import FakeGraph, make_resolver
+from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _CREDITOR_DEBTOR_ROLE_NAMES = RoleNames(donor="creditor", recipient="debtor")
 
@@ -290,6 +290,22 @@ def _extracted_axes(kenya: str, china: str) -> dict[str, list[str]]:
     return {
         name: [axis] for name, axis in (("Kenya", kenya), ("China", china)) if axis != "unspecified"
     }
+
+
+def test_a_debtor_possessive_moves_the_ranked_end_with_the_place():
+    """The recorded extraction of "Which countries does Kenya's debt service go to" puts
+    Kenya on origin and ranks over destination. Kenya's possessive makes it the debtor, so
+    the two ends swap as one: Kenya on destination, and the rank over origin, its
+    creditors."""
+    query = "Which countries does Kenya's debt service go to"
+    result, _usage = asyncio.run(extract(query, llm=FakeLLM()))
+
+    prep = _prepare_extraction(result.extraction, result, query=query)
+
+    assert prep.entity_roles == {
+        "Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]
+    }
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["origin"]
 
 
 class TestRawTextDoorReadsDebtWording:

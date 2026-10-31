@@ -76,6 +76,7 @@ from search.engine.fanout import (
     _run_variables_streaming,
     leg_runs,
 )
+from search.engine.flow_ends import Ends, end_permutation, permute_ends
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import (
@@ -488,6 +489,44 @@ def _cue_states_direction(
     return pairing.cue_first or cue.split()[-1] not in _PREPOSITIONS
 
 
+def _worded_axes(
+    entities: Sequence[ExtractedEntity], *, query: str, measures: Sequence[str]
+) -> tuple[dict[str, RoleAxis], dict[str, RoleAxis]]:
+    """The axes the query's wording sets, by stripped entity name: those its debt and
+    receipt wording state (`role_text.debt_axes`, `role_text.receipt_axes`), and those a
+    lone debt possessive reads off the measure (`role_text.debtor_possessive`), which
+    states no direction of its own."""
+    places: dict[str, list[str]] = {}
+    for entity in entities:
+        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
+    directed = _extracted_axes(entities)
+    debt = debt_axes(query, measures=measures, places=places, directed=directed)
+    stated = receipt_axes(query, places=places) | debt
+    read = debtor_possessive(query, measures=measures, places=places, directed=directed)
+    return stated, {name: axis for name, axis in read.items() if name not in stated}
+
+
+def _extracted_axes(entities: Sequence[ExtractedEntity]) -> dict[str, RoleAxis]:
+    """The one axis the extraction gave each name; a name on both axes has none."""
+    axes_by_place: dict[str, set[RoleAxis]] = {}
+    for entity in entities:
+        if entity.flow_role != "unspecified":
+            axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
+    return {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
+
+
+def _wording_ends(
+    entities: Sequence[ExtractedEntity], *, query: str, measures: Sequence[str]
+) -> Ends:
+    """The permutation of ends the query's wording makes of the extraction's reading
+    (`flow_ends.end_permutation`), from each directed place it moves."""
+    stated, read = _worded_axes(entities, query=query, measures=measures)
+    directed = _extracted_axes(entities)
+    return end_permutation(
+        {name: (directed[name], axis) for name, axis in (stated | read).items() if name in directed}
+    )
+
+
 def _entity_roles(
     entities: list[ExtractedEntity], *, query: str, measures: Sequence[str]
 ) -> dict[str, list[DoorRole]]:
@@ -504,18 +543,7 @@ def _entity_roles(
     (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
     translation leaves no span.
     """
-    places: dict[str, list[str]] = {}
-    for entity in entities:
-        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
-    # A place extraction put on both axes has no single extracted axis.
-    axes_by_place: dict[str, set[RoleAxis]] = {}
-    for entity in entities:
-        if entity.flow_role != "unspecified":
-            axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
-    directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
-    debt = debt_axes(query, measures=measures, places=places, directed=directed)
-    worded = receipt_axes(query, places=places) | debt
-    possessive = debtor_possessive(query, measures=measures, places=places, directed=directed)
+    worded, possessive = _worded_axes(entities, query=query, measures=measures)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
@@ -981,6 +1009,12 @@ def _prepare_extraction(
             extracted_entities.append(entity)
         else:
             entity_breakdowns.append(words)
+    # Where the query's wording shows the extraction read the flow backwards, every end the
+    # parse names swaps with it: places, and the axes operations run over.
+    ends = _wording_ends(extracted_entities, query=query, measures=unique)
+    extraction, extract_result, extracted_entities = permute_ends(
+        (extraction, extract_result, extracted_entities), ends
+    )
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
     entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
