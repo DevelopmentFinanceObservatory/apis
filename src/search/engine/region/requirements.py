@@ -34,7 +34,7 @@ from search.engine.departures import (
 from search.engine.qualifier_match import _normalize
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_rank_bind import judge_value_requirements
-from search.engine.region.qualifier_readings import answer_reads_measure
+from search.engine.region.qualifier_readings import answer_reads_measure, shape_reads_measure_axis
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     CodeRule,
@@ -115,12 +115,47 @@ class Judgement:
             zip(self.requirements, self.outcomes[answer], strict=True)
         ):
             held = terms.get(requirement.phrase)
+            if rule_departs_only(requirement.rule):
+                continue
             if outcome == "unmet" and (
                 held is None
                 or _specificity(requirement.rule) > _specificity(self.requirements[held].rule)
             ):
                 terms[requirement.phrase] = j
         return tuple(slot_terms.get(j, self.requirements[j].term) for j in terms.values())
+
+    def met_exclusions(self) -> frozenset[str]:
+        """The phrases the request asked to leave out that every answer leaves out, as the
+        request wrote them. An answer leaves a phrase out when it binds the value binding
+        repair bound for it (`state.named_exclusion_requirement`), or when it leaves out
+        every run of its words that names codes (`excluded_run`): it meets the run's rule on
+        every property the run names. A property the answer's shape lacks is summed over, so
+        a run naming one is not left out, and neither is a run of two systems the answer
+        meets on one. Empty when no answer was judged."""
+        runs: dict[str, dict[str, list[int]]] = {}
+        named: dict[str, list[int]] = {}
+        for j, requirement in enumerate(self.requirements):
+            if requirement.origin != "exclusion":
+                continue
+            phrase = requirement.term.text
+            if (run := excluded_run(requirement.rule)) is None:
+                named.setdefault(phrase, []).append(j)
+            else:
+                runs.setdefault(phrase, {}).setdefault(run, []).append(j)
+
+        def leaves_out(outcomes: tuple[Outcome, ...], phrase: str) -> bool:
+            if (bound := named.get(phrase)) and all(outcomes[j] == "met" for j in bound):
+                return True
+            by_run = runs.get(phrase, {})
+            return bool(by_run) and all(
+                all(outcomes[j] == "met" for j in held) for held in by_run.values()
+            )
+
+        return frozenset(
+            phrase
+            for phrase in runs.keys() | named.keys()
+            if self.outcomes and all(leaves_out(outcomes, phrase) for outcomes in self.outcomes)
+        )
 
     def departures(self) -> tuple[Departed, ...]:
         """The departures that disclose each phrase some answer does not meet and the
@@ -223,6 +258,21 @@ def _disclosing(
     )
 
 
+def excluded_run(rule: RequirementRule) -> str | None:
+    """The run of the request's words naming codes it asked to leave out that `rule` judges
+    (`CodeRule.excluded`, a `MeasureRule`'s on its code), `None` for any other rule."""
+    if isinstance(rule, MeasureRule):
+        return rule.code.excluded
+    return rule.excluded if isinstance(rule, CodeRule) else None
+
+
+def rule_departs_only(rule: RequirementRule) -> bool:
+    """Whether a requirement of `rule` is something the request asked to leave out
+    (`excluded_run`). An answer that leaves it unmet still answers, so no trace term and no
+    refusal names it."""
+    return excluded_run(rule) is not None
+
+
 def _met_only_by_an_answer(rule: RequirementRule) -> bool:
     """Whether a requirement of `rule` can be met only by an answer that applies it: a
     query record of the elected reading and a value the request names. With no answer
@@ -260,9 +310,15 @@ def judge(
 
     A `CodeRule` is met when the answer's bindings bind one of its codes or a descendant on
     its property, unmet when the answer's shape holds the property and binds none of them,
-    and outside an answer whose shape lacks it. A `MeasureRule` is met when the answer's
+    and outside an answer whose shape lacks it. An `excluded` `CodeRule` reads the other way
+    (`CodeRule`), and an answer that leaves it unmet names no term for it
+    (`rule_departs_only`). A `MeasureRule` is met when the answer's
     shape or a value its bindings bind carries the measure value (`answer_reads_measure`),
-    else judged as its `CodeRule`. A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
+    else judged as its `CodeRule`. An `excluded` one is unmet when the answer carries it or
+    is served under a unit request whose price basis reads as it, met when the answer states
+    another value on the axis or is served under a unit request at other prices, and outside
+    an answer that states no value on the axis and is served under none, which sums over it
+    (`shape_reads_measure_axis`). A price-basis `CodeRule`, alone or a `MeasureRule`'s, is
     also met by an answer served under a unit request whose price basis reads as one of its
     codes (`_serves_price_basis`). A `ValueRule` is met or unmet as
     `phase_rank_bind.judge_value_requirements` decides, and an answer leaving it unmet
@@ -310,13 +366,28 @@ def judge(
         for j, requirement in enumerate(requirements):
             rule = requirement.rule
             if isinstance(rule, CodeRule):
-                met_by_unit = prices is not None and _serves_price_basis(rule, prices)
+                met_by_unit = (
+                    prices is not None
+                    and not rule_departs_only(rule)
+                    and _serves_price_basis(rule, prices)
+                )
                 answer.append("met" if met_by_unit else _code_outcome(rule, held, bound))
             elif isinstance(rule, MeasureRule):
-                met = answer_reads_measure(shape, rule.match, bindings) or (
+                reads = answer_reads_measure(shape, rule.match, bindings) or (
                     prices is not None and _serves_price_basis(rule.code, prices)
                 )
-                answer.append("met" if met else _code_outcome(rule.code, held, bound))
+                if rule.code.excluded is not None:
+                    # A shape that states no value on the axis sums over it, so it leaves
+                    # nothing out, unless a unit request states its prices.
+                    priced = prices is not None and rule.code.property_dcid == PRICE_BASIS_AXIS
+                    if reads:
+                        answer.append("unmet")
+                    elif priced or shape_reads_measure_axis(shape, rule.match.code_system):
+                        answer.append("met")
+                    else:
+                        answer.append("outside")
+                else:
+                    answer.append("met" if reads else _code_outcome(rule.code, held, bound))
             elif isinstance(rule, ValueRule) and requirement.origin == "set_value":
                 # A value of a drafted set: met when the answer applies it or leaves the
                 # whole set unmet, which the refusal names; else disclosed, never refused.
@@ -408,6 +479,13 @@ def _code_outcome(rule: CodeRule, held: frozenset[str], bound: Mapping[str, set[
     if rule.property_dcid not in held:
         return "outside"
     values = bound.get(rule.property_dcid, set())
+    if rule.excluded is not None:
+        holds = any(
+            applies_value(code, value) or applies_value(value, code)
+            for code in rule.codes
+            for value in values
+        )
+        return "met" if values and not holds else "unmet"
     applied = any(applies_value(code, value) for code in rule.codes for value in values)
     return "met" if applied else "unmet"
 
@@ -684,7 +762,9 @@ def meets_stray_values(
 def met_measure_phrases(judgement: Judgement | None) -> frozenset[str]:
     """The phrases of the measure values every final answer `judgement` judged carries
     (`MeasureRule`), which binding repair can bind after election. The part admits them, so
-    no raw-text warning names a measure value its answer applies."""
+    no raw-text warning names a measure value its answer applies. An excluded rule is met
+    only by an answer whose shape states a value on the axis other than the one excluded
+    (`judge`), so a phrase leaving out a value of an axis the answer sums over stays out."""
     if judgement is None:
         return frozenset()
     measures = {r.phrase for r in judgement.requirements if isinstance(r.rule, MeasureRule)}

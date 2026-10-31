@@ -6,8 +6,6 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
-import pytest
-
 from search.engine.response_cache_flow import Layer2Signals, compute_layer2_signals
 from search.engine.role_text import DoorRole
 
@@ -32,16 +30,16 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 8 `query_text` readers and 2 `role_query` readers covered by cache signals,
+    """Pin the 7 `query_text` readers and 2 `role_query` readers covered by cache signals,
     plus the two reads of each that fill `QuantityRequest.query_text` in
     `_read_stated_quantity` and `BindRequest.query_text` in `_phase_bind`. Those two reach
     a model only through a binder that reads the query text, which looks up nothing on
     layer 2 (`CacheScope`), so they need no signal."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
-    assert query_text_reads == 10, (
+    assert query_text_reads == 9, (
         f"state.query_text has {query_text_reads} readers in src/search/engine/region/, "
-        "not the 8 compute_layer2_signals computes signals for and the binder requests' 2. "
+        "not the 7 compute_layer2_signals computes signals for and the binder requests' 2. "
         "Update compute_layer2_signals (and this test) to cover the new reader."
     )
     assert role_query_reads == 4, (
@@ -239,28 +237,6 @@ def test_declared_default_slot_named_against_the_real_index() -> None:
     assert unnamed.declared_default_slots_named == ()
 
 
-@pytest.mark.parametrize(
-    ("query_text", "expected"),
-    [
-        ("not bilateral ODA to Kenya", ("bilateral",)),
-        ("non-bilateral ODA to Kenya", ("bilateral",)),
-        ("bilateral ODA to Kenya", ()),
-        ("not multilateral ODA to Kenya", ("multilateral",)),
-        ("ODA to Kenya excluding multilateral and bilateral flows", ("bilateral", "multilateral")),
-        ("multilateral ODA to Kenya", ()),
-        (None, ()),
-    ],
-)
-def test_negated_stated_words_against_the_real_index(
-    query_text: str | None, expected: tuple[str, ...]
-) -> None:
-    """The real index has the CRS state "bilateral" of its rows and DAC2a name a party for
-    "multilateral"; a raw query negating either carries the word, and one stating it, or a
-    request of several variables, carries none."""
-    signals = compute_layer2_signals(query=query_text or "", entity_roles={}, query_text=query_text)
-    assert signals.query_text_negated_stated_words == expected
-
-
 def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
     """The dataclass has one field for each cache signal."""
     field_names = {f.name for f in fields(Layer2Signals)}
@@ -274,7 +250,6 @@ def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
         "declared_default_trigger_words",
         "declared_default_slots_named",
         "written_variable_phrases",
-        "query_text_negated_stated_words",
         "every_member_axes",
         "query_text_value_source",
     }

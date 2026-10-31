@@ -20,7 +20,7 @@ from dc_sdmx import EntityFilter
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import FacetBinding, GraphReader, MaterialisationRequest, decide_group_unit
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
-from materialise.facets import FacetSelection, MemberProbe, UnitRequest, native_currency_iso
+from materialise.facets import FacetSelection, MemberProbe, UnitRequest, nominal_currency
 from materialise.finish import (
     currency_unmapped_omitted_warning,
     deflator_missing_omitted_warning,
@@ -1186,7 +1186,7 @@ def unit_request_period(
     if not keys:
         return None
     recipes = {catalogue.recipe(provenance) if provenance else None for _unit, provenance in keys}
-    natives = {native_currency_iso(unit) for unit, _provenance in keys}
+    natives = {nominal_currency(unit) for unit, _provenance in keys}
     recipe = next(iter(recipes)) if len(recipes) == 1 else None
     if served is None or recipe is None or None in natives:
         return None
@@ -1347,8 +1347,7 @@ def _reads_tables(selections: Mapping[str, FacetSelection] | None) -> bool:
     if selections is None or (request := selections["unit"].request) is None:
         return False
     return not (
-        request.prices == "current"
-        and request.currency == native_currency_iso(selections["unit"].ref)
+        request.prices == "current" and request.currency == nominal_currency(selections["unit"].ref)
     )
 
 

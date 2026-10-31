@@ -104,8 +104,8 @@ class AmbiguousEntityCandidate:
 class AmbiguousEntity:
     """Query wording with multiple graph candidates.
 
-    `role` is the flow axis the door gave the wording, or `None` when it gave none
-    or gave both.
+    `role` is the flow axis this group asks the wording on, or `None` when the door gave
+    it none. A wording on both flow ends is one group per end.
     """
 
     text: str
@@ -232,6 +232,10 @@ class RegionResult:
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
     # across the request.
     admitted_qualifier_phrases: frozenset[str] = frozenset()
+    # The phrases the request asked to leave out that every answer of this region leaves out
+    # (`requirements.Judgement.met_exclusions`), as the request wrote them. The entry door
+    # drops a phrase's warning on the parts whose regions hold it.
+    met_exclusions: frozenset[str] = frozenset()
     # The raw-text door's request-wide `QUERY_QUALIFIER_DROPPED` warnings whose phrase this
     # region leaves unapplied (`raw_text._ExtractionPrep.onto`). The envelope states such a
     # warning only while no region admits its phrase. The part's departures read these
@@ -441,8 +445,9 @@ class RegionResult:
     members_in_words: bool = False
     # The places the answer binds for each entity text of the part, by that text
     # (`place_roles.bound_entity_refs`), read once the part's places have settled. A text
-    # absent here binds none: an ambiguous or unresolved one, every text of a part refused
-    # before its places are bound, and every text of a soft-deadline placeholder.
+    # absent here binds none: an ambiguous or unresolved one, a group or a set read as its
+    # members in a part refused before its places are bound, and every text of a
+    # soft-deadline placeholder.
     entity_refs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The flow sides a whole population the part asks for member by member opens
     # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it

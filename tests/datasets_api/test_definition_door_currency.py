@@ -1341,7 +1341,7 @@ def _unit_sdmx_transport(body_ref: dict[str, str]) -> httpx.MockTransport:
 
 
 def test_a_rebuild_after_the_native_unit_turns_non_currency_remints_the_422():
-    """When the elected unit changes from native `CurrencyUSD` to plain `USD` with no source
+    """When the elected unit changes from native `CurrencyUSD` to `Percent` with no source
     date moving, the head serves until its maximum age. The rebuild then returns 422
     `facet_binding_unsupported` without a pointer because the binding belongs to the stored
     identity."""
@@ -1385,11 +1385,11 @@ def test_a_rebuild_after_the_native_unit_turns_non_currency_remints_the_422():
     )
     assert minted.status_code == 200, minted.text
 
-    # The unit changes to plain `USD`, and the head reaches its maximum age.
+    # The unit changes to `Percent`, and the head reaches its maximum age.
     head_store.age_head(spec_id, age=_PAST_MAX_AGE)
-    body_ref["text"] = _unit_row(unit="USD")
+    body_ref["text"] = _unit_row(unit="Percent")
     facets[(_UNIT_STAT_VAR, _RECIPIENT)] = [
-        replace(facets[(_UNIT_STAT_VAR, _RECIPIENT)][0], unit="USD")
+        replace(facets[(_UNIT_STAT_VAR, _RECIPIENT)][0], unit="Percent")
     ]
 
     rechecked = client.get(f"/api/datasets/{spec_id}")

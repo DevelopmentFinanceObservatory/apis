@@ -37,7 +37,7 @@ from code_index.types import PartyRow, PartyWord
 from entity_resolution.types import Group, Kind, Resolved, entity_kind
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
-from search.engine.bind_repair import stated_words_negated, word_stated
+from search.engine.bind_repair import word_stated
 from search.engine.function_words import (
     AMOUNT_WORDS,
     DATA_WORDS,
@@ -712,12 +712,8 @@ def stated_party_words(state: ResolveState) -> tuple[PartyWord, ...]:
 def part_states(state: ResolveState, word: str) -> bool:
     """Whether the part states the casefolded `word`, one a declared dataset states of its
     rows or names a party for, as a modifier of its measure (`bind_repair.word_stated`),
-    read in its variable and typed qualifier phrases with the declared words the verbatim
-    query negates (`bind_repair.stated_words_negated`), which key the response cache."""
-    texts = (state.variable, *(coded.phrase for coded in state.qualifiers or ()))
-    query_text = state.query_text
-    negated = stated_words_negated(query_text, index=get_index()) if query_text else ()
-    return word_stated(word, texts, negated=frozenset(negated))
+    read in its variable and typed qualifier phrases."""
+    return word_stated(word, (state.variable, *(coded.phrase for coded in state.qualifiers or ())))
 
 
 def held_party_words(state: ResolveState, shape: ShapeDraft) -> tuple[PartyWord, ...]:
@@ -1701,6 +1697,21 @@ def group_request_names(state: ResolveState) -> dict[str, str]:
     return {**groups, **wholes}
 
 
+def single_node_dcids(state: ResolveState) -> dict[str, str]:
+    """The node each entity name of the part resolved to alone, in query order: a set with
+    a node that is neither a group nor read as its members. A group, a set read as its
+    members, and an ambiguous or unresolved name are left out, since re-resolving such a
+    text keeps its members or its candidates."""
+    return {
+        name: place_set.node.dcid
+        for name in dict.fromkeys(state.entities)
+        if (place_set := state.place_sets.get(name)) is not None
+        and place_set.kind != "group"
+        and place_set.reading != "members"
+        and place_set.node is not None
+    }
+
+
 def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     """The places the part's settled binding (`ResolveState.place`) holds for each entity
     text, in `place_order` (`RegionResult.entity_refs`).
@@ -1710,9 +1721,14 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     as its members states its own ref first, so a client matches the set it named: its
     node, else its total, else its registry id (`PlaceSet.group_id`). A text naming a whole
     population ("all donors", `ResolveState.whole_named`) binds the parties it names that
-    the binding holds. A text with neither, ambiguous or unresolved, is left out, as is
-    every text before the part's places are bound.
+    the binding holds. A text with neither, ambiguous or unresolved, is left out.
+
+    A part refused before a shape's places are installed (`ResolveState.places_bound`),
+    whether before election or after it, states the node each text names alone
+    (`single_node_dcids`).
     """
+    if not state.places_bound:
+        return {text: (dcid,) for text, dcid in single_node_dcids(state).items()}
     bound = {dcid for dcid, _role in state.place.roles.roles}
     readings = state.place.roles.readings
     refs: dict[str, tuple[str, ...]] = {}

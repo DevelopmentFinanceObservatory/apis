@@ -1244,10 +1244,12 @@ def test_collapse_same_shape_merges_differing_fallback_resolved_facets():
     The merged facet records `selection="per_series"` instead of one member's pick.
     """
     facets_a = {
-        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/A", label="Method A")
+        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/A", label="Method A"),
+        "unit": ResolvedFacet(basis="fallback", ref="CurrencyUSD"),
     }
     facets_b = {
-        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/B", label="Method B")
+        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/B", label="Method B"),
+        "unit": ResolvedFacet(basis="fallback", selection="per_series", refs=["CurrencyKES"]),
     }
     spec_a = _spec_with_resolved_facets(_PERSON_SHAPE, "ValA", "sv_a", facets_a)
     spec_b = _spec_with_resolved_facets(_PERSON_SHAPE, "ValB", "sv_b", facets_b)
@@ -1260,7 +1262,10 @@ def test_collapse_same_shape_merges_differing_fallback_resolved_facets():
     assert residual == []
     merged = effective[0].spec
     assert merged.resolved.facets == {
-        "measurementMethod": ResolvedFacet(basis="fallback", selection="per_series")
+        "measurementMethod": ResolvedFacet(basis="fallback", selection="per_series"),
+        "unit": ResolvedFacet(
+            basis="fallback", selection="per_series", refs=["CurrencyUSD", "CurrencyKES"]
+        ),
     }
 
 

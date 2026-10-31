@@ -1938,7 +1938,6 @@ class LiveFrameStore:
             measure_index=self._measure_index,
             labels=labels,
             sources={},
-            currency_units={},
             graph_generation=None,
             catalogue_build=None,
         )

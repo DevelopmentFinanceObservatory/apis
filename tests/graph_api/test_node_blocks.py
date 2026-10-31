@@ -377,6 +377,17 @@ class TestUnits:
                 },
             ),
             (
+                "SDG_CU_USD",
+                {"typeOf": ("UnitOfMeasure",)},
+                {
+                    "unit_class": "currency",
+                    "currency": "USD",
+                    "currency_noun": "US dollars",
+                    "price_basis": {"prices": "current", "base_year": None},
+                    "changes_magnitude": False,
+                },
+            ),
+            (
                 "Percent",
                 {"typeOf": ("UnitOfMeasure",)},
                 {

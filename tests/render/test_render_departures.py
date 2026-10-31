@@ -57,6 +57,17 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "This shows the measure without debt instruments.",
     ),
+    # A phrase that asked to leave something out claims nothing of the measure shown.
+    (
+        DepartureFact(
+            code="measure_not_applied",
+            binding_ref=None,
+            asked="excluding humanitarian aid",
+            left_out=True,
+        ),
+        "aid",
+        'You asked for "excluding humanitarian aid". The search did not apply it.',
+    ),
     # A dropped phrase is the user's own words, quoted whatever it opens with (mls-030).
     (
         DepartureFact(

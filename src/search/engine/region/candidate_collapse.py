@@ -10,7 +10,7 @@ import functools
 from typing import cast
 
 from materialise import GraphReader
-from materialise.facets import native_currency_iso
+from materialise.facets import nominal_currency
 from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.envelope import _emit_step, now_ms
@@ -327,7 +327,7 @@ def _in_currency(facets: list[Facet], currency: str | None) -> bool:
     Grounding keeps a twin's facets in that currency where it reports others too
     (`candidate_grounding._twin_unit_filters`)."""
     return currency is None or all(
-        f.unit is None or native_currency_iso(f.unit) == currency for f in facets
+        f.unit is None or nominal_currency(f.unit) == currency for f in facets
     )
 
 

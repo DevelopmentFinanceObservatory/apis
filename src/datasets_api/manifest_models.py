@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Annotated, Literal, NotRequired
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator, with_config
+from typing_extensions import TypedDict  # `extra_items` (PEP 728) reaches `typing` in 3.15
 
 from dfo_platform.roles import RoleAxis
 from materialise.roles import axis_for_role
@@ -666,9 +667,53 @@ class RetentionModel(BaseModel):
     )
 
 
+@with_config(ConfigDict(extra="forbid"))
+class PartyTotalsLeftOutModel(TypedDict):
+    """One role's group totals a `without_party_totals` cut left out of one provenance's rows
+    (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
+    `provenance`, which a version recorded before the trace named the provenance holds, left its
+    parties out of the rows of every dataset."""
+
+    role: Annotated[str, Field(description="the party role whose rows lost the totals")]
+    provenance: NotRequired[
+        Annotated[
+            str | None,
+            Field(
+                description="the dataset whose rows lost the totals, null for rows with no "
+                "provenance. Absent on a version recorded before the trace named the "
+                "provenance, whose totals left the rows of every dataset"
+            ),
+        ]
+    ]
+    entities: Annotated[
+        list[str],
+        Field(description="the dcid refs of the totals left out, in ref order"),
+    ]
+
+
+# Set here so the enclosing model's `extra="forbid"` does not reach the open keys.
+@with_config(ConfigDict(extra="allow"))
+class TraceModel(TypedDict, extra_items=object):
+    """A manifest's `trace` (`materialise.trace.ManifestTrace.to_dict()`, plus the keys each
+    door attaches). It types `party_totals_left_out` and keeps every other key open."""
+
+    party_totals_left_out: NotRequired[
+        Annotated[
+            list[PartyTotalsLeftOutModel],
+            Field(
+                description="the parties whose total rows a without_party_totals rendering "
+                "left out of this version's frame: one entry per open party role and "
+                "provenance that lost rows, in role order and then provenance order (null "
+                "first). Absent when the rendering left nothing out or was not asked to"
+            ),
+        ]
+    ]
+
+
 class Manifest(BaseModel):
-    """`trace` stays a plain dict, since `materialise.trace.ManifestTrace.to_dict()`
-    is already this field's exact wire shape.
+    """`trace` is a plain dict at run time, since `materialise.trace.ManifestTrace.to_dict()`
+    is already this field's wire shape. Its type (`TraceModel`) fixes the shape of
+    `party_totals_left_out` and leaves every other key open.
 
     `series_count` is the number of distinct series this definition
     resolves, as the version's description counts them (`statistics.SeriesFigures.series`): a
@@ -695,7 +740,7 @@ class Manifest(BaseModel):
     prepared_at: AwareDatetime
     coverage: CoverageModel
     citation: CitationModel
-    trace: dict[str, object]
+    trace: TraceModel
     warnings: list[WarningModel] = Field(default_factory=list)
     diagnostics: list[DiagnosticModel] = Field(
         default_factory=list,
@@ -747,4 +792,4 @@ class OptionsEnvelope(BaseModel):
     coverage: CoverageModel
     output_options: OutputOptionsModel | None = None
     warnings: list[WarningModel] = Field(default_factory=list)
-    trace: dict[str, object]
+    trace: TraceModel

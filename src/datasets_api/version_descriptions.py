@@ -105,7 +105,6 @@ def mint_title(
         measure_index=get_measure_index(),
         labels=labels,
         sources={},
-        currency_units={},
         graph_generation=None,
         catalogue_build=None,
     )

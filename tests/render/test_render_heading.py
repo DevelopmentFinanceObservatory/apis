@@ -153,6 +153,15 @@ def _heading_cases() -> list[object]:
             )
         },
     )
+    gni = _spec(
+        population_type=_ref("EconomicUnit", "economic unit"),
+        measured_property=_ref("primaryIncome", "primary income"),
+        slots=[
+            _how("fixedCapitalConsumptionBasis", "GrossOfFixedCapitalConsumption", "gross"),
+            _where_place_slot("country/DNK", "Denmark"),
+        ],
+        stat_vars=_members("fixedCapitalConsumptionBasis"),
+    )
     return [
         pytest.param(
             _aid(
@@ -168,6 +177,7 @@ def _heading_cases() -> list[object]:
         pytest.param(
             gdp_per_capita, "Japan's GDP per capita in PPP international dollars.", id="weo"
         ),
+        pytest.param(gni, "Denmark's gross national income.", id="weo-gni"),
     ]
 
 

@@ -142,7 +142,6 @@ def _vocabulary(**overrides: object) -> Vocabulary:
                 publisher=_OECD, last_downloaded="2026-10-08", next_release="2026-09"
             )
         },
-        "currency_units": {"CurrencyUSD": "USD", "CurrencyNGN": "NGN"},
         "graph_generation": "rev-1",
         "catalogue_build": "build-1",
     }
@@ -427,7 +426,6 @@ def test_the_shipped_index_gives_the_worked_examples_words():
         measure_index=load_measure_axes(source),
         labels={},
         sources={_CRS: SourceDocumentFacts(publisher=_OECD)},
-        currency_units={"CurrencyUSD": "USD"},
         graph_generation=None,
         catalogue_build=None,
     )

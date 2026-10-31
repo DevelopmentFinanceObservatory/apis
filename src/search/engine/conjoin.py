@@ -77,10 +77,10 @@ if TYPE_CHECKING:
 BINDING_FOLDED = "binding_folded"
 VARIABLES_CLAMPED = "variables_clamped"
 
-# The name of the one step every leg's own timing_by_step seeds from the shared,
-# once-per-request extraction stage (see fanout.py's base_timing). It is reported
-# once, on the envelope's own timing_ms.by_step.
-_SHARED_TIMING_STEP = "extract"
+# The steps every leg's own timing_by_step seeds from the shared, once-per-request stages
+# ahead of the fan-out, extraction and the exclusion read (see fanout.py's base_timing). Each
+# is reported once, on the envelope's own timing_ms.by_step.
+_SHARED_TIMING_STEPS = frozenset({"extract", "exclusion_read"})
 
 # The steps that time stages inside `shape` (`phase_intake._phase_derive_shapes`). A part's
 # by_step reports them, and its total leaves them out, since `shape` already spans them.
@@ -163,11 +163,14 @@ def _shared_timing_by_step(regions: list[RegionResult]) -> dict[str, int]:
     """Read the shared pre-fanout timing from the first region that carries it.
 
     Deadline placeholders may carry no timing. Return an empty mapping when
-    no region records the shared step.
+    no region records a shared step.
     """
     for region in regions:
-        if _SHARED_TIMING_STEP in region.timing_by_step:
-            return {_SHARED_TIMING_STEP: region.timing_by_step[_SHARED_TIMING_STEP]}
+        shared = {
+            step: ms for step, ms in region.timing_by_step.items() if step in _SHARED_TIMING_STEPS
+        }
+        if shared:
+            return shared
     return {}
 
 
@@ -405,15 +408,15 @@ def _option(
 def _entity_options(
     region: RegionResult, part: ParsedPart, *, asked: Mapping[str, str]
 ) -> list[NoDataOption | None]:
-    """One option per ambiguous wording and candidate: the part with every entity that
-    resolved to one node pinned, and every row with the wording pinned to the candidate.
-    A pinned row posts its words and the dcid, which is its identity, with no name. A row
+    """One option per ambiguous group and candidate: the part with every entity that
+    resolved to one node pinned, and every row of the group's wording on the group's flow
+    end pinned to the candidate. A pinned row posts its words and the dcid, which is its identity, with no name. A row
     asked for its members takes a group's own node by the group's registered name, with no
     dcid, since a pin cannot ask for a group's members; a group node with no registered
     name that resolves to it alone has no option. Every other ambiguous row posts as the
     parsed door reads it back to the same outcome (`_asked_row`, from `asked`, the region's
     `_asked_words`), so it asks its choice again and "aid from Congo to Congo" settles one
-    end per option. The option's mentions quote the asked words. Each option names its
+    end per option, whether its ends carry one name or two. The option's mentions quote the asked words. Each option names its
     group's index in `region.ambiguous_entities` (`NoDataOption.entity_choice`), since two
     groups can share one wording."""
 
@@ -437,7 +440,10 @@ def _entity_options(
     for i, group in enumerate(region.ambiguous_entities):
         for candidate in group.candidates:
             entities = [
-                chosen(entity, candidate) if entity.identity == group.text else entity
+                chosen(entity, candidate)
+                if entity.identity == group.text
+                and group.role in (None, role_axis_for_text(entity.role_text))
+                else entity
                 for entity in base
             ]
             if None in entities:
@@ -619,7 +625,7 @@ def _build_part(
     part's departures speak for every reading it shows.
     """
     own_timing_by_step = {
-        step: ms for step, ms in region.timing_by_step.items() if step != _SHARED_TIMING_STEP
+        step: ms for step, ms in region.timing_by_step.items() if step not in _SHARED_TIMING_STEPS
     }
     raised = {**region.departure_facts, **representative.departure_facts}
     timing_ms = Timing(

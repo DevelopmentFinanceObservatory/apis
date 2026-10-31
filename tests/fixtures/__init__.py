@@ -313,9 +313,12 @@ class FakeLLM:
     user prompt so the fixture can be written without a second run. Optional harvest logging
     records each call.
     Keys come from `fixture_key` over the system prompt as `_recorded_system` keys it.
+    `recorded` is whether it replays `llm_responses.json` rather than the `responses` a test
+    scripted.
     """
 
     def __init__(self, responses: dict | None = None):
+        self.recorded = responses is None
         self._responses: dict = (
             responses if responses is not None else _load_json("llm_responses.json")
         )

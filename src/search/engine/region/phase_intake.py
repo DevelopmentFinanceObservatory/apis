@@ -31,6 +31,7 @@ from search.engine.region.place_roles import (
     part_sets,
     place_key,
     set_choices,
+    single_node_dcids,
     stated_party_words,
     totalled_axes,
 )
@@ -350,10 +351,9 @@ async def _party_word_sets(state: ResolveState) -> dict[str, PlaceSet]:
     }
 
 
-def _sole_axis(state: ResolveState, name: str) -> RoleAxis | None:
-    """The one flow axis the door gave `name`, or `None` when it gave none or both."""
-    axes = {role.axis for role in state.entity_roles.get(name, ())}
-    return axes.pop() if len(axes) == 1 else None
+def _door_axes(state: ResolveState, name: str) -> tuple[RoleAxis | None, ...]:
+    """The flow axes the door gave `name`, in mention order, or `(None,)` when it gave none."""
+    return tuple(dict.fromkeys(role.axis for role in state.entity_roles.get(name, ()))) or (None,)
 
 
 def _is_oversized_group(resolution: object) -> bool:
@@ -387,8 +387,8 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
     resolution, ``entity_set_too_large`` for a Group with more members than a Spec binds,
     and ``entity_not_resolved`` otherwise. The part refuses with the reason
     `elect_no_data_reason` elects over them, and names, whatever the elected reason, an
-    ambiguous name with its candidates (``ambiguous_entities``) and every name that resolved
-    to no single node, ambiguous ones included, as unresolved (``unresolved_entity_names``).
+    ambiguous name with its candidates, one group per flow axis the door gave it
+    (``ambiguous_entities``), and every name that resolved to no single node, ambiguous ones included, as unresolved (``unresolved_entity_names``).
     An oversized group resolved, so it is never among the unresolved. Both keep query
     order. The place sets are final once `_phase_resolve_places` has run,
     so every later phase sees only resolved entities.
@@ -432,26 +432,17 @@ async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
                 )
                 for candidate in cast(Ambiguous, rcl.resolutions[name]).candidates
             ),
-            role=_sole_axis(state, name),
+            role=role,
         )
         for name in ambiguous
+        for role in _door_axes(state, name)
     )
-    # Each option of an `entity_ambiguous` refusal pins these. A group, and a set read as
-    # its members, stay unpinned: re-resolving the text keeps the members, whether an alias
-    # row or the part's flag asked for them.
-    resolved_entity_dcids = {
-        name: place_set.node.dcid
-        for name in dict.fromkeys(state.entities)
-        if (place_set := state.place_sets.get(name)) is not None
-        and place_set.kind != "group"
-        and place_set.reading != "members"
-        and place_set.node is not None
-    }
     reason = elect_no_data_reason(reasons.values())
     return state.no_data(
         reason,
         ambiguous_entities=ambiguous_entities,
-        resolved_entity_dcids=resolved_entity_dcids if reason == "entity_ambiguous" else None,
+        # Each option of an `entity_ambiguous` refusal pins these.
+        resolved_entity_dcids=single_node_dcids(state) if reason == "entity_ambiguous" else None,
         unresolved_entity_names=tuple(
             name for name, name_reason in reasons.items() if name_reason != "entity_set_too_large"
         ),

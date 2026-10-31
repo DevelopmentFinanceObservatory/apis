@@ -62,7 +62,7 @@ from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 _RAW_BODY = {"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}}
 _KEY = "query-key"
 _TRACE_ID = "abc123"
-_USAGE = {"input_tokens": 120, "output_tokens": 30, "cached_tokens": 0}
+_USAGE = {"input_tokens": 120, "output_tokens": 30, "cached_tokens": 0, "uncounted_calls": 1}
 # The response echoes this word on every row, and the line must not.
 _ECHOED_WORD = "fertility"
 

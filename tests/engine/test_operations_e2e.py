@@ -972,10 +972,10 @@ def test_an_ambiguous_wording_is_its_own_slot_token_in_the_sentence():
     assert response.rendered_sentence.startswith('"Congo" matches more than one entity')
 
 
-def test_an_ambiguous_part_without_a_restatement_still_carries_options():
-    """Congo named on both axes leaves the direction unnameable, so the part withholds
-    its restatement. Each option still lists Congo once per axis, pinned to its candidate,
-    beside Kenya pinned, and keeps the operation."""
+def test_an_ambiguous_name_on_both_axes_asks_each_end_and_restates_both():
+    """Congo named on both axes asks one choice per end, and the restatement lists it once
+    per axis. Each option pins its candidate on its own end alone, beside Kenya pinned, and
+    keeps the operation."""
     llm = _ScriptedLLM(
         _extraction(
             entities=[
@@ -1003,9 +1003,18 @@ def test_an_ambiguous_part_without_a_restatement_still_carries_options():
     part = response.parts[0]
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "entity_ambiguous"
-    assert part.restatement is None
-    assert len(part.no_data.options) == 2
-    for option, dcid in zip(part.no_data.options, ("country/COD", "country/COG"), strict=True):
+    assert part.restatement is not None
+    assert [(e.text, e.role_text) for e in part.restatement.entities or ()] == [
+        ("Kenya", None),
+        ("Congo", "from"),
+        ("Congo", "to"),
+    ]
+    assert [group.text for group in part.no_data.ambiguous_entities] == ["Congo", "Congo"]
+    assert len(part.no_data.options) == 4
+    candidates = ("country/COD", "country/COG")
+    ends = [(0, dcid, None) for dcid in candidates] + [(1, None, dcid) for dcid in candidates]
+    for option, (group, origin, destination) in zip(part.no_data.options, ends, strict=True):
+        assert option.entity_choice == group
         (query_part,) = option.data_query.parts
         assert query_part.variable_text == _QUERY
         assert query_part.operations == [
@@ -1013,8 +1022,8 @@ def test_an_ambiguous_part_without_a_restatement_still_carries_options():
         ]
         assert [(e.text, e.role_text, e.dcid) for e in query_part.entities or ()] == [
             ("Kenya", None, _E2E_KEN_DCID),
-            ("Congo", "from", dcid),
-            ("Congo", "to", dcid),
+            ("Congo", "from", origin),
+            ("Congo", "to", destination),
         ]
 
 
