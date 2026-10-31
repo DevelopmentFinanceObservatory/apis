@@ -24,7 +24,7 @@ from search.engine.errors import (
 )
 from search.engine.events import DoneEvent, Event, ObservationsEvent, ResponseEvent
 from search.engine.region import composite_answer, pipeline
-from search.engine.region.codes import _ObsProbeResult
+from search.engine.region.codes import MEMBERS_ABSENT_FROM_GRAPH, _ObsProbeResult
 from search.engine.region.composite_answer import (
     ComponentReads,
     CompositeRelaunch,
@@ -33,6 +33,7 @@ from search.engine.region.composite_answer import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState
+from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
 from search.models import (
     BaseIdentity,
@@ -88,14 +89,15 @@ class _Components:
     `template` with one series named for its table, holding a point in each year of `_WINDOW`
     and estimates where `estimated`, or raises its entry of `failures`, and answers degraded
     where named in `degraded`. The bilateral component warns once under a preview code and
-    once under another. Each call records the source scope of the catalogue it reads
-    through."""
+    once under another, and each component adds its entry of `warned`. Each call records the
+    source scope of the catalogue it reads through."""
 
     def __init__(self, template: Spec, *, estimated: bool) -> None:
         self.template = template
         self.estimated = estimated
         self.failures: dict[str, Exception] = {}
         self.degraded: set[str] = set()
+        self.warned: dict[str, tuple[Warning, ...]] = {}
         self.calls: list[tuple[ResubmitIdentityPayload, EngineOptions]] = []
         self.scopes: list[frozenset[str] | None] = []
 
@@ -129,7 +131,7 @@ class _Components:
                 ),
             }
         )
-        warned = (_PARTIAL, _DEFAULTED) if name == "bilateral" else ()
+        warned = ((_PARTIAL, _DEFAULTED) if name == "bilateral" else ()) + self.warned.get(name, ())
         return RegionResult(
             variable_text="health aid",
             status="definite",
@@ -443,6 +445,43 @@ def test_a_degraded_component_marks_the_buffered_composite_answer_degraded(
 
     assert _dates(_answered(events).resolved.observations) == _BOTH
     assert _done(events).degraded_leg is bool(degraded)
+
+
+_ABSENT = Warning(code=MEMBERS_ABSENT_FROM_GRAPH, severity="warn", message="absent")
+
+
+@pytest.mark.parametrize("mode", ["streamed", "buffered"])
+@pytest.mark.parametrize("fault", [None, "degraded", "members_absent"])
+def test_a_component_the_cache_would_refuse_keeps_the_composite_answer_out_of_it(
+    monkeypatch, mode, fault
+):
+    """A component answer the response cache would not store, one standing on a read its
+    resolve swallowed or one warning `members_absent_from_graph`, keeps the composite answer
+    out of the cache too, so a repeat request reads the components again; a whole component
+    lets the answer be stored and replayed. The streamed preview reads its components after
+    the part's resolution has ended. The composite's preview shows only the component's
+    preview warnings."""
+    _, components = _components(monkeypatch)
+    if fault == "degraded":
+        components.degraded.add("imputed")
+    elif fault == "members_absent":
+        components.warned["imputed"] = (_ABSENT,)
+    cache = ResponseCache()
+
+    def ask() -> list[Event]:
+        return offline_events(
+            _fresh(), stream_slot_options=mode == "streamed", response_cache=cache, **_clients()
+        )
+
+    events = ask()
+    reads = len(components.calls)
+    ask()
+
+    shown = _observed(events).observations if mode == "streamed" else None
+    assert _dates(shown or _answered(events).resolved.observations) == _BOTH
+    assert MEMBERS_ABSENT_FROM_GRAPH not in {w.code for w in _done(events).warnings}
+    assert (cache.stats().entries > 0) is (fault is None)
+    assert len(components.calls) == (reads if fault is None else 2 * reads)
 
 
 def test_a_composite_whose_every_component_read_fails_streams_its_omission(monkeypatch):

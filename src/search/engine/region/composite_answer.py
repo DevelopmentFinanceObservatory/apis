@@ -63,6 +63,7 @@ from search.engine.region.observations.dispatch import (
 from search.engine.region.resubmit import resolve_spec_resubmit
 from search.engine.region.result import RegionResult, with_composite_answer
 from search.engine.region.state import EngineOptions
+from search.engine.response_cache_keys import is_region_storable
 from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
@@ -235,8 +236,11 @@ async def _read_component(
     `GraphDeadlineExceededError`). A component whose resolve refuses its identity
     (`EngineInputError`) or answers no definite Spec warns `observations_probe_failed`,
     since the preview then lacks years the composite serves. Each warning names the
-    component's role. A degraded component answer (`RegionResult.degraded`) notes a
-    degraded read (`note_degraded_read`), so no cache stores the composite answer."""
+    component's role. A component answer the cache would not store (`is_region_storable`
+    under the request catalogue's refused places), degraded or carrying a warning such as
+    `members_absent_from_graph`, notes a degraded read (`note_degraded_read`), so no cache
+    stores the composite answer. The preview raises only the component's warnings under
+    `PREVIEW_WARNING_CODES`."""
     identity = BaseIdentity.model_validate(dict(item.component.identity))
     payload = ResubmitIdentityPayload(
         identity=identity,
@@ -267,7 +271,7 @@ async def _read_component(
             return None, (_missing(item, cause, timed_out=timed_out),)
     if memo is not None and key is not None and not stored:
         memo.store(key, region)
-    if region.degraded:
+    if not is_region_storable(region, refused_at_build=reads.catalogue.un_blocked_places):
         note_degraded_read("composite component")
     if region.status != "definite":
         return None, (_missing(item, f"answered {region.status}"),)
@@ -328,7 +332,7 @@ class CompositeRelaunch:
     served: Sequence[ServedComponent] | None = None
 
     def __call__(self, spec_id: str) -> asyncio.Task[_ObsProbeResult]:
-        return create_owned_task(self._events(spec_id))
+        return create_owned_task(_preview_events(self, spec_id))
 
     async def read(
         self, *, semaphore: asyncio.Semaphore | None
@@ -346,13 +350,20 @@ class CompositeRelaunch:
             semaphore=semaphore,
         )
 
-    async def _events(self, spec_id: str) -> _ObsProbeResult:
-        observations, raised = await self.read(semaphore=bounded_semaphore())
-        warnings = _keyed(raised, spec_id)
-        projected = _deflator_projected_warning(spec_id, observations)
-        if projected is not None:
-            warnings.append(projected)
-        return (ObservationsEvent(spec_id=spec_id, observations=observations),), tuple(warnings)
+
+async def _preview_events(relaunch: CompositeRelaunch, spec_id: str) -> _ObsProbeResult:
+    """The trailing preview `relaunch` reads, as one event under `spec_id` with its warnings
+    keyed to it and `deflator_projected` for the preview. The event states whether the read
+    swallowed a read (`ObservationsEvent.degraded`), which the task's own record collects,
+    since the request's resolutions have ended by the time it runs."""
+    with recording_degraded_reads() as lost:
+        observations, raised = await relaunch.read(semaphore=bounded_semaphore())
+    warnings = _keyed(raised, spec_id)
+    projected = _deflator_projected_warning(spec_id, observations)
+    if projected is not None:
+        warnings.append(projected)
+    event = ObservationsEvent(spec_id=spec_id, observations=observations)
+    return (event.stating_degraded(lost.degraded),), tuple(warnings)
 
 
 def as_merged_composite(
