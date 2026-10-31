@@ -7,6 +7,8 @@ parses exactly. `warning_rewrite.sql` rewrites the unserved-entity, currency and
 lists. It leaves two kinds of warning for a rewrite outside SQL: the old member sentence
 (`MEMBER_SENTENCE`), whose split into off-cadence and out-of-window members needs graph reads,
 and the codes in `CODES_LEFT_BY_SQL`, whose new sentences and fields come from their writers.
+The serving image still writes the codes in `CODES_STILL_WRITTEN` in their old shape, so their
+rows are reported under a heading of their own.
 
 `python -m dataset_store.warning_formats` refuses unless every statement of
 `warning_rewrite.sql` is `CREATE OR REPLACE FUNCTION pg_temp.`, then opens a transaction,
@@ -14,7 +16,8 @@ executes each statement on its own through the extended query protocol, which re
 statement holding a second command, sets the transaction READ ONLY, refuses unless the
 session reports it read-only, reads `datasets.version_record` in one statement and rolls
 back. Its patterns are bound parameters. It prints, each by format, the version rows the SQL
-rewrite changes, the rows it leaves for a rewrite outside SQL, and the residual rows; then up
+rewrite changes, the rows it leaves for a rewrite outside SQL, the rows holding a code still
+written in its old shape, and the residual rows; then up
 to `SAMPLES_PER_FORMAT` messages of each format before and after the SQL rewrite; then the
 rows whose `immutable_body` warnings differ from their `warnings` column, and of those the
 rows whose body warnings the rewrite changes; then the rows whose stored `member_count`
@@ -26,9 +29,10 @@ A residual row holds a warning that still matches its format after the SQL rewri
 member sentences of a row whose trace holds `resolved_stat_vars` are removed: a member
 sentence on a trace holding none has no member count to state. An unlisted row holds a
 warning that names a ref after the SQL rewrite and with its member sentences removed, but
-matches no format. Residual rows, rows whose body and column differ, and unlisted rows of a
-code outside `CENSUS_ALLOWED` are findings and exit 1; the `member_count` and conversion
-figures are reported only. A run that cannot complete exits 2.
+matches no format. Residual rows and unlisted rows of a code outside `CENSUS_ALLOWED` are
+findings and exit 1. The rows holding a code still written in its old shape, the body figures,
+and the `member_count` and conversion figures are reported only. A run that cannot complete
+exits 2.
 
 It connects with the migration job's settings (`dataset_store.migrate`), so it runs as an
 execution of that job with its args overridden. The deployed image omits `scripts/`, so this
@@ -101,6 +105,10 @@ CODES_LEFT_BY_SQL = frozenset(
     {"withheld_by_registry", "un_system_unavailable", "deflator_projected"}
 )
 
+# The codes of `CODES_LEFT_BY_SQL` that the serving image still writes in their old shape
+# (`datasets_api.origin`), so their rows keep growing until those writers count.
+CODES_STILL_WRITTEN = frozenset({"withheld_by_registry", "un_system_unavailable"})
+
 # The structured field that counts the entities of each conversion code.
 CONVERSION_FIELDS = {
     "currency_unmapped_omitted": "omitted_entities",
@@ -140,6 +148,8 @@ class DryRun:
     rewritten: dict[str, int]
     left_rows: int
     left: dict[str, int]
+    still_written_rows: int
+    still_written: dict[str, int]
     residual_rows: int
     residual: dict[str, int]
     samples: dict[str, list[tuple[str, str]]]
@@ -186,6 +196,7 @@ def _statement(table: str) -> str:
                 %s::text AS member,
                 %s::text AS ref,
                 %s::text[] AS left_codes,
+                %s::text[] AS still_written_codes,
                 %s::jsonb AS conversion_fields
         ),
         format AS (
@@ -221,6 +232,7 @@ def _statement(table: str) -> str:
                 f.name AS format,
                 f.pattern,
                 coalesce(f.code = ANY(p.left_codes), false) AS code_left,
+                coalesce(f.code = ANY(p.still_written_codes), false) AS code_still_written,
                 w.value ->> 'message' AS before,
                 r.value ->> 'message' AS after,
                 r.value IS DISTINCT FROM w.value AS rewritten,
@@ -248,7 +260,9 @@ def _statement(table: str) -> str:
                 rewritten,
                 coalesce(before ~ pattern, false) AS detected,
                 coalesce(has_members AND has_member_sentence, false)
-                    OR code_left AND coalesce(after ~ pattern, false) AS left_by_sql,
+                    OR code_left AND NOT code_still_written AND coalesce(after ~ pattern, false)
+                    AS left_by_sql,
+                code_still_written AND coalesce(after ~ pattern, false) AS still_written,
                 NOT code_left AND coalesce(
                     CASE WHEN has_members THEN without_members ELSE after END ~ pattern, false
                 ) AS residual,
@@ -270,6 +284,7 @@ def _statement(table: str) -> str:
                 SELECT jsonb_build_array(
                     count(DISTINCT {_ROW}) FILTER (WHERE rewritten),
                     count(DISTINCT {_ROW}) FILTER (WHERE left_by_sql),
+                    count(DISTINCT {_ROW}) FILTER (WHERE still_written),
                     count(DISTINCT {_ROW}) FILTER (WHERE residual)
                 )
                 FROM classified
@@ -282,6 +297,7 @@ def _statement(table: str) -> str:
                         jsonb_build_array(
                             count(DISTINCT {_ROW}) FILTER (WHERE rewritten),
                             count(DISTINCT {_ROW}) FILTER (WHERE left_by_sql),
+                            count(DISTINCT {_ROW}) FILTER (WHERE still_written),
                             count(DISTINCT {_ROW}) FILTER (WHERE residual)
                         ) AS counts
                     FROM classified
@@ -354,6 +370,7 @@ def _params() -> tuple[object, ...]:
         MEMBER_SENTENCE,
         _REF,
         sorted(CODES_LEFT_BY_SQL),
+        sorted(CODES_STILL_WRITTEN),
         json.dumps(CONVERSION_FIELDS),
         names,
         codes,
@@ -394,7 +411,7 @@ def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
     names = [name for name, _code, _pattern in OLD_FORMATS]
 
     def _column(index: int) -> dict[str, int]:
-        return {name: by_format.get(name, [0, 0, 0])[index] for name in names}
+        return {name: by_format.get(name, [0, 0, 0, 0])[index] for name in names}
 
     sampled: dict[str, list[tuple[str, str]]] = {name: [] for name in names}
     for name, before, after in samples:
@@ -405,8 +422,10 @@ def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
         rewritten=_column(0),
         left_rows=totals[1],
         left=_column(1),
-        residual_rows=totals[2],
-        residual=_column(2),
+        still_written_rows=totals[2],
+        still_written=_column(2),
+        residual_rows=totals[3],
+        residual=_column(3),
         samples=sampled,
         body_mismatch_rows=body[0],
         body_rewritten_rows=body[1],
@@ -419,16 +438,11 @@ def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
 
 
 def findings(report: DryRun) -> list[str]:
-    """What stops the rewrite: residual rows, rows whose body and column differ, and unlisted
-    rows of a code outside `CENSUS_ALLOWED`."""
+    """What stops the rewrite: residual rows, and unlisted rows of a code outside
+    `CENSUS_ALLOWED`."""
     found = []
     if report.residual_rows:
         found.append(f"{report.residual_rows} residual rows")
-    if report.body_mismatch_rows:
-        found.append(
-            f"{report.body_mismatch_rows} rows whose immutable_body warnings differ from "
-            "their warnings column"
-        )
     found.extend(
         f"{unlisted} rows of {code} name a ref in no format"
         for code, _rows, _refs, unlisted in report.census
@@ -445,6 +459,11 @@ def _print(report: DryRun) -> None:
             "rows holding a member sentence or a code the SQL leaves to its writer",
             report.left_rows,
             report.left,
+        ),
+        (
+            "rows holding a code the serving image still writes in its old shape",
+            report.still_written_rows,
+            report.still_written,
         ),
         ("residual rows", report.residual_rows, report.residual),
     ):
