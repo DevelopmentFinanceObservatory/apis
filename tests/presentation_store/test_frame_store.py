@@ -860,6 +860,46 @@ def test_load_labels_the_entities_and_members_a_coverage_warning_counts():
     assert {"country/SEN", "YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
 
 
+def test_load_names_the_provenances_a_registry_withheld_as_a_citation_names_them():
+    """A base provenance node is named for its import, so a withheld provenance takes the name
+    of its parent Dataset, as a source citation does, under its `dcid:` ref."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    version = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
+    warning = {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": "Withheld.",
+        "withheld_members": {"count": 1, "refs": ["dcid:YouthRate"]},
+        "withheld_provenances": {"count": 1, "refs": ["dcid:dc/base/WHO_GHO"]},
+    }
+    snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
+        version, facts=replace(version.facts, warnings=[warning])
+    )
+    graph = _FakeGraphReader(
+        labels={
+            "MalariaGrantDisbursements": "Malaria Grant Disbursements",
+            "YouthRate": "Youth rate",
+        },
+        arcs={
+            "dc/base/WHO_GHO": {
+                "typeOf": ("Provenance",),
+                "name": ("WHO_GHO",),
+                "isPartOf": ("dc/d/WHO_GHO",),
+            },
+            "dc/d/WHO_GHO": {
+                "typeOf": ("Dataset",),
+                "name": ("WHO Global Health Observatory",),
+            },
+        },
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["dcid:dc/base/WHO_GHO"] == "WHO Global Health Observatory"
+    assert resolved.labels["dcid:YouthRate"] == "Youth rate"
+
+
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
 
 

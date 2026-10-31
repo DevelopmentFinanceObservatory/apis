@@ -2036,15 +2036,6 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
             ["dcid:Water", "dcid:XYZ"],
             id="withheld-members",
         ),
-        # A provenance ref reaches `labels` under its `dcid:` ref, like an entity's.
-        pytest.param(
-            "withheld_by_registry",
-            {"withheld_provenances": {"count": 3, "refs": ["dcid:OECD_DAC2A", "dcid:XYZ"]}},
-            "Withheld sources",
-            "OECD DAC2a, XYZ",
-            ["dcid:OECD_DAC2A", "dcid:XYZ"],
-            id="withheld-provenances",
-        ),
     ],
 )
 def test_a_counted_field_warning_names_what_it_counts_by_label(
@@ -2055,7 +2046,6 @@ def test_a_counted_field_warning_names_what_it_counts_by_label(
         labels={
             "dcid:country/KEN": "Kenya",
             "dcid:Water": "Water",
-            "dcid:OECD_DAC2A": "OECD DAC2a",
         },
     )
 

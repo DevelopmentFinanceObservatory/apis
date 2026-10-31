@@ -62,10 +62,14 @@ is left out, and an input record holding `steps: null` is held, and either leave
 record not final, so a later load reads the inputs again. A
 failed input read raises as a failed record read does.
 
-A version's warnings carry by ref the entities and group members they count and their
-messages do not name: the bound entities and members that served nothing, and the entities a
-conversion left out (`assembler.mint.warned_refs`). These hold no row, so their refs join the
-frame's label read ahead of its own refs, and a card names them by label.
+A version's warnings carry by ref the entities, group members, series and provenances they
+count: the bound entities and members that served nothing, the entities a conversion left out,
+and the series and provenances the registry withheld. A stored warning's message may name
+none of them (`assembler.mint.warned_refs`, `assembler.mint.warned_provenance_refs`). The
+entities, members and series hold no row, so their refs join the frame's label read ahead of
+its own refs. A provenance is named as a source citation names it (`read_source_citations`):
+its catalogue row, else its parent Dataset's name, else its own. A card names them all by
+label.
 
 A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
 comes from its stored version alone: a dataset version's `trace.continuations`, or the
@@ -178,7 +182,7 @@ from assembler.frame_view import (
     frame_continuation,
 )
 from assembler.limits import LABEL_MAX, joined_label
-from assembler.mint import warned_refs
+from assembler.mint import warned_provenance_refs, warned_refs
 from assembler.ports import (
     FrameRef,
     FrameUnavailable,
@@ -464,13 +468,13 @@ def _capped_refs(
     *,
     columns: Sequence[str],
     rows: Sequence[Sequence[object]],
-    leading_stat_vars: Sequence[str] = (),
+    leading_refs: Sequence[str] = (),
     worded: Sequence[str] = (),
     named: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """The refs to label in `rows`, each mapped to the bare dcid a graph read takes: stat_var,
     entity, and provenance refs up to `_LABEL_RESOLUTION_CAP`, then unit dcid refs up to
-    `_UNIT_LABEL_CAP`, each in row order. `leading_stat_vars`, then the bare dcids in `worded`,
+    `_UNIT_LABEL_CAP`, each in row order. `leading_refs`, then the bare dcids in `worded`,
     then a composed unit's StatVar sides, count under the first cap ahead of the columns' own
     refs, and a composed unit's string sides as unit refs. A ref in `named` is left out."""
     index_by_column = {column: position for position, column in enumerate(columns)}
@@ -494,7 +498,7 @@ def _capped_refs(
     # composed variable, the refs inputs' titles and steps' names word and the sides of a
     # composed unit come first, since each labels the whole card and frames hold few of them.
     # A bare dcid is its own key and strips to itself.
-    leading = [*leading_stat_vars, *worded]
+    leading = [*leading_refs, *worded]
     leading += [
         cast("Mapping[str, str]", part)["stat_var"]
         for part in unit_parts
@@ -871,6 +875,7 @@ class LiveFrameStore:
                 composed=_composed(record, stored=stored),
                 inputs=inputs,
                 warned=warned_refs(manifest=document),
+                warned_provenances=warned_provenance_refs(manifest=document),
                 deadline=deadline,
             )
             continuation = frame_continuation(manifest=document)
@@ -937,6 +942,7 @@ class LiveFrameStore:
                     composed=_composed(record, stored=stored),
                     inputs=inputs,
                     warned=warned_refs(manifest=document),
+                    warned_provenances=warned_provenance_refs(manifest=document),
                     deadline=deadline,
                 )
                 if record_changed and not labels_resolved:
@@ -1637,11 +1643,14 @@ class LiveFrameStore:
         composed: Sequence[ComposedVariable],
         inputs: Sequence[DescriptionRecord],
         warned: Sequence[str],
+        warned_provenances: Sequence[str],
         deadline: float,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
-        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities and group
-        members its version's warnings count (`warned`, `assembler.mint.warned_refs`) under
-        their `dcid:` refs, since what served nothing or was left out has no row, and the refs
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities, group
+        members and series its version's warnings count (`warned`, `assembler.mint.warned_refs`)
+        under their `dcid:` refs, since what served nothing, was left out or was withheld has no
+        row, the provenances they count (`warned_provenances`) named as a source citation names
+        them (`_provenance_names`), and the refs
         each of `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
@@ -1656,16 +1665,47 @@ class LiveFrameStore:
             )
         labels, resolved = self._resolve_ref_labels(
             doc,
-            leading_stat_vars=[*_composed_sides(composed), *warned],
+            leading_refs=[*_composed_sides(composed), *warned],
             worded=sorted(worded),
             named=frozenset(_named_refs(record, composed=composed)),
             deadline=deadline,
         )
+        provenance_names, named_ok = self._provenance_names(warned_provenances, deadline=deadline)
+        labels.update(provenance_names)
         labels.update(
             self._computed_labels(record, composed=composed, inputs=inputs, labels=labels)
         )
         descriptions, described = self._world_bank_descriptions(record, deadline=deadline)
-        return labels, descriptions, resolved and described
+        return labels, descriptions, resolved and named_ok and described
+
+    def _provenance_names(
+        self, refs: Sequence[str], *, deadline: float
+    ) -> tuple[dict[str, str], bool]:
+        """The name of each provenance of `refs`, a `dcid:` ref, by that ref, and whether the
+        read succeeded. The name is the one a source citation carries
+        (`read_source_citations`): the catalogue row's, else the parent Dataset's, else the
+        node's own, since a base provenance node is named for its import. A ref neither the
+        catalogue lists nor the graph holds has no name. A store with no graph reads nothing."""
+        if not refs or self._graph is None:
+            return {}, True
+        bare = {ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in refs}
+        try:
+            cited = read_source_citations(
+                self._graph, list(bare.values()), catalogue=current_catalogue(), deadline=deadline
+            )
+        except GraphReadError:
+            logger.warning(
+                "Provenance name read failed for %d withheld provenances; serving the frame "
+                "without their names",
+                len(bare),
+                exc_info=True,
+            )
+            return {}, False
+        return {
+            ref: name
+            for ref, dcid in bare.items()
+            if dcid in cited and (name := cited[dcid].name) is not None
+        }, True
 
     def _world_bank_descriptions(
         self, record: DescriptionRecord | None, *, deadline: float
@@ -1701,17 +1741,17 @@ class LiveFrameStore:
         self,
         doc: Mapping[str, object],
         *,
-        leading_stat_vars: Sequence[str],
+        leading_refs: Sequence[str],
         named: frozenset[str],
         worded: Sequence[str] = (),
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
         order, then unit dcid refs, capped at 100 in row order, and say whether the graph read
-        succeeded. `leading_stat_vars`, then a composed unit's StatVar sides, count as stat_var
+        succeeded. `leading_refs`, then a composed unit's StatVar sides, count as stat_var
         refs ahead of the columns' own refs, and a composed unit's string sides as unit refs.
         A ref in `named` is left out of the read. Each bare dcid in `worded` counts under the
-        first cap after `leading_stat_vars`. `dcid:spec_...` family refs use stored
+        first cap after `leading_refs`. `dcid:spec_...` family refs use stored
         definitions and `CodeIndex`. Other refs use one graph batch that stops at the absolute
         monotonic `deadline`. Missing readers, lookup/store failures, and over-cap refs remain
         unlabelled without failing the load. A graph failure, the deadline included, preserves
@@ -1725,7 +1765,7 @@ class LiveFrameStore:
         refs = _capped_refs(
             columns=columns,
             rows=rows,
-            leading_stat_vars=leading_stat_vars,
+            leading_refs=leading_refs,
             worded=worded,
             named=named,
         )

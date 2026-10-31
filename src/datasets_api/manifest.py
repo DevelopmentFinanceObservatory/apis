@@ -842,6 +842,13 @@ def version_body(record: VersionRecord) -> dict[str, object]:
     return body
 
 
+def _warning_key(warning: WarningModel) -> str:
+    """The identity of a warning: its `code`, `message` and structured fields, so two warnings
+    of one code and one count that name other refs differ. `stat_var_label` is left out, since
+    the code index it reads can move between mints."""
+    return warning.model_dump_json(exclude={"severity", "stat_var_label"})
+
+
 def persisted_manifest(
     *,
     stored: StoredVersion,
@@ -853,9 +860,9 @@ def persisted_manifest(
     Every field comes from the stored version's facts (`stored_manifest`), so a re-mint after
     a graph rename keeps the stored citation. From `served` it takes only `artifacts`,
     `output_options`, `series_coverage_stamp` and `diagnostics`, this call's. A
-    `call_warnings` entry is appended when no stored warning has its `code` and `message`; on a
-    match the stored entry stands, so a stored `stat_vars_summed` warning keeps the structured
-    fields and label it was recorded with. `call_warnings` holds this call's reshape warnings
+    `call_warnings` entry is appended when no stored warning has its `code`, `message` and
+    structured fields (`_warning_key`); on a match the stored entry stands, so a stored
+    `stat_vars_summed` warning keeps the label it was recorded with. `call_warnings` holds this call's reshape warnings
     and the origin warnings its reads found (`datasets_api.origin`). A stored
     `origin_catalogue_stale` warning is dropped, since this call's diagnostics state the
     staleness of the catalogue bound to it.
@@ -864,10 +871,10 @@ def persisted_manifest(
     warnings = [
         warning for warning in manifest.warnings if warning.code != "origin_catalogue_stale"
     ]
-    keys = {(warning.code, warning.message) for warning in warnings}
+    keys = {_warning_key(warning) for warning in warnings}
     for warning in call_warnings:
-        if (warning.code, warning.message) not in keys:
-            keys.add((warning.code, warning.message))
+        if (key := _warning_key(warning)) not in keys:
+            keys.add(key)
             warnings.append(warning)
     return manifest.model_copy(
         update={

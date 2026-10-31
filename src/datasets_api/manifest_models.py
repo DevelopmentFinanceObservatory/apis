@@ -259,15 +259,18 @@ class CitationModel(BaseModel):
 
 class CountedRefsModel(BaseModel):
     """The things of one kind a warning counts: how many, and the `dcid:` refs of the first
-    five, or ten for a conversion's left-out entities (`materialise.codes.CountedRefs`). The message states the count and names none, so a
-    reader labels the refs."""
+    five, or ten for a conversion's left-out entities (`materialise.codes.CountedRefs`). A
+    message states the count and may name none, so a reader labels the refs. A group's members
+    are in request order, entities sorted, and the provenances a registry withheld in the order
+    they first occur across the withheld series, each list cut to its first five."""
 
     model_config = ConfigDict(extra="forbid")
     count: int = Field(description="how many there are")
     refs: list[str] = Field(
         description=(
             "the `dcid:` refs of the first five of them, ten for omitted_entities: a "
-            "group's members in request order, entities sorted"
+            "group's members in request order, entities sorted, withheld provenances in the "
+            "order they first occur across the withheld series"
         )
     )
 
@@ -314,8 +317,9 @@ class WarningModel(BaseModel):
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
     `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
-    `withheld_by_registry` `withheld_members` and `withheld_provenances`. A `None` field
-    is left out of every dump, so other codes' warnings, on the wire and in stored version
+    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`.
+    A stored warning can lack a field its code carries, as a `withheld_by_registry` warning
+    stored before these fields existed does while still withholding. A `None` field is left out of every dump, so other codes' warnings, on the wire and in stored version
     bodies, stay exactly `{code, severity, message}`.
     """
 
@@ -388,8 +392,8 @@ class WarningModel(BaseModel):
         default=None,
         exclude_if=_is_none,
         description=(
-            "coverage_below_scope only: the entities the request binds that served no "
-            "observation, sorted; absent when there are none"
+            "coverage_below_scope and withheld_by_registry only: the entities the request binds "
+            "that served no observation, sorted; absent when there are none"
         ),
     )
     requested_years: YearRangeModel | None = Field(
@@ -411,13 +415,17 @@ class WarningModel(BaseModel):
     withheld_members: CountedRefsModel | None = Field(
         default=None,
         exclude_if=_is_none,
-        description="withheld_by_registry only: the series the registry withheld",
+        description=(
+            "withheld_by_registry only: the series the registry withheld; "
+            "absent when there are none, and on a warning stored before this field existed"
+        ),
     )
     withheld_provenances: CountedRefsModel | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
-            "withheld_by_registry only: the provenances holding data for the withheld series"
+            "withheld_by_registry only: the provenances holding data for the withheld series; "
+            "absent when there are none, and on a warning stored before this field existed"
         ),
     )
     omitted_entities: CountedRefsModel | None = Field(
