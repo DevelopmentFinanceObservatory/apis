@@ -576,7 +576,6 @@ _ONE_POSSESSIVE_OVER_ITS_DEBT = [
     ("Kenya's debt repayments", "debt repayments", "Kenya"),
     ("Kenya's repayments", "debt repayments", "Kenya"),
     ("Kenya's liabilities", "external liabilities", "Kenya"),
-    ("Kenya's debt reduction target", "debt reduction target", "Kenya"),
     ("The World Bank's debt", "debt", "World Bank"),
 ]
 
@@ -609,20 +608,10 @@ class TestDebtorPossessive:
     @pytest.mark.parametrize(
         ("query", "measures", "place"),
         [
-            # `_owns_debt`: a possessed phrase that names no debt, or a claim or action word after
-            # the debt noun; or a second measure.
-            ("China's debt claims", ["debt claims"], "China"),
-            ("China's debt exposure", ["debt exposure"], "China"),
-            ("China's debt holdings", ["debt holdings"], "China"),
-            ("China's debt portfolio", ["debt portfolio"], "China"),
+            # `_owns_debt`: a possessed phrase that names no debt, or a second measure.
             ("China's lending to Africa", ["lending"], "China"),
             ("Germany's aid", ["aid"], "Germany"),
             ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
-            ("China's debt receivables", ["debt receivables"], "China"),
-            ("China's debt lending", ["debt lending"], "China"),
-            ("China's debt assets", ["debt assets"], "China"),
-            ("China's debt claim", ["debt claim"], "China"),
-            ("China's debt credits", ["debt credits"], "China"),
             # `_bare_possessive`: words before the possessive, or no possessive over the place.
             ("debt owed to China", ["debt"], "China"),
             ("external debt of Kenya", ["external debt"], "Kenya"),
@@ -777,6 +766,22 @@ class TestDebtorPossessive:
             ("The IMF's outstanding debt from Africa", ["debt"], "IMF"),
             ("World Bank's debt outstanding from borrowing countries", ["debt"], "World Bank"),
             ("China's debt claims on Africa", ["debt"], "China"),
+            # `_bare_possessive`: a phrase whose head is no debt word, with the measure
+            # covering every word.
+            ("China's debt service receipts", ["debt service receipts"], "China"),
+            ("China's debt repayments received", ["debt repayments received"], "China"),
+            ("Japan's debt securities holdings", ["debt securities holdings"], "Japan"),
+            ("China's debt investments", ["debt investments"], "China"),
+            ("Kenya's debt reduction target", ["debt reduction target"], "Kenya"),
+            ("China's debt claims", ["debt claims"], "China"),
+            ("China's debt exposure", ["debt exposure"], "China"),
+            ("China's debt holdings", ["debt holdings"], "China"),
+            ("China's debt portfolio", ["debt portfolio"], "China"),
+            ("China's debt receivables", ["debt receivables"], "China"),
+            ("China's debt lending", ["debt lending"], "China"),
+            ("China's debt assets", ["debt assets"], "China"),
+            ("China's debt claim", ["debt claim"], "China"),
+            ("China's debt credits", ["debt credits"], "China"),
             # `_bare_possessive`: a measure word that names a party of the debt.
             ("China's official creditor debt", ["official creditor debt"], "China"),
             ("Kenya's debt by creditor", ["debt by creditor"], "Kenya"),

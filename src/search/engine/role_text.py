@@ -122,28 +122,6 @@ _DEBT_ACTION_WORDS: frozenset[str] = frozenset(
         "swaps",
     }
 )
-# After a debt noun these name a holder's claim on the debt, which the creditor holds:
-# "China's debt claims", "China's debt receivables", "China's debt portfolio".
-_DEBT_CLAIM_WORDS: frozenset[str] = frozenset(
-    {
-        "claim",
-        "claims",
-        "asset",
-        "assets",
-        "receivable",
-        "receivables",
-        "credit",
-        "credits",
-        "lending",
-        "exposure",
-        "exposures",
-        "holding",
-        "holdings",
-        "portfolio",
-        "portfolios",
-    }
-)
-_NOT_DEBT_AFTER: frozenset[str] = _DEBT_ACTION_WORDS | _DEBT_CLAIM_WORDS
 # Active forms of "owe", whose subject is the debtor and whose object is the creditor:
 # "how much does China owe India". The past "owed" is left out, since "China owed by
 # Kenya" is passive and reverses the parties.
@@ -181,9 +159,9 @@ def _span_starts(query_tokens: list[str], span_tokens: list[str]) -> list[int]:
 
 
 def _names_debt(tokens: list[str]) -> bool:
-    """Whether ``tokens`` hold a debt noun that no action or claim word follows."""
+    """Whether ``tokens`` hold a debt noun that no action word follows."""
     return any(
-        token in _DEBT_NOUNS and (i + 1 == len(tokens) or tokens[i + 1] not in _NOT_DEBT_AFTER)
+        token in _DEBT_NOUNS and (i + 1 == len(tokens) or tokens[i + 1] not in _DEBT_ACTION_WORDS)
         for i, token in enumerate(tokens)
     )
 
@@ -396,8 +374,8 @@ def debtor_possessive(
     country``), and so do a measure word that names a party of the debt (``China's
     official creditor debt``), a creditor cue whose object is no place (``Kenya's debt to
     GDP ratio``) and a possessive claim on another party's debt (``Kenya's share of
-    external debt``). A debt noun followed by a claim word (``China's debt receivables``)
-    names no debt.
+    external debt``). A phrase whose head is no debt word (``China's debt receivables``,
+    ``Kenya's debt reduction target``) names no debt the possessor owes.
 
     The possessive reads the measure, so the axis states no direction of its own
     (``FramePlace.direction_stated``).
@@ -429,14 +407,18 @@ _DEBT_PARTY_NOUNS: frozenset[str] = frozenset({"creditor", "debtor", "lender", "
 def _bare_possessive(
     query_tokens: list[str], start: int, after: int, measure_tokens: Collection[str]
 ) -> bool:
-    """Whether the query is the possessive at ``start`` and its measure alone, after an
-    optional ``the``: every word after it is one of ``measure_tokens`` and none a debt
-    party's noun (`_DEBT_PARTY_NOUNS`), so ``Kenya's external debt`` over "external debt"
-    and ``Kenya's debt`` over "total debt" are, and ``Kenya's debt by creditor`` is not."""
+    """Whether the query is the possessive at ``start`` and its own debt alone, after an
+    optional ``the``: every word after it is one of ``measure_tokens``, none a debt party's
+    noun (`_DEBT_PARTY_NOUNS`), and the last, the phrase's head, a debt word (`_DEBT_NOUNS`,
+    `_DEBT_PHRASE_TAILS`). ``Kenya's external debt`` over "external debt", ``Kenya's
+    debt`` over "total debt" and ``Kenya's debt service`` are; ``Kenya's debt by
+    creditor``, ``China's official creditor debt`` and ``China's debt receivables`` are
+    not."""
     rest = query_tokens[after:]
     return (
         query_tokens[:start] in ([], ["the"])
         and bool(rest)
+        and rest[-1] in _DEBT_NOUNS | _DEBT_PHRASE_TAILS
         and all(
             token in measure_tokens
             and not any(
