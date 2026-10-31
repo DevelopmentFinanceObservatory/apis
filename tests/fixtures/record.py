@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 
-from dc_graph import FacetDefaultPolicy
+from dc_graph import ArcTarget, FacetDefaultPolicy, display_name
 from dc_graph.client import _dedup_wire_arcs
 from origin_catalogue import bound_catalogue, current_catalogue
 from search.engine.clients.graph import Detection, DetectLegs, SubjectsPage, admit_legs
@@ -324,6 +324,47 @@ class _RecordingGraph:
                 dcid,
                 label=name_values[0] if name_values else None,
                 type_of=type_values[0] if type_values else None,
+            )
+        return result
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Record what `FakeGraph.node_arc_targets_many` replays: each node's display name as
+        its label, its first type, its other properties as arcs, and each node target's name
+        and first type on that target's own node."""
+        time.sleep(_RECORD_THROTTLE_S)
+        result = self._graph.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
+        for dcid, targets in result.items():
+            if targets is None:
+                continue
+            type_values = targets.get("typeOf", ())
+            arcs: dict[str, dict[str, list[dict[str, str]]]] = {}
+            for prop, values in targets.items():
+                if prop in ("name", "typeOf"):
+                    continue
+                arcs[prop] = {
+                    "nodes": [
+                        {"dcid": t.value} if t.name or t.types else {"value": t.value}
+                        for t in values
+                    ]
+                }
+                for target in values:
+                    if target.name or target.types:
+                        self._merge_node(
+                            target.value,
+                            label=target.name,
+                            type_of=target.types[0] if target.types else None,
+                        )
+            self._merge_node(
+                dcid,
+                label=display_name((t.value for t in targets.get("name", ())), dcid),
+                type_of=type_values[0].value if type_values else None,
+                arcs=arcs or None,
             )
         return result
 

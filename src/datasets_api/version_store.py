@@ -87,6 +87,7 @@ from datasets_api.manifest import version_body
 from datasets_api.manifest_models import year_coverage_counted
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
+    COLLAPSED_FACT_FIELDS,
     NO_PARTY_ROLE,
     RENDERED_FACT_FIELDS,
     ArtifactRecord,
@@ -430,13 +431,23 @@ def _state(tx: Transaction, record: VersionRecord) -> VersionState:
     return state
 
 
-def _holds_rendered_facts(state: VersionState, record: VersionRecord) -> bool:
-    """Whether the stored version carries the facts `record`'s artifacts render."""
-    stored, written = state.version.facts, record.facts
+def _holds_rendered_facts(state: VersionState, write: VersionWrite) -> bool:
+    """Whether the stored version carries the facts `write`'s artifacts render, and with a
+    collapse the facts the collapsed version takes from it. Each is compared as stored JSON."""
+    stored, written = state.version.facts, write.record.facts
+    fields = RENDERED_FACT_FIELDS if write.collapsed is None else COLLAPSED_FACT_FIELDS
     return all(
-        getattr(stored, field, None) == getattr(written, field, None)
-        for field in RENDERED_FACT_FIELDS
+        _as_stored(getattr(stored, field, None)) == _as_stored(getattr(written, field, None))
+        for field in fields
     )
+
+
+def _as_stored(value: object) -> object:
+    """`value` as a JSON column stores it: tuples read back as lists. `prepared_at`, a timestamp
+    column, compares as the datetime it is."""
+    if isinstance(value, datetime):
+        return value
+    return json.loads(json.dumps(value))
 
 
 class LiveVersionRecordWriter:
@@ -476,7 +487,7 @@ class LiveVersionRecordWriter:
                 for entry in write.inventory:
                     write_entry(tx, entry, now=now)
                 created = _insert_version(tx, record, trace_id=trace_id, now=now)
-                rendered = created or _holds_rendered_facts(_state(tx, record), record)
+                rendered = created or _holds_rendered_facts(_state(tx, record), write)
                 served = record
                 if rendered:
                     for artifact in write.rendered:

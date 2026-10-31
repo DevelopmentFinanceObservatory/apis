@@ -15,12 +15,15 @@ from typing import get_args
 import httpx
 import pytest
 
+from dc_graph import ArcTarget
+from materialise.provenance_doc import read_source_citations
 from origin_catalogue import (
     BASE,
     UN_SYSTEM,
     OriginId,
     UnBlockedPlaces,
     UnReadFailure,
+    current_catalogue,
     note_un_blocked_places,
     recording_un_blocked_places,
 )
@@ -76,6 +79,7 @@ from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
+from tests.fixtures.provenance import arc_targets
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
     provenance_row,
@@ -263,12 +267,15 @@ class _WithheldGraph:
         if self._on_stall is not None:
             self._on_stall()
 
-    def node_labels_batch(self, dcids):
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
         if self._label_stall is not None:
             self._announce_stall()
             self._label_stall.wait(5)
             self.finished.set()
-        return {dcid: self._labels[dcid] for dcid in dcids if dcid in self._labels}
+        return {
+            dcid: {"name": (ArcTarget(value=self._labels[dcid]),)} if dcid in self._labels else None
+            for dcid in dcids
+        }
 
 
 class _CutWhenStalled:
@@ -359,6 +366,38 @@ def test_a_withheld_source_no_label_names_is_left_out_of_the_departure():
 
     (fact,) = first.departure_facts.values()
     assert fact.sources == ("Excluded Survey",)
+
+
+def test_an_unlisted_withheld_source_is_named_as_its_citation_names_it():
+    """A base provenance node is named for its import, so the departure names it by its parent
+    Dataset, the name its citation carries, read under the re-read's deadline."""
+    who = "dc/base/WHO_GHO"
+    graph = _WithheldGraph(withheld=(who,), labels={})
+    arcs = {
+        who: {"typeOf": ("Provenance",), "name": ("WHO_GHO",), "isPartOf": ("dc/d/WHO_GHO",)},
+        "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("WHO Global Health Observatory",)},
+    }
+    deadlines: list[float | None] = []
+
+    def node_arcs_many(dcids, *, properties, deadline=None):
+        return {dcid: arcs.get(dcid) for dcid in dcids}
+
+    def node_arc_targets_many(dcids, *, properties, deadline=None):
+        deadlines.append(deadline)
+        return arc_targets(node_arcs_many(dcids, properties=properties), arcs)
+
+    graph.node_arcs_many = node_arcs_many
+    graph.node_arc_targets_many = node_arc_targets_many
+    deadline = time.monotonic() + 60
+
+    first, _ = asyncio.run(
+        _with_warning_twice(*[_no_data([_subject("country/KEN")])] * 2, graph, deadline=deadline)
+    )
+
+    (fact,) = first.departure_facts.values()
+    assert deadlines == [deadline - withheld._HANDOFF_RESERVE_S]
+    cited = read_source_citations(graph, [who], catalogue=current_catalogue())[who]
+    assert fact.sources == (cited.name,) == ("WHO Global Health Observatory",)
 
 
 def test_withheld_warning_skips_role_bearing_answers_and_definite_parts():
@@ -593,9 +632,13 @@ def test_posted_source_slot_prefers_the_catalogue_label(bind_catalogue):
         nodes={_WDI: {"label": "WDI graph name"}, "dc/base/Other": {"label": "Other"}}
     )
 
-    (slot,) = _rebind_source_slot([_unbound_source_slot()], [_WDI], graph)
-    (unlisted,) = _rebind_source_slot([_unbound_source_slot()], ["dc/base/Other"], graph)
-    (unnamed,) = _rebind_source_slot([_unbound_source_slot()], ["dc/base/Unnamed"], graph)
+    (slot,) = _rebind_source_slot([_unbound_source_slot()], [_WDI], graph, deadline=None)
+    (unlisted,) = _rebind_source_slot(
+        [_unbound_source_slot()], ["dc/base/Other"], graph, deadline=None
+    )
+    (unnamed,) = _rebind_source_slot(
+        [_unbound_source_slot()], ["dc/base/Unnamed"], graph, deadline=None
+    )
 
     labels = [
         s.binding.value.ref.label

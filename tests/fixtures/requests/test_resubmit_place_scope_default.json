@@ -128,15 +128,14 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"unit"}],
     ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["Earth"],"needs_dates":false}],
-    ["FakeGraph.node_labels_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","dc/base/Src","measuredValue","testResubmitCount"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","measuredValue","testResubmitCount"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["Earth"]}],
     ["FakeGraph.node_types_batch",{"dcids":["Earth"]}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"provenance"}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"measurementMethod"}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"unit"}],
-    ["FakeGraph.node_labels_batch",{"dcids":["Earth","TEST/ResubmitPlaceScopeDefault_Population","dc/base/Src"]}],
-    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["Earth"],"needs_dates":true}],
-    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/Src"]}]
+    ["FakeGraph.node_labels_batch",{"dcids":["Earth","TEST/ResubmitPlaceScopeDefault_Population"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["Earth"],"needs_dates":true}]
   ],
   "test_no_where_slot_resubmit_is_definite_with_bulk_series": [
     ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],

@@ -2001,12 +2001,14 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
 
 
 @pytest.mark.parametrize(
-    ("code", "field", "named"),
+    ("code", "field", "lead", "named", "refs"),
     [
         pytest.param(
             "currency_unmapped_omitted",
             {"omitted_entities": {"count": 3, "refs": ["dcid:country/KEN", "dcid:XYZ"]}},
+            "Left out",
             "Kenya, XYZ",
+            ["dcid:country/KEN", "dcid:XYZ"],
             id="currency",
         ),
         # Each entity's name carries the years its rows were left out.
@@ -2021,23 +2023,112 @@ def test_a_coverage_warning_names_its_members_by_label(release, members, expecte
                     ],
                 }
             },
+            "Left out",
             "Kenya (1990-2001, 2004), XYZ (2020)",
+            ["dcid:country/KEN", "dcid:XYZ"],
             id="deflator",
+        ),
+        pytest.param(
+            "withheld_by_registry",
+            {"withheld_members": {"count": 3, "refs": ["dcid:Water", "dcid:XYZ"]}},
+            "Withheld series",
+            "Water, XYZ",
+            ["dcid:Water", "dcid:XYZ"],
+            id="withheld-members",
         ),
     ],
 )
-def test_a_conversion_warning_names_the_entities_it_left_out_by_label(release, code, field, named):
+def test_a_counted_field_warning_names_what_it_counts_by_label(
+    release, code, field, lead, named, refs
+):
     resolved_frame = _resolved_frame_with_warnings(
-        [{"code": code, "severity": "warn", "message": "It left out 3 entities.", **field}],
-        labels={"dcid:country/KEN": "Kenya"},
+        [{"code": code, "severity": "warn", "message": "The message.", **field}],
+        labels={
+            "dcid:country/KEN": "Kenya",
+            "dcid:Water": "Water",
+            "dcid:dc/base/WHO_GHO": "WHO Global Health Observatory",
+            "dcid:dc/base/WHO_GHO_Archive": "WHO Global Health Observatory",
+        },
     )
 
     provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
 
     assert provenance["warnings"] == [
-        {"kind": "coverage_gap", "detail": f"It left out 3 entities. Left out: {named} and 1 more."}
+        {"kind": "coverage_gap", "detail": f"The message. {lead}: {named} and 1 more."}
     ]
-    assert warned_refs(manifest=resolved_frame.manifest) == ["dcid:country/KEN", "dcid:XYZ"]
+    assert warned_refs(manifest=resolved_frame.manifest) == refs
+
+
+@pytest.mark.parametrize(
+    ("count", "refs", "message", "detail"),
+    [
+        # Provenances of one Dataset share its name, which a card gives once. The count leads
+        # with its noun, and "and others" stands for a ref the field counts but does not name.
+        pytest.param(
+            8,
+            ["A1", "A2", "A3", "B1", "B2"],
+            "The message.",
+            "Withheld sources: 8 sources (Alpha, Beta and others).",
+            id="eight-counted-five-carried-two-names",
+        ),
+        pytest.param(
+            5,
+            ["A1", "A2", "A3", "B1", "B2"],
+            "The message.",
+            "Withheld sources: 5 sources (Alpha, Beta).",
+            id="five-carried-two-names",
+        ),
+        pytest.param(
+            2,
+            ["A1", "A2"],
+            "The message.",
+            "Withheld sources: 2 sources (Alpha).",
+            id="every-one-carried-sharing-one-name",
+        ),
+        pytest.param(
+            6,
+            ["A1", "A2", "A3", "A4", "A5"],
+            "The message.",
+            "Withheld sources: 6 sources (Alpha and others).",
+            id="six-counted-five-carried-one-name",
+        ),
+        pytest.param(
+            2,
+            ["A1", "B1"],
+            "The message.",
+            "Withheld sources: 2 sources (Alpha, Beta).",
+            id="every-one-carried",
+        ),
+        pytest.param(1, ["A1"], "The message.", "Withheld sources: 1 source (Alpha).", id="one"),
+        # A message that leaves no room for a name states the count alone, in the same words.
+        pytest.param(3, ["A1", "B1"], "M" * 470, "Withheld sources: 3 sources.", id="no-name-fits"),
+    ],
+)
+def test_a_withheld_provenance_field_states_its_count_and_each_distinct_name(
+    release, count, refs, message, detail
+):
+    resolved_frame = _resolved_frame_with_warnings(
+        [
+            {
+                "code": "withheld_by_registry",
+                "severity": "warn",
+                "message": message,
+                "withheld_provenances": {
+                    "count": count,
+                    "refs": [f"dcid:{ref}" for ref in refs],
+                },
+            }
+        ],
+        labels={
+            **{f"dcid:A{i}": "Alpha" for i in range(1, 6)},
+            **{f"dcid:B{i}": "Beta" for i in range(1, 3)},
+        },
+    )
+
+    provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
+
+    assert provenance["warnings"] == [{"kind": "coverage_gap", "detail": f"{message} {detail}"}]
+    assert warned_refs(manifest=resolved_frame.manifest) == []
 
 
 def test_a_card_names_every_counted_field_a_stored_warning_holds():

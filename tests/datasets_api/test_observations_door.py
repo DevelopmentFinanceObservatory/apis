@@ -285,6 +285,9 @@ class _World:
             )
         self.reader.locations[(_SPEC, _CV)] = locations
         self.graph = graph if graph is not None else _graph()
+        self.catalogue = FakeCatalogue(
+            provenances={_PROV: provenance_row(_PROV, DFO, source="OECD")}
+        )
         self.now = now
 
     def client(self) -> TestClient:
@@ -299,7 +302,7 @@ class _World:
                 materialise_semaphore=self.permits,
             )
         )
-        catalogue = FakeCatalogue(provenances={_PROV: provenance_row(_PROV, DFO, source="OECD")})
+        catalogue = self.catalogue
         surface = Surface(
             name="datasets",
             prefix="/api/datasets",
@@ -402,6 +405,17 @@ def _graph_down(world: _World) -> str:
     return _PATH
 
 
+def _provenance_names_down(world: _World) -> str:
+    """The catalogue does not list `_PROV`, and the read that would name it fails."""
+
+    def broken(dcids, *, properties, deadline=None):
+        raise GraphReadError("graph down")
+
+    world.catalogue = FakeCatalogue()
+    world.graph.node_arc_targets_many = broken
+    return _PATH
+
+
 @pytest.mark.parametrize(
     ("arrange", "status", "code"),
     [
@@ -413,6 +427,7 @@ def _graph_down(world: _World) -> str:
         # A retired `col_` id is outside the id grammar, so it matches no route.
         (_collection, 404, "not_found"),
         (_graph_down, 503, "service_unavailable"),
+        (_provenance_names_down, 503, "service_unavailable"),
     ],
 )
 def test_snapshot_and_route_refusals(arrange, status: int, code: str):

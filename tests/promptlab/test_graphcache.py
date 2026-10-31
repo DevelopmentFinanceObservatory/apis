@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from dc_graph import ArcTarget
 from promptlab.graphcache import CacheMiss, GraphCache, StaleCaptureError, _key
 from search.engine.clients.graph import (
     DetectedSV,
@@ -35,6 +36,7 @@ _EXPECTED_METHODS = (
     "node_type",
     "default_facet_policy",
     "node_arcs_many",
+    "node_arc_targets_many",
     "node_names_many",
     "node_subjects_many",
     "resolve_by_arc",
@@ -105,6 +107,10 @@ class _CountingGraph:
     ):
         self.calls["node_arcs_many"] += 1
         return self._inner.node_arcs_many(dcids, properties=properties)
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline: float | None = None):
+        self.calls["node_arc_targets_many"] += 1
+        return self._inner.node_arc_targets_many(dcids, properties=properties)
 
     def node_names_many(
         self,
@@ -309,6 +315,103 @@ def test_node_arcs_many_absent_dcid_caches_none(tmp_path):
 
     assert first == second == {"does-not-exist": None}
     assert inner.calls["node_arcs_many"] == 1
+
+
+def test_node_arc_targets_many_serves_a_written_target_s_name_and_types(tmp_path):
+    nodes = {
+        "dc/base/WHO_GHO": {"label": "WHO_GHO", "arcs": {"isPartOf": {"nodes": [{"dcid": "d"}]}}},
+        "d": {"label": "WHO Global Health Observatory", "type": "Dataset"},
+    }
+    inner = _CountingGraph(FakeGraph(nodes=nodes))
+
+    written = _cache(tmp_path, inner).node_arc_targets_many(
+        ["dc/base/WHO_GHO"], properties=("isPartOf",)
+    )
+    served = _cache(tmp_path, inner, read_only=True).node_arc_targets_many(
+        ["dc/base/WHO_GHO"], properties=("isPartOf",)
+    )
+
+    assert served == written
+    assert written["dc/base/WHO_GHO"]["isPartOf"] == (
+        ArcTarget(value="d", name="WHO Global Health Observatory", types=("Dataset",)),
+    )
+    assert inner.calls["node_arc_targets_many"] == 1
+
+
+_WHO = "dc/base/WHO_GHO"
+_WHO_DATASET = "dc/d/WHO_GHO"
+_WHO_ARCS = {
+    "name": {"nodes": [{"value": "WHO_GHO"}]},
+    "typeOf": {"nodes": [{"dcid": "Provenance"}]},
+    "isPartOf": {"nodes": [{"dcid": _WHO_DATASET}]},
+}
+
+
+@pytest.mark.parametrize(
+    ("rows", "served"),
+    [
+        pytest.param(
+            {
+                ("node_arcs", _WHO): _WHO_ARCS,
+                ("node_label", _WHO_DATASET): "WHO Global Health Observatory",
+                ("node_type", _WHO_DATASET): "Dataset",
+                ("node_arcs", "dc/base/Gone"): None,
+            },
+            {
+                _WHO: {
+                    "isPartOf": (
+                        ArcTarget(
+                            value=_WHO_DATASET,
+                            name="WHO Global Health Observatory",
+                            types=("Dataset",),
+                        ),
+                    ),
+                    "name": (ArcTarget(value="WHO_GHO"),),
+                    "typeOf": (ArcTarget(value="Provenance"),),
+                },
+                "dc/base/Gone": None,
+            },
+            id="whole-node-rows",
+        ),
+        # A label alone names the import, where live serving names its Dataset.
+        pytest.param(
+            {("node_label", _WHO): "WHO_GHO", ("node_label", "dc/base/Gone"): None},
+            None,
+            id="labels-only",
+        ),
+        pytest.param(
+            {
+                ("node_arcs", _WHO): _WHO_ARCS,
+                ("node_type", _WHO_DATASET): "Dataset",
+                ("node_arcs", "dc/base/Gone"): None,
+            },
+            None,
+            id="parent-unlabelled",
+        ),
+    ],
+)
+def test_read_only_node_arc_targets_many_answers_a_miss_only_from_whole_node_rows(
+    tmp_path, rows, served
+):
+    """A capture made before this read replays it from its whole-node rows when they give the
+    live answer: the node's arcs and its parent's name and type. Otherwise the miss raises."""
+    path = tmp_path / "graph.sqlite"
+    writer = GraphCache(_CountingGraph(), path=path)
+    for (method, dcid), value in rows.items():
+        writer._store.put(_key(method, dcid), method, value)
+    writer.close()
+    read_only = GraphCache(FakeGraph(raise_on_call=True), path=path, read_only=True)
+
+    def read():
+        return read_only.node_arc_targets_many(
+            [_WHO, "dc/base/Gone"], properties=("isPartOf", "name", "typeOf")
+        )
+
+    if served is None:
+        with pytest.raises(CacheMiss):
+            read()
+    else:
+        assert read() == served
 
 
 def test_node_subjects_many_hit_miss_write_back(tmp_path):

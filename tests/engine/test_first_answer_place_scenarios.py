@@ -54,7 +54,7 @@ import json
 import logging
 import os
 import threading
-from collections.abc import Callable, Coroutine, Iterator, Mapping
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent import futures
 from concurrent.futures import Executor, Future
 from dataclasses import dataclass, field
@@ -65,7 +65,9 @@ from unittest import mock
 import pytest
 
 from materialise import place_scope
+from origin_catalogue import bound_catalogue
 from search.engine.clients import materialise_bridge
+from search.engine.concurrency import scoped_concurrency
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest
@@ -87,18 +89,38 @@ from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._binders import elected_reply
 from tests.engine._facet_option_builds import wrap_facet_option_builds
-from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
+from tests.engine._fake_coverage import (
+    FIXTURE_PROVENANCE,
+    FakeCoverageService,
+    build_coverage_index,
+)
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine._request_log import _UNRECORDED_METHODS, _plain, _RequestLog
 from tests.engine._virtual_clock import VirtualRequests
 from tests.fixtures import FakeGraph, make_resolver
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, listing
+
+
+class _WithheldGraph(FakeGraph):
+    """A graph whose withheld re-read finds `_SOURCE` holding data."""
+
+    def withheld_provenances(
+        self, variables: Sequence[str], entities: Sequence[str], *, deadline: float | None = None
+    ) -> tuple[str, ...]:
+        return (_SOURCE,)
+
 
 _RECORD_ENV = "SEARCH_RECORD_SCENARIOS"
 _RECORD_BASELINE_ENV = "SEARCH_RECORD_BASELINE_DEPTH"
 _SNAPSHOT = Path(__file__).parent.parent / "fixtures" / "first_answer_place_scenarios.json"
-_RECORDED_CLASSES: tuple[type, ...] = (FakeGraph, FakeSdmxClient, FakeMintGraphReader)
+_RECORDED_CLASSES: tuple[type, ...] = (
+    FakeGraph,
+    _WithheldGraph,
+    FakeSdmxClient,
+    FakeMintGraphReader,
+)
 # The modules whose thread pools fan requests out inside one executor function.
 _POOL_MODULES = (observation_fetch, materialise_bridge, candidate_grounding, resubmit_request)
 # The pools a module builds at import, on which requests run beside the resolve.
@@ -129,6 +151,8 @@ _KEN, _GHA, _TZA, _NOR, _USA = (
 _AFRICA = "africa"
 _EARTH = "Earth"
 _SOURCE = "dc/base/ScenarioFixture"
+# The graph's node for `_SOURCE`, which a scenario the catalogue does not list it in reads.
+_SOURCE_NODE = {"label": "ScenarioFixture", "type": "Provenance"}
 
 # A subject-only family: the elected count, two qualifier siblings, and an unrelated reading
 # the bind step can flag. The unrelated reading's label holds every word of the query, so the
@@ -301,6 +325,11 @@ _CHILDREN = {
 
 
 @pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(listing({_SOURCE: "Scenario fixture", FIXTURE_PROVENANCE: "Coverage fixture"}))
+
+
+@pytest.fixture(autouse=True)
 def _regions(declare_regions):
     """Search reads Africa's members from the membership policy."""
     declare_regions({_AFRICA: _CHILDREN[_AFRICA]["Country"]})
@@ -350,6 +379,9 @@ class _Scenario:
     # default scope (`_index_sourced`).
     index_sourced: tuple[str, ...] = ()
     date_request: DateRequest | None = None
+    # No admitted source holds data, and the withheld re-read (`withheld.with_withheld_warning`)
+    # finds `_SOURCE`, which the catalogue does not list, so the graph names it.
+    withheld: bool = False
 
 
 class _Bind:
@@ -638,6 +670,15 @@ _SCENARIOS: dict[str, _Scenario] = {
         "mortality count in Kenya", ("Kenya",), (_MORT,), (0.9,), _at(_MORT, _KEN)
     ),
     "named-no-data": _Scenario("mortality count in Kenya", ("Kenya",), (_MORT,), (0.9,)),
+    # Its baseline depth is the engine's that named an unlisted provenance by one read of its
+    # citation arcs, so naming it by one read of its arcs and their targets keeps the depth.
+    "named-withheld-unlisted-source": _Scenario(
+        "mortality count in Kenya",
+        ("Kenya",),
+        (_MORT,),
+        (0.9,),
+        withheld=True,
+    ),
     "named-reelect-adopt": _Scenario(
         "mortality count in Kenya",
         ("Kenya",),
@@ -930,8 +971,8 @@ def _resolve_scenario(
     scenario: _Scenario,
     run: Callable[[Coroutine[Any, Any, RegionResult]], RegionResult],
 ) -> RegionResult:
-    graph = FakeGraph(
-        nodes=_NODES,
+    graph = (_WithheldGraph if scenario.withheld else FakeGraph)(
+        nodes={**_NODES, _SOURCE: _SOURCE_NODE} if scenario.withheld else _NODES,
         obs=dict(scenario.obs),
         detect={
             scenario.query: {"svs": list(scenario.svs), "cosine_scores": list(scenario.scores)}
@@ -944,33 +985,42 @@ def _resolve_scenario(
         build_coverage_index(list(scenario.coverage_rows), role_names=_ROLE_NAMES)
     )
     entities = list(scenario.entities)
-    return run(
-        resolve_variable(
-            scenario.query,
-            entities=entities,
-            date_request=scenario.date_request,
-            detect_query=scenario.query,
-            role_query=scenario.query,
-            entity_roles=(
-                door_roles_for_test_query(scenario.query, entities) if scenario.directed else None
-            ),
-            pac=True,
-            graph=graph,
-            resolver=make_resolver(graph),
-            llm=_Bind(scenario.chosen, scenario.also_plausible),
-            sdmx=FakeSdmxClient(
-                observations={}, availability={}, scope_availability=graph.scope_availability
-            ),
-            base_timing={},
-            coverage=coverage.snapshot(),
-            options=EngineOptions(
-                include_observations=scenario.include_observations,
-                include_option_coverage=scenario.include_option_coverage,
-                stream_slot_options=scenario.stream_slot_options,
-                materialise_graph=_materialise_graph(graph, scenario),
-            ),
-        )
+    resolved = resolve_variable(
+        scenario.query,
+        entities=entities,
+        date_request=scenario.date_request,
+        detect_query=scenario.query,
+        role_query=scenario.query,
+        entity_roles=(
+            door_roles_for_test_query(scenario.query, entities) if scenario.directed else None
+        ),
+        pac=True,
+        graph=graph,
+        resolver=make_resolver(graph),
+        llm=_Bind(scenario.chosen, scenario.also_plausible),
+        sdmx=FakeSdmxClient(
+            observations={}, availability={}, scope_availability=graph.scope_availability
+        ),
+        base_timing={},
+        coverage=coverage.snapshot(),
+        options=EngineOptions(
+            include_observations=scenario.include_observations,
+            include_option_coverage=scenario.include_option_coverage,
+            stream_slot_options=scenario.stream_slot_options,
+            materialise_graph=_materialise_graph(graph, scenario),
+        ),
     )
+    if not scenario.withheld:
+        return run(resolved)
+    with bound_catalogue(FakeCatalogue()):
+        return run(_in_request_scope(resolved))
+
+
+async def _in_request_scope(resolved: Coroutine[Any, Any, RegionResult]) -> RegionResult:
+    """`resolved` inside a request's concurrency scope, which the withheld re-read claims once
+    per request."""
+    async with scoped_concurrency():
+        return await resolved
 
 
 def _with_deadline_marked(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1263,7 +1313,6 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     "named-reelect-menu": 6,
     "placeless-reelect-earth-sibling-and-country-sibling": 9,
     "placeless-reelect-two-siblings-apart": 9,
-    "placeless-reelect-two-siblings-apart-option-coverage": 9,
     "placeless-reelect-two-siblings-together": 6,
     # With no place named, the default scope is one listing of Earth's countries beside the
     # elected walk and one presence read, where the baseline reads availability for each
@@ -1278,8 +1327,11 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     "placeless-definite-one-country": 1,
     "placeless-empty-elected-flagged-alternate-data": 2,
     "placeless-flagged-alternate-elsewhere": 4,
-    "placeless-flagged-alternate-elsewhere-option-coverage": 4,
     "placeless-flagged-alternate-empty": 2,
+    # As their scenarios without option coverage, and the catalogue lists the facet options'
+    # one source, so they read no labels for it and save one more step.
+    "placeless-flagged-alternate-elsewhere-option-coverage": 5,
+    "placeless-reelect-two-siblings-apart-option-coverage": 10,
     "placeless-reelect-no-data": 2,
     "placeless-worldwide-elected-country-alternate": 4,
     # A StatVar whose availability lists no place takes the empty scope without the check of

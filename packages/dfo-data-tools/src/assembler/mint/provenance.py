@@ -195,13 +195,16 @@ class _RefField:
     """A counted field of a manifest warning: its key, the words that lead its names on a
     card, and the noun, one and many, that counts them when no name fits. A field `with_years`
     is `{count, entities}`, each entity a `{ref, years}` (`datasets_api.manifest_models.
-    CountedEntityYearsModel`); any other is `{count, refs}` (`CountedRefsModel`)."""
+    CountedEntityYearsModel`); any other is `{count, refs}` (`CountedRefsModel`). A field of
+    `provenance` refs holds provenances, which a card names as a source citation does
+    (`warned_provenance_refs`), not entities, members or series."""
 
     key: str
     lead: str
     one: str
     many: str
     with_years: bool = False
+    provenance: bool = False
 
 
 _REF_FIELDS = (
@@ -211,20 +214,34 @@ _REF_FIELDS = (
         "out_of_window_members", "No observations in the requested years", "series", "series"
     ),
     _RefField("unserved_members", "Under another source, unit or method", "series", "series"),
+    _RefField("withheld_members", "Withheld series", "series", "series"),
+    _RefField("withheld_provenances", "Withheld sources", "source", "sources", provenance=True),
     _RefField("omitted_entities", "Left out", "entity", "entities"),
     _RefField("omitted_entity_years", "Left out", "entity", "entities", with_years=True),
 )
 
 
 def warned_refs(*, manifest: Mapping[str, object]) -> list[str]:
-    """The `dcid:` refs the counted fields of `manifest`'s warnings carry, in warning and
-    field order: the entities and group members a card names by label
-    (`_translate_warnings`)."""
+    """The `dcid:` refs the counted fields of `manifest`'s warnings carry, other than
+    provenances, in warning and field order: the entities, group members and series a card
+    names by label (`_translate_warnings`)."""
+    return _warned(manifest, provenance=False)
+
+
+def warned_provenance_refs(*, manifest: Mapping[str, object]) -> list[str]:
+    """The `dcid:` refs of the provenances the counted fields of `manifest`'s warnings carry,
+    in warning and field order. A card names each by the name of its source citation, which the
+    graph's own `name` for a base provenance does not give."""
+    return _warned(manifest, provenance=True)
+
+
+def _warned(manifest: Mapping[str, object], *, provenance: bool) -> list[str]:
     warnings = cast("Sequence[Mapping[str, object]]", manifest.get("warnings") or ())
     return [
         ref
         for warning in warnings
         for field in _REF_FIELDS
+        if field.provenance is provenance
         for ref, _years in _named_items(_counted(warning, field), field)
     ]
 
@@ -252,9 +269,9 @@ def _translate_warnings(
 
     A warning's `detail` is its message, then, for each counted field it carries, the field's
     lead words and its refs' `labels`, the bare dcid where `labels` holds none, each followed
-    by its years where the field holds them (`_named_refs`). The fields share the room the message leaves within
-    `_WARNING_DETAIL_MAX` equally, and a field's unused share passes to the next. Drops
-    `severity` and raises `AssertionError` for an unmapped code."""
+    by its years where the field holds them (`_named_refs`). The fields share the room the
+    message leaves within `_WARNING_DETAIL_MAX` equally, and a field's unused share passes to
+    the next. Drops `severity` and raises `AssertionError` for an unmapped code."""
     translated: list[dict[str, object]] = []
     for warning in warnings:
         code = cast(str, warning["code"])
@@ -283,14 +300,29 @@ def _translate_warnings(
 def _named_refs(field: _RefField, names: Sequence[str], *, count: int, budget: int) -> str:
     """`" {lead}: "`, then as many whole `names` as fit within `budget` characters, with
     `" and N more"` for the `count` not named, closed by a full stop. When no name fits, the
-    count stands for them all, whatever the budget, so the field keeps its count."""
+    count stands for them all, whatever the budget, so the field keeps its count.
+
+    A `provenance` field states its `count` with the field's noun and names each distinct name
+    once in brackets, since provenances of one Dataset share its name:
+    `" Withheld sources: 8 sources (A, B and others)."`, `" Withheld sources: 8 sources."` when
+    no name fits. "and others" closes the names when a withheld ref goes unnamed: one the
+    field counts but does not carry, or one whose name the budget leaves out."""
     lead = field.lead
+    counted = f"{count} {field.one if count == 1 else field.many}"
+    if field.provenance:
+        distinct = list(dict.fromkeys(names))
+        for shown in range(len(distinct), 0, -1):
+            rest = " and others" if shown < len(distinct) or count > len(names) else ""
+            text = f" {lead}: {counted} ({', '.join(distinct[:shown])}{rest})."
+            if len(text) <= budget:
+                return text
+        return f" {lead}: {counted}."
     for shown in range(len(names), 0, -1):
         hidden = count - shown
         text = f" {lead}: {', '.join(names[:shown])}{f' and {hidden} more' if hidden > 0 else ''}."
         if len(text) <= budget:
             return text
-    return f" {lead}: {count} {field.one if count == 1 else field.many}."
+    return f" {lead}: {counted}."
 
 
 @dataclass(frozen=True)
