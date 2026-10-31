@@ -42,18 +42,19 @@ of the other kind, a version or recipe the stores do not hold, and a door with n
 the rule. A `note_narration` binds no frame, so no target can stand in for one, and it refuses
 `render_target_mismatch` too.
 
-A refusal of the render carries the status the code registry gives its code on
-`presentation.render`, which for five codes differs from the status the write routes serve:
-`binding_invalid` and `constraint_violation` 422, and `frame_unavailable`, `release_mismatch`,
-and `resource_exhausted` 409. The caller replays a stored intent it cannot correct, so
-`retryable` is the write routes' value read through `presentation_api.codes.replay_retryable`:
-true only for a `retry_after_delay` or `refresh_then_retry` code whose occurrence is retryable.
+A refusal of the render goes out at the status the code registry gives its code on
+`presentation.render` (`RENDER_ENDPOINT`), which the platform binds while the surface classifies.
+For five codes it differs from the status the write routes serve: `binding_invalid` and
+`constraint_violation` answer 422, and `frame_unavailable`, `release_mismatch`, and
+`resource_exhausted` 409. The caller replays a stored intent it cannot correct, so
+`retryable` is the write routes' value read through `presentation_api.codes.replay_retryable`
+(`replayed`, which wraps the components door's classifier): true only for a `retry_after_delay`
+or `refresh_then_retry` code whose occurrence is retryable.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Path, Query
@@ -78,7 +79,8 @@ from datasets_api.live_refresh import (
     classify_live_refresh_exception,
 )
 from datasets_api.recipe_store import RecipeReader
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
+from dfo_platform.codes import bound_endpoint
 from presentation_api.codes import replay_retryable, retryable_for
 from presentation_api.doors.component_data import COMPONENT_DATA_MEDIA_TYPES
 from presentation_api.models import ComponentReadResponse
@@ -89,12 +91,10 @@ from presentation_api.path_params import (
 )
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
+from presentation_api.routes import RENDER_DATA_PATH, RENDER_ENDPOINT, RENDER_PATH
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
-
-RENDER_PATH = "/api/presentation/components/{component_id}/revisions/{revision}/render"
-RENDER_DATA_PATH = f"{RENDER_PATH}/data"
 
 _DATASET_SPEC_PREFIX = "spec_"
 _DERIVED_SPEC_PREFIX = "ops_"
@@ -102,15 +102,6 @@ _DERIVED_SPEC_PREFIX = "ops_"
 # The header a door built with no principal reads. Its empty principal admits nobody, so the
 # name decides nothing.
 _NO_PRINCIPAL = LiveRefreshPrincipal(header="x-dfo-principal", principal="")
-
-# The `presentation.render` status of each assembler refusal the write routes serve at another.
-_RENDER_STATUS: Mapping[str, int] = {
-    "binding_invalid": 422,
-    "constraint_violation": 422,
-    "frame_unavailable": 409,
-    "release_mismatch": 409,
-    "resource_exhausted": 409,
-}
 
 
 class RenderTargetMismatch(Exception):
@@ -124,44 +115,43 @@ class RenderTargetMismatch(Exception):
         super().__init__(f"{component_id} revision {revision}: {detail}")
 
 
-class RenderRefused(Exception):
-    """An assembler refusal of a render, as the problem the render routes serve for it."""
-
-    def __init__(self, spec: ProblemSpec) -> None:
-        self.spec = spec
-        super().__init__(spec.detail)
-
-
 def classify_render_exception(exc: BaseException) -> ProblemSpec | None:
-    if isinstance(exc, RenderRefused):
-        return exc.spec
     if isinstance(exc, RenderTargetMismatch):
-        return ProblemSpec(
-            status=409,
-            code="render_target_mismatch",
+        return refused(
+            "render_target_mismatch",
             detail=str(exc),
             retryable=retryable_for("render_target_mismatch"),
         )
     if isinstance(exc, ComponentHoldsNoFrame):
-        return ProblemSpec(
-            status=409,
-            code="render_target_mismatch",
+        return refused(
+            "render_target_mismatch",
             detail=exc.detail,
             retryable=retryable_for("render_target_mismatch"),
         )
     return classify_live_refresh_exception(exc)
 
 
+def replayed(
+    classify: Callable[[BaseException], ProblemSpec | None],
+) -> Callable[[BaseException], ProblemSpec | None]:
+    """`classify`, with a refusal on a render route restating `retryable` as its caller, who
+    replays a stored intent, reads it (`replay_retryable`)."""
+
+    def classify_replayed(exc: BaseException) -> ProblemSpec | None:
+        spec = classify(exc)
+        if spec is None or bound_endpoint() != RENDER_ENDPOINT:
+            return spec
+        return spec._replace(retryable=replay_retryable(spec.code, retryable=spec.retryable))
+
+    return classify_replayed
+
+
 RENDER_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
-    RenderRefused,
     RenderTargetMismatch,
     ComponentHoldsNoFrame,
     RefreshNotPermitted,
 )
 RENDER_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
-    RenderRefused(
-        ProblemSpec(status=409, code="frame_unavailable", detail="exemplar", retryable=True)
-    ),
     RenderTargetMismatch(component_id="cmp_exemplar", revision=1, detail="exemplar"),
     ComponentHoldsNoFrame(component_id="cmp_exemplar", revision=1, detail="exemplar"),
     RefreshNotPermitted(presented=False),
@@ -308,32 +298,13 @@ def build_render_router(
     *,
     deps: ComponentsDeps,
     run: Callable[[Callable[[], Response]], Awaitable[Response]],
-    classify: Callable[[BaseException], ProblemSpec | None],
     live_refresh: LiveRefreshPrincipal | None,
 ) -> APIRouter:
     """The two render routes, run through the components door's `run` on its `deps`.
-
-    `classify` is the components door's classifier, whose problem for a refusal the routes
-    restate at its `presentation.render` status and replay retryability. `live_refresh=None`
-    refuses every caller.
+    `live_refresh=None` refuses every caller.
     """
     principal = live_refresh if live_refresh is not None else _NO_PRINCIPAL
     router = APIRouter(route_class=principal.route_class())
-
-    @contextmanager
-    def restated() -> Iterator[None]:
-        try:
-            yield
-        except Exception as exc:
-            spec = classify(exc) or classify_render_exception(exc)
-            if spec is None:
-                raise
-            raise RenderRefused(
-                spec._replace(
-                    status=_RENDER_STATUS.get(spec.code, spec.status),
-                    retryable=replay_retryable(spec.code, retryable=spec.retryable),
-                )
-            ) from exc
 
     def accepted_revision(*, component_id: str, revision: int, target: FrameRef) -> RevisionRecord:
         record = read_stored_revision(
@@ -353,19 +324,16 @@ def build_render_router(
         )
 
         def job() -> JSONResponse:
-            with restated():
-                record = accepted_revision(
-                    component_id=component_id, revision=revision, target=target
-                )
-                reply = render_component(
-                    component_id=component_id,
-                    revision=revision,
-                    target_frame=target,
-                    frame_store=deps.frame_store,
-                    revision_store=deps.revision_store,
-                    release_registry=deps.release_registry,
-                    vocabulary_source=deps.vocabulary_source,
-                )
+            record = accepted_revision(component_id=component_id, revision=revision, target=target)
+            reply = render_component(
+                component_id=component_id,
+                revision=revision,
+                target_frame=target,
+                frame_store=deps.frame_store,
+                revision_store=deps.revision_store,
+                release_registry=deps.release_registry,
+                vocabulary_source=deps.vocabulary_source,
+            )
             retention = stated_retention(target, snapshot_reader=deps.snapshot_reader)
             return JSONResponse(
                 {
@@ -401,19 +369,18 @@ def build_render_router(
         target = _target_frame(spec_id=spec_id, content_version=content_version)
 
         def job() -> Response:
-            with restated():
-                accepted_revision(component_id=component_id, revision=revision, target=target)
-                exported = export_component_data(
-                    component_id=component_id,
-                    revision=revision,
-                    format=format_,
-                    bundle=bundle,
-                    revision_store=deps.revision_store,
-                    frame_store=deps.frame_store,
-                    site_url=deps.site.public_site_url,
-                    target_frame=target,
-                    release_registry=deps.release_registry,
-                )
+            accepted_revision(component_id=component_id, revision=revision, target=target)
+            exported = export_component_data(
+                component_id=component_id,
+                revision=revision,
+                format=format_,
+                bundle=bundle,
+                revision_store=deps.revision_store,
+                frame_store=deps.frame_store,
+                site_url=deps.site.public_site_url,
+                target_frame=target,
+                release_registry=deps.release_registry,
+            )
             return Response(
                 content=exported.data,
                 media_type=exported.media_type,

@@ -68,7 +68,7 @@ from datasets_api.render import (
     stored_frame_location,
 )
 from datasets_api.retention import version_retention
-from datasets_api.store_errors import DatasetsStoreUnavailable
+from datasets_api.store_errors import DatasetsStoreUnavailable, read_stored_frame
 from datasets_api.versions import VersionRecordWriter
 from dfo_platform.config import PublicSiteSettings
 from materialise import EnrichmentLookup
@@ -87,7 +87,6 @@ from materialise.formats import (
     Table,
     column_cells,
     frame_entity_columns,
-    read_stored_frame,
     table_schema_for,
     write_csv,
     write_excel,
@@ -304,7 +303,7 @@ class _StoredFrame:
     """The derived version's stored frame, when its bytes were first stored, and the version's
     servable locations."""
 
-    table: Table
+    table: Frame
     stored_on: datetime
     servable: Sequence[StoredArtifactLocation]
 
@@ -315,6 +314,7 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     Raises:
         SnapshotNotFound, SnapshotRevoked: The version has no record, or is taken down.
         ArtifactExpired: No servable stored frame is left, or its bytes are gone.
+        StoredFrameUnreadable: The stored frame's bytes do not read as a frame.
     """
     stored = read_servable_version(
         reads.snapshot_reader, subject_id=spec_id, content_version=content_version, now=reads.now()
@@ -332,7 +332,9 @@ def _read_stored_frame(*, spec_id: str, content_version: str, reads: DerivedRead
     # A store that drops the zone records UTC, as every write stamps it.
     stored_on = created if created.tzinfo is not None else created.replace(tzinfo=UTC)
     return _StoredFrame(
-        table=read_stored_frame(data, media_type=location.media_type),
+        table=read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        ),
         stored_on=stored_on,
         servable=stored.servable,
     )
@@ -398,13 +400,13 @@ def render_derived_file(
     docstring.
 
     Raises:
-        SnapshotNotFound, SnapshotRevoked, ArtifactExpired: As `_read_stored_frame`.
+        SnapshotNotFound, SnapshotRevoked, ArtifactExpired, StoredFrameUnreadable: As
+            `_read_stored_frame`.
         ExcelLimitError, ExcelIllegalCharacterError, ParquetSizeBoundError: The writer's.
     """
     frame = _read_stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
     table, prepared_at = frame.table, frame.stored_on
-    rows = table.num_rows if isinstance(table, Frame) else len(table.rows)
-    columns = len(table.columns)
+    rows, columns = table.num_rows, len(table.columns)
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
     sources = tuple(

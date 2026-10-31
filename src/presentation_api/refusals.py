@@ -5,18 +5,25 @@ any individual door.
 
 from __future__ import annotations
 
+import math
+
 from fastapi.exceptions import RequestValidationError
 
 from assembler.errors import BindingInvalid, FrameUnavailable
-from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec
+from assembler.ports import FRAME_UNAVAILABLE_OUTCOME
+from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec, refused
+from dfo_platform.codes import registered_status
 from dfo_platform.validation import validation_problem
 from presentation_api.codes import retryable_for
 
 __all__ = [
     "EXPIRED_FRAME_FIX",
+    "FRAME_UNAVAILABLE_EXEMPLARS",
+    "NEWEST_NOT_READY_OUTCOME",
     "binding_invalid_spec",
     "frame_unavailable_spec",
     "request_validation_spec",
+    "retry_after_headers",
 ]
 
 
@@ -37,9 +44,8 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
             )
             for dimension in exc.structural_view.dimensions
         ]
-    return ProblemSpec(
-        status=400,
-        code="binding_invalid",
+    return refused(
+        "binding_invalid",
         detail=exc.detail,
         pointer=exc.pointer,
         alternatives=[
@@ -52,22 +58,25 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
     )
 
 
-# `expired` and `ops_unsupported` can succeed after republishing. Revoked, missing, digest
-# mismatch, quarantined, and unknown refs are permanent. I/O maps to retryable 503, as do a
-# derived frame whose recipe is not written yet (`recipe_pending`), which a recipe write lets a
-# retry pin, and a recipe the store cannot read (`recipe_unreadable`), a server fault.
-_FRAME_UNAVAILABLE_OUTCOME: dict[str, tuple[int, bool]] = {
-    "expired": (404, True),
-    "revoked": (404, False),
-    "ops_unsupported": (404, True),
-    "missing_rendering": (404, False),
-    "digest_mismatch": (404, False),
-    "quarantined": (404, False),
-    "io": (503, True),
-    "recipe_pending": (503, True),
-    "recipe_unreadable": (503, True),
-    "unknown": (404, False),
-}
+# The reasons that name a fault to look into: every one that is no frame state but `busy`, which
+# is ordinary load, and a stored artifact failing its digest. The frame store logs
+# `missing_rendering` where bytes do not decode.
+_LOGGED_REASONS: frozenset[str] = (
+    frozenset(
+        reason
+        for reason, (code, _, _) in FRAME_UNAVAILABLE_OUTCOME.items()
+        if code != "frame_unavailable"
+    )
+    - {"busy"}
+) | {"digest_mismatch"}
+
+# The code and retryability of a bare `spec_id` whose newest version is not ready.
+NEWEST_NOT_READY_OUTCOME: tuple[str, bool] = ("service_unavailable", True)
+
+# One exemplar of every reason, for each door whose routes load or pin a frame.
+FRAME_UNAVAILABLE_EXEMPLARS: tuple[FrameUnavailable, ...] = tuple(
+    FrameUnavailable(reason=reason, detail="exemplar") for reason in FRAME_UNAVAILABLE_OUTCOME
+)
 
 
 # An expired frame aged out of the working tier. A card made on it draws again from current
@@ -79,24 +88,34 @@ EXPIRED_FRAME_FIX = (
 
 
 def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
-    """`frame_unavailable`, at the status and retryability `exc.reason` gives, with the reason as
-    `cause.code`, so a client tells a frame it can rebuild from one taken down. An expired
-    frame's detail ends with `EXPIRED_FRAME_FIX`."""
-    status, retryable = _FRAME_UNAVAILABLE_OUTCOME.get(exc.reason, (503, True))
+    """The refusal `FRAME_UNAVAILABLE_OUTCOME` gives `exc.reason`, at the bound endpoint's status,
+    with the reason as `cause.code`, so a client tells a frame it can rebuild from one taken
+    down. An expired frame's detail ends with `EXPIRED_FRAME_FIX`."""
+    code, retryable, _ = FRAME_UNAVAILABLE_OUTCOME[exc.reason]
     detail = f"{exc.detail}; {EXPIRED_FRAME_FIX}" if exc.reason == "expired" else exc.detail
-    return ProblemSpec(
-        status=status,
-        code="frame_unavailable",
+    return refused(
+        code,
         detail=detail,
         retryable=retryable,
         cause=Cause(code=exc.reason),
+        headers=None if exc.retry_after_s is None else retry_after_headers(exc.retry_after_s),
+        log=(
+            f"Frame refused for reason {exc.reason}: {exc.detail}"
+            if exc.reason in _LOGGED_REASONS
+            else None
+        ),
     )
 
 
+def retry_after_headers(seconds: float) -> dict[str, str]:
+    return {"Retry-After": str(math.ceil(seconds))}
+
+
 def request_validation_spec(exc: BaseException) -> ProblemSpec | None:
-    """Return the platform validation spec unchanged, or `None` for other exceptions.
-    Malformed requests inherit `retryable=False`.
+    """Return the platform validation spec at the registry's status, or `None` for other
+    exceptions. Malformed requests inherit `retryable=False`.
     """
     if not isinstance(exc, RequestValidationError):
         return None
-    return validation_problem(exc)
+    spec = validation_problem(exc)
+    return spec._replace(status=registered_status(spec.code))

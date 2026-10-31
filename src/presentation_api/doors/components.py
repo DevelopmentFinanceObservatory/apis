@@ -94,7 +94,7 @@ from datasets_api.principals import Grant, Principals
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from dfo_platform import Alternative, ProblemSpec
+from dfo_platform import Alternative, ProblemSpec, refused
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.doors import DoorContribution, combine_classifiers
@@ -116,14 +116,33 @@ from presentation_api.doors.render import (
     RENDER_EXCEPTION_TYPES,
     build_render_router,
     classify_render_exception,
+    replayed,
 )
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import ComponentReadResponse, CreateReplyResponse, WriteReplyResponse
-from presentation_api.newest_frames import NewestFrames, resolve_bare_spec
+from presentation_api.newest_frames import (
+    NewestFrames,
+    NewestNotReady,
+    newest_not_ready_spec,
+    resolve_bare_spec,
+)
 from presentation_api.path_params import PathParamInvalid, require_component_id
-from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
+from presentation_api.refusals import (
+    FRAME_UNAVAILABLE_EXEMPLARS,
+    binding_invalid_spec,
+    frame_unavailable_spec,
+)
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
 from presentation_api.retention import stated_retention
+from presentation_api.routes import (
+    COMPONENT_DATA_ENDPOINT,
+    COMPONENT_PATH,
+    COMPONENT_READ_ENDPOINT,
+    COMPONENTS_PATH,
+    RENDER_ENDPOINT,
+    WRITE_ENDPOINT,
+    door_registry_endpoints,
+)
 from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     GeneratedIdCollision,
@@ -135,9 +154,6 @@ from presentation_store import close_shared_pool as close_presentation_pool
 from presentation_store import shared_pool as presentation_shared_pool
 from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
-logger = logging.getLogger(__name__)
-
-
 # Carries the write token a create returned; a revise, or a create into an existing
 # composition, sends it back.
 WRITE_TOKEN_HEADER = "x-dfo-write-token"
@@ -145,6 +161,48 @@ WRITE_TOKEN_HEADER = "x-dfo-write-token"
 
 class PresentationBackpressure(Exception):
     """Raised when the shared components semaphore is full."""
+
+
+# The exemplars the components and shares doors' routes share, whose refusals
+# `classify_components_exception` renders.
+LOOKUP_EXEMPLARS: tuple[BaseException, ...] = (
+    PathParamInvalid(name="component_id", value="exemplar"),
+    DraftNotFound(subject_kind="component", subject_id="cmp_exemplar"),
+    RevisionNotFound(component_id="cmp_exemplar", revision=1, detail="exemplar"),
+    EditConflict("exemplar"),
+)
+STORE_EXEMPLARS: tuple[BaseException, ...] = (
+    PresentationBackpressure(),
+    PresentationStoreUnavailable("exemplar"),
+    PresentationStoreUnavailable("exemplar", sqlstate="42601"),
+    DatasetsStoreUnavailable("exemplar"),
+    DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
+    SpecRegistryUnavailable(),
+    SpecRegistryStoreError("exemplar"),
+    # The surface classifies validation errors.
+    RequestValidationError(
+        [{"loc": ("body", "intent"), "msg": "Field required", "type": "missing"}], body={}
+    ),
+)
+DRAW_EXEMPLARS: tuple[BaseException, ...] = (
+    SchemaInvalid(pointer="/type", detail="exemplar", legal_fields=("type", "frame_ref", "select")),
+    SchemaInvalid(pointer="/select", detail="exemplar", minimal_intent={"type": "stat_card"}),
+    BindingInvalid(
+        pointer="/select",
+        dimension="recipient",
+        legal_values=("country/USA",),
+        truncated=False,
+        detail="exemplar",
+    ),
+    ConstraintViolation(
+        constraint_id="log_scale_requires_positive_values",
+        pointer="/scale",
+        detail="exemplar",
+        fix="exemplar fix",
+    ),
+    ResourceExhausted(pointer="/select", limit_name="MAX_SELECTORS", detail="exemplar"),
+    ReleaseMismatch(catalog_version="2020.1.0", detail="exemplar"),
+)
 
 
 class ComponentBody(BaseModel):
@@ -181,16 +239,14 @@ class CreateComponentBody(ComponentBody):
 
 def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, PathParamInvalid):
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, CreateRequestInvalid):
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=exc.detail,
             pointer=exc.pointer,
             retryable=False,
@@ -200,129 +256,122 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, BindingInvalid):
         return binding_invalid_spec(exc)
     if isinstance(exc, ConstraintViolation):
-        return ProblemSpec(
-            status=400,
-            code="constraint_violation",
+        return refused(
+            "constraint_violation",
             detail=f"{exc.detail} fix: {exc.fix}",
             pointer=exc.pointer,
             constraint_id=exc.constraint_id,
             retryable=retryable_for("constraint_violation"),
         )
     if isinstance(exc, EditConflict):
-        return ProblemSpec(
-            status=409,
-            code="edit_conflict",
+        return refused(
+            "edit_conflict",
             detail=str(exc) or "the component or composition moved before this write committed",
             retryable=retryable_for("edit_conflict"),
         )
     if isinstance(exc, WriteRefused):
-        return ProblemSpec(
-            status=403,
-            code="write_refused",
+        return refused(
+            "write_refused",
             detail=f"{exc.detail} fix: {exc.fix}",
             retryable=retryable_for("write_refused"),
         )
     if isinstance(exc, DraftNotFound):
-        return ProblemSpec(
-            status=404,
-            code="not_found",
+        return refused(
+            "not_found",
             detail=str(exc),
             retryable=retryable_for("not_found"),
         )
     if isinstance(exc, RevisionNotFound):
-        return ProblemSpec(
-            status=404,
-            code="not_found",
+        return refused(
+            "not_found",
             detail=exc.detail,
             retryable=retryable_for("not_found"),
         )
     if isinstance(exc, FrameUnavailable):
         return frame_unavailable_spec(exc)
+    if isinstance(exc, NewestNotReady):
+        return newest_not_ready_spec(exc)
     if isinstance(exc, ResourceExhausted):
-        return ProblemSpec(
-            status=400,
-            code="resource_exhausted",
+        return refused(
+            "resource_exhausted",
             detail=f"{exc.detail} (limit: {exc.limit_name})",
             pointer=exc.pointer,
             retryable=retryable_for("resource_exhausted"),
         )
     if isinstance(exc, ReleaseMismatch):
-        return ProblemSpec(
-            status=503,
-            code="release_mismatch",
+        return refused(
+            "release_mismatch",
             detail=exc.detail,
             retryable=retryable_for("release_mismatch"),
         )
     if isinstance(exc, PresentationBackpressure):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
             detail="the components door is at its concurrent-write capacity right now; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, GeneratedIdCollision):
-        logger.warning("Fresh presentation %s ID collision. Retry safely", exc.subject_kind)
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
+            log=f"Fresh presentation {exc.subject_kind} ID collision. Retry safely",
+            log_level=logging.WARNING,
             detail=f"A generated presentation {exc.subject_kind} ID collided. Retry the request.",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, PresentationStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error("Presentation store call failed with a permanent cause: %s", exc)
-            return ProblemSpec(
-                status=500,
-                code="internal_error",
+            return refused(
+                "internal_error",
+                log=f"Presentation store call failed with a permanent cause: {exc}",
                 detail="a presentation store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
-        logger.error("Presentation store call failed: %s", exc)
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
+            log=f"Presentation store call failed: {exc}",
             detail="a presentation store call failed; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, (SpecRegistryUnavailable, SpecRegistryStoreError)):
         # A frame load reads the registry to scope its revocation check, and fails closed.
-        logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
+            log=f"Spec registry read scoping a frame load's revocation check failed: {exc}",
             detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, AllowanceExhausted):
-        return ProblemSpec(
-            status=429,
-            code="allowance_exhausted",
+        return refused(
+            "allowance_exhausted",
             detail=str(exc),
             retryable=exc.retryable,
             headers=exc.headers,
         )
     if isinstance(exc, CallerHeaderInvalid):
-        return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
+        return refused(
+            "request_invalid",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, CallerUnresolved):
         # A deployment fault a retry does not clear, so not the retryable service_unavailable.
-        logger.error("Components door cannot name a caller: %s", exc)
-        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
+        return refused(
+            "internal_error",
+            log=f"Components door cannot name a caller: {exc}",
+            detail=str(exc),
+            retryable=False,
+        )
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error(
-                "Datasets store call underlying a frame load failed with a permanent cause: %s",
-                exc,
-            )
-            return ProblemSpec(
-                status=500,
-                code="internal_error",
+            return refused(
+                "internal_error",
+                log=f"Datasets store call underlying a frame load failed with a permanent cause: {exc}",
                 detail="a frame store call failed with a non-retryable cause",
                 retryable=retryable_for("internal_error"),
             )
-        logger.error("Datasets store call underlying a frame load failed: %s", exc)
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
+            log=f"Datasets store call underlying a frame load failed: {exc}",
             detail="a frame store call failed; retry",
             retryable=retryable_for("service_unavailable"),
         )
@@ -339,17 +388,15 @@ def _schema_invalid_spec(exc: SchemaInvalid) -> ProblemSpec:
         detail = (
             f"{exc.detail} minimal legal intent: {json.dumps(exc.minimal_intent, sort_keys=True)}"
         )
-        return ProblemSpec(
-            status=400,
-            code="schema_invalid",
+        return refused(
+            "schema_invalid",
             detail=detail,
             pointer=exc.pointer,
             retryable=retryable_for("schema_invalid"),
         )
     legal_fields = cast(tuple[str, ...], exc.legal_fields)
-    return ProblemSpec(
-        status=400,
-        code="schema_invalid",
+    return refused(
+        "schema_invalid",
         detail=exc.detail,
         pointer=exc.pointer,
         alternatives=[Alternative(ref=field, label=field) for field in legal_fields],
@@ -545,7 +592,7 @@ def build_components_door(
     router = APIRouter()
 
     @router.post(
-        "/api/presentation/components",
+        COMPONENTS_PATH,
         status_code=201,
         responses={201: {"model": CreateReplyResponse}},
     )
@@ -595,7 +642,7 @@ def build_components_door(
         return await _run(job)
 
     @router.patch(
-        "/api/presentation/components/{component_id}",
+        COMPONENT_PATH,
         responses={200: {"model": WriteReplyResponse}},
     )
     async def revise_component(
@@ -624,7 +671,7 @@ def build_components_door(
         return await _run(job)
 
     @router.get(
-        "/api/presentation/components/{component_id}",
+        COMPONENT_PATH,
         responses={200: {"model": ComponentReadResponse}},
     )
     async def read_component(
@@ -647,22 +694,18 @@ def build_components_door(
 
     add_component_data_route(router, deps=deps, run=_run)
     # Extending the route list keeps each render route's own class, which admits the caller.
-    router.routes.extend(
-        build_render_router(
-            deps=deps,
-            run=_run,
-            classify=classify_components_exception,
-            live_refresh=live_refresh,
-        ).routes
-    )
+    router.routes.extend(build_render_router(deps=deps, run=_run, live_refresh=live_refresh).routes)
 
     return DoorContribution(
         router=router,
-        classify=combine_classifiers(
-            classify_components_exception,
-            classify_component_data_exception,
-            classify_render_exception,
+        classify=replayed(
+            combine_classifiers(
+                classify_components_exception,
+                classify_component_data_exception,
+                classify_render_exception,
+            )
         ),
+        registry_endpoints=door_registry_endpoints(router),
         exception_types=(
             PathParamInvalid,
             CreateRequestInvalid,
@@ -674,6 +717,7 @@ def build_components_door(
             DraftNotFound,
             RevisionNotFound,
             FrameUnavailable,
+            NewestNotReady,
             ResourceExhausted,
             ReleaseMismatch,
             PresentationBackpressure,
@@ -691,59 +735,54 @@ def build_components_door(
             # `ComponentBody` so platform exception discovery includes it.
             RequestValidationError,
         ),
-        exception_exemplars=(
-            PathParamInvalid(name="component_id", value="exemplar"),
-            CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
-            SchemaInvalid(
-                pointer="/type", detail="exemplar", legal_fields=("type", "frame_ref", "select")
+        endpoint_exemplars={
+            WRITE_ENDPOINT: (
+                *LOOKUP_EXEMPLARS,
+                *STORE_EXEMPLARS,
+                *DRAW_EXEMPLARS,
+                *FRAME_UNAVAILABLE_EXEMPLARS,
+                CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
+                WriteRefused(
+                    subject_kind="component",
+                    subject_id="cmp_exemplar",
+                    detail="exemplar",
+                    fix="exemplar fix",
+                ),
+                NewestNotReady("exemplar", retry_after_s=1.0),
+                GeneratedIdCollision(subject_kind="component"),
+                AllowanceExhausted(
+                    kind=AllowanceKind.card, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
+                ),
+                CallerHeaderInvalid(),
+                CallerUnresolved("exemplar"),
             ),
-            SchemaInvalid(
-                pointer="/select", detail="exemplar", minimal_intent={"type": "stat_card"}
+            COMPONENT_READ_ENDPOINT: (
+                *LOOKUP_EXEMPLARS,
+                *STORE_EXEMPLARS,
+                ReleaseMismatch(catalog_version="2020.1.0", detail="exemplar"),
             ),
-            BindingInvalid(
-                pointer="/select",
-                dimension="recipient",
-                legal_values=("country/USA",),
-                truncated=False,
-                detail="exemplar",
+            COMPONENT_DATA_ENDPOINT: (
+                *LOOKUP_EXEMPLARS,
+                *STORE_EXEMPLARS,
+                *FRAME_UNAVAILABLE_EXEMPLARS,
+                *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
+                # A frame load raises it for a frame whose units read alike.
+                BindingInvalid(
+                    pointer="/frame_ref",
+                    dimension="",
+                    legal_values=(),
+                    truncated=False,
+                    detail="exemplar",
+                ),
             ),
-            ConstraintViolation(
-                constraint_id="log_scale_requires_positive_values",
-                pointer="/scale",
-                detail="exemplar",
-                fix="exemplar fix",
+            RENDER_ENDPOINT: (
+                *LOOKUP_EXEMPLARS,
+                *STORE_EXEMPLARS,
+                *DRAW_EXEMPLARS,
+                *FRAME_UNAVAILABLE_EXEMPLARS,
+                *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
+                *RENDER_EXCEPTION_EXEMPLARS,
             ),
-            EditConflict("exemplar"),
-            WriteRefused(
-                subject_kind="component",
-                subject_id="cmp_exemplar",
-                detail="exemplar",
-                fix="exemplar fix",
-            ),
-            DraftNotFound(subject_kind="component", subject_id="cmp_exemplar"),
-            RevisionNotFound(component_id="cmp_exemplar", revision=1, detail="exemplar"),
-            FrameUnavailable(reason="io", detail="exemplar"),
-            ResourceExhausted(pointer="/select", limit_name="MAX_SELECTORS", detail="exemplar"),
-            ReleaseMismatch(catalog_version="2020.1.0", detail="exemplar"),
-            PresentationBackpressure(),
-            GeneratedIdCollision(subject_kind="component"),
-            PresentationStoreUnavailable("exemplar"),
-            PresentationStoreUnavailable("exemplar", sqlstate="42601"),
-            DatasetsStoreUnavailable("exemplar"),
-            DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
-            SpecRegistryUnavailable(),
-            SpecRegistryStoreError("exemplar"),
-            AllowanceExhausted(
-                kind=AllowanceKind.card, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
-            ),
-            CallerHeaderInvalid(),
-            CallerUnresolved("exemplar"),
-            RequestValidationError(
-                [{"loc": ("body", "intent"), "msg": "Field required", "type": "missing"}],
-                body={},
-            ),
-            *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
-            *RENDER_EXCEPTION_EXEMPLARS,
-        ),
+        },
         lifespan=lifespan,
     )

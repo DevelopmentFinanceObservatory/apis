@@ -48,7 +48,7 @@ _UNIT_CELLS: list[dict[str, object] | None] = [
     {"ref": "USD", "request": None},
     {"ref": "EUR", "request": None},
     {"ref": None, "request": {"currency": "USD", "prices": "constant", "base_year": 2020}},
-    {"ref": None, "request": {"currency": "USD", "prices": "constant", "base_year": None}},
+    {"ref": None, "request": {"currency": "EUR", "prices": "constant", "base_year": 2015}},
     {"ref": None, "request": {"currency": "USD", "prices": "current", "base_year": None}},
     None,
 ]

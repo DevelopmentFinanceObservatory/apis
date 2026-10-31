@@ -134,6 +134,7 @@ from datasets_api.serve import (
     serve_definition,
     with_linked_artifacts,
 )
+from datasets_api.store_errors import read_stored_frame
 from datasets_api.timings import count, label, phase
 from datasets_api.version_descriptions import collapse_describer
 from datasets_api.versions import (
@@ -168,9 +169,7 @@ from materialise.dependencies import (
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.formats import (
-    Frame,
     frame_entity_columns,
-    read_stored_frame,
 )
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile
@@ -640,11 +639,9 @@ def _render_frame(
     coverage_index: CoverageIndex,
     frame: StoredFrame,
     plan: StoredRenderPlan,
-    locations: Sequence[StoredArtifactLocation] = (),
 ) -> Manifest | None:
     """Render a missing request format from the stored frame `frame` on a head hit. The caller
     holds a materialise permit from before it read `frame` to after this returns.
-    `locations` is the version's links when the caller read them to find `frame`.
 
     Use the same provenance, definition, resolved-member population, and `ReproducingCall` as
     fresh rendering. The full population keeps `groupby` completeness checks consistent,
@@ -661,8 +658,8 @@ def _render_frame(
     unchanged is the base version, whatever frame grammar minted its token
     (`render_and_store`). Record its artifact, and every other one, under the base version
     and add it to the manifest. A party-totals cut
-    reads a canonical frame, so a version whose stored frame is a frame1 document returns
-    `None` and the caller rebuilds. Render errors propagate to the shared classifier.
+    is cut from the stored frame, a frame1 document's included. Render errors propagate to the
+    shared classifier.
 
     A bundle cites the stored citation with its empty fields filled by a live read
     (`bundle_citations`). A render whose graph metadata reads failed is linked as incomplete
@@ -671,13 +668,11 @@ def _render_frame(
     """
     # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
     assert plan.frame_mode is not None
-    table = read_stored_frame(frame.data, media_type=frame.location.media_type)
-    if (
-        options.without_party_totals
-        and plan.frame_mode is FrameMode.RAW
-        and not isinstance(table, Frame)
-    ):
-        return None
+    table = read_stored_frame(
+        frame.data,
+        media_type=frame.location.media_type,
+        digest=frame.location.artifact_digest,
+    )
     # A collapse's kept code axes render as the decoded codes its mint wrote them as.
     entity_columns = entity_roles(frame_entity_columns(table.columns))
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
@@ -704,7 +699,7 @@ def _render_frame(
     )
     rendered = render_and_store(
         frame_chunks=lambda: iter((table,)),
-        frame_rows=table.table.num_rows if isinstance(table, Frame) else len(table.rows),
+        frame_rows=table.table.num_rows,
         options=options,
         spec=spec_dict,
         provenance_refs=provenance_refs,
@@ -726,7 +721,6 @@ def _render_frame(
         enrichment=deps.enrichment,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
         groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
-        groupby_row_fold_max_rows=deps.settings.groupby_row_fold_max_rows,
         code_index=deps.code_index,
         resolved_stat_var_refs=resolved_stat_var_refs,
         # A pivot reads the stored pivot facts. They check its caps before the scan and let a
@@ -736,12 +730,7 @@ def _render_frame(
         # Only a groupby of a frame it has not collapsed yields a collapse frame to compare
         # with the stored one.
         base_frame_sha256=(
-            stored_frame_sha256(
-                frame.location,
-                table,
-                recorded=plan.frame_sha256,
-                locations=locations,
-            )
+            stored_frame_sha256(table, recorded=plan.frame_sha256)
             if options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
             else None
         ),
@@ -825,12 +814,11 @@ def _render_located_frame(
     trace_id: str | None,
     coverage_index: CoverageIndex,
     plan: StoredRenderPlan,
-    locations: Sequence[StoredArtifactLocation],
 ) -> Manifest | None:
-    """Read the stored frame at `location`, one of the version's links `locations`, and
-    render it (`_render_frame`), or return `None` for missing or corrupt frame bytes. The
-    caller holds a materialise permit and binds no frame itself, so the bytes are freed when
-    this returns, before the permit is released."""
+    """Read the stored frame at `location`, one of the version's links, and render it
+    (`_render_frame`), or return `None` for missing or corrupt frame bytes. The caller holds a
+    materialise permit and binds no frame itself, so the bytes are freed when this returns,
+    before the permit is released."""
     try:
         stored_frame = StoredFrame(
             location=location,
@@ -850,7 +838,6 @@ def _render_located_frame(
         coverage_index=coverage_index,
         frame=stored_frame,
         plan=plan,
-        locations=locations,
     )
 
 
@@ -948,7 +935,6 @@ def _render_stored_rendering(
             trace_id=trace_id,
             coverage_index=coverage_snapshot.index,
             plan=decided,
-            locations=locations,
         )
 
 

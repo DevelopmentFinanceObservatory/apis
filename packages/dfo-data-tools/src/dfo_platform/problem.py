@@ -10,9 +10,9 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Annotated, NamedTuple
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from dfo_platform.codes import CodeCatalogue, registered_status
 from dfo_platform.trace import get_trace_id
@@ -35,9 +35,9 @@ class Alternative(BaseModel):
 class Cause(BaseModel):
     """The `cause` extension: why a refusal fired, beneath its own top-level
     `code` -- present only on a refusal that carries one (`recipe_not_declared`,
-    `rate_coverage_gap`, `operation_failed`, `frame_unavailable`). On
-    `operation_failed`, `code` is the failed operation's refusal code, and on
-    `frame_unavailable` the reason the frame does not load. Mirrors `alternatives`/`truncated`'s
+    `rate_coverage_gap`, `operation_failed`, or a Presentation refusal of a frame). On
+    `operation_failed`, `code` is the failed operation's refusal code, and on a
+    frame's refusal the reason the frame does not load. Mirrors `alternatives`/`truncated`'s
     own extension style: `entities` names what the cause concerns (entity or
     `entity@year` keys), capped, with `truncated` set when the cap cut items
     short.
@@ -47,7 +47,7 @@ class Cause(BaseModel):
         description=(
             "the cause code: a sub-cause such as nominal_undeclared, recipe_undeclared, or "
             "rate_missing, on operation_failed the failed operation's own refusal code, or on "
-            "frame_unavailable the reason the frame does not load"
+            "a Presentation refusal of a frame the reason the frame does not load"
         )
     )
     entities: list[str] = Field(
@@ -220,6 +220,10 @@ class ProblemSpec(NamedTuple):
     count: int | None = None
     cap: int | None = None
     headers: Mapping[str, str] | None = None
+    # What `dfo_platform.app._log_refusal` logs for a refusal a surface's classifier or admission
+    # check returns, so both stay pure. Neither reaches the wire or `to_canonical_data`.
+    log: str | None = None
+    log_level: int = logging.ERROR
 
     def to_canonical_data(self) -> dict[str, object]:
         """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes."""
@@ -258,13 +262,60 @@ class ProblemSpec(NamedTuple):
         return _PROBLEM_SPEC_ADAPTER.validate_python(data)
 
 
-_PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(ProblemSpec)
+def _without_log_fields(data: object) -> object:
+    """`data`, refused if it names a field `to_canonical_data` does not write."""
+    if isinstance(data, Mapping) and data.keys() & {"log", "log_level"}:
+        raise ValueError("canonical problem data holds no log fields")
+    return data
+
+
+_PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(
+    Annotated[ProblemSpec, BeforeValidator(_without_log_fields)]
+)
 
 
 # The headers of a 503 that refuses a request because a pool or permit is full. A full pool
 # refuses at once, and a running read or work thread frees within a request, so a client
 # waits the shortest `Retry-After`, one second, before it retries.
 BACKPRESSURE_HEADERS: Mapping[str, str] = MappingProxyType({"Retry-After": "1"})
+
+
+def refused(
+    code: str,
+    *,
+    retryable: bool,
+    detail: str | None = None,
+    pointer: str | None = None,
+    alternatives: list[Alternative] | None = None,
+    truncated: bool = False,
+    issues: list[ProblemIssue] | None = None,
+    cause: Cause | None = None,
+    constraint_id: str | None = None,
+    headers: Mapping[str, str] | None = None,
+    log: str | None = None,
+    log_level: int = logging.ERROR,
+) -> ProblemSpec:
+    """`code`'s problem at the status the code registry gives it on the bound endpoint, so a
+    classifier cannot state one apart from the other.
+
+    Raises:
+        LookupError: The registry maps no one status for `code` there (`registered_status`).
+    """
+    return ProblemSpec(
+        status=registered_status(code),
+        code=code,
+        retryable=retryable,
+        detail=detail,
+        pointer=pointer,
+        alternatives=alternatives,
+        truncated=truncated,
+        issues=issues,
+        cause=cause,
+        constraint_id=constraint_id,
+        headers=headers,
+        log=log,
+        log_level=log_level,
+    )
 
 
 class Refusal(Exception):

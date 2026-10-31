@@ -148,7 +148,7 @@ from dc_sdmx import (
     SdmxUnsupportedFilterError,
 )
 from dfo_platform import ProblemIssue, ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.problem import Refusal
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.trace import get_trace_id
@@ -1012,11 +1012,14 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
 
     return DoorContribution(
         router=router,
-        registry_endpoints={
-            "/api/datasets/{id:dfo_spec_id}": "datasets.definition",
-            "/api/datasets/{id:dfo_spec_id}/options": "datasets.options",
-            "/api/datasets/{id:dfo_spec_id}/members": "datasets.members",
-        },
+        registry_endpoints=path_registry_endpoints(
+            router,
+            {
+                "/api/datasets/{id:dfo_spec_id}": "datasets.definition",
+                "/api/datasets/{id:dfo_spec_id}/options": "datasets.options",
+                "/api/datasets/{id:dfo_spec_id}/members": "datasets.members",
+            },
+        ),
         classify=classify_definition_exception,
         exception_types=tuple(dict.fromkeys(chain.from_iterable(ROUTE_EXCEPTION_TYPES.values()))),
         exception_exemplars=(

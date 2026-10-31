@@ -29,7 +29,8 @@ for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`).
 served definition's newest version in the root's default rendering, rebuilt when its head is stale.
 A rebuild too large for the call's budget (`doors.definition.inline_definition_deps`) goes to an
 operation, so a retry finds it, and the call answers `NewestPending`.
-`resolve_bare_spec` turns its refusals into the `frame_unavailable` the presentation doors serve.
+`resolve_bare_spec` turns its refusals into the `FrameUnavailable` the presentation doors refuse,
+and `NewestPending` into `NewestNotReady`.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
 that mounts that surface (`dfo_apis.app` passes the cell and the `RunningAnalyses` to both).
@@ -57,6 +58,7 @@ from datasets_api.analysis import (
 )
 from datasets_api.analysis_roots import LiveRootSource, newest_spec_version
 from datasets_api.app import classify_datasets_exception
+from datasets_api.backpressure import Backpressure
 from datasets_api.current import DefinitionDeps
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.analysis import (
@@ -68,14 +70,19 @@ from datasets_api.doors.analysis import (
 from datasets_api.doors.definition import definition_deps, inline_definition_deps
 from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
 from datasets_api.exports import resolve_endpoint
+from datasets_api.operation_store import OperationBacklogFull
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.trace import get_trace_id
+from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME, retry_after_headers
 
 __all__ = [
     "FRESHNESS_WINDOW",
     "DatasetsNewestFrames",
     "NewestFrames",
+    "NewestNotReady",
     "NewestPending",
+    "newest_not_ready_spec",
     "resolve_bare_spec",
 ]
 
@@ -198,12 +205,37 @@ class DatasetsNewestFrames:
             ).body()
 
 
+class NewestNotReady(Exception):
+    """A bare `spec_id`'s newest version is not ready to serve, and a retry after
+    `retry_after_s` seconds may find it. Maps to retryable `service_unavailable` with
+    `Retry-After` (`newest_not_ready_spec`)."""
+
+    def __init__(self, detail: str, *, retry_after_s: float) -> None:
+        self.retry_after_s = retry_after_s
+        super().__init__(detail)
+
+
+def newest_not_ready_spec(exc: NewestNotReady) -> ProblemSpec:
+    code, retryable = NEWEST_NOT_READY_OUTCOME
+    return refused(
+        code,
+        detail=str(exc),
+        retryable=retryable,
+        headers=retry_after_headers(exc.retry_after_s),
+    )
+
+
+# The Datasets refusals that say the surface is at capacity, which no stored state explains.
+_CAPACITY_REFUSALS = (Backpressure, OperationBacklogFull)
+
+
 def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
     """The frame a bare `spec_id` names (`NewestFrames.newest_of_spec`).
 
     Raises:
-        FrameUnavailable: `io` (503, retryable) while the version builds or for a refusal a
-            retry may clear; `quarantined` for a quarantined identity; `revoked` for a revoked
+        NewestNotReady: While the version builds.
+        FrameUnavailable: `busy` for a Datasets surface at capacity and `io` for any other
+            retryable Datasets refusal, each keeping its `Retry-After`; `quarantined` for a quarantined identity; `revoked` for a revoked
             version; `unknown` (404) for any other refusal below status 500, the Datasets code
             and detail in its detail; and
             `unknown` when no Datasets surface is mounted beside this one, so no bare id
@@ -226,9 +258,17 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             problem = classify_datasets_exception(exc)
         if problem is None:
             raise
+        detail = (
+            f"the newest version of {spec_id} cannot be served: {problem.code}: {problem.detail}"
+        )
         if problem.retryable:
-            reason = "io"
-        elif problem.code == "identity_quarantined":
+            retry_after = (problem.headers or {}).get("Retry-After")
+            raise FrameUnavailable(
+                reason="busy" if isinstance(exc, _CAPACITY_REFUSALS) else "io",
+                detail=detail,
+                retry_after_s=None if retry_after is None else float(retry_after),
+            ) from exc
+        if problem.code == "identity_quarantined":
             reason = "quarantined"
         elif problem.code == "snapshot_revoked":
             reason = "revoked"
@@ -237,15 +277,11 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             raise
         else:
             reason = "unknown"
-        raise FrameUnavailable(
-            reason=reason,
-            detail=f"the newest version of {spec_id} cannot be served: {problem.code}: "
-            f"{problem.detail}",
-        ) from exc
+        raise FrameUnavailable(reason=reason, detail=detail) from exc
     if isinstance(resolved, NewestPending):
-        raise FrameUnavailable(
-            reason="io",
-            detail=f"the newest version of {spec_id} is building; retry in "
+        raise NewestNotReady(
+            f"the newest version of {spec_id} is building; retry in "
             f"{math.ceil(resolved.retry_after_s)} s",
+            retry_after_s=resolved.retry_after_s,
         )
     return resolved
