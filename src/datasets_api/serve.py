@@ -578,12 +578,14 @@ _NO_ORIGIN_FINDINGS = _OriginFindings(warnings=(), gaps=())
 
 @dataclass(frozen=True)
 class _ComponentRun:
-    """One composite component's materialisation, kept until the call knows whether its
-    version is on record."""
+    """What `_origin_findings` reads of one composite component's materialisation, kept until
+    the call knows whether its version is on record. The run's frame is not kept."""
 
     identity: Mapping[str, object]
     requests: Sequence[MaterialisationRequest]
-    result: MaterialisationResult
+    probe_empty: bool
+    coverage: Coverage
+    default_scope: tuple[str, ...]
     un_blocked: UnBlockedPlaces
 
 
@@ -642,22 +644,24 @@ def _materialise_scoped(
 
 def _origin_findings(
     requests: Sequence[MaterialisationRequest],
-    result: MaterialisationResult,
     *,
+    probe_empty: bool,
+    coverage: Coverage,
+    default_scope: Sequence[str],
     un_blocked: UnBlockedPlaces,
     graph: GraphReader,
     deadline: float | None,
 ) -> _OriginFindings:
-    """The withheld and UN-unavailable findings of `result`'s reads, made under the read
-    scope in context. An empty probe's withheld re-read was made by
-    `refuse_unserved_empty_probe`."""
+    """The withheld and UN-unavailable findings of a materialisation's reads, from its
+    `probe_empty`, `coverage` and `default_scope`, made under the read scope in context. An
+    empty probe's withheld re-read was made by `refuse_unserved_empty_probe`."""
     withheld = (
         None
-        if result.probe_empty
+        if probe_empty
         else withheld_finding(
             graph,
-            [(request, result.coverage) for request in requests],
-            default_scope=result.default_scope,
+            [(request, coverage) for request in requests],
+            default_scope=default_scope,
             deadline=deadline,
         )
     )
@@ -714,7 +718,12 @@ def _materialise_components(
             result, un_blocked = materialise(part, ceiling=remaining, precomputed_probe=None)
         runs.append(
             _ComponentRun(
-                identity=component.identity, requests=part, result=result, un_blocked=un_blocked
+                identity=component.identity,
+                requests=part,
+                probe_empty=result.probe_empty,
+                coverage=result.coverage,
+                default_scope=result.default_scope,
+                un_blocked=un_blocked,
             )
         )
         charged = result.coverage.rows if kept is None else rows_in_years(result.frame_chunks, kept)
@@ -751,7 +760,13 @@ def _component_findings(
     for run in runs:
         with pinned_provenance_scope(run.identity):
             findings = _origin_findings(
-                run.requests, run.result, un_blocked=run.un_blocked, graph=graph, deadline=deadline
+                run.requests,
+                probe_empty=run.probe_empty,
+                coverage=run.coverage,
+                default_scope=run.default_scope,
+                un_blocked=run.un_blocked,
+                graph=graph,
+                deadline=deadline,
             )
         warnings.extend(warning for warning in findings.warnings if warning not in warnings)
         gaps.extend(findings.gaps)
@@ -874,7 +889,13 @@ def prewrite_definition(
             origin = _component_findings(runs, graph=graph, deadline=deadline)
         else:
             origin = _origin_findings(
-                requests, result, un_blocked=un_blocked, graph=graph, deadline=deadline
+                requests,
+                probe_empty=result.probe_empty,
+                coverage=result.coverage,
+                default_scope=result.default_scope,
+                un_blocked=un_blocked,
+                graph=graph,
+                deadline=deadline,
             )
         origin_warnings = origin.warnings
         # Every manifest built from `result` records the places those warnings name.
@@ -953,8 +974,8 @@ def serve_definition(
     (`None` for no head). The head advances only while it names the run `expected_head` names,
     and the prewrite reads the stored version only when that head names the result.
     `precomputed_probe` and `progress` are forwarded. `options` `None` records the version, its
-    canonical frame and statistics, renders nothing, and returns the prewrite manifest,
-    with no artifacts.
+    canonical frame and statistics, renders nothing, and returns the prewrite manifest with no
+    artifacts, or the stored body (`persisted_manifest`) when the version is on record.
 
     `ceiling` overrides the raw-fetch guard. `None` uses `deps.ceiling`. `coverage_stamp` adds
     manifest lineage, while `coverage_index` feeds materialisation.
@@ -1504,10 +1525,7 @@ def _render_pass(
             settings=deps.settings,
         )
         manifest = collapsed_head_manifest(
-            manifest=persisted_manifest(
-                stored=persisted.version,
-                served=prewrite.manifest.model_copy(update={"output_options": output_options}),
-            ),
+            manifest=persisted_manifest(stored=persisted.version, served=prewrite.manifest),
             derived=derived,
             artifact=artifact,
             statistics_artifact=derived_statistics_artifact,

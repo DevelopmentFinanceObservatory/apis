@@ -2063,7 +2063,7 @@ def test_a_counted_field_warning_names_what_it_counts_by_label(
     ("count", "refs", "message", "detail"),
     [
         # Provenances of one Dataset share its name, which a card gives once. The count leads
-        # with its noun, and "and others" closes names that fall short of it.
+        # with its noun, and "and others" stands for a ref the field counts but does not name.
         pytest.param(
             8,
             ["A1", "A2", "A3", "B1", "B2"],
@@ -2075,8 +2075,15 @@ def test_a_counted_field_warning_names_what_it_counts_by_label(
             5,
             ["A1", "A2", "A3", "B1", "B2"],
             "The message.",
-            "Withheld sources: 5 sources (Alpha, Beta and others).",
+            "Withheld sources: 5 sources (Alpha, Beta).",
             id="five-carried-two-names",
+        ),
+        pytest.param(
+            2,
+            ["A1", "A2"],
+            "The message.",
+            "Withheld sources: 2 sources (Alpha).",
+            id="every-one-carried-sharing-one-name",
         ),
         pytest.param(
             6,

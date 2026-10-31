@@ -305,13 +305,14 @@ def _named_refs(field: _RefField, names: Sequence[str], *, count: int, budget: i
     A `provenance` field states its `count` with the field's noun and names each distinct name
     once in brackets, since provenances of one Dataset share its name:
     `" Withheld sources: 8 sources (A, B and others)."`, `" Withheld sources: 8 sources."` when
-    no name fits. "and others" closes the names whenever fewer names show than the count."""
+    no name fits. "and others" closes the names when a withheld ref goes unnamed: one the
+    field counts but does not carry, or one whose name the budget leaves out."""
     lead = field.lead
     counted = f"{count} {field.one if count == 1 else field.many}"
     if field.provenance:
         distinct = list(dict.fromkeys(names))
         for shown in range(len(distinct), 0, -1):
-            rest = " and others" if shown < count else ""
+            rest = " and others" if shown < len(distinct) or count > len(names) else ""
             text = f" {lead}: {counted} ({', '.join(distinct[:shown])}{rest})."
             if len(text) <= budget:
                 return text

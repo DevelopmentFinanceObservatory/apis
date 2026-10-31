@@ -304,6 +304,13 @@ order. On a derived frame a ref beyond the cap is cited by its ref alone, as a r
 not hold is. On a root frame a source beyond the cap keeps its stored fields and documents
 nothing."""
 
+_PROVENANCE_NAME_POOL = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="frame-provenance-names"
+)
+"""Threads, process-wide, that read a load's provenance names beside its label read
+(`_label_refs`). A name read still queued when the label read ends is cancelled and made on
+the load's own thread, so a busy pool delays no load beyond a serial read."""
+
 _RECHECK = datetime.timedelta(seconds=60)
 """How long a cached frame serves a description record that is not final, or words whose
 refresh failed, before a load reads them again: at most one such read a minute for each frame,
@@ -1849,22 +1856,23 @@ class LiveFrameStore:
         if graph is None:
             return labels, family_read_ok
 
+        unlisted = unnamed_provenances(list(provenance_refs), catalogue=catalogue)
+
         def name_provenances() -> tuple[dict[str, str], bool]:
             with phase("provenance_names"):
                 return provenance_names(
-                    graph, list(provenance_refs), catalogue=catalogue, deadline=deadline
+                    graph,
+                    list(provenance_refs),
+                    catalogue=catalogue,
+                    deadline=deadline,
+                    unlisted=unlisted,
                 )
 
-        beside = bool(graph_bare_to_refs) and bool(
-            unnamed_provenances(list(provenance_refs), catalogue=catalogue)
-        )
-        if beside:
-            with ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="frame-provenance-names"
-            ) as pool:
-                named = submit_with_context(pool, name_provenances)
-                graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
-                names, named_ok = named.result()
+        if graph_bare_to_refs and unlisted:
+            named = submit_with_context(_PROVENANCE_NAME_POOL, name_provenances)
+            graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+            # A name read still queued behind other loads' runs here instead.
+            names, named_ok = name_provenances() if named.cancel() else named.result()
         else:
             graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
             names, named_ok = name_provenances() if provenance_refs else ({}, True)

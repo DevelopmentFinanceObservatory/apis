@@ -900,6 +900,7 @@ def provenance_names(
     *,
     catalogue: Catalogue,
     deadline: float | None,
+    unlisted: Sequence[str] | None = None,
 ) -> tuple[dict[str, str], bool]:
     """The name of each distinct provenance of `dcids`, by dcid, and whether the graph read
     succeeded. This is the name a source citation gives it (`read_source_citations`), since a
@@ -907,7 +908,8 @@ def provenance_names(
 
     A declared composite, which neither the catalogue nor the graph holds, takes its declared
     label, and a provenance `catalogue` lists takes its row's name, each with no read. Every
-    other (`unnamed_provenances`) is read in one `node_arc_targets_many` of
+    other (`unnamed_provenances`, or `unlisted` when the caller has them) is read in one
+    `node_arc_targets_many` of
     `PROVENANCE_NAME_PROPERTIES`, bounded by `deadline`. A node typed Dataset is named by its
     own `name`. Any other is named by its first `isPartOf` target typed Dataset
     (`first_dataset_parent`'s rule), from the name the read carries beside that target, else
@@ -919,7 +921,8 @@ def provenance_names(
     the graph client may answer from its cache. A failed read, `GraphReadError` with the
     deadline included, is logged and returns the names found without a read, with `False`.
     """
-    unlisted = unnamed_provenances(dcids, catalogue=catalogue)
+    if unlisted is None:
+        unlisted = unnamed_provenances(dcids, catalogue=catalogue)
     names: dict[str, str] = {}
     for dcid in dict.fromkeys(dcids):
         if (composite := DECLARED_COMPOSITES.get(dcid)) is not None:

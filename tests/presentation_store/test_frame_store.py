@@ -826,6 +826,35 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     )
 
 
+def test_load_finds_its_unlisted_provenances_once_and_starts_no_pool(monkeypatch, bind_catalogue):
+    """A load beside whose label read a provenance name read runs finds the provenances the
+    catalogue does not list once, and runs the name read on the shared pool."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    graph = _FakeGraphReader(
+        labels={"MalariaGrantDisbursements": "Malaria", "src_oecd_dac": "OECD DAC"}
+    )
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    bind_catalogue(FakeCatalogue(build_id="build-1"))
+    finds: list[list[str]] = []
+    unnamed = provenance_doc.unnamed_provenances
+
+    def finding(dcids, *, catalogue):
+        finds.append(list(dcids))
+        return unnamed(dcids, catalogue=catalogue)
+
+    def no_pool(*_args, **_kwargs):
+        raise AssertionError("a load starts no thread pool")
+
+    monkeypatch.setattr(provenance_doc, "unnamed_provenances", finding)
+    monkeypatch.setattr(frame_store, "unnamed_provenances", finding)
+    monkeypatch.setattr(frame_store, "ThreadPoolExecutor", no_pool)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert finds == [["src_oecd_dac"]]
+
+
 @pytest.mark.parametrize(
     "names",
     [

@@ -26,7 +26,7 @@ from typing import Any, Protocol
 
 from pydantic import TypeAdapter
 
-from dc_graph import ArcTarget, FacetDefaultPolicy
+from dc_graph import ArcTarget, FacetDefaultPolicy, parse_arc_targets
 from graph_generation import GenerationStamp
 from origin_catalogue import current_catalogue
 from origin_catalogue.graph import UnAvailabilityClient
@@ -318,9 +318,9 @@ class GraphCache:
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Cache each dcid's targets under its sorted `properties`, as `node_arcs_many` does.
 
-        Read-only, a miss on a read of `name` takes the dcid's `node_label` row as its one
-        `name` target, since a capture made before provenance names were read this way holds
-        those names as labels (`_captured_label_targets`)."""
+        Read-only, misses are answered from the capture's whole-node rows when those give the
+        full answer (`_captured_arc_targets`), so a capture made before this read existed
+        replays it as live serving would, else raise `CacheMiss`."""
         del deadline
         if not dcids:
             return {}
@@ -344,10 +344,10 @@ class GraphCache:
             else:
                 misses.append(dcid)
         if misses and self._read_only:
-            labelled = self._captured_label_targets(misses) if "name" in properties else None
-            if labelled is None:
+            captured = self._captured_arc_targets(misses, properties)
+            if captured is None:
                 raise CacheMiss(_key("node_arc_targets_many", *sorted(misses), sorted_properties))
-            result.update(labelled)
+            result.update(captured)
             misses = []
         if misses:
             with self._semaphore:
@@ -367,18 +367,46 @@ class GraphCache:
                 result[dcid] = entry
         return result
 
-    def _captured_label_targets(
-        self, dcids: Sequence[str]
+    def _captured_arc_targets(
+        self, dcids: Sequence[str], properties: Sequence[str]
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None] | None:
-        """Each of `dcids` as a `name` read of its stored `node_label` row, `None` for a dcid
-        stored as unnamed, or `None` when any of them has no row."""
-        targets: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        """Each of `dcids`' `properties` from its stored `node_arcs` row, the whole node a
+        `->*` read answered, with each `isPartOf` parent's name and types from the row or from
+        the parent's stored `node_label` and `node_type` rows. `None` for a dcid stored with no
+        arcs, and `None` overall when a dcid has no row or a parent lacks its name or types,
+        since the answer would then differ from the live read's."""
+        answered: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
         for dcid in dcids:
-            hit, label = self._store.get(_key("node_label", dcid))
+            hit, arcs = self._store.get(_key("node_arcs", dcid))
             if not hit:
                 return None
-            targets[dcid] = None if label is None else {"name": (ArcTarget(value=label),)}
-        return targets
+            if arcs is None:
+                answered[dcid] = None
+                continue
+            targets = parse_arc_targets(arcs, properties)
+            parents: list[ArcTarget] = []
+            for parent in targets.get("isPartOf", ()):
+                if (named := self._captured_parent(parent)) is None:
+                    return None
+                parents.append(named)
+            if "isPartOf" in targets:
+                targets["isPartOf"] = tuple(parents)
+            answered[dcid] = targets
+        return answered
+
+    def _captured_parent(self, parent: ArcTarget) -> ArcTarget | None:
+        """`parent` with the name and types its stored rows give, or `None` without them."""
+        name, types = parent.name, parent.types
+        if name is None:
+            hit, name = self._store.get(_key("node_label", parent.value))
+            if not hit or name is None:
+                return None
+        if not types:
+            hit, type_of = self._store.get(_key("node_type", parent.value))
+            if not hit or type_of is None:
+                return None
+            types = (type_of,)
+        return ArcTarget(value=parent.value, name=name, types=types)
 
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None

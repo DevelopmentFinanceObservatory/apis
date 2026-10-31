@@ -9,9 +9,11 @@ fixture index's members, not recorded figures.
 from __future__ import annotations
 
 import csv
+import gc
 import io
 import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import Mapping
 
@@ -428,6 +430,34 @@ def test_a_rebuild_of_a_composite_version_on_record_reads_no_origin_findings(mon
     assert rebuilt.json()["trace"]["served_from"] != "head"
     assert first_mint_reads == 2
     assert len(reads) == first_mint_reads
+
+
+def test_a_composite_s_component_frames_are_freed_before_its_origin_findings(monkeypatch):
+    """A component run keeps only what its origin findings read, so no component's
+    materialisation outlives the composition into the findings' graph reads."""
+    _artifacts, client = _composite_client()
+    component_results: list[weakref.ref] = []
+    alive_at_findings: list[int] = []
+    compose = serve.compose_components
+    component_findings = serve._component_findings
+
+    def composing(results, **kwargs):
+        component_results.extend(weakref.ref(component.result) for component in results)
+        return compose(results, **kwargs)
+
+    def finding(runs, **kwargs):
+        gc.collect()
+        alive_at_findings.append(sum(ref() is not None for ref in component_results))
+        return component_findings(runs, **kwargs)
+
+    monkeypatch.setattr(serve, "compose_components", composing)
+    monkeypatch.setattr(serve, "_component_findings", finding)
+
+    minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    assert len(component_results) == 2
+    assert alive_at_findings == [0]
 
 
 def _same_purpose_pair() -> tuple[str, str]:
