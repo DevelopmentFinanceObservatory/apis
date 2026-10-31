@@ -33,6 +33,7 @@ import time
 from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import partial
 from typing import NamedTuple
 
 from code_index.shared import get_index
@@ -54,6 +55,7 @@ from search.engine.clients.sdmx import (
     RoleTuple,
 )
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import (
     UPSTREAM_READ_ERRORS,
     GraphInfraError,
@@ -564,6 +566,7 @@ def _assemble_role_bulk_series(
     observations = assemble_role_bulk(
         reads,
         label_source=graph,
+        on_names_unread=partial(note_degraded_read, "provenance names"),
         index=get_index(),
         member_constraints=member_constraints or {},
         order=plan.order,

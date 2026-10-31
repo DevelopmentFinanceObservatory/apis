@@ -41,6 +41,7 @@ from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.errors import FamilyNotResolvableError, GraphReadFailure
+from search.engine.place import ConsultedPresence
 from search.engine.quantity import QuantityRequirement
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_place_materialise, pipeline
@@ -61,7 +62,6 @@ from search.engine.region.phase_place_materialise import (
     _lacks_presence,
     _read_taker_stat_vars,
     _sibling_shapes_of,
-    merge_presence,
     record_unevaluated,
 )
 from search.engine.region.phase_rank_bind import (
@@ -116,6 +116,7 @@ from tests.engine._binders import elected_reply
 from tests.engine._builders import subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._presence import raw_presence
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.graph_release.recorded import recorded_dfo_arcs
@@ -970,13 +971,18 @@ def test_a_narrowed_siblings_presence_read_covers_the_family_its_resolve_elects(
     assert list(prewarmed) == expected
 
 
-def _presence_of(stat_vars: Iterable[str]) -> DefaultPresence:
-    """A presence read covering `stat_vars`, each scoped to Kenya."""
-    return DefaultPresence(
-        countries=("country/KEN",),
-        scopes={
-            sv: DefaultPlaceScope(places=("country/KEN",), every_place=False) for sv in stat_vars
-        },
+def _presence_of(stat_vars: Iterable[str], *, unsettled: Iterable[str] = ()) -> ConsultedPresence:
+    """A presence read covering `stat_vars`, each scoped to Kenya, `unsettled` of them by a
+    countries fallback this request alone took."""
+    return ConsultedPresence(
+        DefaultPresence(
+            countries=("country/KEN",),
+            scopes={
+                sv: DefaultPlaceScope(places=("country/KEN",), every_place=False)
+                for sv in stat_vars
+            },
+            unsettled=frozenset(unsettled),
+        )
     )
 
 
@@ -1041,9 +1047,9 @@ def test_unbinding_reads_the_presence_the_relaxed_resolve_needs(
     )
     asked: list[list[str]] = []
 
-    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> DefaultPresence:
+    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> ConsultedPresence:
         asked.append(list(stat_vars))
-        return _presence_of([*known.scopes, *stat_vars])
+        return _presence_of([*raw_presence(known).scopes, *stat_vars])
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
     state = SimpleNamespace(
@@ -1063,7 +1069,9 @@ def test_unbinding_reads_the_presence_the_relaxed_resolve_needs(
 
     assert read == [_BONDS]
     assert asked == [[_IMF_GG]]
-    assert set(default_scope_members(shape, [debtor], ())) <= set(state.default_presence.scopes)
+    assert set(default_scope_members(shape, [debtor], ())) <= set(
+        raw_presence(state.default_presence).scopes
+    )
 
 
 _UN_SERIES = "undata/wb/SERIES-DEBT"
@@ -1490,7 +1498,7 @@ def test_an_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
     shape = alternate.shape
     known = _presence_of([_BONDS])
 
-    def read_default_presence(**_kwargs: object) -> DefaultPresence:
+    def read_default_presence(**_kwargs: object) -> ConsultedPresence:
         assert failure is not None, "no presence read is tried after the pass's failed"
         raise failure
 
@@ -1548,7 +1556,7 @@ def test_after_one_alternate_s_top_up_fails_no_other_is_tried(
     known = _presence_of([_BONDS])
     reads: list[object] = []
 
-    def read_default_presence(**_kwargs: object) -> DefaultPresence:
+    def read_default_presence(**_kwargs: object) -> ConsultedPresence:
         reads.append(_kwargs["stat_vars"])
         raise TimeoutError("deadline")
 
@@ -1570,7 +1578,7 @@ def test_after_one_alternate_s_top_up_fails_no_other_is_tried(
     assert read.unevaluated == ((first, "timed_out"), (second, "timed_out"))
 
 
-def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
+def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
     sent: list[httpx.Request],
     client: LiveGraphClient,
     bind_catalogue,
@@ -1578,23 +1586,20 @@ def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
 ) -> None:
     """The alternate's presence read after unbinding gives the member it now answers through
     a countries fallback for this request only (`_alternate_bound_past_its_recall`). The
-    read comes back with the alternates' result and joins the request's presence
-    (`merge_presence`), so the pass's scope is unsettled and the answer stays out of the
-    cache."""
+    answer offering the alternate stays out of the cache, whichever pass holds it."""
     alternate = _alternate_bound_past_its_recall(client, bind_catalogue)
     shape = alternate.shape
     known = _presence_of([_BONDS])
 
-    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> DefaultPresence:
-        return dataclasses.replace(
-            _presence_of([*known.scopes, *stat_vars]), unsettled=frozenset(stat_vars)
-        )
+    def read_default_presence(*, stat_vars, known, **_kwargs: object) -> ConsultedPresence:
+        return _presence_of([*raw_presence(known).scopes, *stat_vars], unsettled=stat_vars)
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
+    place = place_context(shape, subject_place_roles(), stat_vars=[_BONDS], presence=known)
 
     read = _materialise_alt_shapes(
         [alternate],
-        places=[place_context(shape, subject_place_roles(), stat_vars=[_BONDS], presence=known)],
+        places=[place],
         presence=known,
         named_place_dcids=[],
         graph=client,
@@ -1602,12 +1607,11 @@ def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
         date_request=None,
         coverage=empty_coverage_snapshot(),
     )
-    state = SimpleNamespace(default_presence=known)
-    merge_presence(cast("ResolveState", state), read.presence)
 
-    assert read.presence is not None and read.presence.unsettled
-    assert _BONDS not in read.presence.unsettled
-    assert pipeline._scope_unsettled(cast("ResolveState", state))
+    # The alternate's reading consulted its top-up's countries fallback into its own record,
+    # which admission carries (`candidate_admission`).
+    assert [record.unsettled for record in read.consulted] == [{_IMF_GG}]
+    assert read.presence is not None and _BONDS not in raw_presence(read.presence).unsettled
 
 
 def test_each_default_scope_taker_is_elected_once_off_the_event_loop(

@@ -50,6 +50,7 @@ from search.engine.region.refs import (
     _ref_or_miss,
     _refs_present,
     _where_slot_refs,
+    provenance_labels,
 )
 from search.engine.retrieval.bound_values import (
     RoleClassWalks,
@@ -112,10 +113,10 @@ from search.models import (
     TimeWindow,
     Warning,
 )
-from search.observations import provenance_refs, unlisted_provenances
+from search.observations import provenance_refs
 
 if TYPE_CHECKING:
-    from materialise.place_scope import DefaultPresence
+    from search.engine.place import ConsultedPresence
     from search.engine.region.place_context import PlaceContext, UnsettledPlace
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
@@ -597,8 +598,7 @@ def _ground_answer_lookup(
 
     Collect distinct ids across shapes, slots, StatVars, roles, and options for one
     `node_labels_batch` call. Missing graph labels fall back to code-index labels.
-    Source labels come from the origin catalogue; only provenance ids it does not list
-    join the batch.
+    Sources join no batch: each is named by `refs.provenance_labels`.
     Index-sourced taxonomies offer a bound code's children and its parent, or, for a bound
     root, its children and every other root (`CodeIndex.level_scoped_options`). Unbound
     slots and bound sets offer each root and its children. Deeper levels are excluded from
@@ -665,12 +665,12 @@ def _ground_answer_lookup(
         for option_dcids in (shape_draft.slot_taxonomy or {}).values():
             name_dcids.update(option_dcids)
 
-    # Citations keep their first-seen order. The catalogue labels the ones it lists.
+    # Citations keep their first-seen order, and join no batch (`refs.provenance_labels`).
     prov_dcids = citable_source_ids(cited_facets(plan))
-    name_dcids.update(unlisted_provenances(prov_dcids))
     name_dcids.update(answer_facet_dcids(plan, unit_request))
 
     labels = graph.node_labels_batch(list(name_dcids))
+    labels.update(provenance_labels(prov_dcids, graph, deadline=None))
     # Fill graph label misses from the release's code index.
     code_index = get_index()
     for dcid in name_dcids:
@@ -1007,7 +1007,7 @@ class _RelaxationProbeContext:
     # The original answer's places before its place sets settled. A relaxation settles
     # them on its own read. `None` when the answer's context is all there is to read in.
     unsettled: UnsettledPlace | None
-    presence: DefaultPresence | None
+    presence: ConsultedPresence | None
     date_request: DateRequest | None
     deadline: float | None
     coverage: CoverageSnapshot
@@ -1127,7 +1127,7 @@ def _walked_relaxations(
 def _relaxations_presence(
     ctx: _RelaxationProbeContext,
     relaxations: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft]] | None],
-) -> DefaultPresence | None:
+) -> ConsultedPresence | None:
     """The presence the relaxations of a default-scoped answer are probed over: `ctx.presence`
     topped up, in one presence read (`place.read_default_presence`), with what each
     relaxation's resolve, its shape under its relaxed bindings, reads at its own scope and
@@ -1151,7 +1151,7 @@ def _relaxations_presence(
             for relaxation in relaxations
             if relaxation is not None
             for sv in presence_stat_vars(relaxation[0], relaxation[1], role_keys)
-            if sv not in presence.scopes
+            if not presence.covers(sv)
         )
     )
     if not missing:
@@ -1436,7 +1436,7 @@ def _suggest_nearest_real(
     shape_draft: ShapeDraft,
     bindings: list[SlotBindingDraft],
     place: PlaceContext,
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
     date_request: DateRequest | None,
     deadline: float | None = None,
     include_option_coverage: bool = False,
@@ -1453,11 +1453,14 @@ def _suggest_nearest_real(
     unsettled: UnsettledPlace | None = None,
     pin_served_provenance: bool = False,
     level: tuple[ShapeDraft, Relaxation] | None = None,
-) -> tuple[list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], DefaultPresence | None]:
+) -> tuple[
+    list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], ConsultedPresence | None
+]:
     """Relax one value/set binding at a time and return up to `n_max` confirmed suggestions,
     the warnings, what each suggestion is read over by spec id, and the presence the
-    relaxations were probed over (`_relaxations_presence`), whose `unsettled` StatVars keep
-    the answer out of the response cache.
+    relaxations were probed over (`_relaxations_presence`). Each probe reads its scopes
+    through that `ConsultedPresence`, so a countries fallback this request alone took that
+    shapes a suggestion keeps the answer out of the response cache.
 
     Runs synchronously on the no-observations path. Every relaxation first walks its own
     members with `role_class_walks`, all in one round, as the relaxed query's first answer

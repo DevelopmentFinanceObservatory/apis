@@ -12,13 +12,13 @@ from code_index.query import IndexFamily
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import GraphReader
 from materialise.facets import FacetSelection
-from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.departures import WarningKey, warning_key
 from search.engine.extract import DateRequest
+from search.engine.place import ConsultedPresence
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.place_context import PlaceContext
 from search.engine.region.result import FacetAxisFilter
@@ -176,7 +176,7 @@ class _PromoteState:
     # phase-dependent value.
     place: PlaceContext = dataclasses.field(default=cast(PlaceContext, None))
     # The presence read a default scope comes from; None when the shape binds a place.
-    default_presence: DefaultPresence | None = None
+    default_presence: ConsultedPresence | None = None
     # where + arc-derived constraint bindings for this resubmit's answer.
     bindings: list[SlotBindingDraft] = dataclasses.field(default_factory=list)
     # Resolved from identity.requested_window; re-resolves "latest" to the

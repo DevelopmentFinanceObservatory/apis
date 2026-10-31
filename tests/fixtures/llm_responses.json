@@ -3305,6 +3305,46 @@
     "dropped_qualifiers": [],
     "dates": []
   },
+  "Extraction@501cb31acc6e:33c913b1bc4c1dbdf818c3472f0344f9a106615f": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:e00fa46460864ab6ef3307dbe7a32ee1c992ef45": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding imputed multilateral"
+    ],
+    "dates": []
+  },
   "Extraction@501cb31acc6e:505314e113febadee51bd76d55a4d3e1ddaa26ce": {
     "kind": "resolution",
     "variables": [
@@ -3641,6 +3681,66 @@
       }
     ],
     "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:28e2aae6e50c0acb7431bb256a49e2278c1fcd20": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not imputed"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:50dcd9c7a891287ee705668b5ee5aa6bee8a3cf8": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:7041b558e7d023a4bd4253f8ae6f1354ae354085": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding multilateral donors"
+    ],
     "dates": []
   },
   "Extraction@501cb31acc6e:1afb9d098bbd0b4894cb6afb12855f21153e7507": {
@@ -6325,6 +6425,34 @@
     ],
     "operations": [],
     "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:c54fc0652bf7259568374b926a69436d7c3ac290": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "'s",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "bilateral-only",
+      "not counting what goes through multilaterals"
+    ],
     "dates": []
   },
   "Extraction@501cb31acc6e:b3cd90d91bc1f9791f385e9d792e475d3e96d78c": {
@@ -10493,6 +10621,26 @@
     "operations": [],
     "dropped_qualifiers": [
       "according to DAC Table 2a"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:cd6296ddb216c0a4551aaeb11cded980c1d5ca05": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
     ],
     "dates": []
   },
@@ -18477,6 +18625,39 @@
       }
     ]
   },
+  "_UniversalBindOutput@7105c7d81a38:3914f949f96b61924afb6a14ff55e61f1e702b69": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
   "_UniversalBindOutput@7105c7d81a38:6add25994af30e724adbbeced6a418f300a9564b": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -19196,6 +19377,14 @@
       }
     ]
   },
+  "StatedWordsOutput@e3e465c89a54:d24021832fb4d88e5fa9e17540d8c76d0816479a": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
   "StatedWordsOutput@e3e465c89a54:0f5cbcb375a3c2d235a13837323a5ed72a7cb640": {
     "words": [
       {
@@ -19213,6 +19402,14 @@
     ]
   },
   "StatedWordsOutput@e3e465c89a54:ad4dcd92e11add0d5c4eb7e49ea0787119121930": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:1153c601dd9b2792935afe0e941b51a86096ede5": {
     "words": [
       {
         "index": 0,
@@ -22393,202 +22590,5 @@
   },
   "ExclusionRead@3c024839b279:fd8a2dca04293d17e08a951421c2c53e5b4d4872": {
     "exclusions": []
-  },
-  "Extraction@501cb31acc6e:33c913b1bc4c1dbdf818c3472f0344f9a106615f": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding the CRS"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:e00fa46460864ab6ef3307dbe7a32ee1c992ef45": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:28e2aae6e50c0acb7431bb256a49e2278c1fcd20": {
-    "kind": "resolution",
-    "variables": [
-      "aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "not imputed"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:50dcd9c7a891287ee705668b5ee5aa6bee8a3cf8": {
-    "kind": "resolution",
-    "variables": [
-      "ODA"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding the CRS"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:7041b558e7d023a4bd4253f8ae6f1354ae354085": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding multilateral donors"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:c54fc0652bf7259568374b926a69436d7c3ac290": {
-    "kind": "resolution",
-    "variables": [
-      "bilateral aid"
-    ],
-    "entities": [
-      {
-        "text": "Norway",
-        "span": "Norway",
-        "flow_role": "origin",
-        "role_span": "'s",
-        "members": false
-      },
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "bilateral-only",
-      "not counting what goes through multilaterals"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:cd6296ddb216c0a4551aaeb11cded980c1d5ca05": {
-    "kind": "resolution",
-    "variables": [
-      "aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding the CRS"
-    ],
-    "dates": []
-  },
-  "_UniversalBindOutput@7105c7d81a38:3914f949f96b61924afb6a14ff55e61f1e702b69": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
-  "StatedWordsOutput@e3e465c89a54:d24021832fb4d88e5fa9e17540d8c76d0816479a": {
-    "words": [
-      {
-        "index": 0,
-        "stated": true
-      }
-    ]
-  },
-  "StatedWordsOutput@e3e465c89a54:1153c601dd9b2792935afe0e941b51a86096ede5": {
-    "words": [
-      {
-        "index": 0,
-        "stated": true
-      }
-    ]
   }
 }

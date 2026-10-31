@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -407,16 +407,14 @@ class RegionResult:
     # members because their materialisations are gone. `None` on non-definite
     # results or when population measurement was skipped.
     member_population: MemberPopulation | None = None
-    # Whether the pass's default-scope presence read left a StatVar's scope unsettled
-    # (`DefaultPresence.unsettled`): its countries fallback holds for this request only, and
-    # a later request may read it over every place with data. The fan-out reports such a leg
-    # as degraded (`_FanOutResult.degraded_leg`) so it is not cached.
-    scope_unsettled: bool = False
     # Whether the answer swallowed a read that failed or ran past its deadline and stands on
     # less than it would have read (`degraded_reads`): a member walk that settled nothing, a
-    # named group dropped, the dates the unit gate could not read, or the withheld-registry
-    # re-read. The fan-out reports such a leg as degraded (`_FanOutResult.degraded_leg`), so
-    # neither cache layer stores the response, and the part memo stores no such region.
+    # named group dropped, the dates the unit gate could not read, the withheld-registry
+    # re-read, a decision that consulted an unsettled default scope
+    # (`place.ConsultedPresence`), or an alternate's presence read. Also set on the `no_data` placeholder of a leg whose own error the
+    # fan-out swallowed, which reads as a real miss. Every door reports such a leg as degraded
+    # (`DoneEvent.degraded_leg`), so neither cache layer stores the response, and the part
+    # memo stores no such region.
     degraded: bool = False
     # The `time.monotonic()` instant this region's reads, its trailing streams included, run
     # to: the request deadline, or the later full-read bound when a resubmit's member walk
@@ -468,18 +466,14 @@ class RegionResult:
     @property
     def alternates_left_out(self) -> bool:
         """Whether the answer states `alternates_unevaluated`: an alternate was left
-        unevaluated because its presence read did not complete. The fan-out reports such a
-        leg as degraded (`_FanOutResult.degraded_leg`) so it is not cached. Reading the
-        warning keeps the statement and the cache exclusion in step on every path, a
-        same-shape merge included."""
+        unevaluated because its presence read did not complete."""
         return any(warning.code == ALTERNATES_UNEVALUATED for warning in self.warnings)
 
-    @property
-    def leg_degraded(self) -> bool:
-        """Whether this region's answer stands on less than a later request may read:
-        `degraded`, `alternates_left_out` or `scope_unsettled`. Every door reports such a
-        region as a degraded leg (`DoneEvent.degraded_leg`), so no cache stores it."""
-        return self.degraded or self.alternates_left_out or self.scope_unsettled
+
+def any_degraded(regions: Iterable[RegionResult]) -> bool:
+    """Whether any of `regions` stands on less than a later request may read, the
+    `DoneEvent.degraded_leg` of every door."""
+    return any(region.degraded for region in regions)
 
 
 def source_refusal_result(

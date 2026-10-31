@@ -11,6 +11,7 @@ import pytest
 
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
+from materialise import place_scope
 from search.engine.region import (
     NO_MEMBER_HAS_DATA_AT_PLACE,
     PLACE_SCOPE_DEFAULTED,
@@ -39,6 +40,7 @@ from tests.engine._harness import (
     with_member_arcs,
 )
 from tests.fixtures import FakeGraph
+from tests.origin_catalogue.fake_catalogue import listing
 
 pytestmark = pytest.mark.usefixtures("request_log")
 
@@ -64,6 +66,11 @@ _NODES: dict = {
         },
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(listing({"dc/base/Src": "Src"}))
 
 
 def _entity_less_input() -> ResubmitIdentityPayload:
@@ -136,6 +143,38 @@ def test_no_where_slot_resubmit_is_definite_with_bulk_series():
 # ---------------------------------------------------------------------------
 # (c) no country in the default scope has data -> no_observations
 # ---------------------------------------------------------------------------
+
+
+def test_a_resubmit_over_an_unsettled_default_scope_is_degraded(monkeypatch):
+    """A countries fallback holds for this request only, so the part memo keeps none of it."""
+    obs = {
+        f"{_SV}|{_COUNTRIES[0]}": [
+            {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "facetId": "F1"}
+        ],
+    }
+    graph = FakeGraph(nodes=_NODES, obs=obs, children=_EARTH_CHILDREN)
+    sdmx = FakeSdmxClient(
+        observations={},
+        availability={},
+        subject_observations={_SV: {_COUNTRIES[0]: []}},
+        scope_availability=graph.scope_availability,
+    )
+    read = place_scope.read_default_presence
+
+    def _unsettled_read(**kwargs):
+        return dataclasses.replace(read(**kwargs), unsettled=frozenset({_SV}))
+
+    monkeypatch.setattr(place_scope, "read_default_presence", _unsettled_read)
+
+    region = resolve_spec_resubmit(
+        inp=_entity_less_input(),
+        graph=graph,
+        sdmx=sdmx,
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
+    )
+
+    assert region.degraded is True
 
 
 def test_no_where_slot_resubmit_no_country_has_data_reports_no_observations():

@@ -21,6 +21,7 @@ from collections.abc import Iterable, Mapping, Sequence
 
 from graph_generation import GenerationStamp
 from materialise.graph import (
+    ArcTarget,
     Facet,
     FacetDefaultPolicy,
     GraphReader,
@@ -180,6 +181,11 @@ class MemoGraphReader:
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         return self._reader.node_labels_batch(dcids)
+
+    def node_arc_targets_many(
+        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        return self._reader.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
 
     def variable_facets_batch(
         self,

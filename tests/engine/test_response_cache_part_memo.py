@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
-import logging
 import threading
 import time
 
@@ -17,7 +15,7 @@ from graph_generation import FakeGeneration
 from origin_catalogue import bound_catalogue
 from search.engine import core
 from search.engine.binders import GeminiBinder
-from search.engine.core import resolve_events
+from search.engine.core import ResolveRecord, resolve_events
 from search.engine.errors import GraphInfraError
 from search.engine.events import ObservationsEvent, ResponseEvent
 from search.engine.region import resolve_spec_resubmit
@@ -274,10 +272,10 @@ def _without_timing(response: ResolveResponse) -> dict:
     return document
 
 
-def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run(caplog):
+def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run():
     """The female part is stored by a request that resolves it alone. A request posting it
     beside a male part hits it, resolves the male part fresh, and folds the two into one
-    Spec exactly as a request that resolves both fresh does. Its log line counts the hit."""
+    Spec exactly as a request that resolves both fresh does. Its log record counts the hit."""
     graph = _gender_fold_graph()
     sdmx = FakeSdmxClient(observations={}, availability={})
     female = _gender_entry("Female", "Count_Person_Female", window=None)
@@ -294,10 +292,10 @@ def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run(caplog):
         materialise_graph=walk,
         part_memo=memo,
     )
-    # Another test can leave the logger at INFO, so the two earlier resolves log too.
-    caplog.clear()
-    with caplog.at_level(logging.INFO, logger="search.engine.core"):
-        warm = offline_resolve(both, graph=graph, sdmx=sdmx, materialise_graph=walk, part_memo=memo)
+    record = ResolveRecord()
+    warm = offline_resolve(
+        both, graph=graph, sdmx=sdmx, materialise_graph=walk, part_memo=memo, record=record
+    )
 
     assert any(w.code == "binding_folded" for w in warm.parts[1].warnings)
     assert _without_timing(warm) == _without_timing(fresh)
@@ -306,9 +304,7 @@ def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run(caplog):
         "response_cache_part_memo",
         "served_entry",
     }
-    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("resolve ")]
-    logged = json.loads(line.removeprefix("resolve "))
-    assert (logged["memo_hits"], logged["memo_misses"]) == (1, 1)
+    assert (record.memo_hits, record.memo_misses) == (1, 1)
 
 
 def test_a_memo_hit_overlays_comparison_without_mutating_the_stored_region():

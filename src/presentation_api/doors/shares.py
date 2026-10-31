@@ -200,7 +200,12 @@ from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.principals import Grant, Principal, Principals, granted_route_class
-from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
+from datasets_api.retention_admission import (
+    CopyClaimUnsettled,
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    PinUnitHeld,
+)
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import ProblemSpec
@@ -1167,11 +1172,13 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=exc.retryable,
             headers=exc.headers,
         )
-    if isinstance(exc, PinBudgetExhausted | OpenPinBudgetExhausted):
+    if isinstance(
+        exc, PinBudgetExhausted | OpenPinBudgetExhausted | PinUnitHeld | CopyClaimUnsettled
+    ):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
-            detail=str(exc),
+            detail=exc.detail or str(exc),
             retryable=True,
             headers=exc.headers,
         )
@@ -1477,6 +1484,8 @@ def build_shares_door(
             AllowanceExhausted,
             PinBudgetExhausted,
             OpenPinBudgetExhausted,
+            PinUnitHeld,
+            CopyClaimUnsettled,
             CreateRequestInvalid,
             CallerHeaderInvalid,
             CallerUnresolved,
@@ -1510,6 +1519,8 @@ def build_shares_door(
             ),
             PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
             OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+            PinUnitHeld(retry_after=1),
+            CopyClaimUnsettled(),
             CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
             CallerHeaderInvalid(),
             CallerUnresolved("exemplar"),

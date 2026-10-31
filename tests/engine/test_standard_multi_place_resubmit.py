@@ -31,7 +31,8 @@ from tests.engine._builders import gref as _gref
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
-from tests.fixtures import FakeGraph
+from tests.fixtures import FakeGraph, fixture_provenance_names
+from tests.origin_catalogue.fake_catalogue import listing
 
 pytestmark = pytest.mark.usefixtures("request_log")
 
@@ -65,6 +66,11 @@ _CHILDREN: dict = {
 
 # The graph names a provenance on every facet it serves; `select_facet` refuses one without.
 _OBS_PROVENANCE = "dc/base/WorldDevelopmentIndicators"
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(listing(fixture_provenance_names()))
 
 
 def _where_value_slot(dcid: str, label: str) -> Slot:

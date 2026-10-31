@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 from artifact_store import Tier
+from artifact_store.errors import ArtifactWriteError
 from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
     ArtifactNotFound,
@@ -38,6 +39,7 @@ from datasets_api.reference_store import (
     PIN_REFERENCE_KIND,
 )
 from datasets_api.render import servable_frame_location
+from datasets_api.retention_admission import PinUnitHeld, sweep_copy_claims
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.caller import Caller, address_key
 from materialise.formats import FRAME1_MEDIA_TYPE
@@ -306,7 +308,7 @@ def test_a_revocation_landing_during_the_copy_window_is_caught_at_reference_writ
     reference_writer = FakeArtifactReferenceWriter()
 
     class _RevokingDuringCopyArtifactStore(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             reference_writer.revoked[("spec_a", "cv1")] = "revoked mid-copy"
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -360,6 +362,8 @@ def test_pinning_a_working_tier_artifact_copies_it_and_records_a_reference():
 
     assert pinned_at == _NOW
     assert (location.artifact_digest, Tier.pinned.value) in store._objects
+    # The copy reads from the location the door holds.
+    assert (location.artifact_digest, Tier.working) not in store.locations
     key = (_PRINCIPAL, location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
     assert reference_writer.records[key] == _NOW
 
@@ -372,7 +376,7 @@ def test_pinning_an_already_pinned_artifact_does_not_re_copy():
             super().__init__()
             self.copy_calls = 0
 
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             self.copy_calls += 1
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 
@@ -553,7 +557,7 @@ def test_a_pin_whose_named_bytes_are_gone_refuses_artifact_expired_and_spends_no
 
 
 class _CopyForbiddenArtifactStore(FakeArtifactStore):
-    def copy(self, digest, *, from_tier, to_tier):
+    def copy(self, digest, *, from_tier, to_tier, source=None):
         raise AssertionError("the budget refusal must come before any copy")
 
 
@@ -579,11 +583,99 @@ def _pin_named(store, location, ledger: LiveAllowanceLedger, *, caller: Caller |
     return pinned_at, writer
 
 
+def test_a_copy_that_landed_and_raised_ends_with_one_set_of_units():
+    """The bytes can land before a copy raises, so the failed attempt keeps its units, and the
+    retry, which finds them stored, gives its own set back."""
+
+    class _LandedThenRaised(FakeArtifactStore):
+        failed = False
+
+        def copy(self, digest, *, from_tier, to_tier, source=None):
+            copied = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+            if not self.failed:
+                self.failed = True
+                raise ArtifactWriteError(object_name=digest, digest=digest)
+            return copied
+
+    store = _LandedThenRaised()
+    location = _store_and_locate(store, b"landed")
+    ledger = _ledger()
+
+    with pytest.raises(ArtifactWriteError):
+        _pin_named(store, location, ledger)
+    _pin_named(store, location, ledger)
+
+    assert _spent(ledger) == {(BUDGET_KEY, "pin_budget"): 1}
+
+
+@pytest.mark.parametrize(
+    ("landed", "bucket_read", "units", "swept"),
+    [
+        pytest.param(False, None, {}, {}, id="absent-refunds"),
+        pytest.param(
+            True,
+            None,
+            {(BUDGET_KEY, "pin_budget"): 1},
+            {(BUDGET_KEY, "pin_budget"): 1},
+            id="present-keeps",
+        ),
+        pytest.param(
+            False,
+            ArtifactWriteError(object_name="d", digest="d"),
+            {(BUDGET_KEY, "pin_budget"): 1},
+            {},
+            id="failed-read-held-for-the-sweep",
+        ),
+    ],
+)
+def test_a_copy_that_raises_is_judged_by_the_pinned_object(
+    landed: bool, bucket_read: Exception | None, units: dict, swept: dict
+):
+    class _Raises(FakeArtifactStore):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
+            if landed:
+                super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+            raise ArtifactWriteError(object_name=digest, digest=digest)
+
+        def exists(self, digest, *, tier, read=None):
+            if bucket_read is not None:
+                raise bucket_read
+            return super().exists(digest, tier=tier)
+
+    store = _Raises()
+    location = _store_and_locate(store, b"judged")
+    ledger = _ledger()
+
+    with pytest.raises(ArtifactWriteError):
+        _pin_named(store, location, ledger)
+
+    assert _spent(ledger) == units
+    bucket_read = None  # The sweep reads a bucket that answers.
+    sweep_copy_claims(allowances=ledger, artifacts=store, now=_NOW + timedelta(minutes=5))
+    assert _spent(ledger) == swept
+
+
+def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
+    """The unit can come back, so its limit reads as capacity, and not as a day that spent it."""
+    store = _CopyForbiddenArtifactStore()
+    location = _store_and_locate(store, b"held")
+    ledger = _ledger(pin_budget=1)
+    claim = ledger.claim("exp_a", now=_NOW, expires_at=_NOW + timedelta(minutes=2))
+    ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], clock=lambda: _NOW)
+
+    with pytest.raises(PinUnitHeld) as refused:
+        _pin_named(store, location, ledger)
+
+    assert (refused.value.code, refused.value.retryable) == ("service_unavailable", True)
+    assert refused.value.headers == {"Retry-After": "10"}
+
+
 def test_pin_at_the_daily_budget_refuses_before_copying_until_utc_midnight():
     store = _CopyForbiddenArtifactStore()
     location = _store_and_locate(store, b"over-budget")
     ledger = _ledger(pin_budget=2)
-    ledger.spend_together([Spend(BUDGET_KEY, AllowanceKind.pin_budget)] * 2, _NOW)
+    for _ in range(2):
+        ledger.spend(Caller(kind="address", key=BUDGET_KEY), AllowanceKind.pin_budget, _NOW)
 
     with pytest.raises(PinBudgetExhausted) as refused:
         _pin_named(store, location, ledger)
@@ -607,7 +699,8 @@ def test_pin_the_budget_admits_copies_and_records_a_reference(tier: Tier, spent_
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"within-budget", tier=tier)
     ledger = _ledger(pin_budget=2)
-    ledger.spend_together([Spend(BUDGET_KEY, AllowanceKind.pin_budget)] * 2, spent_at)
+    for _ in range(2):
+        ledger.spend(Caller(kind="address", key=BUDGET_KEY), AllowanceKind.pin_budget, spent_at)
 
     pinned_at, writer = _pin_named(store, location, ledger)
 
@@ -676,7 +769,7 @@ def test_a_link_replaced_during_the_copy_refuses_artifact_not_found_without_the_
     writer = FakeArtifactReferenceWriter()
 
     class _RelinkingDuringCopyArtifactStore(FakeArtifactStore):
-        def copy(self, digest, *, from_tier, to_tier):
+        def copy(self, digest, *, from_tier, to_tier, source=None):
             writer.unlinked.add(("spec_a", "cv1", digest))
             return super().copy(digest, from_tier=from_tier, to_tier=to_tier)
 

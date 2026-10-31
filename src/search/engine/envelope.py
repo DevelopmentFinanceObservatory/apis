@@ -190,7 +190,7 @@ def _terminal_events(
     *,
     start_ms: int,
     timed_out: bool = False,
-    degraded_leg: bool = False,
+    degraded_leg: bool,
     llm_usage: dict | None = None,
 ) -> tuple[Event, Event]:
     """Build terminal response and done events for early-exit paths."""

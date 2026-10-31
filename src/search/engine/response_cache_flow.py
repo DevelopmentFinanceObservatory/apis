@@ -303,6 +303,7 @@ class CacheScope:
         self._degraded_leg = False
         self._trailing_incomplete = False
         self._served_timed_out = False
+        self._served_degraded_leg = False
         self._served_storable = True
         # Events from `response` on, while this request records its bundle.
         self._recorded: list[Event] = []
@@ -317,16 +318,6 @@ class CacheScope:
         Per-request state avoids inferring outcomes from concurrent global counters.
         """
         return self._outcome
-
-    @property
-    def served_timed_out(self) -> bool:
-        """Whether a cache hit came from a leader whose run timed out.
-
-        The caller reports this in `done.timed_out`; restored diagnostics omit
-        it. Stored hits return `False`. `store()` also uses the leader's
-        `_served_storable` verdict when republishing a hit.
-        """
-        return self._served_timed_out
 
     async def _acquire(self, key: str) -> tuple[bytes | None, Lease | None]:
         """Return `key`'s value, or `None` with the leader lease this request now holds.
@@ -350,8 +341,10 @@ class CacheScope:
             except TimeoutError:
                 return None, None  # this request's own deadline is spent; proceed unleased
             if awaited is not None:
-                value, self._served_timed_out, self._served_storable = awaited
-                return value, None
+                self._served_timed_out = awaited.timed_out
+                self._served_degraded_leg = awaited.degraded_leg
+                self._served_storable = awaited.storable
+                return awaited.value, None
             value, lease = await self._cache.acquire(key)
             if value is not None:
                 return value, None
@@ -524,11 +517,6 @@ class CacheScope:
         self._degraded_leg = self._degraded_leg or degraded_leg
         self._trailing_incomplete = self._trailing_incomplete or trailing_incomplete
 
-    @property
-    def degraded_leg(self) -> bool:
-        """Whether a fresh run noted a degraded leg. A cache hit reports False."""
-        return self._degraded_leg
-
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.
 
@@ -568,7 +556,8 @@ class CacheScope:
         verdict controls storage, not delivery. Fresh runs use `note_health`; hits carry
         the leader's verdict because degraded-leg status is absent from response bytes. A
         hit is storable only when both its served verdict and this response's checks allow
-        it. Published timeout status combines this run's and the leader's flags.
+        it. Published timeout and degraded-leg status combine this run's and the leader's
+        flags.
         """
         assert not self._bundle, "a streamed request publishes its bundle through observe()"
         await self._publish(
@@ -601,6 +590,7 @@ class CacheScope:
         try:
             verdict = not self._fallbacks.reasons and self._served_storable and storable()
             timed_out = self._timed_out or self._served_timed_out
+            degraded_leg = self._degraded_leg or self._served_degraded_leg
             entry, size = encode()
             for lease in (self._layer1_lease, self._layer2_lease):
                 if lease is not None:
@@ -610,6 +600,7 @@ class CacheScope:
                         size,
                         storable=verdict,
                         timed_out=timed_out,
+                        degraded_leg=degraded_leg,
                         max_age_s=self._stamp.max_age_s,
                     )
             self._layer1_lease = None
@@ -676,6 +667,10 @@ class CacheScope:
         the place-options budget (`enrichment.stream_place_options`), and keeps the stored
         `done` event's warnings and late departures. Any other hit sends `response` and
         `done` alone. `place_options` is `None` when the request streams no place options.
+
+        A follower's `done` reports its leader's timeout and degraded-leg verdicts. A stored
+        layer-1 or layer-2 hit has no leader and reports neither, and neither applies: no
+        layer stores a timed-out or degraded answer (`is_storable`).
         """
         yield ResponseEvent(response=response)
         if self._replay is not None:
@@ -688,13 +683,17 @@ class CacheScope:
                     async for event in streamed:
                         yield event
         _, done_event = _terminal_events(
-            response, start_ms=start_ms, llm_usage=llm_usage, timed_out=self._served_timed_out
+            response,
+            start_ms=start_ms,
+            llm_usage=llm_usage,
+            timed_out=self._served_timed_out,
+            degraded_leg=self._served_degraded_leg,
         )
         if self._replay is not None:
             done_event = done_event.model_copy(
                 update={
-                    "warnings": self._replay.done.warnings,
-                    "late_departures": self._replay.done.late_departures,
+                    "warnings": self._replay.warnings,
+                    "late_departures": self._replay.late_departures,
                 }
             )
         yield done_event

@@ -40,6 +40,7 @@ from search.engine import degraded_reads as degraded_reads_module
 from search.engine import exclusion_read
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
+from search.engine.degraded_reads import DegradedReads, note_unsettled_scope
 from search.engine.entry import raw_text
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
@@ -51,6 +52,7 @@ from search.engine.extract import ExtractedEntity, ExtractedOperation, Extractio
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind as rank_bind_module
 from search.engine.region import pipeline as pipeline_module
+from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import identity_dataset, identity_query
@@ -872,13 +874,13 @@ def test_a_party_reading_that_fails_or_refuses_leaves_the_base_reply(
     noted as degraded, and a refusal is not. Any other exception is a defect, logged with
     its traceback."""
     noted: list[str] = []
-    note = pipeline_module.note_degraded_read
+    carry = pipeline_module.carry
 
-    def noting(read: str) -> None:
-        noted.append(read)
-        note(read)
+    def carrying(record: DegradedReads, *, consulted: bool = True) -> None:
+        noted.extend(record.reads)
+        carry(record, consulted=consulted)
 
-    monkeypatch.setattr(pipeline_module, "note_degraded_read", noting)
+    monkeypatch.setattr(pipeline_module, "carry", carrying)
     if isinstance(fails, Exception):
         monkeypatch.setattr(rank_bind_module, "with_party_reading", _refusing_party_reading(fails))
 
@@ -919,11 +921,11 @@ def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
     """A read the party reading swallowed before it was withdrawn at election marks the
     reply degraded: the resolution without party words notes it again."""
     noted: list[str] = []
-    note = pipeline_module.note_degraded_read
+    carry = pipeline_module.carry
 
-    def noting(read: str) -> None:
-        noted.append(read)
-        note(read)
+    def carrying(record: DegradedReads, *, consulted: bool = True) -> None:
+        noted.extend(record.reads)
+        carry(record, consulted=consulted)
 
     elect = rank_bind_module.with_party_reading
 
@@ -931,7 +933,7 @@ def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
         degraded_reads_module.note_degraded_read("a swallowed read")
         return elect(state, shapes, phrases_read)
 
-    monkeypatch.setattr(pipeline_module, "note_degraded_read", noting)
+    monkeypatch.setattr(pipeline_module, "carry", carrying)
     monkeypatch.setattr(rank_bind_module, "with_party_reading", swallowing)
     variable = "multilateral education aid"
 
@@ -942,6 +944,59 @@ def test_a_withdrawn_party_reading_carries_the_reads_it_swallowed(
     )
 
     assert noted == ["a swallowed read"]
+
+
+@pytest.mark.parametrize(
+    ("first_reading", "degraded"),
+    [
+        ("lost", True),
+        ("no-data", True),
+        ("unsupported", False),
+        ("withdrawn", False),
+        ("settled", False),
+    ],
+)
+def test_a_party_reading_dropped_after_its_answer_marks_the_reply_degraded(
+    monkeypatch: pytest.MonkeyPatch, first_reading: str, degraded: bool
+):
+    """An alternate the first reading left unevaluated holds for this request only, whichever
+    reading answers. The first reading finds no series from the party, so a scope it
+    consulted decided its withdrawal and holds for this request only too. A reading withdrawn
+    before it answers, or answering unsupported, hands on no scope it consulted."""
+    _party_coverage(monkeypatch, from_the_party=False)
+    stating = pipeline_module._stating_unevaluated
+    run_phases = pipeline_module._run_phases
+
+    def leaving_an_alternate(result, state):
+        if not state.party_words_off and first_reading == "lost":
+            state.unevaluated_alternates = True
+            state.alternates_presence_failure = "timed_out"
+        if not state.party_words_off and first_reading == "no-data":
+            note_unsettled_scope("Count_Consulted")
+        return stating(result, state)
+
+    async def withdrawing(state):
+        if not state.party_words_off and first_reading == "withdrawn":
+            note_unsettled_scope("Count_Consulted")
+            raise PartyReadingWithdrawn
+        if not state.party_words_off and first_reading == "unsupported":
+            note_unsettled_scope("Count_Consulted")
+            return dataclasses.replace(await run_phases(state), status="unsupported")
+        return await run_phases(state)
+
+    monkeypatch.setattr(pipeline_module, "_stating_unevaluated", leaving_an_alternate)
+    monkeypatch.setattr(pipeline_module, "_run_phases", withdrawing)
+    variable = "multilateral ODA"
+
+    events = offline_events(
+        make_request(f"{variable} to Kenya"),
+        llm=_ScriptedLLM(variable),
+        graph=_party_graph(variable, "ODA"),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    assert events[-1].kind == "done"
+    assert events[-1].degraded_leg is degraded
 
 
 @pytest.mark.parametrize(

@@ -30,10 +30,11 @@ from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
 from search.models import Coverage, Headline, NoDataReason
 
 if TYPE_CHECKING:
-    from materialise.place_scope import DefaultPlaceScope, DefaultPresence
+    from materialise.place_scope import DefaultPlaceScope
     from materialise.roles import RoleAxis
     from search.engine.clients.sdmx import RoleFacetCandidate
     from search.engine.extract import DateRequest
+    from search.engine.place import ConsultedPresence
     from search.engine.retrieval.coverage import CoverageForm
     from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import PlanYears, ReadPlan, WindowGap
@@ -307,7 +308,7 @@ def materialise(
     date_request: DateRequest | None = None,
     deadline: float | None = None,
     place_dcids: list[str] | None = None,
-    default_presence: DefaultPresence | None = None,
+    default_presence: ConsultedPresence | None = None,
     discover_scope: bool = False,
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot,

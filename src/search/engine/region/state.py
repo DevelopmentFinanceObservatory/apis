@@ -22,7 +22,6 @@ from dfo_platform import Cause
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.facets import FacetSelection
-from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
@@ -30,6 +29,7 @@ from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.degraded_reads import DegradedReads
 from search.engine.departures import (
     WarningKey,
     measure_not_applied,
@@ -43,7 +43,7 @@ from search.engine.frame import Frame, door_frame
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import PinnedResolved, Recall
 from search.engine.interpretation import Interpretation, InterpretationSet
-from search.engine.place import read_default_presence
+from search.engine.place import ConsultedPresence, read_default_presence
 from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierMatch,
@@ -334,20 +334,18 @@ def _covered(shape: ShapeDraft, served: Sequence[str]) -> list[str]:
 
 
 def presence_lacking(
-    presence: DefaultPresence,
+    presence: ConsultedPresence,
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     role_keys: RoleKeys,
 ) -> list[str]:
     """The StatVars a resolve of `shape` under `bindings` reads at their own default scope
     (`presence_stat_vars`) that `presence` does not cover."""
-    return [
-        sv for sv in presence_stat_vars(shape, bindings, role_keys) if sv not in presence.scopes
-    ]
+    return [sv for sv in presence_stat_vars(shape, bindings, role_keys) if not presence.covers(sv)]
 
 
 def presence_covering(
-    presence: DefaultPresence,
+    presence: ConsultedPresence,
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     role_keys: RoleKeys,
@@ -355,7 +353,7 @@ def presence_covering(
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
     deadline: float | None,
-) -> DefaultPresence:
+) -> ConsultedPresence:
     """`presence` topped up, in one presence read (`place.read_default_presence`), with the
     StatVars a resolve of `shape` under `bindings` reads at their own default scope that it
     lacks (`presence_stat_vars`), for a reader that resolves `shape` under bindings the read
@@ -744,7 +742,7 @@ class UnPool:
     shapes: list[ShapeDraft]
     missed: str | None = None
     unserved: UnUnserved = field(default_factory=UnUnserved)
-    lost: tuple[str, ...] = ()
+    lost: DegradedReads = field(default_factory=DegradedReads)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1216,7 +1214,7 @@ class ResolveState:
     node_admissions: dict[tuple[str, str], bool] = field(default_factory=dict)
     # Where the StatVars of the last default-scope read have data; the default scope of the
     # shape in play, when it has one, is taken from it. `None` until a shape needs one.
-    default_presence: DefaultPresence | None = None
+    default_presence: ConsultedPresence | None = None
     # The elected shape's assignment of the query's place sets, or its refusal, taken once
     # by binding repair (`phase_election._bind_query_places`): with a whole total only where
     # the bindings settled under its role keys hold the total's series, and those are the
@@ -1269,17 +1267,17 @@ class ResolveState:
     # The presence read a role-bearing elected shape's alternates need, running beside its
     # materialisation (`_start_alternates_presence_read`). Candidate admission awaits it;
     # `None` when none was started or once it is taken.
-    alternates_presence: Future[DefaultPresence] | None = None
+    alternates_presence: Future[ConsultedPresence] | None = None
     # The listing of Earth's countries started beside the elected shape's walk on a query
     # naming no place (`phase_place_materialise._start_countries_listing`). The first
     # default-scope presence read takes it; `None` when none was started or once it is taken.
     # One untaken when the pass ends is cancelled (`pipeline._cancel_queued_reads`).
-    countries_listing: asyncio.Future[DefaultPresence] | None = None
+    countries_listing: asyncio.Future[ConsultedPresence] | None = None
     # The same listing when it runs on the alternates' pool for a role-bearing elected
     # shape's alternates (`phase_place_materialise._start_countries_listing`); their
     # presence read, on that pool, waits for it. `None` otherwise. It never queues, since
     # it is not started while that pool is busy (`_submit_alternates_read`).
-    alternates_listing: Future[DefaultPresence] | None = None
+    alternates_listing: Future[ConsultedPresence] | None = None
     # The walks of the alternates and re-election siblings, started beside the elected
     # shape's walk and materialisation and keyed by alternate and representative
     # (`phase_place_materialise._start_alternate_walks`). A walk from a superseded plan stays

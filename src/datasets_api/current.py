@@ -433,7 +433,7 @@ def _record_head_hit_derived(
         content_version=derived.content_version,
         artifact_store=deps.artifact_store,
     )
-    call_warnings = reshape_warning_models(reshape_warnings)
+    reshape_models = reshape_warning_models(reshape_warnings)
     output_profile = derived_output_profile(derived, enrichment=deps.enrichment)
     capabilities = build_capabilities(
         capability_version=deps.capability_version,
@@ -455,7 +455,7 @@ def _record_head_hit_derived(
             parties=deps.code_index.parties,
             datasets=source_refs_of(manifest.trace),
         ),
-        extra_warnings=call_warnings,
+        extra_warnings=reshape_models,
     )
     created = record_collapsed_head_version(
         manifest=derived_manifest,
@@ -496,7 +496,7 @@ def _record_head_hit_derived(
         persisted=state.version,
         locations=state.locations,
         served=derived_manifest,
-        call_warnings=call_warnings,
+        reshape_warnings=reshape_models,
         now=deps.now(),
         enrichment_digest=deps.code_index.enrichment_digest,
     )

@@ -125,7 +125,7 @@ def test_a_dataset_version_assembles_the_wire_its_body_rendered(name: str) -> No
     served = manifest.model_copy(
         update={"artifacts": [_ARTIFACT, _STATS], "series_coverage_stamp": "sha256:served"}
     )
-    persisted = persisted_manifest(stored=stored, served=served, call_warnings=_CALL_WARNINGS)
+    persisted = persisted_manifest(stored=stored, served=served, reshape_warnings=_CALL_WARNINGS)
     assert persisted.model_dump(mode="json") == expected["persisted"]
 
     # Presentation reads a dataset version's citation, coverage and warnings.

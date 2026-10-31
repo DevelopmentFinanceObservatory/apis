@@ -434,7 +434,7 @@ async def _generate_structured[SchemaT: BaseModel](
         # Re-acquiring the key here would re-issue the Gemini call that is
         # failing, once per parked request.
         raise LLMInfraError(f"Gemini API error: {_LLM_MEMO_LEADER_FAILED_DETAIL}")
-    value, _timed_out, _storable = published
+    value = published.value
     # Followers report zero usage. The leader's live call reports its token cost.
     logger.info("LLM memo hit: schema=%s", schema.__name__)
     return _served(value, schema, model=llm._model), dict(MEMO_HIT_USAGE)

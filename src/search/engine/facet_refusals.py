@@ -369,13 +369,13 @@ def facets_satisfy_bindings(
 
 
 def _alternatives(
-    axis: str, all_facets: list[Facet], graph: EngineGraphClient
+    axis: str, all_facets: list[Facet], graph: EngineGraphClient, *, deadline: float | None
 ) -> list[Alternative]:
     """Every distinct value `axis` DOES carry (unwindowed presence),
     descending by summed observation count then ascending by dcid -- mirrors
-    region/option_coverage.py's _facet_options ranking. A provenance the origin
-    catalogue lists takes its label. Any other dcid the graph can't label falls
-    back to the dcid itself, same convention as _facet_options. Capped at
+    region/option_coverage.py's _facet_options ranking. A provenance is named by
+    `refs.provenance_labels`, its read bounded by `deadline`. Any dcid nothing names
+    falls back to the dcid itself, same convention as _facet_options. Capped at
     settings().max_options."""
     counts: dict[str, int] = {}
     for facet in all_facets:
@@ -386,7 +386,7 @@ def _alternatives(
         return []
     ranked = sorted(counts, key=lambda dcid: (-counts[dcid], dcid))[: settings().max_options]
     labels = (
-        provenance_labels(ranked, graph)
+        provenance_labels(ranked, graph, deadline=deadline)
         if axis == "provenance"
         else graph.node_labels_batch(ranked)
     )
@@ -553,6 +553,7 @@ def _facet_refusal_from_candidates(
             pointed_axis,
             provenance_facets if pointed_axis == "provenance" else all_facets,
             graph,
+            deadline=deadline,
         )
         or None,
     )

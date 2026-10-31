@@ -21,7 +21,11 @@ from materialise import place_scope
 from materialise.place_scope import NO_DEFAULT_SCOPE, DefaultPlaceScope, DefaultPresence
 from search.engine.departures import warning_key
 from search.engine.errors import DefaultScopeIndexSourcedError, GraphReadFailure
-from search.engine.place import default_place_scope_message, read_default_presence
+from search.engine.place import (
+    ConsultedPresence,
+    default_place_scope_message,
+    read_default_presence,
+)
 from search.engine.region import place_context as place_context_module
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.codes import (
@@ -51,6 +55,7 @@ from tests.engine._builders import flow_place_roles, subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._presence import raw_presence
 from tests.fixtures import FakeGraph
 
 _KEN = "country/KEN"
@@ -194,7 +199,7 @@ class _PresenceGraph:
         return {sv: [_KEN] for sv in variable_dcids if sv == _MALE}
 
 
-def _read(graph: _PresenceGraph, sdmx: _PresenceSdmx, stat_vars, **kwargs) -> DefaultPresence:
+def _read(graph: _PresenceGraph, sdmx: _PresenceSdmx, stat_vars, **kwargs) -> ConsultedPresence:
     return read_default_presence(
         graph=cast(Any, graph), sdmx=cast(Any, sdmx), stat_vars=stat_vars, **kwargs
     )
@@ -207,9 +212,9 @@ class TestReadDefaultPresence:
         presence = _read(graph, sdmx, [_FEMALE, _MALE])
 
         assert sorted(sdmx.reads) == [_FEMALE, _MALE]
-        assert presence.scope(_FEMALE) == _PRESENCE.scope(_FEMALE)
-        assert presence.scope(_MALE) == _PRESENCE.scope(_MALE)
-        assert presence.unsettled == frozenset()
+        assert presence.consulted_scope(_FEMALE) == _PRESENCE.scope(_FEMALE)
+        assert presence.consulted_scope(_MALE) == _PRESENCE.scope(_MALE)
+        assert raw_presence(presence).unsettled == frozenset()
 
     def test_an_earth_listing_naming_no_country_refuses_as_a_graph_failure(self) -> None:
         """Search refuses an Earth listing that names no country as it refuses any failed
@@ -227,8 +232,8 @@ class TestReadDefaultPresence:
         presence = _read(graph, sdmx, [_FEMALE, "Count_Death_None"], known=known)
 
         assert sdmx.reads == ["Count_Death_None"]
-        assert presence.scope("Count_Death_None") == NO_DEFAULT_SCOPE
-        assert presence.union_scope([_FEMALE, "Count_Death_None"]).places == (_AFRICA, _TZA)
+        assert presence.consulted_scope("Count_Death_None") == NO_DEFAULT_SCOPE
+        assert presence.consulted_union([_FEMALE, "Count_Death_None"]).places == (_AFRICA, _TZA)
 
     def test_nothing_missing_makes_no_request(self) -> None:
         graph, sdmx = _PresenceGraph(), _PresenceSdmx()
@@ -237,7 +242,7 @@ class TestReadDefaultPresence:
         sdmx.reads.clear()
 
         assert _read(graph, sdmx, [_FEMALE], known=known) is known
-        assert _read(graph, sdmx, []).scopes == {}
+        assert raw_presence(_read(graph, sdmx, [])).scopes == {}
         assert graph.calls == []
         assert sdmx.reads == []
 
@@ -249,7 +254,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape(_FEMALE),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
         assert context.probe_dcids == (_AFRICA, _TZA)
@@ -262,7 +267,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape(_MALE),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
         assert context.probe_dcids == (_KEN,)
@@ -280,7 +285,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape("Count_Death_None"),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
         assert context.probe_dcids == ()
@@ -290,7 +295,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape("Count_Death_World"),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
         assert context.probe_dcids == ("Earth",)
@@ -303,7 +308,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape("Count_Death_None"),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
         assert context.probe_dcids == ()
@@ -318,7 +323,7 @@ class TestPlaceContext:
         context = _served_context(
             _FLOW,
             flow_place_roles(_FLOW, origin=[_GHA]),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
         assert context.probe_dcids is None
@@ -352,7 +357,10 @@ class TestPlaceContext:
         search_settings(max_child_places=1)
         shape = _shape(_FEMALE)
         context = UnsettledPlace(
-            shape, PlaceAssignment(), stat_vars=tuple(shape.sv_arc_facts or {}), presence=_PRESENCE
+            shape,
+            PlaceAssignment(),
+            stat_vars=tuple(shape.sv_arc_facts or {}),
+            presence=ConsultedPresence(_PRESENCE),
         ).unread()
 
         assert context.probe_dcids == (_AFRICA, _TZA)
@@ -432,7 +440,7 @@ class TestSettled:
         context = _served_context(
             _SUBJECT,
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
         mat = cast(
             Materialised,
@@ -483,7 +491,7 @@ class TestSettled:
         context = _served_context(
             _SUBJECT,
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
         mat = cast(
             Materialised,
@@ -506,7 +514,7 @@ class TestSettlePlace:
         return _served_context(
             _SUBJECT,
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
 
     def test_a_changed_scope_warning_is_replaced_where_it_stands(self) -> None:
@@ -608,12 +616,12 @@ class TestStampOfferedPlaceWarnings:
         in_play = _served_context(
             _shape(_FEMALE),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
         worldwide = _served_context(
             _shape("Count_Death_World"),
             subject_place_roles(),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
         warnings = list(in_play.warnings)
 
@@ -647,7 +655,7 @@ class TestBulkScopeFor:
         context = _served_context(
             _shape(stat_var),
             subject_place_roles(*([place] if place else [])),
-            presence=_PRESENCE,
+            presence=ConsultedPresence(_PRESENCE),
         )
         sdmx = cast(Any, object())
         mat = cast(Materialised, SimpleNamespace(facets_by_entity=facets_by_entity))
@@ -665,21 +673,23 @@ def test_the_alternates_presence_read_is_merged_into_the_requests_presence() -> 
     made since, a re-election's, added `_MALE`, and the alternates' read adds `_FEMALE`, so
     the request's presence covers both and keeps the countries both name."""
     countries = _PRESENCE.countries
-    alternates_read: Future[DefaultPresence] = Future()
+    alternates_read: Future[ConsultedPresence] = Future()
     alternates_read.set_result(
-        DefaultPresence(countries=countries, scopes={_FEMALE: _PRESENCE.scope(_FEMALE)})
+        ConsultedPresence(
+            DefaultPresence(countries=countries, scopes={_FEMALE: _PRESENCE.scope(_FEMALE)})
+        )
     )
     state = SimpleNamespace(
-        default_presence=DefaultPresence(
-            countries=countries, scopes={_MALE: _PRESENCE.scope(_MALE)}
+        default_presence=ConsultedPresence(
+            DefaultPresence(countries=countries, scopes={_MALE: _PRESENCE.scope(_MALE)})
         )
     )
 
     reason = asyncio.run(_await_alternates_presence(cast(Any, state), alternates_read))
 
     assert reason is None
-    assert state.default_presence.countries == countries
-    assert dict(state.default_presence.scopes) == {
+    assert raw_presence(state.default_presence).countries == countries
+    assert dict(raw_presence(state.default_presence).scopes) == {
         _MALE: _PRESENCE.scope(_MALE),
         _FEMALE: _PRESENCE.scope(_FEMALE),
     }

@@ -10,7 +10,11 @@ from __future__ import annotations
 from assembler.mint.builders import complete_window, default_window
 from assembler.mint.card_description import DescribedRevision, with_card_description
 from assembler.mint.dispatch import MintedComponent, mint_component, stamp_envelope
-from assembler.mint.provenance import DESCRIPTION_PROVENANCE_MEMBERS, warned_refs
+from assembler.mint.provenance import (
+    DESCRIPTION_PROVENANCE_MEMBERS,
+    warned_provenance_refs,
+    warned_refs,
+)
 from assembler.mint.selection import selection_facts
 
 __all__ = [
@@ -22,6 +26,7 @@ __all__ = [
     "mint_component",
     "selection_facts",
     "stamp_envelope",
+    "warned_provenance_refs",
     "warned_refs",
     "with_card_description",
 ]

@@ -34,11 +34,12 @@ from code_index.shared import get_index
 from dfo_platform.trace import reset_trace_id, set_trace_id
 from entity_resolution import Entity, Resolved
 from graph_generation import UNKNOWN_GENERATION
+from materialise import place_scope
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
-from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
@@ -98,6 +99,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
+from tests.engine._presence import raw_presence
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine._search_app import search_app
 from tests.engine._virtual_clock import VirtualRequests
@@ -2059,7 +2061,10 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
 
     assert asyncio.run(_phase_place_bindings(state)) is None
     assert state.default_presence is not None
-    assert {sv: frozenset(scope.places) for sv, scope in state.default_presence.scopes.items()} == {
+    assert {
+        sv: frozenset(scope.places)
+        for sv, scope in raw_presence(state.default_presence).scopes.items()
+    } == {
         _GNI_PPP: frozenset({_GHA}),
         atlas: frozenset({_NOR}),
     }
@@ -2217,6 +2222,27 @@ def test_placeless_subject_alternate_beside_a_role_bearing_election_takes_a_defa
     assert [(w.code, w.spec_id) for w in result.warnings if w.code == "role_scope_defaulted"] == [
         ("role_scope_defaulted", None)
     ]
+
+
+@pytest.mark.parametrize(
+    ("unsettled", "degraded"), [(scenarios._PPP, True), ("Count_Unread", False)], ids=str
+)
+def test_only_an_offered_alternate_s_countries_fallback_keeps_the_answer_uncached(
+    monkeypatch, search_settings, unsettled: str, degraded: bool
+) -> None:
+    read = place_scope.read_default_presence
+
+    def unsettled_read(**kwargs):
+        return dataclasses.replace(read(**kwargs), unsettled=frozenset({unsettled}))
+
+    monkeypatch.setattr(place_scope, "read_default_presence", unsettled_read)
+
+    result, _, _ = _scenario_candidates(
+        monkeypatch, "placeless-role-bearing-elected-subject-alternate", search_settings
+    )
+
+    assert result.status == "candidates", result
+    assert result.degraded is degraded
 
 
 def test_placeless_subject_alternate_reads_its_default_scope_in_bulk(
@@ -2786,6 +2812,7 @@ def test_an_unevaluated_alternate_leaves_the_elected_answer_standing_and_stated(
     assert _states_unevaluated(answer, reason)
     assert reasons[0] == {1: reason}
     assert answer.alternates_left_out
+    assert answer.degraded
     assert _untraced(_without_unevaluated(scenarios._projection(answer))) == _untraced(
         scenarios._projection(scenarios._resolve(without_alternate))
     )
@@ -2805,7 +2832,11 @@ def test_an_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
         candidate_admission,
         "_materialise_alt_shapes",
         lambda alternates, *args, presence, **kwargs: _AlternatesRead(
-            [], None, presence, tuple((alternate, reason) for alternate in alternates)
+            [],
+            None,
+            presence,
+            tuple((alternate, reason) for alternate in alternates),
+            tuple(DegradedReads() for _ in alternates),
         ),
     )
 

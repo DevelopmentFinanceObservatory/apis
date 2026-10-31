@@ -11,7 +11,7 @@ query that names no place takes the default place scope the datasets mint takes
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -24,6 +24,7 @@ from materialise.place_scope import (
     PlaceScopeReadError,
     is_worldwide,
 )
+from search.engine.degraded_reads import note_unsettled_scope
 from search.engine.errors import GraphReadFailure
 
 if TYPE_CHECKING:
@@ -87,14 +88,98 @@ def default_place_scope_message(scope: DefaultPlaceScope) -> str:
     )
 
 
+class ConsultedPresence:
+    """A default-scope presence read (`materialise.place_scope.DefaultPresence`) as Search
+    reads it.
+
+    A decision reads a StatVar's scope only through `consulted_scope`, `consulted_union` and
+    `consulted_any_places`, which note a scope that is a countries fallback this request
+    alone took (`degraded_reads.note_unsettled_scope`), so the answer the decision shapes
+    stays out of the response cache. A cache warm reads through `warming_places`, which
+    notes nothing, and `covers` reads no scope. A presence no decision consults notes
+    nothing. The read itself stays private, so Search cannot read a scope around them."""
+
+    __slots__ = ("_presence",)
+
+    def __init__(self, presence: DefaultPresence) -> None:
+        self._presence = presence
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ConsultedPresence) and self._presence == other._presence
+
+    def __hash__(self) -> int:
+        return hash(self._presence)
+
+    def __repr__(self) -> str:
+        return f"ConsultedPresence({self._presence!r})"
+
+    def read_more(
+        self,
+        *,
+        graph: EngineGraphClient,
+        sdmx: EngineSdmxClient,
+        stat_vars: Iterable[str],
+        deadline: float | None,
+    ) -> ConsultedPresence:
+        """This presence topped up with the scopes of `stat_vars` it lacks
+        (`read_default_presence`), this one itself when the read adds nothing."""
+        presence = _read_presence(
+            graph=graph, sdmx=sdmx, stat_vars=stat_vars, known=self._presence, deadline=deadline
+        )
+        return self if presence is self._presence else ConsultedPresence(presence)
+
+    def consulted_scope(self, stat_var: str) -> DefaultPlaceScope:
+        """The default scope of `stat_var`, for a decision that reads it."""
+        scope = self._presence.scope(stat_var)
+        if not scope.settled:
+            note_unsettled_scope(stat_var)
+        return scope
+
+    def consulted_union(self, stat_vars: Iterable[str]) -> DefaultPlaceScope:
+        """The union of the default scopes of `stat_vars` (`DefaultPresence.union_scope`), each
+        read through `consulted_scope`."""
+        stat_vars = list(dict.fromkeys(stat_vars))
+        for stat_var in stat_vars:
+            self.consulted_scope(stat_var)
+        return self._presence.union_scope(stat_vars)
+
+    def consulted_any_places(self, stat_vars: Iterable[str]) -> bool:
+        """Whether the default scope of any of `stat_vars` holds a place. A settled scope
+        holding one answers alone; otherwise the answer rests on every unsettled scope, each
+        consulted. Neither the answer nor the note depends on the order of `stat_vars`."""
+        scopes = {sv: self._presence.scope(sv) for sv in stat_vars}
+        if any(scope.places for scope in scopes.values() if scope.settled):
+            return True
+        unsettled = [sv for sv, scope in scopes.items() if not scope.settled]
+        consulted = [self.consulted_scope(sv) for sv in unsettled]
+        return any(scope.places for scope in consulted)
+
+    def covers(self, stat_var: str) -> bool:
+        """Whether the read holds a default scope for `stat_var`."""
+        return stat_var in self._presence.scopes
+
+    def warming_places(
+        self, members: Iterable[str], *, own: Collection[str]
+    ) -> dict[str, tuple[str, ...]]:
+        """The places a cache warm reads each of `members` at: each of them in `own`, the
+        StatVars the resolve reads at their own scope (`standard._member_places`), at that
+        scope. A warm decides nothing, so it notes nothing."""
+        return {sv: self._presence.scope(sv).places for sv in members if sv in own}
+
+    def merged(self, other: ConsultedPresence) -> ConsultedPresence:
+        """This read with the StatVars `other` covers and it does not
+        (`DefaultPresence.merged`)."""
+        return ConsultedPresence(self._presence.merged(other._presence))
+
+
 def read_default_presence(
     *,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
     stat_vars: Iterable[str],
-    known: DefaultPresence | None = None,
+    known: ConsultedPresence | None = None,
     deadline: float | None = None,
-) -> DefaultPresence:
+) -> ConsultedPresence:
     """The default place scopes (`materialise.place_scope.read_default_presence`) of
     `stat_vars` over Search's graph client, under the request's `deadline`. `sdmx` reads our
     variables' availability; `graph` reads the UN deployment's.
@@ -105,7 +190,24 @@ def read_default_presence(
     infrastructure failure. The read may be one the datasets door's
     reader started, so the error carries no SDMX client's type. A read the deadline
     ends raises `place_scope.PlaceScopeDeadlineError`, a `TimeoutError`, which Search refuses
-    as a timeout."""
+    as a timeout. A `known` read is topped up with what it lacks (`ConsultedPresence.read_more`)."""
+    if known is not None:
+        return known.read_more(graph=graph, sdmx=sdmx, stat_vars=stat_vars, deadline=deadline)
+    return ConsultedPresence(
+        _read_presence(graph=graph, sdmx=sdmx, stat_vars=stat_vars, known=None, deadline=deadline)
+    )
+
+
+def _read_presence(
+    *,
+    graph: EngineGraphClient,
+    sdmx: EngineSdmxClient,
+    stat_vars: Iterable[str],
+    known: DefaultPresence | None,
+    deadline: float | None,
+) -> DefaultPresence:
+    """`place_scope.read_default_presence` over Search's clients, its read failures raised as
+    `GraphReadFailure` (`read_default_presence`)."""
     try:
         return place_scope.read_default_presence(
             graph=graph, availability=sdmx, stat_vars=stat_vars, known=known, deadline=deadline
@@ -114,7 +216,9 @@ def read_default_presence(
         raise GraphReadFailure(str(exc), upstream_status=exc.upstream_status) from exc
 
 
-def earth_countries(*, graph: EngineGraphClient, deadline: float | None = None) -> DefaultPresence:
+def earth_countries(
+    *, graph: EngineGraphClient, deadline: float | None = None
+) -> ConsultedPresence:
     """Earth's countries (`materialise.place_scope.earth_countries`) as a presence that covers
     no StatVar yet, which a later `read_default_presence` takes as `known`. A listing that
     names no country raises `GraphReadFailure`."""
@@ -122,4 +226,4 @@ def earth_countries(*, graph: EngineGraphClient, deadline: float | None = None) 
         countries = place_scope.earth_countries(graph, deadline=deadline)
     except DefaultScopeUnknownError as exc:
         raise GraphReadFailure(str(exc)) from exc
-    return DefaultPresence(countries=countries, scopes={})
+    return ConsultedPresence(DefaultPresence(countries=countries, scopes={}))
