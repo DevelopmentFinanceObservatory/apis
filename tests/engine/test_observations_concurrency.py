@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import contextvars
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
 
 import search.engine.region.observations.fetch as region_fetch
+from dfo_platform.request_deadline import request_deadline
 from materialise import (
     MaterialisationUsageError,
 )
 from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
+    OBSERVATIONS_TIMED_OUT,
 )
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import (
@@ -291,6 +294,48 @@ def test_build_observations_pair_degrades_when_total_semaphore_wait_times_out(
     assert observations.omitted.reason == OBSERVATIONS_PROBE_FAILED
     assert warn is not None
     assert warn.code == OBSERVATIONS_PROBE_FAILED
+
+
+class _HeldPermits:
+    """A process-wide permit gate every permit of which is held elsewhere. It records the
+    longest each acquire would wait and refuses at once, so no test waits on it."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float | None] = []
+
+    def acquire(self, blocking: bool = True, timeout: float | None = None) -> bool:
+        self.timeouts.append(timeout)
+        return False
+
+    def release(self) -> None:
+        raise AssertionError("no permit was acquired")
+
+
+def test_build_observations_permit_wait_ends_at_the_bound_request_deadline(
+    monkeypatch, search_settings
+):
+    """A permit wait inside a bound request, or a fail-open scope, ends at that deadline,
+    however long `SEARCH_GRAPH_TIMEOUT_S` allows. The pair counts as timed out."""
+    search_settings(graph_timeout_s=30)
+    permits = _HeldPermits()
+    monkeypatch.setattr(region_fetch, "_OBS_PREVIEW_TOTAL_SEMAPHORE", permits)
+
+    with request_deadline(time.monotonic() - 1):
+        observations, warn = build_observations_planned(
+            ["Count_Person"],
+            {"observationAbout": ["country/KEN"]},
+            graph=FakeGraph(),
+            materialise_graph=harness_reader(["country/KEN"]),
+            materialise_sdmx=sdmx_double(),
+            coverage=empty_coverage_snapshot(),
+        )
+
+    assert permits.timeouts == [0.0]
+    assert observations.series == []
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_TIMED_OUT
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_TIMED_OUT
 
 
 def test_build_observations_materialisation_usage_error_from_pooled_worker_propagates_uncaught():

@@ -21,7 +21,6 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.errors import GraphInfraError
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_answer as phase_answer_module
 from search.engine.region import resolve_variable
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason, plan_unit_evidence
 from search.engine.region.codes import (
@@ -30,6 +29,7 @@ from search.engine.region.codes import (
     OBSERVATIONS_SERIES_TRUNCATED,
     OBSERVATIONS_TIMED_OUT,
 )
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.region.state import EngineOptions
 from search.engine.stated_words_read import StatedWordsOutput
 from search.models import IdentityUnitRequest
@@ -324,7 +324,7 @@ def test_a_covered_conversion_answers_definite_without_an_observation_read(monke
     def _no_read(*args, **kwargs):
         raise AssertionError("the bound-unit gate must not read observations")
 
-    monkeypatch.setattr(phase_answer_module, "_build_observations", _no_read)
+    monkeypatch.setattr(preview_dispatch, "_build_observations", _no_read)
     obs = {
         f"{_SV_A}|country/KEN": [_obs_facet(unit="CurrencyUSD", value=10.0)],
         f"{_SV_B}|country/KEN": [_obs_facet(unit="CurrencyEUR", value=5.0)],

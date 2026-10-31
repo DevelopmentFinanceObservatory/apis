@@ -12,7 +12,6 @@ from contextlib import ExitStack
 from typing import Final
 
 import dc_graph
-from code_index.composites import composite_ref
 from code_index.shared import get_index
 from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
@@ -36,7 +35,6 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
-from search.engine.departures import served_datasets
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
@@ -97,6 +95,7 @@ from search.engine.region.result import (
     every_member_phrases,
     with_composite_answer,
 )
+from search.engine.region.scope_decision import decide_spec_scope, scope_facts
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -113,17 +112,11 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft
 from search.engine.source_code import SeriesCodeMembers
 from search.engine.source_scope import SourceScope
-from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Spec, Warning
-from search.scope.basis import basis_dataset, identity_basis_record, unbound_basis_record
+from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Warning
+from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope
 from search.scope.composite import assemble_composite
-from search.scope.provider import (
-    settle_provider,
-    with_summed_provider,
-    without_unoffered_multilateral,
-)
-from search.scope.state import ScopeIntake, ScopeState
-from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -599,67 +592,34 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
-    built from the axis records the pass's binders hold (`ResolveState.scope_selection`)
-    and the provider scope settled over the answer's identity (`provider.settle_provider`),
-    after words summing the bilateral and multilateral lines are read as the answer's
-    dataset sums them (`provider.with_summed_provider`) and words naming multilateral ODA
-    are dropped where that dataset offers no such option
-    (`provider.without_unoffered_multilateral`). Only the entries a binder applied
-    compile (`AxisRecord.entry`), so every choice states the option the answer serves. The
-    other entries that attach to the part (`ScopeState.attached`: those on an axis a binder
-    settled, for the concept it was asked for, and the stated ones on an axis the part
-    lacks) are reported in `PartScope.dropped_entries`. A result that is not definite
-    states none, and so does one whose answer the recorded axes do not reach, as a region
-    read at its published total. The scope is built in memory,
-    and the rules read the bound release's code index, the request's coverage snapshot and
-    the part's operations, groups and served datasets (`scope_facts`). A part whose binders
-    settled no axis, such as one naming no place, states the scope of its served identity
-    where the measure-basis axis applies to it, with the stated or carried basis that
-    identity holds applied (`basis.unbound_basis_record`), so it states what a resubmit
-    of that identity with the part's entries states. A fresh search does
-    not refuse its scope (`build_part_scope` with `refuse` false). Only a dataset_resubmit's
-    posted `scope_entries` refuse 422.
+    the scope the answer phase or the candidates path decided for it before its preview
+    launched (`ResolveState.scope_decision`), else one decided here from the answer
+    (`scope_decision.decide_spec_scope`). A result
+    that is not definite states none. The scope is built in memory, and the rules read the
+    bound release's code index, the request's coverage snapshot and the part's operations,
+    groups and served datasets (`scope_facts`). Only a dataset_resubmit's posted
+    `scope_entries` refuse 422.
 
     When the binders settle a composite option (the inclusive provider scope, the OECD
     headline per year), the scope's base is the composite, and the answer is restated as it
     (`composite.assemble_composite`), carrying the closure that reads its preview per
     component (`composite_answer.CompositeRelaunch`) for
     `_with_composite_preview` to launch on the event loop."""
-    selection = state.scope_selection
     if result.status != "definite":
         return result
     spec = result.spec
-    identity = spec.definition.identity
-    records = dict(selection.records)
-    if not records:
-        # No binder settled an axis, as on a part naming no place. Where the basis axis
-        # applies to the served identity, the scope reads it and the part's entries.
-        if basis_dataset(identity, get_index()) is None:
-            return result
-        stated = selection.entries_on("measure_basis")
-        if (basis := unbound_basis_record(identity, get_index(), stated)) is not None:
-            records[basis.axis] = basis
-    facts = scope_facts(spec, operations=state.operations, coverage=state.coverage)
-    # Words summing the bilateral and multilateral lines ask for the dataset's own sum.
-    selection = with_summed_provider(identity, selection, facts)
-    # "Multilateral ODA" names DAC1's row only on a dataset that publishes it.
-    selection = without_unoffered_multilateral(identity, selection, facts)
-    settled = ScopeState(entries=selection.entries, records=records)
-    provider = settle_provider(identity, selection, facts)
-    if provider is not None:
-        settled.write(provider)
-    built = build_part_scope(
-        base=spec.definition.identity,
-        entries=[],
-        records=settled.records,
-        facts=facts,
-        read=settled.attached(),
-        refuse=False,
-    )
-    assert isinstance(built, PartScope)
-    if not built.choices:
+    decision = state.scope_decision
+    if decision is None or decision.spec_id != spec.spec_id:
+        decision = decide_spec_scope(
+            spec,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
+        )
+    built = decision.scope
+    if built is None:
         return result
-    if composite_ref(built.compiled.identity.model_dump(mode="json", include={"facets"})) is None:
+    if not decision.composite:
         return dataclasses.replace(result, scope_choices=built)
     reads = _component_reads(state)
     # The composite follows its mint, which reads each component under its own pin alone, so
@@ -674,7 +634,7 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
             built.compiled.identity,
             built.compiled.spec_id,
             served=served,
-            facts=facts,
+            facts=decision.facts,
         )
     compiled = built.compiled.model_copy(update={"components": components})
     relaunch = CompositeRelaunch(spec=composite, reads=reads, served=served)
@@ -716,23 +676,6 @@ async def _with_composite_preview(result: RegionResult, state: ResolveState) -> 
     if state.include_observations:
         return await with_composite_observations(result, semaphore=None)
     return dataclasses.replace(result, observations_relaunch=None)
-
-
-def scope_facts(
-    spec: Spec, *, operations: Sequence[Operation], coverage: CoverageSnapshot
-) -> ScopeFacts:
-    """What the axis rules read of the part `spec` answers: the bound release's code index,
-    `coverage`, the part's `operations`, the groups its roles stand for and the datasets it
-    is served from."""
-    return ScopeFacts(
-        index=get_index(),
-        coverage=coverage,
-        part=PartFacts(
-            operations=tuple(operations),
-            entity_groups=spec.resolved.entity_groups or {},
-            datasets=tuple(sorted(served_datasets(spec))),
-        ),
-    )
 
 
 def merged_scope_choices(

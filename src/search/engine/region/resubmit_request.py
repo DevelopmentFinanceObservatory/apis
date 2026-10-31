@@ -21,7 +21,7 @@ from origin_catalogue import scoped_reads
 from search.engine.axis import classify_axis
 from search.engine.clients.graph import EngineGraphClient, SubjectsCoverage
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads, note_lost_read
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.place import expand_places
@@ -482,10 +482,11 @@ def resubmit_named_groups(
     (`_registry_named_group`). A posted `group_id` the registry does not hold refuses
     (`_registry_group`). Any other group posting no dcid drops, since nothing ties its label
     to the role's entities, and so does a group on a role the identity binds no entity on. The posted dcids' types and labels are read side
-    by side, one batch each, and their members after the types. Each dropped group is logged
-    at info with the reason. A `GraphInfraError` on any of the reads drops the groups it
-    covers, logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`),
-    and the role's entities still bind.
+    by side, one batch each, under the fail-open budget (`degraded_reads.fail_open_reads`),
+    and their members after the types, under the request's deadline. Each dropped group is
+    logged at info with the reason. A lost label or type read, or a `GraphInfraError` on the
+    members read, drops the groups it covers, logged at warning and noted as a lost read
+    (`degraded_reads.note_lost_read`), and the role's entities still bind.
 
     A role whose entities the identity's dataset reads as the whole population of its side
     (`_whole_named_groups`) carries that population, whatever group the request posts on it,
@@ -553,24 +554,33 @@ def resubmit_named_groups(
     membership = shared_membership_policy()
     group_members = _policy_members(read_as_members, membership)
     member_dcids = [dcid for dcid in read_as_members if dcid not in group_members]
+    budget = settings().fail_open_read_budget_s
+
+    def read_labels() -> dict[str, str] | None:
+        with fail_open_reads("named group labels", budget_s=budget, about={"dcids": dcids}):
+            return graph.node_labels_batch(dcids)
+        return None
+
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="group-labels") as pool:
-        labels_read = submit_with_context(pool, graph.node_labels_batch, dcids)
-        try:
+        labels_read = submit_with_context(pool, read_labels)
+        types: dict[str, str] | None = None
+        with fail_open_reads("named group types", budget_s=budget, about={"dcids": dcids}):
             types = graph.node_types_batch(dcids)
-            if member_dcids:
+        if types is not None and member_dcids:
+            # The members read keeps the request's deadline: a large node's members took 1 to
+            # 9 s to read against dfo-dev when healthy, so the fail-open budget would drop
+            # groups the graph confirms.
+            try:
                 group_members |= _graph_members(
                     member_dcids, graph=graph, membership=membership, deadline=deadline
                 )
-        except GraphInfraError as exc:
-            logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
-            note_degraded_read("named group members")
-            return tuple(named)
-        try:
-            labels = labels_read.result()
-        except GraphInfraError as exc:
-            logger.warning("resubmit dropped groups %s: labels read failed: %s", dcids, exc)
-            note_degraded_read("named group labels")
-            return tuple(named)
+            except GraphInfraError as exc:
+                logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
+                note_lost_read("named group members", exc)
+                return tuple(named)
+        labels = labels_read.result()
+    if types is None or labels is None:
+        return tuple(named)
     for dcid, group, members, total in kept:
         held = members if total is not None else group_members[dcid]
         if held == members:

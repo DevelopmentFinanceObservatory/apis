@@ -13,6 +13,7 @@ from typing import ClassVar, cast
 
 import pytest
 
+from dfo_platform.request_deadline import bounded_deadline
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
@@ -515,13 +516,13 @@ class _BoundedGraph:
 
 
 class _RecordingFacetGraph:
-    """Records the deadline of each facet read it serves, and answers none."""
+    """Records the deadline each facet read it serves is bound by, and answers none."""
 
     def __init__(self) -> None:
         self.deadlines: list[float | None] = []
 
     def observation_facets_batch(self, stat_vars, entities, needs_dates=False, **bounds):
-        self.deadlines.append(bounds["deadline"])
+        self.deadlines.append(bounded_deadline(bounds["deadline"]))
         return {sv: {entity: [] for entity in entities} for sv in stat_vars}
 
 
@@ -575,8 +576,8 @@ class TestMenuAvailabilityRead:
     @FAIL_OPEN_REQUESTS
     def test_each_facet_read_runs_under_the_fail_open_budget(self, request_in_s, monkeypatch):
         """A read whose failure leaves availability unknown gets the fail-open budget, so a
-        stalled graph holds the part for the budget at most. Each
-        chunk of a many-StatVar read gets its own, as each read is a fresh round trip."""
+        stalled graph holds the part for the budget at most. The chunks of a many-StatVar
+        read share one budget, so the read as a whole holds the part no longer."""
         monkeypatch.setattr(availability, "_facet_reads", lambda *_args: [["a", "b"], ["c"]])
         graph = _RecordingFacetGraph()
         requested = request_deadline(request_in_s)
@@ -591,9 +592,9 @@ class TestMenuAvailabilityRead:
         )
 
         assert coverage is not None
-        assert len(graph.deadlines) == 2
-        for deadline in graph.deadlines:
-            assert_fail_open_deadline(deadline, requested=requested, started=started)
+        first, second = graph.deadlines
+        assert_fail_open_deadline(first, requested=requested, started=started)
+        assert second == first
 
     @pytest.mark.parametrize(
         ("start", "end", "has_data"),

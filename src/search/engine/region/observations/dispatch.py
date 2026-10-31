@@ -30,8 +30,10 @@ those periods fall in, as the per-pair route does.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
@@ -43,6 +45,7 @@ from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import create_owned_task
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.events import ObservationsEvent
 from search.engine.region.codes import DEFLATOR_PROJECTED, _ObsProbeResult
 from search.engine.region.observations.bulk_scope import BulkScope
@@ -50,7 +53,7 @@ from search.engine.region.observations.fetch import (
     _build_observations,
 )
 from search.engine.region.result import FacetAxisFilter
-from search.engine.region.un_system import member_labels, un_unavailable_warning
+from search.engine.region.un_system import un_unavailable_warning
 from search.engine.retrieval.read_plan import ReadPlan
 from search.models import (
     CoverageExact,
@@ -93,9 +96,12 @@ def _observations_events(
     Fetch options pass unchanged to `_build_observations`. Missing optional inputs disable
     their branches. The event runs after the answer's own warnings are built, so places the
     UN front door refused during this read carry their own `un_system_unavailable` warning,
-    its variables named from `variable_labels`, the names of the Spec's members.
+    its variables named from `variable_labels`, the names of the Spec's members. The event
+    states whether the read swallowed a read (`ObservationsEvent.degraded`).
     """
-    with recording_un_blocked_places() as un_blocked:
+    # The task runs once the answer's resolution has ended, so it collects the reads it
+    # swallows on a record of its own.
+    with recording_un_blocked_places() as un_blocked, recording_degraded_reads() as lost:
         observations, warn = _build_observations(
             plan,
             sv_dcids,
@@ -114,7 +120,8 @@ def _observations_events(
             coverage=coverage,
         )
     # Empty previews carry an omission reason in the payload. The event fires.
-    events = (ObservationsEvent(spec_id=spec_id, observations=observations),)
+    event = ObservationsEvent(spec_id=spec_id, observations=observations)
+    events = (event.stating_degraded(lost.degraded),)
     warns: list[Warning] = []
     if warn is not None:
         warns.append(warn.model_copy(update={"spec_id": spec_id}))
@@ -173,54 +180,108 @@ def _launch_observations_task(
     )
 
 
-def _observations_relaunch_closure(
-    sv_dcids: list[str],
-    obs_entities: Mapping[str, Sequence[str]],
-    *,
-    graph: EngineGraphClient,
-    materialise_graph: GraphReader | None,
-    materialise_sdmx: MaterialiseSdmxClient | None,
-    facet_filter: Mapping[str, FacetAxisFilter] | None = None,
-    scope: BulkScope | None = None,
-    sdmx: EngineSdmxClient | None = None,
-    deadline: float | None = None,
-    member_facts: Mapping[str, MemberFacts] | None = None,
-    rate_cache: RateTableCache | None = None,
-    unit_request: IdentityUnitRequest | None = None,
-    elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None,
-    coverage: CoverageSnapshot,
-    plan: ReadPlan | None = None,
-    variable_labels: Mapping[str, str],
-) -> Callable[[str], asyncio.Task[_ObsProbeResult]]:
-    """Capture request inputs in a closure that sync resubmit can call on the event loop.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreviewRead:
+    """What one answer's observation preview reads, apart from the request's clients.
 
-    The worker thread has no running loop, so it cannot create the task itself. Captured
-    plan, filters, scope, coverage index, labels, and conversion inputs keep the relaunched
-    SSE fetch aligned with buffered results, including after the Spec id changes.
-    """
+    Every input of `_build_observations` but the clients, the coverage snapshot and the
+    deadline: the served members `sv_dcids`, the entities they are read at by role
+    (`obs_entities`), the read plan, the facet filter, the places a scope-defaulted bulk read
+    names (`bulk_places`, None for any other read), the members' facts, which give each
+    series its declared roles and `axes` (`fetch._build_observations`), the posted
+    request-form unit and the elected unit selections. Every field is required, so a path
+    that builds one cannot leave an input out. A fresh answer builds it once
+    (`phase_answer._start_assemble_definite`), a resubmit once (`promote_finalize`), and the
+    part memo stores it with the region (`RegionResult.preview_read`). `PreviewReader`
+    binds it to one request's clients."""
 
-    def _relaunch(spec_id: str) -> asyncio.Task[_ObsProbeResult]:
+    sv_dcids: tuple[str, ...]
+    obs_entities: Mapping[str, Sequence[str]]
+    plan: ReadPlan | None
+    facet_filter: Mapping[str, FacetAxisFilter] | None
+    bulk_places: tuple[str, ...] | None
+    member_facts: Mapping[str, MemberFacts] | None
+    unit_request: IdentityUnitRequest | None
+    elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreviewReader:
+    """`read` bound to one request's clients, coverage snapshot, conversion memo and
+    deadline. A buffered answer reads it in a worker thread (`observations`), and a
+    streamed one launches it as a trailing task (`launch`, `relaunch`), so both read the
+    same inputs and preview the same."""
+
+    read: PreviewRead
+    graph: EngineGraphClient
+    sdmx: EngineSdmxClient | None
+    materialise_graph: GraphReader | None
+    materialise_sdmx: MaterialiseSdmxClient | None
+    rate_cache: RateTableCache | None
+    deadline: float | None
+    coverage: CoverageSnapshot
+
+    def observations(self) -> tuple[SpecObservations, Warning | None]:
+        """The preview, read in the calling thread, with the read's own warning."""
+        read = self.read
+        return _build_observations(
+            read.plan,
+            list(read.sv_dcids),
+            read.obs_entities,
+            graph=self.graph,
+            materialise_graph=self.materialise_graph,
+            materialise_sdmx=self.materialise_sdmx,
+            facet_filter=read.facet_filter,
+            scope=self._scope(),
+            sdmx=self.sdmx,
+            deadline=self.deadline,
+            member_facts=read.member_facts,
+            rate_cache=self.rate_cache,
+            unit_request=read.unit_request,
+            elected=read.elected,
+            coverage=self.coverage,
+        )
+
+    def launch(
+        self, spec_id: str, *, variable_labels: Mapping[str, str]
+    ) -> asyncio.Task[_ObsProbeResult]:
+        """The preview as a request-owned trailing task under `spec_id`
+        (`_observations_events`), naming the UN variables of a refused read from
+        `variable_labels`. Only the event loop's thread may call it."""
+        read = self.read
         return _launch_observations_task(
             spec_id,
-            sv_dcids,
-            obs_entities,
-            graph=graph,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            facet_filter=facet_filter,
-            scope=scope,
-            sdmx=sdmx,
-            deadline=deadline,
-            member_facts=member_facts,
-            rate_cache=rate_cache,
-            unit_request=unit_request,
-            elected=elected,
-            coverage=coverage,
-            plan=plan,
+            list(read.sv_dcids),
+            read.obs_entities,
+            graph=self.graph,
+            materialise_graph=self.materialise_graph,
+            materialise_sdmx=self.materialise_sdmx,
+            facet_filter=read.facet_filter,
+            scope=self._scope(),
+            sdmx=self.sdmx,
+            deadline=self.deadline,
+            member_facts=read.member_facts,
+            rate_cache=self.rate_cache,
+            unit_request=read.unit_request,
+            elected=read.elected,
+            coverage=self.coverage,
+            plan=read.plan,
             variable_labels=variable_labels,
         )
 
-    return _relaunch
+    def relaunch(
+        self, variable_labels: Mapping[str, str]
+    ) -> Callable[[str], asyncio.Task[_ObsProbeResult]]:
+        """`launch` for any spec_id, a merged one included (`RegionResult.observations_relaunch`).
+        The labels name the Spec's members, which a fresh answer knows only once its Spec is
+        built, after its buffered read starts, so they bind here, outside `PreviewRead`."""
+        return functools.partial(self.launch, variable_labels=variable_labels)
+
+    def _scope(self) -> BulkScope | None:
+        if self.read.bulk_places is None:
+            return None
+        assert self.sdmx is not None, "a scope-defaulted bulk preview reads through SDMX"
+        return BulkScope(places=self.read.bulk_places, sdmx=self.sdmx)
 
 
 def _deflator_projected_warning(spec_id: str, observations: SpecObservations) -> Warning | None:
@@ -304,81 +365,3 @@ def _attach_observations(
         update["coverage"] = spec.resolved.coverage.model_copy(update={"evidence": "observed"})
     spec = spec.model_copy(update={"resolved": spec.resolved.model_copy(update=update)})
     return spec
-
-
-async def _resolve_spec_observations(
-    spec: Spec,
-    sv_dcids: list[str],
-    obs_entities: Mapping[str, Sequence[str]],
-    *,
-    graph: EngineGraphClient,
-    materialise_graph: GraphReader | None,
-    materialise_sdmx: MaterialiseSdmxClient | None,
-    include_observations: bool,
-    stream_observations: bool,
-    warnings: list[Warning],
-    facet_filter: Mapping[str, FacetAxisFilter] | None = None,
-    scope: BulkScope | None = None,
-    sdmx: EngineSdmxClient | None = None,
-    deadline: float | None = None,
-    member_facts: Mapping[str, MemberFacts] | None = None,
-    rate_cache: RateTableCache | None = None,
-    unit_request: IdentityUnitRequest | None = None,
-    elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None,
-    coverage: CoverageSnapshot,
-    plan: ReadPlan | None = None,
-) -> tuple[
-    Spec,
-    asyncio.Task[_ObsProbeResult] | None,
-    Callable[[str], asyncio.Task[_ObsProbeResult]] | None,
-]:
-    """Dispatch observations inline or as a deferred SSE task for one definite Spec.
-
-    `stream_observations` selects transport. `include_observations` reflects the request.
-    Check them separately so SSE can defer a requested preview. Sync resubmit uses the
-    relaunch closure because it cannot await. The preview reads `plan`, the answer's read
-    plan. Facet filters, bound-axis basis, and optional fetch inputs pass through. Probe
-    warnings append to the caller's `warnings` list.
-    """
-    if stream_observations:
-        relaunch = _observations_relaunch_closure(
-            sv_dcids,
-            obs_entities,
-            graph=graph,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            facet_filter=facet_filter,
-            scope=scope,
-            sdmx=sdmx,
-            deadline=deadline,
-            member_facts=member_facts,
-            rate_cache=rate_cache,
-            unit_request=unit_request,
-            elected=elected,
-            coverage=coverage,
-            plan=plan,
-            variable_labels=member_labels((spec,)),
-        )
-        return spec, relaunch(spec.spec_id), relaunch
-    if not include_observations:
-        return spec, None, None
-    result = await asyncio.to_thread(
-        _build_observations,
-        plan,
-        sv_dcids,
-        obs_entities,
-        graph=graph,
-        materialise_graph=materialise_graph,
-        materialise_sdmx=materialise_sdmx,
-        facet_filter=facet_filter,
-        scope=scope,
-        sdmx=sdmx,
-        deadline=deadline,
-        member_facts=member_facts,
-        rate_cache=rate_cache,
-        unit_request=unit_request,
-        elected=elected,
-        coverage=coverage,
-    )
-    spec = _attach_observations(spec, result, warnings)
-    return spec, None, None

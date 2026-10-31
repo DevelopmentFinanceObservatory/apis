@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from materialise.rate_tables import RateTableCache
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_answer as region_phase_answer
 from search.engine.region import resolve_variable
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.region.state import EngineOptions
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -99,13 +99,13 @@ def test_rate_cache_reaches_build_observations():
     fetch site exactly as materialise_graph/materialise_sdmx do."""
     sentinel = RateTableCache()
     captured: list[object] = []
-    real_build_observations = region_phase_answer._build_observations
+    real_build_observations = preview_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("rate_cache"))
         return real_build_observations(*args, **kwargs)
 
-    with patch.object(region_phase_answer, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         result = _run(rate_cache=sentinel)
 
     assert result.status == "definite", f"expected definite, got {result.status!r}"
@@ -118,13 +118,13 @@ def test_resolve_variable_with_no_rate_cache_still_serves():
     the resolve path serves exactly as it did before ResolveState carried
     this field."""
     captured: list[object] = []
-    real_build_observations = region_phase_answer._build_observations
+    real_build_observations = preview_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("rate_cache"))
         return real_build_observations(*args, **kwargs)
 
-    with patch.object(region_phase_answer, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         result = _run(rate_cache=None)
 
     assert result.status == "definite", f"expected definite, got {result.status!r}"

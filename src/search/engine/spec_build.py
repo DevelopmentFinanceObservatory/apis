@@ -1220,6 +1220,84 @@ def _build_slot_filters(
     return slot_filters
 
 
+@dataclass(frozen=True)
+class AnswerIdentity:
+    """What `build_spec` derives from the answer before it reads any option: the identity
+    and `spec_id` it mints, the slots and facets it states once the served provenance is
+    pinned, the entities the identity hashes, the sources the answer names
+    (`elected_sources`) and the group each role stands for (`ResolvedSpec.entity_groups`,
+    before `with_members_left_out` states what their members leave out), and the datasets
+    that publish the answer's StatVars (`CodeIndex.statvar_provenances`)."""
+
+    spec_id: str
+    identity: BaseIdentity
+    slots: list[Slot]
+    facets: dict[str, ResolvedFacet] | None
+    hashed_entities: list[Entity]
+    resolved_sources: list[ProvenanceRef]
+    entity_groups: dict[str, EntityGroup]
+    served_datasets: frozenset[str]
+
+
+def answer_identity(
+    shape: Shape,
+    slots: list[Slot],
+    stat_vars: list[StatVar],
+    entities: list[Entity],
+    *,
+    identity_entities: list[Entity] | None,
+    open_roles: Collection[RoleAxis],
+    requested_window: RequestedWindow | None,
+    facet_bindings: dict[str, IdentityFacetBinding] | None,
+    facets: dict[str, ResolvedFacet] | None,
+    resolved_sources: list[ProvenanceRef] | None,
+    plan: ReadPlan | None,
+    pin_served_provenance: bool,
+    named_groups: Iterable[NamedGroup],
+) -> AnswerIdentity:
+    """The identity `build_spec` mints from these of its arguments, and what it states
+    beside it (`AnswerIdentity`). The answer phase reads it before the options are counted,
+    so the scope an answer states can be decided before its preview launches."""
+    if pin_served_provenance and (served := served_provenances(plan)):
+        slots = with_served_provenance(slots, served)
+        if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
+            facets = {
+                **facets,
+                "provenance": provenance_facet.model_copy(update={"basis": "bound"}),
+            }
+
+    # spec_id and identity derive from one projection through build_spec_identity.
+    hashed_entities = identity_entities if identity_entities is not None else entities
+    spec_id, identity_doc = build_spec_identity(
+        identity_shape_from_wire(shape),
+        slots,
+        entities=hashed_entities,
+        open_roles=open_roles,
+        requested_window=requested_window,
+        explicit_facets=facet_bindings,
+    )
+    index = get_index()
+    served_datasets = index.statvar_provenances(sv.ref.ref for sv in stat_vars)
+    entity_groups = with_multilateral_holdings(
+        with_side_classes(
+            role_entity_groups(named_groups, hashed_entities),
+            dataset=identity_dataset(identity_doc),
+        ),
+        index=index,
+        datasets=served_datasets,
+    )
+    return AnswerIdentity(
+        spec_id=spec_id,
+        identity=identity_doc,
+        slots=slots,
+        facets=facets,
+        hashed_entities=hashed_entities,
+        resolved_sources=elected_sources(resolved_sources or [], identity_doc),
+        entity_groups=entity_groups,
+        served_datasets=served_datasets,
+    )
+
+
 def build_spec(
     shape: Shape,
     slots: list[Slot],
@@ -1266,10 +1344,17 @@ def build_spec(
     coverage_index: CoverageIndex | None = None,
     measure_served_rows: Callable[[BaseIdentity], ServedRows | None] | None = None,
     pin_served_provenance: bool = False,
+    answer: AnswerIdentity | None = None,
 ) -> Spec:
     """Assemble a Spec with a deterministic spec_id.
 
     Args:
+        answer: The `answer_identity` of these same arguments, when the caller decided
+            something over it before building. The Spec is then minted from it as given,
+            and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,
+            `identity_entities`, `open_roles`, `requested_window`, `facet_bindings`,
+            `facets`, `resolved_sources`, `plan`, `pin_served_provenance` and
+            `named_groups` are the ones it computed it from. None computes it here.
         plan: The answer's read plan under the request's facet filter. The entities among
             ``entities`` that it was asked to read and serves no point at on their role
             (``read_plan.unserved_entities``) become ``ResolvedSpec.unserved_entities``,
@@ -1341,35 +1426,28 @@ def build_spec(
             "are not text-recognised; a grouping binds only what the text named"
         )
 
-    if pin_served_provenance and (served := served_provenances(plan)):
-        slots = with_served_provenance(slots, served)
-        if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
-            facets = {
-                **facets,
-                "provenance": provenance_facet.model_copy(update={"basis": "bound"}),
-            }
-
-    # spec_id and identity derive from one projection through build_spec_identity.
-    hashed_entities = identity_entities if identity_entities is not None else entities
     named_groups = tuple(named_groups)
-    spec_id, identity_doc = build_spec_identity(
-        identity_shape_from_wire(shape),
-        slots,
-        entities=hashed_entities,
-        open_roles=open_roles,
-        requested_window=requested_window,
-        explicit_facets=facet_bindings,
-    )
+    if answer is None:
+        answer = answer_identity(
+            shape,
+            slots,
+            stat_vars,
+            entities,
+            identity_entities=identity_entities,
+            open_roles=open_roles,
+            requested_window=requested_window,
+            facet_bindings=facet_bindings,
+            facets=facets,
+            resolved_sources=resolved_sources,
+            plan=plan,
+            pin_served_provenance=pin_served_provenance,
+            named_groups=named_groups,
+        )
+    spec_id, identity_doc = answer.spec_id, answer.identity
+    slots, facets, hashed_entities = answer.slots, answer.facets, answer.hashed_entities
+    entity_groups = answer.entity_groups
     index = get_index()
-    served_datasets = index.statvar_provenances(sv.ref.ref for sv in stat_vars)
-    entity_groups = with_multilateral_holdings(
-        with_side_classes(
-            role_entity_groups(named_groups, hashed_entities),
-            dataset=identity_dataset(identity_doc),
-        ),
-        index=index,
-        datasets=served_datasets,
-    )
+    served_datasets = answer.served_datasets
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)
     stated = stated_members(identity_doc, walked)
@@ -1405,7 +1483,7 @@ def build_spec(
     )
 
     resolved_entity_refs = [e.ref for e in entities]
-    resolved_sources = elected_sources(resolved_sources or [], identity_doc)
+    resolved_sources = answer.resolved_sources
 
     slot_filters = _build_slot_filters(
         slots,

@@ -7,7 +7,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from materialise.rate_tables import RateTableCache
-from search.engine.region import promote_finalize, resolve_spec_resubmit
+from search.engine.region import resolve_spec_resubmit
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.region.state import EngineOptions
 from search.models import ResubmitIdentityPayload
 from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
@@ -67,13 +68,13 @@ def test_rate_cache_reaches_build_observations():
     materialise_graph and materialise_sdmx do."""
     sentinel = RateTableCache()
     captured: list[object] = []
-    real_build_observations = promote_finalize._build_observations
+    real_build_observations = preview_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("rate_cache"))
         return real_build_observations(*args, **kwargs)
 
-    with patch.object(promote_finalize, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         result = _run(rate_cache=sentinel)
 
     assert result.status == "definite", f"expected definite, got {result.status!r}"
@@ -85,13 +86,13 @@ def test_standard_promote_with_no_rate_cache_still_serves():
     """None reaches _build_observations as None, and the promote path serves
     the same definite answer."""
     captured: list[object] = []
-    real_build_observations = promote_finalize._build_observations
+    real_build_observations = preview_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("rate_cache"))
         return real_build_observations(*args, **kwargs)
 
-    with patch.object(promote_finalize, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         result = _run(rate_cache=None)
 
     assert result.status == "definite", f"expected definite, got {result.status!r}"

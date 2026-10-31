@@ -13,8 +13,9 @@ import pytest
 
 import dc_graph
 from origin_catalogue import current_catalogue, scoped_reads
-from search.engine import response_cache_flow
+from search.engine import response_cache_flow, same_shape
 from search.engine.concurrency import scoped_concurrency
+from search.engine.config import settings
 from search.engine.entry import dataset_resubmit
 from search.engine.errors import (
     EngineInfraError,
@@ -836,6 +837,10 @@ def test_a_composite_entry_whose_walk_ran_the_full_read_previews_to_its_deadline
     reads its components to the full read's deadline, so its preview holds both and warns
     no timeout. A component read bound by the request deadline finds it passed. A merge
     whose second member alone ran the full read reads to that member's deadline."""
+    # A buffered merge reads its preview under the fail-open budget as well
+    # (`same_shape._read_merged_previews`); a budget past the full read leaves the deadline
+    # under test the one that binds.
+    monkeypatch.setattr(settings(), "fail_open_read_budget_s", 600.0)
     first, components = _components(monkeypatch)
     identity = first.definition.identity
     real = dataset_resubmit.resolve_spec_resubmit
@@ -871,3 +876,83 @@ def test_a_composite_entry_whose_walk_ran_the_full_read_previews_to_its_deadline
 
     assert _dates(observations) == _BOTH
     assert "observations_timed_out" not in {w.code for w in warnings}
+
+
+@pytest.mark.parametrize("streamed", [True, False])
+def test_two_merged_composites_preview_both_members_places(monkeypatch, streamed):
+    """A same-shape merge of two composite answers, one per recipient, previews as a resubmit
+    of the merged identity previews it: each component is read once, over both recipients,
+    under the merged spec_id, streamed or embedded."""
+    spec, components = _components(monkeypatch)
+    identity = spec.definition.identity
+    reads = _reads(_coverage(monkeypatch))
+
+    def with_destinations(source: Spec, spec_id: str, *destinations: str) -> Spec:
+        entities = {**(identity.entities or {}), "destination": list(destinations)}
+        return source.model_copy(
+            update={
+                "spec_id": spec_id,
+                "definition": source.definition.model_copy(
+                    update={"identity": identity.model_copy(update={"entities": entities})}
+                ),
+            }
+        )
+
+    def member(destination: str, index: int) -> RegionResult:
+        own = with_destinations(spec, destination, destination)
+        if not streamed:
+            embedded = SpecObservations(series=[], total_obs=0, truncated=False)
+            own = own.model_copy(
+                update={"resolved": own.resolved.model_copy(update={"observations": embedded})}
+            )
+        return RegionResult(
+            variable_text="health aid",
+            status="definite",
+            specs=(own,),
+            no_data_reason=None,
+            warnings=(),
+            timing_by_step={},
+            earliest_index=index,
+            observations_relaunch=CompositeRelaunch(spec=own, reads=reads) if streamed else None,
+        )
+
+    region = same_shape._finalize_merged_region(
+        [member(provider._KEN, 0), member(_UGA, 1)],
+        with_destinations(spec, "merged", provider._KEN, _UGA),
+        preview_reads=reads,
+        facet_probe=None,
+        facet_warning=None,
+        measure_partition=None,
+        measure_siblings=(),
+        open_axis_facts=(),
+        option_axis_facts=(),
+        role_axis_facts=(),
+        served_filter=None,
+        served_members=(),
+        served_plans=(),
+    )
+    if streamed:
+        relaunch = region.observations_relaunch
+        assert isinstance(relaunch, CompositeRelaunch)
+
+        async def run() -> _ObsProbeResult:
+            async with scoped_concurrency():
+                return await relaunch("merged")
+
+        (event,), _ = asyncio.run(run())
+        assert isinstance(event, ObservationsEvent)
+        assert event.spec_id == "merged"
+        observations = event.observations
+    else:
+        (region,) = same_shape._read_merged_previews([region])
+        assert region.observations_relaunch is None
+        observations = region.spec.resolved.observations
+
+    assert sorted(_STAT_VARS[_provenance(inp.identity)] for inp, _ in components.calls) == [
+        "bilateral",
+        "imputed",
+    ]
+    assert [(inp.identity.entities or {}).get("destination") for inp, _ in components.calls] == [
+        [provider._KEN, _UGA]
+    ] * 2
+    assert _dates(observations) == _BOTH

@@ -165,6 +165,7 @@ if TYPE_CHECKING:
 
     # `requirements` imports this module.
     from search.engine.region.requirements import Judgement
+    from search.engine.region.scope_decision import ScopeDecision
 
 __all__ = ["EngineOptions", "ResolveState", "UnLeg", "raised_facts"]
 
@@ -865,6 +866,10 @@ class ResolveState:
     # the record of each axis they settle, from which the pass's definite answer states its
     # scope choices (`pipeline._with_scope_choices`).
     scope_selection: ScopeState = field(default_factory=ScopeState)
+    # The scope the definite answer states, decided before its preview launches
+    # (`phase_answer._decide_answer_scope`), which `pipeline._with_scope_choices` reuses for
+    # that answer. None until then.
+    scope_decision: ScopeDecision | None = None
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
     # The departure facts raised beside warnings, each under its warning's key

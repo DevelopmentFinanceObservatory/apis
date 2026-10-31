@@ -63,7 +63,6 @@ from tests.engine._builders import constraint_value_slot as _value_slot
 from tests.engine._builders import gref as _gr
 from tests.engine._conjoin_fixtures import _PERSON_SHAPE, _region
 from tests.engine._fake_coverage import build_coverage_index, empty_coverage_snapshot
-from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph
 
 _KEN = "country/KEN"
@@ -1112,9 +1111,10 @@ def test_a_multi_variable_answer_offers_the_merged_facet_options():
             graph=_MERGE_GRAPH,
             start_ms=0,
             params=params,
+            # The members preview nothing, so the merge reads through none of them.
             preview_reads=ComponentReads(
                 graph=_MERGE_GRAPH,
-                sdmx=FakeSdmxClient(observations={}, availability={}),
+                sdmx=cast(Any, None),
                 coverage=params.coverage,
                 materialise_graph=None,
                 materialise_sdmx=None,
