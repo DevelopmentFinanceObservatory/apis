@@ -733,7 +733,6 @@ def _words_with_wdi() -> Vocabulary:
                 publisher=_WORLD_BANK, last_downloaded="2026-10-01", next_release=None
             ),
         },
-        currency_units=words.currency_units,
         graph_generation="gen-1",
         catalogue_build="ocb_20260927",
     )
@@ -845,7 +844,6 @@ def test_a_computed_versions_credits_past_the_schemas_bound_keep_the_most_drawn(
             **words.sources,
             **{ref: SourceDocumentFacts(publisher=_WORLD_BANK) for ref in [*oda_refs, *gni_refs]},
         },
-        currency_units=words.currency_units,
         graph_generation="gen-1",
         catalogue_build="ocb_20260927",
     )
