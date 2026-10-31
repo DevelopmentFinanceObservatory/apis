@@ -3,6 +3,7 @@ the limit with a wait to the next UTC midnight. `refund` and `spending` give a u
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
@@ -29,6 +30,7 @@ from datasets_api.retention_admission import (
     PreparingCopy,
     copy_to_pinned,
 )
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.caller import Caller
 
 from ._artifact_doubles import FakeArtifactStore
@@ -647,6 +649,46 @@ def test_a_pin_spends_and_settles_in_two_ledger_transactions_and_refuses_in_one(
     assert _counts(ledger) == units
     with transaction() as tx:
         assert tx.fetch_all("SELECT claim_key FROM datasets.copy_claim") == []
+
+
+@pytest.mark.parametrize(("failures", "units"), [(1, {}), (2, {(BUDGET_KEY, "pin_budget"): 1})])
+def test_a_pin_retries_a_failed_refund_once_and_names_the_claim_it_leaves(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failures: int, units: dict
+):
+    """A deduplicated copy's claim left behind is one the sweep keeps the units of, since the
+    pinned object stands, so the second failure logs the claim's key at ERROR."""
+    ledger = LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(), limits={AllowanceKind.pin_budget: 5}
+    )
+    bucket = _Bucket()
+    bucket._objects[(_DIGEST, Tier.working.value)] = b"bytes"
+    bucket._objects[(_DIGEST, Tier.pinned.value)] = b"bytes"
+    close_claim = ledger.close_claim
+    left = [failures]
+
+    def flaky(claim: CopyClaim, *, landed: bool = False) -> bool:
+        if left[0]:
+            left[0] -= 1
+            raise DatasetsStoreUnavailable("closing failed")
+        return close_claim(claim, landed=landed)
+
+    monkeypatch.setattr(ledger, "close_claim", flaky)
+
+    with caplog.at_level(logging.ERROR):
+        copy_to_pinned(
+            bucket,
+            _DIGEST,
+            source=("working", _DIGEST),
+            allowances=ledger,
+            caller=None,
+            clock=lambda: _NOON,
+        )
+
+    assert _counts(ledger) == units
+    left_behind = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(left_behind) == failures - 1
+    if left_behind:
+        assert left_behind[0].args[0].startswith("pin_")
 
 
 def test_a_copy_reads_its_source_before_it_begins(claims):

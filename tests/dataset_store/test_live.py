@@ -560,6 +560,8 @@ def test_a_pin_refuses_when_a_rerender_replaces_its_link_during_the_copy(live_st
     rerender = LiveVersionRecordWriter(store=live_store, now=lambda: pinned_at + timedelta(days=2))
 
     class _RerenderDuringCopy:
+        copy_lands_within = CopyBounds().lands_within
+
         def copy(self, digest, *, from_tier, to_tier, source=None):
             rerender.record_artifact(
                 subject_id=subject_id,

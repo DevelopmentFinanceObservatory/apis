@@ -160,8 +160,9 @@ _EXISTS_READS: Mapping[ExistsRead, tuple[float, float]] = {
     # 5 s attempts retried within 5 s, so one 503 does not leave a copy unsettled and a bucket
     # that is down answers in about 10 s.
     ExistsRead.short: (5.0, 5.0),
-    # The library's own: 60 s attempts retried within 120 s.
-    ExistsRead.long: (60.0, 120.0),
+    # The library's own 60 s attempts, retried within 60 s, so one read, 120 s at most, fits a
+    # sweep run beside its ledger writes.
+    ExistsRead.long: (60.0, 60.0),
 }
 """Each read's attempt timeout and retry deadline, in seconds."""
 

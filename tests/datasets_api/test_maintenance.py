@@ -208,6 +208,22 @@ def test_the_sweep_starts_no_claim_whose_read_could_outrun_its_budget():
     assert ledger.read_claim("exp_b").state == ClaimState.copying
 
 
+def test_the_sweep_reserves_a_ledger_write_before_starting_any_claim():
+    ledger = _claims()
+    _held(ledger, "exp_a")
+    elapsed = iter([0.0, SWEEP_BUDGET.total_seconds() + 1])
+
+    swept = sweep_copy_claims(
+        allowances=ledger,
+        artifacts=FakeArtifactStore(),
+        now=_SPENT_AT + timedelta(minutes=5),
+        monotonic=lambda: next(elapsed),
+    )
+
+    assert swept == (0, 0, 1)
+    assert _units(ledger) == {"pin_budget": 1}
+
+
 def test_the_sweep_counts_only_the_claims_it_moved(capsys):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()

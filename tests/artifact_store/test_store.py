@@ -778,14 +778,14 @@ def test_a_pinned_dedupe_without_a_location_row_reads_no_object_metadata():
 @pytest.mark.parametrize("stored", [True, False], ids=["present", "absent"])
 @pytest.mark.parametrize(
     ("read", "attempt", "deadline"),
-    [({}, 5, 5), ({"read": ExistsRead.long}, 60, 120)],
+    [({}, 5, 5), ({"read": ExistsRead.long}, 60, 60)],
     ids=["short-by-default", "long"],
 )
 def test_an_existence_read_bounds_its_attempts_and_retries_as_its_read_says(
     stored: bool, read: dict[str, ExistsRead], attempt: int, deadline: int
 ):
     """A settle holds a work permit through the short read, and the sweep, holding none, takes
-    the library's own 60 s attempts within 120 s."""
+    the library's own 60 s attempts within 60 s."""
     client = FakeGCSClient()
     store = _store(client, RecordingArtifactInventory())
     bucket = client.bucket(_BUCKETS[Tier.pinned])

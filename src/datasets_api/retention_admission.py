@@ -78,9 +78,11 @@ from artifact_store import (
     StoredArtifact,
     Tier,
 )
+from dataset_store import CONNECT_TIMEOUT_SECONDS, TRANSACTION_STALL_SECONDS
 from dataset_store.clock import Clock
 from datasets_api.allowance import (
     BUDGET_KEY,
+    SWEEP_INTERVAL_SECONDS,
     AllowanceExhausted,
     AllowanceKind,
     ClaimState,
@@ -97,14 +99,15 @@ PREPARE_LEASE_MARGIN = timedelta(seconds=30)
 """How long a prepare's claim outlives its `definition_timeout_seconds`, for the writes begun
 before the deadline."""
 
-_BEGIN_COPY_ALLOWANCE = timedelta(seconds=30)
-"""How long the `begin_copy` transaction may take and still leave its copy the whole of the store's
-`copy_lands_within`. A slower one copies nothing."""
+_BEGIN_COPY_ALLOWANCE = timedelta(seconds=CONNECT_TIMEOUT_SECONDS)
+"""How long the write that begins a copy may take after it reads the clock, one round trip, and
+still leave the copy the whole of the store's `copy_lands_within`. A slower one copies nothing."""
 
-SWEEP_BUDGET = timedelta(seconds=240)
-"""How long one sweep's claims may run, under the five-minute schedule. A `copying` claim's
-long read (`ExistsRead.long.within`, 180 seconds) fits inside it, and the minute left over covers
-the last claim's ledger write, so runs never overlap."""
+SWEEP_BUDGET = timedelta(seconds=SWEEP_INTERVAL_SECONDS - TRANSACTION_STALL_SECONDS)
+"""How long into a run a sweep may still start a claim, under the five-minute schedule: the
+interval less one ledger write's stall bound (`dataset_store.TRANSACTION_STALL_SECONDS`), which
+every claim reserves, so runs never overlap. A `copying` claim also reserves its long read
+(`ExistsRead.long.within`)."""
 
 _UNSETTLED_RETRY_SECONDS = 30
 """`CopyClaimUnsettled`'s wait: the pinned bucket could not be read, and a quick retry would
@@ -203,13 +206,13 @@ def _pin_spends(caller: Caller | None) -> list[Spend]:
     return spends
 
 
-def _spend_refusal(exhausted: AllowanceExhausted, *, now: datetime) -> Refusal:
+def _spend_refusal(exhausted: AllowanceExhausted) -> Refusal:
     """The refusal of the spend `exhausted` stopped: `PinUnitHeld` when a claim holds the
-    unit, else the copy's own for a day that spent it."""
+    unit, else the copy's own for the day that spent it."""
     if exhausted.held_for is not None:
         return PinUnitHeld(retry_after=exhausted.held_for)
     budget = _BUDGET_REFUSALS.get(exhausted.kind)
-    return exhausted if budget is None else budget(limit=exhausted.limit, now=now)
+    return exhausted if budget is None else budget(limit=exhausted.limit, now=exhausted.now)
 
 
 def _landed(artifacts: ArtifactStore, digest: str) -> bool | None:
@@ -289,7 +292,7 @@ class PreparingCopy:
                 self._claim, _pin_spends(self._caller), clock=self._clock
             )
         except AllowanceExhausted as exhausted:
-            raise _spend_refusal(exhausted, now=self._clock()) from None
+            raise _spend_refusal(exhausted) from None
         if held is None:
             raise CopyClaimUnsettled()
         self._claim = held
@@ -321,33 +324,20 @@ class PreparingCopy:
             if location is None:
                 raise ArtifactNotFoundError(digest=artifact_digest, tier=Tier.working)
             source = (location.bucket, location.object_name)
-        lands_within = self._artifacts.copy_lands_within
         began = self._allowances.begin_copy(
-            self._claim,
-            artifact_digest,
-            clock=self._clock,
-            lease=lands_within + _BEGIN_COPY_ALLOWANCE,
+            self._claim, artifact_digest, clock=self._clock, lease=_copy_lease(self._artifacts)
         )
         if began is None:
             raise CopyClaimUnsettled()
         self._claim = began
-        # The update and commit that follow the transaction's clock read are bounded only by
-        # socket timeouts, so the copy starts only with its whole landing time left.
-        if self._clock() + lands_within > began.expires_at:
-            self._settle(landed=paid)
-            raise CopyClaimUnsettled()
-        try:
-            copied = self._artifacts.copy(
-                artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source
-            )
-        except ArtifactNotFoundError:
-            self._settle(landed=paid)
-            raise
-        except Exception:
-            self._judge()
-            raise
-        self._settle(landed=paid or not copied.deduplicated)
-        return copied
+        return _settled_copy(
+            self._artifacts,
+            artifact_digest,
+            source=source,
+            expires_at=began.expires_at,
+            clock=self._clock,
+            settle=lambda landed: self._settle(landed=paid or landed),
+        )
 
     def __enter__(self) -> Self:
         return self
@@ -368,6 +358,51 @@ class PreparingCopy:
                 self._allowances.close_claim(self._claim)
         except Exception:
             logger.exception("Settling the claim of %s failed", self._claim.key)
+
+
+def _copy_lease(artifacts: ArtifactStore) -> timedelta:
+    """The lease a begun copy runs under: its landing time and the write that begins it."""
+    return artifacts.copy_lands_within + _BEGIN_COPY_ALLOWANCE
+
+
+def _settled_copy(
+    artifacts: ArtifactStore,
+    digest: str,
+    *,
+    source: tuple[str, str],
+    expires_at: datetime,
+    clock: Clock,
+    settle: Callable[[bool], None],
+) -> StoredArtifact:
+    """Copy `digest` from `source`, a bucket and object name, to the pinned tier under a
+    `copying` claim whose lease ends at `expires_at`, and settle the claim through
+    `settle(landed)` by what the copy shows: a new object landed, and a deduplicated copy or
+    working bytes gone did not. Any other failure reads the pinned object and leaves the claim
+    to the sweep when that read fails too.
+
+    Raises:
+        CopyClaimUnsettled: Too little of the lease was left to copy. Nothing is copied.
+        ArtifactNotFoundError: The working bytes are gone.
+        ArtifactWriteError, ArtifactInventoryError: The copy failed.
+    """
+    lands_within = artifacts.copy_lands_within
+    # The write that began the copy is bounded after its clock read only by socket timeouts, so
+    # the copy starts only with its whole landing time left.
+    if clock() + lands_within > expires_at:
+        settle(False)
+        raise CopyClaimUnsettled()
+    try:
+        copied = artifacts.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source)
+    except ArtifactNotFoundError:
+        settle(False)
+        raise
+    except Exception:
+        landed = _landed(artifacts, digest)
+        if landed is not None:
+            settle(landed)
+        raise
+    settle(not copied.deduplicated)
+    return copied
 
 
 def copy_to_pinned(
@@ -403,44 +438,46 @@ def copy_to_pinned(
         return artifacts.copy(
             artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source
         )
-    lands_within = artifacts.copy_lands_within
     try:
         claim = allowances.begin_pin_copy(
             f"pin_{uuid4().hex}",
             _pin_spends(caller),
             artifact_digest,
             clock=clock,
-            lease=lands_within + _BEGIN_COPY_ALLOWANCE,
+            lease=_copy_lease(artifacts),
         )
     except AllowanceExhausted as exhausted:
-        raise _spend_refusal(exhausted, now=clock()) from None
-    if clock() + lands_within > claim.expires_at:
-        _close_pin_claim(allowances, claim, landed=False)
-        raise CopyClaimUnsettled()
-    try:
-        copied = artifacts.copy(
-            artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source
-        )
-    except ArtifactNotFoundError:
-        _close_pin_claim(allowances, claim, landed=False)
-        raise
-    except Exception:
-        landed = _landed(artifacts, artifact_digest)
-        if landed is not None:
-            _close_pin_claim(allowances, claim, landed=landed)
-        raise
-    _close_pin_claim(allowances, claim, landed=not copied.deduplicated)
-    return copied
+        raise _spend_refusal(exhausted) from None
+    return _settled_copy(
+        artifacts,
+        artifact_digest,
+        source=source,
+        expires_at=claim.expires_at,
+        clock=clock,
+        settle=lambda landed: _close_pin_claim(allowances, claim, landed=landed),
+    )
 
 
 def _close_pin_claim(allowances: SharedAllowanceLedger, claim: CopyClaim, *, landed: bool) -> None:
     """Delete a pin's claim, refunding its units unless `landed`. Its random key is never
     retried, so a landed claim has nothing left to keep. The copy's outcome stands, so a write
-    that fails is logged and the sweep settles the claim."""
-    try:
-        allowances.close_claim(claim, landed=landed)
-    except Exception:
-        logger.exception("Settling the claim of %s failed", claim.key)
+    that fails is not raised: a refund is tried once more on a fresh connection, since the pool
+    discards a broken one, and a claim left behind goes to the sweep. After a deduplicated copy
+    the sweep finds the pinned object and keeps the units, the rare case where a pin is charged
+    for a copy it did not make, so that failure logs at ERROR with the claim's key."""
+    attempts = 1 if landed else 2
+    for attempt in range(attempts):
+        try:
+            allowances.close_claim(claim, landed=landed)
+        except Exception:
+            if attempt + 1 < attempts:
+                continue
+            logger.exception(
+                "Closing the pin claim %s failed; the sweep settles it, keeping its units "
+                "if the pinned object stands",
+                claim.key,
+            )
+        return
 
 
 def _settle_stale_claim(
@@ -471,8 +508,8 @@ def sweep_copy_claims(
 ) -> tuple[int, int, int]:
     """Settle every claim whose lease has passed at `now`, one by one, `held` ones first, and
     return how many moved, how many failed and how many were left for the next run. A claim
-    starts only while `SWEEP_BUDGET` has room for its worst case, a `copying` claim's whole
-    `ExistsRead.long` included. Each names its generation, so a second run or a writer that got there
+    starts only before `SWEEP_BUDGET` has run out, which reserves its ledger write, and a
+    `copying` claim only while its whole `ExistsRead.long` fits before then too. Each names its generation, so a second run or a writer that got there
     first leaves nothing to do."""
     settled = failed = 0
     stop = monotonic() + SWEEP_BUDGET.total_seconds()

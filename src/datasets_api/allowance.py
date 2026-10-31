@@ -61,9 +61,10 @@ row before any of its units.
 it is below the limit, so spends racing on one row cannot pass it. A claim's units are upserted in
 the claim's own transaction, which rolls them all back when one finds its row at the limit. A
 refund locks the day's row, then takes one from it or deletes the row it would leave at zero, so
-a spend racing the refund waits for its commit. `hold_claim`, `begin_copy` and `begin_pin_copy`
-read the time inside their transaction, after any row lock, so the wait for a connection and a
-lock sits outside the lease they write and the lease check they make.
+a spend racing the refund waits for its commit. `hold_claim` and `begin_copy` read the time
+inside their transaction after the claim's row lock, and `begin_pin_copy` as its first statement,
+since that time names the day whose rows its spends lock, so the wait for a connection sits
+outside the lease each writes and the lease check it makes.
 """
 
 from __future__ import annotations
@@ -151,6 +152,7 @@ class AllowanceExhausted(Refusal):
     ) -> None:
         self.kind = kind
         self.limit = limit
+        self.now = now
         self.held_for = held_for
         self.headers = MappingProxyType({"Retry-After": str(seconds_to_reset(now))})
         super().__init__(
@@ -290,8 +292,9 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         self, key: str, spends: Sequence[Spend], digest: str, *, clock: Clock, lease: timedelta
     ) -> CopyClaim:
         """Spend one unit of each of `spends`, all or none, and write a `copying` claim of them
-        under `key` for `digest`, in one transaction. Its lease runs `lease` on from the time
-        `clock` reads once the units are spent. A pin knows its digest before it spends, so its
+        under `key` for `digest`, in one transaction. One read of `clock`, the transaction's
+        first statement, names the units' day, `spent_at` and the start of the `lease`, so the
+        wait for a connection sits outside it. A pin knows its digest before it spends, so its
         claim begins its copy.
 
         Raises:
@@ -596,6 +599,8 @@ class LiveAllowanceLedger:
         self, key: str, spends: Sequence[Spend], digest: str, *, clock: Clock, lease: timedelta
     ) -> CopyClaim:
         with self._spending(f"beginning the pin copy {key!r}") as tx:
+            # One read names the day the spends count under, `spent_at` and the lease, so it
+            # comes before the upserts that choose the day's rows.
             now = clock()
             self._spend_in(tx, spends, now)
             row = tx.fetch_one(
@@ -606,7 +611,7 @@ class LiveAllowanceLedger:
                     key,
                     uuid4().hex,
                     ClaimState.copying.value,
-                    clock() + lease,
+                    now + lease,
                     {spend.kind.value: spend.key for spend in spends},
                     now,
                     digest,
