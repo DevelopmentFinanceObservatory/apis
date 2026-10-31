@@ -39,6 +39,7 @@ from tests.engine._harness import (
     with_member_arcs,
 )
 from tests.fixtures import FakeGraph
+from tests.origin_catalogue.fake_catalogue import listing
 
 pytestmark = pytest.mark.usefixtures("request_log")
 
@@ -64,6 +65,11 @@ _NODES: dict = {
         },
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(listing({"dc/base/Src": "Src"}))
 
 
 def _entity_less_input() -> ResubmitIdentityPayload:

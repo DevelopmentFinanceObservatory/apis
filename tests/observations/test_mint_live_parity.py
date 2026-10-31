@@ -411,12 +411,18 @@ class _Upstream:
 
 def _catalogue(upstream: _Upstream) -> Catalogue:
     """Lists the upstream's StatVars as base variables, so their `FinancialFlow` amount family,
-    which the bound release holds as DFO, is walked on the upstream's graph."""
+    which the bound release holds as DFO, is walked on the upstream's graph, and lists each
+    provenance it serves by its graph label, as production lists every provenance it admits."""
+    served = {fixture.provenance for facets in upstream.facets.values() for fixture in facets}
     return listing_base_variables(
         upstream.stat_var_arcs_by_dcid(),
         provenances={
             _PROV_A: provenance_row(_PROV_A, BASE, source="ParitySourceA"),
             _PROV_B: provenance_row(_PROV_B, BASE, source="ParitySourceB"),
+        }
+        | {
+            provenance: provenance_row(provenance, BASE, name=upstream.labels.get(provenance))
+            for provenance in served - {_PROV_A, _PROV_B}
         },
     )
 

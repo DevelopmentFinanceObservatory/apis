@@ -318,9 +318,10 @@ class WarningModel(BaseModel):
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
     `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
     `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`.
-    A stored warning can lack a field its code carries, as a `withheld_by_registry` warning
-    stored before these fields existed does while still withholding. A `None` field is left out of every dump, so other codes' warnings, on the wire and in stored version
-    bodies, stay exactly `{code, severity, message}`.
+    A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
+    withhold with none of its three. A `None` field is left out of every dump, so other codes'
+    warnings, on the wire and in stored version bodies, stay exactly `{code, severity,
+    message}`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -418,8 +419,8 @@ class WarningModel(BaseModel):
         exclude_if=_is_none,
         description=(
             "withheld_by_registry only: the series the finding read, that of the first request "
-            "that left a subject entity without rows, so one; absent when there are none, and on "
-            "a warning stored before this field existed"
+            "that left a subject entity without rows, so one; absent when there are none or the "
+            "stored warning does not carry them"
         ),
     )
     withheld_provenances: CountedRefsModel | None = Field(
@@ -428,7 +429,7 @@ class WarningModel(BaseModel):
         description=(
             "withheld_by_registry only: the provenances the registry withholds that hold data for "
             "that series at those places, in the order they first occur across the places; "
-            "absent when there are none, and on a warning stored before this field existed"
+            "absent when there are none or the stored warning does not carry them"
         ),
     )
     omitted_entities: CountedRefsModel | None = Field(

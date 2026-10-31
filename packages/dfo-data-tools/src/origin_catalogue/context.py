@@ -10,7 +10,7 @@ copied context. Jobs pass a catalogue explicitly and bind nothing.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -63,17 +63,6 @@ def current_catalogue() -> Catalogue:
             "run pooled work under contextvars.copy_context()"
         )
     return catalogue
-
-
-def listed_provenance_labels(dcids: Sequence[str]) -> dict[str, str]:
-    """The bound catalogue's name for each provenance in `dcids` it lists, by dcid. A listed
-    provenance needs no graph read to be named, since its graph `name` is its import's."""
-    catalogue = current_catalogue()
-    return {
-        dcid: row.name
-        for dcid in dict.fromkeys(dcids)
-        if (row := catalogue.provenance(dcid)) is not None
-    }
 
 
 def current_build_id(*, default: Callable[[], str]) -> str:

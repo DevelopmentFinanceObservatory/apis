@@ -88,6 +88,7 @@ from datasets_api.default_enrichment import resolve_enrichment
 from datasets_api.manifest import (
     assemble_manifest,
     collapsed_citation,
+    collapsed_head_manifest,
     coverage_facts_of,
     definition_version_record,
     healed_citation,
@@ -512,7 +513,8 @@ class DefinitionPrewrite:
     # version is not yet on record. The write half builds every manifest from this map.
     source_citations: Mapping[str, SourceCitation]
     # `datasets_api.origin`'s `withheld_by_registry` and `un_system_unavailable` warnings for this
-    # call, found once here and joined to every manifest the write half builds.
+    # call, found once here and joined to every manifest the write half builds. Empty when the
+    # version is on record, whose stored warnings every response serves.
     origin_warnings: tuple[WarningModel, ...]
     # The provenance refs this call's rows carry (`provenance_refs_of`): a composite's own.
     provenance_refs: list[str]
@@ -568,6 +570,9 @@ class _OriginFindings:
 
     warnings: tuple[WarningModel, ...]
     gaps: tuple[OriginGap, ...]
+
+
+_NO_ORIGIN_FINDINGS = _OriginFindings(warnings=(), gaps=())
 
 
 def _materialise_scoped(
@@ -837,7 +842,10 @@ def prewrite_definition(
                 deadline=deadline,
                 coverage_index=coverage_index,
             )
-        if origin is None:
+        # A version on record serves the origin findings it recorded (`persisted_manifest`).
+        if persisted is not None:
+            origin = _NO_ORIGIN_FINDINGS
+        elif origin is None:
             origin = _origin_findings(
                 requests, result, un_blocked=un_blocked, graph=graph, deadline=deadline
             )
@@ -1089,7 +1097,8 @@ def _write_definition_artifacts(
     before the failure propagates. A version is recorded only with its canonical frame and
     statistics. A failed canonical frame write records nothing, logs
     `CANONICAL_FRAME_STORE_FAILED_MARKER` and leaves the head where it was. `options` `None`
-    renders nothing and returns `prewrite.manifest`."""
+    renders nothing and returns `prewrite.manifest`, or the stored version's
+    (`persisted_manifest`) when it is on record."""
     _check_work_deadline(deps, "rendering the canonical frame and the series statistics")
     stored = prewrite.stored
     result = prewrite.result
@@ -1177,7 +1186,9 @@ def _write_definition_artifacts(
                 ),
                 trace_id=trace_id,
             )
-        return prewrite.manifest
+        if prewrite.persisted is None:
+            return prewrite.manifest
+        return persisted_manifest(stored=prewrite.persisted.version, served=prewrite.manifest)
     assert options is not None
     with phase("record"):
         written = deps.version_writer.write_version(
@@ -1430,7 +1441,8 @@ def _render_pass(
     )
     # The derived identity cites and dates as its base record does, and so does every
     # concurrent writer of it, so its record is written with its artifacts.
-    # `collapsed_head_manifest` does the same.
+    # `collapsed_head_manifest` does the same, and a base version on record gives the derived
+    # one its warnings and trace, as a head hit does.
     manifest = assemble_manifest(
         stored=stored,
         materialisation=derived_result,
@@ -1446,13 +1458,24 @@ def _render_pass(
         coverage_stamp=prewrite.coverage_stamp,
         year_coverage=prewrite.year_coverage,
     )
-    manifest = manifest.model_copy(
-        update={
-            "citation": collapsed_citation(render_citation, base=manifest)
-            if derived.summed
-            else render_citation
-        }
-    )
+    if persisted is None:
+        manifest = manifest.model_copy(
+            update={
+                "citation": collapsed_citation(render_citation, base=manifest)
+                if derived.summed
+                else render_citation
+            }
+        )
+    else:
+        manifest = collapsed_head_manifest(
+            manifest=persisted_manifest(stored=persisted.version, served=manifest),
+            derived=derived,
+            artifact=artifact,
+            statistics_artifact=derived_statistics_artifact,
+            series_count=derived_statistics.series_count,
+            output_options=manifest.output_options,
+            extra_warnings=reshape_models,
+        )
     return _RenderPass(
         prewrite=prewrite,
         persisted=persisted,

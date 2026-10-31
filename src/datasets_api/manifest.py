@@ -934,7 +934,7 @@ def collapsed_head_manifest(
     artifact: ArtifactEntryModel,
     statistics_artifact: ArtifactEntryModel,
     series_count: int,
-    output_options: OutputOptionsModel,
+    output_options: OutputOptionsModel | None,
     extra_warnings: Sequence[WarningModel] = (),
 ) -> Manifest:
     """Patches a raw head manifest for a derived identity (`render.DerivedVersion`) without a

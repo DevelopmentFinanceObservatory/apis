@@ -297,6 +297,18 @@ class ProvenanceRefresh:
 
 
 @dataclass(frozen=True)
+class ArcTarget:
+    """One target of a node's arc as `/v2/node` answers it: its dcid, or a literal's `value`,
+    and for a node target the `name` and `types` the answer carries beside the dcid. A target
+    with several names carries the first of them, sorted, where `display_name` takes the
+    greatest."""
+
+    value: str
+    name: str | None = None
+    types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SubjectPage:
     """One `node_subjects` page. `truncated` means `node_subjects` found a `(max_results + 1)`th
     distinct subject. Stuck cursors raise `GraphNotAdvancingError`.
@@ -1175,6 +1187,26 @@ class GraphClient:
             individual_probe_budget=individual_probe_budget,
             deadline=deadline,
         )
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
+        target's name and types need no read of their own, or `None` for a node the graph
+        answers with none of them. The reads are `node_arcs_many`'s initial chunks and pages,
+        bounded by `deadline`, with no retry of an empty answer. This method is uncached."""
+        if not dcids:
+            return {}
+        data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
+        result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        for dcid in dict.fromkeys(dcids):
+            arcs = (data.get(dcid) or {}).get("arcs", {})
+            result[dcid] = parse_arc_targets(arcs, properties) if arcs else None
+        return result
 
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
@@ -2379,6 +2411,27 @@ def parse_arcs(
         )
         for prop in properties
     }
+
+
+def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[ArcTarget, ...]]:
+    """Each of `properties` with its distinct targets in first-occurrence order, `()` for a
+    missing property. An entry with neither `dcid` nor `value` is dropped. Entries are read
+    through `_arc_entries`."""
+    parsed: dict[str, tuple[ArcTarget, ...]] = {}
+    for prop in properties:
+        targets: dict[str, ArcTarget] = {}
+        for entry in _arc_entries(arcs, prop):
+            dcid = entry.get("dcid")
+            value = dcid or entry.get("value")
+            if value is None or value in targets:
+                continue
+            targets[value] = ArcTarget(
+                value=value,
+                name=entry.get("name") if dcid else None,
+                types=tuple(entry.get("types", ())) if dcid else (),
+            )
+        parsed[prop] = tuple(targets.values())
+    return parsed
 
 
 def display_name(names: Iterable[str], dcid: str) -> str | None:

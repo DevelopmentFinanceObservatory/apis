@@ -12,6 +12,7 @@ from typing import Protocol
 
 from dc_graph import (
     UNRESOLVED_NODE,
+    ArcTarget,
     Facet,
     FacetDefaultPolicy,
     GraphDeadlineExceededError,
@@ -27,6 +28,7 @@ from origin_catalogue.graph import UnAvailabilityClient
 
 __all__ = [
     "UNRESOLVED_NODE",
+    "ArcTarget",
     "Facet",
     "FacetDefaultPolicy",
     "GraphDeadlineExceededError",
@@ -198,6 +200,16 @@ class GraphReader(Protocol):
         contract this signature mirrors, including its per-property
         uniqueness guarantee and its `deadline` contract.
         """
+        ...
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """See `dc_graph.GraphClient.node_arc_targets_many`."""
         ...
 
     def node_names_many(

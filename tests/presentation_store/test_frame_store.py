@@ -93,7 +93,7 @@ from materialise import provenance_doc
 from materialise.continued_series import ContinuedSeries
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
 from materialise.graph import GraphReadError
-from materialise.provenance_doc import SourceDocumentNotFound
+from materialise.provenance_doc import PROVENANCE_NAME_PROPERTIES, SourceDocumentNotFound
 from origin_catalogue import BASE
 from presentation_store import frame_store
 from presentation_store.frame_store import (
@@ -112,6 +112,7 @@ from spec_registry.errors import (
 from spec_registry.reader import StoredDefinition
 from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
+from tests.fixtures.provenance import arc_targets
 from tests.graph_release.support import release_at_revision
 from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
@@ -342,6 +343,15 @@ class _FakeGraphReader:
             label = self._labels.get(dcid)
             result[dcid] = {"name": (label,)} if label is not None else None
         return result
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline: float | None = None):
+        """`node_arcs_many`, each target carrying the name and type this double holds."""
+        read = self.node_arcs_many(dcids, properties=properties, deadline=deadline)
+        nodes = {
+            **{dcid: {"name": (label,)} for dcid, label in self._labels.items()},
+            **self._arcs,
+        }
+        return arc_targets(read, nodes)
 
     def node_names_many(
         self,
@@ -861,9 +871,11 @@ def test_load_labels_the_entities_and_members_a_coverage_warning_counts():
     assert {"country/SEN", "YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
 
 
-def test_load_names_the_provenances_a_registry_withheld_as_a_citation_names_them():
-    """A base provenance node is named for its import, so a withheld provenance takes the name
-    of its parent Dataset, as a source citation does, under its `dcid:` ref."""
+def test_load_names_row_and_withheld_provenances_by_their_dataset_in_the_label_read():
+    """A base provenance node is named for its import, so the row's provenance and a withheld
+    one take the name of their parent Dataset, as a source citation does. Both ride the
+    frame's one label read, which carries their parents' names, timed as
+    `provenance_names`."""
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
     _with_withheld_provenance(snapshots, frame_ref)
     graph = _FakeGraphReader(
@@ -871,14 +883,33 @@ def test_load_names_the_provenances_a_registry_withheld_as_a_citation_names_them
             "MalariaGrantDisbursements": "Malaria Grant Disbursements",
             "YouthRate": "Youth rate",
         },
-        arcs=_WHO_PROVENANCE_ARCS,
+        arcs={
+            **_WHO_PROVENANCE_ARCS,
+            "src_oecd_dac": {
+                "typeOf": ("Provenance",),
+                "name": ("OECD_DAC",),
+                "isPartOf": ("dc/d/OECD_DAC",),
+            },
+            "dc/d/OECD_DAC": {"typeOf": ("Dataset",), "name": ("OECD DAC",)},
+        },
     )
     store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph)
+    timings = PhaseTimings()
 
-    resolved = store.load(frame_ref=frame_ref)
+    with collecting(timings):
+        resolved = store.load(frame_ref=frame_ref)
 
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
     assert resolved.labels["dcid:dc/base/WHO_GHO"] == "WHO Global Health Observatory"
     assert resolved.labels["dcid:YouthRate"] == "Youth rate"
+    (label_read,) = [
+        dcids
+        for dcids, properties, _ in graph.node_arcs_many_requests
+        if properties == PROVENANCE_NAME_PROPERTIES
+    ]
+    assert {"src_oecd_dac", "dc/base/WHO_GHO", "YouthRate"} <= set(label_read)
+    assert not any("dc/d/WHO_GHO" in dcids for dcids, _, _ in graph.node_arcs_many_requests)
+    assert "provenance_names" in timings.snapshot()
 
 
 def test_load_names_a_listed_row_provenance_from_the_catalogue_and_leaves_the_graph_read(
@@ -1021,7 +1052,11 @@ def test_load_reads_no_description_unless_the_version_resolved_to_one_world_bank
     resolved = store.load(frame_ref=frame_ref)
 
     assert resolved.descriptions == {}
-    assert [properties for _, properties, _ in graph.node_arcs_many_requests] == [("name",)]
+    # The frame's provenance is one the catalogue does not list, so the label read also reads
+    # what names it.
+    assert [properties for _, properties, _ in graph.node_arcs_many_requests] == [
+        PROVENANCE_NAME_PROPERTIES
+    ]
 
 
 def test_a_failed_description_read_is_logged_not_cached_and_read_again(caplog):
@@ -1209,7 +1244,10 @@ def test_a_failed_refresh_keeps_its_retry_wait_through_a_citation_retry(
     graph.raise_for = frozenset({"country/ETH"})
 
     def label_reads() -> int:
-        return sum(properties == ("name",) for _, properties, _ in graph.node_arcs_many_requests)
+        return sum(
+            properties == PROVENANCE_NAME_PROPERTIES
+            for _, properties, _ in graph.node_arcs_many_requests
+        )
 
     before = label_reads()
     loads = [store.load(frame_ref=frame_ref) for _ in range(4)]

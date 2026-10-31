@@ -1423,10 +1423,10 @@ def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
     A preview serving no series reads nothing. A per-pair read makes one GET per series and
     one label read after them. Under a unit request each series first plans its conversion
     in two reads of materialise's graph, six when it converts, and a converting preview
-    loads the rate table in three reads, which then carry the label read. A bulk route may
-    instead make one bulk read and one label read. Converting, it plans each StatVar from
-    the reads its unit gate made, and between the two reads its request's view of the rate
-    cache rereads the table's refresh date, so the label read carries the table."""
+    loads the rate table in two reads. A bulk route may instead make one bulk read and one
+    label read. Converting, it plans each StatVar from the reads its unit gate made, and
+    between the two reads its request's view of the rate cache rereads the table's refresh
+    date. The catalogue lists the rate table, so no label read carries it."""
     series = [s for said in statements(answer) for s in said.preview or ()]
     if not series:
         return [{"requests": {}, "depth": 0}]
@@ -1435,15 +1435,14 @@ def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
     plans = [0 if cell.unit == "none" else 6 if s.converted else 2 for s in series]
     requests = {_PAIR_READ: len(series), _UNIT_PLAN_READ: sum(plans)}
     if converting:
-        requests |= {_UNIT_PLAN_READ + rates: 1, _PAIR_READ + rates: 1, _LABEL_READ + rates: 1}
-    else:
-        requests[_LABEL_READ] = 1
+        requests |= {_UNIT_PLAN_READ + rates: 1, _PAIR_READ + rates: 1}
+    requests[_LABEL_READ] = 1
     per_pair = {"requests": requests, "depth": max(plans) + (3 if converting else 0) + 2}
     if not cell.route.endswith("bulk"):
         return [per_pair]
     bulk = (
         {
-            "requests": {_BULK_READ: 1, _UNIT_PLAN_READ + rates: 1, _LABEL_READ + rates: 1},
+            "requests": {_BULK_READ: 1, _UNIT_PLAN_READ + rates: 1, _LABEL_READ: 1},
             "depth": 3,
         }
         if converting
@@ -1790,6 +1789,11 @@ def checks_for(cell: Cell) -> dict[str, Callable[[Doors], list[str]]]:
         for invariant, check in CHECKS.items()
         if invariant != "I9" or str(cell) in _I9_CELLS
     }
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(fixture_world.CATALOGUE)
 
 
 @pytest.fixture(scope="module")

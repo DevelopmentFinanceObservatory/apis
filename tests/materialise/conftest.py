@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy, SubjectPage
+from tests.fixtures.provenance import arc_targets
 
 from ._scope_availability import ScopeAvailability
 
@@ -99,6 +100,7 @@ class FakeGraphReader:
             "node_arc_values": 0,
             "node_subjects": 0,
             "node_arcs_many": 0,
+            "node_arc_targets_many": 0,
             "node_names_many": 0,
         }
         self.last_individual_probe_budget: int | None = None
@@ -251,6 +253,12 @@ class FakeGraphReader:
                 else None
             )
         return result
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        self._count("node_arc_targets_many")
+        return arc_targets(
+            self.node_arcs_many(dcids, properties=properties, deadline=deadline), self._arcs
+        )
 
     def node_names_many(
         self,

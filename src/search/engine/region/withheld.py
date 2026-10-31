@@ -11,9 +11,10 @@ failed read, or one that cannot finish by the request deadline, leaves the answe
 and notes the lost read (`degraded_reads.note_degraded_read`), so no cache stores it.
 
 The warning carries an `entity_unavailable` departure on the places, which names the withheld
-sources by the catalogue's name or graph label (`refs.provenance_labels`). The label read runs
-after the re-read, under the same deadline, and one that fails or cannot finish by then leaves
-the sources out of the departure, keeps the warning and notes the lost read.
+sources as every surface names a provenance (`refs.provenance_labels`). The name read runs after
+the re-read, under the same deadline. One that cannot finish by then leaves the sources out of
+the departure, and one that fails names the sources the catalogue lists alone. Either keeps the
+warning and notes the lost read.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from typing import Final, Protocol, runtime_checkable
 
 import dc_graph
 from dfo_platform.named import named_capped
-from materialise.provenance_doc import NodeArcsReader
+from materialise.provenance_doc import ProvenanceNameReader
 from search.engine.concurrency import current_scope
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import note_degraded_read
@@ -48,7 +49,7 @@ _HANDOFF_RESERVE_S: Final = 0.25
 
 
 @runtime_checkable
-class WithheldReader(NodeArcsReader, Protocol):
+class WithheldReader(ProvenanceNameReader, Protocol):
     """The re-read behind `withheld_by_registry` and the labels of what it finds, which
     `LiveGraphClient` implements."""
 
@@ -60,9 +61,9 @@ class WithheldReader(NodeArcsReader, Protocol):
 async def _source_names(
     graph: WithheldReader, withheld: Sequence[str], *, deadline: float | None
 ) -> tuple[str, ...]:
-    """The names of the `withheld` provenances a label read finds by `deadline`, empty when
-    that read fails or cannot finish by then."""
-    read = asyncio.to_thread(provenance_labels, withheld, graph)
+    """The names of the `withheld` provenances a name read finds by `deadline`, empty when
+    that read cannot finish by then (`refs.provenance_labels`)."""
+    read = asyncio.to_thread(provenance_labels, withheld, graph, deadline=deadline)
     try:
         labels = await (read if deadline is None else _await_bounded(read, deadline=deadline))
     except TimeoutError:

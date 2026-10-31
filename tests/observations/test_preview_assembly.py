@@ -9,6 +9,7 @@ import pytest
 from code_index import CodeIndex, IndexStamp
 from code_index.types import PartyRow
 from materialise.series_conversion import SeriesConversion
+from origin_catalogue import BASE
 from search.observations import (
     PreviewMode,
     SeriesRead,
@@ -18,6 +19,7 @@ from search.observations import (
     observations_too_large,
     preview_mode,
 )
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _POP = "Count_Person"
 _AID = "DFO/ODA"
@@ -31,7 +33,6 @@ _LABELS = {
     "country/GHA": "Ghana",
     "country/NOR": "Norway",
     "country/USA": "United States",
-    _PROV: "World Bank",
     "CurrencyEUR": "Euro",
     "USDollar": "US dollar",
     "gender-value/Female": "Female",
@@ -57,6 +58,14 @@ _INDEX = CodeIndex(
 )
 
 
+@pytest.fixture(autouse=True)
+def _listed_provenance(bind_catalogue) -> None:
+    """The catalogue lists `_PROV`, as production lists every provenance it admits."""
+    bind_catalogue(
+        FakeCatalogue(provenances={_PROV: provenance_row(_PROV, BASE, name="World Bank")})
+    )
+
+
 class _Labels:
     """A label source answering from `_LABELS` and recording each batch."""
 
@@ -66,6 +75,9 @@ class _Labels:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         self.batches.append(list(dcids))
         return {dcid: _LABELS[dcid] for dcid in dcids if dcid in _LABELS}
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        raise AssertionError(f"the catalogue lists every provenance served, not {dcids}")
 
 
 def _read(*values: float | None, total: int | None = None, **kwargs) -> SeriesRead:

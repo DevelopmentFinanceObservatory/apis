@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import cache
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
+from dc_graph import ArcTarget
 
 
 @cache
@@ -30,3 +31,28 @@ def facet_provenance(stat_var: str, raw: Mapping[str, object]) -> str | None:
     so a fixture that names none means that one."""
     stated = raw.get("provenanceId")
     return stated if isinstance(stated, str) else index_provenance(stat_var)
+
+
+def arc_targets(
+    read: Mapping[str, Mapping[str, tuple[str, ...]] | None],
+    nodes: Mapping[str, Mapping[str, Sequence[str]]],
+) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+    """`read`, a double's `node_arcs_many` answer, as `node_arc_targets_many` answers it: each
+    value a target carrying the first `name` and the `typeOf` the double's `nodes` hold for
+    it, as the mixer answers beside an arc's targets."""
+    return {
+        dcid: None
+        if arcs is None
+        else {
+            prop: tuple(
+                ArcTarget(
+                    value=value,
+                    name=next(iter(nodes.get(value, {}).get("name", ())), None),
+                    types=tuple(nodes.get(value, {}).get("typeOf", ())),
+                )
+                for value in values
+            )
+            for prop, values in arcs.items()
+        }
+        for dcid, arcs in read.items()
+    }

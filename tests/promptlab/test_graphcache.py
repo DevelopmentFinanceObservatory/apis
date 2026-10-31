@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from dc_graph import ArcTarget
 from promptlab.graphcache import CacheMiss, GraphCache, StaleCaptureError, _key
 from search.engine.clients.graph import (
     DetectedSV,
@@ -35,6 +36,7 @@ _EXPECTED_METHODS = (
     "node_type",
     "default_facet_policy",
     "node_arcs_many",
+    "node_arc_targets_many",
     "node_names_many",
     "node_subjects_many",
     "resolve_by_arc",
@@ -105,6 +107,10 @@ class _CountingGraph:
     ):
         self.calls["node_arcs_many"] += 1
         return self._inner.node_arcs_many(dcids, properties=properties)
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline: float | None = None):
+        self.calls["node_arc_targets_many"] += 1
+        return self._inner.node_arc_targets_many(dcids, properties=properties)
 
     def node_names_many(
         self,
@@ -309,6 +315,27 @@ def test_node_arcs_many_absent_dcid_caches_none(tmp_path):
 
     assert first == second == {"does-not-exist": None}
     assert inner.calls["node_arcs_many"] == 1
+
+
+def test_node_arc_targets_many_serves_a_written_target_s_name_and_types(tmp_path):
+    nodes = {
+        "dc/base/WHO_GHO": {"label": "WHO_GHO", "arcs": {"isPartOf": {"nodes": [{"dcid": "d"}]}}},
+        "d": {"label": "WHO Global Health Observatory", "type": "Dataset"},
+    }
+    inner = _CountingGraph(FakeGraph(nodes=nodes))
+
+    written = _cache(tmp_path, inner).node_arc_targets_many(
+        ["dc/base/WHO_GHO"], properties=("isPartOf",)
+    )
+    served = _cache(tmp_path, inner, read_only=True).node_arc_targets_many(
+        ["dc/base/WHO_GHO"], properties=("isPartOf",)
+    )
+
+    assert served == written
+    assert written["dc/base/WHO_GHO"]["isPartOf"] == (
+        ArcTarget(value="d", name="WHO Global Health Observatory", types=("Dataset",)),
+    )
+    assert inner.calls["node_arc_targets_many"] == 1
 
 
 def test_node_subjects_many_hit_miss_write_back(tmp_path):

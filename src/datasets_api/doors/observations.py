@@ -97,7 +97,7 @@ from materialise.formats import (
     read_canonical_frame_table,
     read_frame1_table,
 )
-from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
+from materialise.graph import UNRESOLVED_NODE, ArcTarget, GraphReader, GraphReadError
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from search.models import SpecObservations
 from search.observations import (
@@ -166,7 +166,7 @@ def classify_observations_exception(exc: BaseException) -> ProblemSpec | None:
 @dataclass(frozen=True)
 class _IndexLabels:
     """A `search.observations.LabelSource` over the graph's labels, each passed through the
-    code index (`code_index.labels.normalize_label`) as live labels are."""
+    code index (`code_index.labels.normalize_label`) as live labels are, and its node reads."""
 
     graph: GraphReader
     index: CodeIndex
@@ -174,6 +174,11 @@ class _IndexLabels:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         raw = self.graph.node_labels_batch(dcids)
         return {dcid: normalize_label(dcid, label, index=self.index) for dcid, label in raw.items()}
+
+    def node_arc_targets_many(
+        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        return self.graph.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
 
 
 @dataclass(frozen=True)

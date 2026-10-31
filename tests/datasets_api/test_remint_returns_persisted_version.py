@@ -469,6 +469,56 @@ def test_a_collapse_minted_over_a_renamed_base_cites_the_base_s_stored_citation(
     assert collapsed["prepared_at"] == _prepared(0)
 
 
+def test_a_collapse_reminted_under_a_changed_catalogue_keeps_the_base_s_recorded_warnings(
+    version_store, monkeypatch: pytest.MonkeyPatch
+):
+    """A collapse whose base version is on record under a head that rebuilds renders the
+    derived version from a fresh materialisation and serves the warnings the base recorded,
+    whatever origin warnings the call's catalogue finds."""
+    client = definition_door_client(
+        graph=groupby_fixture._graph(),
+        sdmx_transport=groupby_fixture._sdmx_transport(),
+        version_store=version_store,
+        head_writer=LiveHeadStore(store=version_store),
+        code_index=groupby_fixture._code_index(),
+        coverage=groupby_fixture._coverage_service(),
+    )
+    spec_id, sidecar = groupby_fixture._spec_id_and_sidecar()
+    _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
+
+    def unavailable_at(place: str) -> None:
+        warning = WarningModel(
+            code="un_system_unavailable", severity=severity, message=f"{detail} {place}."
+        )
+        monkeypatch.setattr(
+            serve, "un_unavailable_warnings", lambda _blocked, *, request=None: (warning,)
+        )
+
+    unavailable_at("country/GRC")
+    base = groupby_fixture._mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": True})
+    monkeypatch.setattr(get_catalogue_service(), "snapshot", lambda: FakeCatalogue(build_id="b"))
+    unavailable_at("country/ITA")
+    # A head past its maximum age rebuilds, and its version is on record.
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET confirmed_at = %s, materialised_at = %s "
+            "WHERE subject_id = %s",
+            ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", spec_id),
+        )
+
+    collapsed = groupby_fixture._mint(
+        client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": True, "groupby": {"by": ["recipient"], "op": "sum"}},
+    )
+
+    assert collapsed["content_version"] != base["content_version"]
+    (recorded,) = _snapshot(client, base)["warnings"]
+    assert recorded["message"].endswith("country/GRC.")
+    assert [w for w in collapsed["warnings"] if w["code"] == "un_system_unavailable"] == [recorded]
+
+
 class _RaceObservingWriter:
     """A `VersionRecordWriter` over `delegate` that keeps what each `write_version` stored.
 

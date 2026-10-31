@@ -88,7 +88,8 @@ from tests.engine._harness import (
 )
 from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
-from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
+from tests.fixtures import FakeGraph, FakeLLM, _load_json, fixture_provenance_names, make_resolver
+from tests.origin_catalogue.fake_catalogue import listing
 
 # Most entries here resolve several parts concurrently, so the parts' reads interleave and
 # repeat in an order that varies between runs; the distinct reads are compared.
@@ -110,6 +111,13 @@ _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
         "binding": {"kind": "unbound"},
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue, serve_catalogue) -> None:
+    catalogue = listing(fixture_provenance_names("dc/base/IndiaCensus"))
+    bind_catalogue(catalogue)
+    serve_catalogue(catalogue)
 
 
 def _client(*, materialise_graph=None) -> TestClient:

@@ -201,7 +201,8 @@ class TestCatalogueRows:
             "/api/graph/documentation/dc/base/HumanCRS",
             "/api/graph/documentation/dc/base/Other",
         ]
-        assert graph.label_reads == [["dc/base/Other"]]
+        assert graph.node_reads == [["dc/base/Other"]]
+        assert graph.label_reads == []
 
     def test_un_provenance_is_its_own_source(self, bind_catalogue):
         bind_catalogue(restrictive_catalogue(provenances=[_UN_WHO]))
@@ -216,12 +217,17 @@ class TestCatalogueRows:
 
 
 class _LabelSpyGraph(FakeGraph):
-    """Record every `node_labels_batch` call."""
+    """Record every `node_labels_batch` and `node_arc_targets_many` call."""
 
     def __init__(self, *, nodes: dict) -> None:
         super().__init__(nodes=nodes, obs={}, detect={}, resolve={})
         self.label_reads: list[list[str]] = []
+        self.node_reads: list[list[str]] = []
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         self.label_reads.append(list(dcids))
         return super().node_labels_batch(dcids)
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        self.node_reads.append(list(dcids))
+        return super().node_arc_targets_many(dcids, properties=properties, deadline=deadline)

@@ -269,10 +269,9 @@ def _translate_warnings(
 
     A warning's `detail` is its message, then, for each counted field it carries, the field's
     lead words and its refs' `labels`, the bare dcid where `labels` holds none, each followed
-    by its years where the field holds them (`_named_refs`). A provenance field names each
-    distinct name once, since provenances of one Dataset share its name. The fields share the
-    room the message leaves within `_WARNING_DETAIL_MAX` equally, and a field's unused share
-    passes to the next. Drops `severity` and raises `AssertionError` for an unmapped code."""
+    by its years where the field holds them (`_named_refs`). The fields share the room the
+    message leaves within `_WARNING_DETAIL_MAX` equally, and a field's unused share passes to
+    the next. Drops `severity` and raises `AssertionError` for an unmapped code."""
     translated: list[dict[str, object]] = []
     for warning in warnings:
         code = cast(str, warning["code"])
@@ -286,34 +285,39 @@ def _translate_warnings(
             (field, counted) for field in _REF_FIELDS if (counted := _counted(warning, field))
         ]
         for index, (field, counted) in enumerate(present):
-            items = _named_items(counted, field)
             names = [
                 labels.get(ref, ref.removeprefix(STAT_VAR_REF_PREFIX))[:LABEL_MAX] + years
-                for ref, years in items
+                for ref, years in _named_items(counted, field)
             ]
-            if field.provenance:
-                names = list(dict.fromkeys(names))
-            count = cast(int, counted["count"])
             room = (_WARNING_DETAIL_MAX - len(detail)) // (len(present) - index)
-            detail += _named_refs(
-                field, names, count=count, unlisted=count - len(items), budget=room
-            )
+            detail += _named_refs(field, names, count=cast(int, counted["count"]), budget=room)
         translated.append(
             {"kind": _WARNING_KIND_BY_CODE[code], "detail": detail[:_WARNING_DETAIL_MAX]}
         )
     return translated
 
 
-def _named_refs(
-    field: _RefField, names: Sequence[str], *, count: int, unlisted: int, budget: int
-) -> str:
+def _named_refs(field: _RefField, names: Sequence[str], *, count: int, budget: int) -> str:
     """`" {lead}: "`, then as many whole `names` as fit within `budget` characters, with
-    `" and N more"` for the names not shown and the `unlisted` refs the warning counts but
-    does not carry, closed by a full stop. When no name fits, the `count` stands for them all,
-    whatever the budget, so the field keeps its count."""
+    `" and N more"` for the `count` not named, closed by a full stop. When no name fits, the
+    count stands for them all, whatever the budget, so the field keeps its count.
+
+    A `provenance` field states its `count` in brackets after its lead and names each distinct
+    name once, since provenances of one Dataset share its name, so the names need not add up
+    to it: `" Withheld sources (8): A, B and others."`, `" Withheld sources (8)."` when no name
+    fits. "and others" closes the names when the field counts a provenance it does not carry
+    or a name does not fit."""
     lead = field.lead
+    if field.provenance:
+        distinct = list(dict.fromkeys(names))
+        for shown in range(len(distinct), 0, -1):
+            rest = " and others" if shown < len(distinct) or count > len(names) else ""
+            text = f" {lead} ({count}): {', '.join(distinct[:shown])}{rest}."
+            if len(text) <= budget:
+                return text
+        return f" {lead} ({count})."
     for shown in range(len(names), 0, -1):
-        hidden = len(names) - shown + unlisted
+        hidden = count - shown
         text = f" {lead}: {', '.join(names[:shown])}{f' and {hidden} more' if hidden > 0 else ''}."
         if len(text) <= budget:
             return text

@@ -245,10 +245,15 @@ from materialise.formats import (
     canonical_frame_document,
     read_canonical_frame_table,
 )
-from materialise.graph import GraphReader, GraphReadError
-from materialise.provenance_doc import SourceCitation, read_source_citations
+from materialise.graph import ArcTarget, GraphReader, GraphReadError
+from materialise.provenance_doc import (
+    PROVENANCE_NAME_PROPERTIES,
+    SourceCitation,
+    provenance_names,
+    read_source_citations,
+)
 from materialise.unit_cells import composed_unit_sides
-from origin_catalogue import current_catalogue, listed_provenance_labels
+from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
 from spec_registry.errors import (
     IdentityQuarantined,
@@ -462,6 +467,16 @@ def _document_bytes(*, rows: int, columns: int) -> int:
     one pointer per column and its value cell. Strings and units are shared across rows, so
     they add little at scale."""
     return rows * (_ROW_LIST_BYTES + 8 * columns + _VALUE_CELL_BYTES)
+
+
+def _provenance_cells(
+    *, columns: Sequence[str], rows: Sequence[Sequence[object]]
+) -> frozenset[str]:
+    """The provenance dcids the `provenance` column of `rows` holds."""
+    if _PROVENANCE_COLUMN not in columns:
+        return frozenset()
+    index = columns.index(_PROVENANCE_COLUMN)
+    return frozenset(cast(str, row[index]) for row in rows if row[index] is not None)
 
 
 def _capped_refs(
@@ -871,11 +886,11 @@ class LiveFrameStore:
             graph_generation, catalogue_build = self._read_under()
             labels, descriptions, labels_resolved = self._resolve_labels(
                 doc,
-                frame_ref=frame_ref,
-                manifest=document,
                 record=record,
                 composed=_composed(record, stored=stored),
                 inputs=inputs,
+                warned=warned_refs(manifest=document),
+                warned_provenances=warned_provenance_refs(manifest=document),
                 deadline=deadline,
             )
             continuation = frame_continuation(manifest=document)
@@ -938,11 +953,11 @@ class LiveFrameStore:
                 graph_generation, catalogue_build = self._read_under()
                 labels, descriptions, labels_resolved = self._resolve_labels(
                     frame.frame,
-                    frame_ref=frame_ref,
-                    manifest=document,
                     record=record,
                     composed=_composed(record, stored=stored),
                     inputs=inputs,
+                    warned=warned_refs(manifest=document),
+                    warned_provenances=warned_provenance_refs(manifest=document),
                     deadline=deadline,
                 )
                 if record_changed and not labels_resolved:
@@ -1150,15 +1165,15 @@ class LiveFrameStore:
         left_out = cast("Sequence[Mapping[str, object]]", body["left_out"])
         coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
         columns = tuple(dict.fromkeys(column for one in coordinates for column in one))
+        rows = [[one.get(column) for column in columns] for one in coordinates]
         refs = {
             ref: bare
-            for ref, bare in _capped_refs(
-                columns=columns,
-                rows=[[one.get(column) for column in columns] for one in coordinates],
-            ).items()
+            for ref, bare in _capped_refs(columns=columns, rows=rows).items()
             if ref not in frame.labels
         }
-        read, labelled = self._label_refs(refs, deadline=deadline)
+        read, labelled = self._label_refs(
+            refs, provenances=_provenance_cells(columns=columns, rows=rows), deadline=deadline
+        )
         labels = {**frame.labels, **read}
         anchor = RollingAnchor(
             period=cast(str, body["period"]),
@@ -1608,15 +1623,10 @@ class LiveFrameStore:
         return manifest, _source_documents(live), _documented(live)
 
     def _source_citations(
-        self,
-        refs: Sequence[str],
-        *,
-        frame_ref: FrameRef,
-        deadline: float,
-        documented: bool = True,
+        self, refs: Sequence[str], *, frame_ref: FrameRef, deadline: float
     ) -> dict[str, SourceCitation] | None:
-        """Each of `refs` cited (`read_source_citations`), with its documentation when
-        `documented`, read from the origin catalogue, else the graph, within the absolute
+        """Each of `refs` cited with its documentation (`read_source_citations` with
+        `documented`), read from the origin catalogue, else the graph, within the absolute
         monotonic `deadline` and timed as the call's `citation` phase, or `None` when the read
         failed, which is logged. The store has a graph."""
         assert self._graph is not None
@@ -1627,7 +1637,7 @@ class LiveFrameStore:
                     refs,
                     catalogue=current_catalogue(),
                     deadline=deadline,
-                    documented=documented,
+                    documented=True,
                 )
         except GraphReadError:
             logger.warning(
@@ -1644,25 +1654,23 @@ class LiveFrameStore:
         self,
         doc: Mapping[str, object],
         *,
-        frame_ref: FrameRef,
-        manifest: Mapping[str, object],
         record: DescriptionRecord | None,
         composed: Sequence[ComposedVariable],
         inputs: Sequence[DescriptionRecord],
+        warned: Sequence[str],
+        warned_provenances: Sequence[str],
         deadline: float,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
         """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities, group
-        members and series the warnings of `manifest` count (`assembler.mint.warned_refs`)
+        members and series its version's warnings count (`warned`, `assembler.mint.warned_refs`)
         under their `dcid:` refs, since what served nothing, was left out or was withheld has no
-        row, the provenances they count (`assembler.mint.warned_provenance_refs`) named as a
-        source citation names them (`_provenance_names`), and the refs
+        row, the provenances they count (`warned_provenances`), and the refs
         each of `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
         (`_computed_labels`), under the ref its `stat_var` cells hold, and read the description
         of the World Development Indicators variable `record` resolved to
-        (`_world_bank_descriptions`). The returned flag says the label, provenance name and
-        description reads all succeeded."""
+        (`_world_bank_descriptions`). The returned flag says both reads succeeded."""
         worded = set(_step_entities(record))
         if inputs:
             indexed = self._vocabulary(labels={})
@@ -1671,48 +1679,17 @@ class LiveFrameStore:
             )
         labels, resolved = self._resolve_ref_labels(
             doc,
-            leading_refs=[*_composed_sides(composed), *warned_refs(manifest=manifest)],
+            leading_refs=[*_composed_sides(composed), *warned],
             worded=sorted(worded),
             named=frozenset(_named_refs(record, composed=composed)),
+            warned_provenances=warned_provenances,
             deadline=deadline,
         )
-        provenance_names, named_ok = self._provenance_names(
-            warned_provenance_refs(manifest=manifest), frame_ref=frame_ref, deadline=deadline
-        )
-        labels.update(provenance_names)
         labels.update(
             self._computed_labels(record, composed=composed, inputs=inputs, labels=labels)
         )
         descriptions, described = self._world_bank_descriptions(record, deadline=deadline)
-        return labels, descriptions, resolved and named_ok and described
-
-    def _provenance_names(
-        self, refs: Sequence[str], *, frame_ref: FrameRef, deadline: float
-    ) -> tuple[dict[str, str], bool]:
-        """The name of each provenance of `refs`, a `dcid:` ref, by that ref, and whether the
-        read succeeded. The name is the one a source citation carries
-        (`read_source_citations`): the catalogue row's, else the parent Dataset's, else the
-        node's own, since a base provenance node is named for its import. The catalogue's names
-        need no graph read, so a failed read of the rest (`_source_citations`) keeps them. A ref
-        neither the catalogue lists nor the graph holds has no name, and a store with no graph
-        reads none."""
-        bare = {ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in refs}
-        listed = listed_provenance_labels(list(bare.values()))
-        names = {ref: listed[dcid] for ref, dcid in bare.items() if dcid in listed}
-        unlisted = {ref: dcid for ref, dcid in bare.items() if dcid not in listed}
-        if not unlisted or self._graph is None:
-            return names, True
-        cited = self._source_citations(
-            list(unlisted.values()), frame_ref=frame_ref, deadline=deadline, documented=False
-        )
-        if cited is None:
-            return names, False
-        names.update(
-            (ref, name)
-            for ref, dcid in unlisted.items()
-            if dcid in cited and (name := cited[dcid].name) is not None
-        )
-        return names, True
+        return labels, descriptions, resolved and described
 
     def _world_bank_descriptions(
         self, record: DescriptionRecord | None, *, deadline: float
@@ -1751,11 +1728,14 @@ class LiveFrameStore:
         leading_refs: Sequence[str],
         named: frozenset[str],
         worded: Sequence[str] = (),
+        warned_provenances: Sequence[str] = (),
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
-        order, then unit dcid refs, capped at 100 in row order, and say whether the graph read
-        succeeded. `leading_refs`, then a composed unit's StatVar sides, count as stat_var
+        order, then unit dcid refs, capped at 100 in row order, with the `dcid:` refs of
+        `warned_provenances` past both caps, and say whether the graph read succeeded. The
+        provenance cells and `warned_provenances` are named as `_label_refs` names a
+        provenance. `leading_refs`, then a composed unit's StatVar sides, count as stat_var
         refs ahead of the columns' own refs, and a composed unit's string sides as unit refs.
         A ref in `named` is left out of the read. Each bare dcid in `worded` counts under the
         first cap after `leading_refs`. `dcid:spec_...` family refs use stored
@@ -1776,7 +1756,10 @@ class LiveFrameStore:
             worded=worded,
             named=named,
         )
-        return self._label_refs(refs, deadline=deadline)
+        warned = {ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in warned_provenances}
+        refs.update(warned)
+        provenances = _provenance_cells(columns=columns, rows=rows) | set(warned.values())
+        return self._label_refs(refs, provenances=provenances, deadline=deadline)
 
     def _computed_labels(
         self,
@@ -1834,48 +1817,88 @@ class LiveFrameStore:
         )
 
     def _label_refs(
-        self, refs: Mapping[str, str], *, deadline: float
+        self, refs: Mapping[str, str], *, provenances: frozenset[str], deadline: float
     ) -> tuple[dict[str, str], bool]:
         """Label `refs`, a map from each ref to its bare dcid, and say whether every read
-        succeeded, as `_resolve_labels` describes. A provenance the catalogue lists takes its
-        name (`listed_provenance_labels`) and leaves the graph read, since its graph `name` is
-        its import's."""
+        succeeded, as `_resolve_labels` describes. A ref whose bare dcid is in `provenances` is
+        named by `materialise.provenance_doc.provenance_names`, timed as the call's
+        `provenance_names` phase. A listed one is read for nothing, and an unlisted one rides
+        the labels' one read, which then reads `PROVENANCE_NAME_PROPERTIES` with each target's
+        name and types (`node_arc_targets_many`)."""
+        catalogue = current_catalogue()
         family_refs: dict[str, str] = {}
+        provenance_refs: dict[str, list[str]] = {}
         graph_bare_to_refs: dict[str, list[str]] = {}
-        listed = listed_provenance_labels(list(refs.values()))
-        labels: dict[str, str] = {}
+        read: list[str] = []
         for ref, bare in refs.items():
             if bare.startswith(_FAMILY_REF_PREFIX):
                 family_refs[ref] = bare
-            elif bare in listed:
-                labels[ref] = listed[bare]
+                continue
+            if bare in provenances:
+                provenance_refs.setdefault(bare, []).append(ref)
+                if catalogue.provenance(bare) is not None:
+                    continue
             else:
                 graph_bare_to_refs.setdefault(bare, []).append(ref)
+            read.append(bare)
+        read = list(dict.fromkeys(read))
 
+        labels: dict[str, str] = {}
         family_read_ok = True
         if family_refs:
             family_labels, family_read_ok = self._resolve_family_labels(family_refs)
             labels.update(family_labels)
 
-        if not graph_bare_to_refs or self._graph is None:
+        if self._graph is None:
             return labels, family_read_ok
 
-        try:
-            arcs_by_bare = self._graph.node_arcs_many(
-                tuple(graph_bare_to_refs), properties=("name",), deadline=deadline
+        # A provenance the catalogue does not list rides the labels' one read, which then
+        # carries each target's name and types (`provenance_names`).
+        named_read = any(bare in provenance_refs for bare in read)
+        targets: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        read_ok = True
+        if read:
+            try:
+                if named_read:
+                    targets = self._graph.node_arc_targets_many(
+                        read, properties=PROVENANCE_NAME_PROPERTIES, deadline=deadline
+                    )
+                    names_by_bare = {
+                        bare: None
+                        if node is None
+                        else tuple(target.value for target in node.get("name", ()))
+                        for bare, node in targets.items()
+                    }
+                else:
+                    names_by_bare = {
+                        bare: None if arcs is None else arcs.get("name", ())
+                        for bare, arcs in self._graph.node_arcs_many(
+                            read, properties=("name",), deadline=deadline
+                        ).items()
+                    }
+            except GraphReadError:
+                read_ok = False
+                names_by_bare = {}
+            for bare, names in names_by_bare.items():
+                label = None if names is None else label_or_self_name(names, bare)
+                if label is None or bare not in graph_bare_to_refs:
+                    continue
+                for ref in graph_bare_to_refs[bare]:
+                    labels[ref] = label
+        if provenance_refs:
+            with phase("provenance_names"):
+                names, named_ok = provenance_names(
+                    self._graph,
+                    list(provenance_refs),
+                    catalogue=catalogue,
+                    deadline=deadline,
+                    targets=targets,
+                )
+            read_ok = read_ok and named_ok
+            labels.update(
+                (ref, name) for bare, name in names.items() for ref in provenance_refs[bare]
             )
-        except GraphReadError:
-            return labels, False
-
-        for bare, arcs in arcs_by_bare.items():
-            if arcs is None:
-                continue
-            label = label_or_self_name(arcs.get("name", ()), bare)
-            if label is None:
-                continue
-            for ref in graph_bare_to_refs[bare]:
-                labels[ref] = label
-        return labels, family_read_ok
+        return labels, family_read_ok and read_ok
 
     def _resolve_family_labels(self, family_refs: Mapping[str, str]) -> tuple[dict[str, str], bool]:
         """Label family refs with one batched definition read and `family_label`, and say

@@ -132,7 +132,7 @@ from dfo_provenance_docs import (
     parse_transformations,
 )
 
-from dc_graph import GraphReadError
+from dc_graph import ArcTarget, GraphReadError, display_name
 from dfo_platform.roles import RoleAxis
 from materialise.cadence import known_cadence_label
 from materialise.graph import SubjectPage
@@ -221,8 +221,8 @@ CONFLICTING_VALUES: Literal["conflicting_values"] = "conflicting_values"
 
 
 class NodeArcsReader(Protocol):
-    """The one graph read a provenance's name needs (`read_source_names`). Graph clients and
-    test doubles satisfy it structurally."""
+    """The batched node read a citation's identity takes (`_read_unlisted_citations`). Graph
+    clients and test doubles satisfy it structurally."""
 
     def node_arcs_many(
         self,
@@ -232,6 +232,21 @@ class NodeArcsReader(Protocol):
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         """Read the requested arcs by dcid; missing nodes map to `None`."""
+        ...
+
+
+class ProvenanceNameReader(Protocol):
+    """The one graph read `provenance_names` makes. Graph clients and test doubles satisfy it
+    structurally."""
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each dcid's arcs with their targets' names and types; missing nodes map to `None`."""
         ...
 
 
@@ -853,25 +868,74 @@ class SourceCitation:
     documentation_read_failed: bool = False
 
 
-def read_source_names(
-    graph: NodeArcsReader,
+PROVENANCE_NAME_PROPERTIES: tuple[str, ...] = ("name", "typeOf", "isPartOf")
+"""The arcs `provenance_names` reads of each provenance the catalogue does not list."""
+
+
+def provenance_names(
+    graph: ProvenanceNameReader,
     dcids: Sequence[str],
     *,
     catalogue: Catalogue,
-    deadline: float | None = None,
-) -> dict[str, str]:
-    """The name `read_source_citations` gives each distinct dcid of `dcids` it cites, by dcid:
-    the catalogue row's for a listed provenance, with no graph read, else the graph's
-    (`_read_unlisted_citations`), the parent Dataset's name before the node's own. A dcid
-    neither the catalogue lists nor the graph holds is absent, and one whose citation has no
-    name."""
+    deadline: float | None,
+    targets: Mapping[str, Mapping[str, tuple[ArcTarget, ...]] | None] | None = None,
+) -> tuple[dict[str, str], bool]:
+    """The name of each distinct provenance of `dcids`, by dcid, and whether the graph read
+    succeeded. This is the name a source citation gives it (`read_source_citations`), since a
+    base provenance's own graph `name` is its import's, such as `WHO_GHO`.
+
+    A provenance `catalogue` lists takes its row's name with no read. Every other is read in
+    one `node_arc_targets_many` of `PROVENANCE_NAME_PROPERTIES`, bounded by `deadline`, or
+    taken from `targets` when the caller read those properties for it already. A node typed
+    Dataset is named by its own `name`. Any other is named by its first `isPartOf` target
+    typed Dataset (`first_dataset_parent`'s rule), from the name the read carries beside that
+    target, else by its own `name`. Each name passes `display_name`'s guard, and a dcid with
+    no name is absent. A target carries the first of several names where `display_name`
+    takes the greatest; the 680 Dataset parents of the dev graph's 1,277 Provenances each
+    carry one.
+
+    A call makes no request when the catalogue lists every dcid, or one otherwise. A failed
+    read, `GraphReadError` with the deadline included, is logged and returns the catalogue's
+    names with `False`.
+    """
     unique = list(dict.fromkeys(dcids))
     names = {dcid: row.name for dcid in unique if (row := catalogue.provenance(dcid)) is not None}
-    read = _read_unlisted_citations(
-        graph, [dcid for dcid in unique if dcid not in names], deadline=deadline
-    )
-    names.update((dcid, name) for dcid, citation in read.items() if (name := citation.name))
-    return names
+    unlisted = [dcid for dcid in unique if dcid not in names]
+    if not unlisted:
+        return names, True
+    if targets is None:
+        try:
+            targets = graph.node_arc_targets_many(
+                unlisted, properties=PROVENANCE_NAME_PROPERTIES, deadline=deadline
+            )
+        except GraphReadError:
+            logger.warning(
+                "Provenance name read failed for %d provenances the catalogue does not list; "
+                "naming the listed ones alone",
+                len(unlisted),
+                exc_info=True,
+            )
+            return names, False
+    for dcid in unlisted:
+        node = targets.get(dcid)
+        if node is None:
+            continue
+        parent = (
+            None
+            if DATASET_TYPE in (target.value for target in node.get("typeOf", ()))
+            else next(
+                (target for target in node.get("isPartOf", ()) if DATASET_TYPE in target.types),
+                None,
+            )
+        )
+        name = (
+            display_name(() if parent.name is None else (parent.name,), parent.value)
+            if parent is not None
+            else None
+        ) or display_name(tuple(target.value for target in node.get("name", ())), dcid)
+        if name is not None:
+            names[dcid] = name
+    return names, True
 
 
 def read_source_citations(

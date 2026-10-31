@@ -50,6 +50,7 @@ from search.engine.region.refs import (
     _ref_or_miss,
     _refs_present,
     _where_slot_refs,
+    provenance_labels,
 )
 from search.engine.retrieval.bound_values import (
     RoleClassWalks,
@@ -112,7 +113,7 @@ from search.models import (
     TimeWindow,
     Warning,
 )
-from search.observations import provenance_refs, unlisted_provenances
+from search.observations import provenance_refs
 
 if TYPE_CHECKING:
     from materialise.place_scope import DefaultPresence
@@ -597,8 +598,7 @@ def _ground_answer_lookup(
 
     Collect distinct ids across shapes, slots, StatVars, roles, and options for one
     `node_labels_batch` call. Missing graph labels fall back to code-index labels.
-    Source labels come from the origin catalogue; only provenance ids it does not list
-    join the batch.
+    Sources join no batch: each is named by `refs.provenance_labels`.
     Index-sourced taxonomies offer a bound code's children and its parent, or, for a bound
     root, its children and every other root (`CodeIndex.level_scoped_options`). Unbound
     slots and bound sets offer each root and its children. Deeper levels are excluded from
@@ -665,12 +665,12 @@ def _ground_answer_lookup(
         for option_dcids in (shape_draft.slot_taxonomy or {}).values():
             name_dcids.update(option_dcids)
 
-    # Citations keep their first-seen order. The catalogue labels the ones it lists.
+    # Citations keep their first-seen order, and join no batch (`refs.provenance_labels`).
     prov_dcids = citable_source_ids(cited_facets(plan))
-    name_dcids.update(unlisted_provenances(prov_dcids))
     name_dcids.update(answer_facet_dcids(plan, unit_request))
 
     labels = graph.node_labels_batch(list(name_dcids))
+    labels.update(provenance_labels(prov_dcids, graph, deadline=None))
     # Fill graph label misses from the release's code index.
     code_index = get_index()
     for dcid in name_dcids:
