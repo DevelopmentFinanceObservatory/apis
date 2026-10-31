@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import itertools
 import json
+import logging
 import math
 import re
 import time
@@ -977,6 +978,30 @@ def walk_options(graph: EngineGraphClient, options: EngineOptions | None = None)
     if options.materialise_graph is not None or not isinstance(graph, FakeGraph):
         return options
     return dataclasses.replace(options, materialise_graph=member_walk_reader(graph))
+
+
+@contextmanager
+def resolve_log_lines() -> Iterator[list[dict]]:
+    """Collect the JSON object of each `resolve` line logged inside the block."""
+    # A handler on the module's own logger, since the `search` logger may stop propagation.
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    core_logger = logging.getLogger("search.engine.core")
+    core_logger.addHandler(handler)
+    previous_level = core_logger.level
+    core_logger.setLevel(logging.INFO)
+    lines: list[dict] = []
+    try:
+        yield lines
+    finally:
+        core_logger.removeHandler(handler)
+        core_logger.setLevel(previous_level)
+        lines.extend(
+            json.loads(r.getMessage().removeprefix("resolve "))
+            for r in records
+            if r.getMessage().startswith("resolve {")
+        )
 
 
 def make_request(query: str) -> ResolveRequest:

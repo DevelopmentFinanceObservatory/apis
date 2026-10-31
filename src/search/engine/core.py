@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing
@@ -21,6 +22,7 @@ from typing import Protocol
 import search.engine.config as config  # module-attribute access: SEARCH_ENGINE_MODEL/SEARCH_LLM_SEED are runtime-resolved
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from dfo_platform import refusal
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
@@ -51,12 +53,14 @@ from search.engine.envelope import (
     now_ms,
     with_step_timing,
 )
+from search.engine.errors import engine_problem
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope, PartMemoScope
+from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import held_family_memo
 from search.models import (
@@ -83,7 +87,8 @@ logger = logging.getLogger(__name__)
 class ResolveHealth:
     """Run health that `resolve_async` reports beside the response, outside its body.
 
-    `degraded_leg` is true when a raw-text leg failed and was backfilled.
+    `degraded_leg` is the `done` event's: a leg of the answer stands on less than a later
+    request may read (`RegionResult.leg_degraded`).
     """
 
     degraded_leg: bool = False
@@ -108,25 +113,48 @@ class SkillsIndexSource(Protocol):
 class _ResolveRecord:
     """What one resolve's log line reports, filled in as its events pass.
 
-    `trace_id` is read when the request starts, because `get_trace_id` in the `finally` after a
-    client disconnect can mint a fresh id that joins nothing. `cache` is the response cache outcome:
-    `inactive`, `miss`, `hit layer1` or `hit layer2`. `memo_hits` and `memo_misses` count a
-    `dataset_resubmit` request's part memo lookups, and stay None on every other request and
-    when the memo is off. `timed_out` and `degraded_leg` come from the `done` event and stay
-    None when the request ended before it.
+    `cache` is the response cache outcome: `inactive`, `miss`, `hit layer1` or `hit layer2`.
+    `memo_hits` and `memo_misses` count a `dataset_resubmit` request's part memo lookups, and
+    stay None on every other request and when the memo is off. `response` and `done` are the
+    request's terminal events, None when it ended before them. `raised` is the failure or
+    cancellation that left the pipeline, None when it ran to its end.
     """
 
-    trace_id: str
     cache: str = "inactive"
     memo_hits: int | None = None
     memo_misses: int | None = None
     response: ResolveResponse | None = None
-    timed_out: bool | None = None
-    degraded_leg: bool | None = None
+    done: DoneEvent | None = None
+    raised: BaseException | None = None
+
+
+def _error_code(record: _ResolveRecord, *, hard: float) -> str | None:
+    """How a request that did not run to its end ended, None for one that did.
+
+    A failure reads the problem code the route serves for it. The hard cap reaches the
+    pipeline as cancellation on both transports, so a cancellation at or past `hard` reads
+    `timeout` and an earlier one, such as a client disconnect, `cancelled`. A disconnect whose
+    unwinding crosses `hard` reads `timeout`. A cancellation after `done` is the stream's own
+    teardown.
+    """
+    raised = record.raised
+    if raised is None:
+        return None
+    if isinstance(raised, Exception):
+        problem = engine_problem(raised)
+        return problem.code if problem is not None else refusal.UNHANDLED_DEFAULT.code
+    if record.done is not None:
+        return None
+    return refusal.TIMEOUT_DEFAULT.code if time.monotonic() >= hard else "cancelled"
 
 
 def _log_resolve(
-    request: ResolveRequest, record: _ResolveRecord, *, caller: str | None, transport: str
+    request: ResolveRequest,
+    record: _ResolveRecord,
+    *,
+    caller: str | None,
+    transport: str,
+    hard: float,
 ) -> None:
     """Log one INFO line per resolve, `resolve ` followed by a JSON object.
 
@@ -137,14 +165,20 @@ def _log_resolve(
 
     `outcome` is the response's `status` for a resolution and its `kind` otherwise.
     `part_statuses` lists each part's status in order, `no_data_reasons` each no_data part's
-    `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is the
-    diagnostics' token counts. `timed_out` and `degraded_leg` come from the `done` event. A
-    leg cut at the soft deadline is backfilled as `no_data`/`variable_not_resolved`, so only
-    `timed_out` tells it from a real miss.
+    `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is
+    `diagnostics.llm_usage`, so it leaves out tokens spent by cut or aborted legs.
 
-    `query_sha256` is the sha256 hex of a raw_text query after `.strip().casefold()`, null for
-    other input kinds. It is a pseudonymous key for counting repeats, and hashing a guessed
-    phrasing recovers a common query. The line carries no query text.
+    `error_code` says how a request that did not run to its end ended (`_error_code`): a
+    problem code, `timeout` at the hard cap, or `cancelled`. `timed_out` and `degraded_leg`
+    come from the `done` event. Before `done`, `degraded_leg` is null and `timed_out` is true
+    for a `timeout` and null otherwise. A leg cut at the soft deadline is backfilled as
+    `no_data`/`timed_out`. A leg whose error was swallowed is backfilled as
+    `no_data`/`variable_not_resolved`, so only `degraded_leg` tells it from a real miss.
+
+    `query_sha256` is the sha256 hex of `normalise_query(query).casefold()` for a raw_text
+    query, the text the response cache keys on with case folded, null for other input kinds.
+    It is a pseudonymous key for counting repeats, and hashing a guessed phrasing recovers a
+    common query. The line carries no query text.
 
     Every response-derived field is null, and every list empty, when the request ended before
     its response event.
@@ -162,15 +196,21 @@ def _log_resolve(
         outcome = response.kind
     inp = request.input
     query_sha256 = (
-        hashlib.sha256(inp.query.strip().casefold().encode()).hexdigest()
+        hashlib.sha256(normalise_query(inp.query).casefold().encode()).hexdigest()
         if isinstance(inp, RawTextInput)
         else None
     )
+    error_code = _error_code(record, hard=hard)
+    done = record.done
+    if done is not None:
+        timed_out, degraded_leg = done.timed_out, done.degraded_leg
+    else:
+        timed_out, degraded_leg = True if error_code == refusal.TIMEOUT_DEFAULT.code else None, None
     logger.info(
         "resolve %s",
         json.dumps(
             {
-                "trace_id": record.trace_id,
+                "trace_id": get_trace_id(),
                 "kind": inp.kind,
                 "caller": caller,
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
@@ -192,8 +232,9 @@ def _log_resolve(
                     part.unsupported.code for part in parts if isinstance(part, UnsupportedPart)
                 ],
                 "llm_usage": response.diagnostics.llm_usage if response is not None else None,
-                "timed_out": record.timed_out,
-                "degraded_leg": record.degraded_leg,
+                "error_code": error_code,
+                "timed_out": timed_out,
+                "degraded_leg": degraded_leg,
                 "query_sha256": query_sha256,
             }
         ),
@@ -315,7 +356,7 @@ async def resolve_events(
     if budget is None:
         budget = request_budget(kind=request.input.kind)
     start_ms = budget.start_ms
-    record = _ResolveRecord(trace_id=get_trace_id())
+    record = _ResolveRecord()
     request_rate_cache = rate_cache.for_request() if rate_cache is not None else None
     owns_graph = graph is None
     _graph = graph if graph is not None else _build_live_graph_client()
@@ -383,22 +424,30 @@ async def resolve_events(
                         )
                         record.response = event.response
                     elif isinstance(event, DoneEvent):
-                        record.timed_out = event.timed_out
-                        record.degraded_leg = event.degraded_leg
+                        record.done = event
                     yield event
+    except BaseException as exc:
+        record.raised = exc
+        raise
     finally:
-        _log_resolve(
-            request,
-            record,
-            caller=caller,
-            transport="sse" if stream_slot_options else "buffered",
-        )
-        if owns_graph and hasattr(_graph, "close"):
-            _graph.close()  # ty: ignore[call-non-callable]  # hasattr
-        if owns_sdmx and hasattr(_sdmx, "close"):
-            _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
-        if _shared_resolvekit is not None:
-            release_shared(_shared_resolvekit)
+        try:
+            _log_resolve(
+                request,
+                record,
+                caller=caller,
+                transport="sse" if stream_slot_options else "buffered",
+                hard=budget.hard,
+            )
+        except Exception as exc:
+            # A logging failure must not replace the response or skip the cleanup.
+            logger.warning("resolve log line failed: %s", type(exc).__name__)
+        finally:
+            if owns_graph and hasattr(_graph, "close"):
+                _graph.close()  # ty: ignore[call-non-callable]  # hasattr
+            if owns_sdmx and hasattr(_sdmx, "close"):
+                _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
+            if _shared_resolvekit is not None:
+                release_shared(_shared_resolvekit)
 
 
 def _with_request_step(event: Event, *, step: str, ms: int) -> Event:

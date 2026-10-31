@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import dc_graph
 from dc_sdmx import SdmxClientError
-from dfo_platform import Alternative, Cause
+from dfo_platform import Alternative, Cause, ProblemSpec
 from materialise.errors import UpstreamResponseError, UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 
@@ -73,6 +73,40 @@ graph read, a deadline the graph read crossed among them (`GraphDeadlineExceeded
 an SDMX read, or an upstream answer materialise could not use. A preview read counts them
 as failed reads and omits what they leave unread, beside `TimeoutError` for the shared
 SDMX deadline (`observations.fetch`, `observations.bulk_conversion`)."""
+
+
+def engine_problem(exc: BaseException) -> ProblemSpec | None:
+    """The refusal a pipeline failure answers with, or `None` when it is not one of Search's
+    own. It logs nothing, so the `resolve` log line can name the code the route serves."""
+    if isinstance(exc, EngineInputError):
+        # Code-less routing failures keep generic code and detail to prevent ID probing.
+        code = exc.code if exc.code is not None else "request_invalid"
+        detail = None if exc.code is None else str(exc)
+        return ProblemSpec(
+            status=exc.status,
+            code=code,
+            detail=detail,
+            pointer=exc.pointer,
+            alternatives=exc.alternatives,
+            cause=exc.cause,
+            retryable=False,
+        )
+    if isinstance(exc, RATE_TABLE_REFUSALS):
+        # The materialise library refuses an inadmissible rate table with 501
+        # `capability_unavailable` and a table version that moved mid-load with 503, retryable.
+        return ProblemSpec(
+            status=exc.status, code=exc.code, detail=exc.detail, retryable=exc.retryable
+        )
+    if isinstance(exc, EngineInfraError):
+        # Upstream 4xx responses (e.g. graph returned 404) map to 502 Bad Gateway
+        # so callers can distinguish client-side upstream errors from transient failures.
+        upstream_status = getattr(exc, "upstream_status", None)
+        if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
+            return ProblemSpec(status=502, code="upstream_error", retryable=True)
+        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+    if isinstance(exc, TimeoutError):
+        return ProblemSpec(status=504, code="timeout", retryable=True)
+    return None
 
 
 class LLMInfraError(EngineInfraError):

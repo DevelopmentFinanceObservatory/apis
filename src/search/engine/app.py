@@ -104,6 +104,7 @@ from search.engine.errors import (
     EngineInputError,
     GraphInfraError,
     LLMInfraError,
+    engine_problem,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
 from search.engine.extraction_store import build_extraction_store
@@ -177,34 +178,12 @@ def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
     """Return a Search `ProblemSpec` or defer to platform classification. JSON and SSE use
     this function. Platform classification handles routing 404/405 errors.
     """
-    if isinstance(exc, EngineInputError):
-        # Code-less routing failures keep generic code and detail to prevent ID probing.
-        code = exc.code if exc.code is not None else "request_invalid"
-        detail = None if exc.code is None else str(exc)
-        return ProblemSpec(
-            status=exc.status,
-            code=code,
-            detail=detail,
-            pointer=exc.pointer,
-            alternatives=exc.alternatives,
-            cause=exc.cause,
-            retryable=False,
-        )
     if isinstance(exc, RATE_TABLE_REFUSALS):
-        # The materialise library refuses an inadmissible rate table with 501
-        # `capability_unavailable` and a table version that moved mid-load with 503, retryable.
         logger.warning("Rate table refusal %s: %s", exc.code, exc.detail)
-        return ProblemSpec(
-            status=exc.status, code=exc.code, detail=exc.detail, retryable=exc.retryable
-        )
-    if isinstance(exc, EngineInfraError):
+    elif isinstance(exc, EngineInfraError):
         logger.error("Engine infrastructure error: %s", exc, exc_info=exc)
-        # Upstream 4xx responses (e.g. graph returned 404) map to 502 Bad Gateway
-        # so callers can distinguish client-side upstream errors from transient failures.
-        upstream_status = getattr(exc, "upstream_status", None)
-        if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
-            return ProblemSpec(status=502, code="upstream_error", retryable=True)
-        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+    elif isinstance(exc, asyncio.TimeoutError):
+        logger.error("Request hit its hard deadline")
     if isinstance(exc, RequestValidationError):
         # The platform maps body errors to 400 and schema-version errors to 422. Search adds
         # a field-specific refinement below.
@@ -231,10 +210,7 @@ def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
                     detail=None,
                 )
         return problem
-    if isinstance(exc, asyncio.TimeoutError):
-        logger.error("Request hit its hard deadline")
-        return ProblemSpec(status=504, code="timeout", retryable=True)
-    return None
+    return engine_problem(exc)
 
 
 # Module-level sentinels for the SSE merge queue.

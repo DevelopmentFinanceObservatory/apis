@@ -13,6 +13,7 @@ from origin_catalogue import bound_catalogue
 from search.engine import config
 from search.engine.binders import Binder, Fallbacks, configured_binder
 from search.engine.envelope import now_ms
+from search.engine.events import DoneEvent
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
@@ -336,6 +337,12 @@ async def _woken_layer2_follower(
     return leader, follower, follower_task
 
 
+async def _done_of_hit(scope: CacheScope, response: ResolveResponse) -> DoneEvent:
+    [*_, done] = [event async for event in scope.hit_events(response, start_ms=now_ms())]
+    assert isinstance(done, DoneEvent)
+    return done
+
+
 async def _test_layer2_follower_of_a_timed_out_leader_gets_no_layer1_entry(base: ResolveResponse):
     cache = _new_cache()
     extraction = _population_india_extraction()
@@ -375,7 +382,15 @@ async def _test_layer2_follower_of_a_degraded_leader_gets_no_layer1_entry(base: 
     result = await follower_task
     assert result is not None
     assert follower.outcome == "hit layer2"
+    assert (await _done_of_hit(follower, result)).degraded_leg is True
+    # A follower that publishes passes the verdict on to its own followers.
+    second = _make_scope(cache)
+    second_task = asyncio.ensure_future(second.lookup_raw(query_2))
+    await asyncio.sleep(0)
     await follower.store(result)
+    second_result = await second_task
+    assert second_result is not None
+    assert (await _done_of_hit(second, second_result)).degraded_leg is True
 
     assert await _new_scope_hits_layer1(cache, query_1) is False
     assert await _new_scope_hits_layer1(cache, query_2) is False

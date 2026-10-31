@@ -95,6 +95,7 @@ def test_non_infra_exception_under_degrade_sets_degraded_leg():
     assert out.degraded_leg is True
     assert out.regions[0].status == "no_data"
     assert out.regions[0].no_data_reason == "variable_not_resolved"
+    assert [region.leg_degraded for region in out.regions] == [True, False]
 
 
 def test_clean_multi_variable_run_leaves_degraded_leg_false():

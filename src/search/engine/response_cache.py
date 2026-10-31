@@ -13,6 +13,7 @@ from asyncio import Event, Lock
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import graph_generation.config as generation_config  # the constructor's own unknown-generation TTL default
 import search.engine.config as config  # module-attribute access for runtime-resolved values
@@ -50,18 +51,29 @@ class _Entry:
     expires_at: float
 
 
+class LeaderAnswer(NamedTuple):
+    """What a follower receives from its leader: the published value and the verdicts the
+    bytes cannot show. `storable` holds even when this store rejects an oversized value."""
+
+    value: bytes
+    timed_out: bool
+    degraded_leg: bool
+    storable: bool
+
+
 @dataclass
 class _Waiter:
     """Shared signal and result for one in-flight key.
 
     `event` wakes all followers. `value=None` means abandonment; otherwise
-    `timed_out` and `storable` carry the leader's verdict. `interest` counts
+    `timed_out`, `degraded_leg` and `storable` carry the leader's verdict. `interest` counts
     leases not yet released; `on_orphaned` runs when that count reaches zero.
     """
 
     event: Event = field(default_factory=Event)
     value: bytes | None = None
     timed_out: bool = False
+    degraded_leg: bool = False
     storable: bool = True
     interest: int = 1
     on_orphaned: Callable[[], object] | None = None
@@ -151,12 +163,11 @@ class ResponseCache:
         self._store.move_to_end(key)
         return entry.value
 
-    async def await_leader(self, lease: Lease) -> tuple[bytes, bool, bool] | None:
-        """Wait for a follower's leader; return `(value, timed_out, storable)` or `None` on abandon.
+    async def await_leader(self, lease: Lease) -> LeaderAnswer | None:
+        """Wait for a follower's leader; return its `LeaderAnswer` or `None` on abandon.
 
-        `storable` is the leader's verdict, even when this store rejects an
-        oversized value. Calling this with a leader lease raises `ValueError`.
-        The wait is unbounded; callers enforce their own deadlines.
+        Calling this with a leader lease raises `ValueError`. The wait is unbounded;
+        callers enforce their own deadlines.
         """
         if lease.is_leader:
             raise ValueError(
@@ -165,10 +176,10 @@ class ResponseCache:
             )
         assert lease._waiter is not None  # every lease acquire() returns carries one
         await lease._waiter.event.wait()
-        value = lease._waiter.value
-        if value is None:
+        waiter = lease._waiter
+        if waiter.value is None:
             return None
-        return value, lease._waiter.timed_out, lease._waiter.storable
+        return LeaderAnswer(waiter.value, waiter.timed_out, waiter.degraded_leg, waiter.storable)
 
     def on_orphaned(self, lease: Lease, callback: Callable[[], object]) -> None:
         """Register the leader's orphan callback; non-leader leases raise `ValueError`.
@@ -211,6 +222,7 @@ class ResponseCache:
         also: Sequence[str] = (),
         storable: bool = True,
         timed_out: bool = False,
+        degraded_leg: bool = False,
         max_age_s: float | None = None,
     ) -> None:
         """Wake followers and optionally store `value` under this and `also` keys.
@@ -220,8 +232,8 @@ class ResponseCache:
         sets the lifetime for all keys, while `None` uses the cache's `ttl_s`.
 
         `storable=False` still publishes the value to followers. They also
-        receive the leader's `timed_out` and `storable` verdicts, which the
-        response bytes cannot show. Oversized storable values are not stored
+        receive the leader's `timed_out`, `degraded_leg` and `storable` verdicts, which
+        the response bytes cannot show. Oversized storable values are not stored
         and increment `oversized`; non-storable values do not.
 
         Retained bytes count each stored bytes object once, however many keys
@@ -247,6 +259,7 @@ class ResponseCache:
                 del self._inflight[lease.key]
                 waiter.value = value
                 waiter.timed_out = timed_out
+                waiter.degraded_leg = degraded_leg
                 waiter.storable = storable
                 waiter.event.set()
 

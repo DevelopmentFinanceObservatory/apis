@@ -84,17 +84,10 @@ _DIRECTIONAL_ROLES: frozenset[str] = frozenset(get_args(RoleAxis.__value__))
 
 @dataclass(frozen=True, slots=True)
 class _RegionDone:
-    """Terminal marker: one variable leg finished with a RegionResult.
-
-    `degraded` is True when `region` is a `_placeholder_no_data` produced by
-    swallowing that leg's own exception (see `_FanOutResult.degraded_leg`),
-    False for every other completion including a genuine no_data result the
-    leg itself returned.
-    """
+    """Terminal marker: one variable leg finished with a RegionResult."""
 
     index: int
     region: RegionResult
-    degraded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +116,7 @@ class _FanOutResult:
     # It is True when:
     # - a leg's exception, other than an EngineInfraError or a RATE_TABLE_REFUSALS member,
     #   was swallowed into a `_placeholder_no_data` result under `degrade_on_error`, which
-    #   looks like a genuine no_data answer;
+    #   looks like a genuine no_data answer (`RegionResult.degraded`);
     # - a leg's answer states `alternates_unevaluated` (`RegionResult.alternates_left_out`)
     #   because an alternate lacked a presence read;
     # - a presence read left a StatVar's default scope unsettled
@@ -570,7 +563,6 @@ async def _stream_one_variable(
             ),
         )
 
-    degraded = False
     try:
         if sem is not None:
             enter_phase("variable_slot")
@@ -605,7 +597,7 @@ async def _stream_one_variable(
             open_axes=open_axes,
             separate=separate,
         )
-        degraded = True
+        region = dataclasses.replace(region, degraded=True)
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
         # restatement (it has no ParsedPart dependency), so this leg's own
@@ -654,7 +646,7 @@ async def _stream_one_variable(
         )
     # Ownership attaches the instant `region` is final, ahead of the marker.
     landed.append(region)
-    await queue.put(_RegionDone(index=i, region=region, degraded=degraded))
+    await queue.put(_RegionDone(index=i, region=region))
 
 
 @dataclass(frozen=True, slots=True)
@@ -984,7 +976,7 @@ def _handle_fanout_item(
     """
     if isinstance(item, _RegionDone):
         progress.results[item.index] = item.region
-        if item.degraded or item.region.leg_degraded:
+        if item.region.leg_degraded:
             progress.degraded_leg = True
         progress.n_pending -= 1
         return None

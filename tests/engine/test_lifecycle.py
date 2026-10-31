@@ -151,12 +151,16 @@ class TestResolveAsyncLifecycle:
 
         assert len(closed_instances) == 1
 
+    @pytest.mark.parametrize("log_line", ["logs", "raises"])
     @pytest.mark.parametrize("raising", ["pipeline", "coverage_snapshot"])
-    def test_both_self_built_clients_close_once_when_pipeline_raises(self, monkeypatch, raising):
+    def test_both_self_built_clients_close_once_when_pipeline_raises(
+        self, monkeypatch, raising, log_line
+    ):
         """Cleanup when both clients are self-built and the pipeline, or the coverage
         snapshot read before it, raises: the branch a reordering of the two close() calls,
         or an early return or read added ahead of them, would silently break. The shared
-        resolvekit is released once too."""
+        resolvekit is released once too. A log line that raises neither replaces the
+        request's own failure nor skips the cleanup."""
         graph_closes: list[bool] = []
         sdmx_closes: list[bool] = []
 
@@ -190,6 +194,12 @@ class TestResolveAsyncLifecycle:
             release_shared(shared)
 
         monkeypatch.setattr("search.engine.core.release_shared", _release)
+
+        def _raising_log_line(*_args, **_kwargs):
+            raise ValueError("simulated log failure")
+
+        if log_line == "raises":
+            monkeypatch.setattr("search.engine.core._log_resolve", _raising_log_line)
 
         class _FakeLiveGraphClientClass:
             @staticmethod

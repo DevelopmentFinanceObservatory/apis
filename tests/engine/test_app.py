@@ -8,8 +8,6 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
 from logging.handlers import BufferingHandler
 
 import pytest
@@ -26,7 +24,7 @@ from search.models import Resolution
 from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._builders import value_slot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import member_walk_reader
+from tests.engine._harness import member_walk_reader, resolve_log_lines
 from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -1042,30 +1040,6 @@ class TestCORS:
         assert "access-control-allow-origin" not in resp.headers
 
 
-@contextmanager
-def _resolve_log_lines() -> Iterator[list[dict]]:
-    """Collect the JSON object of each `resolve` line logged inside the block."""
-    # A handler on the module's own logger, since the `search` logger may stop propagation.
-    records: list[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append
-    core_logger = logging.getLogger("search.engine.core")
-    core_logger.addHandler(handler)
-    previous_level = core_logger.level
-    core_logger.setLevel(logging.INFO)
-    lines: list[dict] = []
-    try:
-        yield lines
-    finally:
-        core_logger.removeHandler(handler)
-        core_logger.setLevel(previous_level)
-        lines.extend(
-            json.loads(r.getMessage().removeprefix("resolve "))
-            for r in records
-            if r.getMessage().startswith("resolve {")
-        )
-
-
 @pytest.mark.parametrize("transport", ["buffered", "sse"])
 def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(transport):
     """Each resolve logs one `resolve` line whose timing, trace id and outcome match the
@@ -1073,7 +1047,7 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
     headers = {"User-Agent": "dfo-test/1"}
     if transport == "sse":
         headers["Accept"] = "text/event-stream"
-    with _resolve_log_lines() as lines:
+    with resolve_log_lines() as lines:
         resp = make_client().post(
             "/api/search/resolve",
             json={
@@ -1200,7 +1174,7 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
     monkeypatch.setattr("search.engine.fanout.resolve_variable", _leg)
     client = make_client()
     try:
-        with _resolve_log_lines() as lines:
+        with resolve_log_lines() as lines:
             resp = client.post(
                 "/api/search/resolve", json={"input": {"kind": "raw_text", "query": "two things"}}
             )
@@ -1218,6 +1192,81 @@ def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadli
     [budget] = budgets
     assert budget.hard - budget.soft == pytest.approx(2.0)
     assert deadlines_seen == [budget.hard]
+
+
+async def _stalled_pipeline(*_args: object, **_kwargs: object):
+    """A pipeline that never finishes, cut from outside. Bounded so a test whose cut does not
+    arrive fails instead of hanging."""
+    await asyncio.sleep(5)
+    return
+    yield  # pragma: no cover - makes this an async generator
+
+
+@pytest.mark.parametrize("transport", ["buffered", "sse"])
+def test_the_hard_cap_reads_as_a_timeout_on_the_resolve_line(
+    monkeypatch, search_settings, transport
+):
+    """The hard cap reaches `resolve_events` as cancellation on both transports."""
+    search_settings(request_timeout_s=0.05, finalise_grace_s=0.05)
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _stalled_pipeline)
+    headers = {"Accept": "text/event-stream"} if transport == "sse" else {}
+    with resolve_log_lines() as lines:
+        make_client().post(
+            "/api/search/resolve",
+            json={"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}},
+            headers=headers,
+        )
+
+    [logged] = lines
+    assert (logged["error_code"], logged["timed_out"]) == ("timeout", True)
+    assert logged["outcome"] is None
+
+
+def test_a_client_disconnect_reads_as_cancelled_under_the_request_trace_id(monkeypatch):
+    """A disconnect unwinds the pipeline in the stream's producer task, whose copied context
+    still holds the id the response header carries."""
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _stalled_pipeline)
+    app = make_client().app
+    body = json.dumps({"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}})
+    started = asyncio.Event()
+    headers: dict[bytes, bytes] = {}
+    requested = False
+
+    async def receive() -> dict:
+        nonlocal requested
+        if not requested:
+            requested = True
+            return {"type": "http.request", "body": body.encode(), "more_body": False}
+        await started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.start":
+            headers.update(message["headers"])
+            started.set()
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/search/resolve",
+        "raw_path": b"/api/search/resolve",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"accept", b"text/event-stream"),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+        "scheme": "http",
+        "root_path": "",
+        "http_version": "1.1",
+    }
+    with resolve_log_lines() as lines:
+        asyncio.run(asyncio.wait_for(app(scope, receive, send), timeout=4))
+
+    [logged] = lines
+    assert (logged["error_code"], logged["timed_out"]) == ("cancelled", None)
+    assert logged["trace_id"].encode() == headers[b"x-dfo-trace-id"]
 
 
 def test_sse_route_ends_at_the_hard_cap_with_the_timeout_error_event(monkeypatch, search_settings):

@@ -411,8 +411,10 @@ class RegionResult:
     # Whether the answer swallowed a read that failed or ran past its deadline and stands on
     # less than it would have read (`degraded_reads`): a member walk that settled nothing, a
     # named group dropped, the dates the unit gate could not read, or the withheld-registry
-    # re-read. The fan-out reports such a leg as degraded (`_FanOutResult.degraded_leg`), so
-    # neither cache layer stores the response, and the part memo stores no such region.
+    # re-read. Also set on the `no_data` placeholder of a leg whose own error the fan-out
+    # swallowed, which reads as a real miss. The fan-out reports such a leg as degraded
+    # (`_FanOutResult.degraded_leg`), so neither cache layer stores the response, and the part
+    # memo stores no such region.
     degraded: bool = False
     # The `time.monotonic()` instant this region's reads, its trailing streams included, run
     # to: the request deadline, or the later full-read bound when a resubmit's member walk
