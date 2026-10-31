@@ -83,6 +83,19 @@ failed transiently and left for the next run. It exits 1 when the store is unrea
 it read no version and at least one failed for a cause a retry clears (`_clears_on_retry`).
 It reads the settings `sweep` reads.
 
+`backfill-warnings [--dry-run]` rewrites each stored `coverage_below_scope` member sentence
+that names members by ref into the counts and member fields a mint writes, in the `warnings`
+column and in `immutable_body`, reading each row's members from the graph
+(`warning_backfill`), one row per transaction, starting none once
+`BACKFILL_DESCRIPTIONS_BUDGET` has passed. It writes one `datasets_warning_backfill_failed`
+`ERROR` line per row it leaves, saying whether a later run can get past the failure, and one
+`datasets_warnings_backfilled` line with the counts, and exits 1 when any row failed, lost the
+compare or was left. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
+per row, and compares its split with the stored one on rows a mint already split. When no row
+matches it opens no release and builds no client. It reads the runtime database settings,
+`DatasetsSettings`, `DATASETS_GRAPH_TOKEN`, `DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph
+release and `ORIGIN_CATALOGUE_URI`.
+
 `backfill-frame-summed` runs by hand once the deploy that applies migration 0038 has moved the
 services to the new image, since the previous image records derived rows without `frame_summed`
 until then. A later run is safe and fills any row the previous image wrote after an earlier one.
@@ -157,6 +170,7 @@ import json
 import sys
 import traceback
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
@@ -199,7 +213,11 @@ from dataset_store.snapshot import (
 )
 from dataset_store.store import LiveDatasetStore
 from datasets_api.analysis import FrameUnavailable
-from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
+from datasets_api.config import (
+    DEFAULT_OPERATION_DEADLINE_SECONDS,
+    DatasetsConfigError,
+    DatasetsSettings,
+)
 from datasets_api.description_record import backfill_record, computed_inputs
 from datasets_api.description_store import (
     insert_description,
@@ -239,6 +257,13 @@ from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord
+from datasets_api.warning_backfill import (
+    Readers,
+    emit_nothing_backfilled,
+    run_backfill_warnings,
+    select_rows,
+)
+from dc_sdmx import SdmxClient
 from description.facts import SCHEMA_VERSION, DescriptionRecord
 from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
@@ -261,6 +286,10 @@ from materialise.statistics import (
     SeriesFigures,
     SeriesStatisticsSink,
 )
+from origin_catalogue import bound_catalogue
+from origin_catalogue.graph import build_graph_client
+from origin_catalogue.service import get_catalogue_service
+from series_coverage.shared import get_coverage_service
 
 if TYPE_CHECKING:
     from presentation_store import ShareStore
@@ -945,6 +974,73 @@ def _backfill_descriptions() -> int:
         )
 
 
+class WarningBackfillSettings(BaseSettings):
+    """The graph token and SDMX timeout a mint reads with, under the API's own names."""
+
+    model_config = SettingsConfigDict(env_prefix="DATASETS_")
+
+    graph_token: str = ""
+    sdmx_timeout_seconds: int = Field(default=90, ge=1)
+
+
+def _backfill_warnings(dry_run: bool) -> int:
+    """Run `warning_backfill.run_backfill_warnings` over the rows it rewrites, and with
+    `dry_run` its control rows. With none it opens no release and builds no client."""
+    deadline = utc_now() + BACKFILL_DESCRIPTIONS_BUDGET
+    store = LiveDatasetStore(connections=shared_pool())
+    try:
+        rows = select_rows(store, control=dry_run)
+        if not rows:
+            emit_nothing_backfilled(dry_run=dry_run)
+            return 0
+        try:
+            settings = DatasetsSettings.from_env()
+            backfill = WarningBackfillSettings()
+        except (DatasetsConfigError, ValidationError) as exc:
+            emit(
+                "datasets_maintenance_failed",
+                severity="ERROR",
+                task="backfill-warnings",
+                error=str(exc),
+            )
+            return 1
+        with ExitStack() as stack:
+            stack.enter_context(bound_served_release(get_release_service()))
+            stack.enter_context(bound_catalogue(get_catalogue_service().snapshot()))
+            graph = build_graph_client(
+                base_url=settings.graph_base_url,
+                token=backfill.graph_token,
+                un_base_url=settings.un_graph_base_url,
+                un_availability=SdmxClient(
+                    base_url=settings.un_graph_base_url, timeout=backfill.sdmx_timeout_seconds
+                ),
+                **settings.graph_cache_options(),
+            )
+            stack.callback(graph.close)
+            sdmx = SdmxClient(
+                base_url=settings.sdmx_base_url,
+                token=backfill.graph_token,
+                timeout=backfill.sdmx_timeout_seconds,
+            )
+            stack.callback(sdmx.close)
+            unfinished = run_backfill_warnings(
+                rows,
+                store=store,
+                readers=Readers(
+                    graph=graph,
+                    availability=sdmx,
+                    code_index=get_index(),
+                    coverage=get_coverage_service().snapshot().index,
+                ),
+                dry_run=dry_run,
+                deadline=deadline,
+                now=utc_now,
+            )
+    finally:
+        close_shared_pool()
+    return 1 if unfinished else 0
+
+
 class FrameSummedOutcome(StrEnum):
     """What `run_backfill_frame_summed` found for one derived version holding no
     `frame_summed`. `SUMMED` and `CUT` are set on the row; every other outcome leaves it NULL."""
@@ -1443,6 +1539,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backfill-descriptions",
         help="write a description record for every version made before records existed",
     ).set_defaults(run=_backfill_descriptions)
+    warnings = tasks.add_parser(
+        "backfill-warnings",
+        help="rewrite stored member sentences into the counts and fields a mint writes",
+    )
+    warnings.add_argument("--dry-run", action="store_true")
+    warnings.set_defaults(run=_backfill_warnings)
     tasks.add_parser(
         "backfill-frame-summed",
         help="record whether each derived version recorded without it stores its collapse",

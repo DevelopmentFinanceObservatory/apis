@@ -285,7 +285,7 @@ jobs:
       - name: Run the live-gated dataset_store suite against the ephemeral instance
         env:
           DFO_DATASET_STORE_LIVE_DSN: postgresql://dataset_store_migrator:ci-throwaway@localhost:5432/datasets
-        run: uv run pytest -q tests/dataset_store/test_live.py tests/dataset_store/test_warning_formats_live.py
+        run: uv run pytest -q tests/dataset_store/test_live.py tests/dataset_store/test_warning_formats_live.py tests/datasets_api/test_warning_backfill_live.py
 
   presentation-migrations:
     # Proves presentation_store's own migrations apply forward against an

@@ -72,10 +72,10 @@ from materialise.facets import (
     declared_default_policies,
     default_scope_of,
     facet_election,
+    facets_in_window,
     fetch_role_bindings,
     joint_dispatch_facet_ids,
     joint_matches,
-    overlaps_window,
     probe_collection_candidates,
     probe_facets,
     probe_from_candidates,
@@ -2456,10 +2456,11 @@ def _plan_group_members(
     window = requests[0].window
     # Each uncounted member's dcid, and whether a facet it matches holds a point in the window.
     uncounted = [
-        (request.stat_var, any(overlaps_window(facet, window=window) for facet in matches))
+        (request.stat_var, in_window)
         for index, (request, probe) in enumerate(zip(requests, probes, strict=True))
         if index not in election.members
-        and (matches := joint_matches(probe.candidates, selections))
+        and (in_window := facets_in_window(probe.candidates, selections=selections, window=window))
+        is not None
     ]
     return _GroupPlan(
         selections=selections,
