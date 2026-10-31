@@ -240,6 +240,16 @@ class SearchSettings(BaseSettings):
     # connect, read, write, and pool timeouts alike.
     graph_timeout_s: float = 30
 
+    # Seconds one graph read on the request's critical path may take when its failure is
+    # swallowed, so the answer stands without it and notes the lost read
+    # (`degraded_reads.fail_open_deadline`). It bounds the place-availability probe, menu and
+    # breakdown availability, and the withheld re-read and its label read. The place probe's
+    # reads took 15 to 253 ms against dfo-dev, so this leaves about eight times that. A
+    # stalled read then costs the request at most this long. A read that fails closed keeps
+    # the request deadline, as `convertibility._dated_plan` does, because a healthy read
+    # slower than this budget would turn a served answer into a gap.
+    fail_open_read_budget_s: float = 2.0
+
     # Gemini HTTP timeout in seconds. genai expects milliseconds. This bounds each call so
     # pipeline deadline handling can proceed.
     llm_timeout_s: float = 30
@@ -804,6 +814,10 @@ class SearchSettings(BaseSettings):
         """Graph/LLM/Jev/request timeouts, Gemini, Jev and observation-preview concurrency."""
         if self.graph_timeout_s <= 0:
             raise ValueError(f"SEARCH_GRAPH_TIMEOUT_S must be > 0; got {self.graph_timeout_s!r}")
+        if self.fail_open_read_budget_s <= 0:
+            raise ValueError(
+                f"SEARCH_FAIL_OPEN_READ_BUDGET_S must be > 0; got {self.fail_open_read_budget_s!r}"
+            )
         if self.llm_timeout_s <= 0:
             raise ValueError(f"SEARCH_LLM_TIMEOUT_S must be > 0; got {self.llm_timeout_s!r}")
         if self.llm_max_concurrency < 1:

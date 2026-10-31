@@ -72,6 +72,11 @@ from search.models import (
 from search.models import SourceRef as WireSourceRef
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import conjoin_spec, gref, shape_five_tuple
+from tests.engine._fail_open_deadline import (
+    FAIL_OPEN_REQUESTS,
+    assert_fail_open_deadline,
+    request_deadline,
+)
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
@@ -418,7 +423,7 @@ def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadli
     stall = threading.Event()
     graph = _WithheldGraph(stall=stall, on_stall=cut.stalled)
     result = _no_data([_subject("country/KEN")])
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + 1.0
 
     async def run() -> tuple[RegionResult, bool]:
         # Released here, since `asyncio.run` waits for the stalled read's thread on exit.
@@ -443,13 +448,49 @@ def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadli
     assert any("re-read skipped" in r.getMessage() for r in caplog.records)
 
 
+class _RecordingAwait:
+    """Wraps `withheld._await_bounded`, keeping the deadline each await was given."""
+
+    def __init__(self) -> None:
+        self.deadlines: list[float] = []
+        self._await_bounded = withheld._await_bounded
+
+    async def __call__(self, coro, *, deadline: float):
+        self.deadlines.append(deadline)
+        return await self._await_bounded(coro, deadline=deadline)
+
+
+@FAIL_OPEN_REQUESTS
+def test_the_re_read_and_the_label_read_each_run_under_the_fail_open_budget(
+    request_in_s, monkeypatch
+):
+    """Both reads fail open, so each gets the budget from its own start, or the request
+    deadline less the handoff reserve when that ends first."""
+    awaited = _RecordingAwait()
+    monkeypatch.setattr(withheld, "_await_bounded", awaited)
+    graph = _WithheldGraph()
+    result = _no_data([_subject("country/KEN")])
+    requested = request_deadline(request_in_s)
+    bound = None if requested is None else requested - withheld._HANDOFF_RESERVE_S
+    started = time.monotonic()
+
+    out, _ = asyncio.run(_with_warning_twice(result, result, graph, deadline=requested))
+
+    assert out.warnings, "the re-read found the withheld provenances"
+    (re_read,) = graph.deadlines
+    assert_fail_open_deadline(re_read, requested=bound, started=started)
+    assert len(awaited.deadlines) == 2
+    for await_deadline in awaited.deadlines:
+        assert_fail_open_deadline(await_deadline, requested=bound, started=started)
+
+
 def test_a_stalled_source_label_read_keeps_the_warning_without_its_sources(caplog, monkeypatch):
     cut = _CutWhenStalled()
     monkeypatch.setattr(withheld, "_await_bounded", cut)
     label_stall = threading.Event()
     graph = _WithheldGraph(label_stall=label_stall, on_stall=cut.stalled)
     result = _no_data([_subject("country/KEN")])
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + 1.0
 
     async def run() -> tuple[RegionResult, bool]:
         try:
