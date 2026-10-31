@@ -103,8 +103,10 @@ class _FanOutResult:
     """Out-parameter for the async generator's final state.
 
     The generator assigns these fields only on normal completion. `regions`
-    contains one result per input leg, including deadline backfills;
-    `timed_out` and `degraded_leg` distinguish deadline and error backfills.
+    contains one result per input leg, including deadline backfills. `timed_out`
+    reports those. `degraded_leg` reports a leg that stands on less than a later request
+    may read: a lost read, an unsettled scope, an unevaluated alternate, a swallowed
+    error, or the reads an abandoned reading carried (`RegionResult.degraded`).
     The generator cancels trailing tasks if it exits abnormally.
     """
 

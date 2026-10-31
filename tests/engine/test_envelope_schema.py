@@ -136,7 +136,6 @@ def test_unsupported_response_validates_against_schema(response_schema, monkeypa
         response_cache=None,
         part_memo=None,
         generation=None,
-        health=None,
         budget=None,
         record=None,
     ):

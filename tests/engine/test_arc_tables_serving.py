@@ -1607,7 +1607,7 @@ def test_a_top_up_on_a_countries_fallback_leaves_the_pass_s_scope_unsettled(
 
     assert read.presence is not None and read.presence.unsettled
     assert _BONDS not in read.presence.unsettled
-    assert pipeline._scope_unsettled(cast("ResolveState", state))
+    assert state.default_presence.unsettled
 
 
 def test_each_default_scope_taker_is_elected_once_off_the_event_loop(

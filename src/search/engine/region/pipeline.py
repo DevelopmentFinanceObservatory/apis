@@ -1032,8 +1032,6 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     # Every requirement departs here, once, as the judgement of the part's
                     # final answer leaves it (`with_requirement_departures`).
                     log_would_refuse(state, result)
-                    if _scope_unsettled(state):
-                        note_degraded_read("default scope presence")
                     result = _stating_unevaluated(
                         dataclasses.replace(
                             with_requirement_departures(
@@ -1101,13 +1099,6 @@ def _refused_pinned_phrases(state: ResolveState, result: RegionResult) -> frozen
         for interpretation in state.interpretations.interpretations
         for match in interpretation.pinned_codes
     )
-
-
-def _scope_unsettled(state: ResolveState) -> bool:
-    """Whether the pass's default-scope presence read left a StatVar's scope unsettled: its
-    countries fallback holds for this request only, and a later request may read it over
-    every place with data."""
-    return state.default_presence is not None and bool(state.default_presence.unsettled)
 
 
 def _cancel_queued_reads(state: ResolveState) -> None:

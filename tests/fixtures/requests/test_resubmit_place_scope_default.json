@@ -22,6 +22,22 @@
     ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}],
     ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1"],"needs_dates":true}]
   ],
+  "test_a_resubmit_over_an_unsettled_default_scope_is_degraded": [
+    ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],
+    ["FakeGraph.generation_stamp",{}],
+    ["FakeGraph.source_key",{}],
+    ["FakeSdmxClient.source_key",{}],
+    ["FakeSdmxClient.availability_values",{"variables":["TEST/ResubmitPlaceScopeDefault_Population"],"component":"observationAbout","max_values":5000,"max_bytes":320000,"deadline":"set","read_seconds":15.0}],
+    ["FakeGraph.node_arcs_many",{"dcids":["country/RPS1"],"properties":["typeOf"],"deadline":"set"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"provenance"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"measurementMethod"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"unit"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1"],"needs_dates":false}],
+    ["FakeGraph.node_labels_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","measuredValue","testResubmitCount"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1"],"needs_dates":true}]
+  ],
   "test_a_resubmit_the_index_decides_is_scoped_over_the_family_its_mint_serves": [],
   "test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope": [
     ["FakeGraphReader.generation_stamp",{}],

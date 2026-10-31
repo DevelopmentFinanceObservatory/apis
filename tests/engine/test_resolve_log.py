@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 import unicodedata
 from collections.abc import Iterator
 
@@ -14,10 +15,11 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from dfo_platform.trace import reset_trace_id, set_trace_id
-from search.engine.core import ResolveRecord, _log_resolve, resolve_events
+from search.engine.app import _event_source, _served_code
+from search.engine.core import ResolveRecord, _log_resolve, resolve_events, resolve_line
 from search.engine.envelope import make_diagnostics, make_query_echo
 from search.engine.errors import EngineInfraError, EngineInputError
-from search.engine.events import DoneEvent, DoneTelemetry, ResponseEvent
+from search.engine.events import DoneEvent, DoneTelemetry, ResponseEvent, serialize_sse
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
 from search.engine.response_cache_keys import normalise_query
@@ -71,7 +73,7 @@ def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
 def _logged(request: ResolveRequest, record: ResolveRecord) -> dict:
     """The JSON object of the one line `_log_resolve` writes for `record`."""
     with resolve_log_lines() as lines:
-        _log_resolve(request, record, caller=None, transport="buffered")
+        _log_resolve(request, record, caller=None, transport="buffered", trace_id=_TRACE_ID)
     [line] = lines
     return line
 
@@ -293,6 +295,9 @@ _NOT_RAN = EngineInputError("no such door", code="door_not_implemented", status=
         pytest.param(_NOT_RAN, "door_not_implemented", None, id="refused"),
         pytest.param(EngineInfraError("down"), "service_unavailable", None, id="infra"),
         pytest.param(_BOOM, "internal_error", None, id="unhandled"),
+        pytest.param(
+            EngineInputError("x", code="not_a_code"), "internal_error", None, id="unknown"
+        ),
         pytest.param(TimeoutError("past it"), "timeout", True, id="soft_deadline_failure"),
     ],
 )
@@ -375,7 +380,7 @@ def test_a_failure_classification_cannot_finish_still_reads_as_a_failure(monkeyp
         raise _BOOM
         yield  # pragma: no cover - makes this an async generator
 
-    monkeypatch.setattr("search.engine.core.served_problem", _broken)
+    monkeypatch.setattr("search.engine.app.served_problem", _broken)
     monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
 
     with resolve_log_lines() as lines:
@@ -399,6 +404,95 @@ def test_a_log_line_that_raises_leaves_the_response_standing(monkeypatch, transp
     assert resp.status_code == 200
     if transport == "sse":
         assert parse_sse(resp.text)[-1][0] == "done"
+
+
+def test_a_frame_that_cannot_serialise_ends_the_stream_with_the_error_it_logs(monkeypatch):
+    def _failing_serialize(event):
+        if event.kind == "interpretation":
+            raise ValueError("no frame")
+        return serialize_sse(event)
+
+    monkeypatch.setattr("search.engine.app.serialize_sse", _failing_serialize)
+
+    with resolve_log_lines() as lines:
+        resp = _client().post(
+            "/api/search/resolve", json=_RAW_BODY, headers={"Accept": "text/event-stream"}
+        )
+
+    assert parse_sse(resp.text)[-1][1]["code"] == "internal_error"
+    [logged] = lines
+    assert logged["error_code"] == "internal_error"
+
+
+def test_a_client_gone_before_done_left_reads_cancelled_under_the_request_trace_id():
+    """The pipeline finished, but `done` never left. The closing body runs outside the
+    request's context, as an abandoned response body does."""
+    record = ResolveRecord()
+
+    async def _stream():
+        record.response = _resolution([_NO_DATA])
+        yield ResponseEvent(response=record.response)
+        record.done = _done()
+        yield record.done
+
+    async def _run() -> None:
+        body = _event_source(
+            _stream(),
+            hard_deadline=time.monotonic() + 60,
+            record=record,
+            line=resolve_line(_RAW, record, caller=None, transport="sse", served_code=_served_code),
+        )
+        await anext(body)
+        await asyncio.sleep(0)
+        token = set_trace_id("another-request")
+        try:
+            await body.aclose()
+        finally:
+            reset_trace_id(token)
+
+    with resolve_log_lines() as lines:
+        asyncio.run(_run())
+
+    [logged] = lines
+    assert logged["error_code"] == "cancelled"
+    assert logged["trace_id"] == _TRACE_ID
+
+
+def test_a_client_gone_once_done_left_reads_clean_while_the_pipeline_unwinds():
+    record = ResolveRecord()
+    unwinding = asyncio.Event()
+
+    async def _stream():
+        record.done = _done()
+        try:
+            yield record.done
+        finally:
+            unwinding.set()
+            await asyncio.sleep(60)
+
+    async def _drain() -> None:
+        body = _event_source(
+            _stream(),
+            hard_deadline=time.monotonic() + 60,
+            record=record,
+            line=resolve_line(_RAW, record, caller=None, transport="sse", served_code=_served_code),
+        )
+        async for _frame in body:
+            pass
+
+    async def _run() -> None:
+        task = asyncio.create_task(_drain())
+        await unwinding.wait()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with resolve_log_lines() as lines:
+        asyncio.run(_run())
+
+    [logged] = lines
+    assert logged["error_code"] is None
 
 
 def test_a_stream_closed_at_a_yield_closes_the_pipeline_first(monkeypatch):

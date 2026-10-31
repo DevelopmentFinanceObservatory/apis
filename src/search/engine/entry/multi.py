@@ -33,7 +33,7 @@ async def _stream_combined_regions(
     extra_warnings: list[Warning],
     echo: QueryEcho | None,
     timed_out: bool,
-    degraded_leg: bool = False,
+    degraded_leg: bool,
     graph: EngineGraphClient,
     start_ms: int,
     params: EntryParams,

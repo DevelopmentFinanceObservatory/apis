@@ -689,8 +689,8 @@ class CacheScope:
         if self._replay is not None:
             done_event = done_event.model_copy(
                 update={
-                    "warnings": self._replay.done.warnings,
-                    "late_departures": self._replay.done.late_departures,
+                    "warnings": self._replay.warnings,
+                    "late_departures": self._replay.late_departures,
                 }
             )
         yield done_event

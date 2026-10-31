@@ -6,8 +6,7 @@ import asyncio
 import dataclasses
 import time
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -15,9 +14,11 @@ import pytest
 from entity_resolution import Admission
 from materialise.place_scope import DefaultPresence
 from search.engine.binders import GeminiBinder
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
-from search.engine.region import RegionResult, pipeline
+from search.engine.place import read_default_presence
+from search.engine.region import RegionResult
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -151,7 +152,6 @@ def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg():
 @pytest.mark.parametrize(
     ("presence", "unsettled"),
     [
-        pytest.param(None, False, id="no-presence"),
         pytest.param(DefaultPresence(countries=(), scopes={}), False, id="settled"),
         pytest.param(
             DefaultPresence(countries=(), scopes={}, unsettled=frozenset({"Count_Person"})),
@@ -160,12 +160,16 @@ def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg():
         ),
     ],
 )
-def test_a_pass_is_unsettled_when_its_presence_read_left_a_scope_unsettled(
-    presence: DefaultPresence | None, unsettled: bool
+def test_a_default_scope_read_that_left_a_scope_unsettled_is_a_lost_read(
+    presence: DefaultPresence, unsettled: bool
 ) -> None:
-    state = cast(Any, SimpleNamespace(default_presence=presence))
+    with (
+        patch("search.engine.place.place_scope.read_default_presence", return_value=presence),
+        recording_degraded_reads() as lost,
+    ):
+        read_default_presence(graph=FakeGraph(), sdmx=FakeSdmxClient(), stat_vars=[])
 
-    assert pipeline._scope_unsettled(state) is unsettled
+    assert lost.degraded is unsettled
 
 
 def test_infra_error_fails_the_request_and_never_sets_degraded_leg():

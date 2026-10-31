@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dfo_platform import ProblemDetails
 from search.engine.extract import ExtractedDate
@@ -433,23 +433,10 @@ class LateDepartures(BaseModel):
         return departures_in_precedence_order(value)
 
 
-# Validates a `done` event read back from a stored bundle (`DoneEvent._stored_is_healthy`).
-STORED_DONE_CONTEXT = {"stored_done": True}
-
-
 class DoneEvent(BaseModel):
     """Terminal event on success OR soft-timeout (partials already folded into ``response``)."""
 
     model_config = ConfigDict(frozen=True)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _stored_is_healthy(cls, data: object, info: ValidationInfo) -> object:
-        """A stored bundle leaves out `degraded_leg`, which no layer stores true."""
-        if info.context == STORED_DONE_CONTEXT and isinstance(data, dict):
-            return {**data, "degraded_leg": False}
-        return data
-
     kind: Literal["done"] = "done"
     elapsed_ms: int
     timed_out: bool = False

@@ -229,6 +229,46 @@ class TestResolveAsyncLifecycle:
 
         assert closes == [True]
 
+    def test_a_client_that_fails_to_close_skips_no_cleanup_and_keeps_the_failure(self, monkeypatch):
+        sdmx_closes: list[bool] = []
+        released: list[object] = []
+
+        class _FailingGraph(FakeGraph):
+            def close(self):
+                raise ValueError("close failed")
+
+        class _SpySdmx(FakeSdmxClient):
+            def __init__(self):
+                super().__init__(observations={}, availability={})
+
+            def close(self):
+                sdmx_closes.append(True)
+
+        class _FakeLiveGraphClientClass:
+            @staticmethod
+            def from_search_settings(*_args, **_kwargs):
+                return _FailingGraph()
+
+        async def _raising_pipeline(request, **_kwargs):
+            raise RuntimeError("simulated pipeline failure")
+            yield  # pragma: no cover — makes this an async generator function
+
+        def _release(shared):
+            released.append(shared)
+            release_shared(shared)
+
+        monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _raising_pipeline)
+        monkeypatch.setattr("search.engine.core.release_shared", _release)
+        with (
+            patch("search.engine.core.LiveGraphClient", new=_FakeLiveGraphClientClass),
+            patch("search.engine.core.LiveSdmxClient", return_value=_SpySdmx()),
+            pytest.raises(RuntimeError, match="simulated pipeline failure"),
+        ):
+            _run("health ODA grants from USA to Ethiopia", graph=None, sdmx=None)
+
+        assert sdmx_closes == [True]
+        assert len(released) == 1
+
 
 def test_lifespan_leaves_the_search_logger_to_propagate_to_root():
     """`search.*` records reach the root JSON handler that `log-config.json` installs."""

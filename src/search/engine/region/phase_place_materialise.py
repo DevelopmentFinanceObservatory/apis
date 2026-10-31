@@ -1397,7 +1397,7 @@ def _submit_alternates_presence_read(
 def merge_presence(state: ResolveState, presence: DefaultPresence | None) -> None:
     """Merge `presence`, a read made over the request's presence when it started, into
     `state.default_presence`, so a read made since keeps what it added and the pass's
-    unsettled scopes (`pipeline._scope_unsettled`) include those `presence` left."""
+    unsettled scopes include those `presence` left."""
     if presence is None:
         return
     known = state.default_presence

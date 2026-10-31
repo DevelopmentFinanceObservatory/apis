@@ -12,11 +12,12 @@ import hashlib
 import hmac
 import json
 import logging
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Protocol
 
 import search.engine.config as config  # module-attribute access: SEARCH_ENGINE_MODEL/SEARCH_LLM_SEED are runtime-resolved
@@ -53,7 +54,6 @@ from search.engine.envelope import (
     now_ms,
     with_step_timing,
 )
-from search.engine.errors import served_problem
 from search.engine.events import DoneEvent, Event, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
@@ -83,17 +83,6 @@ from skills_index import SkillsIndex
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ResolveHealth:
-    """Run health that `resolve_async` reports beside the response, outside its body.
-
-    `degraded_leg` is the `done` event's: a leg of the answer stands on less than a later
-    request may read (`RegionResult.degraded`).
-    """
-
-    degraded_leg: bool = False
-
-
 class SkillsIndexSource(Protocol):
     """Anything exposing the current skills index, such as ``SharedSkillsIndex``.
 
@@ -115,9 +104,10 @@ class ResolveRecord:
 
     `cache` is the response cache outcome: `inactive`, `miss`, `hit layer1` or `hit layer2`.
     `memo_hits` and `memo_misses` count a `dataset_resubmit` request's part memo lookups, and
-    stay None on every other request and when the memo is off. `response` and `done` are the
-    request's terminal events, None when it ended before them. `error_code` is how a request
-    that did not run to its end ended (`_note_ending`), None for one that did.
+    stay None on every other request and when the memo is off. `response` and `done` are what
+    the pipeline produced, None when it ended before them. `error_code` is how a request that
+    did not run to its end ended (`resolve_line`), None for one that did. `delivered` says
+    the SSE route's last frame has left, so nothing after it can end the request.
     """
 
     cache: str = "inactive"
@@ -126,51 +116,54 @@ class ResolveRecord:
     response: ResolveResponse | None = None
     done: DoneEvent | None = None
     error_code: str | None = None
-
-
-def _note_ending(record: ResolveRecord, exc: BaseException, *, transport: str) -> None:
-    """Record how `exc` ended the request. It never raises, so a classification failure
-    cannot replace `exc`.
-
-    An SSE client holds its answer once `done` is sent, so nothing after `done` ends the
-    request. A buffered client holds nothing until the route returns.
-
-    A failure reads the problem code the route serves for it, the catch-all when classifying
-    it fails, as `app._event_source` falls back. Any other `exc` is a cancellation, which the
-    hard cap's `asyncio.timeout` has by now turned into a `TimeoutError` if it was the cap's.
-    """
-    if transport == "sse" and record.done is not None:
-        return
-    if not isinstance(exc, Exception):
-        record.error_code = "cancelled"
-        return
-    try:
-        record.error_code = served_problem(exc).code
-    except Exception:
-        logger.exception("classifying %s for the resolve log line failed", type(exc).__name__)
-        record.error_code = refusal.UNHANDLED_DEFAULT.code
+    delivered: bool = False
 
 
 @contextmanager
 def resolve_line(
-    request: ResolveRequest, record: ResolveRecord, *, caller: str | None, transport: str
+    request: ResolveRequest,
+    record: ResolveRecord,
+    *,
+    caller: str | None,
+    transport: str,
+    served_code: Callable[[Exception], str],
 ) -> Iterator[None]:
     """Write `request`'s `resolve` log line when the block ends.
 
-    A route holds the block around the hard cap and everything it does with the answer, so
-    the line reports the ending the client received. A logging failure neither replaces the
-    response nor reaches the route.
+    A route holds the block outside the hard cap. A failure reaching it reads the code
+    `served_code` names, the one the route serves for it, and any other ending is a
+    cancellation, since `asyncio.timeout` has turned the cap's own into a `TimeoutError`. A
+    logging failure neither replaces the response nor reaches the route.
+
+    The SSE route sets `record.delivered` when its last frame has left, and a disconnect
+    before then reads `cancelled`. The buffered route ends the block once the response is
+    built, before it is sent, so its line cannot tell whether the client received the answer.
+
+    The trace id is read on entry, because an SSE body abandoned at a `yield` closes later in
+    a task of its own, outside the request's context.
     """
+    trace_id = get_trace_id()
     try:
         yield
     except BaseException as exc:
-        _note_ending(record, exc, transport=transport)
+        if not record.delivered:
+            record.error_code = served_code(exc) if isinstance(exc, Exception) else "cancelled"
         raise
     finally:
         try:
-            _log_resolve(request, record, caller=caller, transport=transport)
+            _log_resolve(request, record, caller=caller, transport=transport, trace_id=trace_id)
         except Exception:
             logger.exception("resolve log line failed")
+
+
+def _close_each(closers: Iterable[Callable[[], object]]) -> None:
+    """Run every closer, logging a failure, so one cannot skip the rest or replace the
+    request's own outcome."""
+    for close in closers:
+        try:
+            close()
+        except Exception:
+            logger.exception("closing a request's client failed")
 
 
 def _query_hmac(inp: ResolveInput) -> str | None:
@@ -189,6 +182,7 @@ def _log_resolve(
     *,
     caller: str | None,
     transport: str,
+    trace_id: str,
 ) -> None:
     """Log one INFO line for a resolve a route ran (`resolve_line`), `resolve ` followed by a
     JSON object. A refusal at the route ahead of the pipeline logs none, and neither does a
@@ -204,7 +198,7 @@ def _log_resolve(
     `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is
     `diagnostics.llm_usage`, so it leaves out tokens spent by cut or aborted legs.
 
-    `error_code` says how a request that did not run to its end ended (`_note_ending`): the
+    `error_code` says how a request that did not run to its end ended (`resolve_line`): the
     problem code the route served, or `cancelled`. `timeout` covers the hard cap and any
     `TimeoutError` that fails the request, such as a soft deadline an extraction or a
     `dataset_resubmit` parsed entry crossed. `timed_out` is true for a `timeout`, else the
@@ -243,7 +237,7 @@ def _log_resolve(
         "resolve %s",
         json.dumps(
             {
-                "trace_id": get_trace_id(),
+                "trace_id": trace_id,
                 "kind": inp.kind,
                 "caller": caller,
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
@@ -465,12 +459,14 @@ async def resolve_events(
                             record.done = event
                         yield event
     finally:
+        closers: list[Callable[[], object]] = []
         if owns_graph and hasattr(_graph, "close"):
-            _graph.close()  # ty: ignore[call-non-callable]  # hasattr
+            closers.append(_graph.close)  # ty: ignore[invalid-argument-type]  # hasattr
         if owns_sdmx and hasattr(_sdmx, "close"):
-            _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
+            closers.append(_sdmx.close)  # ty: ignore[invalid-argument-type]  # hasattr
         if _shared_resolvekit is not None:
-            release_shared(_shared_resolvekit)
+            closers.append(partial(release_shared, _shared_resolvekit))
+        _close_each(closers)
 
 
 def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
@@ -816,7 +812,6 @@ async def resolve_async(
     response_cache: ResponseCache | None = None,
     part_memo: PartMemo | None = None,
     generation: GenerationProvider = UNKNOWN_GENERATION,
-    health: ResolveHealth | None = None,
     budget: RequestBudget | None = None,
     record: ResolveRecord | None = None,
     binder: Binder | None = None,
@@ -824,8 +819,7 @@ async def resolve_async(
     """Drain ``resolve_events`` into one buffered response.
 
     The ``response`` event precedes ``done``. Copy ``done.timed_out`` into
-    diagnostics so buffered callers can detect a partial result. ``health``,
-    when given, receives ``done.degraded_leg``, which the body omits. Client
+    diagnostics so buffered callers can detect a partial result. Client
     injection and lifetimes match ``resolve_events``. The buffered path emits
     no trailing SSE events, so ``place_options_pool`` launches no tasks.
     ``budget``, ``record`` and ``binder`` reach ``resolve_events``.
@@ -859,8 +853,6 @@ async def resolve_async(
             response = event.response
         elif isinstance(event, DoneEvent):
             timed_out = event.timed_out
-            if health is not None:
-                health.degraded_leg = event.degraded_leg
     assert response is not None, "resolve_events must yield exactly one response event"
     diagnostics = response.diagnostics.model_copy(update={"timed_out": timed_out})
     return response.model_copy(update={"diagnostics": diagnostics})
