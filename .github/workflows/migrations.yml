@@ -27,6 +27,7 @@ on:
       - src/artifact_store/**
       - tests/artifact_store/**
       - src/datasets_api/**
+      - packages/dfo-data-tools/src/materialise/finish.py
       - src/presentation_store/**
       - tests/presentation_store/**
       - .github/workflows/migrations.yml
@@ -54,6 +55,7 @@ on:
       - src/artifact_store/**
       - tests/artifact_store/**
       - src/datasets_api/**
+      - packages/dfo-data-tools/src/materialise/finish.py
       - src/presentation_store/**
       - tests/presentation_store/**
       - .github/workflows/migrations.yml
@@ -285,7 +287,7 @@ jobs:
       - name: Run the live-gated dataset_store suite against the ephemeral instance
         env:
           DFO_DATASET_STORE_LIVE_DSN: postgresql://dataset_store_migrator:ci-throwaway@localhost:5432/datasets
-        run: uv run pytest -q tests/dataset_store/test_live.py
+        run: uv run pytest -q tests/dataset_store/test_live.py tests/dataset_store/test_warning_formats_live.py
 
   presentation-migrations:
     # Proves presentation_store's own migrations apply forward against an
