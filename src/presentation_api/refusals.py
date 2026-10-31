@@ -64,7 +64,7 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
 _LOGGED_REASONS: frozenset[str] = (
     frozenset(
         reason
-        for reason, (code, _) in FRAME_UNAVAILABLE_OUTCOME.items()
+        for reason, (code, _, _) in FRAME_UNAVAILABLE_OUTCOME.items()
         if code != "frame_unavailable"
     )
     - {"busy"}
@@ -91,7 +91,7 @@ def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
     """The refusal `FRAME_UNAVAILABLE_OUTCOME` gives `exc.reason`, at the bound endpoint's status,
     with the reason as `cause.code`, so a client tells a frame it can rebuild from one taken
     down. An expired frame's detail ends with `EXPIRED_FRAME_FIX`."""
-    code, retryable = FRAME_UNAVAILABLE_OUTCOME[exc.reason]
+    code, retryable, _ = FRAME_UNAVAILABLE_OUTCOME[exc.reason]
     detail = f"{exc.detail}; {EXPIRED_FRAME_FIX}" if exc.reason == "expired" else exc.detail
     return refused(
         code,

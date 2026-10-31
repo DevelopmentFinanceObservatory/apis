@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal, Protocol, get_args
+from typing import Literal, NamedTuple, Protocol, get_args
 
 from assembler.catalogue import CatalogueRelease
 from description.facts import DescriptionRecord
@@ -20,12 +20,13 @@ from materialise.continued_series import ContinuedSeries
 
 __all__ = [
     "FRAME_UNAVAILABLE_OUTCOME",
-    "RETRYABLE_FRAME_REASONS",
+    "TRANSIENT_FRAME_REASONS",
     "CompositionAppend",
     "CompositionMembership",
     "DimensionView",
     "DraftNotFound",
     "EditConflict",
+    "FrameOutcome",
     "FrameRef",
     "FrameStore",
     "FrameUnavailable",
@@ -198,39 +199,55 @@ FrameUnavailableReason = Literal[
     "unknown",
 ]
 
-# The code and retryability each `FrameUnavailable` reason refuses with. `expired`,
-# `ops_unsupported` and `recipe_pending` can succeed once the frame is republished or its recipe
-# written. Revoked, missing, digest mismatch, quarantined, and unknown refs are permanent. A store
-# that fails to answer (`io`), and a Datasets surface at capacity (`busy`), is
-# `service_unavailable`. A recipe the store cannot read (`recipe_unreadable`) is write-once, so
-# no retry clears it.
-FRAME_UNAVAILABLE_OUTCOME: Mapping[FrameUnavailableReason, tuple[str, bool]] = MappingProxyType(
+
+class FrameOutcome(NamedTuple):
+    """What a `FrameUnavailable` reason refuses with. `retryable` is the client's bit: the same
+    request may pass once the client or the frame's owner acts. `transient` is a reader's: a
+    later read of this same frame may pass with nothing done, so a reader that falls back when a
+    frame cannot be loaded raises it instead."""
+
+    code: str
+    retryable: bool
+    transient: bool
+
+
+# The outcome of each `FrameUnavailable` reason. `expired`, `ops_unsupported` and
+# `recipe_pending` can succeed once the frame is republished or its recipe written. Revoked,
+# missing, digest mismatch, quarantined, and unknown refs are permanent. A store that fails to
+# answer (`io`), and a Datasets surface at capacity (`busy`), is `service_unavailable` and
+# transient. A recipe the store cannot read (`recipe_unreadable`) is write-once, so no retry
+# clears it.
+FRAME_UNAVAILABLE_OUTCOME: Mapping[FrameUnavailableReason, FrameOutcome] = MappingProxyType(
     {
-        "expired": ("frame_unavailable", True),
-        "revoked": ("frame_unavailable", False),
-        "ops_unsupported": ("frame_unavailable", True),
-        "missing_rendering": ("frame_unavailable", False),
-        "digest_mismatch": ("frame_unavailable", False),
-        "quarantined": ("frame_unavailable", False),
-        "recipe_pending": ("frame_unavailable", True),
-        "unknown": ("frame_unavailable", False),
-        "io": ("service_unavailable", True),
-        "busy": ("service_unavailable", True),
-        "recipe_unreadable": ("internal_error", False),
+        "expired": FrameOutcome("frame_unavailable", retryable=True, transient=False),
+        "revoked": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "ops_unsupported": FrameOutcome("frame_unavailable", retryable=True, transient=False),
+        "missing_rendering": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "digest_mismatch": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "quarantined": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "recipe_pending": FrameOutcome("frame_unavailable", retryable=True, transient=False),
+        "unknown": FrameOutcome("frame_unavailable", retryable=False, transient=False),
+        "io": FrameOutcome("service_unavailable", retryable=True, transient=True),
+        "busy": FrameOutcome("service_unavailable", retryable=True, transient=True),
+        "recipe_unreadable": FrameOutcome("internal_error", retryable=False, transient=False),
     }
 )
 
+# Fail at import if a reason and its outcome drift apart, or a transient reason is one the
+# client may not retry.
 if set(FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
-    # Fail at import if a reason and its outcome drift apart.
     raise AssertionError(
         f"FRAME_UNAVAILABLE_OUTCOME {sorted(FRAME_UNAVAILABLE_OUTCOME)} does not match "
         f"FrameUnavailableReason {sorted(get_args(FrameUnavailableReason))}"
     )
+if any(
+    outcome.transient and not outcome.retryable for outcome in FRAME_UNAVAILABLE_OUTCOME.values()
+):
+    raise AssertionError("a transient FrameUnavailable reason is not retryable")
 
-# The reasons a later read of the same frame may pass. A reader that falls back when a frame
-# cannot be loaded raises these instead, keeping the refusal's wait.
-RETRYABLE_FRAME_REASONS: frozenset[FrameUnavailableReason] = frozenset(
-    reason for reason, (_, retryable) in FRAME_UNAVAILABLE_OUTCOME.items() if retryable
+# The reasons a later read of the same frame may pass (`FrameOutcome.transient`).
+TRANSIENT_FRAME_REASONS: frozenset[FrameUnavailableReason] = frozenset(
+    reason for reason, outcome in FRAME_UNAVAILABLE_OUTCOME.items() if outcome.transient
 )
 
 

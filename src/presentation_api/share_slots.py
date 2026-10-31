@@ -64,12 +64,15 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from assembler.pipeline.stored_revision import read_stored_revision
-from assembler.ports import RETRYABLE_FRAME_REASONS, FrameRef, FrameUnavailable, RevisionRecord
+from assembler.ports import TRANSIENT_FRAME_REASONS, FrameRef, FrameUnavailable, RevisionRecord
+from dfo_platform.codes import bound_registry_endpoint
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
+from presentation_api.doors.components import classify_components_exception
 from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
+from presentation_api.routes import SHARES_ENDPOINT
 from presentation_store import (
     Freshness,
     ServedPage,
@@ -194,8 +197,10 @@ def serve_on_slot_frame[T](
 ) -> SlotServed[T]:
     """Draw `card`, shown in slot `slot` of `share`, with `draw` on the frame the slot serves
     now, and record the frame served. A snapshot serves its recorded frame. A live slot serves
-    its check's frame (`_live_check`), and when `draw` fails on a frame other than the card's
-    own, the slot is recorded `stale` on the card's own frame, which `draw` then draws on.
+    its check's frame (`_live_check`), stored once `draw` succeeds on it. When `draw` fails on a
+    frame other than the card's own, `draw` draws on the card's own frame, served `stale`. A
+    transient failure (`_transient`) stores no check, so the read after the claim lapses checks
+    again; any other failure stores the slot `stale` on the card's own frame.
     `card.frame` must be set and `record` must be the card revision.
 
     Raises:
@@ -206,7 +211,7 @@ def serve_on_slot_frame[T](
         frame, freshness, checked_at = card.frame, "current", None
         drawn = draw(frame)
     else:
-        check = _live_check(
+        check, ran = _live_check(
             share=share, slot=slot, card=card, rendering=record.frame_rendering, deps=deps
         )
         try:
@@ -215,24 +220,26 @@ def serve_on_slot_frame[T](
             # The format refuses the rows, whatever frame they come from.
             raise
         except Exception as exc:
-            # A read a retry may pass refuses with its wait, so the slot is not recorded stale.
-            if check.frame == card.frame or (
-                isinstance(exc, FrameUnavailable) and exc.reason in RETRYABLE_FRAME_REASONS
-            ):
+            if check.frame == card.frame:
                 raise
+            transient = _transient(exc)
             # The newer frame does not fit the card's intent, or cannot be read. The slot
-            # serves the card's own frame, which its share pinned, until the next check.
+            # serves the card's own frame, which its share pinned: until the next check when
+            # the failure is permanent, and for this read alone when a later read may pass.
             logger.warning(
-                "Share %s slot %s cannot draw %s on %s; serving its own frame",
+                "Share %s slot %s cannot draw %s on %s%s; serving its own frame",
                 share.id,
                 slot,
                 card.component_id,
                 check.frame,
+                " for now" if transient else "",
                 exc_info=True,
             )
             check = replace(check, frame=card.frame, freshness="stale")
-            deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
             drawn = draw(card.frame)
+            ran = not transient
+        if ran:
+            deps.share_store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
         frame, freshness, checked_at = check.frame, check.freshness, check.checked_at
     deps.share_store.record_served(
         share_id=share.id,
@@ -441,6 +448,17 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
     return isinstance(held_until, str) and datetime.fromisoformat(held_until) > now
 
 
+def _transient(exc: Exception) -> bool:
+    """Whether a later read may draw where `exc` refused with nothing done: a `FrameUnavailable`
+    whose reason is transient (`TRANSIENT_FRAME_REASONS`), or any other failure the components
+    classifier, on the share routes' endpoint, marks retryable."""
+    if isinstance(exc, FrameUnavailable):
+        return exc.reason in TRANSIENT_FRAME_REASONS
+    with bound_registry_endpoint(SHARES_ENDPOINT):
+        spec = classify_components_exception(exc)
+    return spec is not None and spec.retryable
+
+
 def _live_check(
     *,
     share: ShareRecord,
@@ -448,26 +466,27 @@ def _live_check(
     card: ShareCard,
     rendering: Mapping[str, object] | None,
     deps: SharesDeps,
-) -> SlotCheck:
+) -> tuple[SlotCheck, bool]:
     """The slot's check, run once none is stored and again once the last one is due
     (`SlotCheck.next_check_at`), asking for the newest frame of the card's frame under
     `rendering`, the one the card revision recorded. Of reads finding it due, the one whose claim succeeds runs it,
     and the others serve what the last check recorded: its frame, freshness and check time, or
     `pending` on the card's own frame before the first check ends. A claim whose reader never
-    records its check expires after `_CLAIM_TTL`."""
+    records its check expires after `_CLAIM_TTL`. Returns the check and whether this read ran
+    it, so the caller stores it once its draw succeeds."""
     assert card.frame is not None
     store = deps.share_store
     now = deps.now()
     prior = store.slot_check(share_id=share.id, slot=slot, card=card)
     if prior is not None and prior.next_check_at > now:
-        return prior
+        return prior, False
     if not store.claim_slot_check(
         share_id=share.id, slot=slot, card=card, now=now, claim_until=now + _CLAIM_TTL
     ):
         held = store.slot_check(share_id=share.id, slot=slot, card=card)
         # A lost claim means another read stored or claimed the check, and nothing removes one.
         assert held is not None
-        return held
+        return held, False
     last = prior.frame if prior is not None else card.frame
     check = _check(
         card.frame,
@@ -477,8 +496,7 @@ def _live_check(
         deps=deps,
         label=f"{share.id} slot {slot}",
     )
-    store.record_slot_check(share_id=share.id, slot=slot, card=card, check=check)
-    return check
+    return check, True
 
 
 def _check(

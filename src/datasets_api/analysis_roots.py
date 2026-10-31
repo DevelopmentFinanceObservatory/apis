@@ -88,6 +88,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.operations.submit import OPERATION_SUBMIT_RETRY_AFTER_MS, OperationSubmitted
 from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import is_statistics_rendering, stored_frame_location
+from datasets_api.store_errors import read_stored_frame1_table
 from dfo_analysis_engine.frame_ref import FrameRef
 from dfo_analysis_engine.place_type import (
     UNTYPED,
@@ -97,7 +98,6 @@ from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     frame_entity_columns,
     read_canonical_frame,
-    read_frame1_table,
 )
 from materialise.frame_build import build_frame, unit_cell_for_rebuild
 from spec_registry.reader import StoredDefinition
@@ -249,8 +249,8 @@ def frame_from_frame_layout(data: bytes) -> Frame:
     return build_frame_from_arrow(table, role_keys=role_keys)
 
 
-def _frame_of_frame1(data: bytes) -> Frame:
-    table = read_frame1_table(data)
+def _frame_of_frame1(data: bytes, *, digest: str) -> Frame:
+    table = read_stored_frame1_table(data, digest=digest)
     return build_frame(
         role_keys=frame_entity_columns(table.columns),
         rows=[
@@ -264,11 +264,11 @@ def _frame_of_frame1(data: bytes) -> Frame:
     )
 
 
-def frame_of_stored(data: bytes, *, media_type: str) -> Frame:
-    """The frame a version's stored frame `data` holds: its frame1 document when `media_type`
-    names one, else its canonical frame."""
+def frame_of_stored(data: bytes, *, media_type: str, digest: str) -> Frame:
+    """The frame a version's stored frame `data`, at `digest`, holds: its frame1 document when
+    `media_type` names one, else its canonical frame."""
     if media_type == FRAME1_MEDIA_TYPE:
-        return _frame_of_frame1(data)
+        return _frame_of_frame1(data, digest=digest)
     return read_canonical_frame(data)
 
 
@@ -432,7 +432,9 @@ class LiveRootSource:
             raise RootExpired(
                 spec_id=spec_id, content_version=content_version, reason="its stored frame is gone"
             ) from None
-        return frame_of_stored(data, media_type=location.media_type)
+        return frame_of_stored(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        )
 
     def recipe(self, *, spec_id: str, content_version: str) -> Mapping[str, Any] | None:
         record = self._recipes.read_recipe(spec_id=spec_id, content_version=content_version)

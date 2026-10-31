@@ -173,7 +173,11 @@ class StoredRootSource:
         )
         if located.frame_layout:
             return frame_from_frame_layout(data)
-        return frame_of_stored(data, media_type=located.location.media_type)
+        return frame_of_stored(
+            data,
+            media_type=located.location.media_type,
+            digest=located.location.artifact_digest,
+        )
 
     def _bytes(
         self, location: StoredArtifactLocation, *, spec_id: str, content_version: str
@@ -199,7 +203,9 @@ class StoredRootSource:
             data = self._bytes(location, spec_id=spec_id, content_version=content_version)
         except RootExpired:
             return None
-        return frame_of_stored(data, media_type=location.media_type)
+        return frame_of_stored(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        )
 
 
 def _frame_layout(options: Mapping[str, Any]) -> bool:

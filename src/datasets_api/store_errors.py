@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import logging
 
+from dfo_frame_grammar import FrameError
+
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import store_failure_is_permanent
+from materialise.formats import Table, read_frame1_table
 from spec_registry.errors import SpecRegistryStoreError
 
 logger = logging.getLogger(__name__)
@@ -34,6 +37,28 @@ class DatasetsStoreUnavailable(Exception):
     def __init__(self, message: str, *, sqlstate: str | None = None) -> None:
         self.sqlstate = sqlstate
         super().__init__(message)
+
+
+class StoredFrameUnreadable(Exception):
+    """A stored frame1 artifact does not read as a frame1 document, a stored-artifact fault. It is
+    classified by no door, so it answers `internal_error` as a stored canonical frame that does
+    not decode does, and its message names only the digest."""
+
+    def __init__(self, *, digest: str) -> None:
+        self.digest = digest
+        super().__init__(f"stored frame artifact_digest {digest!r} does not read as a frame")
+
+
+def read_stored_frame1_table(data: bytes, *, digest: str) -> Table:
+    """The table of the stored frame1 artifact `data`, at `digest`.
+
+    Raises:
+        StoredFrameUnreadable: `read_frame1_table` raised `FrameError` for it.
+    """
+    try:
+        return read_frame1_table(data)
+    except FrameError as exc:
+        raise StoredFrameUnreadable(digest=digest) from exc
 
 
 def classify_store_exception(exc: BaseException) -> ProblemSpec | None:

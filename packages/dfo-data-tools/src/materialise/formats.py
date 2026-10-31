@@ -54,6 +54,7 @@ from dfo_frame_grammar.grammar import (
     FrameError,
     UnitCell,
     UnitRequest,
+    derive_columns,
     reject_lone_surrogates,
     unit_cell_from_json,
 )
@@ -826,8 +827,10 @@ def read_frame1_table(data: bytes) -> Table:
 
 def read_frame1_document(data: bytes) -> dict[str, object]:
     """The frame1 document `data` holds: a JSON object with `frame_version` at `FRAME_VERSION`,
-    `columns` a list of column names, and `rows` lists of one cell per column. The one rule both
-    Datasets and Presentation read a stored frame1 document by. Cells are not read.
+    `columns` a list of distinct column names holding every column `derive_columns` gives for
+    its role columns but those older documents lack (`_FRAME1_OPTIONAL_COLUMNS`), and `rows`
+    lists of one cell per column. The one rule both Datasets and Presentation read a stored
+    frame1 document by. Cells are not read.
 
     Raises:
         FrameError: `schema_violation` for any other document, including bytes that do not
@@ -858,6 +861,12 @@ def read_frame1_document(data: bytes) -> dict[str, object]:
         raise FrameError("schema_violation", "frame1 columns must be a list of strings")
     for column in columns:
         reject_lone_surrogates(column)
+    if len(set(columns)) != len(columns):
+        raise FrameError("schema_violation", "frame1 columns repeat a name")
+    roles = [column for column in columns if column not in _FRAME_COLUMNS]
+    missing = set(derive_columns(roles)) - _FRAME1_OPTIONAL_COLUMNS - set(columns)
+    if missing:
+        raise FrameError("schema_violation", f"frame1 columns lack {sorted(missing)!r}")
     if not isinstance(rows, list):
         raise FrameError("schema_violation", "frame1 rows must be a list")
     for index, row in enumerate(rows):
@@ -869,23 +878,26 @@ def read_frame1_document(data: bytes) -> dict[str, object]:
     return document
 
 
+# Every column a frame holds beside its role columns, and those of them a frame1 document written
+# before the grammar named them may lack.
+_FRAME_COLUMNS = frozenset(derive_columns(()))
+_FRAME1_OPTIONAL_COLUMNS = frozenset({"measurementMethod", STATUS_COLUMN})
+if not _FRAME1_OPTIONAL_COLUMNS <= _FRAME_COLUMNS:
+    raise AssertionError("an optional frame1 column is no frame column")
+
+
 def frame1_unit_cells(cells: Sequence[object]) -> list[UnitCell | None]:
     """The validated cell of each frame1 `unit` cell in `cells`, through `unit_cell_from_json`,
-    read once per distinct cell keyed by its canonical JSON text, as a canonical frame reads
-    its `unit` column once per dictionary code.
+    read once per distinct cell keyed by its `repr`, as a canonical frame reads its `unit`
+    column once per dictionary code.
 
     Raises:
         FrameError: For a cell outside the `unit` cell's forms.
     """
-    read: dict[object, UnitCell | None] = {}
+    read: dict[str, UnitCell | None] = {}
     validated: list[UnitCell | None] = []
     for cell in cells:
-        # A mapping keys by its text beside the cell kind, so a ref spelling that text stays apart.
-        key = (
-            ("json", json.dumps(cell, sort_keys=True, separators=(",", ":")))
-            if isinstance(cell, (dict, list))
-            else cell
-        )
+        key = repr(cell)
         if key not in read:
             read[key] = unit_cell_from_json(cell)
         validated.append(read[key])

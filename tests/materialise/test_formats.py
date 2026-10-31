@@ -18,7 +18,7 @@ import openpyxl
 import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
-from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
+from dfo_frame_grammar.grammar import ComposedUnit, FrameError, StatVarPart, UnitRequest
 
 import materialise.formats as materialise_formats
 from materialise.errors import MaterialisationError, MaterialisationUsageError
@@ -883,9 +883,29 @@ def test_read_frame1_table_refuses_a_document_missing_a_required_key():
 
 def test_read_frame1_table_refuses_a_ragged_row():
     document = json.dumps(
-        {"frame_version": "frame1", "columns": ["stat_var", "value"], "rows": [["dcid:X"]]}
+        {
+            "frame_version": "frame1",
+            "columns": ["stat_var", "time_period", "value", "unit", "provenance"],
+            "rows": [["dcid:X"]],
+        }
     ).encode("utf-8")
     with pytest.raises(ValueError, match="row 0"):
+        read_frame1_table(document)
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(["stat_var", "time_period", "value", "provenance"], id="no-unit"),
+        pytest.param(["stat_var", "value", "unit", "provenance"], id="no-time-period"),
+        pytest.param(
+            ["stat_var", "time_period", "value", "unit", "unit", "provenance"], id="a-repeat"
+        ),
+    ],
+)
+def test_read_frame1_table_refuses_columns_outside_the_grammar(columns: list[str]):
+    document = json.dumps({"frame_version": "frame1", "columns": columns, "rows": []}).encode()
+    with pytest.raises(FrameError):
         read_frame1_table(document)
 
 

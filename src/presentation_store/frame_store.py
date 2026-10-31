@@ -188,6 +188,7 @@ from assembler.frame_view import (
 from assembler.limits import LABEL_MAX, joined_label
 from assembler.mint import warned_refs
 from assembler.ports import (
+    TRANSIENT_FRAME_REASONS,
     Continuation,
     FrameRef,
     FrameUnavailable,
@@ -422,25 +423,27 @@ _MALFORMED_CONTENT = (FrameError, pa.ArrowException, OSError, UnicodeDecodeError
 _DECODE_RETRY_AFTER_S = 30
 
 
-def _frame1_document(data: bytes) -> Mapping[str, object]:
+def _frame1_document(
+    data: bytes, *, location: StoredArtifactLocation, max_rows: int
+) -> Mapping[str, object]:
     """The frame1 document `data` holds, under `read_frame1_document`'s rule, the one Datasets
-    reads it by. Its `time_period` cells are strings and its `unit` cells pass
-    `frame1_unit_cells`, the two the structural view reads past that rule; the other cells are
-    trusted as the grammar's writer wrote them.
+    reads it by, refused past `max_rows` before any cell is read. Its `time_period` cells are
+    strings and its `unit` cells pass `frame1_unit_cells`, the two the structural view reads
+    past that rule; the other cells are trusted as the grammar's writer wrote them.
 
     Raises:
         FrameError: For any other document.
+        FrameUnavailable: `missing_rendering` past `max_rows`.
     """
     doc = read_frame1_document(data)
     columns = cast("list[str]", doc["columns"])
     rows = cast("list[list[object]]", doc["rows"])
-    if TIME_PERIOD_COLUMN in columns:
-        period = columns.index(TIME_PERIOD_COLUMN)
-        if not all(isinstance(row[period], str) for row in rows):
-            raise FrameError("invalid_time_period", "a time_period cell is not a string")
-    if UNIT_COLUMN in columns:
-        unit = columns.index(UNIT_COLUMN)
-        frame1_unit_cells([row[unit] for row in rows])
+    if len(rows) > max_rows:
+        raise _over_row_bound(location, rows=len(rows), max_rows=max_rows)
+    period, unit = columns.index(TIME_PERIOD_COLUMN), columns.index(UNIT_COLUMN)
+    if not all(isinstance(row[period], str) for row in rows):
+        raise FrameError("invalid_time_period", "a time_period cell is not a string")
+    frame1_unit_cells([row[unit] for row in rows])
     return doc
 
 
@@ -500,27 +503,40 @@ def _structural_view(
 def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
-    """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
-    document parsed, at its byte length, or a canonical frame built into one, at
-    `_document_bytes`. The grammar checks a canonical frame's schema, and `max_rows` its footer's
-    row count, before any row is decoded. A null `time_period` refuses here, and an unparseable
-    one in the structural view; the other cells are trusted as the grammar's writer wrote them.
-    `_decoding` refuses what does not decode."""
+    """The frame1 document `data` holds and the bytes the cache counts for it, `_document_bytes`
+    of its rows and columns: a frame1 document parsed (`_frame1_document`), or a canonical frame
+    built into one (`_canonical_document`), each bounded by `max_rows` before any cell is read.
+    An unparseable `time_period` refuses in the structural view; the cells neither reads are
+    trusted as the grammar's writer wrote them. `_decoding` refuses what does not decode."""
     with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
-            return _frame1_document(data), len(data)
-        footer = pq.ParquetFile(pa.BufferReader(data))
-        rows = footer.metadata.num_rows
-        if rows > max_rows:
-            raise _over_row_bound(location, rows=rows, max_rows=max_rows)
-        schema = footer.schema_arrow
-        Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
-        table = read_canonical_frame_table(data, columns=schema.names)
-        if table.column(TIME_PERIOD_COLUMN).null_count:
-            raise FrameError("invalid_time_period", "a time_period cell is null")
-        doc = canonical_frame_document(table)
+            doc = _frame1_document(data, location=location, max_rows=max_rows)
+        else:
+            doc = _canonical_document(data, location=location, max_rows=max_rows)
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
+
+
+def _canonical_document(
+    data: bytes, *, location: StoredArtifactLocation, max_rows: int
+) -> Mapping[str, object]:
+    """The frame1 document of the canonical frame `data` holds, refused past `max_rows` from its
+    footer before any row is decoded, and for a null `time_period`.
+
+    Raises:
+        FrameError: The schema is not a canonical frame's, or a `time_period` cell is null.
+        FrameUnavailable: `missing_rendering` past `max_rows`.
+    """
+    footer = pq.ParquetFile(pa.BufferReader(data))
+    rows = footer.metadata.num_rows
+    if rows > max_rows:
+        raise _over_row_bound(location, rows=rows, max_rows=max_rows)
+    schema = footer.schema_arrow
+    Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
+    table = read_canonical_frame_table(data, columns=schema.names)
+    if table.column(TIME_PERIOD_COLUMN).null_count:
+        raise FrameError("invalid_time_period", "a time_period cell is null")
+    return canonical_frame_document(table)
 
 
 def _over_row_bound(
@@ -1355,11 +1371,12 @@ class LiveFrameStore:
         fault no retry clears (`presentation_api.refusals`). Then the frame pins,
         and a refusal there pins nothing either. Then each root pins while it is still held: a
         root that aged out of the working tier, was revoked, or cannot be read is left unpinned
-        and logged. A root whose pin fails on I/O raises `io`, and a retry pins what is left.
+        and logged. A root whose pin fails transiently (`TRANSIENT_FRAME_REASONS`) raises it, and
+        a retry pins what is left.
 
         Raises:
             FrameUnavailable: The frame cannot be pinned, its roots cannot be named, or a
-                root's pin failed on I/O.
+                root's pin failed transiently.
             PinBudgetExhausted: The day's pin budget is spent.
             OpenPinBudgetExhausted: The open callers' pin budget is spent.
             AllowanceExhausted: `caller`'s `pin` allowance is spent.
@@ -1370,7 +1387,7 @@ class LiveFrameStore:
             try:
                 changed = self._pin_frame(root, component_id=component_id, caller=caller) or changed
             except FrameUnavailable as exc:
-                if exc.reason == "io":
+                if exc.reason in TRANSIENT_FRAME_REASONS:
                     raise
                 logger.warning(
                     "root %s at %s of %s at %s left unpinned for %s: %s %s",

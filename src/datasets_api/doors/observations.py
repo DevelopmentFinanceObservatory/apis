@@ -86,6 +86,7 @@ from datasets_api.manifest import (
 from datasets_api.manifest_models import Manifest
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import rendition_token, servable_frame_location
+from datasets_api.store_errors import read_stored_frame1_table
 from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
@@ -95,7 +96,6 @@ from materialise.formats import (
     canonical_frame_rows,
     frame_entity_columns,
     read_canonical_frame_table,
-    read_frame1_table,
 )
 from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
 from materialise.series_conversion import SeriesConversion, SeriesKey
@@ -244,12 +244,12 @@ class _StoredPreview:
 
 
 def _stored_frame_rows(
-    data: bytes, *, media_type: str
+    data: bytes, *, media_type: str, digest: str
 ) -> tuple[tuple[str, ...], Iterable[tuple[object, ...]]]:
-    """The columns and rows of a version's stored frame: its frame1 document, or its canonical
-    frame without the `status` column, whose rows are built a slice at a time."""
+    """The columns and rows of a version's stored frame at `digest`: its frame1 document, or its
+    canonical frame without the `status` column, whose rows are built a slice at a time."""
     if media_type == FRAME1_MEDIA_TYPE:
-        table = read_frame1_table(data)
+        table = read_stored_frame1_table(data, digest=digest)
         return table.columns, table.rows
     columns = [
         name for name in pq.read_schema(pa.BufferReader(data)).names if name != STATUS_COLUMN
@@ -328,7 +328,9 @@ def _load_series_reads(
     with phase("frame_load"):
         data = deps.artifact_store.get(artifact_digest=frame.artifact_digest, tier=Tier(frame.tier))
     with phase("frame_decode"):
-        columns, rows = _stored_frame_rows(data, media_type=frame.media_type)
+        columns, rows = _stored_frame_rows(
+            data, media_type=frame.media_type, digest=frame.artifact_digest
+        )
         return _series_reads(
             columns,
             rows,

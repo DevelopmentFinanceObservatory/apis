@@ -42,7 +42,7 @@ from assembler.pipeline.write import (
     _utc_now,
 )
 from assembler.ports import (
-    RETRYABLE_FRAME_REASONS,
+    TRANSIENT_FRAME_REASONS,
     FrameRef,
     FrameStore,
     FrameUnavailable,
@@ -117,7 +117,7 @@ def render_on_frame(
         try:
             return frame_store.load(frame_ref=stored_ref)
         except FrameUnavailable as exc:
-            if exc.reason in RETRYABLE_FRAME_REASONS:
+            if exc.reason in TRANSIENT_FRAME_REASONS:
                 raise
             return None
 

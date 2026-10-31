@@ -18,9 +18,10 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import presentation_api.retention as presentation_retention
+import presentation_api.share_slots as share_slots
 from assembler.errors import FrameUnavailable
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
-from assembler.ports import FrameRef, FrameUnavailableReason, ResolvedFrame
+from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
     build_resolved_frame,
     malaria_ethiopia_frame_ref,
@@ -31,6 +32,7 @@ from datasets_api.retention import RetentionUnreadable
 from dfo_platform.app import create_app
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
+from presentation_api.doors.components import PresentationBackpressure
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
 from presentation_api.newest_frames import NewestPending
 from presentation_store import LiveShareStore
@@ -100,16 +102,18 @@ class _Clock:
 
 
 class _RefusingFrameStore(FakeFrameStore):
-    """Refuses `_UNREADABLE` with `refusal`, a frame that cannot be loaded unless a test sets a
-    reason a retry may pass."""
+    """Raises `refusals[frame_ref]` for a frame it holds there, `_UNREADABLE` a frame that cannot
+    be loaded."""
 
-    refusal: FrameUnavailableReason = "missing_rendering"
+    def __init__(self) -> None:
+        super().__init__()
+        self.refusals: dict[FrameRef, Exception] = {
+            _UNREADABLE: FrameUnavailable(reason="missing_rendering", detail="exemplar")
+        }
 
     def load(self, *, frame_ref: FrameRef) -> ResolvedFrame:
-        if frame_ref == _UNREADABLE:
-            # Only a store or capacity refusal names a wait, as the frame store and Datasets do.
-            wait = 7.0 if self.refusal in ("io", "busy") else None
-            raise FrameUnavailable(reason=self.refusal, detail="exemplar", retry_after_s=wait)
+        if frame_ref in self.refusals:
+            raise self.refusals[frame_ref]
         return super().load(frame_ref=frame_ref)
 
 
@@ -562,23 +566,36 @@ def test_a_live_slot_whose_card_cannot_draw_the_newer_frame_serves_its_own_as_st
     assert door.newest.asked == [_STORED]
 
 
-@pytest.mark.parametrize("reason", ["io", "busy", "expired"])
-def test_a_live_slot_whose_newer_frame_a_retry_may_load_refuses_with_its_wait(
-    door: _Door, reason: FrameUnavailableReason
+@pytest.mark.parametrize(
+    ("raised", "stored"),
+    [
+        pytest.param(FrameUnavailable(reason="io", detail="exemplar"), False, id="io"),
+        pytest.param(FrameUnavailable(reason="busy", detail="exemplar"), False, id="busy"),
+        pytest.param(PresentationBackpressure(), False, id="classified-retryable"),
+        pytest.param(FrameUnavailable(reason="expired", detail="exemplar"), True, id="expired"),
+    ],
+)
+def test_a_live_slot_stores_a_stale_check_only_when_the_newer_frame_cannot_be_drawn(
+    door: _Door, raised: Exception, stored: bool
 ):
-    """A read a retry may pass is no reason to fall back, so the slot is not recorded stale."""
+    """A transient failure serves the card's own frame for that read and stores no check, so the
+    read after the claim lapses checks again and, on a healthy store, serves the newer frame."""
     share = door.share(door.card(), latest=True)
-    door.newest.answer = _UNREADABLE
-    door.frame_store.refusal = reason
+    door.newest.answer = _MOVED
+    door.frame_store.refusals[_MOVED] = raised
 
-    refused = door.data(share["id"])
-    door.frame_store.refusal = "missing_rendering"
-    door.later(minutes=1)
-    served = door.data(share["id"])
+    first = door.data(share["id"])
+    del door.frame_store.refusals[_MOVED]
+    door.later(seconds=share_slots._CLAIM_TTL.total_seconds() + 1)
+    second = door.data(share["id"])
 
-    assert (refused.json()["cause"]["code"], refused.json()["retryable"]) == (reason, True)
-    assert refused.headers.get("retry-after") == (None if reason == "expired" else "7")
-    assert _stated(served) == ("stale", _STORED.content_version, "live")
+    assert _stated(first) == ("stale", _STORED.content_version, "live")
+    if stored:
+        assert _stated(second) == ("stale", _STORED.content_version, "live")
+        assert door.newest.asked == [_STORED]
+    else:
+        assert _stated(second) == ("current", _MOVED.content_version, "live")
+        assert door.newest.asked == [_STORED] * 2
 
 
 def test_a_live_slot_with_no_datasets_surface_serves_its_cards_frame_as_stale(

@@ -485,6 +485,19 @@ def _frame1_with(**members: object) -> bytes:
     return json.dumps({key: value for key, value in doc.items() if value is not None}).encode()
 
 
+def _frame1_without(column: str) -> bytes:
+    """The malaria frame1 document without `column`."""
+    doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    columns = cast("list[str]", doc["columns"])
+    index = columns.index(column)
+    doc["columns"] = [name for name in columns if name != column]
+    doc["rows"] = [
+        [cell for position, cell in enumerate(row) if position != index]
+        for row in cast("list[list[object]]", doc["rows"])
+    ]
+    return json.dumps(doc).encode()
+
+
 def _frame_bytes() -> bytes:
     doc = build_frame_doc(role_keys=("recipient",), rows=malaria_ethiopia_rows())
     return json.dumps(doc).encode("utf-8")
@@ -1048,13 +1061,37 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
             id="a-column-name-with-a-lone-surrogate",
         ),
         pytest.param(_frame1_with(rows=[["dcid:X"]]), id="a-short-row"),
+        pytest.param(_frame1_without("unit"), id="no-unit-column"),
+        pytest.param(_frame1_without("provenance"), id="no-provenance-column"),
+        pytest.param(
+            _frame1_with(columns=["stat_var", "stat_var", "time_period", "value", "unit"], rows=[]),
+            id="a-repeated-column",
+        ),
+        pytest.param(_frame1_with(), id="past-the-row-bound"),
     ],
 )
 def test_a_frame1_document_that_is_not_a_frame_refuses_missing_rendering(data: bytes):
+    """The malaria document holds 9 rows, one past the bound here."""
     with pytest.raises(FrameUnavailable) as excinfo:
-        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=10)
+        frame_store._decode_frame(data, location=_location(digest="d", tier="working"), max_rows=8)
 
     assert excinfo.value.reason == "missing_rendering"
+
+
+@pytest.mark.parametrize("missing", ["measurementMethod", "status"])
+def test_a_frame1_document_older_than_an_optional_column_decodes_at_the_frame_measure(
+    missing: str,
+):
+    """A frame1 document counts in the cache at the measure a canonical frame of its rows and
+    columns does, whatever its byte length."""
+    data = _frame1_without(missing)
+    doc, size = frame_store._decode_frame(
+        data, location=_location(digest="d", tier="working"), max_rows=9
+    )
+
+    rows, columns = cast("list[list[object]]", doc["rows"]), cast("list[str]", doc["columns"])
+    assert missing not in columns
+    assert size == frame_store._document_bytes(rows=len(rows), columns=len(columns)) != len(data)
 
 
 def test_load_decodes_a_canonical_frame_at_the_row_bound():
