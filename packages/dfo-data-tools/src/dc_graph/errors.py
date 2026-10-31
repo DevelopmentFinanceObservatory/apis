@@ -1,11 +1,18 @@
 """Errors for `GraphClient` reads from `/v2/node`, `/v2/observation` and `/v2/resolve`.
 
 Callers may supply subclasses through `read_error_cls`, `deadline_error_cls` and
-`cap_error_cls`. Each must preserve the matching constructor signature.
+`cap_error_cls`. Each must preserve the matching constructor signature. A stuck cursor in
+`node_subjects` raises `GraphNotAdvancingError` itself. Every other paged read whose
+`nextToken` repeats, and every paged read still reporting one at its page cap, raises
+`read_error_cls` from a `GraphNotAdvancingError`, and dcids a re-request still omits raise
+it from a `GraphOmittedDcidsError` naming them, so a caller can tell both apart from a
+failure a later read could clear by the cause chain. `node_subjects_many` raises nothing at
+its page cap: it returns each lead it had not finished as `budget_exhausted`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, Protocol
 
 
@@ -41,8 +48,11 @@ class GraphDeadlineExceededError(GraphReadError):
 
 
 class GraphNotAdvancingError(GraphReadError):
-    """Raised when `nextToken` repeats or `node_subjects` sees 3 fresh-token pages with no new
-    dcids. `dcid` and `property` identify the stuck read.
+    """A paged read whose `nextToken` repeats, that still reports one at its page cap, or, in
+    `node_subjects`, that sees 3 fresh-token pages with no new dcids. Each would page the
+    same way again. `node_subjects` raises a stuck cursor itself; every other case raises
+    the read's `read_error_cls` from it. `dcid` names the stuck read's dcids, comma-joined
+    when it pages several, and `property` its arc expression.
     """
 
     def __init__(
@@ -55,6 +65,18 @@ class GraphNotAdvancingError(GraphReadError):
         super().__init__(*args, upstream_status=upstream_status)
         self.dcid = dcid
         self.property = property
+
+
+class GraphOmittedDcidsError(GraphReadError):
+    """Marks an omission that survives the scoped retry: the cause of the read error raised
+    when the graph leaves `dcids` out of a response and again out of a re-request scoped to
+    them, so a later read would leave them out too."""
+
+    def __init__(
+        self, *args: object, dcids: Sequence[str], upstream_status: int | None = None
+    ) -> None:
+        super().__init__(*args, upstream_status=upstream_status)
+        self.dcids = tuple(dcids)
 
 
 class GraphCapExceededError(Exception):

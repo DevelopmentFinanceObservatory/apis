@@ -3,7 +3,7 @@ The fake graph models `->*` range lookup followed by paged `<-typeOf` reads."""
 
 import pytest
 
-from dc_graph import GraphClient, GraphReadError
+from dc_graph import GraphClient, GraphNotAdvancingError, GraphReadError
 
 _PAGE_SIZE = 500
 
@@ -134,6 +134,7 @@ def test_enum_members_max_pages_exceeded_raises(monkeypatch) -> None:
     monkeypatch.setattr(GraphClient, "post", fake_post)
     client = GraphClient(base_url="http://fake/core/api")
 
-    with pytest.raises(GraphReadError, match="still reported a nextToken"):
+    with pytest.raises(GraphReadError, match="still reported a nextToken") as raised:
         client.enum_members("prop1")
+    assert isinstance(raised.value.__cause__, GraphNotAdvancingError)
     assert graph_module._ENUM_MEMBERS_TYPEOF_MAX_PAGES > 0

@@ -12,6 +12,7 @@ from dc_graph import (
     CURRENCY_UNIT_OF_MEASURE_ISO_CODES,
     GraphClient,
     GraphDeadlineExceededError,
+    GraphNotAdvancingError,
     GraphReadError,
 )
 from dc_graph import client as client_module
@@ -157,6 +158,26 @@ def test_currency_units_failed_read_raises_and_is_not_cached(monkeypatch) -> Non
         client.currency_units()
 
     assert call_count[0] == 2  # neither failed attempt was memoised, so both retried
+
+
+def test_currency_units_page_budget_exhausted_raises_from_a_not_advancing_cause(
+    monkeypatch,
+) -> None:
+    # Each page carries a fresh token, so only the page budget stops the walk.
+    monkeypatch.setattr(client_module, "_NODE_ARCS_MANY_MAX_PAGES", 2)
+    calls: list[dict] = []
+
+    def fake_post(self, path, payload, *, deadline=None):
+        calls.append(payload)
+        return {"data": _typeof_body(["CurrencyUSD"])["data"], "nextToken": f"tok{len(calls)}"}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api")
+
+    with pytest.raises(GraphReadError, match="still reported a nextToken") as raised:
+        client.currency_units()
+    assert isinstance(raised.value.__cause__, GraphNotAdvancingError)
+    assert len(calls) == 2
 
 
 def test_currency_units_empty_roster_raises_without_second_post_and_retries(monkeypatch) -> None:

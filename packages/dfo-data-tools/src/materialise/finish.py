@@ -20,6 +20,7 @@ from materialise.codes import (
     CountedEntityYears,
     CountedRefs,
     MaterialisationWarning,
+    MemberFields,
     YearRange,
 )
 from materialise.content_version import mint_version_from_digest
@@ -473,14 +474,14 @@ def _build_warnings(
         out_of_window = () if absent_reads_zero else outcome.out_of_window_members
         unserved_members = outcome.unserved_members
         member_count = len(outcome.member_observation_counts)
-    if (
-        countries_fallback
-        or off_cadence
-        or out_of_window
-        or unserved_members
-        or coverage_below_scope(
+    if writes_coverage_below_scope(
+        below_scope=coverage_below_scope(
             outcome.coverage, applied_window=outcome.applied_window, unserved=unserved
-        )
+        ),
+        countries_fallback=countries_fallback,
+        off_cadence=off_cadence,
+        out_of_window=out_of_window,
+        unserved_members=unserved_members,
     ):
         warnings.append(
             _coverage_below_scope_warning(
@@ -509,6 +510,23 @@ def _build_warnings(
     return tuple(warnings)
 
 
+def writes_coverage_below_scope(
+    *,
+    below_scope: bool,
+    countries_fallback: bool,
+    off_cadence: Sequence[str],
+    out_of_window: Sequence[str],
+    unserved_members: Sequence[str],
+) -> bool:
+    """Whether a mint writes `coverage_below_scope`: the window was clamped or a bound entity
+    went unserved (`below_scope`, `window.coverage_below_scope`), a request binding no place
+    was served the countries with data, or a group left members out. `_build_warnings` and
+    the stored-warning backfill (`datasets_api.warning_backfill`) both ask this."""
+    return (
+        below_scope or countries_fallback or bool(off_cadence or out_of_window or unserved_members)
+    )
+
+
 # Warnings use a local `TypedDict` because no shared warning model exists.
 # Refusal issues use the shared pydantic model.
 def _warning(code: str) -> MaterialisationWarning:
@@ -534,11 +552,19 @@ def _empty_result_warning(
 
 # Maximum refs a warning's counted field carries. A conversion's left-out entities keep the
 # ten the warnings named in their message, `_MAX_TRACE_EXAMPLES`.
-_MAX_COUNTED_REFS = 5
+MAX_COUNTED_REFS = 5
 
 # Entities are bare dcids; a warning's counted field carries them as `dcid:` refs, as it
 # carries a group's members.
 _DCID_REF_PREFIX = "dcid:"
+
+
+# The sentence of `coverage_below_scope` saying a request binding no place was served the
+# countries with data.
+COUNTRIES_FALLBACK_SENTENCE = (
+    "No place was named, so the answer covers the countries with data, because the full list "
+    "of places with data was too large or unavailable."
+)
 
 
 def _clamped_years(
@@ -611,26 +637,15 @@ def _coverage_below_scope_warning(
             f"{message} No observations were served for {len(unserved)} requested "
             f"{_entities(len(unserved))}."
         )
-    if off_cadence:
-        message = (
-            f"{message} {len(off_cadence)} of {member_count} series report at a different "
-            "frequency and are left out of the figures."
-        )
-    if out_of_window:
-        message = (
-            f"{message} {len(out_of_window)} of {member_count} series hold no observations "
-            "in the requested years."
-        )
-    if unserved_members:
-        message = (
-            f"{message} {len(unserved_members)} of {member_count} series hold no observations "
-            "under the source, unit and method the figures use and are left out."
-        )
+    for sentence in member_sentences(
+        off_cadence=off_cadence,
+        out_of_window=out_of_window,
+        unserved_members=unserved_members,
+        member_count=member_count,
+    ):
+        message = f"{message} {sentence}"
     if countries_fallback:
-        message = (
-            f"{message} No place was named, so the answer covers the countries with data, "
-            "because the full list of places with data was too large or unavailable."
-        )
+        message = f"{message} {COUNTRIES_FALLBACK_SENTENCE}"
     warning: MaterialisationWarning = {
         "code": "coverage_below_scope",
         "severity": "warn",
@@ -640,22 +655,73 @@ def _coverage_below_scope_warning(
         warning["requested_years"], warning["served_years"] = years
     if unserved:
         warning["unserved_entities"] = _counted_entities(unserved)
-    if off_cadence or out_of_window or unserved_members:
-        warning["member_count"] = member_count
-    if off_cadence:
-        warning["off_cadence_members"] = _counted(off_cadence)
-    if out_of_window:
-        warning["out_of_window_members"] = _counted(out_of_window)
-    if unserved_members:
-        warning["unserved_members"] = _counted(unserved_members)
+    warning.update(
+        member_fields(
+            off_cadence=off_cadence,
+            out_of_window=out_of_window,
+            unserved_members=unserved_members,
+            member_count=member_count,
+        )
+    )
     return warning
 
 
-def _counted(refs: Sequence[str], *, limit: int = _MAX_COUNTED_REFS) -> CountedRefs:
+def member_sentences(
+    *,
+    off_cadence: Sequence[str],
+    out_of_window: Sequence[str],
+    unserved_members: Sequence[str],
+    member_count: int,
+) -> tuple[str, ...]:
+    """The sentences of a group's `coverage_below_scope` that count, of its `member_count`
+    series, those in `off_cadence`, `out_of_window` and `unserved_members`, one sentence for
+    each that is not empty (`_coverage_below_scope_warning`)."""
+    sentences: list[str] = []
+    if off_cadence:
+        sentences.append(
+            f"{len(off_cadence)} of {member_count} series report at a different "
+            "frequency and are left out of the figures."
+        )
+    if out_of_window:
+        sentences.append(
+            f"{len(out_of_window)} of {member_count} series hold no observations "
+            "in the requested years."
+        )
+    if unserved_members:
+        sentences.append(
+            f"{len(unserved_members)} of {member_count} series hold no observations "
+            "under the source, unit and method the figures use and are left out."
+        )
+    return tuple(sentences)
+
+
+def member_fields(
+    *,
+    off_cadence: Sequence[str],
+    out_of_window: Sequence[str],
+    unserved_members: Sequence[str],
+    member_count: int,
+) -> MemberFields:
+    """The fields of a group's `coverage_below_scope` naming the members `member_sentences`
+    counts: `member_count` when any is named, and each non-empty kind's count and first five
+    refs (`CountedRefs`)."""
+    fields: MemberFields = {}
+    if off_cadence or out_of_window or unserved_members:
+        fields["member_count"] = member_count
+    if off_cadence:
+        fields["off_cadence_members"] = _counted(off_cadence)
+    if out_of_window:
+        fields["out_of_window_members"] = _counted(out_of_window)
+    if unserved_members:
+        fields["unserved_members"] = _counted(unserved_members)
+    return fields
+
+
+def _counted(refs: Sequence[str], *, limit: int = MAX_COUNTED_REFS) -> CountedRefs:
     return {"count": len(refs), "refs": list(refs[:limit])}
 
 
-def _counted_entities(entities: Iterable[str], *, limit: int = _MAX_COUNTED_REFS) -> CountedRefs:
+def _counted_entities(entities: Iterable[str], *, limit: int = MAX_COUNTED_REFS) -> CountedRefs:
     """The distinct bare `entities`, sorted, as `dcid:` refs, the first `limit` of them
     carried (`_counted`)."""
     return _counted(
