@@ -340,8 +340,8 @@ def _stretch_attach(
     character `at`, qualifies: those whose words hold it, else every measure but where the
     blank lies in one clause of the query's measures (`_measure_positions`). Measures the
     query writes joined only by commas and coordinators ("ODA and OOF") share a clause, which
-    runs from the first of them to the next clause's first measure; a blank between two
-    measures parts them: "aid to Kenya and education aid to Kenya, not from the OECD" leaves
+    runs from the first of them to the next clause's first measure; a ";" between two
+    measures parts them, a blank or one the query wrote: "aid to Kenya and education aid to Kenya, not from the OECD" leaves
     the OECD out of education aid alone, "ODA and OOF to Kenya excluding debt relief" judges
     both, and "ODA excluding debt relief and OOF to Kenya" judges ODA alone. A stretch before
     every measure, or in a query with one clause or a measure it does not write, qualifies

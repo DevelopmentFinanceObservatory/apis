@@ -154,6 +154,24 @@ def test_a_stretch_the_query_does_not_write_is_disclosed_unblanked(query, phrase
     assert reading == QueryReading(text=query, left_out=(LeftOut(phrase, ("aid",), None, phrase),))
 
 
+def test_a_stretch_the_query_does_not_write_is_judged_without_its_scope_words():
+    """A stretch the query does not write splits as a written one does, so the applied scope
+    it holds is neither quoted nor judged."""
+    query = "ODA to Kenya not including multilateral, nor humanitarian aid"
+    reading = admit_exclusions(
+        query,
+        _read(
+            "not including multilateral or humanitarian aid",
+            left_out=("multilateral", "humanitarian aid"),
+        ),
+    )
+
+    assert reading == QueryReading(
+        text=query,
+        left_out=(LeftOut("or humanitarian aid", ("humanitarian aid",), None, "humanitarian aid"),),
+    )
+
+
 _SCOPE = "not including multilateral"
 
 
@@ -212,6 +230,16 @@ _SCOPE = "not including multilateral"
             ),
             id="two-spans",
         ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief and not including multilateral, loans",
+            ("debt relief", "multilateral", "loans"),
+            "ODA to Kenya ; and not including multilateral, ;",
+            (
+                LeftOut("excluding debt relief", ("debt relief",), 13, "excluding debt relief"),
+                LeftOut("loans", ("loans",), 47, "loans"),
+            ),
+            id="a-coordinator-before-the-scope",
+        ),
     ],
 )
 def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
@@ -233,6 +261,7 @@ def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
     )
     # Blanking "net ODA" takes its netting basis with it; the provider scope stays.
     assert "provider:bilateral" in before
+    assert "provider:bilateral" in after
     assert [entry for entry in before if entry in after] == after
 
 
@@ -257,11 +286,17 @@ def test_a_stretch_stating_the_provider_scope_blanks_only_what_outlives_it(
             [("excluding debt relief", ";"), ("without IMF credit", ";")],
             id="two-cues",
         ),
+        pytest.param(
+            "ODA to Kenya excluding debt relief and all humanitarian aid",
+            ("debt relief", "humanitarian aid"),
+            [("excluding debt relief and all humanitarian aid", ";")],
+            id="a-word-that-is-no-cue",
+        ),
     ],
 )
 def test_items_under_one_cue_share_a_stretch(query, left_out, stretches):
-    """A read phrase splits where an item has a cue of its own, words before the first word
-    it leaves out; items under one cue are one stretch."""
+    """A read phrase splits where an item has a cue of its own, a negation cue before the
+    first word it leaves out; items under one cue are one stretch."""
     reading = admit_exclusions(query, _read(query[query.index(" e") + 1 :], left_out=left_out))
 
     assert [(s.phrase, reading.text[s.at]) for s in reading.left_out if s.at is not None] == (

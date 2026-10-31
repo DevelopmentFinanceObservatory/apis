@@ -30,7 +30,7 @@ from search.engine.extract import _extract_version
 from search.engine.extraction_store import extraction_key
 from search.engine.qualifier_match import label_runs
 from search.engine.response_cache_keys import normalise_query
-from search.engine.stated_scope import part_scope_intakes, scope_phrase_spans
+from search.engine.stated_scope import _NEGATION_CUE, part_scope_intakes, scope_phrase_spans
 from search.scope.state import ScopeIntake
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,9 @@ def _items(phrase: str, intake: ScopeIntake | None) -> list[_Item]:
         previous_end = token.end
         coordinator = token.text.casefold() in _COORDINATORS
         if any(start <= token.start < end for start, end in scopes):
+            # A coordinator before a scope phrase joins it to the item before, so it stays.
             close()
+            lead = None
             after_scope = in_scope_noun = True
             continue
         if in_scope_noun and not (coordinator or comma):
@@ -269,8 +271,10 @@ def _items(phrase: str, intake: ScopeIntake | None) -> list[_Item]:
 def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str]) -> list[_Piece]:
     """The stretches of `phrase`: one per negation cue, the items under one cue sharing it.
     An item opens a stretch when it starts the phrase, which starts at the read's cue, when
-    words of its own come before the first word it leaves out (`left_words`), its own cue, or
-    when an applied scope phrase stands before it (`_items`), which no stretch covers.
+    the words it has before the first word it leaves out (`left_words`) hold a negation cue
+    (`stated_scope._NEGATION_CUE`), its own cue, or when an applied scope phrase stands
+    before it (`_items`), which no stretch covers. Other words before it, as in "and all
+    humanitarian aid", are no cue, and the item shares the stretch before.
 
     A stretch is disclosed from its cue. An item after a scope phrase with no cue of its own
     is disclosed as the words its blank removes, its coordinator included, so it quotes no
@@ -281,9 +285,9 @@ def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str])
 
     def own_cue(item: _Item) -> bool:
         first = next(
-            (i for i, word in enumerate(item.words) if word.text.casefold() in left_words), 0
+            (word for word in item.words if word.text.casefold() in left_words), item.words[0]
         )
-        return first > 0
+        return bool(_NEGATION_CUE.search(phrase, item.words[0].start, first.start))
 
     groups: list[list[_Item]] = []
     for item in _items(phrase, intake):
@@ -339,7 +343,8 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
 
     The phrase splits into one stretch per negation cue (`_pieces`), each leaving out the
     read's items its own words hold. A stretch the query does not write as read, even so
-    normalised, is kept unblanked with no `at`, so the answer discloses it. A query with no
+    normalised, splits the same way and is kept unblanked with no `at`, so the answer
+    discloses it. A query with no
     stretch blanked comes back as it was written.
     """
     if not read.exclusions:
@@ -356,23 +361,21 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
         if not phrase or len(phrase) >= len(normal):
             continue
         found = _occurrences(phrase, normal)
-        if not found:
-            shown.setdefault(phrase, phrase)
-            things.setdefault(phrase, []).extend(map(base.fold, exclusion.left_out))
-            continue
-        if labels is None:
-            labels = label_runs(normal, get_index(), get_measure_index())
-        if any(lo <= s and e <= hi for s, e in found for lo, hi in labels):
-            continue
+        if found:
+            if labels is None:
+                labels = label_runs(normal, get_index(), get_measure_index())
+            if any(lo <= s and e <= hi for s, e in found for lo, hi in labels):
+                continue
         left = [base.fold(thing) for thing in exclusion.left_out]
         left_words = frozenset(
             token.text.casefold() for thing in left for token in word_tokens(thing)
         )
         for piece in _pieces(phrase, intake, left_words):
             stretch = phrase[slice(*piece.phrase)]
-            ranges.setdefault(stretch, []).extend(
-                (s + piece.blank[0], s + piece.blank[1]) for s, _ in found
-            )
+            if found:
+                ranges.setdefault(stretch, []).extend(
+                    (s + piece.blank[0], s + piece.blank[1]) for s, _ in found
+                )
             words = shown.setdefault(stretch, phrase[slice(*piece.shown)])
             things.setdefault(stretch, []).extend(
                 _left_out_words(left, words, whole=piece.blank == (0, len(phrase)))
