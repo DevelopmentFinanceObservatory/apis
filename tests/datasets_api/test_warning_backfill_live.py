@@ -87,11 +87,12 @@ def _run(live_store: LiveDatasetStore, rows) -> int:
 
 def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(live_store):
     """The selection's pattern finds the old sentence in Postgres and the new-format clause the
-    split rows. The update rewrites a row as read, leaves a row changed after the read, and a
-    second selection finds only the row it left."""
+    split rows, a page at a time as at once. The update rewrites a row as read, leaves a row
+    changed after the read and a row holding a warning that is no object, and a second
+    selection finds only the rows it left."""
     suffix = uuid4().hex
-    rewritten, changed, split = (
-        f"spec_{name}_{suffix}" for name in ("rewritten", "changed", "split")
+    rewritten, changed, split, malformed = (
+        f"spec_{name}_{suffix}" for name in ("rewritten", "changed", "split", "malformed")
     )
     split_warning = {
         "code": "coverage_below_scope",
@@ -104,13 +105,22 @@ def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(
         _insert(live_store, _row(_warning([_IN, _OUT]), zero=[_IN, _OUT], subject_id=rewritten))
         _insert(live_store, _row(_warning([_IN]), zero=[_IN], subject_id=changed))
         _insert(live_store, _row(split_warning, zero=[_OUT], subject_id=split))
-        ours = {rewritten, changed, split}
+        bad = _row(_warning([_IN]), zero=[_IN], subject_id=malformed)
+        bad["warnings"] = ["not a warning", *bad["warnings"]]
+        bad["immutable_body"] = {**bad["immutable_body"], "warnings": bad["warnings"]}
+        _insert(live_store, bad)
+        ours = {rewritten, changed, split, malformed}
 
         assert {row.subject_id for row in select_rows(live_store, new_format=False)} & ours == {
             rewritten,
             changed,
+            malformed,
         }
         assert {row.subject_id for row in select_rows(live_store, new_format=True)} & ours == ours
+        whole = select_rows(live_store, new_format=True)
+        paged = select_rows(live_store, new_format=True, page_rows=1)
+        assert len(paged) == len(whole) == len(list(whole)) >= len(ours)
+        assert [row.subject_id for row in paged] == [row.subject_id for row in whole]
 
         rows = [row for row in select_rows(live_store, new_format=False) if row.subject_id in ours]
         concurrent = [{**_warning([_IN]), "message": f"{_warning([_IN])['message']} Again."}]
@@ -129,7 +139,8 @@ def test_the_selection_finds_old_sentences_and_the_update_holds_to_what_it_read(
         assert written["out_of_window_members"] == {"count": 1, "refs": ["dcid:Var_Out"]}
         assert _warnings(live_store, changed) == concurrent
         assert {row.subject_id for row in select_rows(live_store, new_format=False)} & ours == {
-            changed
+            changed,
+            malformed,
         }
     finally:
-        _delete_versions(live_store, [rewritten, changed, split])
+        _delete_versions(live_store, [rewritten, changed, split, malformed])

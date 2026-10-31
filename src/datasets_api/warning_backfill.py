@@ -35,8 +35,9 @@ member as zero (`generation.reads_absent_as_zero`), as a mint drops them. A warn
 member sentences all drop keeps its other sentences (`emptied`), and is dropped when a mint
 would not write it (`finish.writes_coverage_below_scope`, `dropped`).
 
-A row is refused for good (`permanent`) when it cannot be rewritten from what it stores: no
-definition or trace, a named member the trace says served observations, fewer zero-count
+A row is refused for good (`permanent`) when it cannot be rewritten from what it stores: a
+warning that is no object or a `coverage_below_scope` warning that is no `WarningModel`
+(`malformed_warning`), no definition or trace, a named member the trace says served observations, fewer zero-count
 members after the last named one than K counts, a body and column holding different warnings
 (`mismatched`), a composite, an identity the adapter refuses, a probe over its pair ceiling
 or refusing its requests, a graph or SDMX read a later read would repeat
@@ -55,7 +56,8 @@ beside ours (`origin_catalogue.UnBlockedPlaces.failures`), or a member whose def
 scope is not settled leaves the row for the next run (`transient`). The places the UN
 front door refuses do not: it refused them at the mint too. An update the store fails as an
 outage does (`clears_on_retry`) stops the run, and the rows not yet tried count as
-`remaining`. Any other exception is a defect in this task (`failed`).
+`remaining`. A failed read of the next page of rows stops the run too: it emits the summary,
+counting the rows not tried as `remaining`, and raises. Any other exception is a defect in this task (`failed`).
 
 The run exits 1 when a later run could still rewrite a row, because its read did not
 complete (`transient`), the row changed under the update (`conflicts`), or the deadline or a
@@ -64,7 +66,7 @@ store outage stopped the run before it (`remaining`), or when a row failed with 
 exits 0 with a `WARNING` line naming the row and its count in the summary, so a scheduled
 run does not fail on every run over rows that will never change.
 
-Rows come by subject, and a probe, or its failure, is kept until the subject changes, keyed
+Rows come by subject a page at a time (`SelectedRows`), and a probe, or its failure, is kept until the subject changes, keyed
 by its members, the mint's window and the provenance the selections dispatch, so the
 versions of one definition probe once. Each row is written in a transaction of its own,
 and the update holds the row to the warnings it read in both the column and the body, so a
@@ -83,6 +85,7 @@ the rows it rewrote.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import time
@@ -94,6 +97,7 @@ from functools import cached_property, partial
 from typing import cast
 
 from dfo_spec_kit.identity import IdentityError
+from pydantic import ValidationError
 
 from artifact_publication.jobs import emit
 from code_index.members import absent_member_reads_zero
@@ -171,40 +175,103 @@ class WarningRow:
     recorded_at: datetime
     definition: object
     trace: object
-    warnings: list[dict[str, object]]
+    warnings: list[object]
     # The `warnings` of `immutable_body`, `None` when the body holds none.
     body_warnings: object
 
 
-def select_rows(store: DatasetStore, *, new_format: bool) -> list[WarningRow]:
+# The version rows `select_rows` reads at a time.
+PAGE_ROWS = 100
+
+# The rows holding a `coverage_below_scope` warning with the old member sentence, and with the
+# third parameter those holding one in the new format, with member fields.
+_SELECTED = (
+    "FROM datasets.version_record "
+    "WHERE jsonb_typeof(warnings) = 'array' AND EXISTS ("
+    "SELECT 1 FROM jsonb_array_elements(warnings) AS w "
+    "WHERE w ->> 'code' = %s AND (w ->> 'message' ~ %s OR (%s AND ("
+    "w -> 'off_cadence_members' IS NOT NULL "
+    "OR w -> 'out_of_window_members' IS NOT NULL))))"
+)
+
+
+@dataclass(frozen=True)
+class SelectedRows:
+    """The version rows `select_rows` selects, `count` of them when it counted, read by
+    subject and then oldest first one page of at most `page_rows` at a time, each page in a
+    transaction of its own after the last row of the one before it (a keyset), so a run
+    holds one page whatever the row count. A row a run rewrites drops out of the selection,
+    and the keyset never reads before the last row read."""
+
+    store: DatasetStore
+    new_format: bool
+    page_rows: int
+    count: int
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __iter__(self) -> Iterator[WarningRow]:
+        after: tuple[str, datetime, str] | None = None
+        while True:
+            page = self._page(after)
+            yield from page
+            if len(page) < self.page_rows:
+                return
+            last = page[-1]
+            after = (last.subject_id, last.recorded_at, last.content_version)
+
+    def _page(self, after: tuple[str, datetime, str] | None) -> list[WarningRow]:
+        keyset = (
+            ""
+            if after is None
+            else " AND (subject_id, recorded_at, content_version) > (%s, %s, %s)"
+        )
+        with self.store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT subject_id, content_version, recorded_at, definition, trace, warnings, "
+                f"immutable_body -> 'warnings' AS body_warnings {_SELECTED}{keyset} "
+                "ORDER BY subject_id, recorded_at, content_version LIMIT %s",
+                (
+                    MEMBER_SENTENCE_CODE,
+                    MEMBER_SENTENCE,
+                    self.new_format,
+                    *(after or ()),
+                    self.page_rows,
+                ),
+            )
+        return [
+            WarningRow(
+                subject_id=str(row["subject_id"]),
+                content_version=str(row["content_version"]),
+                recorded_at=cast(datetime, row["recorded_at"]),
+                definition=row["definition"],
+                trace=row["trace"],
+                warnings=cast("list[object]", row["warnings"]),
+                body_warnings=row["body_warnings"],
+            )
+            for row in rows
+        ]
+
+
+def select_rows(
+    store: DatasetStore, *, new_format: bool, page_rows: int = PAGE_ROWS
+) -> SelectedRows:
     """The version rows holding a `coverage_below_scope` warning with the old member sentence,
     and with `new_format` those holding one in the new format, with member fields, by subject
-    and then oldest first, so a run keeps the probes of one subject at a time (`Readers.probes`)."""
+    and then oldest first, so a run keeps the probes of one subject at a time (`Readers.probes`).
+    Only their count is read here; the rows are read a page at a time (`SelectedRows`)."""
     with store.transaction() as tx:
-        rows = tx.fetch_all(
-            "SELECT subject_id, content_version, recorded_at, definition, trace, warnings, "
-            "immutable_body -> 'warnings' AS body_warnings "
-            "FROM datasets.version_record "
-            "WHERE jsonb_typeof(warnings) = 'array' AND EXISTS ("
-            "SELECT 1 FROM jsonb_array_elements(warnings) AS w "
-            "WHERE w ->> 'code' = %s AND (w ->> 'message' ~ %s OR (%s AND ("
-            "w -> 'off_cadence_members' IS NOT NULL "
-            "OR w -> 'out_of_window_members' IS NOT NULL)))) "
-            "ORDER BY subject_id, recorded_at, content_version",
+        counted = tx.fetch_one(
+            f"SELECT count(*) AS count {_SELECTED}",
             (MEMBER_SENTENCE_CODE, MEMBER_SENTENCE, new_format),
         )
-    return [
-        WarningRow(
-            subject_id=str(row["subject_id"]),
-            content_version=str(row["content_version"]),
-            recorded_at=cast(datetime, row["recorded_at"]),
-            definition=row["definition"],
-            trace=row["trace"],
-            warnings=cast("list[dict[str, object]]", row["warnings"]),
-            body_warnings=row["body_warnings"],
-        )
-        for row in rows
-    ]
+    return SelectedRows(
+        store=store,
+        new_format=new_format,
+        page_rows=page_rows,
+        count=int(cast(int, counted["count"])) if counted is not None else 0,
+    )
 
 
 class _Refused(Exception):
@@ -341,7 +408,7 @@ class _Counts:
 
 
 def run_backfill_warnings(
-    rows: Sequence[WarningRow],
+    rows: SelectedRows | Sequence[WarningRow],
     *,
     store: DatasetStore,
     readers: Readers,
@@ -364,17 +431,29 @@ def run_backfill_warnings(
     `clears_on_retry` calls an outage stops the run; any other failure is the row's own."""
     counts = _Counts()
     subject = None
-    for position, row in enumerate(rows):
+    selected = iter(rows)
+    for position in itertools.count():
+        try:
+            row = next(selected, None)
+        except Exception:
+            # The next page's read failed, so the rows from here are left for a later run.
+            counts.remaining = _left(rows, position)
+            _emit_backfilled(counts, dry_run=dry_run, probes=readers.probe_calls)
+            raise
+        if row is None:
+            break
         if now() >= deadline:
-            counts.remaining = len(rows) - position
+            counts.remaining = _left(rows, position)
             break
         if row.subject_id != subject:
             # Rows come by subject, so no later row reads an earlier subject's probes.
             readers.probes.clear()
             subject = row.subject_id
-        task = any(_member_sentence(warning) for warning in row.warnings)
+        # A row whose warnings cannot be read is refused as one to rewrite.
+        task = True
         outage = False
         try:
+            task = any(_member_sentence(warning) for warning in _read_warnings(row))
             if task:
                 _backfill_row(
                     row,
@@ -394,7 +473,7 @@ def run_backfill_warnings(
             transient = outage or isinstance(exc, _Unread)
             defect = not (transient or isinstance(exc, _Refused))
             if outage:
-                counts.remaining = len(rows) - position
+                counts.remaining = _left(rows, position)
             elif defect:
                 counts.failed += 1
             elif not task:
@@ -423,6 +502,12 @@ def run_backfill_warnings(
     return _emit_backfilled(counts, dry_run=dry_run, probes=readers.probe_calls)
 
 
+def _left(rows: SelectedRows | Sequence[WarningRow], position: int) -> int:
+    """The rows of `rows` from `position` on, at least the one there or the one a failed page
+    read may hold: a page read after the count can hold rows the count missed."""
+    return max(len(rows) - position, 1)
+
+
 def emit_nothing_backfilled(*, dry_run: bool) -> None:
     """The `datasets_warnings_backfilled` line of a run that found no row."""
     _emit_backfilled(_Counts(), dry_run=dry_run, probes=0)
@@ -443,6 +528,27 @@ def _emit_backfilled(counts: _Counts, *, dry_run: bool, probes: int) -> int:
         **asdict(counts),
     )
     return unfinished
+
+
+def _read_warnings(row: WarningRow) -> list[Mapping[str, object]]:
+    """`row`'s warnings, each a mapping and each of `MEMBER_SENTENCE_CODE` a `WarningModel`.
+    Raises `_Refused` for a row holding any other, which every run would read alike."""
+    for position, warning in enumerate(row.warnings):
+        if not isinstance(warning, Mapping):
+            raise _Refused(
+                f"warning {position} is a {type(warning).__name__}, not an object",
+                reason="malformed_warning",
+            )
+        if warning.get("code") == MEMBER_SENTENCE_CODE:
+            try:
+                warning_model(cast("Mapping[str, object]", warning))
+            except ValidationError as exc:
+                raise _Refused(
+                    f"warning {position} is no warning: {exc.error_count()} errors, first "
+                    f"{exc.errors()[0]['msg']!r} at {exc.errors()[0]['loc']!r}",
+                    reason="malformed_warning",
+                ) from exc
+    return cast("list[Mapping[str, object]]", row.warnings)
 
 
 def _member_sentence(warning: Mapping[str, object]) -> re.Match[str] | None:
@@ -466,10 +572,10 @@ def _backfill_row(
     if row.body_warnings != row.warnings:
         raise _Mismatched("immutable_body holds other warnings than the warnings column")
     trace = _trace(row)
-    warnings: list[dict[str, object]] = []
+    warnings: list[Mapping[str, object]] = []
     splits: list[tuple[int, Split]] = []
     dropped = 0
-    for warning in row.warnings:
+    for warning in _read_warnings(row):
         match = _member_sentence(warning)
         if match is None:
             warnings.append(warning)
@@ -525,7 +631,7 @@ def _backfill_row(
 def _update(
     store: DatasetStore,
     row: WarningRow,
-    warnings: list[dict[str, object]],
+    warnings: Sequence[Mapping[str, object]],
     *,
     clears_on_retry: Callable[[BaseException], bool],
 ) -> Mapping[str, object] | None:
@@ -605,7 +711,7 @@ def _new_format_row(row: WarningRow, *, readers: Readers) -> bool:
     one `datasets_warning_backfill_row` line per warning states."""
     trace = _trace(row)
     agreed = True
-    for warning in row.warnings:
+    for warning in _read_warnings(row):
         if warning.get("code") != MEMBER_SENTENCE_CODE or not any(
             key in warning for key in _MEMBER_KEYS
         ):
