@@ -89,8 +89,10 @@ column and in `immutable_body`, reading each row's members from the graph
 (`warning_backfill`), one row per transaction, starting none once
 `BACKFILL_DESCRIPTIONS_BUDGET` has passed. It writes one `datasets_warning_backfill_failed`
 `ERROR` line per row it leaves, saying whether a later run can get past the failure, and one
-`datasets_warnings_backfilled` line with the counts, and exits 1 when any row failed, lost the
-compare or was left. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
+`datasets_warnings_backfilled` line with the counts. It stops at a store outage
+(`_clears_on_retry`), and exits 1 when a row failed transiently, lost the compare or was left.
+A row refused for good is refused again on every run from what it stores, so it is reported
+each time and sets no exit code. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
 per row, and compares its split with the stored one on rows a mint already split. When no row
 matches it opens no release and builds no client. It reads the runtime database settings,
 `DatasetsSettings`, `DATASETS_GRAPH_TOKEN`, `DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph
@@ -975,7 +977,9 @@ def _backfill_descriptions() -> int:
 
 
 class WarningBackfillSettings(BaseSettings):
-    """The graph token and SDMX timeout a mint reads with, under the API's own names."""
+    """The graph token and SDMX timeout a mint reads with, under the API's own names.
+    `DatasetsBuildSettings` holds both but also reads `DFO_PUBLIC_SITE_URL`, which the job does
+    not set."""
 
     model_config = SettingsConfigDict(env_prefix="DATASETS_")
 
@@ -1035,6 +1039,7 @@ def _backfill_warnings(dry_run: bool) -> int:
                 dry_run=dry_run,
                 deadline=deadline,
                 now=utc_now,
+                clears_on_retry=_clears_on_retry,
             )
     finally:
         close_shared_pool()

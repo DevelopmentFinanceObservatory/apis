@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from materialise.errors import (
     DefaultFacetUndefinedError,
@@ -49,6 +49,7 @@ from materialise.facets import (
     dataset_candidates,
     facet_axis_value,
     facet_election,
+    facets_in_window,
     joined_breadth,
     joint_dispatch_facet_ids,
     joint_matches,
@@ -105,6 +106,32 @@ def is_populated(candidates: Iterable[_Identified]) -> bool:
     unpopulated member dispatches no rows and is not named unserved (`GroupElection`), and
     Search names a member it leaves out by the same test (`read_plan.populated_members`)."""
     return any(c.facet_id is not None for c in candidates)
+
+
+# How a group member the election did not count is left out (`classify_uncounted`).
+type UncountedKind = Literal["off_cadence", "out_of_window", "unserved"]
+
+
+def classify_uncounted(
+    candidates: Sequence[Facet],
+    *,
+    electable: Sequence[Facet],
+    selections: Mapping[str, FacetSelection],
+    window: RequestedWindow | None,
+) -> UncountedKind | None:
+    """How a group member the election did not count (`FacetElection.members`) is left out,
+    from its `candidates` and those its elected dataset publishes (`electable`,
+    `facets.dataset_candidates`). `off_cadence` when a candidate jointly matching
+    `selections` holds a point in `window`, so its observations in those years are at another
+    period than the group's; `out_of_window` when such candidates hold none; `unserved` when
+    none jointly matches and the member is populated (`is_populated`), so its observations sit
+    under another source, unit or method; `None` for an unpopulated member, which no warning
+    names. The mint's warning (`generation._plan_group_members`), `GroupElection.unserved` and
+    the stored-warning backfill (`datasets_api.warning_backfill`) all classify here."""
+    in_window = facets_in_window(candidates, selections=selections, window=window)
+    if in_window is not None:
+        return "off_cadence" if in_window else "out_of_window"
+    return "unserved" if is_populated(electable) else None
 
 
 def _populated_mask(candidates: Sequence[Sequence[Facet]]) -> list[bool]:
@@ -546,12 +573,14 @@ def elect_group(
             continuing_facet_ids(member, election, member=index)
             for index, member in enumerate(members)
         ),
+        # A counted member holds a jointly matching facet, so only an uncounted one is unserved.
         unserved=tuple(
             index
-            for index, (member, populated) in enumerate(
-                zip(members, _populated_mask(electable), strict=True)
+            for index, (member, member_electable) in enumerate(zip(members, electable, strict=True))
+            if classify_uncounted(
+                member, electable=member_electable, selections=election.selections, window=window
             )
-            if populated and not joint_matches(member, election.selections)
+            == "unserved"
         ),
         incoherent=incoherent,
     )

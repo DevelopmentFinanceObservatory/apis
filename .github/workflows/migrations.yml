@@ -28,6 +28,11 @@ on:
       - tests/artifact_store/**
       - src/datasets_api/**
       - packages/dfo-data-tools/src/materialise/finish.py
+      - packages/dfo-data-tools/src/materialise/facets.py
+      - packages/dfo-data-tools/src/materialise/generation.py
+      - packages/dfo-data-tools/src/materialise/group_facets.py
+      - packages/dfo-data-tools/src/materialise/window.py
+      - tests/datasets_api/test_warning_backfill_live.py
       - src/presentation_store/**
       - tests/presentation_store/**
       - .github/workflows/migrations.yml
@@ -56,6 +61,11 @@ on:
       - tests/artifact_store/**
       - src/datasets_api/**
       - packages/dfo-data-tools/src/materialise/finish.py
+      - packages/dfo-data-tools/src/materialise/facets.py
+      - packages/dfo-data-tools/src/materialise/generation.py
+      - packages/dfo-data-tools/src/materialise/group_facets.py
+      - packages/dfo-data-tools/src/materialise/window.py
+      - tests/datasets_api/test_warning_backfill_live.py
       - src/presentation_store/**
       - tests/presentation_store/**
       - .github/workflows/migrations.yml

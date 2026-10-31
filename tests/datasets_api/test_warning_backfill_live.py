@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 
 from dataset_store import LiveDatasetStore
+from datasets_api.maintenance import _clears_on_retry
 from datasets_api.warning_backfill import Readers, run_backfill_warnings, select_rows
 from tests.dataset_store.test_live import _DSN, _delete_versions, _pool
 from tests.materialise._scope_availability import ScopeAvailability
@@ -80,6 +81,7 @@ def _run(live_store: LiveDatasetStore, rows) -> int:
         dry_run=False,
         deadline=_NOW + timedelta(minutes=45),
         now=lambda: _NOW,
+        clears_on_retry=_clears_on_retry,
     )
 
 
