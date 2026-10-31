@@ -39,7 +39,7 @@ class ResolvedFacet(StrictModel):
     basis is always present. ref/label are present when one distinct value
     served every carried series; selection carries "per_series" in their
     place when the carried series select different values on this axis --
-    never alongside ref/label. request_basis joins either shape, present
+    never alongside ref/label -- and refs lists those values. request_basis joins either shape, present
     only on the unit axis, only when unit was bound through the request form
     (currency/prices/base_year), one basis value per member the request
     named.
@@ -126,6 +126,13 @@ class ResolvedFacet(StrictModel):
             "this axis; present in place of ref/label, never alongside them"
         ),
     )
+    refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "alongside selection 'per_series' only: the distinct dcids the carried series "
+            "select on this axis, in series order; a series selecting no value adds none"
+        ),
+    )
     request_basis: dict[str, FacetBasis] | None = Field(
         default=None,
         description=(
@@ -152,6 +159,8 @@ class ResolvedFacet(StrictModel):
             )
         if (self.ref is not None) == (self.selection is not None):
             raise ValueError("exactly one of ref or selection must be present")
+        if self.refs is not None and self.selection is None:
+            raise ValueError("refs is only meaningful alongside selection")
         return self
 
 

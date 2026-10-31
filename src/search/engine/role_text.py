@@ -360,6 +360,7 @@ def debtor_possessive(
     measures: Sequence[str],
     places: Mapping[str, Sequence[str]],
     directed: Mapping[str, RoleAxis],
+    phrases: Sequence[str] = (),
 ) -> dict[str, RoleAxis]:
     """Return the debtor's axis for the one place a possessive names over its own debt.
 
@@ -371,8 +372,11 @@ def debtor_possessive(
     external debt``), a place with no possessive, and a creditor cue whose object is no
     place (``Kenya's debt to GDP ratio``, a debt measured against a quantity) set nothing,
     and a debt noun followed by a claim word (``China's debt exposure``) names no debt. A
-    query that opens the debtors as a breakdown (``China's debt by debtor country``,
-    `breakdown_axis`) reads its possessor as the creditor and sets nothing.
+    query that opens the debtors as a breakdown reads its possessor as the creditor and
+    sets nothing: ``China's debt by debtor country``, ``China's debt for each debtor
+    country``. `breakdown_axis` reads each of the extraction's ``phrases`` (its operation
+    phrases, dropped qualifiers and breakdown entities) and each of the query's own
+    `breakdown_segments`.
 
     The possessive reads the measure, so the axis states no direction of its own
     (``FramePlace.direction_stated``).
@@ -384,22 +388,13 @@ def debtor_possessive(
         return {}
     # A query that opens the debtors as a breakdown ("China's debt by debtor country") asks
     # for a creditor's lending, so its possessor is the creditor.
-    if "destination" in _opened_axes(query_tokens, query=query):
+    if any(
+        breakdown_axis(phrase, query=query) == "destination"
+        for phrase in (*phrases, *breakdown_segments(query))
+    ):
         return {}
     possessors = _debt_possessors(query_tokens, places) or set()
     return {name: "destination" for name in possessors if name in directed}
-
-
-def _opened_axes(query_tokens: list[str], *, query: str) -> set[RoleAxis]:
-    """The flow axes a breakdown phrase of the query opens (`breakdown_axis`), read from
-    each ``by`` or ``across`` over every span of the words after it."""
-    return {
-        axis
-        for start, token in enumerate(query_tokens)
-        if token in _BREAKDOWN_CONNECTIVES
-        for end in range(start + 2, len(query_tokens) + 1)
-        if (axis := breakdown_axis(" ".join(query_tokens[start:end]), query=query)) is not None
-    }
 
 
 # Forms of "receive" that read the place beside them as the recipient: "received by
@@ -593,6 +588,22 @@ def _nouns_axes(tokens: list[str]) -> set[RoleAxis] | None:
 # Connectives that ask for one value per member of the role nouns after them: "by donor",
 # "across recipients". "for" asks it only before "each" or "every" ("for each donor").
 _BREAKDOWN_CONNECTIVES: frozenset[str] = frozenset({"by", "across"})
+# The words that open a phrase `breakdown_axis` reads: "by donor", "across recipients", "for
+# each donor", "from every provider", "to each recipient".
+_SEGMENT_OPENERS: frozenset[str] = _BREAKDOWN_CONNECTIVES | {"for", *_ROLE_PREP_AXES}
+
+
+def breakdown_segments(query: str) -> list[str]:
+    """The query's phrases that can ask for a breakdown, each read whole by `breakdown_axis`:
+    the words from each opener (``by``, ``across``, ``for``, ``from``, ``to``) to the next
+    opener or the end. ``Kenya's external debt by debtor type`` gives ``by debtor type``, which opens
+    no side, so no shorter span reads as ``by debtor``."""
+    tokens = _tokenize(query.replace("\u2019", "'"))
+    starts = [i for i, token in enumerate(tokens) if token in _SEGMENT_OPENERS]
+    return [
+        " ".join(tokens[start:end])
+        for start, end in zip(starts, [*starts[1:], len(tokens)], strict=False)
+    ]
 
 
 def breakdown_axis(phrase: str, *, query: str) -> RoleAxis | None:

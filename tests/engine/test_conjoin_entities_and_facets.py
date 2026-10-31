@@ -1260,7 +1260,9 @@ def test_collapse_same_shape_merges_differing_fallback_resolved_facets():
     assert residual == []
     merged = effective[0].spec
     assert merged.resolved.facets == {
-        "measurementMethod": ResolvedFacet(basis="fallback", selection="per_series")
+        "measurementMethod": ResolvedFacet(
+            basis="fallback", selection="per_series", refs=["method/A", "method/B"]
+        )
     }
 
 

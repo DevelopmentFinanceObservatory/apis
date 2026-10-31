@@ -6,7 +6,9 @@ UN System Data Commons. Writes `{ref: label}`, sorted, to `tests/fixtures/per_n_
 `tests/unit_words/test_per_n_units.py` holds each recorded ref to the unit registry, so a new
 unit in the graph shows up as a failure on the next recording.
 
-Requires `SEARCH_GRAPH_BASE`. `SEARCH_GRAPH_TOKEN` is forwarded when set.
+Requires `SEARCH_GRAPH_BASE`. `SEARCH_GRAPH_TOKEN`, when set, goes as the `x-graph-token`
+header, and a `*.run.app` base also takes a Cloud Run ID token from Application Default
+Credentials (`dc_graph.GraphClient`). The UN System Data Commons needs neither.
 
 Usage:
     uv run --env-file .env python scripts/record_per_n_units.py

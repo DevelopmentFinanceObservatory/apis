@@ -370,6 +370,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -473,7 +474,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1093,6 +1094,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -1250,7 +1252,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1413,6 +1415,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -1516,7 +1519,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1984,6 +1987,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -2141,7 +2145,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2375,7 +2379,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2922,7 +2926,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -3536,7 +3540,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4430,6 +4434,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -4568,7 +4573,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4736,6 +4741,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -4839,7 +4845,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5457,6 +5463,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -5599,7 +5606,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5779,6 +5786,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -5894,7 +5902,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6491,6 +6499,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -6594,7 +6603,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6762,6 +6771,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -6900,7 +6910,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7330,6 +7340,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -7409,7 +7420,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7935,6 +7946,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -8014,7 +8026,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8602,6 +8614,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -8681,7 +8694,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8831,6 +8844,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -8910,7 +8924,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -9090,7 +9104,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10005,6 +10019,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -10084,7 +10099,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10609,6 +10624,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -10703,7 +10719,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11380,6 +11396,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -11459,7 +11476,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11609,6 +11626,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -11688,7 +11706,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12209,6 +12227,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -12309,7 +12328,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12851,6 +12870,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -12960,7 +12980,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -13648,6 +13668,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -13748,7 +13769,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14198,6 +14219,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -14289,7 +14311,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14682,6 +14704,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -14763,7 +14786,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15220,6 +15243,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -15301,7 +15325,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15688,6 +15712,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -15776,7 +15801,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16157,6 +16182,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -16238,7 +16264,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16625,6 +16651,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -16713,7 +16740,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17118,6 +17145,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -17221,7 +17249,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17602,6 +17630,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -17683,7 +17712,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17805,6 +17834,7 @@
        "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
        "label": null,
        "ref": "dc/base/ScenarioFixture",
+       "refs": null,
        "request_basis": null,
        "selection": null,
        "source": null
@@ -17886,7 +17916,7 @@
       "served_count": 1
      },
      "trace": {
-      "capability_version": "cap_ae1c69fd89331e26",
+      "capability_version": "cap_4913302d7a6b6435",
       "conversion": null,
       "default_reading": {
        "applied": true,
@@ -18755,6 +18785,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -18836,7 +18867,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -18964,6 +18995,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -19045,7 +19077,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19591,6 +19623,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -19672,7 +19705,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19800,6 +19833,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -19881,7 +19915,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20339,6 +20373,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -20420,7 +20455,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20803,6 +20838,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -20884,7 +20920,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21267,6 +21303,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -21348,7 +21385,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21507,7 +21544,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22170,6 +22207,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -22258,7 +22296,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22755,6 +22793,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -22836,7 +22875,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23358,6 +23397,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -23461,7 +23501,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24123,6 +24163,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -24204,7 +24245,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24332,6 +24373,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -24413,7 +24455,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25088,6 +25130,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -25176,7 +25219,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25304,6 +25347,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -25385,7 +25429,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25966,6 +26010,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -26054,7 +26099,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26727,6 +26772,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -26815,7 +26861,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26943,6 +26989,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -27031,7 +27078,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27196,7 +27243,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28096,6 +28143,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -28177,7 +28225,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28305,6 +28353,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -28386,7 +28435,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29111,6 +29160,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -29192,7 +29242,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29320,6 +29370,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -29401,7 +29452,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29566,7 +29617,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30416,6 +30467,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -30497,7 +30549,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30686,7 +30738,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31556,6 +31608,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -31661,7 +31714,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31805,6 +31858,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -31951,7 +32005,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32592,6 +32646,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -32697,7 +32752,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32841,6 +32896,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -32987,7 +33043,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33602,6 +33658,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -33714,7 +33771,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34401,6 +34458,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -34489,7 +34547,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34617,6 +34675,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -34698,7 +34757,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35367,6 +35426,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -35455,7 +35515,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35583,6 +35643,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -35664,7 +35725,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36312,6 +36373,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -36393,7 +36455,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36521,6 +36583,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -36602,7 +36665,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36931,6 +36994,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -37077,7 +37141,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37610,6 +37674,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -37756,7 +37821,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37902,6 +37967,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -38007,7 +38073,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38544,6 +38610,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -38690,7 +38757,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38836,6 +38903,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -38941,7 +39009,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -39902,6 +39970,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -40048,7 +40117,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40194,6 +40263,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -40299,7 +40369,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40828,6 +40898,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -40933,7 +41004,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41077,6 +41148,7 @@
         "documentation": "/api/graph/documentation/dc/base/CoverageFixture",
         "label": null,
         "ref": "dc/base/CoverageFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -41223,7 +41295,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41787,6 +41859,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -41868,7 +41941,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41996,6 +42069,7 @@
         "documentation": "/api/graph/documentation/dc/base/ScenarioFixture",
         "label": null,
         "ref": "dc/base/ScenarioFixture",
+        "refs": null,
         "request_basis": null,
         "selection": null,
         "source": null
@@ -42077,7 +42151,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_ae1c69fd89331e26",
+       "capability_version": "cap_4913302d7a6b6435",
        "conversion": null,
        "default_reading": {
         "applied": true,

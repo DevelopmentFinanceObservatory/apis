@@ -351,14 +351,14 @@ not hold."""
             "undata/UNIT_MEASURE-CR_USD_K",
             None,
             None,
-            ("undata/UNIT_MEASURE-CR_USD_K", "Current US dollars", "USD", "current", ""),
+            ("undata/UNIT_MEASURE-CR_USD_K", "Constant US dollars", "USD", "constant", ""),
             id="declared-un-thousand-dollars",
         ),
         pytest.param(
             "ChainedUSDollarBaseYr2017",
             None,
             None,
-            ("ChainedUSDollarBaseYr2017", "Constant 2017 US dollars", "USD", "constant", "2017"),
+            ("ChainedUSDollarBaseYr2017", "Chained 2017 US dollars", "USD", "constant", "2017"),
             id="declared-chained-2017",
         ),
         pytest.param(

@@ -9,7 +9,8 @@ Three facts set the price basis, and the first that holds wins:
 
 - the prices and base year of a unit request on the identity, which converts the answer to
   them;
-- a unit in constant prices of a year (`UnitClass.base_year`, `ChainedUSDollarBaseYr2017`);
+- the price basis the unit registry gives a priced money unit (`UnitClass.prices`):
+  `SDG_CU_USD` current, `CR_USD_K` constant, `ChainedUSDollarBaseYr2017` chained 2017;
 - the shape's `measurementQualifier`, listed in `PRICES_BY_QUALIFIER`: `Nominal` is current
   prices and `RealValue` constant prices. Other qualifiers (`Adjusted`) are no price basis
   and stay in the measure noun.
@@ -29,10 +30,12 @@ US_DOLLARS: Final = "US dollars"
 
 @dataclass(frozen=True, slots=True)
 class PriceBasis:
-    """Current or constant prices, with the base year of constant prices when known."""
+    """Current or constant prices, with the base year of constant prices when known, and
+    whether constant prices are chain-linked."""
 
     prices: PricesKind
     base_year: int | None
+    chained: bool = False
 
 
 def price_basis(
@@ -51,8 +54,10 @@ def price_basis(
     """
     if requested is not None:
         return requested
-    if unit_class is not None and unit_class.base_year is not None:
-        return PriceBasis(prices="constant", base_year=unit_class.base_year)
+    if unit_class is not None and unit_class.prices is not None:
+        return PriceBasis(
+            prices=unit_class.prices, base_year=unit_class.base_year, chained=unit_class.chained
+        )
     prices = PRICES_BY_QUALIFIER.get(measurement_qualifier) if measurement_qualifier else None
     return PriceBasis(prices=prices, base_year=None) if prices is not None else None
 
@@ -60,14 +65,15 @@ def price_basis(
 def price_basis_phrase(basis: PriceBasis | None, *, currency_noun: str) -> str:
     """The unit token's text: "current US dollars", "constant 2022 US dollars".
 
-    Constant prices with no known base year read "constant US dollars". No price basis
-    reads the currency noun alone.
+    Constant prices with no known base year read "constant US dollars", and chain-linked
+    ones "chained 2017 US dollars". No price basis reads the currency noun alone.
     """
     if basis is None:
         return currency_noun
+    prices = "chained" if basis.chained else basis.prices
     if basis.prices == "constant" and basis.base_year is not None:
-        return f"constant {basis.base_year} {currency_noun}"
-    return f"{basis.prices} {currency_noun}"
+        return f"{prices} {basis.base_year} {currency_noun}"
+    return f"{prices} {currency_noun}"
 
 
 def price_basis_option_label(prices: PricesKind) -> str:

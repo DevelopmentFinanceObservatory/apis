@@ -127,7 +127,8 @@ def _resolved_facets(
     An axis is omitted when no series carries it. A shared ref on every series yields
     `ref` with the first-seen series' label, source, and Data Commons, and on the provenance
     axis the account its datasets declare (`code_index.composites.provenance_account`).
-    Differing refs or a missing value on any series yield `selection="per_series"` without a ref or label. `bound_axes` supplies each axis's
+    Differing refs or a missing value on any series yield `selection="per_series"` without a
+    ref or label, with `refs` listing the distinct refs in series order. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
     Keys follow `FacetAxis` order.
@@ -167,7 +168,10 @@ def _resolved_facets(
             )
         else:
             result[axis] = ResolvedFacet(
-                basis=basis, selection="per_series", request_basis=axis_request_basis
+                basis=basis,
+                selection="per_series",
+                refs=list(distinct),
+                request_basis=axis_request_basis,
             )
     return result
 

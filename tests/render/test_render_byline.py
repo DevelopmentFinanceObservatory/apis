@@ -184,9 +184,18 @@ def test_a_role_currency_request_reads_as_the_roles_currency(role: str, expected
     assert (token.text, token.binding_ref) == (expected, UNIT_REF)
 
 
-def test_a_chained_dollar_unit_reads_constant_prices_of_its_base_year():
-    _, plan = _render(facets=_unit("ChainedUSDollarBaseYr2017"))
-    assert next(t for t in plan if t.axis == "unit").text == "Constant 2017 US dollars"
+@pytest.mark.parametrize(
+    ("unit", "expected"),
+    [
+        pytest.param("ChainedUSDollarBaseYr2017", "Chained 2017 US dollars", id="chained"),
+        pytest.param("undata/UNIT_MEASURE-CR_USD_K", "Constant US dollars", id="constant"),
+        pytest.param("SDG_CU_USD", "Current US dollars", id="current"),
+    ],
+)
+def test_a_priced_dollar_unit_reads_the_registry_price_basis(unit, expected):
+    """The unit registry's prices, base year and chaining set the byline's price basis."""
+    _, plan = _render(facets=_unit(unit))
+    assert next(t for t in plan if t.axis == "unit").text == expected
 
 
 @pytest.mark.parametrize(

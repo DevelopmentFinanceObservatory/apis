@@ -100,6 +100,7 @@ from search.engine.role_text import (
     debtor_possessive,
     every_member_breakdown_axis,
     receipt_axes,
+    role_axis_for_text,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import scan_sources, source_phrases
@@ -509,9 +510,14 @@ class _Wording:
 
 
 def _read_wording(
-    entities: Sequence[ExtractedEntity], *, query: str, measures: Sequence[str]
+    entities: Sequence[ExtractedEntity],
+    *,
+    query: str,
+    measures: Sequence[str],
+    phrases: Sequence[str],
 ) -> _Wording:
-    """The query's wording about the ends of `entities` (`_Wording`), read once."""
+    """The query's wording about the ends of `entities` (`_Wording`), read once.
+    ``phrases`` are the extraction's breakdown candidates (`role_text.debtor_possessive`)."""
     places: dict[str, list[str]] = {}
     axes_by_place: dict[str, set[RoleAxis]] = {}
     for entity in entities:
@@ -521,7 +527,9 @@ def _read_wording(
     extracted = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=extracted)
     stated = receipt_axes(query, places=places) | debt
-    read = debtor_possessive(query, measures=measures, places=places, directed=extracted)
+    read = debtor_possessive(
+        query, measures=measures, places=places, directed=extracted, phrases=phrases
+    )
     return _Wording(
         stated=stated,
         read={name: axis for name, axis in read.items() if name not in stated},
@@ -532,8 +540,10 @@ def _read_wording(
 def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: str) -> Ends:
     """The permutation of ends the query's wording makes of the extraction's reading
     (`flow_ends.end_permutation`), from each directed place it moves. A directed place the
-    wording leaves alone whose own cue states its end ("from France", `_cue_states_direction`)
-    keeps it, so the wording then moves only the places it names."""
+    wording leaves alone whose own cue states the end the extraction gave it ("from France"
+    on origin, `_cue_states_direction`) keeps it, so the wording then moves only the places
+    it names. A cue stating the other end ("from France" on destination) shows the
+    extraction read the flow backwards, so it protects nothing."""
     moves = {
         name: (wording.extracted[name], axis)
         for name in wording.extracted
@@ -542,21 +552,12 @@ def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: 
     if any(
         (name := _entity_key(entity)) in wording.extracted
         and name not in moves
+        and role_axis_for_text(entity.role_span) == wording.extracted[name]
         and _cue_states_direction(entity, entities=entities, query=query)
         for entity in entities
     ):
         return {}
     return end_permutation(moves)
-
-
-def _entity_roles(
-    entities: list[ExtractedEntity], *, query: str, measures: Sequence[str]
-) -> dict[str, list[DoorRole]]:
-    """Map stripped entity names to their flow axes and spans (`_door_roles`), with the
-    query's wording read for them (`_read_wording`)."""
-    return _door_roles(
-        entities, _read_wording(entities, query=query, measures=measures), query=query
-    )
 
 
 def _door_roles(
@@ -1044,7 +1045,16 @@ def _prepare_extraction(
             entity_breakdowns.append(words)
     # Where the query's wording shows the extraction read the flow backwards, every end the
     # parse names swaps with it: places, and the axes operations run over.
-    wording = _read_wording(extracted_entities, query=query, measures=unique)
+    wording = _read_wording(
+        extracted_entities,
+        query=query,
+        measures=unique,
+        phrases=[
+            *entity_breakdowns,
+            *(op.phrase for op in extraction.operations),
+            *extraction.dropped_qualifiers,
+        ],
+    )
     ends = _wording_ends(extracted_entities, wording, query=query)
     extraction, extract_result, extracted_entities = permute_ends(
         (extraction, extract_result, extracted_entities), ends

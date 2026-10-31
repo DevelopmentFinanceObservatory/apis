@@ -126,7 +126,7 @@ _UNIDO = "United Nations Industrial Development Organization (UNIDO)"
             "crs-021-1",
             "Outbound official development assistance (ODA) from OECD-DAC countries on grant"
             " equivalent basis in Africa and United Kingdom, 2018 to 2024.",
-            "US dollars · SDG Global Database.",
+            "Constant US dollars · SDG Global Database.",
             id="crs-021-name-without-unit",
         ),
     ],

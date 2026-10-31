@@ -12,7 +12,7 @@ from search.engine.entry.parsed import (
     _role_query_for_part,
     interpret_parts,
 )
-from search.engine.entry.raw_text import _entity_roles, _prepare_extraction
+from search.engine.entry.raw_text import _prepare_extraction
 from search.engine.extract import (
     ExtractedEntity,
     ExtractedOperation,
@@ -51,6 +51,16 @@ def _extracted(text: str, flow_role: RoleAxis, span: str | None = None) -> Extra
     return ExtractedEntity(text=text, span=span, flow_role=flow_role, role_span=cue)
 
 
+def _prepared_roles(
+    entities: list[ExtractedEntity], *, query: str, measures: list[str]
+) -> dict[str, list[DoorRole]]:
+    """The raw-text door's roles for scripted `entities`, read as `_prepare_extraction`
+    reads an extraction of `measures`."""
+    extraction = Extraction(kind="resolution", variables=measures, entities=entities)
+    result = ExtractionResult(extraction=extraction, qualifiers={})
+    return _prepare_extraction(extraction, result, query=query).entity_roles
+
+
 def _occurrences(roles: dict[str, list[DoorRole]]) -> dict[str, list[tuple[RoleAxis, str]]]:
     """Each name's occurrences as ``(axis, span)``; `stated` has its own tests."""
     return {name: [(role.axis, role.span) for role in rs] for name, rs in roles.items()}
@@ -58,7 +68,7 @@ def _occurrences(roles: dict[str, list[DoorRole]]) -> dict[str, list[tuple[RoleA
 
 class TestRawTextDoorCarriesEveryOccurrence:
     def test_one_name_on_both_axes_carries_both_in_mention_order(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "origin", span="from Kenya"),
                 _extracted("Kenya", "destination", span="to Kenya"),
@@ -139,7 +149,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
             for text, axis, cue in entities
         ]
         assert _validate_role_spans(query, extracted, ["aid"]) == extracted
-        roles = _entity_roles(extracted, query=query, measures=["aid"])
+        roles = _prepared_roles(extracted, query=query, measures=["aid"])
         assert {name: [role.stated for role in rs] for name, rs in roles.items()} == {
             name: [value] for name, value in stated.items()
         }
@@ -149,13 +159,13 @@ class TestRawTextDoorCarriesEveryOccurrence:
         entity = ExtractedEntity(
             text="France", span="French", flow_role="origin", role_span="French"
         )
-        roles = _entity_roles([entity], query="French aid to Senegal", measures=["aid"])
+        roles = _prepared_roles([entity], query="French aid to Senegal", measures=["aid"])
         assert [role.stated for role in roles["France"]] == [False]
 
     def test_a_debt_axis_is_stated_by_construction(self):
         """The possessive debtor in "Kenya's debt to China" takes its axis from the debt
         wording, so it is stated although its cue is a possessive."""
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s"),
                 ExtractedEntity(
@@ -173,7 +183,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
     def test_a_lone_debt_possessive_sets_the_debtor_and_states_no_direction(self):
         """The possessive debtor in "Kenya's debt service" reads its axis off the measure,
         so the axis changes and the direction stays unstated."""
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
             query="Which countries does Kenya's debt service go to",
             measures=["debt service"],
@@ -231,13 +241,13 @@ class TestRawTextDoorCarriesEveryOccurrence:
         ]
         validated = _validate_role_spans(query, extracted, [measure])
         assert {e.flow_role for e in validated} == {"unspecified"}
-        roles = _entity_roles(validated, query=query, measures=[measure])
+        roles = _prepared_roles(validated, query=query, measures=[measure])
         assert roles == {
             name: [DoorRole(axis=axis, span=name, stated=True)] for name, axis in expected.items()
         }
 
     def test_an_exact_repeat_collapses_to_one_occurrence(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "destination", span="to Kenya"),
                 _extracted("Kenya", "destination", span="to Kenya"),
@@ -248,7 +258,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
         assert _occurrences(roles) == {"Kenya": [("destination", "to Kenya")]}
 
     def test_an_unspecified_occurrence_is_skipped(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "unspecified"),
                 _extracted("Kenya", "origin", span="from Kenya"),
@@ -259,7 +269,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
         assert _occurrences(roles) == {"Kenya": [("origin", "from Kenya")]}
 
     def test_a_name_unspecified_in_every_occurrence_carries_no_entry(self):
-        roles = _entity_roles(
+        roles = _prepared_roles(
             [
                 _extracted("Kenya", "unspecified"),
                 _extracted("Kenya", "unspecified"),
@@ -275,7 +285,7 @@ def _debt_roles(
     query: str, extracted: list[tuple[str, str | None, str]], measures: list[str]
 ) -> dict[str, list[RoleAxis]]:
     """The raw-text door's axes by name for ``(text, span, extracted axis)`` places."""
-    roles = _entity_roles(
+    roles = _prepared_roles(
         [ExtractedEntity(text=text, span=span, flow_role=axis) for text, span, axis in extracted],
         query=query,
         measures=measures,
@@ -344,6 +354,26 @@ def test_a_place_whose_cue_states_its_direction_keeps_its_end():
         "Kenya": [("destination", "Kenya")],
     }
     assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
+
+
+def test_a_cue_against_its_extracted_end_lets_the_whole_parse_swap():
+    """ "How much ODA did Kenya receive from France" extracted backwards puts France's
+    "from" on destination. The cue contradicts that end, so it protects nothing: the
+    receipt wording moves Kenya, and France swaps with it."""
+    roles = _prepared_roles(
+        [
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="receive"),
+            ExtractedEntity(
+                text="France", span="France", flow_role="destination", role_span="from"
+            ),
+        ],
+        query="How much ODA did Kenya receive from France",
+        measures=["official development assistance"],
+    )
+    assert _occurrences(roles) == {
+        "Kenya": [("destination", "Kenya")],
+        "France": [("origin", "France")],
+    }
 
 
 class TestRawTextDoorReadsDebtWording:
@@ -724,7 +754,7 @@ def _run_self_flow_occurrences(
         resolve={"Kenya": _KEN},
         obs={},
     )
-    door_roles = _entity_roles(
+    door_roles = _prepared_roles(
         [
             _extracted("Kenya", "origin", span="from Kenya"),
             _extracted("Kenya", "destination", span="to Kenya"),
@@ -779,7 +809,7 @@ def test_debt_wording_binds_the_creditor_as_origin_and_the_debtor_as_destination
     monkeypatch, query: str
 ):
     """A by-creditor series answers with China on origin, though the extraction reversed them."""
-    door_roles = _entity_roles(
+    door_roles = _prepared_roles(
         [
             ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s"),
             ExtractedEntity(text="China", span="China", flow_role="destination", role_span="to"),
@@ -873,6 +903,6 @@ def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monke
         ["loans"],
     )
     assert [entity.flow_role for entity in extracted] == ["unspecified", "destination"]
-    door_roles = _entity_roles(extracted, query=query, measures=["loans"])
+    door_roles = _prepared_roles(extracted, query=query, measures=["loans"])
 
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)

@@ -210,7 +210,9 @@ def test_resolved_provenance_carries_the_shared_series_members():
 def test_resolved_provenance_per_series_drops_the_members():
     other = SeriesFacetRef(ref="dc/base/Other")
     facets = _resolved_facets([{"provenance": _WDI_FACET}, {"provenance": other}], {})
-    assert facets["provenance"] == ResolvedFacet(basis="fallback", selection="per_series")
+    assert facets["provenance"] == ResolvedFacet(
+        basis="fallback", selection="per_series", refs=[_WDI, "dc/base/Other"]
+    )
 
 
 def test_resolved_facet_refuses_source_without_ref():
