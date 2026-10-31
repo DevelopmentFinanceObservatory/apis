@@ -88,7 +88,7 @@ import traceback
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
-from functools import partial
+from functools import cached_property, partial
 from typing import cast
 
 from dfo_spec_kit.identity import IdentityError
@@ -120,11 +120,10 @@ from materialise.errors import (
 )
 from materialise.facets import (
     ElectedDataset,
-    FacetElection,
     FacetSelection,
     MemberProbe,
-    continuation,
     continues_selection,
+    continuing_candidates,
     dataset_candidates,
     probe_collection_candidates,
 )
@@ -206,7 +205,12 @@ def select_rows(store: DatasetStore, *, new_format: bool) -> list[WarningRow]:
 
 
 class _Refused(Exception):
-    """The row cannot be rewritten from what it stores. A later run refuses it too."""
+    """The row cannot be rewritten from what it stores. A later run refuses it too. `reason`
+    names the refusals a log reader tells apart, `None` for the rest."""
+
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class _Mismatched(_Refused):
@@ -235,37 +239,18 @@ class _Member:
 
 @dataclass
 class _Probed:
-    """One probe's members, keyed by ref, the series counts ranking their group's election
-    (`group_facets.group_breadth`), and the elections rebuilt over them, by selections."""
+    """One probe's members, keyed by ref in `stat_vars` order, under `window`."""
 
     members: Mapping[str, _Member]
-    breadth: Mapping[str, int] | None
-    elections: dict[tuple[object, ...], FacetElection] = field(default_factory=dict)
+    stat_vars: tuple[str, ...]
+    window: RequestedWindow
 
-    def election(
-        self,
-        selections: Mapping[str, FacetSelection],
-        *,
-        stat_vars: Sequence[str],
-        window: RequestedWindow,
-    ) -> FacetElection:
-        """The group's election under `selections` over the members in `stat_vars` order
-        (`group_facets.group_election`), built once per selections."""
-        key = tuple(
-            sorted(
-                (axis, s.ref, s.basis, s.continued_by, s.dispatch_facet_id)
-                for axis, s in selections.items()
-            )
+    @cached_property
+    def breadth(self) -> Mapping[str, int] | None:
+        """The series counts ranking the group's election (`group_facets.group_breadth`)."""
+        return group_breadth(
+            [self.members[ref].probe for ref in self.stat_vars], window=self.window
         )
-        if key not in self.elections:
-            self.elections[key] = group_election(
-                [self.members[ref].candidates for ref in stat_vars],
-                selections,
-                stat_vars=stat_vars,
-                window=window,
-                breadth=self.breadth,
-            )
-        return self.elections[key]
 
 
 @dataclass(frozen=True)
@@ -348,9 +333,9 @@ def run_backfill_warnings(
     with a defect (`failed`).
 
     Each row that fails gets one `datasets_warning_backfill_failed` line saying whether it was
-    `transient` or `refused`: at `ERROR` for a defect, a store outage and a row to rewrite
-    whose read did not complete, and at `WARNING` for a refusal and a new-format row whose
-    read did not complete. An update the store fails and `clears_on_retry` calls an outage
+    `transient`, `refused` or a `conflict`: at `ERROR` for a defect, a store outage, a
+    conflict and a row to rewrite whose read did not complete, and at `WARNING` for a refusal
+    and a new-format row whose read did not complete. An update the store fails and `clears_on_retry` calls an outage
     stops the run; any other failure is the row's own."""
     counts = _Counts()
     subject = None
@@ -403,6 +388,7 @@ def run_backfill_warnings(
                 new_format=not task,
                 transient=transient,
                 refused=not (transient or defect),
+                reason=exc.reason if isinstance(exc, _Refused) else None,
                 error=f"{type(exc).__name__}: {exc}",
                 traceback=traceback.format_exc(),
             )
@@ -496,7 +482,7 @@ def _backfill_row(
                 subject_id=row.subject_id,
                 content_version=row.content_version,
                 new_format=False,
-                transient=True,
+                transient=False,
                 refused=False,
                 conflict=True,
                 error="the row's warnings changed after they were read",
@@ -678,9 +664,7 @@ def _split(
     selections = _selections(trace)
     probed = _probed(row, identity, resolved, window=window, selections=selections, readers=readers)
     members = probed.members
-    _continuation_stated(
-        selections, probed, stat_vars=[_ref(entry) for entry in resolved], window=window
-    )
+    _continuation_stated(selections, probed)
     kinds: dict[str, UncountedKind | None] = {
         ref: classify_uncounted(
             members[ref].candidates,
@@ -730,20 +714,15 @@ def _selections(trace: Mapping[str, object]) -> dict[str, FacetSelection]:
     return selections
 
 
-def _continuation_stated(
-    selections: Mapping[str, FacetSelection],
-    probed: _Probed,
-    *,
-    stat_vars: Sequence[str],
-    window: RequestedWindow,
-) -> None:
+def _continuation_stated(selections: Mapping[str, FacetSelection], probed: _Probed) -> None:
     """Raise `_Refused` when the mint continued the selection on `measurementMethod` with a
     method the trace does not name.
 
     `trace.continuations` names a continuing method only when it served a row, so a trace
     naming none leaves a continuation that served none unknown. The group's election is
-    rebuilt from the selections and the probed members' candidates in `stat_vars` order
-    (`_Probed.election`), ranked by their series under the window as the mint ranked them.
+    rebuilt from the selections and the probed members' candidates in trace order
+    (`group_facets.group_election`), ranked by their series under the window as the mint
+    ranked them (`_Probed.breadth`).
     The job binds no whole-variable breadth reader (`facets.bound_variable_breadth`), so a
     single-place tie the mint broke by a variable's whole breadth falls here to the unit's
     name, and its cadence can differ from the mint's. When no member holds a facet matching
@@ -752,20 +731,28 @@ def _continuation_stated(
     method = selections.get(_METHOD_AXIS)
     if method is None or method.continued_by is not None:
         return
-    election = probed.election(selections, stat_vars=stat_vars, window=window)
+    candidates = [probed.members[ref].candidates for ref in probed.stat_vars]
+    election = group_election(
+        candidates,
+        selections,
+        stat_vars=probed.stat_vars,
+        window=probed.window,
+        breadth=probed.breadth,
+    )
     if election.cadence is None:
-        candidates = [probed.members[ref].candidates for ref in stat_vars]
-        if _may_continue(candidates, selections, window=window):
+        if _may_continue(candidates, selections, window=probed.window):
             raise _Refused(
                 "no member holds the selected facets any more, and an estimated facet of the "
-                "selected source and unit could have continued them"
+                "selected source and unit could have continued them",
+                reason="continuation_unknown",
             )
         return
     continued_by = election.selections[_METHOD_AXIS].continued_by
     if continued_by is not None:
         raise _Refused(
             f"the mint continued the selected method with {continued_by}, which the trace "
-            "does not name"
+            "does not name",
+            reason="continuation_unnamed",
         )
 
 
@@ -776,11 +763,10 @@ def _may_continue(
     window: RequestedWindow,
 ) -> bool:
     """Whether the mint could have continued a served series of `selections` that the graph no
-    longer holds with one of `candidates` (`facets.continuation`): its method selection is
-    continuable (`facets.continues_selection`), and a series of the selected method, source
-    and unit ending at the window's first year, the earliest a series serving a row in the
-    window can end, would be continued. Where no source or unit is selected, each one the
-    candidates carry is tried."""
+    longer holds with one of `candidates`: its method selection is continuable
+    (`facets.continues_selection`), and a candidate continues a series of the selected method,
+    source and unit (`facets.continuing_candidates`) whose end is unknown, so no year bounds
+    it. Where no source or unit is selected, each one the candidates carry is tried."""
     method = selections.get(_METHOD_AXIS)
     if method is None or not continues_selection(method):
         return False
@@ -788,21 +774,13 @@ def _may_continue(
     provenance, unit = selections.get("provenance"), selections.get("unit")
     sources = {provenance.ref} if provenance is not None else {f.provenance_id for f in facets}
     units = {unit.ref} if unit is not None else {f.unit for f in facets}
-    end = f"{window.start_year:04d}" if window.start_year is not None else "0001"
     return any(
-        continuation(
-            [
-                Facet(
-                    obs_count=1,
-                    earliest_date=end,
-                    latest_date=end,
-                    provenance_id=source,
-                    measurement_method=method.ref,
-                    unit=served_unit,
-                )
-                for served_unit in units
-            ],
+        continuing_candidates(
             facets,
+            provenance=source,
+            method=method.ref,
+            units=units,
+            after=None,
             window=window,
             serves=lambda _facet_id: True,
         )
@@ -842,8 +820,7 @@ def _probed(
         readers.probes[key] = exc
         raise
     found = _Probed(
-        members=members,
-        breadth=group_breadth([members[_ref(entry)].probe for entry in resolved], window=window),
+        members=members, stat_vars=tuple(_ref(entry) for entry in resolved), window=window
     )
     readers.probes[key] = found
     return found

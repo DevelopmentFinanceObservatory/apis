@@ -2119,41 +2119,62 @@ def continuation(
     `measurementMethod`. A served value wins any period both hold, and estimated rows
     serve only the periods after a series' last served one
     (`columnar.continuation_mask`), so a series reaching the window's end takes none."""
-    if window is None or window.kind != "range" or window.end_year is None or not served:
+    if not served:
         return ()
     head = served[0]
-    if status_of(head.measurement_method, head.provenance_id) == "estimated":
-        return ()
     ends = [y for f in served if (y := _leading_year(f.earliest_series_end)) is not None]
-    if not ends or min(ends) >= window.end_year:
+    if not ends:
         return ()
-    units = {f.unit for f in served}
-    continuing = [
-        c
-        for c in candidates
-        if _continues(head, c, after=min(ends), units=units)
-        and c.facet_id is not None
-        and serves(c.facet_id)
-        and overlaps_window(c, window=window)
-    ]
+    continuing = continuing_candidates(
+        candidates,
+        provenance=head.provenance_id,
+        method=head.measurement_method,
+        units={f.unit for f in served},
+        after=min(ends),
+        window=window,
+        serves=serves,
+    )
     if not continuing:
         return ()
     method = rank_candidates(continuing, window=window, breadth=breadth)[0].measurement_method
     return tuple(c for c in continuing if c.measurement_method == method)
 
 
-def _continues(base: Facet, candidate: Facet, *, after: int, units: set[str | None]) -> bool:
-    """Whether `candidate` can continue `base`'s series past the year `after`: it shares
-    `base`'s provenance and one of the served `units`, holds estimated values
-    (`method_status.status_of`) and reaches a later year. The served facets share one unit
+def continuing_candidates(
+    candidates: Sequence[Facet],
+    *,
+    provenance: str | None,
+    method: str | None,
+    units: set[str | None],
+    after: int | None,
+    window: RequestedWindow | None,
+    serves: Callable[[str], bool],
+) -> list[Facet]:
+    """The `candidates` that can continue a series of `method` under `provenance` in one of
+    `units` that ends in the year `after` (`continuation`), in candidate order: those that
+    share the provenance and a unit, sit at the served cadence (`serves`, by facet id), hold
+    estimated values (`method_status.status_of`), reach a later year than `after` and hold a
+    point in the window. None under a window that is not a range with an end year, for an
+    estimated `method`, or when `after` reaches the window's end. The units share one value
     except under a national-currency binding, where each place's admission keeps its own.
-    `base` itself must not be estimated; the callers check it."""
-    return (
-        candidate.provenance_id == base.provenance_id
-        and candidate.unit in units
-        and status_of(candidate.measurement_method, candidate.provenance_id) == "estimated"
-        and (_leading_year(candidate.latest_date) or 0) > after
-    )
+    `after` None sets no lower bound, for a series whose end is unknown."""
+    if window is None or window.kind != "range" or window.end_year is None:
+        return []
+    if status_of(method, provenance) == "estimated":
+        return []
+    if after is not None and after >= window.end_year:
+        return []
+    return [
+        c
+        for c in candidates
+        if c.provenance_id == provenance
+        and c.unit in units
+        and status_of(c.measurement_method, c.provenance_id) == "estimated"
+        and (after is None or (_leading_year(c.latest_date) or 0) > after)
+        and c.facet_id is not None
+        and serves(c.facet_id)
+        and overlaps_window(c, window=window)
+    ]
 
 
 def continues_selection(selection: FacetSelection) -> bool:

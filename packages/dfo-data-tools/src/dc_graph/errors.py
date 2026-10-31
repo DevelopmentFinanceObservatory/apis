@@ -3,9 +3,10 @@
 Callers may supply subclasses through `read_error_cls`, `deadline_error_cls` and
 `cap_error_cls`. Each must preserve the matching constructor signature. A stuck cursor in
 `node_subjects` raises `GraphNotAdvancingError` itself. Every other paged read whose
-`nextToken` repeats raises `read_error_cls` from a `GraphNotAdvancingError`, and dcids a
-re-request still omits raise it from a `GraphOmittedDcidsError` naming them, so a caller
-can tell both apart from a failure a later read could clear by the cause chain.
+`nextToken` repeats, and every paged read still reporting one at its page cap, raises
+`read_error_cls` from a `GraphNotAdvancingError`, and dcids a re-request still omits raise
+it from a `GraphOmittedDcidsError` naming them, so a caller can tell both apart from a
+failure a later read could clear by the cause chain.
 """
 
 from __future__ import annotations
@@ -46,9 +47,10 @@ class GraphDeadlineExceededError(GraphReadError):
 
 
 class GraphNotAdvancingError(GraphReadError):
-    """A paged read whose `nextToken` repeats, or `node_subjects` seeing 3 fresh-token pages
-    with no new dcids. `node_subjects` raises it; every other paged read raises its
-    `read_error_cls` from it. `dcid` names the stuck read's dcids, comma-joined when it pages
+    """A paged read whose `nextToken` repeats, that still reports one at its page cap, or, in
+    `node_subjects`, that sees 3 fresh-token pages with no new dcids. Each would page the
+    same way again. `node_subjects` raises a stuck cursor itself; every other case raises
+    the read's `read_error_cls` from it. `dcid` names the stuck read's dcids, comma-joined when it pages
     several, and `property` its arc expression.
     """
 

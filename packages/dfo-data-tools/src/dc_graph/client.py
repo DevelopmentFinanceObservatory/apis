@@ -1333,10 +1333,13 @@ class GraphClient:
             token = next_token
             if token is None:
                 return merged
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"reading arcs for {list(dcids)!r}"
+            f"reading arcs for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=_arc_spec(properties),
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def _acquire_node_arc_slot(self, deadline: float | None) -> None:
         """Acquire a `node_arcs_many` slot, with `deadline` and a bound request deadline
@@ -1447,10 +1450,13 @@ class GraphClient:
             token = next_token
             if token is None:
                 return children
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"paging child places for {parent!r} via {child_type!r}"
+            f"paging child places for {parent!r} via {child_type!r}",
+            dcid=parent,
+            property=prop,
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def node_subjects(
         self,
@@ -1511,10 +1517,13 @@ class GraphClient:
             if len(dcids) > max_results or token is None:
                 break
         else:
-            raise self._read_error_cls(
+            capped = GraphNotAdvancingError(
                 f"graph still reported a nextToken after {_NODE_SUBJECTS_MAX_PAGES} pages "
-                f"paging subjects for {dcid!r} via {property!r}"
+                f"paging subjects for {dcid!r} via {property!r}",
+                dcid=dcid,
+                property=property,
             )
+            raise self._read_error_cls(str(capped)) from capped
         if len(dcids) > max_results:
             return SubjectPage(dcids=tuple(dcids[:max_results]), truncated=True)
         return SubjectPage(dcids=tuple(dcids), truncated=token is not None)
@@ -2141,10 +2150,13 @@ class GraphClient:
                 raise self._read_error_cls(str(stuck)) from stuck
             tokens_seen.add(next_token)
             token = next_token
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_ENUM_MEMBERS_TYPEOF_MAX_PAGES} pages "
-            f"reading <-typeOf members for {class_dcids!r}"
+            f"reading <-typeOf members for {class_dcids!r}",
+            dcid=", ".join(class_dcids),
+            property="<-typeOf",
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def currency_units(self, *, deadline: float | None = None) -> dict[str, str]:
         """Map currency unit dcids to ISO 4217 alpha-3 codes, from three sources in rising
@@ -2245,10 +2257,13 @@ class GraphClient:
             token = next_token
             if token is None:
                 return merged
-        raise self._read_error_cls(
+        capped = GraphNotAdvancingError(
             f"graph still reported a nextToken after {_NODE_ARCS_MANY_MAX_PAGES} pages "
-            f"reading {arc_spec!r} for {list(dcids)!r}"
+            f"reading {arc_spec!r} for {list(dcids)!r}",
+            dcid=", ".join(dcids),
+            property=arc_spec,
         )
+        raise self._read_error_cls(str(capped)) from capped
 
     def entities_with_data(
         self,

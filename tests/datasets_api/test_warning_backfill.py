@@ -582,11 +582,8 @@ def test_a_row_changed_after_it_was_read_keeps_the_change(where, capsys):
     assert json.loads(json.dumps(store.rows[("spec_a", "cv_a")], default=str)) == after != before
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
-    assert (failed["conflict"], failed["severity"], failed["subject_id"]) == (
-        True,
-        "ERROR",
-        "spec_a",
-    )
+    assert (failed["conflict"], failed["transient"], failed["severity"]) == (True, False, "ERROR")
+    assert failed["subject_id"] == "spec_a"
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert summary["conflicts"] == 1
 
@@ -1148,24 +1145,36 @@ def test_a_new_format_row_left_short_by_the_graph_disagrees(capsys):
 
 
 @pytest.mark.parametrize(
-    ("method", "year", "selection", "field"),
+    ("method", "year", "selection", "field", "window"),
     [
-        pytest.param("M2", "2018", {}, "unserved_members", id="nothing-estimated"),
-        pytest.param("Estimated", "2018", {}, None, id="an-estimated-facet"),
+        pytest.param("M2", "2018", {}, "unserved_members", None, id="nothing-estimated"),
+        pytest.param("Estimated", "2018", {}, None, None, id="an-estimated-facet"),
+        # The gone series may have ended before the window at one of its places, as one
+        # ending in 2005 beside one ending in 2016 does, so an estimate in its first year
+        # could have continued it.
+        pytest.param("Estimated", "2010", {}, None, None, id="estimate-in-the-first-year"),
+        pytest.param("Estimated", "2015", {}, None, (2015, 2015), id="single-year-window"),
         # A bound method is never continued.
         pytest.param(
-            "Estimated", "2018", {"basis": "bound"}, "unserved_members", id="bound-method"
+            "Estimated", "2018", {"basis": "bound"}, "unserved_members", None, id="bound-method"
         ),
         # An estimated method continues nothing.
         pytest.param(
-            "Estimated", "2018", {"ref": "Modelled"}, "unserved_members", id="estimated-method"
+            "Estimated",
+            "2018",
+            {"ref": "Modelled"},
+            "unserved_members",
+            None,
+            id="estimated-method",
         ),
         # An estimate with no point in the window continues nothing.
-        pytest.param("Estimated", "1990", {}, "unserved_members", id="estimate-before-window"),
+        pytest.param(
+            "Estimated", "1990", {}, "unserved_members", None, id="estimate-before-window"
+        ),
     ],
 )
 def test_a_selection_the_graph_no_longer_holds_is_refused_only_where_it_could_continue(
-    method, year, selection, field, capsys
+    method, year, selection, field, window, capsys
 ):
     # The graph no longer holds Var_Served, the one member that held the selected facets.
     other = "Var_Other"
@@ -1174,6 +1183,13 @@ def test_a_selection_the_graph_no_longer_holds_is_refused_only_where_it_could_co
     }
     row = _row(_warning([other]), zero=[other])
     row["trace"]["facets"].append({**_METHOD_SELECTION, **selection})
+    if window is not None:
+        start, end = window
+        row["definition"]["identity"]["requested_window"] = {
+            "kind": "range",
+            "start_year": start,
+            "end_year": end,
+        }
     store = _Store([row])
 
     assert _run(store, graph=FakeGraphReader(facets=facets)) == 0
@@ -1183,7 +1199,7 @@ def test_a_selection_the_graph_no_longer_holds_is_refused_only_where_it_could_co
     else:
         assert _stored(store) == _warning([other])
         (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-        assert failed["refused"] is True
+        assert (failed["refused"], failed["reason"]) == (True, "continuation_unknown")
 
 
 def test_a_continuation_is_judged_at_the_cadence_most_members_hold(capsys):
@@ -1215,7 +1231,7 @@ def test_a_continuation_is_judged_at_the_cadence_most_members_hold(capsys):
 
     assert _stored(store) == _warning([other])
     (failed,) = _lines(capsys, "datasets_warning_backfill_failed")
-    assert (failed["refused"], failed["transient"]) == (True, False)
+    assert (failed["refused"], failed["reason"]) == (True, "continuation_unnamed")
 
 
 def test_a_cadence_tie_breaks_on_the_series_each_facet_holds(capsys):
