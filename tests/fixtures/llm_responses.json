@@ -3305,46 +3305,6 @@
     "dropped_qualifiers": [],
     "dates": []
   },
-  "Extraction@501cb31acc6e:33c913b1bc4c1dbdf818c3472f0344f9a106615f": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding the CRS"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:e00fa46460864ab6ef3307dbe7a32ee1c992ef45": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding imputed multilateral"
-    ],
-    "dates": []
-  },
   "Extraction@501cb31acc6e:505314e113febadee51bd76d55a4d3e1ddaa26ce": {
     "kind": "resolution",
     "variables": [
@@ -3681,66 +3641,6 @@
       }
     ],
     "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:28e2aae6e50c0acb7431bb256a49e2278c1fcd20": {
-    "kind": "resolution",
-    "variables": [
-      "aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "not imputed"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:50dcd9c7a891287ee705668b5ee5aa6bee8a3cf8": {
-    "kind": "resolution",
-    "variables": [
-      "ODA"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding the CRS"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:7041b558e7d023a4bd4253f8ae6f1354ae354085": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding multilateral donors"
-    ],
     "dates": []
   },
   "Extraction@501cb31acc6e:1afb9d098bbd0b4894cb6afb12855f21153e7507": {
@@ -6425,34 +6325,6 @@
     ],
     "operations": [],
     "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:c54fc0652bf7259568374b926a69436d7c3ac290": {
-    "kind": "resolution",
-    "variables": [
-      "bilateral aid"
-    ],
-    "entities": [
-      {
-        "text": "Norway",
-        "span": "Norway",
-        "flow_role": "origin",
-        "role_span": "'s",
-        "members": false
-      },
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "bilateral-only",
-      "not counting what goes through multilaterals"
-    ],
     "dates": []
   },
   "Extraction@501cb31acc6e:b3cd90d91bc1f9791f385e9d792e475d3e96d78c": {
@@ -10621,26 +10493,6 @@
     "operations": [],
     "dropped_qualifiers": [
       "according to DAC Table 2a"
-    ],
-    "dates": []
-  },
-  "Extraction@501cb31acc6e:cd6296ddb216c0a4551aaeb11cded980c1d5ca05": {
-    "kind": "resolution",
-    "variables": [
-      "aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
-        "members": false
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluding the CRS"
     ],
     "dates": []
   },
@@ -18625,39 +18477,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:3914f949f96b61924afb6a14ff55e61f1e702b69": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "dac2aAidType",
-        "kind": "value",
-        "value_dcids": [
-          "DAC2aAidType206"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "dacTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:6add25994af30e724adbbeced6a418f300a9564b": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -19377,14 +19196,6 @@
       }
     ]
   },
-  "StatedWordsOutput@e3e465c89a54:d24021832fb4d88e5fa9e17540d8c76d0816479a": {
-    "words": [
-      {
-        "index": 0,
-        "stated": true
-      }
-    ]
-  },
   "StatedWordsOutput@e3e465c89a54:0f5cbcb375a3c2d235a13837323a5ed72a7cb640": {
     "words": [
       {
@@ -19402,14 +19213,6 @@
     ]
   },
   "StatedWordsOutput@e3e465c89a54:ad4dcd92e11add0d5c4eb7e49ea0787119121930": {
-    "words": [
-      {
-        "index": 0,
-        "stated": true
-      }
-    ]
-  },
-  "StatedWordsOutput@e3e465c89a54:1153c601dd9b2792935afe0e941b51a86096ede5": {
     "words": [
       {
         "index": 0,
@@ -19812,1847 +19615,6 @@
       }
     ]
   },
-  "ExclusionRead@3c024839b279:40ffe24203a2c115e4a4ad694427f7ae054708ee": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:719f8e876a61899faa96b7d602695dd9c78e0f8e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dd449f3cf1dc339f57aaedfdd0fd406b66f7dc6e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3179865b7b31d3748ce7933def156bb17ad368b5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:509fc3281f9f24b1694fd7f63e365dd57a6c65ad": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c4a2d4afe8aa7a2aae0d066d08a0ede8e2bc6456": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d081e49b4e301011be607a63f00ca7d566ff360c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:07ecbbbabb1d6e8b5b337907d556c6f4fe69b260": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d72627b743563fda43a3ff9e02b2daebab937f7e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d8ba36d99adcf490a696a770418b18392bef2abb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:10c3ef7f5b2c39714205db8e0bdd23364d2ac81e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:92271822a935a1c1f31b94f6272521d88aab7313": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:af73bbbd1bec71c78b3852b862e4679a783bef65": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ccf77cf4ad31d3ad861688cfd8fbfa93dea670a6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5f53ab8c17b113772ac08075a123336193fad91c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6d77de18fe282f622347be43e160e20aaa38a7fc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e1ecc60d93c5e80f8d269a81c97f659a87149b26": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ab2a00759a1a50339052f3e227076c8cfac138f8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3485da72b37261c83db826f9913e5e6afeda4cfc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fc2e3de79c873628be5349a8b18a4accab14463f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d395d25937eb9ca445370eb2ebe563095441b74c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:93852202b6acffeddfc9eae709362fb7ead49927": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0a21ee9ef3f0b860d8e3e6e87076c5730356597c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:92bfc055e9b5f7279b517bde0be1df0c5cea2480": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:11df10af7a89ff8cace952a1554b3ce15088ea05": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a28bcc8d3aa95182703548e0186e912e56c7f587": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:51d158f6e37941e2dc06c5b85042f39daad4d4d9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cf803778bace4cb338e95e1cde31866058d74fe7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d14bed5f91a5c8d086718d1095772251a961ef29": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4f945750b50faae84d27802ca469d3e924d49fdf": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0700b61259b718995075bc82aa79b6d740b34855": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:834d5d97366a6d1bdcf4f3313aefb916221b8525": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1f916cfdb2f491dce2bc46fa5479298dda62226a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:321ba6d65136f3560aa829fc7a2ab8e7c27a2a3a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:783553c73a914c373278167a5a0400d5c5a3f606": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cfd2a8e2c2e9840d284fe78f8e7f2b17ae78535d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:751b2838276a53e4c576368ef70435e9fdacbdae": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:037748fc02fc2101e3537f64a397354d9e48670f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f5df54f092fba6cf1c2a83f3a506970ea4701027": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:372445e6c65ff365d1ec982b962df822c246f7f7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:066daf3f41d4c6088e29a721b583f853ea3beb86": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ee29d280133bab241d5307dde745bbbe2949368f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fddc7d98b47b37c32567a31993b92be093a920d1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5169d7632fa8ecfdbbdb1801798268d1cd83033f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5446b1c3feabc16d96ce6018cd1a5a4f77251e67": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:44489964bdfc03d798d82903768d3f7e1e45a2fb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3a32ca786e1005b6b7fd5c5b07a90615b2393a9a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f228b1c8b8ab0a085c95f4d5804324eb303dd2ba": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:232425696eea1143a3f315146d0feda5b0422984": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:28a389b1b968e6972cba2b7fea7db98507706b79": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d63b0269afa714cb9f6c115571ec04d5e10cb031": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ea80d8e127913d2623aff7868f56b2982ba5df17": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5e0873240b191c9e878421887188d3bf3e4478d9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e1e086c6716d05d5a22096db50c28f7ebda4551c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c54edb93053f4f6040f1614137d2d674ad15025b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3d872b783571811645f077193c637c9107a9ae2f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0e185007ee4eb345566b3ed743ef1d1f23a3cabc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eac20bd0788540330e02c375a14b47a24db6fbe8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9f8f7993a5bd08320a4d658d47217cc6db7f2cdc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6337bce00fa1cff9c2604a44a601db8b9c2826b4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3c84ed87548e9fef31592640c3c5632a276be683": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:41a105f2d9990127c5968c3edec8370d701c9a8b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:10e9a7ba7cc49f22b3594ca5c4439a20254c7521": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f1d2f44d2f085bb0f8db289d16a0096fff17e219": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fb5547d553c3c6e7bb06cec6345672adeb1e66ba": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a485082afa18da0437b90c1d635974e2165a0d75": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f38438969f25ccdffab42f3e6a4be9a60cde0e34": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f243cb7b846173db8273b543a424dc17288029b4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9e58f3f3885852263e09a5f45a915570546b4935": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9957de09a2a452a956ec741adf64ae1a188cbbb7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:af5e61ceb3b8d062276b59eac0b577aeb44ea02a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8145234512cb67c3c52d5a15750d56f465920a97": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9d72f0cb79283f919b91e6379aa957fcabcbb22f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:83c5c910d0a34700d96a0a54eb4e6cfbe0edbc7d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1fc5560a2f638c5b9b178a4d1c707d92e91316b5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:67348aa3b0dc34e278e8385aa235c0d2a1974f58": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eaa7b0c8abc0a3ccfa6c5ab08fb33f2b235bff1e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8dcd95a1d32300c435e9e123e80e212d5ba9142f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e24dde6c0131d13592777eb099b0eed7fbb05f06": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d499e989398b1116b772fa52f914af383a54390b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:df0f8fc6af52cca9910537fe144317e547f86d90": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3786e0bf6ab384cbf49b20b75ec3807a2e0b86e5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:27ae2ae044e03f8fc84fdbeb051cd61500bb5587": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4fc884035364631fbae94c279ffde9a37416607f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:637260fda87e1af5ae30e88fbbca23e83497f702": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:068c3185f528557d2f5940ee0835d33fa3747c1c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b8691546b0f6b85f2d297131c5d7e9d77905da52": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b2fcd9c72f614bb13e3e6db911d6b3fda28b49ae": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e99e453040e61109f902ab6719641cbfe2488f69": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1b8aa8b7c901e87bda2dd0f872d2f45cc30af4e1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bcc4d158806259ac4cf41db79603b8ebe037149a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cd9bfa9f8cb603287d2d342b4c63eacc5443fc4e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:51f61d2ce61b21bebf00f6fb4c8f58b022633ebc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e344699f568ec59ba128ce21739a7f72e00fe431": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dfa32ab722c444d74e5d648aa528a0bd85b29f30": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a02d3558fe751eb627a0c690b484e54716fa2a68": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fb2bda465be7228fc580a69d856fb9f15ea73381": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:91159ee2616e58e637ebfa5cbceb3f1e52d19910": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:69323594cfbfa09975854499762c6e7a7f11ee8e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:314f2fa6826ca6b8788ee8abd3da502f44df6a76": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cd4973326bcd706e56cbbe0fb20d4f0ab8486264": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1dccc3050797f0cbf534276264ff9787306571f6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eb4295976f5ab1dc776d1d5dd695e7c5e6fc7815": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:506fc488bbb0601b626a3496c693d0e6980e2e87": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:06d1dcadf2ca9f11e8d852ba0dbd3b6621106fc6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:33c0c5e9a45c5ed744c90a450ce1661f4c76b1f7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dc2aaef267ddcae719e3dcde574b23a9d7daecd3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f7ce7007437cd6766dd746912c16fe3e675d411c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b84fea71e40cf07eb8dfe9513353a9c89ab5ae53": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1dbe63fa293df43c6aa82d9117fcfd5a33cb95d0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0dcdbeb6e49a3bfc25a0eb0e1a76d4cf2aa5bcc4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:565515b9d020f97c02257402633c6ccda6082c27": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dd5b35c6f8407364b874e24d3a664ccf0d05b3fb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4359f80aff5db752279fe7efa765666a4bf68c4a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:67fbd0cfd9c49218b699cf0073e3e39860b1c54e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e3bd3f9aae4c74a9dd540112034ca0b4b700b72a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e177c884d89ddc78dc7033fd95cfa83846e71e6c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eaa056e017aa4db09064374f73fdbab838080396": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:404895fa85262b707428a93d57ed8c043ae974f0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9e3b517b84a0a72dae549f215f058b1a6d828d41": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0646dc5729d91edf52daf7a9493f874fdfecc286": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cb54c25e7aa75d310d3fbd2b130dfc2bd8fb40a9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:94385843ff2939b16bd667e759ab7eb8dd815103": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:204bfc73a03f2362c9840e531649fba79ba5519c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:012864c23a42e7b99bc51ec744b5c5b97c4b88fc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ec0c0700a18c1107c702e72f72746785ed429583": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d39e9f5a9c8542aaf83490c3e38b2a4c46450eb3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b4324d6c13192b6e9ac3cff9b4f6aef57971dea3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:75b24d8ad0e0ff80399cad3ff7bee26494f46246": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:92133abb01021b0ea5041347107cfebca91e7af2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d3b037dfeee44504057a7be6c429132299d9369e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7f8cabb40543d99e24753696f0004ea931f94770": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8cc46a8671ab2844373580a74e048c6fc027be51": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ec834b26cd07193e91cba3b733dce11530f0a688": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:289052413a095e95c64f25633b0f14965c446b6c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f0805d06cfb4e3c953d31e45332c8a763b6d3d7b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:df7d4884b537b848cbf870894190f7a813488818": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c2400f4c8bf84555d8cdfb3ae48e669c1bc848c2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9c4721ca4c09c39c31c806ea0bbc904069f1cdef": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bbe17647d3cca10e532f7a5d10a9738a07c2c342": {
-    "exclusions": [
-      {
-        "phrase": "excluding the CRS",
-        "left_out": [
-          "the",
-          "CRS"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:c4dfa704efcaa4275b0633d10ee9fa1ef0b82861": {
-    "exclusions": [
-      {
-        "phrase": "excluding imputed multilateral",
-        "left_out": [
-          "imputed",
-          "multilateral"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:a7ecad4d755bc27c39861a4d4cbedfb9ea3b6d17": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:14cabdc5f8ca2bbc218f0a4fe8fe631f901f81d0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:51423a548e1465062bc4b012e31ab1269473dda9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:57778e4e052fbe318ceab0ad946b7787d1d2a6f5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bb261b59ab965842b5b730c52acf5a1b3bd2467e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4e071d620dd97b332f8355d568a097253d0354a8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3085b32cc9773651462ee1fa530c5624f0591d90": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:82436b49ad162493b2936f90e43b674e3c5aa786": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0a9c2ce1c2ada337baeaebd6bccdce4dfcac2c73": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9ddb611f56c22b0caa289d56f8173b474da2951e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8528dbd8d89b137239c6fb7bb1349430af38a821": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c9f0f9407a68053c092e128a2a00c83d2ab879dd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b61b755a1e496dded35c8f03d1f49a9e1e90707d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ae36b2663f9ea182df162bd22ea4f1f4a8e8fe35": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0e6f4abbf1019e2874aae32a557d07fe54d49d70": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d1a991fc5fdb247c44beeef58bbf7e8a003a7ffc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0ea0b0a12c3b10bb423d44d97baa5b27882ed224": {
-    "exclusions": [
-      {
-        "phrase": "not imputed",
-        "left_out": [
-          "imputed"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:c260688165e42dbda8e516413f939da012fd7b44": {
-    "exclusions": [
-      {
-        "phrase": "excluding the CRS",
-        "left_out": [
-          "the",
-          "CRS"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:a1406e3e7e204e83a1baaa81878aa2f1917586ae": {
-    "exclusions": [
-      {
-        "phrase": "excluding multilateral donors",
-        "left_out": [
-          "multilateral",
-          "donors"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:0c35567b828db54201d9af9599a4be6447421d7e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:465de60024150f4841e8a1fa142557848d72b556": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:149ce33497cb6c9691e849edd991503e45806b16": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0f575ad0f56d883ac9832b1e8f57096a5594d860": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:be666f7c15f8d5b61a1b38e572a8c9578fc699dd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:27c473cf3e4a8a0361ee4a53e3cddc8daf69f6ac": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e28fef56589bb772d23338e60fc8b6bc8a86b10e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2f6a2270bd954b56ec1d04de3808171ddd42af2c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cfaa54ba7b5957449aaa351f4ed716994730ec49": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:af9a0b148a03d5a8f4f1a4bc4d8329c9e224c508": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4bce48efad2ec44c639f9fd015bb7e8101301799": {
-    "exclusions": [
-      {
-        "phrase": "excluding humanitarian aid",
-        "left_out": [
-          "humanitarian",
-          "aid"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:b983e57e5baf6d3ba931925d2c03cf9034d302b9": {
-    "exclusions": [
-      {
-        "phrase": "not from the United States",
-        "left_out": [
-          "from",
-          "the",
-          "United",
-          "States"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:d610d3ae8ab3c5f8bf07b22cc2d83b0c9ea986be": {
-    "exclusions": [
-      {
-        "phrase": "except Kenya",
-        "left_out": [
-          "Kenya"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:1fa6497b28c81d692d2ed7ac8462933ae07f9dd7": {
-    "exclusions": [
-      {
-        "phrase": "except to Kenya and Uganda",
-        "left_out": [
-          "Kenya",
-          "Uganda"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:71250328cee476dc20b8736c561db9bedf30081c": {
-    "exclusions": [
-      {
-        "phrase": "sin ayuda humanitaria",
-        "left_out": [
-          "ayuda",
-          "humanitaria"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:5044ac2951e9a603ed6339acc940c4557ec7a85c": {
-    "exclusions": [
-      {
-        "phrase": "not net",
-        "left_out": [
-          "net"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:f4cdb0df4fd9698e3ce0043b7c8fc3e907587a5c": {
-    "exclusions": [
-      {
-        "phrase": "not net",
-        "left_out": [
-          "net"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:7372ac4b4e4e85a30a370a4c4d6af8c3f469d26c": {
-    "exclusions": [
-      {
-        "phrase": "no humanitarian aid",
-        "left_out": [
-          "humanitarian",
-          "aid"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:29c4a2fdd82dcd112d1a12b6e0fe9debb737e3c7": {
-    "exclusions": [
-      {
-        "phrase": "but humanitarian aid",
-        "left_out": [
-          "humanitarian",
-          "aid"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:89e27f7f515ee3a1d821f76f050c2c82581df298": {
-    "exclusions": [
-      {
-        "phrase": "without IMF credit",
-        "left_out": [
-          "IMF credit"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:4fd93b8b4a088f4c6b65fc7333b2f4558e9ade87": {
-    "exclusions": [
-      {
-        "phrase": "excluding debt relief",
-        "left_out": [
-          "debt",
-          "relief"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:974be0d049094ac5c9e606a890b997ac811a6bba": {
-    "exclusions": [
-      {
-        "phrase": "excluding grants",
-        "left_out": [
-          "grants"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:80c8ed6c6a6fb50d3aec7663529b700d1f628850": {
-    "exclusions": [
-      {
-        "phrase": "excluding standard grants",
-        "left_out": [
-          "standard",
-          "grants"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:ff21b9d64d6a16b313cf84405b519be03c4a6615": {
-    "exclusions": [
-      {
-        "phrase": "excluding North Africa",
-        "left_out": [
-          "North",
-          "Africa"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:d2b6e02b0d276313320719a9398d247351f0f3aa": {
-    "exclusions": [
-      {
-        "phrase": "excluding bilateral loans",
-        "left_out": [
-          "bilateral",
-          "loans"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:d64a5f3b9ca45795c80edb97eb81ae822bbac529": {
-    "exclusions": [
-      {
-        "phrase": "excluding debt relief",
-        "left_out": [
-          "debt relief"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:df05795dcefb6650b4d289beca2d2e05bafc6c01": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eb4373c8fae6618c7991e65d41d0177b23843b50": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f4fb909a9f50f63c51471de328fa8cdfffefb850": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8842b035aa144a9392339a989a681dfe622a4978": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4ac3bae5b9647cbb1a218192a3d0ec472d491cb3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f3717a52236105cb0730a67946444d54ac5f2756": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6d626681618c3ef5caf36e2ad8afb5b20811a3a1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f3de820e02e2ee22739e24f35460e6395376df43": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7508e365de62391fdf95bee0b1a29c1a265a95ff": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d9178368d178015bdd1b2f30bed32f6258e1f9c5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:69948023dba23e6a68b084bdfb4cb39b81c7220b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5884ea6241ab566073eafe64ed849eb6070bba76": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ea5737a5b5418f7cb7d92ef9ead5f719ddffd514": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ef4c1271f2b52e7819908bf657360803b04d56c4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:894ec2f2c0facf3fc0523dc3140908eb02775a3e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:87410d4857f7a25a45e47f8d06be16b85322c9d8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:50dcb5667f70a966e6866ad7093667e6239d70fe": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bc7610b85a6acfd3ce1eefa0777afd1f6bb02423": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:858214b52adb7bf825b9407db8e487bccf83f034": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:818e8a62ccbd496aa153963751ca0cd895ca4ae2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4e09bec37d9983ed9d6dc67dd670450dd686bbbe": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:44b5748f4d1e4b15d7f0bfee670dd581095f0c39": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:291610f9098177a86ac1c442663664ea0ac6210f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e706c2cfa92b3b9928ee47274a9d422ac28c39ae": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c8eea8b60383ab93e0b16e420f08be6fd1292552": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f3f3241d63c2ac8d41a675acf0bc137baa84fe6e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b1833201e089ba04ebc584a5f4753ae31289ac14": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:837270f9bd80635ae4391fb616da12b701142701": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:151919a1f39594d9b0953acf6e73460f3c478e93": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:64408d7373a7a8656338717cd9b12e9ac6cf6dc3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:83b41a9c0fb5298e6c1dacf688a76b4292613393": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8de3cd29c1831cb24386b8c4ad2e3f8032099476": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c9626fb6ee4a8a48daf99df56a1a028f7cea8960": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:22e520e2f9bc760b57c9f781204bcd667f5e72c9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:de571b6b5da02c08a60877f23a12f8c2240a6836": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1cfbee0fcf1ae77875053b73e6f239aeb10843b9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1356aba04d97466d8ad5b41b17331cb6afe3bc9e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fc13cd1789deeb31dcff363134d0511a5e89a2f3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:191e8d303c1f73f1818978c218509d2e6c3c4a75": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1358a8975e7894e82101106b2eccfff68b40f344": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4114264a1b6504a69d6d7896334b5fe1426e366a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8fcef17a59c7557c4a5719109df6e47c8f191105": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:14cbd3a7908c5a4986a479f073e8edb8d3f6fe65": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:297904921fdb24254d6d888cc1643308be660166": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9d7889c349b418f47de418222e3c837c1117e283": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:887f2de16810fb0b2b9e9393bde65f109abe8f81": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:86a9d6b31596247a9178bab2222abf7708b2f515": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4c77e2e1bbcd579ddb4dfeaf3edbf15e341546b7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:79b99a4a2b8269b20307fa3f233ff58314d1ad48": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:226512965e217352779f1d76d763c86ef69e87dc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eadf2494ca831574cae604252134edbfba46ef56": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ff673268de4ee6718ca12b9f667caba044a49dad": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b97bfcac772445c752939d78220dde69014154fa": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9378b576352ba8aa56c16c015421572edd1aff82": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d497c0e27e063fb515ea805790877ec1d08a8329": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b5c1c869c701a7934827d4c0cd1f3a90200645e6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8f43e1dee736f86f13d748da82a18b8b67ef7de3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3b232b413e5d49660d5127c5cbbea5c0befed404": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0ab91746cd755f87708f5ec4ba79dcb3985e72ae": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:64b2511d0cc85ea3c34f1d63edabb90e33058437": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5747c55d7b325e744a1ce53ff604902f7abb57a3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8cc04ecee73cb43b8dd71841d5fe53e48d02db23": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2d61d0846506a7152e8d02ff41510bd3381c7465": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:42d4736a46362e6b49ecbdb781a9ec867cf711d0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1d8bafd0492faf16bb73d74cfd213dfac9902343": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d60a234bba4cbf4b2218286573be89ef757d71b5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b7e6e7d0e1a541daa135cef4315496360e1b36fd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:841ea26605dae883cb6745c11ec3325210f1ea6a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eb00ac2f77fe750927c658fb831582e7a74e1c1b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9f34599833f65342c639b7b5627b829c6b529458": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:895ef4f2c4a3cd32e7219ecec50c40da51a2f80a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d7835f9fc78bb0435f3afcf6d6417315c699f119": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ba605cdd459c7b0a25f871783773749bbb2960f4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:68045a8f9391e8e1bf4072a480e9a2553c2ffb90": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2848098c07e060544d4080e17fe14334a550e154": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6d03661aee862a95cd4ffeebc7b4fb9e90a86a8d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:00e329ed24e5ebc8f2e632e1180948ea8229c77a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a4ede3f32aa2118ba6ee74ab401b64ce34a954cc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e7534d9b5b42be17c11bc640f7b1e454f340cc19": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ed77af64cfcb9888db97d9b7c6c9c47a24e37385": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e4d1e0a6446c2f3f126e00267226b225f399a0b0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d9a81016c46b51f9fe93e09cd32f48a02305f1a9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9763d1a80bc675a41d914ee0379876566759e3b6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:baabc64c843207ec16f2e4eff7a033b687adcb06": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:67841efd26e650a557aea57c7a2baf277305242f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:60303c0e37acd940d87953e906c400d304ddb6a7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:433f655885c2ee29e3ac388664955e2aca29673a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0db4f159cd52be233c3cd9337462c215490321cb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cb0ba7280365c4860591839f8deb1eb9ed893623": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c195923b9ac44a1bc3334dc41d27bbab9bf46ee1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:46e596f0d73fbe2b69986bb589aeff487461d348": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e3c9996f59951f67aa988164c2f3d790dac03b9d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0e9de2cff06df020b0bfc6cd551ad2aee4a07d3d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ed5d7f522153fd73ed07ab6f9683c95e50144220": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:632a9f75646460745f5bff895ee4004f980d71be": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0f8f27019828ac03231bed83eda1177c310d1cbd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5adeaa3ddf22738aff4d6a1db1065bc24d64ae52": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e66711adc5cc73247650e9f4037cda4199e14463": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3d953ef588311506f4406fe0ff9ba43760f3ca5f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:540ceff331c878ee0f4b6c0ef78c042d42863e1f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b9e788ed6748158c04aebc3199954a5e90ce4075": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cf3a198eeaae1aea7c11671ad44731f107f40e3f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a30bde9df3414902319f53e80acc1e0cd5a56192": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5ae6a10949d4323d9c6c1b5fe36c07d23ac1fe66": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:985ebbeab259d9d9c3601d65a51f2bb52245f80d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ae376aa042aec68ee6847fbb98395c6fad845013": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9d97b8190d7b0f4a49e12df2f670b83f94f90fd9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:41189d9482c9f363f32defd5579a6dabcc344b34": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bf587d07ce091b3faebda57cb96c256a680a7b19": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:86145c60d471b5127baf75469791c989ce9baca3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:24a06707598425e572603ac3c76cc092f7b28cea": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4b97170aaef3d5f4b22c55c01152b0d537ca9b30": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9d44c363bcae8235b98484b853f69482d7762589": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7848cc301ea4984be1b2f1b8d1408f04dc436e12": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b51c5ee2b87bcad759fcd3889a9c9d864755e46b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bc06ed0152203ece0313d580e2c2f911c4490912": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:34d238cbe53d1805569f69b0e2d293c6fba7da35": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:59faaa2807f4c93794988925548bd5526b4e6624": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:65275a1ca704a001addafd72c46c85a7a919ae4b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:355a0a8ed4d97ed23be609230efb0ad36a9868a8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a41fcebe84bf83f99acee9aa23cc81b4665b738f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d9310e6a9226a2964bfc455f85cfd9392ddd9318": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eb904a93645a528c50dcd08f21caa58088c8c49b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:edf7e515cec753facebbb0cc51bcd8041f2e3254": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8a7c253b8c69e7eae5846228f75ff79d287e2bd0": {
-    "exclusions": [
-      {
-        "phrase": "not counting what goes through multilaterals",
-        "left_out": [
-          "what goes through multilaterals"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:c3cc0ed1dbc959e3bf68e108137f229f293c60da": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c75beab50118ff288dc98d6750c06503a6827979": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:302ff9a35cd80e03cfac303d318f3d6485d8edd9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f13cafef508ece8d527de94f53e21c041e76b90b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9a2e5d12a2d36dd7d2f4abb2e85f5c3a62db3131": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e1716a79d44002635884be89e0856d0d9fdb0476": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:57c758fb33278542bafc98b3ac59a5c90a55d551": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5778f3b36cc4bfa53d3ec8152879bfcde383b2dd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:62cc7f2e270e15b0c5e656a51623c2bdb189c1b0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:63dc8cd5150d793c8b832c0c2fe41d56e31a17f0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:16f081398b266007849c22684e4197fa42e8837d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:12fa174cc4b97d2e7b1133f7dec3add25cc76374": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1a2634260c04fb0ea2c77d9034d95ef220605ccf": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0462ae5839c742cb912e44ae5753b254260f9d15": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0f988faf7de1b24ba3886b8862a2c2812b26f231": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d879fa854c177de480a594d9d0a05a115c6de629": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3595f2afb399b387dc8eb903811ec0afa3b1e309": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:322453ed5db6462cd86ce7c6b152209053a88339": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:159ab6f9284dbbf13b41808d511fdd428c881c6a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cdb753f9bfe135dfcccbbd893bd7c3d08482072b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:83b1044cc2f5e73f80fa823008790b0f86b2e73c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:04790a4af991eff2f1b55961199b3eeb6c0a8331": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:316890e38b8f70fdd32c52ca8379b26027ad061f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4ccf69a39bbf72d9b038739f6b093f3ca9de4cd7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cb67459bb565763267ed7c5a143b311cd5e7f38e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3e2be7993ff565f9af320e7f784e42c2aa3ef82f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ae6bc6b323bae8dceb571bde385027482c496d36": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7a76517efa398e06c051ea34b20e2344ab3070c2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ae828b4804160a7c5dbaf2e808598277b564cd41": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9deda4dc22f27a701a019f1bdd030ab4aec56634": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8ecc4bff215e178e39656e4ba78a95fa7a2608bd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9b6475c6b92783bb7a0725b7f12994d71c399c2e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1b7be1222864fe3180f3319d20b6300e6ef9c1d1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:749099b1c9ec983080cfedb520332571cb7c4aa2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f72da230b09a72d84ae38e5d07eafd886d5a9251": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9b26bc923276b66857db76fcfae86739ee187d26": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ca9804c241f60afb5fe3da775368ee6d226d909d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8211d81eb743f384bcdd6ed4275ad38420386a47": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:53de44fa3705c965e60ea5a5734c0f7f828ab470": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c8a77e2ebbb17f820bdd485e18e0a2cb0752ae2e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c33d568f9e62a745d8d59f8f41872b2d3a274245": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:42deb7eda74438acfd90affff9e7d74af95db8af": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ddea33e892a4afe8834d19a81fde1a55d45cfbc1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4693fe399f4f83f63da55ead5ec6153be41f577c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1a347619cc8c5d274ad0213163048d9cafbe49f0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d24fdf4ddb127fd7e88d52ea6ed919da0239dea1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6c4736514bd03802a75e1c2c4d6537de2169819c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ce2bc4a764b0a15f4e6202394af465babfe56ac4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5ee2854b32943279526c61a419dc5a4d8bc20bc5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:58d85b6ef9f2152239c7ae0640d5fd4fe2745b8e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4ea58756ae639837c97e7e5b0da182c0e1fb4383": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:77bc826ab1061bb746cfa7a39880e64f702ecd1e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:61bc660d5cbc8e3b40627fef891aa4bbaf29f866": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b650f31d1352b9e56be76477d8b040e179a9fd3a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ddadc5d362647896f592575f577062e9ee0d9fcc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:10f2bccbae90f05f39211465f63770878fcbcba5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ac22c2ed50cf0dc12767c0b46523eb912b35c801": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f7f380a73d8a4aef984a4255c826308b4b05814d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a9edc5b96b3c0980f5fdd2477f473bbd5f4f6e85": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dbcc2fa1ba1c5aa092656b9a2dfd4b75198dd362": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3ccbc1669b0c385ec16da8049b1bbdd341d86dad": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:47dc2b0f6ae81ea1540aa7a35b3b920cad76e2f0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c5c88603ef8d07b9e5f5a2c92afdf696864525ef": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5dc9e7ef523c31ff556489d6e66792fbc0f657f7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7c1f5e3ee7f64869ec64f70d044877d3117f9b36": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bf7729328309267fc3006942f805302be7c13fc2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e82aded454847d37a15c9d4b48500225febdced9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a0701467603f5fa94d3c3210ab55b85251837011": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6a3cd6267f9a10cffb18b5b165fd6f12db6b2b10": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:aa7f75af2ccba7620dda7c4c4e03966359cd0134": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f191465aa8f882a36a2f6242c06c6c39482d9ba4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bcd94972c9f3efcea4ac8480cf9684e48486e7c9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a5aabd4d3cd95485b61929c52086fe5ebf6f8bab": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4baabb06e0170cf33388b70e128374577a92a65e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b712fe7a9a9bf6ac4963ff7eb9445a7e33675fa3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:421f34e7700939741a3b62f3d17e62ecebe728a5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4274d08776b4f3ea186ffa017a462d3df7d4f988": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5512b89b9e132d671e84ebb04e448e6d9d047bce": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c2bbed5322cdd3da5bf2de45a4d92aa1bcce11d2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:09c95d8e2a116e7585cd2c753190856f2a4b8aeb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4e9a5a34a9b09da84c932c521a6e695f4818503b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:65b05412a59482c2100d1e87486a4b8ef2329a29": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5fa978ce722a72c277ef11ed057d8c05b33b47a0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:498c6187548b105d3f6e0f484c2cd23afffbe049": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:16ba1c9b0a68404cc3944f6f95206557b892db88": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8b44a3544e2cb00b79cfbfe7bf622df427a6fbc7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:544297376e2ebf0583cf29185bb1856ecd10f85a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:29a1f79e4059774c79875ef507ea8eb8f0211aef": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d3742fd0f7f16d502ee429ba97a78b754e87eafd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:43d01360918f12ab98aff4ba7e50702036878b81": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ab64c769b2e5ab2ffb14705189600139b79ab55f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3c5a36d7f08337ad54c95bf50e05cd5fdb4a670c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0c835bcd251dd965b3aab281f730fa12494ebec6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:40fc62568dc53d36dff7bb5abcf79b6812487efb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0e5426e3fc6058fc5d6dc76264226c222adbe10f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cf858ea2c189d31b0c88112de045be032b8086d8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2542c18d93a98fe4cd548c51dd9d16ff998bd9bf": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0e8e88a696215ad2cd54fbef4752e7e6138e36a6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5c24d96bf9d887eb99703a678dcd37570f9bb75e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2e47fae7efcc410ca64cb74486e2182463de0057": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5e90e8bc688ce14f556df605d6e930f85febbbd9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:23b752af35187ad4e992b90119cd5797f2e9645b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e65bd71ceccbf3eeafb5b148b4fa7579d31b1329": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4ab6acf7b48eecb93a6e70781448c9a58851d264": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:da38311900b39ec46f1fdca1a8648ebb4040663a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b83bd3de4f6d011fcf92ab01162d90b09bdb0a4a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b8a5f5af1a3555687663104f5ca9071ca5851a5f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5b7596fc6b70ff032c4463526e9f61d27994d06f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4c5049dbec3357d59398335ca1224263d5b3f47b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7e4a4eb517cb1637985729772b19747979898026": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:323b771dac054c0fb9894a964d978ccdfc31afda": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c8f2911ec7b0e8ecac7ca36404b5c4b4c2be2292": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2cf86b350e4bedd198b2a116ba46db1c2df7dd7f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b544f91bf5cce39ff88eaa9c940d9c3c519f7346": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:293b8841c91280388b7c0df453156e3b2541ad92": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bdb42751ca88dffc9931586f7b99c6d44b623631": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a98ed09a8befbd082e2ad4c69ddf5ee38d680915": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e49cac6ef26f276daf8e1a33179b1a0718464b4b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8341fbb7e5f45917c352c9b8615388822e71b942": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4a9870c2916fbd6d2dcf97813ca2b4dfa65fc1f4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:375736ae0df8aa579a6dfea84904cf4fc53bc3f5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b5284986564b3aec0cf8036205bc3197df740237": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:73ba781c891eab2342facb1d99a0fbf682065805": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:64ebcc7080ba5f706fc2408a637eac8b86f6f8f5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b7a7df21b4e66821d70cf45e3794a78c41ed4c48": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5431f23acd301c4568a5a5f3b39ab66007ecf1af": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:aa7beac9cf20dbb5c633911739fec1c105978cda": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c13f1a15be62b8832953817dab89335c1e27c460": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:124f0c8218ffe4ee55a6e3314a5d9efce5830a26": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:75a115e479a9b43d17229bf1a46e00d1206c7ff3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e03cab29ddd5c3b5225281a973b6b441855d6026": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d9c7842aab903c132bfd95d90bc90e707d117cab": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3583f05106e45745071dc139f2c5529a45e0c802": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ef80e94404fb6f88e2ea67730eebc6d510bd8ed8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:06a1ad0bc66d14ed3d9d972b1ffe58af3c0070c2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b05e6dcc73d64396b97cc461d654f11cdceac286": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0ac8d9296397200aa206c185ffb99147fe2b4103": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c8d8c23dda5b428a588d5fcd08bdda6f560b2732": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e98e0abfb1f2a08dc2996fa2f9724f9e5d604f39": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5ded4929391c292b8187b6df07ad00792be1e929": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:cf244924e66c914afb000eaf85fd59e3cb6d3afd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6fe4df1dec058510d4d360a8762058156175bb83": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:498cde51e6eb02ab5c38db5c96220f696bb69b29": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:71170b4e5fa5560c9c76086bf4c3d75eb56eb769": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:de0a608cc8bdd8eda749601a8bf6468c33bae5a1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e32a743b2e00f3e05c794710b374951fd39e5929": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2a97f3235816cc38b72e95b52f913216a6185bdc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:617e69390a70b45e636626befb9af6d67c41416f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:24dc62da20d077f98b7a35cd664d35704579488c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9f5b63e76a54f6dfcbdc712fdf466ed1e8d1218a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c724387e6f9ba88153c6eca67856bbb5eb31a475": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eb2424b18841e41380500bc9b0e5a57dddab0890": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0b5eac4408e8b99eb2e7b0647c59b9bbcd8a9ec2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1eab37b7959cace1135b13d39d16ff39e50d3015": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:27e1f2c47205b2059daa6f528129a0897d49b019": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:52c64b2ee23cc83c4a37b68ee1095e882906063b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3635053d7865d6ba34cb0fe066d97f0ae657ca5c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a8e8dbc60aca8bc59d255e67df8817691d82b8f7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1c56ab73c407d8a131062713aedacefd92e71f89": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d70b1cb37f81327070a0018ec05cbb7c4f9187e6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2fe3c738483d7ebf9f53a2c82519658ebf8c92df": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:46bb38c6a104149eb74752972f7b67d30d708553": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c56ed92cbc1d214988e9ba9c6526cd71919f7054": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fd0b34dcbdf26932d4ada45922e97bb2704c5c83": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2f5db801f0abcaf4ee3f504292516bb81b4744ca": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:50fa2b3c8416fe25b78cced75dd90346e9b9a266": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:aec1fc64c14818292a3162c0c3965e5109b8691f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:df95e252ff7b9b5e70da603f38e867380a31b6a1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f636268fc1bd7dbbf44d23adb5e943ecba9c202a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:068f679c7cf0430fee9c4529f872349cbf6c9eb8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:9905e089b35d7a282ad0f9ed0e60260e12dd17b2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b0cdd9b0cf464502523c9fd72f49d177d9933caf": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:96027c7fc16f0b714c5661258c141880f6723f13": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d63a8b2a8c99b413ba485b13f7e66faa07c77a36": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ccd565fdacf69143605bfeab9c2fe7acff40cda4": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:be263c18a38cabc7751f585ad213d00efbe93682": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c1a99d8b40c7a38ed9d97fec0df3f3fd2397a6d9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:839bfeba0089ecb02ae2ed4c054ee8e0562ad534": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8cca530373f959b315bda1897defdaa82b06f9b0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:894c26593cfc177429d75484692daf199602aa89": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a2afbceff7da52e6179317ee6aa391967345b2b2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fc74670afbf1a8ce39dfe96252c537046dc72539": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:371874dd7741be151b53bad07eb00ce6385a8b80": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7a8e33133884595744f2b9c3861c46996f4dca6f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:24d988557a2410ec4a1e5a1b4df9653fb9377e10": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:521d9a25d07aad8a303538f083ae543a9a18f278": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5d49c41796ee84db1fae590ad3fe3c5061307e63": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:976c1062b7176396dff86f28715d300dd0382955": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:48f9a6a8309cdecafd3dbf28de761d47951d3864": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f95143702f6161e6c3a0ad2d9c63ac90993cfce9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d1f34d792a68272792a83f75688a09ff7f8cc2fc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6f7aae1fdcb87038be5e274a6700931e96339471": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1737d74cd5cdec93ea3a250f6d22325e89ce5f79": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:87e9e809888299a22260ba58fd1437949c3b83e1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f64701c94606dee8f8b3f400bf4b14d378ab8fb9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4188a1fc7be5775322707abb770da7ba766d116d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ef24c176638b71c094eaf7ce06c92601c4fd68aa": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:74238e05d7a78de55fb6375f6d8e45b48f7eded3": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f6e4249cb9ff4655e7db3c7c5312876fe1ae35fc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:026c4cfba458dcc3ffbfe9caeefe9091d130b6f6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d8a8f1c15c702d25658326deb1574299435103a9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8aa6d1fa60a276882002588fd020804e08031831": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c62d5d4e09a4e7c0d19caffa228340c5f4905f4e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:60c19506e2360d244a8ff8be0c4250daff120458": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c75c1a43d5cb2803f57408e22100652581f1299f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:51a86411385693f82fb7ab399bd25639a9abc775": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d2aa10d3cac381bc45da02378fc8eaa2176fd770": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1f9934ae1b646c90af42f38c310963c196b13e2b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4fadc52f32b661c3aa2c1b67f22992278cf335f7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:b53d611805634d7e56d5791cb06cb857828f90fd": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:60375a040b035e1f11b700485657ae0e971097bb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e695d7b4e710e21971556fc463fccb9cf39e4e7e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d3298c5e1ce8ce5c86e00b4a4d889dbb77716c71": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:44fa38814297e93443867817a82c386463a87e72": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:00502fc1a767a231fdcc651420845379245b0383": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a3a3c3f077589ea68254f4b2049125b317f4f763": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:816b41e5ece05fdaf5fb8cae4186ea15fe84b94b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3ec71cf58a0f8bd4b1b9b2b92926ee6d390e8eaf": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fa35d0b6bad7ab3044c16270b1c87df1be64adc2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:123eb845f97b92e95fd08ac0915bf4b504782c6f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fc326b5249b08191f0bed3168c717ec8ea94daf1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:5589de49f75694eebacf4c483469f525172284d8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a085fe1c1a620c57947ad9e9938cea33efc634d6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:73158bc1e76db82ad547bd5237cffec516a3e883": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7ac6f4afb95f34ef65a4186f809111d7decc0af7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:eaec350a60b6f5f40824467bc299cb4921817e5d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:77b68292e674520745f7ef0a94b9d96077170d4e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d008499a71e371634ef11287450e952d76bdad67": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:fe9dabd5db58f54942e5ccd5ae288bb38c9a38d5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:98f8daa2d008a9be48d0b4f84a995f39e789fd59": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8f842ccae9f7e67937c1ac6f04ddd657c27a4dff": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:e56ccd0e3dfe46ddb8c107fc18fed187e054d79a": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bfaa9b208a7406220aabfa164a3ae22c2262e7f9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:768d8dcc0324fe72b5fa6fd7106eace85421023b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4abf566b616fc14d6d582abd36c3ad25837f97e8": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:56b7c53b29235d5dcdfb2d796ad1be744dfd7027": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3b82374831e0d1b2c694404f865518ff6034313d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:48cf8d89a6657a7ecfcca1c8adefd031f0ee0388": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:1402db2a3a21a2ae0333a3aacbbdb87fc8722a00": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ec89ac3b0a2f493acf683c61a62f2baf35b9e2aa": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dada9db92420c256f8277958a63197856f0856fb": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c7dd6cacfde1ff985ad6630465bc26a529b9b697": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c76e9b6573deb3f38a63e7550e11e65f322c90e6": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:6b5b334644b54667348a9777515cae022e929e66": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0d3b3550dc6b1e39d11263d02fe94738b7e96486": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:66acfb91952afec5b460836b42b04a75baba808e": {
-    "exclusions": []
-  },
   "Extraction@501cb31acc6e:6883ca1a643eec055207b86f7ffb459c61af4114": {
     "kind": "resolution",
     "variables": [
@@ -21670,21 +19632,6 @@
     "operations": [],
     "dropped_qualifiers": [],
     "dates": []
-  },
-  "ExclusionRead@3c024839b279:4b1d177036464e73cabc53a8939abcccf54486c5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4f5b66df75ee69e5d4f6ae2a35ea637f9078b776": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2ad0d32d8609810a0d236af6ff40863c28f569dc": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:04ff18bbc74fc89afaa31ca1c37aafb928cbba06": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f1bcab909739db247299dfe7bbbe2abb6c809390": {
-    "exclusions": []
   },
   "Extraction@501cb31acc6e:aa80ef72e6577ff266d9ea7da7f899ba6937dc93": {
     "kind": "resolution",
@@ -22260,182 +20207,6 @@
       }
     ]
   },
-  "ExclusionRead@3c024839b279:0932cff292cb8ea8838902faf010fc9a933ccf71": {
-    "exclusions": [
-      {
-        "phrase": "not including multilateral flows",
-        "left_out": [
-          "multilateral",
-          "flows"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:4355f99fe884aaa02746ed13423eb39eb9aeb605": {
-    "exclusions": [
-      {
-        "phrase": "not including multilateral aid",
-        "left_out": [
-          "multilateral",
-          "aid"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:2c0aa2406287b51b5821465747afedeed866f8e3": {
-    "exclusions": [
-      {
-        "phrase": "not including multilateral",
-        "left_out": [
-          "multilateral"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:65539e1165cb7646d7512483cb0858ed21290830": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:bb0da75419bc0fe19e2b8e5769abf30b024d4ed9": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f214e6cf4f899cf885fe856c4cc5f178364cc2a2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0f3574ff18be933f8a535ea0af8b8ac6067277c0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a9123f5491c71102e1f3409a2ef42cb9e8fb98b5": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ad82882701dfec9f4eceaf0819049513f91d9c77": {
-    "exclusions": [
-      {
-        "phrase": "excluding the CRS",
-        "left_out": [
-          "the",
-          "CRS"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:bf75a7eb6ec5480838dbc4971a272fb58ed06c4d": {
-    "exclusions": [
-      {
-        "phrase": "excluding CRS",
-        "left_out": [
-          "CRS"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:3ffe4b9cebe7ad3e0f0978413dfd13a9bec1e88b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:03f538ba37a7563e2bf10125905159851e6c8ca0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:665d6aabd0eae48e0cc817f10e30caeaa4710cf7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:96903232960d9f2a96d04f505056ea8df6682292": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:0b504cd7568a7d7067cd63a43af310d7c8604c2d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:345da8c53859386bdffaffd9409960ee77763325": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:53890418cb62fdd99ae3d7b60b48d4abb89d4456": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f30e4f0b49425e7b050725e61b64a1ff922d6ad0": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4b6dbfffc619c8ecab2db0ba03143004b01db6b1": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3c6f0cdb21dfa34e27eaa7a3f8139810c1cbd0f7": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:746b90f48864954926914af13db2ba263d724059": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:dfaac654d9d6c6a8d284317c4e113f65c390a96e": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2f10f075de86f958bb5ca2b42b573d650f030285": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:c326c7e3fbb4e1074f9d54e3785fa9137d8f8608": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:ef9fd7cd79343a1550c1d1ac55b893ceeb556969": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:f84f093371aed858b8ce5a46059d176465012b04": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:84ff8b546febdd3f8804ab9c14b8e5d67db89893": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:2516af34cdc9da698a3fdb3fa4b28cbe94da3922": {
-    "exclusions": [
-      {
-        "phrase": "not net",
-        "left_out": [
-          "net"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:c330d3d0eb9aa24724c13d18de60ca799150a3be": {
-    "exclusions": [
-      {
-        "phrase": "excluding health",
-        "left_out": [
-          "health"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:fe74eb5b61cd8276c7f1b727c952688364b6e944": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:4081f91328890dd678aa8753bd9efd6adcda056c": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:a7bf2ee328486d63591eee649e6bc83cfe8323ef": {
-    "exclusions": [
-      {
-        "phrase": "excluding CRS",
-        "left_out": [
-          "CRS"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:4ba92493e8bc7a17594c6df796c223fd6110c90b": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:3f90e00fc7a19db0fee2dff7d9a90cec723a4f0d": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:92b29e39919ff6cac4240f8e3b7da610a10780be": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:7c72d5ca5e85cb03239f1a6e92f9855df8b79c1f": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:61bb677a4db22c359e50e9d001bda1dd4269c366": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:8277da4252b9b96b4800a7a1ac668280924139a2": {
-    "exclusions": []
-  },
-  "ExclusionRead@3c024839b279:d6688689017bbd98016ecb719196d0dfa309b3c2": {
-    "exclusions": []
-  },
   "Extraction@501cb31acc6e:bfd011590ece39706842a8b8bcdb30df3b64aca1": {
     "kind": "resolution",
     "variables": [
@@ -22495,28 +20266,6 @@
       "not including multilateral"
     ],
     "dates": []
-  },
-  "ExclusionRead@3c024839b279:dbfeb603e07e7090fa854e94cc26db88e5be1151": {
-    "exclusions": [
-      {
-        "phrase": "not from the OECD",
-        "left_out": [
-          "from",
-          "the",
-          "OECD"
-        ]
-      }
-    ]
-  },
-  "ExclusionRead@3c024839b279:04eda0dffae57d13e87e79d09c44286c6f1d3ad9": {
-    "exclusions": [
-      {
-        "phrase": "not from the OECD",
-        "left_out": [
-          "from the OECD"
-        ]
-      }
-    ]
   },
   "_UniversalBindOutput@7105c7d81a38:b987feb0adb6931fe647196938a6f71fb09b81e9": {
     "chosen_shape_index": 0,
@@ -22581,6 +20330,2264 @@
       {
         "index": 0,
         "rating": 1.0
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:95bc7bf59b613daacdcd47bdfa3b78e317712348": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f21e669f0dd3399964faf23c97b475309f3c09f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b7b8048eb0b934daaf445993af1ee2ec252e3c37": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9d99e958fca0a62cca391c69b4235211a903e28d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d5c25ca86568ff761aabf263082fee6532dccdb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7554807695ab8b575842f1840d8ef531f3c6c624": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2561c8582de43b036e1b1555640804356db86431": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:05c389c969baf5018fbaded1e35adb7ac7f5d91e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fdc566f9522c146bc756dc533a36a3dcfa3decab": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b1cb011ff38f6e911ba45deae4eb3622ff70a8e5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a9c0de6f7d6e4ade1e865039de355a7dc0b45d8d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9538b7c206407d1e8e84cc6b4294525b2c7fdfcc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a028b16f26e1b5b0f9f522fa31fb276a4fc4c3a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:29378af3fe4e0a97be02615480a7764a92b3484f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6cef91c399c90f7c5ea2a3dcd774677ac8878695": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9873683461220c24cc6f2cf462ccfdfe48472827": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4069677ace21e424697d186c510d6c23781b2cdf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6524857424661a399563076dd97a394f83154fb0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d4d04da7382552cf87fbe7d6b55f37dd51c7f926": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1a2b89c023ea27217b13b1fbef51ef7e9aaa3673": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dc5570146a73cdfac57d6d09788a2e2d41531d61": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aa7931f3199972ab0deca8547cce1c6b171bd09b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0903e9bc2c7d2bdf7f5d58771b31d577df1bce66": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:191a3ecc4ed3fcc591f1e8c6d87ac1b326146498": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a42f1cbadeab1a352251d8fa2aeb10ca25728876": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:864f0103eda01bd69182ddf958aa673b70a0bec8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c9e144e5cc6053fa53558c322c7ff79bdd28c788": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c6b7d03329d5d0a39aa8d76f9ceb3b4113a6bee6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7fe96bb872f15c23ce72f78469c4220b6616e206": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:01a3850f7e94f6b815045ad9d500866fc7f09ab3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9ab5b61417f6c21a04597053ff537f254aff78be": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:efd9b9e7633c68e0f24e8da450ef32a65cac5c6b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:88a7ffc9450021a0003d960d6e4c2bdc4ace8cde": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d9097115b2a56649913978d0e678fc30e4bba418": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:907b5b6834a710afe4dda8a1522f1a3b76d6a96b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9cbbb6b7845046a5b903b1d0d1076564faefdc7e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ff52f002da041543614d7222dc341fa04a2f7c51": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e948d7a34c7bc1954cb12c7abdc8182777b640d0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e209eb4e216998d27c80aeef3868feb0d1908467": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b44940098083b2996fc582919448c0f0d4417427": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e0cecc852c2d1254a362607af53fc072ded3567e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7f963145df011716b9e4531480b641c1f64d3a7c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d359abd4420ada649a4d1d719f12d5a13c653608": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:22e9955d874f6e2c387990e80aa9e1b38405f3a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a91a5a41a4e2ab896109982d03724283fd570745": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:302830524901ca60ad09c614b46f8ac54d4dada8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2005b6272be4d01da41326be4f210070c0eb9cc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f114b1c0442ff6e43b14bb58d94db6e19a9bd857": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:daba9a0c6f6360ca078868b2d714554e7ec8a07a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:860456e80f55195431b6afeaf1853a1af0a8ef72": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ceb66fd70c8d7b8b7eb1f623037d29adcfbf23a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:248fc28c2af7e4ee5651e3d37a8a270f0a9d7d94": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:29086db76d5ad88ac028eba21b3f36de2d57b78f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8e6966dfbde26488eb44325424bd12a19aa1703f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3a9948e90e3b557eaa981258c51d8907fd0ecc5f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4e1822594e7917d1f4f8b7ec61f6542722a91cf6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d0a0ae9713ab0a3436c16cc4f610c88cc35c31cc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8cb36bc0494f6222714e611e8633a1173e1d2dda": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:67aabdc08ded894d0eadd988bd991689da937a15": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ebca3968bb527164cbe63ff0e627d282ad0ab5bd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ab3fbde08d7cafc4dc58072a00dc1d5076ef5452": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c45ba7e6814aaef6d43e38b358bc65b498ff9fdf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2dd336592524052f188581fea69633f4c430748a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2b4a9ffcf076a9211fd110f49df4507cfbb82d21": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ed35da6b2b81eb37d36689abb737a92b5a659c12": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9c34acee93ebc4adf824869df6f8d012858da8a8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:73256a0cfb7c0b3a0c535c99b18423cc242b2b25": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:478320788af26f664d4030f6e996a2e4c03c0472": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:583042243c85c998f4a22026faf7c8f06f7a70a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:23bb6d7be9271ad0c4cf3d36aaa09e0d4363e4c8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:874001007f37eb6b5a14df262d07d47102825215": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d62bcfd505b0431dd93ac22982ac3a0ed0365e7e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:426460cde2c5903de1657eb71c79696df5de59ce": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:da67d51cad1a5e44963c1417218f97b3bd2bd420": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0f99f3ce76a85cdab7960c851ae15f4a9a13bfa0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e9eab69a7471c0c7e4e7c6ed30a2daa2a8a3195a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2dcaa95eea4ada3933264052b55de37c0257b010": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ee2699247024223ae0f977a206f32d52a1af51bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9db511e5ebebb5e5916defecce8a2be2001bd8f1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bb508db85500824cd379d20f4f1ef97dfcce75cf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f6b55712c10f5ac75c598a20f4b8dee3566d411": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4ff1ff7af7df54952f49212a54cbd2fd2540e0e3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0b17c3a2462c751a0bbd01f9b248033eec79f8f9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:722faa527829aa105026fb15ea253b7f5741012f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fa053891cc353117eb31b52d42f7b82b7ee6a32d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:67bcfb8b48901a0e4b17e6cc5e3393cd599b1cf7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f95e46ff4e56a772ff03714990af16f822e10ee7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:484da20619bc9d8a4fb326896f9fd800b8178cae": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bc107757c8d9cf53e189ea9bf6dc5c226242a251": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a3e0ecb822af54054c1cea82c2900b61949861a9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e66da900be687801793a5a2b2ed14826f69ad47c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:301ad410805f849f8da3c57a86efe36bc51cc5bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:069dbf7d1cca5d12edf871662f6020fb5442b168": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e092ca2635c32db4d8b7e610ad3185cad770b738": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c6daf0e0e80fa49622b89ba68d439a983c9121be": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:81152d51ad091ee8c76d81231b939848f8c19bc3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e6e5657835d369d86ec1f533f4cae8a8fad6ebc6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9477b759237914146bd63860a744dc2fa39c5b15": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d61d5cbb5940f28411e16f0bfd2957dfab9fc8f5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7de9e2ca27dc32d658c19764a0470d80c56c04bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:415252733cd192b3fce43e75eb42dee2504c741f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cfa70650235d1e7ed987340a952c5e71cb73c195": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:62c3f8d2fba783a001bb88dd916b9ea04c6854ef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b15abb684e6c4ee4aaaa1440884ec622df250c38": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:332109078759c7314403be91e13cbb0839b1788f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2d7c10f4d8b69f70a11a246e60ea960461613cf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4b35fb1b909139ad1de3bc93c9f2fbd85821f852": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f3dd53a57c54cd8d0b59221f3bcded4646802dc7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7713511b7db43d82e50e042a45fdc70dc0abaa62": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:27648c2049f747ba65af3dc69dc94285e5aee132": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6183513135166bbedc40c5e5d58fce6e9b0fa50b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:60c4b2a1671071ab7896a4da8d3b978697e09ccd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f78045a3af78cc4f7c3788b0baee0fdf8950746c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:585aeaf08e17352f1f57b57df42e0ded650a14b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:82c66c8e9937b49504b1cb54c4ef0e57624b6a54": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:926e78f9bd0dc649fda89d844c42c8ba842536b5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6739b74f938d9296d3de604c3e35d3abe6476f5d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:76676c8816ad15f42a3226f108325325c139b2e2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ed2c7c7a53ee9bcf2bab0b45fcdcca9b5fbe48ea": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c9e44b05d566062deba8cdca5b2acdc824955fcc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a873881ad8607d6505202e3b8b189d59aa43ba2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e9000d483f88c426c35eb964559488c038373e26": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6fa741ef1f8a4c5a645fa23094f3381868f53e86": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aea08b1a415033f008077334f69e879ae4081b69": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c75dd2636eb823ed8d89637e268a139b5c20d941": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ef4424ced00ba1f1d25ab935ecf010e48a45db2d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a5d637a693051ab5d77b6c08bec9395c8818f53": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:055f2c124643753b331abcdf4fb4763238947bb8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:87e2714d4072827169f6655bbeea0f0e95f5eeb1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:402bf019ce655324b6a7d9ff27cf0632ebf28cf4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:24ab10adf4b12410ed48f74913ae550978d227ab": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:366b5cfc3785e8da5c4af0665dfd2290f3e5cfc9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:45311d249b1b49e3b2ceae0290e62b57b827f74d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e3de20e01056a113b399b3b4ea65fe10a50ae512": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9591fa095d45267a0ee06c1c14351e59b584c5a0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:92eeb5791d33dfdf5a3bfc2f9ad9a4d1692fbfe9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4bce68a474aadbafd0e17c1d53f5d660e9bf2615": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bff95612a8a7a17364297143e30d57f4a606e0a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4d3dceb62c3c12ca416ff3622a986f384c288dd5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:11b278490253b49ff71f10573b38c26acc550d26": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f0a1cbec41f385d56bbdf41b4d875c4e5e48f950": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5068389f59f2b2c2886b8cb49930f28d5dafcd74": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:982e92e11bdc6a2e7b5c5451bc46859786743bc1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d8d31f1d5866d5ed30cfa28fd48efdbdaaee0a19": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e70aa0b148dd7a10c6f6f31db602bc86c1fbd39b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2fb0507f397f027b27c27a76d8ef725ec1c4d17d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:04b37a08e2a3c27b646df3ed4824c8bdbd353fc9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:abe13b1b3b0186cad7055fe43369f73968acf264": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3dfbbf32d1a3068a90a0264b84d8718b6403523b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4028f94f344ffd37acd0ad9a06bb58005af969d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f97f2e5f1e4dbb1c45e136489f592e135b685c6f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:edb45ea2c8a2f0d8d98947d7632a7ec1f8200106": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:202545e2f516c0178061b071f44a24b5341dd32d": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:3db17b9aa6a19f04f094a9d3e8281ad78c43956c": {
+    "exclusions": [
+      {
+        "phrase": "excluding imputed multilateral",
+        "left_out": [
+          "imputed",
+          "multilateral"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:65227a728d42f1ecf6533dc7f278c2c67845dc7a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a410b614b9ce8a17bd7fafbdf7dc618e30c43b1c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1829bce0d2f939739fd47780f93c65e89fcd2e94": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:81483cd2a194707858f8d6d41238d4eb0d9a06f5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a62dcf83b59716821c510d32c65b01a430aec536": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:50daa8c40223259f2bffcd498616d4f9e207cda6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:93b73307fb1a5bded91a830e40963d179e0b4879": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:167f77e1760c38c69debe95d99f801852f5fd90e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6358b0aa965bfee12a4bf8cecd494c913465e163": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:38fa8dc43a23ea310b96f50deeab1a61606bdf58": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:893c73ac4d10565c2f43bc2536a9b81070dccaea": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e2814c9236806a186060b9acd323dbbaf4a5d961": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1677dc45ca0310d05ac9c537c33aa85244fe9761": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a10f8e5fda03a5f1249a39be3982ea6ecb8b176": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f8c9e60ec3482c4e35b9b3ce87302ab7fd61feef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0b042dd4e62d6e1bba3ce8ccbb57fc3f53c67292": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0deb09ca0d5d0c5b1d372a0fcd9d4b7c2873061e": {
+    "exclusions": [
+      {
+        "phrase": "not imputed",
+        "left_out": [
+          "imputed"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:cae5ce49885dde9f45dd5a9c2b85641b88175e39": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:084c97c4d76e882db308c59043f916e848cb704b": {
+    "exclusions": [
+      {
+        "phrase": "excluding multilateral donors",
+        "left_out": [
+          "multilateral",
+          "donors"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:d04b82ed2880da49432d92d1c8eaf713ca10ba98": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:70a73ba0f4424f24a8e496d3712114f77530a3d3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e58f0cc410e891b0c42ea14e015ef11714096506": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ca3fc9e63ee4adaddb01390a10da8a0b2f8c2666": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:487b5f3326316702b99946b0aeddd9d6fd43941e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1405f1a4b0dcbb8f2fbf33a1ecae468c78386982": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:050cb8424a399caf0a37c44fb781e19afa9acc2f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a7a88835d1d81540c13fbcca6956ffca456fc9b6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9fe7640ddeb97db3c8c6d0fad54da6072be3f2c2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4d6112883979369900b83961fb1793dc1a87f7f1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:716982b5ff5650a03ffe70ddf0614a3c42085e50": {
+    "exclusions": [
+      {
+        "phrase": "excluding humanitarian aid",
+        "left_out": [
+          "humanitarian",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a16bd7f58c5ff48aea6f0c354603a2d9f731da11": {
+    "exclusions": [
+      {
+        "phrase": "not from the United States",
+        "left_out": [
+          "from",
+          "the",
+          "United",
+          "States"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:feb58c9e07b29f8f9ad530133285f93c0ab4affa": {
+    "exclusions": [
+      {
+        "phrase": "except Kenya",
+        "left_out": [
+          "Kenya"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:71187a72ea13c8f1fd1e06dba88ac7ff5f8c31b1": {
+    "exclusions": [
+      {
+        "phrase": "except to Kenya and Uganda",
+        "left_out": [
+          "to",
+          "Kenya",
+          "and",
+          "Uganda"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:dbcf20291a1aa2e10f0af717814ebdf1c0366e4d": {
+    "exclusions": [
+      {
+        "phrase": "sin ayuda humanitaria",
+        "left_out": [
+          "ayuda",
+          "humanitaria"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:79db13c2d483c09faad3265330b510270329be2b": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:fd5c4f3088f4fc6317057935c2f4b4ce5b95ac4d": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:1e3acbb9de1a50d49883606db7d62a0cf919c8ea": {
+    "exclusions": [
+      {
+        "phrase": "no humanitarian aid",
+        "left_out": [
+          "humanitarian",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:114015157fcbe51ba80b734f82810584f686c6b4": {
+    "exclusions": [
+      {
+        "phrase": "but humanitarian aid",
+        "left_out": [
+          "humanitarian",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:e51849a0ec59f31d60bba7ddb7259fb1c16c9028": {
+    "exclusions": [
+      {
+        "phrase": "without IMF credit",
+        "left_out": [
+          "IMF",
+          "credit"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:5cae1504275769822d23dd299e92b928bd37ad74": {
+    "exclusions": [
+      {
+        "phrase": "excluding debt relief",
+        "left_out": [
+          "debt relief"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a11ce785f9cbc3ffb7b79d2587f528d485177cfe": {
+    "exclusions": [
+      {
+        "phrase": "excluding grants",
+        "left_out": [
+          "grants"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:20d5f7dde315bb9dc053b60f351d1cc2f24a13b9": {
+    "exclusions": [
+      {
+        "phrase": "excluding standard grants",
+        "left_out": [
+          "standard",
+          "grants"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a68f1df3911329fcf7ec7a68e4993c808b92af38": {
+    "exclusions": [
+      {
+        "phrase": "excluding North Africa",
+        "left_out": [
+          "North",
+          "Africa"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:05f2c60f38962bd7372716a47b19653d1276bf75": {
+    "exclusions": [
+      {
+        "phrase": "excluding bilateral loans",
+        "left_out": [
+          "bilateral",
+          "loans"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:ab82fa607ebdfc81ede7a9d0cbd6cb9100fafef2": {
+    "exclusions": [
+      {
+        "phrase": "excluding debt relief",
+        "left_out": [
+          "debt",
+          "relief"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:cfa774ae03bf6300cee69cba86c44f706105539f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:14d70e43dc7d6065725686e2873eb85ed3e757d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2fe327dd9fa3ebc855b238a74f753e0216d74d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f5d47858944142dab1142ce2c2763295ba13bab2": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral flows",
+        "left_out": [
+          "multilateral",
+          "flows"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:37f1d8ba3238132f5663e5a0407843fc65e22280": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral aid",
+        "left_out": [
+          "multilateral",
+          "aid"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:43ea66d2b03b73fa1bd4b83c76f0a6e577d2d6e6": {
+    "exclusions": [
+      {
+        "phrase": "not including multilateral",
+        "left_out": [
+          "multilateral"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:e44ee1ab9d47a7a1fdcb233785b4d690de80670e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2d0ee7203cd404a071ec9c738c66de394a75825b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c54f1353bdc23779705aeb0d396be5c2baf19b74": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a3678fcf74f3da1b202c1ed87e7a21f39b5b66f0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:85a7042181e540b3e343a496bae8449db652ee2a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2ce3ef3cdde4fde92a1b59e6e13834260589b44": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:03a558dc4dce285fa0d0637ed76b047d15159e7c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:da258b892cf3c7bbc4a5f18a976f8c32fd9fffda": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a2944f0755c18d72c97820df36df151ced0e8dd0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:704061fd1b186240b7c402c83481c1b5db295aa6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:430e0d3e92775b9e54e3ea787c7f145da0c627f5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8384a72f71e00033fe3536a2050fd77d1c81a48d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:287a573a61193d7d75f15ba13accee9d13c64f8e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f64eaecd7df298ca917766cb806d7b64ef165b3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3a816def1400c16db63d24bd280f4c898bf08e78": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ffc621fe98cf87fd79a5493294c08a26d6d7e3a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5ae5dd6d2a87040949e9cbc335948e9ac05b8615": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:30749198487771f5d03fdb5776d09016adfe105d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:71ab88fd40b4a622b126eb5d627ea3e0aaceaa32": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4eaabbcdd8dd418e06b98aea0613811609943726": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5f9b388f56227dce4a224b0fa4253fec4ab9a171": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0c39aff1d7885e3d73d8cdb07251ed9575a7291b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7e5f9046d8559853c9e50588b9d87ee2890a2006": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ea81493b28bb570593d59f41724e8438a9841249": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6c5be28e0f4ddb87916981c04d103e16fe515898": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ec963e31523b5ba369a9b8b62b7dccf952551e4b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:17120ad2b41942266be87a9da041f7dd05425e57": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d126b702f71f3e1192af3a6fbb6eb0abf0432430": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9a8d671e384c6e5f388dd25634d637d1feb3b982": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8756bc370edb247f51ad170131d24384e3563720": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0e110d179938a94ebe85ae202f9602be8603ac8f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5debb648e6d21a6fba57220cf4a156b40a2a788e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bbb75ba914f085d106ed7abe4e6760f657d89246": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:da86a56a1d2f30b209c41c8b6eefba68b4fd0c95": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cd1b11ead123b5d538732020620a39a2aba794c5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e9616789fdd20fa2565bf7fb3dde8112f602d79f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4fce4c5f5ad892481401d41d8b6b0bb4184405d3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7280b8d7779ad20876f64078d23705161de8c7ff": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84727bb86d073a7e71ac6719aecd530e7ae86b61": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6ec62ce1b696d1bc48ffe608a671dd47d32c7e8a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cf37e789d9ec053f9431391aa2c13f58b4c798a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:723c707fc5f0be5eecd57f57fda00df84d47f1b5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2a28369ec12c50e6e16a6dc7bf3a4528b1c00e9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:89002ea4c70c11bbfe4d05a703c7eb94a3c913e1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:217e9b4764512429a57dee7f19c8eafd804ec152": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2607c5ef1d0ddda02eb887d5bba050e9a5eba6f6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dcf9b3011b7498e2e2ea2fc1be98f504ce66b953": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:73a0e260412d5f8a3d8a908da306182f43c29dbd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cea4d82cdfa087dc6a363121b51267ff3719d4f2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:47272646d1ce8816242ca96297deca7ca1d46d49": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2f59212cec54a4e32ca19bde0665f35935bffeaf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b0c288dc8e3e742b364cb60aaf1059c069f6e4f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:03c196635aac7f47f23bd010c631b279ec346e73": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4e7e44ddff35f0d494f0ab769a23f2f6cab1a5bb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7d902f9254b25cfd92f1f7e7d14154ff0b44d95a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d6407ed94ff27abfb4a080618db446efea4fad0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d5b5176f9b73d50ef868e0a125918eaba9a6d04c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fb1dea01ea756a066b8bf1749c31ee30a99e66c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c96860ef1ad444b37d785351b6bca6ad66093c08": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bef1a4f0188d214dfc32eb19fb48d5e2eb7fe3bc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b9e999e6b05f63bf96cfb4af00226337dd0b4501": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:65f3e8a32a7a8ede8ed12940c6c3310d04dc62a4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:71a8188c59880e3d52f2bca58ad4d6b4d2cc4360": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:741e361955ca0b86e3880eb6c860590f43afb89c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1997327af74fba081a79f25cf8b9a7211ea0654a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e598b5ceb00f09aacb5393b8e1af03155a47ddd4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:62577f2c3ef992261f3f9fde8f2b1f0d25b1f374": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:27b646d5077de11087898700bf64b0917f324db0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:acb9c4d7c626d5e49281f75681a25818885d6bcf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:72ddd338b2e4b5053ad666ecfaf6b13572b4f1c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2834b926166a40cc9b1452613da333ecf1d7a741": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fc629062cdf7c123106bdf44446e85c1139f0405": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94086367a350f05dc367f2a15b660475bab9c7db": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:589fb5e1d785cb9026721e2d2ed86cdd705331d9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:47c56539d36cd4e3326548103f68419f2d09d20e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0f58b2eadf1a8dbddb128fd8ebb1ba3138c8b607": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8f243a374dad20688c296bfe5baacacb0e0c3e41": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:be77bd2ab888beb065849d899f25ddeeca5f57c7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:966ed72734e494c3b043f1d81356b7871258b2a7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bd56782c9beade717bdcfec8de42143cdb6e5b97": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a190da11456f15f691e42229a353573722806903": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aa1666348d1f4f9f3924b9353877a07c1ba162a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2412940a572e60f569a48cf96f913f26fd963560": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:95dc9a408b939ac636a566c5d907ec6c750c6950": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d667810219beed5bf9c91fb065dc0928f385be15": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:29a800dff47d68f9ba0f09f47f994b56463df85c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7bae2df8a17ae623665290173b18939ed06705bc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aa311d5724364db44ec36c9dfed9e6804dc4c2d2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6fffc6314f73a4623838a537f6426d94cd5eb402": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:16378249311eee0fb438fc958401bc5f25747883": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:98e21494e5d9b2d184d14d56999b94cd893fbec0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f672b6ee7e80b170a38e16be28fae01afe4dc71a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:54bfb2e669af3f79dcb54f0ea9a0ebc14256756a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e4ab348226bf646511e8079a3627b6474407378a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a12b3dd73527f86bf960192acc051874a746ec18": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2e27851c7aef44c27c97a39b86d7cbc218a5619b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:910c081567960d474762858d0c48101668e2fb71": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:98308c7153b4fbd45b413327d1be020337dfbe6e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:331c18d69237b722a72fbdaa5fabeef42924c2fc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:992cb05032745df0883630fc8e000f11c742baad": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e7cd498ce942d3d986075d3c3482a71c735f8fff": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:87da92357eeb671c76e0b91368efc3da725b72a6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d787ecc2b1c4230f3ab949de3b867190d7b62dbf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:efda540952ea98445c14203ffa4bdbabd3f3810e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40120adcb652f8e30f2d0c610f3667f0132dfe14": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40f365630d3bc0a33fcaf4789f9e4d4de702f020": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:19a6417c2c5408ff60a229d8f370c9248bfec1da": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84f536560fad6bc2349c449e3eec23c207ac802b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9f7505d4a6c7a39d05d4eada172a01f6920173e5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40aab304506761feb9173b06b6d88cac020b4494": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0fd290f802056bbd54cf417cfe9f9ddf94bef092": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5382478d87b7d3db6b81222385df72c735ef7ed2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8b1a440ae04a46a662e55a068c699bca24537621": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ddc8cd1f6d2e0e28bff1f32926c8fa36140161fb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1579eb3470dd4a25a4861f20c0474cdb64ef62b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b585fac87d9784d3e804ce60c98eb8981ee94d26": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d7985e088e363e85c153c8eee116cea4dfe360e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:663445cb37668f93b555b603681d04d749beda68": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6e48e57f5f019ff88d1f9b1f9cbf996059957b31": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:eeeb5cc88d959da85740026c08bca8c521aa052c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:712cedab88eeb428ba68e0d9784a8dfb8d8d8e2e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ee6785c873d77fcf2a82b9644cd352c04e8e93dd": {
+    "exclusions": [
+      {
+        "phrase": "not counting what goes through multilaterals",
+        "left_out": [
+          "counting",
+          "what",
+          "goes",
+          "through",
+          "multilaterals"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:decb17b14d60c1160c88dbe28556d4726e78e9c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c20300dc726dd5a8e77a6ade92d926cb01336417": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c7e103108f5f0d4514246b803218754de62fc94f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3def6c6be7b8036cbf2f461ccd49b97da8fa0c5a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4118afd92a753cfa8aa46475770550d25151443b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0c09e47d4a7acec67af65c8933769227c823750c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b80d35168afc0f550dcbd8a02ff2ef2768285627": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8f05574044814cfe4691d1f895a7342e1eabb4fa": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:178edb98d02f45594470300dfeb946110e226d42": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5444f01fee0e9708b030e9b954cc29227170d2c6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8f8cdc49ebecf61376ee642de8db4fb2ffd1f285": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e37b64092af48db27d7948a8a950233ff9f89df8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fe91a4e02408dd5bb46b75a1f0de3cb1c9ccc9d1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:78a06afa4aa4c89ba2a9a8f0975d9ed3724cbee6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f1488b03e199acbf6c2c7663115f2741059210c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7e954b13204b5d06efd82965d8b1859b3c6f05b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d580cbaf6fb3be1772e7eb907cc57c4d1aba1611": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4371c617637955412533deee1df9e28d6671ad5d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f1c0aaa7509bf8fd0411f232131aa3d9cdbf712f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e03fe8d6a0a4fbeea43f84e89ca30d87a5b93d5c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d0617214988d48f53827b6064dff301e507e79fb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:597bf98b7ec58200bde2be7b61c83afe64b03950": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9ee32499e43f53c2972e2db68523ac59180b0f8e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:14002cbd9041ffa7fc563b835edd4c2f2f9e316b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c1b76de05b8d0679d408eb2674c98a79b11f582a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:364d56569e03c428d93f4dc793c6818bdabe0b1b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1ab8e50d53fc0f466a45587613c61f68c278ecc9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3537c7b0759d3f38d0fecf60216bab0c887234cb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94f2daeb9a6b209e297596caab5ffc226ae9a52a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6dc9bcc2e78f55d9d67577e2b426e64b64aa61d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f39907c2123b618e56e1fb21c7650e7ff95e6ab7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:82319dd6a641e0645d5c42a1acd97f19f43bdef0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a700ee0a8614838b0b40fd6609bbcbf8a25f55a4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c27589839dade97d069cedfd5ad86717782c6dfd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:033ca8ae0c9ac761fc9c1831a1136e22f6a36b08": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:babc1b013d67de97969c841d5afc4b0d6dce17fa": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:189d120cb59b26978ff81181a9bf967a6417a483": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4118b6b0936e0829f697c0d481c474cfeda29134": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d276f3b23deb1898e47e18e0a5bcc47d9136aa04": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b25f37fd43f335d6c65d02371f9960285a220e5c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:db767c8342c79413bacefdac3fb4f6e9464c97ed": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1e1041e3d95cc3b31355769f12308e98da874db": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d2838d8a1afc7217ccd5eea99b4ad258f2f217fd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:77c9426d6b922d10eb52cd7379a989960646d699": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fa04d3e8235d82643f52387d35318704f23b0747": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9c32e2a66f519a1aa3c556b1f78be936beb942fe": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d8ddec1d7760889f716412d2079b1073f6dacd91": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f3571587ff5665de485d795ca701e5fa42677084": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:690356afad9ad7097a316e737dd5efefbb4fc630": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:169ba8926f9b178327bbc0cce27af8af1fa072a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:64975dcdf4e2b868eaddaf533f524667e603e1b4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fe2c3a1e3eeef47205fddc970cddf95db39c6642": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bbb825cd3c88a27b24ce8a1c4c2a1812041982d1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:09b0f252ce93723fa4d0ad4610ea9c416743d7b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:41b2d43a64431ee395c9e5854e044e71b3c83269": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:47982a5f5f65f5f2ceb2e6a7612ee4d7cd27c319": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:26b23fb2ad573eb8889dbd4739c67a3a48302025": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:69c0c0380bbdca8113deb9dfba85bbb0da7fc15c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dc255aa1bf62b0225f59aa1763a7ec1aaf6b501f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7ef6cb34a4d62123e03b95255e0e16766c6e1bce": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e1a934955a18923f308d0a729990965ad1906f9b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:acda5875b087e5ff5bfb04dffe8044b574628c54": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4922e91ad7f62021b5c34d71d9f02e1b34d3df9b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:365b0dbc22ce1e32883a44b8e4535f2a6c11cc3e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3bac37991ba21eb71ae00e9071dccc1832c82044": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:110fa9df40e0cfb07180052413d5926d7904525c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5b8b344556e1bacfc73e23ab1cf2ae36b34eb9ba": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94b438bed7ebbf5f12dd6f73b8546df5006c035e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:217c36da61b047928112355c58c1d254868ebb85": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:280b3f15341d3810d346d8908c2f18650d304464": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:99ef627948cac60a3d0dcff6b094b35e0e491ce8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:522ebc4637c91f931547afa43601606f8225ed9b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:eb0008917eed132b2193763c265ef3f711eda7a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2806f808346a5e1bdd566b6bac99f571075b97f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0cdc20035578ee3efb81d17278209db08dd31526": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:558b466f7e39ddb0744645af79f0a8678499f977": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ced789775b30fb6fba9e763ae4f0e01410cfb723": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3c43b85458c255ca39297bcd3891f2d146d40f6c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4a3b98f1ec031c4d65888e79202821eae517a7c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:50eeb1b650c739c198098f5985a61496122a00d7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8a8c2ffd95dbfc77de28178ea4b720c576f02a99": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7168c76fac984f7bfb7bbbf078a02d4ab54d3e4c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a10d7d3ed5e0cab9627ffcc8d81907aae5437b06": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:574f6659ee863f64af344d97da007ab20e6d200d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ab542e4ceda7bf0675458e612a2c6931b1d38413": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9883c27fc3529f83d9b09ff623ac639d5db954c8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b27fa6083ae60a60c229856162e1667fcd3a2f1d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7536384e409d4ae1cb8d22fa6c49ad8c41642c62": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fafa7ad3b1586aac4a7ba72d723d296832c82538": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6c9e11e27fc1d83112c52bc5915ff6cf1a84e976": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:10b1ac0b77f2703de468a3eb9ecd012bd92a225d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b4e4d12f6c2c3fc84fb3d2d6e0d9805b4d5f27c0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:746709508d1d95cda5b8aeb9fcc7f8a51878ae09": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:742fbad5f177ae9018cd2ba2e0fcb1242b78345b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:40f27a4f9b9a9214dba37bb25c473e33322c429e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:72a2c5f035c2907d5a47056c6f186068889f1e5b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c891b2bd1255524ed657f8afa5fae62e3728f626": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1317627c12fe07ece5c51adc88dd955403e6395f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ddead0abf8bf2755a7b3936f4dd0a6effd5184b8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8dd1099609515ce98f932072eb8225d9998afe6f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d3456dbba503cd0853d0d52e025346fc93c2743d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3a98458309275f3b284e07c4bcc676175020bb73": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a456ef2d31b50664ae37c30e791e6c5cff01a25": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1e6d4cdda238095fe10abbf4c3502803196d83e6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e6ef41e39ef4d26409dc64d1b93adc4832392c90": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:db7df8aa0379505530b891e781e289bd322a29c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7b027b4dee3963b7b5479c916d80a5285b6f7bbd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:536f32d320a054bc46ffd5e2ede29e28c715cd38": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:954935de8b9a9d4ea193663d5a40bb60e574b1eb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:86f102d687f2a77da86a1ed5659ff4a78ffcd1b0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:49eca85e425220d662260ed06175a7725672d1a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:988d26177f92ec6e85b47704fc0ebab5731546bd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ab78943976870e6b227514b5a24af32583a006d9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d9708d732efcef32f6494de03854b8502b34624": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:670030f035c78dd8a31938c0f69d7544ff18a248": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e6c88ae738c9fb076fadfa628456bb6a182f38e4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4109da642b56d823aa3d0a9729d481f06f799322": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4790b8ff2c889f465701e421df332b94715ff15b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a34194e5aecbb08d70a41c3b7df6f5f04e102300": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a058d109804b725789e69b1cd1d4193f2d6836f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:023309c9046f0879be8831d43a13b47bc218de96": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5a6a25384f8fbe3e8206b2584c23ac019c69af75": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:54fb834dac222f504bfe13e4349f83222eabeb33": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2ff7541ec6f1a586279697da0fa0c4c375704ed4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4f5af59f36a5ddf0c7f623b3ac231cdb8b3af708": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:691395dcd0d98aa5a6b1f00b8527c9c84d8510e9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:58712c6affff97e879525ccc3e56f20d8964d718": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b8b18032fd42a1c4d0cee1ad646b925f5762bf96": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3bd04005ef6624376da1e063a1325ff61bb4bcee": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1b8b2208743883ceddb3fdc88e1fdef6d3c54724": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d49fb24aa4e3984e891779c25f06fa035cc48779": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2fde16e91181af22bc850aedf7dc36f5e5289c40": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9ad0082d0d6520d3c6f011442a513874ecbeed32": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8e626b6a0a71bf8449a05cbfa767639f521ae78f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f4036c80be5f74bc88d0e0ad23eacefbc4964777": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bf5f5dd9b2da43da462cd10f372a6198b0a9f3a0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:edbd29c0db963383eb792ba022f01e38a3b393b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b31f3f03fbb99e6e3417695ff34b9f5af4b48f27": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:39bea7e953819b72eaac70cd30e085cc36d41969": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:89ff44b5d8d4f9466cd0d1196820e85955301ef4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:118474171c1c9cf41408736c5e715fc53aae2582": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4e86e3df39e983563ad1c7d735a2610011b38433": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:908de571b6e848b188d2102f214380bb0c6b1a47": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:80542f0489e88f39656d2083356589cf9d1e63d2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1c4992dc3111f39343c9522b9e87f7f4d0b08f4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c324e5e147cebb1074ce000bc9e31d5cddf9c829": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b1c7b1b0d9ebff3ad4db7a778438be6d068a8776": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84e2b7823a1161b995c2fb1441533557cb4a9b3b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:660b7db775190935e35854e0a4916ae6d00e0df5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:866383695ad9bdfab2961cbd0856a55564bc0717": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b720ece72172ae43a783bbea428163ca11fe6437": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:306f1b979839be7e9e497a02588656aeb5108687": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:34a6a2f99fcb81d19a3b89948e048703bbf20972": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:56cfc9582a0639533d65a12b9cc93d91e07d4a8c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:70a0ee3a43fd51a9d596bae55693541f535e6789": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:eefe8387b1b61fb34a0b9f9bcdbd6d1ec76b3f0b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b2ca07da6d5a3d1890aa13fb7ba3a55d1056c45a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:02bb5deb29329f3edcf6053b14a71d4723e3e846": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f3c8d78510b2b9bf221d83716c35288c1756017c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:76d32540b7b34c48b7758de00574003a1d0f2ccf": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f1a76d3b77895e9f6c40731667d82bdab671eb2c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:266ff6cf953ac6f2faaadba8e647cdf06014dd6c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1462692981000ee17525d8b0c28d48530e6d618b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:300b7437ec50059a11db4155072d5d9f01762f88": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:dbec690256afde610d539f95bb351153594516d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6afe29cc833ec6d95445fc202c67ef775bd7c822": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d33c787b5f692ac2d083a31f7859d8c6d2ab451c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ed63c37a57b33383974cb81c11eb839f1fec26c5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2a03f8fd541ff96b742f4152210e6b98c81730fc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:db14c79ac2bc120798ada4007d11876082f8fda2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8bb335944ccace4e0a02e95848325b16438deffe": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ca1d9c7f6a712c8f6a1a501f4c9bfd95f42c4956": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:edca40c8d17eaa0c19305ac266e34de1e2e6f419": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:00e39cb2625d4362e5abaf2dd9c2de4172193048": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3d5304a653b1525063004edebbd17fff76bbe8c9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:97a6c369e292cda19ec53a107a2aa194d81c51fd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:255f8df7094d7b74e21558dada6c3913fdbe7d18": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:36396108855bd7bb2bc55c606001e89f505034c1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:938eec551d38c710e4c731c8c6e12337197ab055": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ade89dfa939dbba4a7a8b8f58d4379d2c656f7e6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a3dea7be6406cc72c65ef4a24022bd22db776ef6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f36b97106b9b89b12eb12cf6b4293ee9bf4e8256": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f93accba9974bd6a45529e3dea478c1c91e74f5f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6aa812e50444eb8b56340264828496772ad05456": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:98277122392a3ac657db818b81ab302e0be94e97": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9db3a92d2692ae1e653b07a160747e78d5e0ede5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ee657a5ec3e5deeea3da735de62a9a6bfbc8cb72": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f20e9f8a090119468a66da540af61abfe733183c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:bc98041c156fc54e91fd32c1ad7db8c8b1332142": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:89fe92f91120fa49bd3adc0831cee75a708d65aa": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6a5c8b06e92c370253fb6686dd2ce0654459a50a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2b4ee0178114acd441b848a2c529e2ef81d319f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e52e8aa4345b0c10890e66b3c5f0aee9174ee539": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:cef8b24408169cd7bf2017899cdefed5f97ba52f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ce2d16e8c58bb8537d7a0350fd6473874b4e988c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:3612225fed4b9289648eafe8a86429bf2e4ee741": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:95d2cb06e60a703d984941047852d2acbc6a9858": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8d7bd81d59c3102c87db52bd06f74b28e4ef69c9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:df04832ded6087d00117b36b3c69f1dab92dff7d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ca2592efbb1d8c38accdabe6447c7206187100d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5b0483ab4b4f83c5e8ac25f6dfda128af629e606": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4bb6c418c3265fd9af8f8dc30c818c9f0afe63b1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4defba5828294a1027e5f01915badb73031366d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ec2207c82efe2fea71ed1fcd4e602616871532a2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0cb327a3adaecdf43182e57f850b4e9f98797f9e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e92df6ea656c4113eb43a36d715ab05027f28949": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e25aa82b7d0960040047bfbdc336c4641f367f10": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a8805f32c52c6e600d90423190459d9a8ae01e82": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:154b17e1e5e373ad44bbaf0435e1fea4117a2e35": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5f9f970f220e3a497649cda3ea1a131bfa116eef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4a9b54b92164e70d83faad3954d55496ac0772a8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5551a6e0d35817e32053db21bfcb6438360313b6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:30aaf691e2d26285bc660dd612d448dfe80106c5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d5056bd061fa0363d886c65d2a729d34dc5ecc98": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:8932b843f9498439696e3f04b31cd67da9e0e55e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:870c6da63785727cc5788ddad9368a152e255c57": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0c93a5ca5d14d8a58b829ac4e9a036107f661df6": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:af101dca340af612801a1b33210871b742d5a4a1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:02a529ca84a8e38a81c0277f80e0ea1c6de8130e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1e92e7220ceb75d5fa1b2d1652a3a6cb5ed67474": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c9392ef304ff6cfd4883abd6372cc93a9762767b": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0fde4dcbbdede286a9e9e518661247c598b070a3": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e7514b84077fafe2ec1ea83be75354e75b8e9c8d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:74250f1f06945bdc9c12a5399dba73bba75e71ef": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7a59c484e481c195e83beb1365d80931682cea64": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d023f8f3da7681c5ad448c4c334f02e44a8fbcfd": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1bf7c46465d07699fe6d5842f83f261f51273a51": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:91ea7cd71bf4a810b61afc849d2a40cee6f7aea1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6f8959f13864ea6aeb927876d3cda54d65f5ce77": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5c62e3813c26b36c5d456d89df92ade53a3dc51f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:245a223479f8267b9ba5d12651c109e7327b8852": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:826f12ae82717cdc45e5ec0348fe4e8008c7835d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:703bd60ab5dda460caca17c93f29665aaa53f664": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:42a6f936a5d8b7822ca8ef84de0b8a02e558ca28": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:33e64ca4d6646cc7897ced1f738a9e4da05d4cf9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7da11470d59dd4153df6ec2c90ce8f79ec6bb8d5": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:7bceca5782fae0c2038ed1b95d5ce30186ae3ff0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f87dc5466e028997c3e8270a27480cb0a047c025": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0af7cf4a53cf107dfa4a2e277dd95e89b76c59e2": {
+    "exclusions": [
+      {
+        "phrase": "excluding the CRS",
+        "left_out": [
+          "the",
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:a7a770dcc9d3c9a1d2c05de5f63b3b5e9cd88ece": {
+    "exclusions": [
+      {
+        "phrase": "excluding CRS",
+        "left_out": [
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:9546f132d8e2d711bf2c49ea71835618bc8b9f19": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:95a55a570c842cc2004b40d192d500ad49cfede1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:23ec54736746621733c3cecc2d3840945ff71c0e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d1e4ac477f8992f7db392789555ef8d472282197": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e0b51c64a55b6337a388ee24e92c528b8d0569e4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6870389a22f8a9561b8b7ea79eb43ee7ad20e123": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:c2223be62c7c7fdc5d383a584a395a42ae3474e1": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:65a0c692fb1ec3b25d84c08fe22c9952eb646876": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9787f1b975d2bb20ca260bada4677a6588150c46": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e8865131439ea7fb072245ab58f76cd86a95dc24": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9721b10249494d1a68dd477496b587590d809df2": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:81f57ac640d2ae39f378966653347d5814ef8891": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:d92f9b5e846bce9ea405870ea632fcacb36a3906": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9c4acc1c3bcbb7e200c7c34c016820c197d87dbb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b1d8c3e7c8a2a125843adc25c8a9dc37c6d6d371": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:e745474373353f78fcc36c832be5c0d878b3aa0a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1db92ecb2b51afe499126cc301f55caa506b70eb": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2d6752e912b6663ee2e1bf903722bf1a0055ea29": {
+    "exclusions": [
+      {
+        "phrase": "not net",
+        "left_out": [
+          "net"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:02850f5b5f5f28bf055d81a24111bc445eef29b9": {
+    "exclusions": [
+      {
+        "phrase": "excluding health",
+        "left_out": [
+          "health"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:6b85c39bb5d94fac7b415235e98d66d4476f4715": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:94b05d8ca0bc70969ee16bd536df109ec01b0eea": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:453748e09d54b33dadb57dfcaffb5131e7832b6b": {
+    "exclusions": [
+      {
+        "phrase": "not from the OECD",
+        "left_out": [
+          "from the OECD"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:583795f4201fb61d58362e9bc2d15cbcd2dc69ad": {
+    "exclusions": [
+      {
+        "phrase": "not from the OECD",
+        "left_out": [
+          "from",
+          "the",
+          "OECD"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:b1f3be04e783a79534c42f05e58d36497ef19581": {
+    "exclusions": [
+      {
+        "phrase": "excluding CRS",
+        "left_out": [
+          "CRS"
+        ]
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:29f4d806695a9e62b41b00994f47c521df816e02": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:789c78ca3f3374abf252e17627793253b2ab2fe7": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0874ed5dc0b4b11217667ac18f14110cc7189f2d": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:f343d002d072ee50e2eb276f9311957d6b7fe56f": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:84f679071d15e03726735b32ff587bc8bc92ac9c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:6fc9c6be0c20cd93677ae04701459904f696dbf0": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a0d86483b6a92803e9fd5c8f04a5dcf3d5577c67": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:32656617b1e9c6e0f8e212460b6e828a0c7a44fc": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:2a7a1d60094f15de6244dd69d82ce0f39622e1f9": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b2c3e7d9129e400e4b4dab77f6f8232f3c8e6a84": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:aeddd1cf52ee19d7900f9fd9a4eb09bac93207d8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fd8a2dca04293d17e08a951421c2c53e5b4d4872": {
+    "exclusions": []
+  },
+  "Extraction@501cb31acc6e:33c913b1bc4c1dbdf818c3472f0344f9a106615f": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:e00fa46460864ab6ef3307dbe7a32ee1c992ef45": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding imputed multilateral"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:28e2aae6e50c0acb7431bb256a49e2278c1fcd20": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not imputed"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:50dcd9c7a891287ee705668b5ee5aa6bee8a3cf8": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:7041b558e7d023a4bd4253f8ae6f1354ae354085": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding multilateral donors"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:c54fc0652bf7259568374b926a69436d7c3ac290": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "'s",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "bilateral-only",
+      "not counting what goes through multilaterals"
+    ],
+    "dates": []
+  },
+  "Extraction@501cb31acc6e:cd6296ddb216c0a4551aaeb11cded980c1d5ca05": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:3914f949f96b61924afb6a14ff55e61f1e702b69": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "dac2aAidType",
+        "kind": "value",
+        "value_dcids": [
+          "DAC2aAidType206"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "dacTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:d24021832fb4d88e5fa9e17540d8c76d0816479a": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
+      }
+    ]
+  },
+  "StatedWordsOutput@e3e465c89a54:1153c601dd9b2792935afe0e941b51a86096ede5": {
+    "words": [
+      {
+        "index": 0,
+        "stated": true
       }
     ]
   }

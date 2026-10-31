@@ -273,8 +273,13 @@ def test_a_hit_parses_the_blanked_text_and_cancels_a_speculative_parse_still_run
     assert read.reading.text == _BLANKED
     assert read.extract_result.extraction.variables == ["ODA"]
     assert set(read.timing) == {"extract", "exclusion_read"}
-    # The cancelled parse sent no response, so only the read and the parse that counts spend.
-    assert read.usage == {"input_tokens": 12, "output_tokens": 3, "cached_tokens": 0}
+    # The cancelled parse sent its request and no response reports its tokens.
+    assert read.usage == {
+        "input_tokens": 12,
+        "output_tokens": 3,
+        "cached_tokens": 0,
+        "uncounted_calls": 1,
+    }
 
 
 def test_a_hit_counts_the_tokens_of_a_speculative_parse_that_finished():

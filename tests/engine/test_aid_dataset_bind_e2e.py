@@ -1913,14 +1913,14 @@ def test_raw_text_source_words_qualify_only_the_variable_they_attach_to(
 def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alone(
     source_catalogue: None,
 ):
-    """The query asks for aid from the OECD and for a second variable from the CRS and not
+    """The query asks for aid from the OECD and for a second variable from the CRS but not
     from the OECD, whose tables hold the CRS. The second part's words leave it nothing to
     answer from, so it answers `qualifier_not_bound` naming the CRS, which it named, and
     runs no bind, while the first part answers from the OECD's tables."""
     llm = _ScriptedLLM("aid", _E)
 
     response = _resolve_scripted(
-        f"aid to Kenya from the OECD and {_E} to Kenya from the CRS, not from the OECD",
+        f"aid to Kenya from the OECD and {_E} to Kenya, not from the OECD but from the CRS",
         llm,
         graph=_graph("aid", _E),
     )
@@ -1940,7 +1940,7 @@ def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alon
 def test_a_raw_text_part_its_source_words_leave_no_source_calls_no_resolver(
     monkeypatch: pytest.MonkeyPatch, source_catalogue: None, resolver_down: bool
 ):
-    """The query asks for aid from the CRS and not from the OECD, whose tables hold the CRS.
+    """The query asks for aid from the CRS but not from the OECD, whose tables hold the CRS.
     The part's words leave it nothing to answer from, so it answers `qualifier_not_bound`
     naming the CRS and runs no step, which leaves its answer standing when the entity
     resolver fails."""
@@ -1953,7 +1953,7 @@ def test_a_raw_text_part_its_source_words_leave_no_source_calls_no_resolver(
     llm = _ScriptedLLM("aid")
 
     response = _resolve_scripted(
-        "aid to Kenya from the CRS, not from the OECD", llm, graph=_graph("aid")
+        "aid to Kenya, not from the OECD but from the CRS", llm, graph=_graph("aid")
     )
 
     (part,) = response.parts

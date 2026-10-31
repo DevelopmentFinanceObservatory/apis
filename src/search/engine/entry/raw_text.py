@@ -603,10 +603,22 @@ class _DoorRead:
     timing: dict[str, int]
 
 
-def _finished_usage(task: asyncio.Task[tuple[ExtractionResult, dict | None, int]]) -> dict | None:
-    """The token usage of a parse `task` that has finished with its answer, else `None`."""
-    if not task.done() or task.cancelled() or task.exception() is not None:
-        return None
+# The `llm_usage` key counting the model calls a request sent whose tokens it cannot count.
+UNCOUNTED_CALLS = "uncounted_calls"
+
+
+async def _discarded_usage(
+    task: asyncio.Task[tuple[ExtractionResult, dict | None, int]],
+) -> dict | None:
+    """The usage of a speculative parse the door discards: its token counts when it finished
+    with an answer, else one uncounted call (`UNCOUNTED_CALLS`), since a parse cancelled in
+    flight or failed had sent its request and reports no counts. One still running is
+    cancelled."""
+    if not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    if task.cancelled() or task.exception() is not None:
+        return {UNCOUNTED_CALLS: 1}
     return task.result()[1]
 
 
@@ -620,9 +632,10 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
 
     The speculative parse a hit discards runs on beside the parse of the blanked text, and
     its tokens count in the usage when it has finished by the time that parse ends. One still
-    running then is cancelled, and no tokens reach the usage for it, since no response
-    arrives. A read whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the
-    text as it was, so the speculative parse stands.
+    running then is cancelled, and the usage counts it as one uncounted call
+    (`_discarded_usage`): its request was sent, and no response reports its tokens. A read
+    whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the text as it was,
+    so the speculative parse stands.
 
     A failed read raises as a failed extraction does and fails the query, and the speculative
     parse goes with it: a query the read could not check for what it leaves out gets no
@@ -648,7 +661,7 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
             result, usage, timing_extract = await _run_extract_phase(
                 reading.text, llm=llm, deadline=deadline
             )
-            usage = _sum_usage(usage, _finished_usage(speculative))
+            usage = _sum_usage(usage, await _discarded_usage(speculative))
     finally:
         speculative.cancel()
         await asyncio.gather(speculative, return_exceptions=True)

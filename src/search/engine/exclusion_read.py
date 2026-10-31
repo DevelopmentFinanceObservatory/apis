@@ -63,6 +63,8 @@ These are not exclusions:
 - A limit or a restriction: "no later than 2015", "only grants", "children under 5".
 
 Copy each phrase character for character from the question. It starts at the negating word, runs to the end of the thing left out, and takes nothing after it: no place, partner, year or measure that the question goes on to name. A negating word alone is not a phrase: "not net ODA to Kenya" gives "not net", since net is left out. "no humanitarian aid to Kenya in 2022" gives "no humanitarian aid". "ODA excluding standard grants from France" gives "excluding standard grants". "health excluding malaria control ODA" gives "excluding malaria control". Other phrases: "not from the United States", "except to Kenya and Uganda", "sin ayuda humanitaria".
+
+In a contrast "not X but Y", the stretch is "not X", and Y is what the question asks for: "aid to Uganda not from France but from Germany" gives "not from France".
 """
 
 # Enters every stored read's key, so an edit to the prompt or the schema reads afresh.

@@ -176,8 +176,8 @@ def make_response(
 
 def _sum_usage(a: dict | None, b: dict | None) -> dict | None:
     """Sum two LLM usage dicts key by key, over every key either holds, in the order they
-    first appear: the Gemini counts and, from a Jev call, ``jev_input_tokens`` and
-    ``jev_output_tokens``. Return `None` when both are `None`."""
+    first appear: the Gemini counts, ``jev_input_tokens`` and ``jev_output_tokens`` from a
+    Jev call, and ``uncounted_calls``. Return `None` when both are `None`."""
     if a is None:
         return b
     if b is None:
