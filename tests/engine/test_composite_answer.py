@@ -13,7 +13,7 @@ import pytest
 
 import dc_graph
 from origin_catalogue import current_catalogue, scoped_reads
-from search.engine import response_cache_flow, same_shape
+from search.engine import response_cache_flow
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import dataset_resubmit
 from search.engine.errors import (
@@ -39,6 +39,7 @@ from search.models import (
     CoverageExact,
     DatasetResubmitInput,
     DefinitePart,
+    IdentityBindingSet,
     IdentityBindingValue,
     ObservationPoint,
     ObservationSeries,
@@ -667,54 +668,167 @@ def test_the_spliced_headline_under_latest_serves_each_component_in_its_own_peri
     assert _dates(observations) == {"headline_ge": ["2024"]}
 
 
-def test_a_merged_composite_previews_every_member_s_places(monkeypatch):
-    """A same-shape merge rebuilds the composite's relaunch over the merged Spec, whose
-    identity holds both members' recipients, so each component reads them both."""
-    spec, components = _components(monkeypatch)
-    identity = spec.definition.identity
-    entities = {**(identity.entities or {}), "destination": [provider._KEN, _UGA]}
-    merged = spec.model_copy(
-        update={
-            "spec_id": "merged",
-            "definition": spec.definition.model_copy(
-                update={"identity": identity.model_copy(update={"entities": entities})}
-            ),
-        }
+_PURPOSES = ("CRSPurposeCode120", "CRSPurposeCode130")
+
+
+def _purpose(identity: BaseIdentity, *codes: str) -> BaseIdentity:
+    """`identity` binding the CRS purposes `codes`, a value for one and a set for more."""
+    binding = (
+        IdentityBindingValue(ref=codes[0])
+        if len(codes) == 1
+        else IdentityBindingSet(refs=list(codes))
     )
-    member = RegionResult(
-        variable_text="health aid",
-        status="definite",
-        specs=(spec,),
-        no_data_reason=None,
-        warnings=(),
-        timing_by_step={},
-        observations_relaunch=CompositeRelaunch(spec=spec, reads=_reads(_coverage(monkeypatch))),
-    )
-
-    region = same_shape._finalize_merged_region(
-        [member, dataclasses.replace(member, earliest_index=1)],
-        merged,
-        facet_probe=None,
-        facet_warning=None,
-        measure_partition=None,
-        measure_siblings=(),
-        open_axis_facts=(),
-        option_axis_facts=(),
-        role_axis_facts=(),
-        served_filter=None,
-        served_members=(),
-        served_plans=(),
-    )
-    relaunch = region.observations_relaunch
-    assert relaunch is not None
-
-    async def run() -> _ObsProbeResult:
-        async with scoped_concurrency():
-            return await relaunch("merged")
-
-    asyncio.run(run())
-
-    assert [(inp.identity.entities or {}).get("destination") for inp, _ in components.calls] == [
-        [provider._KEN, _UGA],
-        [provider._KEN, _UGA],
+    slots = [
+        slot.model_copy(update={"binding": binding}) if slot.property == "crsPurpose" else slot
+        for slot in identity.slots
     ]
+    return identity.model_copy(update={"slots": slots})
+
+
+def _entry(identity: BaseIdentity) -> ResubmitIdentityEntry:
+    """An entry posting `identity` with no scope entries, so its scope compiles."""
+    return ResubmitIdentityEntry(variable_text="health aid", identity=identity, scope_entries=[])
+
+
+def _entries(*identities: BaseIdentity) -> ResolveRequest:
+    return ResolveRequest(
+        input=DatasetResubmitInput(entries=[_entry(identity) for identity in identities]),
+        response_options=ResolveOptions(include_observations=True),
+    )
+
+
+def _composite_facts(spec: Spec) -> tuple[object, ...]:
+    """What a composite answer states of the composite: its spec_id, identity, components,
+    years, counts and download facts."""
+    resolved = spec.resolved
+    scope = resolved.scope_choices
+    assert scope is not None
+    return (
+        spec.spec_id,
+        spec.definition.identity,
+        scope.compiled.spec_id,
+        scope.compiled.components,
+        resolved.facets["provenance"],
+        resolved.data_years,
+        resolved.coverage,
+        resolved.headline,
+        resolved.stat_vars,
+        resolved.download,
+    )
+
+
+def _answer(request: ResolveRequest, mode: str) -> tuple[list[Spec], SpecObservations | None]:
+    """The Specs `request` answers in `mode`, and the first one's preview: its streamed
+    event, once the stream completed, or the one it embeds."""
+    if mode == "streamed":
+        events = _stream(request)
+        assert _done(events).timed_out is False
+        resolution = next(e.response for e in events if isinstance(e, ResponseEvent))
+        specs = [part.spec for part in _answered_parts(resolution)]
+        event = _observed(events)
+        assert event.spec_id == specs[0].spec_id
+        return specs, event.observations
+    specs = [part.spec for part in _answered_parts(offline_resolve(request, **_clients()))]
+    return specs, specs[0].resolved.observations
+
+
+@pytest.mark.parametrize("mode", ["streamed", "buffered"])
+def test_two_merged_composites_answer_the_composite_over_both_members(monkeypatch, mode):
+    """Two composite entries the same-shape merge folds, one per purpose, answer the composite
+    over both purposes as one entry posting it does, and its preview holds every component in
+    every year each serves, each component read over both purposes."""
+    first, components = _components(monkeypatch)
+    identity = first.definition.identity
+
+    specs, observations = _answer(_entries(*(_purpose(identity, code) for code in _PURPOSES)), mode)
+    read = {
+        (_STAT_VARS[_provenance(inp.identity)], _purposes(inp.identity))
+        for inp, _ in components.calls
+    }
+    (expected,), _ = _answer(_entries(_purpose(identity, *_PURPOSES)), mode)
+
+    assert [_composite_facts(spec) for spec in specs] == [_composite_facts(expected)] * 2
+    assert _dates(observations) == _BOTH
+    assert {("bilateral", _PURPOSES), ("imputed", _PURPOSES)} <= read
+
+
+def _purposes(identity: BaseIdentity) -> tuple[str, ...]:
+    (slot,) = (slot for slot in identity.slots if slot.property == "crsPurpose")
+    binding = slot.binding
+    if isinstance(binding, IdentityBindingValue):
+        return (binding.ref,)
+    assert isinstance(binding, IdentityBindingSet)
+    return tuple(binding.refs)
+
+
+def _answered_parts(resolution: object) -> list[DefinitePart]:
+    assert isinstance(resolution, Resolution)
+    parts = [part for part in resolution.parts if isinstance(part, DefinitePart)]
+    assert len(parts) == len(resolution.parts)
+    return parts
+
+
+def test_a_composite_entry_and_a_single_table_entry_stay_apart(monkeypatch):
+    """A composite answer and a single-table answer the merge would otherwise fold keep their
+    own Specs: the composite previews its components, and the table answer claims no
+    composite."""
+    first, components = _components(monkeypatch)
+    identity = first.definition.identity
+    table = identity.model_copy(update={"facets": None})
+
+    events = _stream(_entries(_purpose(identity, _PURPOSES[0]), _purpose(table, _PURPOSES[1])))
+
+    resolution = next(e.response for e in events if isinstance(e, ResponseEvent))
+    composite_part, table_part = _answered_parts(resolution)
+    assert _provenance(composite_part.spec.definition.identity) == provider._INCLUSIVE_SOURCE
+    assert _provenance(table_part.spec.definition.identity) is None
+    assert composite_part.spec.spec_id != table_part.spec.spec_id
+    previews = {e.spec_id: e.observations for e in events if isinstance(e, ObservationsEvent)}
+    assert _dates(previews[composite_part.spec.spec_id]) == _BOTH
+    assert {_purposes(inp.identity) for inp, _ in components.calls} == {_PURPOSES[:1]}
+
+
+@pytest.mark.parametrize("merged", [False, True], ids=["one-entry", "merged"])
+@pytest.mark.parametrize("mode", ["streamed", "buffered"])
+def test_a_composite_entry_whose_walk_ran_the_full_read_previews_to_its_deadline(
+    monkeypatch, mode, merged
+):
+    """A composite entry whose member walk ran the full read, past the request deadline,
+    reads its components to the full read's deadline, so its preview holds both and warns
+    no timeout. A component read bound by the request deadline finds it passed. A merge
+    whose second member alone ran the full read reads to that member's deadline."""
+    first, components = _components(monkeypatch)
+    identity = first.definition.identity
+    real = dataset_resubmit.resolve_spec_resubmit
+    request_deadlines: set[float | None] = set()
+
+    def full_read(**kwargs: Any) -> RegionResult:
+        request_deadlines.add(kwargs["options"].deadline)
+        region = real(**kwargs)
+        if _purposes(kwargs["inp"].identity) == _PURPOSES[:1] and merged:
+            return region
+        return dataclasses.replace(region, reads_deadline=kwargs["full_read_deadline"])
+
+    def component(**kwargs: Any) -> RegionResult:
+        (request_deadline,) = request_deadlines
+        assert request_deadline is not None
+        if kwargs["options"].deadline <= request_deadline:
+            raise TimeoutError
+        return components(**kwargs)
+
+    monkeypatch.setattr(dataset_resubmit, "resolve_spec_resubmit", full_read)
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", component)
+    request = (
+        _entries(*(_purpose(identity, code) for code in _PURPOSES)) if merged else _resubmit(first)
+    )
+
+    if mode == "streamed":
+        events = _stream(request)
+        observations = _observed(events).observations
+        warnings = _done(events).warnings
+    else:
+        part, *_ = _answered_parts(offline_resolve(request, **_clients()))
+        observations, warnings = part.spec.resolved.observations, part.warnings
+
+    assert _dates(observations) == _BOTH
+    assert "observations_timed_out" not in {w.code for w in warnings}

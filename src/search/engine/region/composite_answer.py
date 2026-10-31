@@ -61,8 +61,9 @@ from search.engine.region.observations.dispatch import (
     _deflator_projected_warning,
 )
 from search.engine.region.resubmit import resolve_spec_resubmit
-from search.engine.region.result import RegionResult
+from search.engine.region.result import RegionResult, with_composite_answer
 from search.engine.region.state import EngineOptions
+from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
     EntityGroup,
@@ -77,7 +78,12 @@ from search.observations import (
     OBSERVATIONS_PREVIEW_TOO_LARGE,
     OBSERVATIONS_WINDOWED_SCOPE_UNSUPPORTED,
 )
-from search.scope.composite import ServedComponent, compose_observations, served_components
+from search.scope.composite import (
+    ServedComponent,
+    assemble_composite,
+    compose_observations,
+    served_components,
+)
 from search.scope.region import region_groups
 from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -314,10 +320,8 @@ class CompositeRelaunch:
 
     It reads `spec`'s identity and entity groups alone, so an answer the part memo held
     builds it as a fresh resolve does. `served` holds the components the answer was restated
-    over (`composite_served`), so the preview filters by the years the answer states. A
-    same-shape merge rebuilds it over the merged Spec (`over`), whose identity holds every
-    member's entities, with `served` None: the preview then reads the merged identity's
-    components itself."""
+    over (`composite_served`), so the preview filters by the years the answer states. With
+    `served` None the preview reads `spec`'s components itself."""
 
     spec: Spec
     reads: ComponentReads
@@ -325,10 +329,6 @@ class CompositeRelaunch:
 
     def __call__(self, spec_id: str) -> asyncio.Task[_ObsProbeResult]:
         return create_owned_task(self._events(spec_id))
-
-    def over(self, spec: Spec) -> CompositeRelaunch:
-        """This relaunch reading composite `spec` in place of its own."""
-        return dataclasses.replace(self, spec=spec, served=None)
 
     async def read(
         self, *, semaphore: asyncio.Semaphore | None
@@ -353,6 +353,93 @@ class CompositeRelaunch:
         if projected is not None:
             warnings.append(projected)
         return (ObservationsEvent(spec_id=spec_id, observations=observations),), tuple(warnings)
+
+
+def as_merged_composite(
+    region: RegionResult, group: Sequence[RegionResult], *, reads: ComponentReads
+) -> RegionResult:
+    """`region`, the same-shape merge of `group`, composite answers each, restated as the
+    composite over the merged identity, as a resubmit of that composite answers it
+    (`dataset_resubmit._as_composite`).
+
+    The merge rebuilds the merged Spec from its members' slots, which bind no composite, so
+    its identity is the table identity over every member's entities. The composite's
+    identity binds there the members' facets, the composite provenance among them, which the
+    merge gate holds every member to. Its served components (`composite_served`), years,
+    counts, headline and download facts (`assemble_composite`) and its preview
+    (`CompositeRelaunch`) read that identity over `reads`, the request's component reads,
+    to the later of their deadline and the latest any member's reads ran to
+    (`RegionResult.reads_deadline`). The headline names the request's window as the members'
+    do, since the gate holds every member to that window. The warnings the merge keyed to
+    the table identity's spec_id are keyed to the composite's, save those a member's own
+    preview read raised (`PREVIEW_WARNING_CODES`), which the composite's preview raises
+    afresh. The observation task the merge carried over from its first member is left to
+    the combiner's reconciliation (`enrichment._reconcile_after_collapse`), which cancels
+    the members' tasks and launches the composite's where the request streams
+    observations."""
+    member = group[0].spec
+    deadlines = [
+        deadline
+        for deadline in (reads.deadline, *(r.reads_deadline for r in group))
+        if deadline is not None
+    ]
+    if deadlines:
+        reads = dataclasses.replace(reads, deadline=max(deadlines))
+    merged = region.spec
+    identity = merged.definition.identity.model_copy(
+        update={"facets": member.definition.identity.facets}
+    )
+    spec_id = identity_spec_id(identity)
+    served = composite_served(identity, reads=reads)
+    table = merged.model_copy(
+        update={
+            "resolved": merged.resolved.model_copy(update={"headline": member.resolved.headline})
+        }
+    )
+    with bound_catalogue(reads.catalogue):
+        spec, _ = assemble_composite(
+            table,
+            identity,
+            spec_id,
+            served=served,
+            facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
+        )
+    # A member's own preview read is not the composite's, which raises its own warnings.
+    warnings = tuple(
+        warning.model_copy(update={"spec_id": spec_id})
+        if warning.spec_id == merged.spec_id
+        else warning
+        for warning in region.warnings
+        if warning.code not in PREVIEW_WARNING_CODES
+    )
+    return with_composite_answer(
+        dataclasses.replace(region, warnings=warnings, observations_task=None),
+        spec,
+        observations_relaunch=CompositeRelaunch(spec=spec, reads=reads, served=served),
+    )
+
+
+async def settled_merged_composites(
+    regions: Sequence[RegionResult], *, include_observations: bool, stream_observations: bool
+) -> list[RegionResult]:
+    """`regions`, a same-shape collapse's, with each composite a merge restated
+    (`as_merged_composite`) settled as `pipeline._with_composite_preview` settles a composite
+    answer: its relaunch closure kept where the request streams observations, for the
+    combiner's reconciliation to launch; its preview read inline
+    (`with_composite_observations`), under the request semaphore, where the request embeds
+    observations; and its closure dropped otherwise. Off a streamed request, a part's own
+    composite answer has settled its closure already, so only a merge's carries one."""
+    if stream_observations:
+        return list(regions)
+    settled: list[RegionResult] = []
+    for region in regions:
+        if not isinstance(region.observations_relaunch, CompositeRelaunch):
+            settled.append(region)
+        elif include_observations:
+            settled.append(await with_composite_observations(region, semaphore=bounded_semaphore()))
+        else:
+            settled.append(dataclasses.replace(region, observations_relaunch=None))
+    return settled
 
 
 async def with_composite_observations(

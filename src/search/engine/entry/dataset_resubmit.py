@@ -36,7 +36,9 @@ deadline `resubmit_full_read_timeout_s` (90 s) from request start, and the promo
 phases share it. The wait for promotes is bound by that deadline, since a promote's own
 reads end at `params.deadline` (45 s) unless its walk ran the full read. The trailing
 stream runs to the latest `RegionResult.reads_deadline` among the parts, so it keeps the
-request deadline unless a promote ran the full read.
+request deadline unless a promote ran the full read. A composite entry's component reads run
+to its own region's `reads_deadline` too, so a composite whose walk ran the full read previews
+its components past the request deadline.
 
 An identity entry's part books the time `_served_entry` and `_as_composite` take under the
 `served_entry` and `as_composite` steps of its `timing_by_step`, and a buffered composite
@@ -514,12 +516,15 @@ async def handle(
         steps = {"served_entry": promoted.served_entry_ms}
         if promoted.read is not promoted.identity and region.status == "definite":
             started = now_ms()
+            # The components read to the deadline the entry's own reads ran to, the
+            # full-read bound where its member walk ran the full read.
+            reads = (
+                component_reads
+                if region.reads_deadline is None
+                else dataclasses.replace(component_reads, deadline=region.reads_deadline)
+            )
             region = _as_composite(
-                region,
-                promoted.identity,
-                scope=scope,
-                facts=promoted.facts,
-                reads=component_reads,
+                region, promoted.identity, scope=scope, facts=promoted.facts, reads=reads
             )
             steps["as_composite"] = now_ms() - started
             if params.include_observations and not params.stream_observations:
@@ -743,6 +748,7 @@ async def handle(
             graph=graph,
             start_ms=start_ms,
             params=dataclasses.replace(params, deadline=trailing_deadline),
+            preview_reads=component_reads,
         )
     ) as events:
         async for event in events:

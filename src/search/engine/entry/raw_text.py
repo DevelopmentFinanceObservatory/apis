@@ -99,6 +99,7 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.phase_rank_bind import holds_words, names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import (
@@ -1624,6 +1625,18 @@ async def _handle_multi_variable(
             graph=graph,
             start_ms=start_ms,
             params=params,
+            # Built once every part's own source scope has exited, so the reads run
+            # through the request's own catalogue.
+            preview_reads=ComponentReads(
+                graph=graph,
+                sdmx=sdmx,
+                coverage=params.coverage,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                deadline=params.deadline,
+                catalogue=current_catalogue(),
+            ),
             scope=scope,
         )
     ) as events:

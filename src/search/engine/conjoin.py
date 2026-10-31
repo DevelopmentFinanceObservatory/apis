@@ -66,6 +66,7 @@ from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
+    from search.engine.region.composite_answer import ComponentReads
     from search.engine.region.result import AmbiguousEntityCandidate as EngineCandidate
     from search.engine.region.result import AmbiguousSource
     from search.models import GraphRef, Part, QueryEcho
@@ -883,6 +884,7 @@ def combine_regions(
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
     scope_for: ScopeReader | None = None,
+    preview_reads: ComponentReads | None = None,
 ) -> tuple[Resolution, list[RegionResult]]:
     """Combine regions into one response, with one part per input in query order.
 
@@ -895,21 +897,61 @@ def combine_regions(
     ``place_options_task`` cleared. Identity lets the caller cancel and relaunch enrichment.
     Its only graph reads are the injected ``set_ref_for`` and ``facet_options_for``
     readers a same-shape merge calls, and ``scope_for`` builds a merged region's scope,
-    which every part it folds states. It performs no task operations.
+    which every part it folds states. A merge of composite answers reads its components over
+    ``preview_reads``, the request's component reads, and composite answers stay apart
+    without them. It performs no task operations.
 
     ``llm_usage`` is summed by the caller. A supplied ``echo`` is used
     verbatim. Otherwise a raw-text echo is built from ``query``. Skills-index
     warnings are added once on the envelope.
     """
-    definite = [r for r in regions if r.status == "definite"]
-    others = [r for r in regions if r.status != "definite"]
-
     collapsed, residual_texts = collapse_same_shape(
-        definite,
+        [r for r in regions if r.status == "definite"],
         set_ref_for=set_ref_for,
         facet_options_for=facet_options_for,
         scope_for=scope_for,
+        preview_reads=preview_reads,
     )
+    return combine_collapsed(
+        regions,
+        collapsed,
+        residual_texts,
+        extra_warnings=extra_warnings,
+        start_ms=start_ms,
+        engine_build=engine_build,
+        max_candidates=max_candidates,
+        include_observations=include_observations,
+        include_skills=include_skills,
+        skills_index=skills_index,
+        llm_usage=llm_usage,
+        echo=echo,
+        query=query,
+    )
+
+
+def combine_collapsed(
+    regions: list[RegionResult],
+    collapsed: list[RegionResult],
+    residual_texts: list[tuple[str | None, int]],
+    *,
+    extra_warnings: list[Warning],
+    start_ms: int,
+    engine_build: str,
+    max_candidates: int,
+    include_observations: bool = False,
+    include_skills: bool = False,
+    skills_index: SkillsIndex | None = None,
+    llm_usage: dict | None = None,
+    echo: QueryEcho | None = None,
+    query: str = "",
+) -> tuple[Resolution, list[RegionResult]]:
+    """Combine `regions` into one response as `combine_regions` does, over `collapsed` and
+    `residual_texts`, what `collapse_same_shape` returned for their definite regions. A
+    caller that settles the merged regions between the two steps calls them apart
+    (`entry.multi._stream_combined_regions`)."""
+    definite = [r for r in regions if r.status == "definite"]
+    others = [r for r in regions if r.status != "definite"]
+
     residual_indices = {earliest_index for _variable_text, earliest_index in residual_texts}
     refused = [r for r in definite if r.earliest_index in residual_indices]
     effective = sorted(collapsed + refused + others, key=lambda r: r.earliest_index)
