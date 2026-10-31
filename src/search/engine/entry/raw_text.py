@@ -489,46 +489,78 @@ def _cue_states_direction(
     return pairing.cue_first or cue.split()[-1] not in _PREPOSITIONS
 
 
-def _worded_axes(
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Wording:
+    """What the query's own words say about each place's end, by stripped entity name.
+
+    `stated` holds the axes its debt and receipt wording state (`role_text.debt_axes`,
+    `role_text.receipt_axes`), and `read` those a lone debt possessive reads off the
+    measure (`role_text.debtor_possessive`), which state no direction of their own.
+    `extracted` holds the one axis the extraction gave each name; a name on both axes has
+    none.
+    """
+
+    stated: dict[str, RoleAxis]
+    read: dict[str, RoleAxis]
+    extracted: dict[str, RoleAxis]
+
+    def axis(self, name: str) -> RoleAxis | None:
+        return self.stated.get(name) or self.read.get(name)
+
+
+def _read_wording(
     entities: Sequence[ExtractedEntity], *, query: str, measures: Sequence[str]
-) -> tuple[dict[str, RoleAxis], dict[str, RoleAxis]]:
-    """The axes the query's wording sets, by stripped entity name: those its debt and
-    receipt wording state (`role_text.debt_axes`, `role_text.receipt_axes`), and those a
-    lone debt possessive reads off the measure (`role_text.debtor_possessive`), which
-    states no direction of its own."""
+) -> _Wording:
+    """The query's wording about the ends of `entities` (`_Wording`), read once."""
     places: dict[str, list[str]] = {}
-    for entity in entities:
-        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
-    directed = _extracted_axes(entities)
-    debt = debt_axes(query, measures=measures, places=places, directed=directed)
-    stated = receipt_axes(query, places=places) | debt
-    read = debtor_possessive(query, measures=measures, places=places, directed=directed)
-    return stated, {name: axis for name, axis in read.items() if name not in stated}
-
-
-def _extracted_axes(entities: Sequence[ExtractedEntity]) -> dict[str, RoleAxis]:
-    """The one axis the extraction gave each name; a name on both axes has none."""
     axes_by_place: dict[str, set[RoleAxis]] = {}
     for entity in entities:
+        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
         if entity.flow_role != "unspecified":
             axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
-    return {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
-
-
-def _wording_ends(
-    entities: Sequence[ExtractedEntity], *, query: str, measures: Sequence[str]
-) -> Ends:
-    """The permutation of ends the query's wording makes of the extraction's reading
-    (`flow_ends.end_permutation`), from each directed place it moves."""
-    stated, read = _worded_axes(entities, query=query, measures=measures)
-    directed = _extracted_axes(entities)
-    return end_permutation(
-        {name: (directed[name], axis) for name, axis in (stated | read).items() if name in directed}
+    extracted = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
+    debt = debt_axes(query, measures=measures, places=places, directed=extracted)
+    stated = receipt_axes(query, places=places) | debt
+    read = debtor_possessive(query, measures=measures, places=places, directed=extracted)
+    return _Wording(
+        stated=stated,
+        read={name: axis for name, axis in read.items() if name not in stated},
+        extracted=extracted,
     )
+
+
+def _wording_ends(entities: list[ExtractedEntity], wording: _Wording, *, query: str) -> Ends:
+    """The permutation of ends the query's wording makes of the extraction's reading
+    (`flow_ends.end_permutation`), from each directed place it moves. A directed place the
+    wording leaves alone whose own cue states its end ("from France", `_cue_states_direction`)
+    keeps it, so the wording then moves only the places it names."""
+    moves = {
+        name: (wording.extracted[name], axis)
+        for name in wording.extracted
+        if (axis := wording.axis(name)) is not None
+    }
+    if any(
+        (name := _entity_key(entity)) in wording.extracted
+        and name not in moves
+        and _cue_states_direction(entity, entities=entities, query=query)
+        for entity in entities
+    ):
+        return {}
+    return end_permutation(moves)
 
 
 def _entity_roles(
     entities: list[ExtractedEntity], *, query: str, measures: Sequence[str]
+) -> dict[str, list[DoorRole]]:
+    """Map stripped entity names to their flow axes and spans (`_door_roles`), with the
+    query's wording read for them (`_read_wording`)."""
+    return _door_roles(
+        entities, _read_wording(entities, query=query, measures=measures), query=query
+    )
+
+
+def _door_roles(
+    entities: list[ExtractedEntity], wording: _Wording, *, query: str
 ) -> dict[str, list[DoorRole]]:
     """Map stripped entity names to their flow axes and spans.
 
@@ -543,18 +575,19 @@ def _entity_roles(
     (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
     translation leaves no span.
     """
-    worded, possessive = _worded_axes(entities, query=query, measures=measures)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = worded.get(name) or possessive.get(name)
+        axis = wording.axis(name)
         if axis is None:
             if entity.flow_role == "unspecified":
                 continue
             axis = entity.flow_role
         occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
-        stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
+        stated = name in wording.stated or _cue_states_direction(
+            entity, entities=entities, query=query
+        )
         role = DoorRole(axis=axis, span=span, stated=stated)
         if role not in occurrences:
             occurrences.append(role)
@@ -1011,12 +1044,13 @@ def _prepare_extraction(
             entity_breakdowns.append(words)
     # Where the query's wording shows the extraction read the flow backwards, every end the
     # parse names swaps with it: places, and the axes operations run over.
-    ends = _wording_ends(extracted_entities, query=query, measures=unique)
+    wording = _read_wording(extracted_entities, query=query, measures=unique)
+    ends = _wording_ends(extracted_entities, wording, query=query)
     extraction, extract_result, extracted_entities = permute_ends(
         (extraction, extract_result, extracted_entities), ends
     )
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
-    entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
+    entity_roles = _door_roles(extracted_entities, wording, query=query)
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.
     clamp_warnings: list[Warning] = list(extract_result.warnings)

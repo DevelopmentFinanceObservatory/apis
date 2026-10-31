@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
-from typing import Final, cast
+from functools import cache
+from typing import Any, Final, TypeAliasType, cast, get_args, get_type_hints
 
 from pydantic import BaseModel
 
@@ -44,32 +45,60 @@ def end_permutation(moves: Mapping[str, tuple[RoleAxis, RoleAxis]]) -> Ends:
 
 def permute_ends[T](value: T, ends: Ends) -> T:
     """`value` with every `END_FIELDS` field inside it mapped through `ends`, at any depth
-    of models, dataclasses, sequences and mappings. Values `ends` does not name, and every
-    other field, stay as they are."""
+    of models, dataclasses, sequences and mappings. Only the fields that can hold an end
+    (`_carrying_fields`) are rebuilt; every other field keeps its object."""
     if not ends:
         return value
     return cast(T, _permuted(value, ends))
 
 
 def _permuted(value: object, ends: Ends) -> object:
-    fields = END_FIELDS.get(type(value), frozenset())
-    if isinstance(value, BaseModel):
-        update = {name: _permuted(getattr(value, name), ends) for name in type(value).model_fields}
-        update.update({name: _mapped(update[name], ends) for name in fields})
-        return value.model_copy(update=update)
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        update = {
-            f.name: _permuted(getattr(value, f.name), ends)
-            for f in dataclasses.fields(value)
-            if f.init
-        }
-        update.update({name: _mapped(update[name], ends) for name in fields})
-        return dataclasses.replace(value, **update)
-    if isinstance(value, list | tuple):
-        return type(value)(_permuted(item, ends) for item in value)
+    if isinstance(value, list):
+        return [_permuted(item, ends) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_permuted(item, ends) for item in value)
     if isinstance(value, Mapping):
         return {key: _permuted(item, ends) for key, item in value.items()}
-    return value
+    if not isinstance(value, BaseModel) and not dataclasses.is_dataclass(value):
+        return value
+    fields = _carrying_fields(type(value))
+    if not fields:
+        return value
+    update = {name: _permuted(getattr(value, name), ends) for name in fields}
+    for name in END_FIELDS.get(type(value), ()):
+        update[name] = _mapped(update[name], ends)
+    if isinstance(value, BaseModel):
+        return value.model_copy(update=update)
+    return dataclasses.replace(cast(Any, value), **update)
+
+
+@cache
+def _carrying_fields(model: type) -> frozenset[str]:
+    """The fields of `model` that name an end (`END_FIELDS`) or can hold a model that does,
+    the only fields `permute_ends` rebuilds. Parse models hold no cycle of types."""
+    own = END_FIELDS.get(model, frozenset())
+    return own | frozenset(
+        name
+        for name, annotation in _field_types(model).items()
+        if any(_carrying_fields(held) for held in _models(annotation))
+    )
+
+
+def _field_types(model: type) -> dict[str, object]:
+    if issubclass(model, BaseModel):
+        return {name: field.annotation for name, field in model.model_fields.items()}
+    return get_type_hints(model)
+
+
+def _models(annotation: object) -> list[type]:
+    """The models and dataclasses an annotation can hold, at any depth of its arguments."""
+    if isinstance(annotation, TypeAliasType):
+        return _models(annotation.__value__)
+    if isinstance(annotation, type) and (
+        issubclass(annotation, BaseModel) or dataclasses.is_dataclass(annotation)
+    ):
+        return [annotation]
+    return [held for arg in get_args(annotation) for held in _models(arg)]
 
 
 def _mapped(value: object, ends: Ends) -> object:

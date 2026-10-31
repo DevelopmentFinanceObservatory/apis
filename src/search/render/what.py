@@ -14,7 +14,7 @@ from dfo_platform.roles import RoleWording
 from search.heading.measure_noun import MeasureNoun as AuthoredNoun
 from search.heading.measure_noun import denominator_noun, measure_noun
 from search.models import ResolvedFacet, Slot
-from unit_words.unit_class import classify_unit
+from unit_words.unit_class import classify_unit, rate_phrase
 
 from .how import _is_adjectival
 from .labels import (
@@ -322,24 +322,34 @@ def _with_short_names(noun: str, names: Sequence[str]) -> str:
     return " ".join([*words[:head], *names, *words[head:]])
 
 
-# Ratio terms in the heading text already state a share. Per-terms already state a
-# per-head rate. Bare "ratio" is excluded because a ratio measure can still need a unit.
+# Ratio terms in the heading text already state a share. Bare "ratio" is excluded because
+# a ratio measure can still need a unit.
 _RATIO_WORDS = frozenset(
     {"%", "percent", "percentage", "prevalence", "share of", "proportion of", "fraction of"}
 )
-_PER_WORDS = frozenset(
-    {
-        "per capita",
-        "per person",
-        "per 100",
-        "per 1,000",
-        "per 1000",
-        "per 10,000",
-        "per million",
-        "per 5 million",
-        "per inhabitant",
-    }
+# A base a graph name states after "per": a number in digits, scaled by a word ("per 5
+# million", "per 100k"), a scale word alone ("per million"), or one of a thing ("per capita").
+_SCALES: Mapping[str, int] = {"k": 1_000, "hundred": 100, "thousand": 1_000, "million": 1_000_000}
+_STATED_BASE = re.compile(
+    r"\bper\s+(?:(\d[\d,]*)\s*(k|hundred|thousand|million)?|"
+    r"(hundred|thousand|million)|(capita|person|head|inhabitant))\b",
+    re.IGNORECASE,
 )
+
+
+def _stated_bases(graph_text: str | None) -> frozenset[int]:
+    """The count bases ``graph_text``, a graph name, states after "per": 1,000 for "per
+    1,000 people", 1,000,000 for "per million", 1 for "per capita". A None ``graph_text``
+    (an authored noun) states none."""
+    bases: set[int] = set()
+    for digits, scale, scale_alone, one in _STATED_BASE.findall(graph_text or ""):
+        if one:
+            bases.add(1)
+        elif scale_alone:
+            bases.add(_SCALES[scale_alone.lower()])
+        else:
+            bases.add(int(digits.replace(",", "")) * _SCALES.get(scale.lower(), 1))
+    return frozenset(bases)
 
 
 def _graph_text_names_any(graph_text: str | None, words: frozenset[str]) -> bool:
@@ -403,18 +413,21 @@ def _unit_heading_phrase(
     """Return the unit phrase a heading states, empty when the unit leaves it alone.
 
     A unit stays in the heading when it changes the magnitude and is no currency: the base
-    of a rate ("per 1,000 people", `UnitClass.rate_phrase`), "per capita" for a per-head
-    denominator (`UnitClass.per_head`), "as a share of exports of goods, services and
-    primary income", "in PPP international dollars", or "in percent". A currency, whatever its code, is the
+    of a rate ("per 1,000 people", `unit_class.rate_phrase`), "per capita" for a per-head
+    denominator (`UnitClass.per_head`, `Count_Person` or `PerCapita` under any unit but a
+    rate), "as a share of exports of goods, services and primary income", "in PPP
+    international dollars", or "in percent". A currency, whatever its code, is the
     byline's (`heading._byline_unit`), so a per-capita amount in euros reads "per capita"
     here and "current euros" there. Units outside these classes return empty.
     ``graph_heading_text`` is the heading so far when a graph name states the measure,
-    and None when an authored noun or measure label does. A part a graph name already
-    states ("CO2 emissions per capita") is left out, so no unit reads twice. An authored
-    noun never names a unit, so it is not inspected. Before facets resolve (``facets``
-    None) only a `PerCapita` denominator reads, since it alone fixes the scale. A unit whose
-    series disagree (``per_series``) has no class, though a `PerCapita` or ratio denominator
-    still reads.
+    and None when an authored noun or measure label does. A base a graph name already
+    states after "per" (`_stated_bases`) is left out, so no unit reads twice: "CO2
+    emissions per capita" adds no "per capita", and a rate whose base the name states adds
+    nothing, while a murder rate named "per capita" and served per 100,000 people adds
+    "per 100,000 people". An authored noun never names a unit, so it is not inspected.
+    Before facets resolve (``facets`` None) only the per-head reading applies, since the
+    shape alone fixes it. A unit whose series disagree (``per_series``) has no class,
+    though its denominator still reads.
     A ratio whose dataset declares whose total it divides by (`_ratio_base_owner`) names
     that party in ``wording``'s noun: DAC2a's "as a share of the recipient's GNI", DAC1's
     "as a share of the provider's GNI".
@@ -430,15 +443,16 @@ def _unit_heading_phrase(
         denominator=denominator.ref if denominator is not None else None,
         currency_units=facet_currency_units(unit),
     )
-    names_per = _graph_text_names_any(graph_heading_text, _PER_WORDS)
+    stated_bases = _stated_bases(graph_heading_text)
     phrases: list[str] = []
-    if unit_class.per_head and not names_per:
+    if unit_class.per_head and not stated_bases:
         phrases.append("per capita")
     if facets is None or not unit_class.changes_magnitude:
         return UnitPhrase(" ".join(phrases), names_unit=False)
     names_unit = False
-    if unit_class.rate_phrase is not None and not names_per:
-        phrases.append(unit_class.rate_phrase)
+    rate = unit_class.rate
+    if rate is not None and rate.count_base not in stated_bases:
+        phrases.append(rate_phrase(rate))
         names_unit = True
     names_ratio = _graph_text_names_any(graph_heading_text, _RATIO_WORDS)
     if denominator is not None and unit_class.ratio_denominator is not None and not names_ratio:

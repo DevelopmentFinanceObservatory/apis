@@ -6,7 +6,7 @@ UN System Data Commons. Writes `{ref: label}`, sorted, to `tests/fixtures/per_n_
 `tests/unit_words/test_per_n_units.py` holds each recorded ref to the unit registry, so a new
 unit in the graph shows up as a failure on the next recording.
 
-Requires `SEARCH_GRAPH_BASE` and a `gcloud` login: the dev graph service takes an identity token.
+Requires `SEARCH_GRAPH_BASE`. `SEARCH_GRAPH_TOKEN` is forwarded when set.
 
 Usage:
     uv run --env-file .env python scripts/record_per_n_units.py
@@ -17,33 +17,25 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
-import httpx
+from dc_graph.client import GraphClient
 
 _FIXTURE = Path(__file__).resolve().parent.parent / "tests/fixtures/per_n_units.json"
 _UN_BASE = "https://unsd-datacommons.gcp.un-icc.cloud/core/api"
 _PER_N = re.compile(r"per[ _]?(count_)?(\d|million|hundred|thousand)", re.IGNORECASE)
+# Far above any unit class's membership, so a read that reaches it is truncated and refused.
+_MAX_UNITS = 10_000
 
 
-def _members(base: str, unit_class: str, *, headers: dict[str, str]) -> dict[str, str | None]:
-    """Each member of `unit_class` with its name, paged to the end."""
-    members: dict[str, str | None] = {}
-    token = None
-    while True:
-        body = {"nodes": [unit_class], "property": "<-typeOf"}
-        if token is not None:
-            body["nextToken"] = token
-        response = httpx.post(f"{base}/v2/node", json=body, headers=headers, timeout=120)
-        response.raise_for_status()
-        page = response.json()
-        nodes = page["data"][unit_class]["arcs"]["typeOf"]["nodes"]
-        members.update({node["dcid"]: node.get("name") for node in nodes})
-        token = page.get("nextToken")
-        if token is None:
-            return members
+def _labelled_members(graph: GraphClient, unit_class: str) -> dict[str, str | None]:
+    """Each member of `unit_class` with its first name."""
+    page = graph.node_subjects(unit_class, property="typeOf", max_results=_MAX_UNITS)
+    if page.truncated:
+        raise RuntimeError(f"{unit_class} has more than {_MAX_UNITS} members")
+    names = graph.node_names_many(page.dcids)
+    return {dcid: next(iter(names.get(dcid, ())), None) for dcid in page.dcids}
 
 
 def main() -> int:
@@ -51,16 +43,16 @@ def main() -> int:
     if not base:
         print("SEARCH_GRAPH_BASE is not set", file=sys.stderr)
         return 1
-    identity_token = subprocess.run(
-        ["gcloud", "auth", "print-identity-token"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    headers = {"Authorization": f"Bearer {identity_token}"}
-    graph = f"{base.rstrip('/')}/core/api"
-    members = {
-        **_members(graph, "UnitOfMeasure", headers=headers),
-        **_members(graph, "SDG_UnitOfMeasure", headers=headers),
-        **_members(_UN_BASE, "undata/UNIT_MEASURE", headers={"User-Agent": "dfo-apis"}),
-    }
+    token = os.environ.get("SEARCH_GRAPH_TOKEN") or None
+    with (
+        GraphClient(base_url=f"{base.rstrip('/')}/core/api", token=token) as graph,
+        GraphClient(base_url=_UN_BASE, user_agent="dfo-apis") as un_graph,
+    ):
+        members = {
+            **_labelled_members(graph, "UnitOfMeasure"),
+            **_labelled_members(graph, "SDG_UnitOfMeasure"),
+            **_labelled_members(un_graph, "undata/UNIT_MEASURE"),
+        }
     recorded = {
         ref: members[ref]
         for ref in sorted(members)

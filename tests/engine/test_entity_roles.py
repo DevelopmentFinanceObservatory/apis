@@ -13,11 +13,18 @@ from search.engine.entry.parsed import (
     interpret_parts,
 )
 from search.engine.entry.raw_text import _entity_roles, _prepare_extraction
-from search.engine.extract import ExtractedEntity, _validate_role_spans, extract
+from search.engine.extract import (
+    ExtractedEntity,
+    ExtractedOperation,
+    Extraction,
+    ExtractionResult,
+    _validate_role_spans,
+    extract,
+)
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole, contradicts
-from search.models import ParsedEntity, ParsedPart, RoleAxis
+from search.models import Operation, ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
@@ -306,6 +313,37 @@ def test_a_debtor_possessive_moves_the_ranked_end_with_the_place():
         "Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]
     }
     assert [op.over for ops in prep.per_variable_operations for op in ops] == ["origin"]
+
+
+def test_a_place_whose_cue_states_its_direction_keeps_its_end():
+    """In "largest aid from France received by Kenya" extracted with both places on origin,
+    the receipt wording moves Kenya alone: France's own "from" states its end, so neither
+    France nor the rank's axis swaps."""
+    query = "largest aid from France received by Kenya"
+    extraction = Extraction(
+        kind="resolution",
+        variables=["aid"],
+        entities=[
+            ExtractedEntity(text="France", span="France", flow_role="origin", role_span="from"),
+            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin"),
+        ],
+        operations=[
+            ExtractedOperation(verb="rank", variable=0, phrase="largest", over="destination")
+        ],
+    )
+    result = ExtractionResult(
+        extraction=extraction,
+        qualifiers={},
+        operations={"aid": (Operation(verb="rank", phrase="largest", over="destination"),)},
+    )
+
+    prep = _prepare_extraction(extraction, result, query=query)
+
+    assert _occurrences(prep.entity_roles) == {
+        "France": [("origin", "France")],
+        "Kenya": [("destination", "Kenya")],
+    }
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["destination"]
 
 
 class TestRawTextDoorReadsDebtWording:

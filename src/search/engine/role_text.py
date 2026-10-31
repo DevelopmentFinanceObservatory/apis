@@ -370,7 +370,9 @@ def debtor_possessive(
     direction for it. A possessive claim on another party's debt (``Kenya's share of
     external debt``), a place with no possessive, and a creditor cue whose object is no
     place (``Kenya's debt to GDP ratio``, a debt measured against a quantity) set nothing,
-    and a debt noun followed by a claim word (``China's debt exposure``) names no debt.
+    and a debt noun followed by a claim word (``China's debt exposure``) names no debt. A
+    query that opens the debtors as a breakdown (``China's debt by debtor country``,
+    `breakdown_axis`) reads its possessor as the creditor and sets nothing.
 
     The possessive reads the measure, so the axis states no direction of its own
     (``FramePlace.direction_stated``).
@@ -380,8 +382,24 @@ def debtor_possessive(
     query_tokens = _tokenize(query.replace("\u2019", "'"))
     if any(_follows_creditor_cue(query_tokens, start) for start in range(len(query_tokens))):
         return {}
+    # A query that opens the debtors as a breakdown ("China's debt by debtor country") asks
+    # for a creditor's lending, so its possessor is the creditor.
+    if "destination" in _opened_axes(query_tokens, query=query):
+        return {}
     possessors = _debt_possessors(query_tokens, places) or set()
     return {name: "destination" for name in possessors if name in directed}
+
+
+def _opened_axes(query_tokens: list[str], *, query: str) -> set[RoleAxis]:
+    """The flow axes a breakdown phrase of the query opens (`breakdown_axis`), read from
+    each ``by`` or ``across`` over every span of the words after it."""
+    return {
+        axis
+        for start, token in enumerate(query_tokens)
+        if token in _BREAKDOWN_CONNECTIVES
+        for end in range(start + 2, len(query_tokens) + 1)
+        if (axis := breakdown_axis(" ".join(query_tokens[start:end]), query=query)) is not None
+    }
 
 
 # Forms of "receive" that read the place beside them as the recipient: "received by

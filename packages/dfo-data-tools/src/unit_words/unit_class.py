@@ -6,39 +6,33 @@ plain US-dollar amount leaves the unit to the byline.
 
 The class comes from graph types:
 
-- A currency is any dcid `graph.currency_units()` maps to an ISO 4217 code: the
-  `CurrencyUnit` members (`CurrencyUSD`, `CurrencyKES`), the base Data Commons `Currency`
-  members named by their code (`INR`), and the `CurrencyUnitOfMeasure` nodes (`USDollar`).
-  USD reads as USD whatever its dcid.
-  `_DECLARED_CURRENCY_UNITS` adds the US-dollar units no graph node types: the UN System
-  Data Commons `undata/UNIT_MEASURE-CR_USD` and `undata/UNIT_MEASURE-CR_USD_K`, and
-  `ChainedUSDollarBaseYr2017`, constant 2017 US dollars, typed only `UnitOfMeasure`.
+- A currency is a unit the unit registry reads as money (`dfo_spec_kit.units.parse_unit`:
+  `CurrencyUSD`, a bare `INR`, `USDollar`, the UN `CR_USD`, `ChainedUSDollarBaseYr2017`),
+  with the base year a constant-price ref states, else any other dcid
+  `graph.currency_units()` maps to an ISO 4217 code. USD reads as USD whatever its dcid.
 - PPP and international dollars are the `PurchasingPowerUnit` node
   `PPPInternationalDollar` and the `UnitOfMeasure` nodes `InternationalDollar` and
   `PurchasingPowerStandard`, listed in `_PURCHASING_POWER_UNITS`.
-- Percent and a rate over a stated count come from the unit registry
-  (`dfo_spec_kit.units.parse_unit`). A rate's base is the unit's own: the World Development
-  Indicators crude birth rate divides by `Count_Person` and is served in `Per1000Persons`,
-  so it is a rate per 1,000 people.
-- Per head is a `measurementDenominator` of `PerCapita` (base Data Commons), or of
-  `Count_Person` (WEO, IDS) under a currency, purchasing-power or percent unit. A
-  `Count_Person` rate under any other unit, or before its unit is known, states no scale,
-  so nothing reads it as per head.
+- Percent and a rate over a stated count come from the unit registry too. A rate's base
+  is the unit's own: the World Development Indicators crude birth rate divides by
+  `Count_Person` and is served in `Per1000Persons`, so it is a rate per 1,000 people.
+- Per head is a `measurementDenominator` of `Count_Person` (WEO, IDS) or `PerCapita` (base
+  Data Commons), listed in `PER_HEAD_DENOMINATORS`, under any unit but a rate, which
+  states its own base.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Final, Literal
 
-from dfo_spec_kit.units import Money, Percent, Rate, UnpricedMoney, parse_unit
+from dfo_spec_kit.units import Money, Other, Percent, Rate, UnpricedMoney, parse_unit
 
 PER_CAPITA_DENOMINATOR: Final = "PerCapita"
 """The base Data Commons `measurementDenominator` that frames a measure as per capita. A
-`Count_Person` denominator is a per-person rate too, but also the denominator of rates
-whose unit states another base (a crude birth rate in `Per1000Persons`)."""
+`Count_Person` denominator is a per-person rate too, unless its unit is a rate over another
+base (a crude birth rate in `Per1000Persons`)."""
 
 PER_HEAD_DENOMINATORS: Final = frozenset({"Count_Person", PER_CAPITA_DENOMINATOR})
 """`measurementDenominator` dcids of a per-person rate."""
@@ -48,21 +42,6 @@ _PURCHASING_POWER_UNITS: Final = frozenset(
 )
 _PLAIN_CURRENCY: Final = "USD"
 
-
-@dataclass(frozen=True, slots=True)
-class _DeclaredCurrencyUnit:
-    currency: str
-    base_year: int | None
-
-
-_DECLARED_CURRENCY_UNITS: Final[Mapping[str, _DeclaredCurrencyUnit]] = MappingProxyType(
-    {
-        "undata/UNIT_MEASURE-CR_USD": _DeclaredCurrencyUnit("USD", None),
-        "undata/UNIT_MEASURE-CR_USD_K": _DeclaredCurrencyUnit("USD", None),
-        "ChainedUSDollarBaseYr2017": _DeclaredCurrencyUnit("USD", 2017),
-    }
-)
-
 type UnitKind = Literal["currency", "purchasing_power", "percent", "other", "none"]
 """`currency`: an ISO 4217 currency. `purchasing_power`: PPP or international dollars.
 `percent`: a percentage. `other`: a unit outside these classes, a rate over a stated count
@@ -70,9 +49,11 @@ among them. `none`: the series names no unit."""
 
 
 def is_known_non_currency(unit: str) -> bool:
-    """Whether `unit` is a percent or a PPP or international-dollar unit, which no graph
-    currency unit can be, so classifying it needs no `graph.currency_units()` read."""
-    return isinstance(parse_unit(unit), Percent) or unit in _PURCHASING_POWER_UNITS
+    """Whether `unit` is one the unit registry types as no money (a percent, a count, a rate)
+    or a PPP or international-dollar unit, which no graph currency unit can be, so
+    classifying it needs no `graph.currency_units()` read."""
+    value = parse_unit(unit)
+    return not isinstance(value, Money | UnpricedMoney | Other) or unit in _PURCHASING_POWER_UNITS
 
 
 def is_per_head_denominator(denominator: str | None) -> bool:
@@ -102,14 +83,6 @@ class UnitClass:
     rate: Rate | None = None
 
     @property
-    def rate_phrase(self) -> str | None:
-        """The rate's base as a heading reads it, "per 1,000 people", else `None`."""
-        if self.rate is None:
-            return None
-        base = f"per {self.rate.count_base:,}"
-        return base if self.rate.counted is None else f"{base} {self.rate.counted}"
-
-    @property
     def changes_magnitude(self) -> bool:
         """Whether the unit changes what the number means, so the heading states it.
 
@@ -122,6 +95,13 @@ class UnitClass:
         if self.kind in ("percent", "purchasing_power"):
             return True
         return self.kind == "currency" and self.currency != _PLAIN_CURRENCY
+
+
+def rate_phrase(rate: Rate) -> str:
+    """A rate's base as a heading reads it: "per 1,000 people", or "per 1,000" when the unit
+    states nothing counted."""
+    base = f"per {rate.count_base:,}"
+    return base if rate.counted is None else f"{base} {rate.counted}"
 
 
 def classify_unit(
@@ -141,14 +121,12 @@ def classify_unit(
     Returns:
         The unit's class. A rate over a stated count takes the place of the denominator.
         Otherwise the denominator sets `per_head` or `ratio_denominator`, so a per-capita
-        amount in Kenyan shillings is a `currency` with `per_head` true. A `Count_Person`
-        denominator under a unit that fixes no per-person reading sets neither.
+        amount in Kenyan shillings is a `currency` with `per_head` true.
     """
     value = parse_unit(unit) if unit is not None else None
-    declared = _DECLARED_CURRENCY_UNITS.get(unit) if unit is not None else None
     currency: str | None = None
-    if declared is not None:
-        currency = declared.currency
+    if isinstance(value, Money | UnpricedMoney):
+        currency = value.currency
     elif unit is not None:
         currency = currency_units.get(unit)
     kind: UnitKind
@@ -163,20 +141,13 @@ def classify_unit(
     else:
         kind = "other"
     rate = value if isinstance(value, Rate) else None
-    per_head = rate is None and (
-        denominator == PER_CAPITA_DENOMINATOR
-        or (
-            is_per_head_denominator(denominator)
-            and (kind not in ("other", "none") or isinstance(value, Money | UnpricedMoney))
-        )
-    )
-    stated = rate is not None or is_per_head_denominator(denominator)
+    per_head = rate is None and is_per_head_denominator(denominator)
     return UnitClass(
         kind=kind,
         unit=unit,
         currency=currency,
         per_head=per_head,
-        ratio_denominator=None if stated else denominator,
-        base_year=declared.base_year if declared is not None else None,
+        ratio_denominator=None if per_head or rate is not None else denominator,
+        base_year=value.base_year if isinstance(value, Money) else None,
         rate=rate,
     )

@@ -47,13 +47,16 @@ def test_a_unit_that_keeps_the_magnitude_stays_out_of_the_heading(facets):
 
 @pytest.mark.parametrize("denominator", ["Count_Person", "PerCapita"])
 def test_a_per_head_denominator_reads_per_capita(denominator: str):
-    """Both per-head denominators read "per capita" under a money unit."""
+    """Both per-head denominators read "per capita", whatever the unit."""
     spec = _spec(
         measured_property=_ref("valueAdded", "Value added"),
         measurement_denominator=_ref(denominator, "Total population"),
         facets=_unit("USDollar", "US dollar"),
     )
-    assert _rendered(spec) == "Value added per capita."
+    assert (
+        sentence_from_plan([t for t in render_sentence_plan(spec) if t.segment == "heading"])
+        == "Value added per capita."
+    )
 
 
 @pytest.mark.parametrize(
@@ -134,13 +137,48 @@ def test_a_rate_the_graph_name_states_reads_once(label, unit, expected):
     assert _rendered(spec) == expected
 
 
-def test_count_person_under_an_unknown_unit_states_no_scale():
+@pytest.mark.parametrize(
+    "facets",
+    [
+        pytest.param(_unit("PersonPerSquareKilometer", None), id="physical-unit"),
+        pytest.param(
+            {"unit": ResolvedFacet(basis="fallback", selection="per_series")},
+            id="weo-two-currency",
+        ),
+        pytest.param(_unit("undata/UNIT_MEASURE-UNKNOWN", None), id="unknown-unit"),
+    ],
+)
+def test_count_person_reads_per_capita_under_any_unit_but_a_rate(facets):
+    """Only a registry rate states its own base; any other unit leaves the per-head
+    denominator to read "per capita"."""
     spec = _spec(
-        measured_property=_ref("populationDensity", "Population density"),
+        measured_property=_ref("grossDomesticProduct", "Gross domestic product"),
         measurement_denominator=_ref("Count_Person", "Total population"),
-        facets=_unit("PersonPerSquareKilometer", None),
+        facets=facets,
     )
-    assert _rendered(spec) == "Population density."
+    assert _rendered(spec) == "Gross domestic product per capita."
+
+
+def test_a_rate_the_graph_name_states_differently_reads_the_unit_base():
+    """A murder rate the graph names "per capita" but serves per 100,000 people reads the
+    unit's base."""
+    spec = _spec(
+        measured_property=_ref("value", "value"),
+        measurement_denominator=_ref("Count_Person", "Total population"),
+        facets=_unit("Per100000Persons", None),
+        stat_vars=[
+            StatVar(
+                ref=_ref(
+                    "Count_CriminalActivities_MurderAndNonNegligentManslaughter_PerCapita",
+                    "Murder rate per capita",
+                ),
+                shape_id="test-shape",
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+    )
+    assert _rendered(spec) == "Murder rate per capita per 100,000 people."
 
 
 def test_purchasing_power_per_capita_is_one_unit_token():
@@ -311,7 +349,10 @@ def test_a_heading_never_states_per_capita_twice():
             )
         ],
     )
-    assert _rendered(spec) == "CO2 emissions per capita."
+    assert (
+        sentence_from_plan([t for t in render_sentence_plan(spec) if t.segment == "heading"])
+        == "CO2 emissions per capita."
+    )
 
 
 def _shape(denominator) -> Shape:
@@ -329,23 +370,16 @@ def _shape(denominator) -> Shape:
 
 
 def test_a_pre_materialise_plan_states_only_the_per_head_unit():
-    """Before facets resolve (`facets=None`, the bind-time sentence event) only a
-    `PerCapita` denominator fixes a per-head rate, so "per capita" reads. A `Count_Person`
-    denominator waits for the unit, which may state a base ("per 1,000 people"), and a
-    ratio waits for the unit, which decides "as a share of" against "relative to". An empty
-    mapping is a resolved answer and states the ratio."""
+    """Before facets resolve (`facets=None`, the bind-time sentence event) the shape
+    alone fixes a per-head rate, so "per capita" reads; a ratio waits for the unit,
+    which decides "as a share of" against "relative to". An empty mapping is a resolved
+    answer and states the ratio."""
     per_head = plan_tokens(
-        heading_from_parts(
-            [], [], _shape(_ref("PerCapita", "")), window=None, pinned_properties=frozenset()
-        )
-    )
-    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
-    per_person = plan_tokens(
         heading_from_parts(
             [], [], _shape(_ref("Count_Person", "")), window=None, pinned_properties=frozenset()
         )
     )
-    assert sentence_from_plan(per_person) == "Adolescent birth rate."
+    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
     pre = plan_tokens(
         heading_from_parts([], [], _shape(_LIVE_BIRTHS), window=None, pinned_properties=frozenset())
     )

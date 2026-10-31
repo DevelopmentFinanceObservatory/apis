@@ -615,6 +615,9 @@ class TestDebtorPossessive:
             ("China's lending to Africa", ["lending"], "China"),
             ("Germany's aid", ["aid"], "Germany"),
             ("Kenya's GDP and debt", ["GDP", "debt"], "Kenya"),
+            ("China's debt by debtor country", ["debt"], "China"),
+            ("Japan's outstanding debt by recipient", ["outstanding debt"], "Japan"),
+            ("China's debt by borrower in 2020", ["debt"], "China"),
         ],
     )
     def test_anything_else_sets_no_axis(self, query: str, measures: list[str], place: str) -> None:

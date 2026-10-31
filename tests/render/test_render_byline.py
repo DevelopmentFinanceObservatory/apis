@@ -258,15 +258,24 @@ def test_only_a_graph_name_is_read_for_its_currency(measure_label, expected):
     assert [t.text for t in plan if t.axis == "unit" and t.segment == "byline"] == expected
 
 
-def test_a_unit_facet_with_no_currency_reads_no_unit():
-    """Only the facet's ISO code (`ResolvedFacet.currency`), set where the graph's
-    currency units are read, makes a unit US dollars."""
+@pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        pytest.param("CurrencyUSD", ["US dollars"], id="registry-money"),
+        pytest.param("CurrencyKES", ["Kenyan shillings"], id="registry-national-currency"),
+        pytest.param("ExampleGraphCurrency", [], id="unregistered"),
+    ],
+)
+def test_a_unit_facet_with_no_currency_reads_the_registry_currency(ref, expected):
+    """The unit registry types a money unit's currency, so a facet without its ISO code
+    (`ResolvedFacet.currency`) still reads it; a unit the registry does not type reads its
+    currency from that code alone."""
     spec = _spec(
-        facets={"unit": ResolvedFacet(basis="fallback", ref="CurrencyUSD", label="US Dollar")},
+        facets={"unit": ResolvedFacet(basis="fallback", ref=ref, label="Label")},
         resolved_sources=[_CRS],
     )
     plan = render_sentence_plan(spec)
-    assert not any(t.axis == "unit" for t in plan)
+    assert [t.text for t in plan if t.axis == "unit"] == expected
 
 
 def test_a_latest_request_states_its_year_and_opens_the_byline_with_the_label():

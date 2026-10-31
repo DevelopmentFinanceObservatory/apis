@@ -200,7 +200,7 @@ By hand, when `tests/origin_catalogue/test_fixture.py` reports that a committed 
 
 ## `record_per_n_units.py`
 
-Records every unit whose ref or label reads as a value per N of something, from the three unit classes on the dev graph and the UN System Data Commons, to `tests/fixtures/per_n_units.json`. `tests/unit_words/test_per_n_units.py` holds each one to the unit registry, so a new unit needs a registry row or a named exclusion. Needs `SEARCH_GRAPH_BASE` and a `gcloud` login.
+Records every unit whose ref or label reads as a value per N of something, from the three unit classes on the dev graph and the UN System Data Commons, to `tests/fixtures/per_n_units.json`. `tests/unit_words/test_per_n_units.py` holds each one to the unit registry, so a new unit needs a registry row or a named exclusion. Needs `SEARCH_GRAPH_BASE`; `SEARCH_GRAPH_TOKEN` is forwarded when set.
 
 ```bash
 uv run --env-file .env python scripts/record_per_n_units.py
