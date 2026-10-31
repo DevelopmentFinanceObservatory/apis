@@ -36,8 +36,8 @@ def _formats(code: str, message: str) -> list[str]:
 
 
 def _current_shapes() -> list[tuple[str, str]]:
-    """Messages in the shapes current writers store, and those the writers of
-    `withheld_by_registry`, `un_system_unavailable` and `deflator_projected` will store."""
+    """Messages in the shapes current writers store, and counted sentences for
+    `withheld_by_registry`, `un_system_unavailable` and `deflator_projected`."""
     coverage = [
         cast(str, warning["message"])
         for warning in (
@@ -147,6 +147,14 @@ def test_the_rewrite_file_defines_only_temporary_functions():
         "CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$;",
         "CREATE OR REPLACE FUNCTION datasets.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$;",
         "-- a comment\nDROP TABLE datasets.version_record",
+        # A quote inside a block comment, which a reader of `--` comments only takes for the
+        # start of a string hiding the `;` and the DROP after it.
+        "CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$ "
+        "/* ' */; DROP TABLE datasets.version_record; -- '",
+        # An escaped quote inside an escape string, which a reader of standard strings only
+        # takes for the string's end, so the next quote opens a string hiding the DROP.
+        "CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS text LANGUAGE sql AS E'SELECT \\'x'; "
+        "DROP TABLE datasets.version_record; SELECT '';",
     ],
 )
 def test_the_dry_run_refuses_a_file_that_does_more_than_define_temporary_functions(appended):
@@ -155,12 +163,13 @@ def test_the_dry_run_refuses_a_file_that_does_more_than_define_temporary_functio
 
 
 def test_a_migration_applying_the_rewrite_starts_with_the_validated_bytes():
-    """A migration named for the rewrite starts with `warning_rewrite.sql`'s exact bytes, so
-    the text the dry run validated is the text it applies. No such migration exists yet, so
-    this passes with nothing to check until one does."""
+    """A migration that defines `pg_temp.warning_counted_refs` starts with
+    `warning_rewrite.sql`'s exact bytes, so the text the dry run validated is the text it
+    applies. With no such migration in `MIGRATIONS_DIR` the test checks nothing."""
     prefix = REWRITE_SQL.read_bytes()
-    for path in sorted(MIGRATIONS_DIR.glob("*warning_counted_refs*")):
-        assert path.read_bytes().startswith(prefix), path.name
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        if b"pg_temp.warning_counted_refs" in path.read_bytes():
+            assert path.read_bytes().startswith(prefix), path.name
 
 
 def test_a_run_that_cannot_connect_exits_2(monkeypatch, capsys):
@@ -175,3 +184,33 @@ def test_a_run_that_cannot_connect_exits_2(monkeypatch, capsys):
     monkeypatch.delenv("DATASET_STORE_INSTANCE_CONNECTION_NAME", raising=False)
     assert warning_formats.main() == 2
     assert capsys.readouterr().err.startswith("ERROR: ")
+
+
+def test_an_unexpected_error_exits_2(monkeypatch, capsys):
+    """Exit 1 means only a finding; any other failure of the run exits 2."""
+
+    def _broken(conn, **_kwargs):
+        raise KeyError("column")
+
+    for name, value in {
+        "DATASET_STORE_HOST": "127.0.0.1",
+        "DATASET_STORE_PORT": "5432",
+        "DATASET_STORE_DATABASE": "datasets",
+        "DATASET_STORE_MIGRATOR_DB_USER": "migrator",
+        "DATASET_STORE_MIGRATOR_DB_PASSWORD": "unused",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("DATASET_STORE_INSTANCE_CONNECTION_NAME", raising=False)
+    monkeypatch.setattr(
+        warning_formats.connection.ConnectionSettings,
+        "connect_callable",
+        lambda self, *, connector: lambda: _Closable(),
+    )
+    monkeypatch.setattr(warning_formats, "dry_run", _broken)
+    assert warning_formats.main() == 2
+    assert "ERROR: KeyError" in capsys.readouterr().err
+
+
+class _Closable:
+    def close(self) -> None:
+        pass

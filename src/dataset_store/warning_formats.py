@@ -10,12 +10,16 @@ and the codes in `CODES_LEFT_BY_SQL`, whose new sentences and fields come from t
 
 `python -m dataset_store.warning_formats` refuses unless every statement of
 `warning_rewrite.sql` is `CREATE OR REPLACE FUNCTION pg_temp.`, then opens a transaction,
-executes the file, sets the transaction READ ONLY, refuses unless the session reports it
-read-only, reads `datasets.version_record` in one statement and rolls back. It prints, each
-by format, the version rows the SQL rewrite changes, the rows it leaves for a rewrite outside
-SQL, and the residual rows; then up to `SAMPLES_PER_FORMAT` messages of each format before
-and after the SQL rewrite; then the rows whose `immutable_body` warnings the rewrite changes,
-and the rows whose `immutable_body` warnings differ from their `warnings` column; then a
+executes each statement on its own through the extended query protocol, which refuses a
+statement holding a second command, sets the transaction READ ONLY, refuses unless the
+session reports it read-only, reads `datasets.version_record` in one statement and rolls
+back. Its patterns are bound parameters. It prints, each by format, the version rows the SQL
+rewrite changes, the rows it leaves for a rewrite outside SQL, and the residual rows; then up
+to `SAMPLES_PER_FORMAT` messages of each format before and after the SQL rewrite; then the
+rows whose `immutable_body` warnings differ from their `warnings` column, and of those the
+rows whose body warnings the rewrite changes; then the rows whose stored `member_count`
+equals, differs from or has no trace `resolved_stat_vars` to compare with, and the rows
+holding a currency or deflator warning that neither names nor counts its entities; then a
 census by code of the rows naming a `dcid:` or slash-shaped ref.
 
 A residual row holds a warning that still matches its format after the SQL rewrite, once the
@@ -23,7 +27,8 @@ member sentences of a row whose trace holds `resolved_stat_vars` are removed: a 
 sentence on a trace holding none has no member count to state. An unlisted row holds a
 warning that names a ref after the SQL rewrite and with its member sentences removed, but
 matches no format. Residual rows, rows whose body and column differ, and unlisted rows of a
-code outside `CENSUS_ALLOWED` are findings and exit 1. A broken run exits 2.
+code outside `CENSUS_ALLOWED` are findings and exit 1; the `member_count` and conversion
+figures are reported only. A run that cannot complete exits 2.
 
 It connects with the migration job's settings (`dataset_store.migrate`), so it runs as an
 execution of that job with its args overridden. The deployed image omits `scripts/`, so this
@@ -32,11 +37,13 @@ command lives in the package.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 import pg8000.exceptions
 
@@ -94,6 +101,12 @@ CODES_LEFT_BY_SQL = frozenset(
     {"withheld_by_registry", "un_system_unavailable", "deflator_projected"}
 )
 
+# The structured field that counts the entities of each conversion code.
+CONVERSION_FIELDS = {
+    "currency_unmapped_omitted": "omitted_entities",
+    "deflator_missing_omitted": "omitted_entity_years",
+}
+
 # Codes whose messages may name a ref while matching no format.
 CENSUS_ALLOWED: frozenset[str] = frozenset()
 
@@ -104,11 +117,17 @@ VERSION_TABLE = "datasets.version_record"
 _REF = r"dcid:|[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_]"
 _DEFINITION = "CREATE OR REPLACE FUNCTION pg_temp."
 _SQL_TOKEN = re.compile(
-    r"(?P<comment>--[^\n]*)|'(?:[^']|'')*'|\$(?P<tag>[A-Za-z_]*)\$.*?\$(?P=tag)\$"
-    r"|(?P<end>;)|[^-';$]+|.",
+    r"(?P<comment>--[^\n]*|/\*.*?\*/)|[Ee]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'"
+    r"|\$(?P<tag>[A-Za-z_]*)\$.*?\$(?P=tag)\$|(?P<end>;)|[^-/';$Ee]+|.",
     re.DOTALL,
 )
 _ROW = "(subject_id, content_version)"
+
+
+class _ExtendedQuery(Protocol):
+    """A pg8000 connection's extended query protocol: one Parse message, one command."""
+
+    def execute_unnamed(self, statement: str) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -124,8 +143,12 @@ class DryRun:
     residual_rows: int
     residual: dict[str, int]
     samples: dict[str, list[tuple[str, str]]]
-    body_rewritten_rows: int
     body_mismatch_rows: int
+    body_rewritten_rows: int
+    member_count_equal_rows: int
+    member_count_differs_rows: int
+    member_count_without_trace_rows: int
+    uncounted_conversion_rows: int
     census: list[tuple[str | None, int, int, int]]
 
 
@@ -162,7 +185,8 @@ def _statement(table: str) -> str:
                 %s::text AS member_code,
                 %s::text AS member,
                 %s::text AS ref,
-                %s::text[] AS left_codes
+                %s::text[] AS left_codes,
+                %s::jsonb AS conversion_fields
         ),
         format AS (
             SELECT * FROM unnest(%s::text[], %s::text[], %s::text[]) AS format (name, code, pattern)
@@ -173,15 +197,25 @@ def _statement(table: str) -> str:
                 content_version,
                 warnings,
                 immutable_body -> 'warnings' AS body_warnings,
-                coalesce(jsonb_typeof(trace -> 'resolved_stat_vars') = 'array', false)
-                    AS has_members
+                CASE
+                    WHEN jsonb_typeof(trace -> 'resolved_stat_vars') = 'array'
+                        THEN jsonb_array_length(trace -> 'resolved_stat_vars')
+                END AS trace_members
             FROM {table}
         ),
         warning AS MATERIALIZED (
             SELECT
                 v.subject_id,
                 v.content_version,
-                v.has_members,
+                v.trace_members IS NOT NULL AS has_members,
+                v.trace_members,
+                CASE
+                    WHEN jsonb_typeof(w.value -> 'member_count') = 'number'
+                        THEN (w.value ->> 'member_count')::numeric
+                END AS member_count,
+                p.conversion_fields ? (w.value ->> 'code')
+                    AND NOT w.value ? (p.conversion_fields ->> (w.value ->> 'code'))
+                    AS conversion_uncounted,
                 w.position,
                 w.value ->> 'code' AS code,
                 f.name AS format,
@@ -220,7 +254,15 @@ def _statement(table: str) -> str:
                 ) AS residual,
                 coalesce(before ~ ref, false) AS names_ref,
                 coalesce(without_members ~ ref, false)
-                    AND NOT coalesce(without_members ~ pattern, false) AS unlisted
+                    AND NOT coalesce(without_members ~ pattern, false) AS unlisted,
+                CASE
+                    WHEN member_count IS NULL THEN NULL
+                    WHEN trace_members IS NULL THEN 'without_trace'
+                    WHEN member_count = trace_members THEN 'equal'
+                    ELSE 'differs'
+                END AS member_count_check,
+                coalesce(conversion_uncounted AND NOT before ~ pattern, false)
+                    AS conversion_uncounted
             FROM warning
         )
         SELECT
@@ -267,13 +309,23 @@ def _statement(table: str) -> str:
             ),
             (
                 SELECT jsonb_build_array(
+                    count(*),
                     count(*) FILTER (
                         WHERE pg_temp.warnings_counted_refs(body_warnings)
                             IS DISTINCT FROM body_warnings
-                    ),
-                    count(*) FILTER (WHERE body_warnings IS DISTINCT FROM warnings)
+                    )
                 )
                 FROM version
+                WHERE body_warnings IS DISTINCT FROM warnings
+            ),
+            (
+                SELECT jsonb_build_array(
+                    count(DISTINCT {_ROW}) FILTER (WHERE member_count_check = 'equal'),
+                    count(DISTINCT {_ROW}) FILTER (WHERE member_count_check = 'differs'),
+                    count(DISTINCT {_ROW}) FILTER (WHERE member_count_check = 'without_trace'),
+                    count(DISTINCT {_ROW}) FILTER (WHERE conversion_uncounted)
+                )
+                FROM classified
             ),
             (
                 SELECT coalesce(
@@ -302,6 +354,7 @@ def _params() -> tuple[object, ...]:
         MEMBER_SENTENCE,
         _REF,
         sorted(CODES_LEFT_BY_SQL),
+        json.dumps(CONVERSION_FIELDS),
         names,
         codes,
         patterns,
@@ -316,11 +369,13 @@ def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
     `pg_temp` functions or the session does not report the transaction read-only."""
     if not _VALID_BOOKKEEPING_TABLE.fullmatch(table):
         raise ValueError(f"invalid table {table!r}: must match {_VALID_BOOKKEEPING_TABLE.pattern}")
-    sql = REWRITE_SQL.read_text()
-    definitions(sql)
+    statements = definitions(REWRITE_SQL.read_text())
+    extended = cast(_ExtendedQuery, conn)
     cursor = conn.cursor()
     try:
-        cursor.execute(sql)
+        extended.execute_unnamed("BEGIN")
+        for statement in statements:
+            extended.execute_unnamed(statement)
         cursor.execute("SET TRANSACTION READ ONLY")
         cursor.execute("SHOW transaction_read_only")
         read_only = cursor.fetchone()
@@ -332,8 +387,9 @@ def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
         cursor.close()
         conn.rollback()
     assert row is not None
-    totals, by_format, samples, body, census = cast(
-        "tuple[list[int], dict[str, list[int]], list[list[str]], list[int], list[list]]", row
+    totals, by_format, samples, body, checks, census = cast(
+        "tuple[list[int], dict[str, list[int]], list[list[str]], list[int], list[int], list[list]]",
+        row,
     )
     names = [name for name, _code, _pattern in OLD_FORMATS]
 
@@ -352,8 +408,12 @@ def dry_run(conn: DBAPIConnection, *, table: str = VERSION_TABLE) -> DryRun:
         residual_rows=totals[2],
         residual=_column(2),
         samples=sampled,
-        body_rewritten_rows=body[0],
-        body_mismatch_rows=body[1],
+        body_mismatch_rows=body[0],
+        body_rewritten_rows=body[1],
+        member_count_equal_rows=checks[0],
+        member_count_differs_rows=checks[1],
+        member_count_without_trace_rows=checks[2],
+        uncounted_conversion_rows=checks[3],
         census=[(code, rows, refs, unlisted) for code, rows, refs, unlisted in census],
     )
 
@@ -398,11 +458,25 @@ def _print(report: DryRun) -> None:
             if after != before:
                 print(f"  after:  {after}")
     print(
-        f"rows whose immutable_body warnings the SQL rewrite changes: {report.body_rewritten_rows}"
-    )
-    print(
         "rows whose immutable_body warnings differ from their warnings column: "
         f"{report.body_mismatch_rows}"
+    )
+    print(
+        f"  of these, rows whose body warnings the SQL rewrite changes: {report.body_rewritten_rows}"
+    )
+    print(
+        f"rows whose member_count equals the trace's resolved_stat_vars: {report.member_count_equal_rows}"
+    )
+    print(
+        f"rows whose member_count differs from the trace's resolved_stat_vars: {report.member_count_differs_rows}"
+    )
+    print(
+        "rows holding a member_count beside a trace holding no resolved_stat_vars: "
+        f"{report.member_count_without_trace_rows}"
+    )
+    print(
+        "rows holding a currency or deflator warning that neither names nor counts its "
+        f"entities: {report.uncounted_conversion_rows}"
     )
     print("by code: rows, rows naming a dcid: or slash-shaped ref, rows naming one in no format")
     for code, rows, refs, unlisted in report.census:
@@ -424,11 +498,15 @@ def main() -> int:
             report = dry_run(conn)
         finally:
             conn.close()
+        _print(report)
+        found = findings(report)
     except (DatasetStoreConfigError, DatasetStoreError, pg8000.exceptions.Error) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    _print(report)
-    found = findings(report)
+    except Exception as exc:  # A broken run exits 2 so that 1 means only a finding.
+        traceback.print_exc()
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     for finding in found:
         print(f"FINDING: {finding}")
     return 1 if found else 0

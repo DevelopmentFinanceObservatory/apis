@@ -30,13 +30,14 @@
 --     becomes ` It left out rows of 2 entities.` and `omitted_entity_years`
 --     `{count, entities}`, each entity `{ref, years}`.
 --
--- The functions split a list on `, `. That is exact for dcids, which hold no
--- `, `, and would mis-split a list of labels such as `Korea, Rep.`. Every
--- writer of these lists wrote bare entity dcids, from c2a32cbd9 until
--- e5745836f replaced them with counts: the bound dcids served coverage lacks
--- (`materialise.window.unserved_entities`) and the entity values of converted
--- rows. A list holding a comma inside a name fails its pattern and stays as
--- stored. A warning in none of these shapes is returned as stored, which
+-- The functions split a list on `, `. The old lists hold bare entity dcids:
+-- the bound dcids served coverage lacks (`materialise.window.unserved_entities`)
+-- and the entity values of converted rows. A dcid holds no `, `, so the split
+-- is exact; a list of labels such as `Korea, Rep.` would be mis-split. A list
+-- holding a comma inside a name fails its pattern and stays as stored.
+--
+-- Each regular expression holding a backslash is an escape string (`E'...'`),
+-- so it reads the same whatever `standard_conforming_strings` is. A warning in none of these shapes is returned as stored, which
 -- covers every warning in the new shape: a new unserved sentence counts
 -- "requested entities" where the old one lists dcids, and the new conversion
 -- sentences name no ref.
@@ -66,8 +67,7 @@ BEGIN
     WHEN 'coverage_below_scope' THEN
         parts := regexp_match(
             message,
-            '^(.*) No observations were served for ([^ ,]+(?:, [^ ,]+)*)'
-            '(?: and ([0-9]+) more)?\.( .*)?$'
+            E'^(.*) No observations were served for ([^ ,]+(?:, [^ ,]+)*)(?: and ([0-9]+) more)?\\.( .*)?$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -89,7 +89,7 @@ BEGIN
         );
     WHEN 'currency_unmapped_omitted' THEN
         parts := regexp_match(
-            message, '^(.*) ([0-9]+) entities: ([^ ,]+(?:, [^ ,]+)*)(?: \(truncated\))?$'
+            message, E'^(.*) ([0-9]+) entities: ([^ ,]+(?:, [^ ,]+)*)(?: \\(truncated\\))?$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -106,8 +106,7 @@ BEGIN
     WHEN 'deflator_missing_omitted' THEN
         parts := regexp_match(
             message,
-            '^(.*) ([0-9]+) entities: ([^ ,]+ \([^)]*\)(?:, [^ ,]+ \([^)]*\))*)'
-            '(?: \(truncated\))?$'
+            E'^(.*) ([0-9]+) entities: ([^ ,]+ \\([^)]*\\)(?:, [^ ,]+ \\([^)]*\\))*)(?: \\(truncated\\))?$'
         );
         IF parts IS NULL THEN
             RETURN warning;
@@ -134,7 +133,7 @@ BEGIN
                         )
                         ORDER BY listed.position
                     )
-                    FROM regexp_matches(parts[3], '([^ ,]+) \(([^)]*)\)', 'g')
+                    FROM regexp_matches(parts[3], E'([^ ,]+) \\(([^)]*)\\)', 'g')
                         WITH ORDINALITY AS listed (item, position)
                 )
             )

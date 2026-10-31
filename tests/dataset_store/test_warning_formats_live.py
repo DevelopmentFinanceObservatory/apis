@@ -9,6 +9,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import pg8000.exceptions
 import pytest
 
 from dataset_store import LiveDatasetStore, connect, warning_formats
@@ -43,6 +44,30 @@ _BODY_DIFFERS = {
     "code": "coverage_below_scope",
     "severity": "warn",
     "message": COVERAGE_DETAIL + old_unserved_sentence(["country/KEN"]),
+}
+_COUNTED_MEMBERS = {
+    "code": "coverage_below_scope",
+    "severity": "warn",
+    "message": COVERAGE_DETAIL + " 1 of 4 series report at a different frequency and are left "
+    "out of the figures.",
+    "member_count": 4,
+    "off_cadence_members": {"count": 1, "refs": ["dcid:YouthRate"]},
+}
+# Rows the old checks read: a stored `member_count` against a trace resolving three members and
+# against none, and a currency warning holding only its detail.
+_CHECKED = {
+    "member_count_differs": ([_COUNTED_MEMBERS], {"resolved_stat_vars": [{}, {}, {}]}),
+    "member_count_without_trace": ([_COUNTED_MEMBERS], None),
+    "currency_detail_only": (
+        [
+            {
+                "code": "currency_unmapped_omitted",
+                "severity": "warn",
+                "message": "A conversion into each entity's own currency left out rows.",
+            }
+        ],
+        None,
+    ),
 }
 
 
@@ -115,9 +140,11 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
     By format it counts the rows a real run of the same SQL then changes, the rows holding a
     member sentence or a code the SQL leaves, and the residual rows: a list holding a name with
     a comma, and a member sentence on a trace holding no `resolved_stat_vars`. It counts the
-    rows whose body warnings the rewrite changes and the row whose body and column differ, and
-    by code the rows naming a ref in no format. The real run writes each writer's shape, and a
-    second dry run finds nothing left for the SQL."""
+    row whose body and column differ and whose body the rewrite changes; a stored
+    `member_count` equal to, different from and without the trace's `resolved_stat_vars`; a
+    currency warning that neither names nor counts its entities; and by code the rows naming a
+    ref in no format. The real run, under `standard_conforming_strings` off, writes each
+    writer's shape, and a second dry run finds nothing left for the SQL."""
     cases = rewrite_cases()
     conn = _connect()
     try:
@@ -139,6 +166,17 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
             "NULL)",
             (json.dumps([_EMPTY]), json.dumps({"warnings": [_BODY_DIFFERS, _EMPTY]})),
         )
+        for case, (stored, trace) in _CHECKED.items():
+            _execute(
+                conn,
+                f"INSERT INTO {scratch_table} VALUES (%s, 'cv1', %s::jsonb, %s::jsonb, %s::jsonb)",
+                (
+                    case,
+                    json.dumps(stored),
+                    json.dumps({"warnings": stored}),
+                    json.dumps(trace),
+                ),
+            )
         conn.commit()
         before = _stored(conn, scratch_table)
 
@@ -167,7 +205,13 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
         {**zero, _COVERAGE: 2, _WITHHELD: 1, _UN: 1, _PROJECTED: 1},
     )
     assert (report.residual_rows, report.residual) == (2, {**zero, _COVERAGE: 2})
-    assert (report.body_rewritten_rows, report.body_mismatch_rows) == (8, 1)
+    assert (report.body_mismatch_rows, report.body_rewritten_rows) == (1, 1)
+    assert (
+        report.member_count_equal_rows,
+        report.member_count_differs_rows,
+        report.member_count_without_trace_rows,
+        report.uncounted_conversion_rows,
+    ) == (2, 1, 1, 1)
     expected_samples: dict[str, list[tuple[str, str]]] = {name: [] for name in _NAMES.values()}
     for stored, rewritten in cases.values():
         for old, new in zip(stored, rewritten, strict=True):
@@ -178,8 +222,8 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
         name: sorted(samples) for name, samples in expected_samples.items()
     }
     assert {code: counts for code, *counts in report.census} == {
-        "coverage_below_scope": [7, 6, 0],
-        "currency_unmapped_omitted": [3, 2, 0],
+        "coverage_below_scope": [9, 6, 0],
+        "currency_unmapped_omitted": [4, 2, 0],
         "deflator_missing_omitted": [3, 2, 0],
         "deflator_projected": [1, 1, 0],
         "empty_result": [3, 0, 0],
@@ -199,6 +243,7 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
 
     conn = _connect()
     try:
+        _execute(conn, "SET standard_conforming_strings = off")
         _execute(conn, REWRITE_SQL.read_text())
         updated = _execute(
             conn,
@@ -215,11 +260,32 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
         assert _stored(conn, scratch_table) == {
             **{case: rewritten for case, (_stored_warnings, rewritten) in cases.items()},
             "body_differs": [_EMPTY],
+            **{case: stored for case, (stored, _trace) in _CHECKED.items()},
         }
         after = dry_run(conn, table=scratch_table)
     finally:
         conn.close()
     assert (after.rewritten_rows, after.left_rows, after.residual_rows) == (0, 5, 2)
+
+
+def test_the_dry_run_refuses_a_statement_holding_a_second_command(scratch_table, monkeypatch):
+    """Each definition runs through the extended query protocol, so a second command hidden in
+    one fails the run before it executes."""
+    monkeypatch.setattr(
+        warning_formats,
+        "definitions",
+        lambda _sql: [
+            "CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$; "
+            f"DROP TABLE {scratch_table}"
+        ],
+    )
+    conn = _connect()
+    try:
+        with pytest.raises(pg8000.exceptions.DatabaseError):
+            dry_run(conn, table=scratch_table)
+        assert _stored(conn, scratch_table) == {}
+    finally:
+        conn.close()
 
 
 def test_a_ref_named_in_no_format_fails_the_run(scratch_table):
