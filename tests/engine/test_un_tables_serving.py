@@ -1229,9 +1229,9 @@ def test_a_held_family_past_the_cold_read_cap_answers_unsettled_then_settles(
         assert [sv.ref.ref for sv in answer.resolved.members] == [_FEMALE, _MALE]
     for result in (first, second):
         assert PLACE_SCOPE_DEFAULTED in {warning.code for warning in result.warnings}
-    assert (first.scope_unsettled, first.leg_degraded) == (True, True)
+    assert first.degraded is True
     assert reads_first == 2
-    assert (second.scope_unsettled, second.leg_degraded) == (False, False)
+    assert second.degraded is False
     assert len(submitted) == reads_first
 
 

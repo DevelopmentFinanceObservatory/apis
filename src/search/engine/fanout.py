@@ -10,7 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
@@ -84,17 +84,10 @@ _DIRECTIONAL_ROLES: frozenset[str] = frozenset(get_args(RoleAxis.__value__))
 
 @dataclass(frozen=True, slots=True)
 class _RegionDone:
-    """Terminal marker: one variable leg finished with a RegionResult.
-
-    `degraded` is True when `region` is a `_placeholder_no_data` produced by
-    swallowing that leg's own exception (see `_FanOutResult.degraded_leg`),
-    False for every other completion including a genuine no_data result the
-    leg itself returned.
-    """
+    """Terminal marker: one variable leg finished with a RegionResult."""
 
     index: int
     region: RegionResult
-    degraded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,27 +103,12 @@ class _FanOutResult:
     """Out-parameter for the async generator's final state.
 
     The generator assigns these fields only on normal completion. `regions`
-    contains one result per input leg, including deadline backfills;
-    `timed_out` and `degraded_leg` distinguish deadline and error backfills.
-    The generator cancels trailing tasks if it exits abnormally.
+    contains one result per input leg, including deadline backfills, which `timed_out`
+    reports. The generator cancels trailing tasks if it exits abnormally.
     """
 
     regions: list[RegionResult] = field(default_factory=list)
     timed_out: bool = False
-    # True when a leg's answer is weaker than its response part shows. A consumer that must
-    # tell a transient upstream failure from a settled negative one, such as the response
-    # cache deciding what is safe to store, reads this flag instead of the response body.
-    # It is True when:
-    # - a leg's exception, other than an EngineInfraError or a RATE_TABLE_REFUSALS member,
-    #   was swallowed into a `_placeholder_no_data` result under `degrade_on_error`, which
-    #   looks like a genuine no_data answer;
-    # - a leg's answer states `alternates_unevaluated` (`RegionResult.alternates_left_out`)
-    #   because an alternate lacked a presence read;
-    # - a presence read left a StatVar's default scope unsettled
-    #   (`RegionResult.scope_unsettled`);
-    # - a leg swallowed a graph read failure (`RegionResult.degraded`).
-    # The deadline backfill is reported by `timed_out` and does not set it.
-    degraded_leg: bool = False
 
 
 def _date_request_to_time_text(date_request: DateRequest | None) -> str | None:
@@ -329,13 +307,15 @@ def _placeholder_no_data(
     operations: tuple[Operation, ...] = (),
     open_axes: Collection[RoleAxis] = (),
     separate: bool = False,
+    degraded: bool = False,
 ) -> RegionResult:
     """Build a `no_data` result for a leg with no answer of its own: `timed_out` for one
     the soft deadline cut short, `variable_not_resolved` for one whose error was swallowed.
 
     Its restatement and operations use the leg's own inputs. The door's axis map supplies
     entity roles; without an axis, a non-empty `role_query` makes direction
-    uncertain and suppresses the echo.
+    uncertain and suppresses the echo. `degraded` marks a swallowed error, which reads as a
+    real miss. The deadline's cut is reported by `timed_out`.
     """
     restatement = _leg_restatement(
         variable,
@@ -362,6 +342,7 @@ def _placeholder_no_data(
         restatement=restatement,
         operations=operations,
         separate=separate,
+        degraded=degraded,
     )
 
 
@@ -570,7 +551,6 @@ async def _stream_one_variable(
             ),
         )
 
-    degraded = False
     try:
         if sem is not None:
             enter_phase("variable_slot")
@@ -604,8 +584,8 @@ async def _stream_one_variable(
             operations=operations,
             open_axes=open_axes,
             separate=separate,
+            degraded=True,
         )
-        degraded = True
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
         # restatement (it has no ParsedPart dependency), so this leg's own
@@ -654,7 +634,7 @@ async def _stream_one_variable(
         )
     # Ownership attaches the instant `region` is final, ahead of the marker.
     landed.append(region)
-    await queue.put(_RegionDone(index=i, region=region, degraded=degraded))
+    await queue.put(_RegionDone(index=i, region=region))
 
 
 @dataclass(frozen=True, slots=True)
@@ -964,14 +944,12 @@ def _launch_variable_tasks(
 class _FanOutProgress:
     """Mutable fold state `_run_variables_streaming`'s queue-draining loop
     threads through `_handle_fanout_item`: which leg indices have landed so
-    far, the first hard failure any leg raised, and whether any leg
-    degraded rather than failing outright.
+    far and the first hard failure any leg raised.
     """
 
     results: dict[int, RegionResult]
     n_pending: int
     first_failure: BaseException | None = None
-    degraded_leg: bool = False
 
 
 def _handle_fanout_item(
@@ -984,8 +962,6 @@ def _handle_fanout_item(
     """
     if isinstance(item, _RegionDone):
         progress.results[item.index] = item.region
-        if item.degraded or item.region.leg_degraded:
-            progress.degraded_leg = True
         progress.n_pending -= 1
         return None
     if isinstance(item, _TaskFailed):
@@ -1050,7 +1026,7 @@ async def _run_variables_streaming(
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
     door: EntryPath = "parsed",
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     """Run one task per variable and yield each leg's events as they arrive.
 
     The deadline and caller-initiated close cancel unfinished legs. Any
@@ -1229,7 +1205,6 @@ async def _run_variables_streaming(
             )
     out.regions = [progress.results[i] for i in range(len(unique))]
     out.timed_out = timed_out
-    out.degraded_leg = progress.degraded_leg
 
 
 def _log_unfinished_legs(tasks: Sequence[asyncio.Task], phases: Sequence[LegPhase]) -> None:

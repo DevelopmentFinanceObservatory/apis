@@ -43,8 +43,8 @@ def test_leave_with_interest_remaining_does_nothing():
         newcomer = await _claim(cache)
         assert not newcomer.is_leader
         await cache.publish(leader, b"answer", 6)
-        assert await cache.await_leader(follower) == (b"answer", False, True)
-        assert await cache.await_leader(newcomer) == (b"answer", False, True)
+        assert await cache.await_leader(follower) == (b"answer", False, False, True)
+        assert await cache.await_leader(newcomer) == (b"answer", False, False, True)
 
     asyncio.run(scenario())
 
@@ -113,7 +113,7 @@ def test_a_detached_leases_late_settle_leaves_a_newer_flight_untouched(settle: s
             assert joiner._waiter is newer._waiter
 
         await cache.publish(newer, b"newer", 5)
-        assert await cache.await_leader(parked) == (b"newer", False, True)
+        assert await cache.await_leader(parked) == (b"newer", False, False, True)
 
     asyncio.run(scenario())
 
@@ -153,6 +153,6 @@ def test_without_leave_calls_a_flight_outlives_every_cancelled_follower():
         late = await _claim(cache)
         assert not late.is_leader
         await cache.publish(leader, b"answer", 6)
-        assert await cache.await_leader(late) == (b"answer", False, True)
+        assert await cache.await_leader(late) == (b"answer", False, False, True)
 
     asyncio.run(scenario())

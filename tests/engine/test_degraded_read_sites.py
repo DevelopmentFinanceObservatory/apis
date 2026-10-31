@@ -58,7 +58,7 @@ def _relaxation_ctx(**changes: object) -> SimpleNamespace:
                 presence_for=lambda presence: presence,
             ),
             "unsettled": None,
-            "presence": SimpleNamespace(scopes={}),
+            "presence": SimpleNamespace(covers=lambda _stat_var: False),
             "date_request": None,
             "deadline": None,
             "role_class_walks": object(),

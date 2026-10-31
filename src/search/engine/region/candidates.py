@@ -16,14 +16,15 @@ from typing import NamedTuple
 
 from dc_graph import GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
 from materialise.errors import DatasetDisagreementError
-from materialise.place_scope import DefaultPresence
 from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.extract import DateRequest
+from search.engine.place import ConsultedPresence
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
@@ -124,20 +125,22 @@ def _prewarm_places(
     role_keys: RoleKeys,
     members: Sequence[str],
     place: PlaceContext,
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
     named_place_dcids: Sequence[str],
     read_places: Sequence[str] = (),
 ) -> dict[str, tuple[str, ...]]:
     """The places a shape's facet prewarm reads each of `members` at: on a default scope,
     each member the presence read covers for `shape` under `bindings` and `role_keys`
-    (`presence_stat_vars`) at its own scope (`DefaultPresence.scope`), else every member at
+    (`presence_stat_vars`), which the resolve reads at its own scope, at that scope
+    (`ConsultedPresence.warming_places`), else every member at
     `read_places`, the places the settling of the shape's place sets reads
     (`UnsettledPlace.read_places`), else at the shape's probe places, else at every named
-    place."""
+    place. A warm decides nothing, so it notes no scope."""
     scoped = place.presence_for(presence)
     if scoped is not None:
-        covered = set(presence_stat_vars(shape, bindings, role_keys))
-        return {sv: scoped.scope(sv).places for sv in members if sv in covered}
+        return scoped.warming_places(
+            members, own=set(presence_stat_vars(shape, bindings, role_keys))
+        )
     entities = tuple(read_places or place.probe_dcids or named_place_dcids)
     return dict.fromkeys(members, entities)
 
@@ -380,15 +383,19 @@ class _AlternatesRead(NamedTuple):
 
     candidates: list[_Candidate]
     blocking: UnsupportedDraft | None
-    presence: DefaultPresence | None
+    presence: ConsultedPresence | None
     unevaluated: tuple[tuple[_Alternate, AlternateUnevaluatedReason], ...]
+    # Each alternate's own record of the scopes its reading consulted and the reads it lost,
+    # in `alternates` order. The caller carries those of the readings its rule compared
+    # (`degraded_reads.carry`).
+    consulted: tuple[DegradedReads, ...]
 
 
 def _materialise_alt_shapes(
     alternates: Sequence[_Alternate],
     *,
     places: Sequence[PlaceContext | UnsettledPlace],
-    presence: DefaultPresence | None = None,
+    presence: ConsultedPresence | None = None,
     named_place_dcids: Sequence[str],
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
@@ -435,12 +442,15 @@ def _materialise_alt_shapes(
     """
     # Prewarm key: one for every default-scoped shape, else the probe places themselves.
     # Each batch maps its members to the places they are read at, the first shape's first.
-    readable: list[tuple[_Alternate, PlaceContext | UnsettledPlace]] = []
+    # What each alternate's own reading consulted and lost, in a record of its own.
+    consulted = tuple(DegradedReads() for _ in alternates)
+    readable: list[tuple[_Alternate, PlaceContext | UnsettledPlace, DegradedReads]] = []
     prewarms: dict[tuple[str, ...] | None, dict[str, tuple[str, ...]]] = {}
-    for alternate, unsettled in zip(alternates, places, strict=True):
+    for alternate, unsettled, record in zip(alternates, places, consulted, strict=True):
         shape = alternate.shape
         try:
-            place = unread_context(unsettled)
+            with recording_degraded_reads(into=record):
+                place = unread_context(unsettled)
         except PlaceSetTooLargeError as exc:
             _drop_over_bound(alternate, exc, over_bound)
             continue
@@ -450,7 +460,7 @@ def _materialise_alt_shapes(
                 alternate.shape.shape_id,
             )
             continue
-        readable.append((alternate, unsettled))
+        readable.append((alternate, unsettled, record))
         if is_role_bearing(shape):
             # It resolves from coverage (`graph_confirm_resolve`), so it reads no warmed facet.
             continue
@@ -483,103 +493,104 @@ def _materialise_alt_shapes(
 
     results: list[_Candidate] = []
     unevaluated: list[tuple[_Alternate, AlternateUnevaluatedReason]] = []
-    for alternate, unsettled in readable:
-        bindings = list(alternate.bindings)
-        # The presence the alternate is read over, the last topped up after unbinding.
-        presences = [presence]
+    for alternate, unsettled, record in readable:
+        with recording_degraded_reads(into=record):
+            bindings = list(alternate.bindings)
+            # The presence the alternate is read over, the last topped up after unbinding.
+            presences = [presence]
 
-        def read(
-            place: PlaceContext,
-            facet_batch: FacetBatch | None,
-            alternate: _Alternate = alternate,
-            bindings: list[SlotBindingDraft] = bindings,
-            presences: list[DefaultPresence | None] = presences,
-        ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
-            return materialise(
-                alternate.shape,
-                with_where(bindings, place),
-                place.roles.resolved_entities,
-                graph=graph,
-                sdmx=sdmx,
-                date_request=date_request,
-                deadline=deadline,
-                place_dcids=place.probe_places,
-                default_presence=place.presence_for(presences[-1]),
-                discover_scope=True,
-                open_axes=place.roles.open_axes,
-                coverage=coverage,
-                facet_batch=facet_batch,
-            )
-
-        try:
-            # The alternate's values come from its representative StatVar, none from the
-            # request, so values that match no member together are unbound silently, a
-            # minimal set per round (`BoundValuesUnrealisable.relaxation`).
-            while True:
-                place, result = settle_sets(unsettled, read)
-                if not isinstance(result, BoundValuesUnrealisable):
-                    break
-                bindings[:] = without_values(bindings, result.relaxation())
-                scoped = place.presence_for(presences[-1])
-                if scoped is not None:
-                    covering = _presence_after_unbinding(
-                        scoped,
-                        alternate.shape,
-                        bindings,
-                        place,
-                        graph=graph,
-                        sdmx=sdmx,
-                        deadline=deadline,
-                        failure=presence_failure,
-                    )
-                    if not isinstance(covering, DefaultPresence):
-                        unevaluated.append((alternate, covering))
-                        # The call tries no other optional presence read after one failed.
-                        presence_failure = presence_failure or covering
-                        break
-                    # Later alternates read over what this one added.
-                    presence = covering
-                    presences.append(covering)
-        except PlaceSetTooLargeError as exc:
-            _drop_over_bound(alternate, exc, over_bound)
-            continue
-        except PlaceSetNotAdmittedError:
-            logger.info(
-                "shape %r admits no reading of a place set; dropped from the offer",
-                alternate.shape.shape_id,
-            )
-            continue
-        except DatasetDisagreementError:
-            # The mint refuses this alternate's identity, so it is dropped as one whose walk
-            # the mint refuses is; the elected answer stands.
-            logger.warning(
-                "alternate %r dropped: a member's dataset disagrees with the code index",
-                alternate.shape.shape_id,
-                exc_info=True,
-            )
-            continue
-        if isinstance(result, BoundValuesUnrealisable):
-            # Its presence read under the relaxed bindings failed (`_presence_after_unbinding`).
-            continue
-        if isinstance(result, UnsupportedDraft):
-            return _AlternatesRead(results, result, presence, tuple(unevaluated))
-        if isinstance(result, Materialised) and result.has_data:
-            if alternate.unverified:
-                result = dataclasses.replace(result, membership_unverified=True)
-            results.append(
-                _Candidate(
-                    settled_shape(alternate.shape, result),
+            def read(
+                place: PlaceContext,
+                facet_batch: FacetBatch | None,
+                alternate: _Alternate = alternate,
+                bindings: list[SlotBindingDraft] = bindings,
+                presences: list[ConsultedPresence | None] = presences,
+            ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
+                return materialise(
+                    alternate.shape,
                     with_where(bindings, place),
-                    result,
-                    place.settled(result),
-                    alternate.walked,
+                    place.roles.resolved_entities,
+                    graph=graph,
+                    sdmx=sdmx,
+                    date_request=date_request,
+                    deadline=deadline,
+                    place_dcids=place.probe_places,
+                    default_presence=place.presence_for(presences[-1]),
+                    discover_scope=True,
+                    open_axes=place.roles.open_axes,
+                    coverage=coverage,
+                    facet_batch=facet_batch,
                 )
-            )
-    return _AlternatesRead(results, None, presence, tuple(unevaluated))
+
+            try:
+                # The alternate's values come from its representative StatVar, none from the
+                # request, so values that match no member together are unbound silently, a
+                # minimal set per round (`BoundValuesUnrealisable.relaxation`).
+                while True:
+                    place, result = settle_sets(unsettled, read)
+                    if not isinstance(result, BoundValuesUnrealisable):
+                        break
+                    bindings[:] = without_values(bindings, result.relaxation())
+                    scoped = place.presence_for(presences[-1])
+                    if scoped is not None:
+                        covering = _presence_after_unbinding(
+                            scoped,
+                            alternate.shape,
+                            bindings,
+                            place,
+                            graph=graph,
+                            sdmx=sdmx,
+                            deadline=deadline,
+                            failure=presence_failure,
+                        )
+                        if not isinstance(covering, ConsultedPresence):
+                            unevaluated.append((alternate, covering))
+                            # The call tries no other optional presence read after one failed.
+                            presence_failure = presence_failure or covering
+                            break
+                        # Later alternates read over what this one added.
+                        presence = covering
+                        presences.append(covering)
+            except PlaceSetTooLargeError as exc:
+                _drop_over_bound(alternate, exc, over_bound)
+                continue
+            except PlaceSetNotAdmittedError:
+                logger.info(
+                    "shape %r admits no reading of a place set; dropped from the offer",
+                    alternate.shape.shape_id,
+                )
+                continue
+            except DatasetDisagreementError:
+                # The mint refuses this alternate's identity, so it is dropped as one whose walk
+                # the mint refuses is; the elected answer stands.
+                logger.warning(
+                    "alternate %r dropped: a member's dataset disagrees with the code index",
+                    alternate.shape.shape_id,
+                    exc_info=True,
+                )
+                continue
+            if isinstance(result, BoundValuesUnrealisable):
+                # Its presence read under the relaxed bindings failed (`_presence_after_unbinding`).
+                continue
+            if isinstance(result, UnsupportedDraft):
+                return _AlternatesRead(results, result, presence, tuple(unevaluated), consulted)
+            if isinstance(result, Materialised) and result.has_data:
+                if alternate.unverified:
+                    result = dataclasses.replace(result, membership_unverified=True)
+                results.append(
+                    _Candidate(
+                        settled_shape(alternate.shape, result),
+                        with_where(bindings, place),
+                        result,
+                        place.settled(result),
+                        alternate.walked,
+                    )
+                )
+    return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)
 
 
 def _presence_after_unbinding(
-    presence: DefaultPresence,
+    presence: ConsultedPresence,
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     place: PlaceContext,
@@ -588,7 +599,7 @@ def _presence_after_unbinding(
     sdmx: EngineSdmxClient,
     deadline: float | None,
     failure: AlternateUnevaluatedReason | None,
-) -> DefaultPresence | AlternateUnevaluatedReason:
+) -> ConsultedPresence | AlternateUnevaluatedReason:
     """`presence` topped up with what the resolve of an alternate's `shape` under `bindings`,
     which unbinding relaxed, reads at its own default scope (`presence_covering`), or why
     that read did not complete, as `phase_place_materialise._await_alternates_presence`

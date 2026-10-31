@@ -260,9 +260,9 @@ def _isinstance_checked_types(func) -> set[type]:
     return checked
 
 
-def test_default_exception_types_matches_classify_defaults_real_source():
-    """The exception types in `classify_default` must match `_DEFAULT_EXCEPTION_TYPES`."""
-    assert _isinstance_checked_types(refusal.classify_default) == set(
+def test_default_exception_types_matches_default_problems_real_source():
+    """The exception types in `default_problem` must match `_DEFAULT_EXCEPTION_TYPES`."""
+    assert _isinstance_checked_types(refusal.default_problem) == set(
         refusal._DEFAULT_EXCEPTION_TYPES
     )
 

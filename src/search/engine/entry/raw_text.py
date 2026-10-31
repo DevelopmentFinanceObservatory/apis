@@ -88,7 +88,12 @@ from search.engine.qualifier_match import (
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_rank_bind import holds_words, names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
-from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
+from search.engine.region.result import (
+    RegionResult,
+    any_degraded,
+    with_departure_facts,
+    with_entity_words,
+)
 from search.engine.region.sentence_events import answer_events
 from search.engine.region.state import qualifier_dropped_warning
 from search.engine.response_cache_flow import CacheScope
@@ -561,7 +566,7 @@ async def _empty_query_response(
         include_skills=params.include_skills,
         skills_index=params.skills_index,
     )
-    for ev in _terminal_events(response, start_ms=start_ms):
+    for ev in _terminal_events(response, start_ms=start_ms, degraded_leg=False):
         yield ev
 
 
@@ -620,7 +625,9 @@ async def _no_variables_response(
         include_skills=params.include_skills,
         skills_index=params.skills_index,
     )
-    for ev in _terminal_events(response, start_ms=start_ms, llm_usage=extract_usage):
+    for ev in _terminal_events(
+        response, start_ms=start_ms, degraded_leg=False, llm_usage=extract_usage
+    ):
         yield ev
 
 
@@ -704,7 +711,11 @@ async def _disposition_response(
         case _:
             raise AssertionError(f"not a disposition kind: {extraction.kind!r}")
     for ev in _terminal_events(
-        response, start_ms=start_ms, timed_out=timed_out, llm_usage=extract_usage
+        response,
+        start_ms=start_ms,
+        timed_out=timed_out,
+        degraded_leg=degraded,
+        llm_usage=extract_usage,
     ):
         yield ev
 
@@ -1212,58 +1223,61 @@ async def _handle_single_variable(
 ) -> AsyncGenerator[Event]:
     """Resolve one variable directly, bypassing the same-shape combiner."""
     out = _FanOutResult()
-    async for ev in _run_variables_streaming(
-        prep.unique,
-        entities=prep.entities,
-        entity_roles=prep.entity_roles,
-        member_entities=prep.member_entities,
-        date_request=prep.date_request,
-        query=query,
-        pac=params.pac,
-        graph=graph,
-        resolver=resolver,
-        admission=admission,
-        llm=llm,
-        binder=params.binder,
-        sdmx=sdmx,
-        materialise_graph=materialise_graph,
-        materialise_sdmx=materialise_sdmx,
-        rate_cache=rate_cache,
-        population_memo=population_memo,
-        place_options_pool=place_options_pool,
-        base_timing={"extract": timing_extract},
-        pre_resolved=None,
-        entity_surfaces=prep.entity_surfaces,
-        entity_words=prep.entity_words,
-        deadline=params.deadline,
-        degrade_on_error=False,
-        use_semaphore=False,
-        out=out,
-        per_variable_dropped_qualifier_phrases=[
-            prep.dropped_phrases_of(i) for i in range(len(prep.unique))
-        ],
-        query_text=query,
-        per_variable_qualifiers=prep.per_variable_qualifiers,
-        per_variable_operations=prep.per_variable_operations,
-        per_variable_open_axes=prep.per_variable_open_axes,
-        per_variable_date_requests=prep.per_variable_date_requests,
-        per_variable_unit_texts=prep.per_variable_unit_texts,
-        per_variable_source_scopes=prep.per_variable_source_scopes,
-        per_variable_source_codes=prep.per_variable_compiled_codes,
-        per_variable_scope_intakes=prep.per_variable_scope_intakes,
-        unit_text_best_effort=True,
-        door="raw_text",
-        include_option_coverage=params.include_option_coverage,
-        stream_slot_options=params.stream_option_coverage,
-        include_observations=params.include_observations,
-        stream_observations=params.stream_observations,
-        coverage=params.coverage,
-    ):
-        yield ev
+    async with aclosing(
+        _run_variables_streaming(
+            prep.unique,
+            entities=prep.entities,
+            entity_roles=prep.entity_roles,
+            member_entities=prep.member_entities,
+            date_request=prep.date_request,
+            query=query,
+            pac=params.pac,
+            graph=graph,
+            resolver=resolver,
+            admission=admission,
+            llm=llm,
+            binder=params.binder,
+            sdmx=sdmx,
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            rate_cache=rate_cache,
+            population_memo=population_memo,
+            place_options_pool=place_options_pool,
+            base_timing={"extract": timing_extract},
+            pre_resolved=None,
+            entity_surfaces=prep.entity_surfaces,
+            entity_words=prep.entity_words,
+            deadline=params.deadline,
+            degrade_on_error=False,
+            use_semaphore=False,
+            out=out,
+            per_variable_dropped_qualifier_phrases=[
+                prep.dropped_phrases_of(i) for i in range(len(prep.unique))
+            ],
+            query_text=query,
+            per_variable_qualifiers=prep.per_variable_qualifiers,
+            per_variable_operations=prep.per_variable_operations,
+            per_variable_open_axes=prep.per_variable_open_axes,
+            per_variable_date_requests=prep.per_variable_date_requests,
+            per_variable_unit_texts=prep.per_variable_unit_texts,
+            per_variable_source_scopes=prep.per_variable_source_scopes,
+            per_variable_source_codes=prep.per_variable_compiled_codes,
+            per_variable_scope_intakes=prep.per_variable_scope_intakes,
+            unit_text_best_effort=True,
+            door="raw_text",
+            include_option_coverage=params.include_option_coverage,
+            stream_slot_options=params.stream_option_coverage,
+            include_observations=params.include_observations,
+            stream_observations=params.stream_observations,
+            coverage=params.coverage,
+        )
+    ) as events:
+        async for ev in events:
+            yield ev
     region = out.regions[0]
     # Record run health. `is_storable` decides cache eligibility.
     if scope is not None:
-        scope.note_health(timed_out=out.timed_out, degraded_leg=out.degraded_leg)
+        scope.note_health(timed_out=out.timed_out, degraded_leg=any_degraded(out.regions))
     total_usage = _sum_usage(extract_usage, region.llm_usage)
     # The part and its late departures read the same facts and entity words.
     answered = prep.onto(region, 0)
@@ -1287,21 +1301,25 @@ async def _handle_single_variable(
     slot_options_warnings: list[Warning] = []
     late_departures: list[LateDepartures] = []
     incomplete: list[str] = []
-    async for ev in _stream_slot_options(
-        [answered],
-        deadline=params.deadline,
-        warnings_out=slot_options_warnings,
-        late_departures_out=late_departures,
-        incomplete_out=incomplete,
-        response=response,
-        answered=[answered],
-    ):
-        yield ev
+    async with aclosing(
+        _stream_slot_options(
+            [answered],
+            deadline=params.deadline,
+            warnings_out=slot_options_warnings,
+            late_departures_out=late_departures,
+            incomplete_out=incomplete,
+            response=response,
+            answered=[answered],
+        )
+    ) as events:
+        async for ev in events:
+            yield ev
     if scope is not None:
         scope.note_health(trailing_incomplete=bool(incomplete))
     yield DoneEvent(
         elapsed_ms=now_ms() - start_ms,
         timed_out=out.timed_out,
+        degraded_leg=any_degraded(out.regions),
         trace_id=get_trace_id(),
         telemetry=DoneTelemetry(llm_usage=total_usage),
         warnings=slot_options_warnings,
@@ -1352,53 +1370,56 @@ async def _handle_multi_variable(
         else {}
     )
     out = _FanOutResult()
-    async for ev in _run_variables_streaming(
-        prep.unique,
-        entities=prep.entities,
-        entity_roles=prep.entity_roles,
-        member_entities=prep.member_entities,
-        date_request=prep.date_request,
-        query=query,
-        pac=params.pac,
-        graph=graph,
-        resolver=resolver,
-        admission=admission,
-        llm=llm,
-        binder=params.binder,
-        sdmx=sdmx,
-        materialise_graph=materialise_graph,
-        materialise_sdmx=materialise_sdmx,
-        rate_cache=rate_cache,
-        population_memo=population_memo,
-        place_options_pool=place_options_pool,
-        base_timing={"extract": timing_extract},
-        pre_resolved=pre_resolved,
-        entity_words=prep.entity_words,
-        deadline=params.deadline,
-        degrade_on_error=True,
-        use_semaphore=True,
-        out=out,
-        per_variable_dropped_qualifier_phrases=[
-            prep.dropped_phrases_of(i) for i in range(len(prep.unique))
-        ],
-        per_variable_qualifiers=prep.per_variable_qualifiers,
-        per_variable_operations=prep.per_variable_operations,
-        per_variable_open_axes=prep.per_variable_open_axes,
-        per_variable_date_requests=prep.per_variable_date_requests,
-        per_variable_unit_texts=prep.per_variable_unit_texts,
-        per_variable_source_scopes=prep.per_variable_source_scopes,
-        per_variable_source_codes=prep.per_variable_compiled_codes,
-        per_variable_scope_intakes=prep.per_variable_scope_intakes,
-        unit_text_best_effort=True,
-        per_variable_separate=prep.separate,
-        door="raw_text",
-        include_option_coverage=params.include_option_coverage,
-        stream_slot_options=params.stream_option_coverage,
-        include_observations=params.include_observations,
-        stream_observations=params.stream_observations,
-        coverage=params.coverage,
-    ):
-        yield ev
+    async with aclosing(
+        _run_variables_streaming(
+            prep.unique,
+            entities=prep.entities,
+            entity_roles=prep.entity_roles,
+            member_entities=prep.member_entities,
+            date_request=prep.date_request,
+            query=query,
+            pac=params.pac,
+            graph=graph,
+            resolver=resolver,
+            admission=admission,
+            llm=llm,
+            binder=params.binder,
+            sdmx=sdmx,
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            rate_cache=rate_cache,
+            population_memo=population_memo,
+            place_options_pool=place_options_pool,
+            base_timing={"extract": timing_extract},
+            pre_resolved=pre_resolved,
+            entity_words=prep.entity_words,
+            deadline=params.deadline,
+            degrade_on_error=True,
+            use_semaphore=True,
+            out=out,
+            per_variable_dropped_qualifier_phrases=[
+                prep.dropped_phrases_of(i) for i in range(len(prep.unique))
+            ],
+            per_variable_qualifiers=prep.per_variable_qualifiers,
+            per_variable_operations=prep.per_variable_operations,
+            per_variable_open_axes=prep.per_variable_open_axes,
+            per_variable_date_requests=prep.per_variable_date_requests,
+            per_variable_unit_texts=prep.per_variable_unit_texts,
+            per_variable_source_scopes=prep.per_variable_source_scopes,
+            per_variable_source_codes=prep.per_variable_compiled_codes,
+            per_variable_scope_intakes=prep.per_variable_scope_intakes,
+            unit_text_best_effort=True,
+            per_variable_separate=prep.separate,
+            door="raw_text",
+            include_option_coverage=params.include_option_coverage,
+            stream_slot_options=params.stream_option_coverage,
+            include_observations=params.include_observations,
+            stream_observations=params.stream_observations,
+            coverage=params.coverage,
+        )
+    ) as events:
+        async for ev in events:
+            yield ev
 
     async with aclosing(
         _stream_combined_regions(
@@ -1412,7 +1433,6 @@ async def _handle_multi_variable(
             ),
             echo=None,
             timed_out=out.timed_out,
-            degraded_leg=out.degraded_leg,
             graph=graph,
             start_ms=start_ms,
             params=params,

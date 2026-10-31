@@ -8,20 +8,32 @@ work from recall through assembly lives in ``region.resolve_variable``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import aclosing
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Protocol
 
 import search.engine.config as config  # module-attribute access: SEARCH_ENGINE_MODEL/SEARCH_LLM_SEED are runtime-resolved
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from dfo_platform import refusal
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
+from dfo_platform.trace import (
+    get_cloud_trace_id,
+    get_trace_id,
+    reset_cloud_trace_id,
+    reset_trace_id,
+    set_cloud_trace_id,
+    set_trace_id,
+)
 from entity_resolution import Admission, EntityResolver, acquire_shared, release_shared
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise import GraphReader
@@ -55,10 +67,12 @@ from search.engine.region.codes import ORIGIN_CATALOGUE_STALE
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope, PartMemoScope
+from search.engine.response_cache_keys import normalise_query
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.bound_values import held_family_memo
 from search.models import (
     DatasetResubmitInput,
+    NoDataPart,
     NoDataReason,
     ParsedInput,
     QueryEcho,
@@ -67,22 +81,13 @@ from search.models import (
     ResolveInput,
     ResolveRequest,
     ResolveResponse,
+    UnsupportedPart,
     Warning,
 )
 from series_coverage.shared import CoverageSnapshot, get_coverage_service
 from skills_index import SkillsIndex
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ResolveHealth:
-    """Run health that `resolve_async` reports beside the response, outside its body.
-
-    `degraded_leg` is true when a raw-text leg failed and was backfilled.
-    """
-
-    degraded_leg: bool = False
 
 
 class SkillsIndexSource(Protocol):
@@ -101,29 +106,130 @@ class SkillsIndexSource(Protocol):
 
 
 @dataclass
-class _ResolveRecord:
+class ResolveRecord:
     """What one resolve's log line reports, filled in as its events pass.
 
     `cache` is the response cache outcome: `inactive`, `miss`, `hit layer1` or `hit layer2`.
-    `memo_hits` and `memo_misses` count a `dataset_resubmit` request's part memo lookups,
-    and stay None on every other request and when the memo is off.
+    `memo_hits` and `memo_misses` count a `dataset_resubmit` request's part memo lookups, and
+    stay None on every other request and when the memo is off. `response` and `done` are what
+    the pipeline produced, None when it ended before them. `error_code` is how a request that
+    did not run to its end ended (`resolve_line`), None for one that did. `delivered` says
+    the SSE route's last frame has left, so nothing after it can end the request.
     """
 
     cache: str = "inactive"
     memo_hits: int | None = None
     memo_misses: int | None = None
     response: ResolveResponse | None = None
+    done: DoneEvent | None = None
+    error_code: str | None = None
+    delivered: bool = False
+
+
+@contextmanager
+def resolve_line(
+    request: ResolveRequest,
+    record: ResolveRecord,
+    *,
+    caller: str | None,
+    transport: str,
+    served_code: Callable[[Exception], str],
+) -> Iterator[None]:
+    """Write `request`'s `resolve` log line when the block ends.
+
+    A route holds the block outside the hard cap. A failure reaching it reads the code
+    `served_code` names, the one the route serves for it, and any other ending is a
+    cancellation, since `asyncio.timeout` has turned the cap's own into a `TimeoutError`. A
+    logging failure neither replaces the response nor reaches the route.
+
+    The SSE route sets `record.delivered` when its last frame has left, and reads delivery:
+    a client that stalls delays the line, and one that leaves before taking the last frame
+    reads `cancelled` even when the pipeline finished, since it never took the answer. The
+    buffered route ends the block once the response is built, before it is sent, so its line
+    cannot tell whether the client received the answer.
+
+    The trace ids are read on entry and bound for the line, which `JsonFormatter` stamps at
+    format time, because an SSE body abandoned at a `yield` closes later in a task of its
+    own, outside the request's context.
+    """
+    trace_id = get_trace_id()
+    cloud_trace_id = get_cloud_trace_id()
+    try:
+        yield
+    except BaseException as exc:
+        if not record.delivered:
+            record.error_code = served_code(exc) if isinstance(exc, Exception) else "cancelled"
+        raise
+    finally:
+        trace_token = set_trace_id(trace_id)
+        cloud_trace_token = set_cloud_trace_id(cloud_trace_id)
+        try:
+            _log_resolve(request, record, caller=caller, transport=transport)
+        except Exception:
+            logger.exception("resolve log line failed")
+        finally:
+            reset_cloud_trace_id(cloud_trace_token)
+            reset_trace_id(trace_token)
+
+
+def _close_each(closers: Iterable[Callable[[], object]]) -> None:
+    """Run every closer, logging a failure, so one cannot skip the rest or replace the
+    request's own outcome."""
+    for close in closers:
+        try:
+            close()
+        except Exception:
+            logger.exception("closing a request's client failed")
+
+
+def _query_hmac(inp: ResolveInput) -> str | None:
+    """The keyed digest of a raw_text query's cache text with case folded, None for other input
+    kinds and when `SEARCH_QUERY_HMAC_KEY` is unset."""
+    key = config.settings().query_hmac_key.get_secret_value()
+    if not key or not isinstance(inp, RawTextInput):
+        return None
+    text = normalise_query(inp.query).casefold()
+    return hmac.new(key.encode(), text.encode(), hashlib.sha256).hexdigest()
 
 
 def _log_resolve(
-    request: ResolveRequest, record: _ResolveRecord, *, caller: str | None, transport: str
+    request: ResolveRequest,
+    record: ResolveRecord,
+    *,
+    caller: str | None,
+    transport: str,
 ) -> None:
-    """Log one INFO line per resolve, `resolve ` followed by a JSON object.
+    """Log one INFO line for a resolve a route ran (`resolve_line`), `resolve ` followed by a
+    JSON object. A refusal at the route ahead of the pipeline logs none, and neither does a
+    direct caller of `resolve_events`, `resolve_async` or `resolve`.
 
-    The object carries the input kind, the caller's User-Agent, the posted `include_*` flags
-    (an unposted flag is absent), the transport (`sse` or `buffered`), the response cache
-    outcome, the part memo's hits and misses, the envelope's `timing_ms` total and
-    `by_step`, and each part's own `by_step`. Timing is null when the request ended before
+    The object carries the request's `trace_id`, the input kind, the caller's User-Agent, the
+    posted `include_*` flags (an unposted flag is absent), the transport (`sse` or
+    `buffered`), the response cache outcome, the part memo's hits and misses, the envelope's
+    `timing_ms` total and `by_step`, and each part's own `by_step`.
+
+    `outcome` is the response's `status` for a resolution and its `kind` otherwise.
+    `part_statuses` lists each part's status in order, `no_data_reasons` each no_data part's
+    `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is
+    `diagnostics.llm_usage`, so it leaves out tokens spent by cut or aborted legs.
+
+    `error_code` says how a request that did not run to its end ended (`resolve_line`): the
+    problem code the route served, or `cancelled`. `timeout` covers the hard cap and any
+    `TimeoutError` that fails the request, such as a soft deadline an extraction or a
+    `dataset_resubmit` parsed entry crossed. `timed_out` is true for a `timeout`, else the
+    `done` event's flag, null before `done`. `degraded_leg` is the `done` event's flag, null
+    before `done`. A leg cut at the soft deadline is backfilled as `no_data`/`timed_out`. A leg
+    whose error was swallowed is backfilled as `no_data`/`variable_not_resolved`, so only
+    `degraded_leg` tells it from a real miss.
+
+    `query_hmac` is the HMAC-SHA-256 hex of `normalise_query(query).casefold()` for a raw_text
+    query, the text the response cache keys on with case folded, under `SEARCH_QUERY_HMAC_KEY`.
+    It is null for other input kinds and when the key is unset. It counts repeats within a
+    deployment: digests do not compare across deployments, guessing a query offline needs the
+    key, and rotating the key breaks repeat counts across the rotation. The line carries no
+    query text.
+
+    Every response-derived field is null, and every list empty, when the request ended before
     its response event.
     """
     options = request.response_options
@@ -131,11 +237,23 @@ def _log_resolve(
     response = record.response
     timing = response.diagnostics.timing_ms if response is not None else None
     parts = response.parts if isinstance(response, Resolution) else []
+    if response is None:
+        outcome = None
+    elif isinstance(response, Resolution):
+        outcome = response.status
+    else:
+        outcome = response.kind
+    inp = request.input
+    done = record.done
+    timed_out = done.timed_out if done is not None else None
+    if record.error_code == refusal.TIMEOUT_DEFAULT.code:
+        timed_out = True
     logger.info(
         "resolve %s",
         json.dumps(
             {
-                "kind": request.input.kind,
+                "trace_id": get_trace_id(),
+                "kind": inp.kind,
                 "caller": caller,
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
                 "transport": transport,
@@ -147,6 +265,19 @@ def _log_resolve(
                 "parts_by_step": [
                     part.timing_ms.by_step if part.timing_ms is not None else None for part in parts
                 ],
+                "outcome": outcome,
+                "part_statuses": [part.status for part in parts],
+                "no_data_reasons": [
+                    part.no_data.reason for part in parts if isinstance(part, NoDataPart)
+                ],
+                "unsupported_codes": [
+                    part.unsupported.code for part in parts if isinstance(part, UnsupportedPart)
+                ],
+                "llm_usage": response.diagnostics.llm_usage if response is not None else None,
+                "error_code": record.error_code,
+                "timed_out": timed_out,
+                "degraded_leg": done.degraded_leg if done is not None else None,
+                "query_hmac": _query_hmac(inp),
             }
         ),
     )
@@ -213,10 +344,10 @@ async def resolve_events(
     response_cache: ResponseCache | None = None,
     part_memo: PartMemo | None = None,
     generation: GenerationProvider = UNKNOWN_GENERATION,
-    caller: str | None = None,
     budget: RequestBudget | None = None,
+    record: ResolveRecord | None = None,
     binder: Binder | None = None,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     """Stream typed events for one resolve request.
 
     Success ends with exactly one ``response`` event followed by ``done``.
@@ -253,10 +384,9 @@ async def resolve_events(
     The request reads rate tables through one ``RateTableCache.for_request``
     view, so every spec it converts cites one version of each table.
 
-    The request ends with one ``resolve`` log line (``_log_resolve``) naming
-    ``caller``, the client's User-Agent. Its transport is ``sse`` when
-    ``stream_slot_options`` is set, which only the SSE route does, and
-    ``buffered`` otherwise.
+    ``record`` collects what the request's ``resolve`` log line reports. The route writes the
+    line (``resolve_line``), since only it sees how the request ended. A direct caller logs
+    none.
 
     ``budget`` is the route's ``request_budget``, so the pipeline's soft deadline and the
     route's hard cap share one start. Without one the request starts here.
@@ -267,26 +397,28 @@ async def resolve_events(
     if budget is None:
         budget = request_budget(kind=request.input.kind)
     start_ms = budget.start_ms
-    record = _ResolveRecord()
-    request_rate_cache = rate_cache.for_request() if rate_cache is not None else None
+    record = record if record is not None else ResolveRecord()
     owns_graph = graph is None
-    _graph = graph if graph is not None else _build_live_graph_client()
-    _llm = llm or LLM()
+    _graph = graph
     owns_sdmx = sdmx is None
-    _sdmx = sdmx if sdmx is not None else LiveSdmxClient()
-    if resolver is not None:
-        _resolver = resolver
-        _shared_resolvekit = None
-    else:
-        _shared_resolvekit = acquire_shared()
-        _resolver = EntityResolver(
-            graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index
-        )
-    _admission = (
-        admission if admission is not None else Admission(graph=_graph, generation=generation)
-    )
-
+    _sdmx = sdmx
+    _shared_resolvekit = None
     try:
+        request_rate_cache = rate_cache.for_request() if rate_cache is not None else None
+        _graph = graph if graph is not None else _build_live_graph_client()
+        _llm = llm or LLM()
+        _sdmx = sdmx if sdmx is not None else LiveSdmxClient()
+        if resolver is not None:
+            _resolver = resolver
+        else:
+            _shared_resolvekit = acquire_shared()
+            _resolver = EntityResolver(
+                graph=_graph, shared=_shared_resolvekit, generation=generation, code_index=get_index
+            )
+        _admission = (
+            admission if admission is not None else Admission(graph=_graph, generation=generation)
+        )
+
         # The request binds one artifact set: the catalogue bound at entry, this coverage
         # snapshot, the process's code index and each cache scope's one generation stamp.
         # Separate coverage reads could straddle an artifact swap and mismatch its index and
@@ -298,7 +430,7 @@ async def resolve_events(
         checks = CatalogueSettings()
         async with scoped_concurrency():
             with held_family_memo(), recording_fallbacks() as fallbacks:
-                async for event in _resolve_pipeline_events(
+                pipeline = _resolve_pipeline_events(
                     request,
                     graph=_graph,
                     resolver=_resolver,
@@ -322,32 +454,34 @@ async def resolve_events(
                     warn_index_drift=checks.warn_index_drift,
                     record=record,
                     fallbacks=fallbacks,
-                ):
-                    event = _with_request_step(
-                        _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
-                    )
-                    if isinstance(event, ResponseEvent):
-                        event = _with_response_warning(
-                            event,
-                            pair_stale_warning(
-                                current_catalogue(), coverage.manifest, warn=checks.warn_pair_stale
-                            ),
+                )
+                async with aclosing(pipeline):
+                    async for event in pipeline:
+                        event = _with_request_step(
+                            _with_stale_catalogue_warning(event), step="coverage", ms=coverage_ms
                         )
-                        record.response = event.response
-                    yield event
+                        if isinstance(event, ResponseEvent):
+                            event = _with_response_warning(
+                                event,
+                                pair_stale_warning(
+                                    current_catalogue(),
+                                    coverage.manifest,
+                                    warn=checks.warn_pair_stale,
+                                ),
+                            )
+                            record.response = event.response
+                        elif isinstance(event, DoneEvent):
+                            record.done = event
+                        yield event
     finally:
-        _log_resolve(
-            request,
-            record,
-            caller=caller,
-            transport="sse" if stream_slot_options else "buffered",
-        )
+        closers: list[Callable[[], object]] = []
         if owns_graph and hasattr(_graph, "close"):
-            _graph.close()  # ty: ignore[call-non-callable]  # hasattr
+            closers.append(_graph.close)  # ty: ignore[invalid-argument-type]  # hasattr
         if owns_sdmx and hasattr(_sdmx, "close"):
-            _sdmx.close()  # ty: ignore[call-non-callable]  # hasattr
+            closers.append(_sdmx.close)  # ty: ignore[invalid-argument-type]  # hasattr
         if _shared_resolvekit is not None:
-            release_shared(_shared_resolvekit)
+            closers.append(partial(release_shared, _shared_resolvekit))
+        _close_each(closers)
 
 
 def _with_request_step(event: Event, *, step: str, ms: int) -> Event:
@@ -451,9 +585,9 @@ async def _resolve_pipeline_events(
     generation: GenerationProvider = UNKNOWN_GENERATION,
     coverage_snapshot: CoverageSnapshot,
     warn_index_drift: bool,
-    record: _ResolveRecord,
+    record: ResolveRecord,
     fallbacks: Fallbacks,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     """Compute shared request settings, then dispatch by input kind.
 
     SDMX, materialise clients, and the rate cache reach entry handlers and
@@ -559,24 +693,26 @@ async def _resolve_pipeline_events(
             coverage=coverage_snapshot,
             generation=generation,
         )
+        resubmitted = dataset_resubmit.handle(
+            inp,
+            graph=graph,
+            resolver=resolver,
+            admission=admission,
+            llm=llm,
+            sdmx=sdmx,
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            start_ms=start_ms,
+            params=params,
+            rate_cache=rate_cache,
+            population_memo=population_memo,
+            place_options_pool=place_options_pool,
+            memo=memo,
+        )
         try:
-            async for ev in dataset_resubmit.handle(
-                inp,
-                graph=graph,
-                resolver=resolver,
-                admission=admission,
-                llm=llm,
-                sdmx=sdmx,
-                materialise_graph=materialise_graph,
-                materialise_sdmx=materialise_sdmx,
-                start_ms=start_ms,
-                params=params,
-                rate_cache=rate_cache,
-                population_memo=population_memo,
-                place_options_pool=place_options_pool,
-                memo=memo,
-            ):
-                yield _with_index_drift_warning(ev, warn=warn_index_drift)
+            async with aclosing(resubmitted):
+                async for ev in resubmitted:
+                    yield _with_index_drift_warning(ev, warn=warn_index_drift)
         finally:
             if memo.active:
                 record.memo_hits, record.memo_misses = memo.hits, memo.misses
@@ -592,88 +728,86 @@ async def _resolve_pipeline_events(
             include_skills=include_skills,
             skills_index=skills_index,
         )
-        for ev in _terminal_events(response, start_ms=start_ms):
+        for ev in _terminal_events(response, start_ms=start_ms, degraded_leg=False):
             yield ev
         return
 
-    lookup_ms: int | None = None
-    if isinstance(inp, RawTextInput):
-        # Key the first lookup by raw query string. A hit skips extraction and binding.
-        lookup_t0 = now_ms()
-        cached = await scope.lookup_raw(inp.query)
-        lookup_ms = now_ms() - lookup_t0
-        if cached is not None:
-            record.cache = scope.outcome
-            async with aclosing(
-                scope.hit_events(
-                    cached,
-                    start_ms=start_ms,
-                    place_options=replayed_place_options(
-                        stream=params.stream_option_coverage,
-                        graph=graph,
-                        sdmx=sdmx,
-                        materialise_graph=materialise_graph,
-                        materialise_sdmx=materialise_sdmx,
-                        pool=place_options_pool,
-                        coverage=coverage_snapshot,
-                        population_memo=population_memo,
-                    ),
-                )
-            ) as hit:
-                async for ev in hit:
-                    yield ev
-            return
-        events = raw_text.handle(
-            inp,
-            graph=graph,
-            resolver=resolver,
-            admission=admission,
-            llm=llm,
-            sdmx=sdmx,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            start_ms=start_ms,
-            params=params,
-            rate_cache=rate_cache,
-            population_memo=population_memo,
-            place_options_pool=place_options_pool,
-            scope=scope,
-        )
-    else:
-        # A parsed request looks up layer 2 by its whole input before any work.
-        assert isinstance(inp, ParsedInput)
-        events = parsed.handle(
-            inp,
-            graph=graph,
-            resolver=resolver,
-            admission=admission,
-            llm=llm,
-            sdmx=sdmx,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            start_ms=start_ms,
-            params=params,
-            rate_cache=rate_cache,
-            population_memo=population_memo,
-            place_options_pool=place_options_pool,
-            scope=scope,
-        )
     # CacheScope.observe stores the answer and decides whether it is storable.
     # finally releases any unpublished lease if the request raises.
+    lookup_ms: int | None = None
     try:
-        async for ev in events:
-            ev = _with_index_drift_warning(ev, warn=warn_index_drift)
-            await scope.observe(ev)
-            if isinstance(ev, ResponseEvent) and scope.active and lookup_ms is not None:
-                ev = ResponseEvent(
-                    response=with_step_timing(ev.response, "cache_lookup", lookup_ms)
-                )
-            elif isinstance(ev, DoneEvent) and scope.degraded_leg:
-                ev = ev.model_copy(update={"degraded_leg": True})
-            yield ev
+        if isinstance(inp, RawTextInput):
+            # Key the first lookup by raw query string. A hit skips extraction and binding.
+            lookup_t0 = now_ms()
+            cached = await scope.lookup_raw(inp.query)
+            lookup_ms = now_ms() - lookup_t0
+            if cached is not None:
+                async with aclosing(
+                    scope.hit_events(
+                        cached,
+                        start_ms=start_ms,
+                        place_options=replayed_place_options(
+                            stream=params.stream_option_coverage,
+                            graph=graph,
+                            sdmx=sdmx,
+                            materialise_graph=materialise_graph,
+                            materialise_sdmx=materialise_sdmx,
+                            pool=place_options_pool,
+                            coverage=coverage_snapshot,
+                            population_memo=population_memo,
+                        ),
+                    )
+                ) as hit:
+                    async for ev in hit:
+                        yield ev
+                return
+            events = raw_text.handle(
+                inp,
+                graph=graph,
+                resolver=resolver,
+                admission=admission,
+                llm=llm,
+                sdmx=sdmx,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                start_ms=start_ms,
+                params=params,
+                rate_cache=rate_cache,
+                population_memo=population_memo,
+                place_options_pool=place_options_pool,
+                scope=scope,
+            )
+        else:
+            # A parsed request looks up layer 2 by its whole input before any work.
+            assert isinstance(inp, ParsedInput)
+            events = parsed.handle(
+                inp,
+                graph=graph,
+                resolver=resolver,
+                admission=admission,
+                llm=llm,
+                sdmx=sdmx,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                start_ms=start_ms,
+                params=params,
+                rate_cache=rate_cache,
+                population_memo=population_memo,
+                place_options_pool=place_options_pool,
+                scope=scope,
+            )
+        async with aclosing(events):
+            async for ev in events:
+                ev = _with_index_drift_warning(ev, warn=warn_index_drift)
+                await scope.observe(ev)
+                if isinstance(ev, ResponseEvent) and scope.active and lookup_ms is not None:
+                    ev = ResponseEvent(
+                        response=with_step_timing(ev.response, "cache_lookup", lookup_ms)
+                    )
+                yield ev
     finally:
-        await scope.release()
         record.cache = scope.outcome
+        await scope.release()
 
 
 async def resolve_async(
@@ -693,20 +827,17 @@ async def resolve_async(
     response_cache: ResponseCache | None = None,
     part_memo: PartMemo | None = None,
     generation: GenerationProvider = UNKNOWN_GENERATION,
-    health: ResolveHealth | None = None,
-    caller: str | None = None,
     budget: RequestBudget | None = None,
+    record: ResolveRecord | None = None,
     binder: Binder | None = None,
 ) -> ResolveResponse:
     """Drain ``resolve_events`` into one buffered response.
 
     The ``response`` event precedes ``done``. Copy ``done.timed_out`` into
-    diagnostics so buffered callers can detect a partial result. ``health``,
-    when given, receives ``done.degraded_leg``, which the body omits. Client
+    diagnostics so buffered callers can detect a partial result. Client
     injection and lifetimes match ``resolve_events``. The buffered path emits
     no trailing SSE events, so ``place_options_pool`` launches no tasks.
-    ``caller`` reaches the ``resolve`` log line, and ``budget`` and ``binder`` reach
-    ``resolve_events``.
+    ``budget``, ``record`` and ``binder`` reach ``resolve_events``.
 
     Returns a ``ResolveResponse``: a ``Resolution`` carries one part per requested
     variable.
@@ -729,16 +860,14 @@ async def resolve_async(
         response_cache=response_cache,
         part_memo=part_memo,
         generation=generation,
-        caller=caller,
         binder=binder,
         budget=budget,
+        record=record,
     ):
         if isinstance(event, ResponseEvent):
             response = event.response
         elif isinstance(event, DoneEvent):
             timed_out = event.timed_out
-            if health is not None:
-                health.degraded_leg = event.degraded_leg
     assert response is not None, "resolve_events must yield exactly one response event"
     diagnostics = response.diagnostics.model_copy(update={"timed_out": timed_out})
     return response.model_copy(update={"diagnostics": diagnostics})
