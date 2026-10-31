@@ -90,6 +90,7 @@ from artifact_store import (
     StoredArtifact,
     Tier,
 )
+from artifact_store.errors import ArtifactIntegrityError
 from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
@@ -136,7 +137,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.party_totals import CutFrame, cut_frame, cut_party_totals, open_party_roles
 from datasets_api.query_options import QueryOptionsInvalid
-from datasets_api.store_errors import read_stored_frame
+from datasets_api.store_errors import StoredFrameUnreadable, read_stored_frame
 from datasets_api.timings import phase
 from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import (
@@ -3493,14 +3494,17 @@ def linked_stored_frame(
     locations: Sequence[StoredArtifactLocation], *, artifact_store: ArtifactStore, now: datetime
 ) -> Frame | None:
     """The version's stored frame read from `artifact_store` at the first of its links
-    `locations` whose object a tier still holds, or `None` when none does. Its servable
-    locations come first, then those past retention, whose objects may outlive it; within each,
-    its canonical frame comes before its frame1 document (`stored_frame_location`). It applies
-    no decode bound, so a caller reads only a frame its writer bounded.
+    `locations` whose object a tier still holds and reads as a frame, or `None` when no tier
+    holds one. Its servable locations come first, then those past retention, whose objects may
+    outlive it; within each, its canonical frame comes before its frame1 document
+    (`stored_frame_location`). An object that does not hash to its digest is passed over as a
+    missing one is, as the stored-frame reads in `current` do, and so is one that does not
+    decode. It applies no decode bound, so a caller reads only a frame its writer bounded.
 
     Raises:
-        StoredFrameUnreadable: The bytes do not decode as a stored frame.
+        StoredFrameUnreadable: A copy does not decode as a stored frame and no later copy reads.
     """
+    unreadable: StoredFrameUnreadable | None = None
     servable = select_servable_locations(locations, now=now)
     aged_out = [link for link in locations if link not in servable]
     for group in (servable, aged_out):
@@ -3518,9 +3522,16 @@ def linked_stored_frame(
                 data = artifact_store.get(
                     artifact_digest=link.artifact_digest, tier=Tier(link.tier)
                 )
-            except ArtifactNotFoundError:
+            except (ArtifactNotFoundError, ArtifactIntegrityError):
                 continue
-            return read_stored_frame(data, media_type=link.media_type, digest=link.artifact_digest)
+            try:
+                return read_stored_frame(
+                    data, media_type=link.media_type, digest=link.artifact_digest
+                )
+            except StoredFrameUnreadable as exc:
+                unreadable = exc
+    if unreadable is not None:
+        raise unreadable
     return None
 
 

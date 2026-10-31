@@ -256,9 +256,9 @@ def _record_stored_pair(
     media_type: str,
     rendering: dict[str, object],
     frame_sha256: str | None = None,
-) -> None:
+) -> str:
     """Record the pair holding `data` as its only stored frame, with `frame_sha256` as the
-    frame hash on its record."""
+    frame hash on its record, and return the frame's digest."""
     stored = deps.artifact_store.put(data, tier=Tier.working)
     deps.version_writer.record_version(
         VersionRecord(
@@ -275,6 +275,7 @@ def _record_stored_pair(
             frame_sha256=frame_sha256,
         )
     )
+    return stored.digest
 
 
 class _BytesSink:
@@ -370,6 +371,41 @@ def test_a_hashless_pair_past_retention_matches_by_reading_its_held_frame(deps: 
 
     assert repeat.created is False
     assert counting.reads > 0
+
+
+@pytest.mark.parametrize("unreadable", ["corrupt-pinned-object", "undecodable-canonical-frame"])
+def test_a_hashless_pair_passes_over_an_unreadable_copy_to_one_that_reads(
+    deps: _Deps, unreadable: str
+) -> None:
+    """A hashless pair's frame is read from the first linked copy that reads: past a servable
+    pinned object that does not hash to its digest, or past a canonical frame that does not
+    decode, to the frame1 document."""
+    digest = _record_stored_pair(
+        deps,
+        data=partial_frame1_document(_frame1_document(1.0)),
+        media_type=FRAME1_MEDIA_TYPE,
+        rendering={"format": "frame1"},
+    )
+    if unreadable == "corrupt-pinned-object":
+        deps.artifact_store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        pinned = deps.artifact_store._client.buckets["pinned-bucket"].objects
+        for name in pinned:
+            pinned[name] = b"{not a frame1 document"
+    else:
+        undecodable = deps.artifact_store.put(b"not a parquet file", tier=Tier.working)
+        deps.version_writer.record_artifact(
+            subject_id=_SPEC_ID,
+            content_version=_CONTENT_VERSION,
+            artifact=ArtifactRecord(
+                artifact_digest=undecodable.digest,
+                rendering=dict(CANONICAL_FRAME_RENDERING),
+                media_type=CANONICAL_FRAME_MEDIA_TYPE,
+            ),
+        )
+
+    repeat = deps.publish(rows=_rows(1.0))
+
+    assert repeat.created is False
 
 
 def test_a_hashless_pair_whose_frame1_object_is_gone_is_named_by_its_digest(deps: _Deps) -> None:
