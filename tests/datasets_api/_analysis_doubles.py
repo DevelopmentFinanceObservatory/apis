@@ -15,6 +15,7 @@ from datasets_api.analysis import (
     AnalysisPending,
     AnalysisStores,
     DatasetRoot,
+    LocatedRoot,
     ResolvedRoot,
     RootNotStored,
     RootRendering,
@@ -154,11 +155,11 @@ class FakeRootSource:
             rows=frame.num_rows if self.recorded_rows else None,
         )
 
-    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root` as it is. The frames are held in memory."""
-        return root
+        return LocatedRoot.of(root)
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def read(self, root: LocatedRoot) -> Frame:
         self.reads += 1
         return self.frames[(root.dataset.spec_id, root.dataset.content_version)]
 

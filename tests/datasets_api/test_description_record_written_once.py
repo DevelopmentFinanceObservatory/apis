@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from artifact_store import LiveArtifactInventory
 from description.facts import DescriptionRecord
 
 from ._description_doubles import (
@@ -36,7 +37,7 @@ from ._description_doubles import (
     store_as_frame1_era,
 )
 from ._version_record_store import FakeVersionRecordDatasetStore
-from .test_definition_door_currency import _FakeHeadStore
+from .test_definition_door_currency import _FakeHeadStore, _RenderableArtifactStore
 
 # Past every configured head maximum age, so the next mint rebuilds.
 _STALE = timedelta(days=30)
@@ -81,19 +82,21 @@ def test_a_mint_that_finds_its_version_without_a_record_writes_one() -> None:
     assert record.basis == "mint"
 
 
-# A version recorded before frame hashes matches a republish by its frame1 document's digest.
+# A version recorded before frame hashes, holding a partial frame1 document whose digest is
+# not its frame's hash, matches a republish by the hash of the frame read.
 _ERAS = pytest.mark.parametrize("frame1_era", [False, True], ids=["hashed", "frame1-era"])
 
 
 @_ERAS
 def test_a_republish_of_a_frame_without_a_record_writes_one(frame1_era: bool) -> None:
     store = FakeVersionRecordDatasetStore()
-    client = datasets_client(store)
+    artifacts = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = datasets_client(store, artifact_store=artifacts)
     steps = quotient_steps()
     assert publish(client, publish_body(steps=steps)).status_code == 200
     forget_record(store, subject_id=OPS_ID, content_version=OCV)
     if frame1_era:
-        store_as_frame1_era(store, subject_id=OPS_ID, content_version=OCV)
+        store_as_frame1_era(store, artifacts, subject_id=OPS_ID, content_version=OCV)
 
     response = publish(client, publish_body(steps=steps))
 
@@ -155,7 +158,8 @@ def test_null_steps_fill_once_from_a_matching_republish_and_are_noted_as_late(
     counted under the continuations they carry, so the record states what a first publish with
     those steps states."""
     store = FakeVersionRecordDatasetStore()
-    client = datasets_client(store)
+    artifacts = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = datasets_client(store, artifact_store=artifacts)
     assert publish(client, publish_body()).status_code == 200
     first = read_record(store, subject_id=OPS_ID, content_version=OCV)
     assert first is not None
@@ -167,7 +171,7 @@ def test_null_steps_fill_once_from_a_matching_republish_and_are_noted_as_late(
     ]
     assert first.late_fields == []
     if frame1_era:
-        store_as_frame1_era(store, subject_id=OPS_ID, content_version=OCV)
+        store_as_frame1_era(store, artifacts, subject_id=OPS_ID, content_version=OCV)
     steps = quotient_steps()
 
     response = publish(client, publish_body(steps=steps))

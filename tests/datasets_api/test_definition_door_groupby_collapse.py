@@ -199,13 +199,14 @@ def _collapse_client(
 
 
 def _spy_on_base_frame_hashes(monkeypatch: pytest.MonkeyPatch) -> list[object]:
-    """The frames a head hit takes the base frame's hash of (`stored_frame_sha256`)."""
+    """The base frame readers a head hit takes the base frame's hash through
+    (`stored_frame_sha256`), one per hash taken."""
     hashed: list[object] = []
     take = current_module.stored_frame_sha256
 
-    def spy(frame, *, recorded):
-        hashed.append(frame)
-        return take(frame, recorded=recorded)
+    def spy(read, *, recorded):
+        hashed.append(read)
+        return take(read, recorded=recorded)
 
     monkeypatch.setattr(current_module, "stored_frame_sha256", spy)
     return hashed

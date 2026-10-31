@@ -84,6 +84,7 @@ from dfo_frame_grammar import TIME_PERIOD_COLUMN, frame_sha256, widen_frame_tabl
 from pydantic import ValidationError
 
 from artifact_store import (
+    ArtifactNotFoundError,
     ArtifactRecordConflictError,
     ArtifactStore,
     StoredArtifact,
@@ -134,6 +135,7 @@ from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.party_totals import CutFrame, cut_frame, cut_party_totals, open_party_roles
 from datasets_api.query_options import QueryOptionsInvalid
+from datasets_api.store_errors import read_stored_frame
 from datasets_api.timings import phase
 from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import (
@@ -2872,7 +2874,7 @@ def render_and_store(
     output_profile: OutputProfile | None = None,
     frame_rows: int | None = None,
     deadline: float | None = None,
-    base_frame_sha256: Callable[[], str] | None = None,
+    base_frame_sha256: Callable[[], str | None] | None = None,
     frame_mode: FrameMode = FrameMode.RAW,
     citation_refs: Sequence[str] | None = None,
 ) -> RenderedDefinition:
@@ -3452,13 +3454,29 @@ def stored_frame_location(
     )
 
 
-def stored_frame_sha256(frame: Frame, *, recorded: str | None) -> str:
-    """The frame hash (`dfo_frame_grammar.frame_sha256`) of a stored frame, `frame` as
-    `datasets_api.store_errors.read_stored_frame` read it: `recorded`, the hash on the
-    version's record (`StoredVersion.frame_sha256`), when the record holds one, else the hash
-    of `frame` itself. A frame1 document's digest is not its frame's hash when the document
-    predates a column the frame holds, so the frame read is hashed."""
-    return recorded if recorded is not None else frame_sha256(frame)
+def stored_frame_sha256(
+    read: Callable[[], Frame | None],
+    *,
+    recorded: str | None,
+    locations: Sequence[StoredArtifactLocation] = (),
+) -> str | None:
+    """The frame hash (`dfo_frame_grammar.frame_sha256`) of a stored version, in this order:
+    `recorded`, the hash on its record (`StoredVersion.frame_sha256`); else the hash of the
+    stored frame `read` returns, as `datasets_api.store_errors.read_stored_frame` reads it;
+    else, when `read` returns none, the digest of a frame1 document among `locations`, its
+    links; else `None`. `read` is called only when the record holds no hash.
+
+    The frame is read before the digest is taken because a frame1 document's digest is its
+    frame's hash only for a whole document: one that predates a column the frame holds
+    (`materialise.formats._FRAME1_OPTIONAL_COLUMNS`) has another. A digest names the frame
+    only when no bytes are left to read."""
+    if recorded is not None:
+        return recorded
+    frame = read()
+    if frame is not None:
+        return frame_sha256(frame)
+    frame1 = next((link for link in locations if link.media_type == FRAME1_MEDIA_TYPE), None)
+    return None if frame1 is None else frame1.artifact_digest.removeprefix("sha256:")
 
 
 def servable_frame_location(
@@ -3468,6 +3486,41 @@ def servable_frame_location(
     Servability follows `select_servable_locations`, so a pinned location wins over a working
     one."""
     return stored_frame_location(select_servable_locations(locations, now=now))
+
+
+def linked_stored_frame(
+    locations: Sequence[StoredArtifactLocation], *, artifact_store: ArtifactStore, now: datetime
+) -> Frame | None:
+    """The version's stored frame read from `artifact_store` at the first of its links
+    `locations` whose object a tier still holds, or `None` when none does. Its servable
+    locations come first, then those past retention, whose objects may outlive it; within each,
+    its canonical frame comes before its frame1 document (`stored_frame_location`). It applies
+    no decode bound, so a caller reads only a frame its writer bounded.
+
+    Raises:
+        StoredFrameUnreadable: The bytes do not decode as a stored frame.
+    """
+    servable = select_servable_locations(locations, now=now)
+    aged_out = [link for link in locations if link not in servable]
+    for group in (servable, aged_out):
+        frames = sorted(
+            (
+                link
+                for link in group
+                if is_canonical_frame_rendering(link.rendering)
+                or link.media_type == FRAME1_MEDIA_TYPE
+            ),
+            key=lambda link: not is_canonical_frame_rendering(link.rendering),
+        )
+        for link in frames:
+            try:
+                data = artifact_store.get(
+                    artifact_digest=link.artifact_digest, tier=Tier(link.tier)
+                )
+            except ArtifactNotFoundError:
+                continue
+            return read_stored_frame(data, media_type=link.media_type, digest=link.artifact_digest)
+    return None
 
 
 STATISTICS_MEDIA_TYPE = "application/vnd.apache.parquet"

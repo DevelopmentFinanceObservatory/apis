@@ -140,15 +140,21 @@ their version already holds the frame or file (`recipe_replay.StoredRootSource`)
 and nothing is published, pinned or recorded. It writes one JSON line per recipe that is not
 equal to `PATH` (default `recipe-diff.jsonl`), each `{spec_id, content_version, family, outcome,
 stored, computed, detail}`, and one `datasets_recipes_diffed` line holding the count of each
-outcome (`equal`, `differs`, `roots_unreadable`, `frame_unreadable`) per family (`compare`,
+outcome (`equal`, `differs`, `roots_unreadable`, `over_ceiling`, `frame_unreadable`, as
+`recipe_replay` defines them) per family (`compare`,
 `sum_of`, `other`) and in total. It exits 1 when any recipe differs, with that line at `ERROR`
 severity. It reads the settings `sweep` reads.
 
 `record-recipe-golden --out DIR [--limit N] [--max-bytes B] [--origin NAME]` writes up to `N`
 (default 50) recipes whose roots and stored frame it can read, with those frames, into `DIR`, one
 case directory each labelled `NAME` (default `dfo-dev`) (`recipe_golden.record_case`), skipping
-a recipe whose frames together pass `B` bytes (default 2,000,000). It reads the stores as `diff-recipes` does and writes only under
-`DIR`, one `datasets_recipe_golden_recorded` line counting the cases written and skipped.
+a recipe whose frames together pass `B` bytes (default 2,000,000), one whose frame, roots or
+root frames are no longer held, and one whose roots pass the root-row cap or hold a frame1
+document past the decode bound. It reads the stores as `diff-recipes` does and writes only
+under `DIR`, one `datasets_recipe_golden_skipped` line per recipe skipped past a bound, naming
+its `spec_id`, `content_version` and `ceiling_kind`, and one `datasets_recipe_golden_recorded`
+line counting the cases written and skipped, and the skipped by reason
+(`recipe_golden.CaseOutcome`).
 
 `normalise-recipes [--dry-run]` runs by hand once, after the website's share migration job.
 For each recipe in `datasets.frame_recipe` whose root `options.columns` are not sorted and
@@ -226,11 +232,12 @@ from dataset_store.snapshot import (
 )
 from dataset_store.store import LiveDatasetStore
 from datasets_api.allowance import LiveAllowanceLedger
-from datasets_api.analysis import FrameUnavailable
+from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable
 from datasets_api.config import (
     DEFAULT_OPERATION_DEADLINE_SECONDS,
     DatasetsConfigError,
     DatasetsSettings,
+    FoldCeilingSettings,
 )
 from datasets_api.description_record import backfill_record, computed_inputs
 from datasets_api.description_store import (
@@ -249,7 +256,7 @@ from datasets_api.operation_store import (
 )
 from datasets_api.party_totals import TRACE_KEY as PARTY_TOTALS_TRACE_KEY
 from datasets_api.party_totals import PartyTotalsCut, cut_frame
-from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, record_case
+from datasets_api.recipe_golden import DEFAULT_MAX_BYTES, CaseOutcome, record_case
 from datasets_api.recipe_replay import ReplayOutcome, StoredRootSource, replay_recipe
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reconciliation import sweep
@@ -290,6 +297,7 @@ from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
 from materialise.content_version import mint_version_from_digest
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
+from materialise.errors import OverCeilingError
 from materialise.formats import (
     FRAME1_MEDIA_TYPE,
     Frame,
@@ -1318,13 +1326,14 @@ def stored_recipe_pairs(store: DatasetStore) -> list[tuple[str, str]]:
 
 
 def _replay_source(
-    store: DatasetStore, *, artifact_store: ArtifactStore, now: Clock
+    store: DatasetStore, *, artifact_store: ArtifactStore, now: Clock, fold_max_rows: int
 ) -> StoredRootSource:
     return StoredRootSource(
         snapshot_reader=LiveSnapshotReader(store=store),
         artifact_store=artifact_store,
         recipes=LiveRecipeStore(store=store),
         now=now,
+        fold_max_rows=fold_max_rows,
     )
 
 
@@ -1334,6 +1343,7 @@ def run_diff_recipes(
     """Replay every stored recipe, write each one that is not equal to `report` and emit the
     counts. Return how many differ."""
     counts = {family: dict.fromkeys(ReplayOutcome, 0) for family in ("compare", "sum_of", "other")}
+    fold_max_rows = FoldCeilingSettings.from_env().groupby_fold_max_rows
     recipes = LiveRecipeStore(store=store)
     for spec_id, content_version in stored_recipe_pairs(store):
         record = recipes.read_recipe(spec_id=spec_id, content_version=content_version)
@@ -1343,7 +1353,9 @@ def run_diff_recipes(
             spec_id=spec_id,
             content_version=content_version,
             recipe=record.body,
-            source=_replay_source(store, artifact_store=artifact_store, now=now),
+            source=_replay_source(
+                store, artifact_store=artifact_store, now=now, fold_max_rows=fold_max_rows
+            ),
         )
         counts[replay.family][replay.outcome] += 1
         if replay.outcome is not ReplayOutcome.EQUAL:
@@ -1379,24 +1391,40 @@ def run_record_recipe_golden(
 ) -> None:
     """Write up to `limit` readable recipes with their frames under `out`, one case each,
     labelled `origin`."""
-    written = skipped = 0
+    outcomes = dict.fromkeys(CaseOutcome, 0)
+    fold_max_rows = FoldCeilingSettings.from_env().groupby_fold_max_rows
     for spec_id, content_version in stored_recipe_pairs(store):
-        if written >= limit:
+        if outcomes[CaseOutcome.WRITTEN] >= limit:
             break
         try:
-            kept = record_case(
+            outcome = record_case(
                 spec_id=spec_id,
                 content_version=content_version,
-                source=_replay_source(store, artifact_store=artifact_store, now=now),
+                source=_replay_source(
+                    store, artifact_store=artifact_store, now=now, fold_max_rows=fold_max_rows
+                ),
                 out=out / f"{spec_id}-{content_version}",
                 origin=origin,
                 max_bytes=max_bytes,
             )
         except FrameUnavailable:
-            kept = False
-        written += kept
-        skipped += not kept
-    emit("datasets_recipe_golden_recorded", written=written, skipped=skipped)
+            outcome = CaseOutcome.NOT_HELD
+        except (AnalysisTooLarge, OverCeilingError) as bounded:
+            emit(
+                "datasets_recipe_golden_skipped",
+                spec_id=spec_id,
+                content_version=content_version,
+                ceiling_kind=bounded.ceiling_kind,
+            )
+            outcome = CaseOutcome.OVER_CEILING
+        outcomes[outcome] += 1
+    written = outcomes.pop(CaseOutcome.WRITTEN)
+    emit(
+        "datasets_recipe_golden_recorded",
+        written=written,
+        skipped=sum(outcomes.values()),
+        skipped_by={outcome.value: count for outcome, count in outcomes.items()},
+    )
 
 
 def _record_recipe_golden(out: Path, limit: int, max_bytes: int, origin: str) -> int:

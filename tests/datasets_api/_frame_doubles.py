@@ -5,9 +5,11 @@ Includes one 2015 CSV row, matching coverage metadata, and artifact-row readers.
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Mapping, Sequence
 
 import httpx
+from dfo_frame_grammar import STATUS_COLUMN
 
 from artifact_store import ArtifactStore, Tier
 from datasets_api.render import CANONICAL_FRAME_RENDERING
@@ -131,23 +133,42 @@ def canonical_frame_digest(
     return str(_canonical_frame_row(rows)["artifact_digest"])
 
 
+def partial_frame1_document(data: bytes) -> bytes:
+    """The frame1 document `data` without its `status` column, as one written before frames
+    held it: it reads as the same frame, and its digest is not that frame's hash."""
+    whole = json.loads(data)
+    kept = [index for index, name in enumerate(whole["columns"]) if name != STATUS_COLUMN]
+    assert len(kept) < len(whole["columns"])
+    return json.dumps(
+        {
+            **whole,
+            "columns": [whole["columns"][index] for index in kept],
+            "rows": [[row[index] for index in kept] for row in whole["rows"]],
+        }
+    ).encode()
+
+
 def link_frame1_only(
     version_store: FakeVersionRecordDatasetStore,
     artifact_store: ArtifactStore,
     *,
     subject_id: str,
     content_version: str,
+    partial: bool = False,
 ) -> str:
     """Replaces the version's canonical frame link with a link to the frame1 document of the
     same rows, as a version minted before canonical frames records it. Returns the document's
-    digest."""
+    digest. A `partial` document is `partial_frame1_document`'s."""
     canonical = canonical_frame_digest(
         version_store, subject_id=subject_id, content_version=content_version
     )
     frame = read_canonical_frame(artifact_store.get(artifact_digest=canonical, tier=Tier.working))
     document = io.BytesIO()
     write_frame1((frame,), sink=document)
-    stored = artifact_store.put(document.getvalue(), tier=Tier.working)
+    data = document.getvalue()
+    if partial:
+        data = partial_frame1_document(data)
+    stored = artifact_store.put(data, tier=Tier.working)
     LiveVersionRecordWriter(store=version_store).record_artifact(
         subject_id=subject_id,
         content_version=content_version,

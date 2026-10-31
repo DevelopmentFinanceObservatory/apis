@@ -16,12 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from artifact_store import LiveArtifactInventory
+from artifact_store import ArtifactStore, LiveArtifactInventory
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.description_store import LiveDescriptionStore
-from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
+from datasets_api.version_store import LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
-from materialise.formats import FRAME1_MEDIA_TYPE
 from origin_catalogue.service import CatalogueService
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
@@ -29,6 +28,7 @@ from spec_registry.reader import LiveSpecReader
 from . import test_definition_door as definition_fixture
 from . import test_serve_groupby_collapse as family_fixture
 from ._app_factories import RunningClient, make_client
+from ._frame_doubles import link_frame1_only
 from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
@@ -73,50 +73,24 @@ def forget_record(
         )
 
 
-_FRAME1_RENDERING = {"format": "frame1"}
-
-
 def store_as_frame1_era(
-    store: FakeVersionRecordDatasetStore, *, subject_id: str, content_version: str
+    store: FakeVersionRecordDatasetStore,
+    artifact_store: ArtifactStore,
+    *,
+    subject_id: str,
+    content_version: str,
 ) -> None:
-    """Leave the version as one recorded before frame hashes: no `frame_sha256` on its row,
-    and a frame1 document linked under it whose digest is that hash. No object holds the
-    document: the publish door and the describer compare its digest and read no bytes."""
+    """Leave the version as one recorded before frame hashes and canonical frames: no
+    `frame_sha256` on its row, and its frame stored as a partial frame1 document
+    (`link_frame1_only`), whose digest is not the frame's hash."""
+    link_frame1_only(
+        store, artifact_store, subject_id=subject_id, content_version=content_version, partial=True
+    )
     with store.transaction() as tx:
-        row = tx.fetch_one(
-            "SELECT frame_sha256 FROM datasets.version_record "
-            "WHERE subject_id = %s AND content_version = %s",
-            (subject_id, content_version),
-        )
-        assert row is not None and row["frame_sha256"] is not None
-        digest = f"sha256:{row['frame_sha256']}"
-        tx.execute(
-            "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) VALUES (%s, %s)",
-            (digest, 1),
-        )
-        tx.execute(
-            "INSERT INTO datasets.artifact_location "
-            "(artifact_digest, tier, bucket, object_name, stored_at) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (digest, "pinned", "pinned-bucket", row["frame_sha256"], datetime.now(UTC)),
-        )
         tx.execute(
             "UPDATE datasets.version_record SET frame_sha256 = NULL "
             "WHERE subject_id = %s AND content_version = %s",
             (subject_id, content_version),
-        )
-        tx.execute(
-            "INSERT INTO datasets.version_artifact "
-            "(subject_id, content_version, artifact_digest, rendering_key, rendering, "
-            "media_type) VALUES (%s, %s, %s, %s, %s, %s)",
-            (
-                subject_id,
-                content_version,
-                digest,
-                rendering_key(_FRAME1_RENDERING),
-                _FRAME1_RENDERING,
-                FRAME1_MEDIA_TYPE,
-            ),
         )
 
 
