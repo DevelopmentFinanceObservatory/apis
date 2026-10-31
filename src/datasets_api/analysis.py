@@ -97,7 +97,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from typing import Annotated, Any, Literal, Protocol, Self
 
 import rfc8785
@@ -138,8 +138,7 @@ from datasets_api.publish_models import (
     RecipeStepRef,
 )
 from datasets_api.recipe_store import AnswerRecord, RecipeStore
-from datasets_api.render import frame_file_location
-from datasets_api.version_store import recorded_frame_sha256
+from datasets_api.render import frame_file_location, linked_stored_frame, stored_frame_sha256
 from datasets_api.versions import VersionRecordWriter
 from description.steps import Step
 from dfo_analysis_engine.anchor import ResolvedPeriods, latest_period
@@ -568,6 +567,17 @@ class ResolvedRoot:
     source: object = field(default=None, compare=False)
 
 
+@dataclass(frozen=True, kw_only=True)
+class LocatedRoot(ResolvedRoot):
+    """A root `RootSource.locate` returned, the only root `RootSource.read` takes, so a read
+    that skips `locate_roots` fails the type check."""
+
+    @classmethod
+    def of(cls, root: ResolvedRoot) -> LocatedRoot:
+        """`root` as located."""
+        return cls(**{held.name: getattr(root, held.name) for held in fields(ResolvedRoot)})
+
+
 class RootSource(Protocol):
     """Where the runner reads its roots from (`analysis_roots.LiveRootSource`)."""
 
@@ -582,18 +592,20 @@ class RootSource(Protocol):
         """
         ...
 
-    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root` with what `read` reads located from the records alone, and the refusals they
         decide made (`locate_roots`). Runs once the run has no stored answer, before it takes
-        its materialise permit.
+        its materialise permit. The decode bound is the reading source's:
+        `analysis_roots.LiveRootSource` and `recipe_replay.StoredRootSource` refuse here a
+        frame1 document past `render.frame1_decode_max_bytes`.
 
         Raises:
             FrameUnavailable: The frame is no longer held.
-            OverCeilingError: `bytes`, for a stored frame past the decode bound.
+            OverCeilingError: `bytes`, for a frame1 document past the decode bound.
         """
         ...
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def read(self, root: LocatedRoot) -> Frame:
         """The frame of `root`, as `locate` returned it. Runs under the run's materialise
         permit.
 
@@ -1388,11 +1400,11 @@ def described_steps(evaluation: Evaluation, roots: Sequence[ResolvedRoot]) -> li
 
 @dataclass(frozen=True)
 class _HeldFile:
-    """A recorded pair's servable frame file: its digest, and the frame-grammar `cv_` of the
-    frame hash its version records, `None` when it records none (`recorded_frame_sha256`)."""
+    """A recorded pair's servable frame file's digest, and the frame hash its version records
+    (`StoredVersion.frame_sha256`)."""
 
     artifact_digest: str
-    frame_content_version: str | None
+    recorded_frame_sha256: str | None
 
 
 def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
@@ -1414,15 +1426,30 @@ def _held_file(stores: AnalysisStores, ref: FrameRef) -> _HeldFile | None:
     location = frame_file_location(stored.servable, site=stores.site)
     if location is None:
         return None
-    recorded = recorded_frame_sha256(
-        stored.version.frame_sha256, [*stored.servable, *stored.aged_out]
-    )
     return _HeldFile(
         artifact_digest=location.artifact_digest,
-        frame_content_version=(
-            None if recorded is None else mint_content_version(frame_sha256=recorded)
-        ),
+        recorded_frame_sha256=stored.version.frame_sha256,
     )
+
+
+def _frame_content_version(stores: AnalysisStores, ref: FrameRef, held: _HeldFile) -> str | None:
+    """The frame-grammar `cv_` of the frame hash of the pair `ref` (`render.stored_frame_sha256`)
+    over every link it holds (`render.linked_stored_frame`), as the publish door names it, or
+    `None` when it has no hash to name its frame by. The links are read only when its record
+    holds no hash. The read needs no decode bound: an `ops_` pair's frame holds at most
+    `PUBLISH_MAX_ROWS` rows."""
+    recorded = held.recorded_frame_sha256
+    links = (
+        ()
+        if recorded is not None
+        else stores.snapshot_reader.read_artifact_locations(ref.spec_id, ref.content_version)
+    )
+    recorded = stored_frame_sha256(
+        lambda: linked_stored_frame(links, artifact_store=stores.artifact_store, now=stores.now()),
+        recorded=recorded,
+        locations=links,
+    )
+    return None if recorded is None else mint_content_version(frame_sha256=recorded)
 
 
 def _stored_file_digest(
@@ -1463,6 +1490,8 @@ def _store(
     Raises:
         AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
         SnapshotRevoked: The pair answered is taken down.
+        StoredFrameUnreadable: A pair recording no frame hash holds a stored frame that does
+            not decode, read to name it (`_frame_content_version`, `publish_built_frame`).
     """
     recipe = _recipe(evaluation, roots)
     ref = evaluation.ref
@@ -1559,10 +1588,10 @@ def _replayed(
     computation when a stored run named a root's pair under an earlier derivation of
     `analysis_roots.frame_ref_for`, as dfo-ai's data-mcp does.
 
-    A pair that serves no frame file, or records no frame hash to name its frame by, gives up
-    the key (`RecipeStore.supersede_replay`) and answers `None`, so the run publishes at
-    `computed`, whose recipe then takes the key. Its new bytes can differ from the stored
-    frame's, since a minting step's rows name its own pair.
+    A pair that serves no frame file, or has no frame hash to name its frame by
+    (`_frame_content_version`), gives up the key (`RecipeStore.supersede_replay`) and answers
+    `None`, so the run publishes at `computed`, whose recipe then takes the key. Its new bytes can
+    differ from the stored frame's, since a minting step's rows name its own pair.
 
     Raises:
         SnapshotRevoked: The replayed pair is taken down.
@@ -1574,8 +1603,8 @@ def _replayed(
     if ref == computed:
         return None
     held = _held_file(stores, ref)
-    if held is not None and held.frame_content_version is not None:
-        return ref, held.artifact_digest, held.frame_content_version
+    if held is not None and (frame_content_version := _frame_content_version(stores, ref, held)):
+        return ref, held.artifact_digest, frame_content_version
     stores.recipe_store.supersede_replay(
         replay_key=recipe.replay_key, spec_id=ref.spec_id, content_version=ref.content_version
     )
@@ -1635,14 +1664,21 @@ def resolve_roots(
     return resolved
 
 
-def locate_roots(resolved: Sequence[ResolvedRoot], *, source: RootSource) -> list[ResolvedRoot]:
-    """`resolved`, each located (`RootSource.locate`). A run calls this right before it takes
-    its materialise permit, so the refusals the records decide come before any wait, and a
-    stored answer, keyed before, reads no frame location.
+def locate_roots(
+    resolved: Sequence[ResolvedRoot], *, source: RootSource, cap: int
+) -> list[LocatedRoot]:
+    """`resolved`, each located (`RootSource.locate`), once the rows their versions record
+    are summed against `cap`. A run calls this right before it takes its materialise permit,
+    so the refusals the records decide come before any wait, and a stored answer, keyed
+    before, reads no frame location.
 
     Raises:
+        AnalysisTooLarge: The roots' versions record more than `cap` rows.
         FrameUnavailable, OverCeilingError: As `RootSource.locate`.
     """
+    recorded = sum(root.rows or 0 for root in resolved)
+    if recorded > cap:
+        raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=recorded, cap=cap)
     return [source.locate(root) for root in resolved]
 
 
@@ -1658,17 +1694,14 @@ class Computed:
     output_digest: str
 
 
-def _read_roots(resolved: Sequence[ResolvedRoot], *, source: RootSource, cap: int) -> list[Frame]:
-    """The frames of `resolved`, read in turn. The rows the roots' versions record are summed
-    before the first read, and the rows read so far after each, so a run over `cap` root rows
-    refuses before it reads past it.
+def _read_roots(resolved: Sequence[LocatedRoot], *, source: RootSource, cap: int) -> list[Frame]:
+    """The frames of `resolved`, read in turn. `locate_roots` summed the rows the roots'
+    versions record, and the rows read so far are summed after each read, so a run over `cap`
+    root rows refuses before it reads past it.
 
     Raises:
         AnalysisTooLarge: The roots hold more than `cap` rows.
     """
-    recorded = sum(root.rows or 0 for root in resolved)
-    if recorded > cap:
-        raise AnalysisTooLarge(ceiling_kind="analysis_root_rows", count=recorded, cap=cap)
     frames: list[Frame] = []
     read = 0
     for root in resolved:
@@ -1682,7 +1715,7 @@ def _read_roots(resolved: Sequence[ResolvedRoot], *, source: RootSource, cap: in
 
 def _evaluated(
     working: dict[str, Any],
-    resolved: Sequence[ResolvedRoot],
+    resolved: Sequence[LocatedRoot],
     *,
     source: RootSource,
     bounds: AnalysisBounds,
@@ -1744,7 +1777,7 @@ def compute_analysis(
     """
     working, roots = plan_roots(request, source=source, bounds=bounds)
     resolved = resolve_roots(roots, source=source, latest=request.latest, trace_id=trace_id)
-    located = locate_roots(resolved, source=source)
+    located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         return _evaluated(working, located, source=source, bounds=bounds, latest=request.latest)
 
@@ -1850,7 +1883,7 @@ def run_prepared(
         AnalysisTooLarge, AnalysisStoreDiverges: As their docstrings say.
         SnapshotRevoked: The pair the tree computes is taken down.
     """
-    located = locate_roots(prepared.resolved, source=source)
+    located = locate_roots(prepared.resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         computed = _evaluated(
             prepared.working,
@@ -1956,7 +1989,7 @@ def run_anchor(
     except (ValidationError, ValueError, KeyError, TypeError) as exc:
         raise AnalysisRefused(EngineRefusal.op_spec_invalid(detail=f"populations: {exc}")) from exc
     resolved = resolve_roots(request.roots, source=source, latest=request.latest, trace_id=trace_id)
-    located = locate_roots(resolved, source=source)
+    located = locate_roots(resolved, source=source, cap=bounds.max_root_rows)
     with permit():
         frames = _read_roots(located, source=source, cap=bounds.max_root_rows)
         anchor = latest_period(
@@ -1984,6 +2017,7 @@ __all__ = [
     "DatasetRoot",
     "DerivedRoot",
     "FrameUnavailable",
+    "LocatedRoot",
     "PreparedAnalysis",
     "RefRoot",
     "ResolvedRoot",

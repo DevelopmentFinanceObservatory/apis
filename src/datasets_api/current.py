@@ -784,7 +784,7 @@ def _render_frame(
         # Only a groupby of a frame it has not collapsed yields a collapse frame to compare
         # with the stored one.
         base_frame_sha256=(
-            functools.partial(stored_frame_sha256, table, recorded=plan.frame_sha256)
+            functools.partial(stored_frame_sha256, lambda: table, recorded=plan.frame_sha256)
             if render_folds(options, plan)
             else None
         ),

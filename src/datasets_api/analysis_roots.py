@@ -63,10 +63,11 @@ from dfo_frame_grammar.grammar import (
 
 from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
-from dataset_store.snapshot import StoredArtifactLocation, select_servable_locations
+from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.analysis import (
     AnalysisPending,
     DatasetRoot,
+    LocatedRoot,
     ResolvedRoot,
     RootExpired,
     RootNotStored,
@@ -90,7 +91,7 @@ from datasets_api.recipe_store import RecipeReader
 from datasets_api.render import (
     is_statistics_rendering,
     refuse_frame1_past_decode_bound,
-    stored_frame_location,
+    servable_frame_location,
 )
 from datasets_api.store_errors import read_stored_frame
 from dfo_analysis_engine.frame_ref import FrameRef
@@ -181,13 +182,23 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
     return resolved
 
 
-@dataclass(frozen=True, kw_only=True)
-class _Handle:
-    """What `read` reads: the frame-layout file `artifact`, or with none the version's stored
-    frame at `frame`."""
+@dataclass(frozen=True)
+class _FrameLayoutFile:
+    """A root read from its frame-layout file `artifact`."""
 
-    artifact: ArtifactEntryModel | None
-    frame: StoredArtifactLocation | None = None
+    artifact: ArtifactEntryModel
+
+
+@dataclass(frozen=True)
+class _LocatedFrame:
+    """A root read from its version's stored frame at `location`, as `locate` found it."""
+
+    location: StoredArtifactLocation
+
+
+_Handle = _FrameLayoutFile | _LocatedFrame
+"""What `read` reads. `resolve` gives a root read from its stored frame no handle, so a root
+`locate` has not located holds none `read` accepts."""
 
 
 def _data_artifact(manifest: Manifest) -> ArtifactEntryModel | None:
@@ -377,10 +388,10 @@ class LiveRootSource:
             record=record,
             rendering=root_rendering(options),
             rows=manifest.coverage.rows,
-            source=_Handle(artifact=artifact),
+            source=None if artifact is None else _FrameLayoutFile(artifact),
         )
 
-    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root`, with the version's servable stored frame located when `read` reads it, and a
         frame1 document past `render.frame1_decode_max_bytes` refused on its recorded size. A
         root read from its frame-layout file returns as it is.
@@ -389,13 +400,11 @@ class LiveRootSource:
             RootExpired: The version has no servable stored frame.
             OverCeilingError: `bytes`, for a frame1 document past the bound.
         """
-        handle = root.source
-        assert isinstance(handle, _Handle)
-        if handle.artifact is not None:
-            return root
+        if isinstance(root.source, _Handle):
+            return LocatedRoot.of(root)
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
         locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
-        location = stored_frame_location(select_servable_locations(locations, now=self._deps.now()))
+        location = servable_frame_location(locations, now=self._deps.now())
         if location is None:
             raise RootExpired(
                 spec_id=spec_id,
@@ -405,14 +414,21 @@ class LiveRootSource:
         refuse_frame1_past_decode_bound(
             location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
         )
-        return replace(root, source=_Handle(artifact=None, frame=location))
+        return LocatedRoot.of(replace(root, source=_LocatedFrame(location)))
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def read(self, root: LocatedRoot) -> Frame:
+        """The frame of `root` as `locate` returned it.
+
+        Raises:
+            RootExpired: Its file or stored frame is gone.
+            TypeError: `root` is not located.
+        """
         handle = root.source
-        assert isinstance(handle, _Handle)
+        if not isinstance(handle, _Handle):
+            raise TypeError(f"a root is read only once `locate` locates it, not from {handle!r}")
         store = self._deps.artifact_store
         spec_id, content_version = root.dataset.spec_id, root.dataset.content_version
-        if handle.artifact is not None:
+        if isinstance(handle, _FrameLayoutFile):
             try:
                 data = store.get(
                     artifact_digest=handle.artifact.artifact_digest, tier=Tier(handle.artifact.tier)
@@ -422,8 +438,7 @@ class LiveRootSource:
                     spec_id=spec_id, content_version=content_version, reason="its file is gone"
                 ) from None
             return frame_from_frame_layout(data)
-        location = handle.frame
-        assert location is not None, "the run locates a root's stored frame before it reads it"
+        location = handle.location
         try:
             data = store.get(artifact_digest=location.artifact_digest, tier=Tier(location.tier))
         except ArtifactNotFoundError:

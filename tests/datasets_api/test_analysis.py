@@ -15,6 +15,7 @@ import pytest
 import rfc8785
 from dfo_frame_grammar import Frame
 
+from artifact_store import Tier
 from dataset_store.snapshot import SnapshotRevoked
 from datasets_api import analysis, publish_models
 from datasets_api.analysis import (
@@ -58,7 +59,8 @@ from ._analysis_doubles import (
     source,
     step,
 )
-from ._description_doubles import read_record
+from ._description_doubles import read_record, store_as_frame1_era
+from ._frame_doubles import canonical_frame_digest
 
 _REF_SCHEMA = json.loads(
     (files("dfo_client_contract") / "dataset-ref.schema.json").read_text(encoding="utf-8")
@@ -360,12 +362,41 @@ def _computed_under(monkeypatch: pytest.MonkeyPatch, ref: FrameRef) -> None:
 _ELSEWHERE = FrameRef(spec_id="ops_" + "e" * 32, content_version="ocv_" + "e" * 32)
 
 
+def _pinned_object_gone(stores: Stores, ref: FrameRef) -> None:
+    """Record no frame hash for `ref`, and pin its canonical frame with the pinned object gone,
+    so its only servable link holds no object while its working object stays held."""
+    digest = canonical_frame_digest(
+        stores.store, subject_id=ref.spec_id, content_version=ref.content_version
+    )
+    stores.artifact_store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
+    stores.gcs.buckets["pinned-bucket"].objects.clear()
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET frame_sha256 = NULL "
+            "WHERE subject_id = %s AND content_version = %s",
+            (ref.spec_id, ref.content_version),
+        )
+
+
+@pytest.mark.parametrize("stored_as", ["hashed", "frame1-era", "pinned-object-gone"])
 def test_a_run_of_a_stored_replay_key_answers_the_stored_frame_in_every_field(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, stored_as: str
 ) -> None:
+    """A stored frame recorded before frame hashes is named by the hash of the frame read: a
+    partial frame1 document's, or a canonical frame's read from its working object when the
+    pinned object of its servable link is gone."""
     stores = Stores()
     first = _run(stores, _PER_PERSON)
     stored = first.evaluation.ref
+    if stored_as == "frame1-era":
+        store_as_frame1_era(
+            stores.store,
+            stores.artifact_store,
+            subject_id=stored.spec_id,
+            content_version=stored.content_version,
+        )
+    elif stored_as == "pinned-object-gone":
+        _pinned_object_gone(stores, stored)
     _computed_under(monkeypatch, _ELSEWHERE)
 
     again = _run(stores, _PER_PERSON)

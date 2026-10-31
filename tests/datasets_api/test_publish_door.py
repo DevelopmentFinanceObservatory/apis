@@ -66,7 +66,7 @@ from materialise.frame_build import build_frame
 from tests.artifact_store.conftest import FakeGCSClient
 
 from ._deps_doubles import fake_deps_cell
-from ._frame_doubles import canonical_frame_digest
+from ._frame_doubles import canonical_frame_digest, partial_frame1_document
 from ._render_inputs import ENRICHMENT, PREPARED_AT, SITE
 from ._snapshot_doubles import make_client_for_door
 from ._version_facts import facts_from_body, golden_cases
@@ -291,16 +291,21 @@ class _BytesSink:
     [
         (_frame1_document, FRAME1_MEDIA_TYPE, {"format": "frame1"}, False),
         (_snappy_parquet_frame, CANONICAL_FRAME_MEDIA_TYPE, dict(CANONICAL_FRAME_RENDERING), True),
+        (_snappy_parquet_frame, CANONICAL_FRAME_MEDIA_TYPE, dict(CANONICAL_FRAME_RENDERING), False),
     ],
-    ids=["frame1-document", "canonical-frame-other-parquet-encoding"],
+    ids=[
+        "frame1-document",
+        "canonical-frame-other-parquet-encoding",
+        "canonical-frame-without-hash",
+    ],
 )
 def test_repeat_publish_compares_the_stored_frame_not_its_encoding(
     deps: _Deps, encode, media_type, rendering, records_hash
 ) -> None:
     """A repeat publish matches a stored frame holding the same rows whatever bytes encode it,
     and refuses one holding other rows: by the frame hash on a record that holds one, else by
-    the frame1 document's digest. It links one canonical frame and its frame file, and answers
-    the frame file's digest."""
+    the hash of the stored frame read (`render.stored_frame_sha256`). It links one canonical
+    frame and its frame file, and answers the frame file's digest."""
     _record_stored_pair(
         deps,
         data=encode(1.0),
@@ -318,6 +323,71 @@ def test_repeat_publish_compares_the_stored_frame_not_its_encoding(
     assert repeat.created is False
     assert len(_canonical_frames(deps)) == 1
     assert [loc.artifact_digest for loc in _frame_files(deps)] == [repeat.artifact_digest]
+    with pytest.raises(PublishBytesDiverge):
+        deps.publish(rows=_rows(2.0))
+
+
+def _age_stored_frame(deps: _Deps) -> None:
+    """Put every stored location of the pair's frame past working-tier retention, its objects
+    still held, as they are until the sweep deletes them."""
+    with deps.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s",
+            (datetime.now(UTC) - timedelta(days=366),),
+        )
+
+
+class _ReadCountingArtifactStore:
+    """`store`, counting each `get` that returns bytes."""
+
+    def __init__(self, store: LiveArtifactStore) -> None:
+        self._store = store
+        self.reads = 0
+
+    def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
+        data = self._store.get(artifact_digest=artifact_digest, tier=tier)
+        self.reads += 1
+        return data
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._store, name)
+
+
+def test_a_hashless_pair_past_retention_matches_by_reading_its_held_frame(deps: _Deps) -> None:
+    """A pair recording no frame hash, whose only link is a partial frame1 document past
+    retention with its object still held, is named by the hash of the frame read from it, not
+    by the document's digest."""
+    _record_stored_pair(
+        deps,
+        data=partial_frame1_document(_frame1_document(1.0)),
+        media_type=FRAME1_MEDIA_TYPE,
+        rendering={"format": "frame1"},
+    )
+    _age_stored_frame(deps)
+    counting = _ReadCountingArtifactStore(deps.artifact_store)
+
+    repeat = deps.publish(rows=_rows(1.0), artifact_store=counting)
+
+    assert repeat.created is False
+    assert counting.reads > 0
+
+
+def test_a_hashless_pair_whose_frame1_object_is_gone_is_named_by_its_digest(deps: _Deps) -> None:
+    """With no bytes left to read, a whole frame1 document's digest, the frame hash of the rows
+    it held, names the pair: the same rows match without a read, and other rows refuse."""
+    _record_stored_pair(
+        deps,
+        data=_frame1_document(1.0),
+        media_type=FRAME1_MEDIA_TYPE,
+        rendering={"format": "frame1"},
+    )
+    _expire_stored_frame(deps)
+    counting = _ReadCountingArtifactStore(deps.artifact_store)
+
+    repeat = deps.publish(rows=_rows(1.0), artifact_store=counting)
+
+    assert repeat.created is False
+    assert counting.reads == 0
     with pytest.raises(PublishBytesDiverge):
         deps.publish(rows=_rows(2.0))
 
@@ -425,14 +495,16 @@ def test_http_republishing_other_rows_over_an_expired_frame_maps_to_publish_conf
     assert response.json()["code"] == "publish_conflict"
 
 
-def test_a_pair_recording_neither_a_frame_hash_nor_a_frame1_document_refuses(deps: _Deps) -> None:
-    """A canonical frame alone is no identity: its digest depends on its Parquet encoding."""
+def test_a_pair_recording_no_frame_hash_whose_stored_frame_is_gone_refuses(deps: _Deps) -> None:
+    """With no hash on its record and no stored frame to read, the pair's frame has no
+    identity to match."""
     _record_stored_pair(
         deps,
         data=_snappy_parquet_frame(1.0),
         media_type=CANONICAL_FRAME_MEDIA_TYPE,
         rendering=dict(CANONICAL_FRAME_RENDERING),
     )
+    _expire_stored_frame(deps)
 
     with pytest.raises(PublishBytesDiverge):
         deps.publish(rows=_rows(1.0))

@@ -73,7 +73,6 @@ from dataset_store.snapshot import (
     VERSION_FACT_COLUMNS,
     WORKING_TIER_RETENTION,
     ManifestFacts,
-    StoredArtifactLocation,
     VersionState,
     version_fact_values,
     version_state_in,
@@ -109,7 +108,6 @@ from datasets_api.versions import (
 )
 from description.facts import DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
-from materialise.formats import FRAME1_MEDIA_TYPE
 
 Clock = Callable[[], datetime]
 
@@ -150,21 +148,6 @@ def current_rendering_keys(
     if enrichment_digest is None or not carries_party_kind(rendering):
         return (key,)
     return (key, enriched_rendering_key(rendering, NO_PARTY_ROLE))
-
-
-def recorded_frame_sha256(
-    recorded: str | None, locations: Sequence[StoredArtifactLocation]
-) -> str | None:
-    """The frame hash (`dfo_frame_grammar.frame_sha256`) a stored version holds without reading
-    its frame: `recorded`, the hash on its record (`StoredVersion.frame_sha256`), else the
-    digest of the frame1 document among `locations`, its links, since a frame1 document is the
-    frame's canonical bytes. `None` when it holds neither, as a version linking only a
-    canonical frame recorded before frame hashes does: a Parquet digest depends on its
-    encoding."""
-    if recorded is not None:
-        return recorded
-    frame1 = next((loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE), None)
-    return None if frame1 is None else frame1.artifact_digest.removeprefix("sha256:")
 
 
 # Two-key advisory locks live apart from the one-key space `operation_store` uses.
@@ -331,14 +314,16 @@ def _record_description(
 
     A version without a record gets the one `record.describer` builds from the version as
     stored, so a write that found the row already there describes the stored facts and frame,
-    the frame named by its hash as `recorded_frame_sha256` reads it in this transaction, the
-    rule the publish door matched it by. A version holding a record, including one a concurrent
-    writer inserted first, gets the late fields the describer settles, and, when they fill any
-    member, the continuations they carry on its version row (`LateFields.continuations`). A
-    describer that raises anything but `DescriptionDiverges` has a
-    defect: it is logged and the version is stored without touching its record, before any
-    record statement runs, so the transaction stays sound. When a concurrent writer filled them first, the describer
-    settles again against what it filled, so a contradiction still raises.
+    the frame named by the hash its row records. A version recorded before frame hashes takes
+    the hash on `record`. Only `PublishDescriber` reads that hash, and the publish door matches
+    the stored frame to it before it records (`_recorded_frame_matches`); every writer since
+    records a hash, so a row a concurrent writer inserted carries its own. A version holding a
+    record, including one a concurrent writer inserted first, gets the late fields the describer
+    settles, and, when they fill any member, the continuations they carry on its version row
+    (`LateFields.continuations`). A describer that raises anything but `DescriptionDiverges` has
+    a defect: it is logged and the version is stored without touching its record, before any
+    record statement runs, so the transaction stays sound. When a concurrent writer filled them
+    first, the describer settles again against what it filled, so a contradiction still raises.
 
     A stored row that fails validation reads as no record (`read_description`), so the version
     gets the record its describer builds, which replaces the row (`insert_description`). A row
@@ -369,7 +354,11 @@ def _write_description(
         version = replace(
             record,
             facts=state.version.facts,
-            frame_sha256=recorded_frame_sha256(state.version.frame_sha256, state.locations),
+            frame_sha256=(
+                record.frame_sha256
+                if state.version.frame_sha256 is None
+                else state.version.frame_sha256
+            ),
         )
     if stored is None:
         base = (

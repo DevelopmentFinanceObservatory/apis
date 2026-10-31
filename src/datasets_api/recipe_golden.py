@@ -24,6 +24,7 @@ import io
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +35,12 @@ from datasets_api.analysis import (
     AnalysisRequest,
     DatasetRoot,
     DerivedRoot,
+    LocatedRoot,
     ResolvedRoot,
     RootRendering,
     SpecRoot,
     compute_analysis,
+    locate_roots,
     plan_roots,
     resolve_roots,
 )
@@ -59,6 +62,18 @@ def _frame_bytes(frame: Frame) -> bytes:
     return sink.getvalue()
 
 
+class CaseOutcome(StrEnum):
+    """What `record_case` did with one stored recipe, and why a skipped one was skipped."""
+
+    WRITTEN = "written"
+    # The frame holds no recipe, or it, a root version or a root's frame is no longer held.
+    NOT_HELD = "not_held"
+    # The frames together pass the byte limit.
+    PAST_MAX_BYTES = "past_max_bytes"
+    # The roots pass the root-row cap, or a root is a frame1 document past the decode bound.
+    OVER_CEILING = "over_ceiling"
+
+
 def record_case(
     *,
     spec_id: str,
@@ -67,26 +82,29 @@ def record_case(
     out: Path,
     origin: str,
     max_bytes: int = DEFAULT_MAX_BYTES,
-) -> bool:
+) -> CaseOutcome:
     """Write the case of the stored recipe of `{spec_id, content_version}` under `out`, and
-    return whether it was written: `False` when the frame holds no recipe, a frame is no longer
-    held, or the frames pass `max_bytes`.
+    return what it did (`CaseOutcome`). The roots are located (`analysis.locate_roots`) before
+    any is read, so roots past a bound are refused unread.
 
     Raises:
         FrameUnavailable: A root cannot be read.
+        AnalysisTooLarge: `analysis_root_rows`, for roots past the root-row cap.
+        OverCeilingError: `bytes`, for a root stored as a frame1 document past the decode bound.
     """
     recipe = source.recipe(spec_id=spec_id, content_version=content_version)
     output = source.stored_output(spec_id=spec_id, content_version=content_version)
     if recipe is None or output is None:
-        return False
+        return CaseOutcome.NOT_HELD
     request = AnalysisRequest(tree=DerivedRoot(spec_id=spec_id, content_version=content_version))
     _, roots = plan_roots(request, source=source, bounds=_BOUNDS)
     resolved = resolve_roots(roots, source=source, latest=False, trace_id=None)
-    frames = [source.read(root) for root in resolved]
+    located = locate_roots(resolved, source=source, cap=_BOUNDS.max_root_rows)
+    frames = [source.read(root) for root in located]
     files = [_frame_bytes(frame) for frame in frames]
     output_bytes = _frame_bytes(output)
     if sum(map(len, files)) + len(output_bytes) > max_bytes:
-        return False
+        return CaseOutcome.PAST_MAX_BYTES
     out.mkdir(parents=True, exist_ok=True)
     (out / "roots").mkdir(exist_ok=True)
     for index, data in enumerate(files):
@@ -108,7 +126,7 @@ def record_case(
         ),
     }
     (out / CASE_FILE).write_text(json.dumps(case, indent=1, sort_keys=True) + "\n")
-    return True
+    return CaseOutcome.WRITTEN
 
 
 def _names(
@@ -166,11 +184,11 @@ class FixtureRootSource:
             source=held["file"],
         )
 
-    def locate(self, root: ResolvedRoot) -> ResolvedRoot:
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
         """`root` as it is. A case file names its frame as it resolves."""
-        return root
+        return LocatedRoot.of(root)
 
-    def read(self, root: ResolvedRoot) -> Frame:
+    def read(self, root: LocatedRoot) -> Frame:
         assert isinstance(root.source, str)
         return read_canonical_frame((self.case / root.source).read_bytes())
 

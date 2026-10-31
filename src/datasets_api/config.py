@@ -10,7 +10,7 @@ startup when live clients are built. Tests can inject fakes without constructing
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +40,12 @@ DEFAULT_MATERIALISE_WAIT_SECONDS = 30
 # `DATASETS_GROUPBY_FOLD_MAX_ROWS` where the environment sets none, which also sizes the frame1
 # document a read decodes (`render.frame1_decode_max_bytes`).
 DEFAULT_GROUPBY_FOLD_MAX_ROWS = 2_000_000
+# Frame rows a groupby that sums a frame folds as Arrow. A larger frame refuses over_ceiling
+# (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads (505 MiB over
+# spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB. A frame1 document a
+# read decodes is held to that memory too (`render.frame1_decode_max_bytes`). Declared once for
+# `FoldCeilingSettings` and Presentation's settings (`presentation_api.config`).
+GroupbyFoldMaxRows = Annotated[int, Field(default=DEFAULT_GROUPBY_FOLD_MAX_ROWS, ge=1)]
 
 
 class DatasetsConfigError(Exception):
@@ -54,11 +60,7 @@ class FoldCeilingSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="DATASETS_")
 
-    # Frame rows a groupby that sums a frame folds as Arrow. A larger frame refuses over_ceiling
-    # (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads (505 MiB over
-    # spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB. A frame1 document
-    # a read decodes is held to that memory too (`render.frame1_decode_max_bytes`).
-    groupby_fold_max_rows: int = Field(default=DEFAULT_GROUPBY_FOLD_MAX_ROWS, ge=1)
+    groupby_fold_max_rows: GroupbyFoldMaxRows
 
     @classmethod
     def from_env(cls) -> Self:
