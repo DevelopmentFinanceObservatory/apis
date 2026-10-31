@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 import openpyxl
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -29,6 +30,7 @@ import datasets_api.admission as admission
 import datasets_api.analysis_roots as analysis_roots
 import datasets_api.current as current_module
 import datasets_api.doors.analysis as analysis_door
+import datasets_api.doors.derived as derived_door
 import datasets_api.doors.exports as exports_door
 import datasets_api.exports as exports_module
 from artifact_store import LiveArtifactInventory, Tier
@@ -42,7 +44,7 @@ from datasets_api.allowance import (
     LiveAllowanceLedger,
 )
 from datasets_api.analysis import AnalysisPending
-from datasets_api.codes_exports import LicenceNotRedistributable
+from datasets_api.codes_exports import ExportOverCeiling, LicenceNotRedistributable
 from datasets_api.codes_materialise import SpecNotExportable
 from datasets_api.codes_snapshot import ArtifactExpired
 from datasets_api.config import DatasetsBuildSettings
@@ -54,9 +56,11 @@ from datasets_api.export_store import LiveExportStore
 from datasets_api.exports import BareExportFrame
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.reference_store import LiveArtifactReferenceWriter
+from datasets_api.retention_admission import PinReservation
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.caller import CallerUnresolved, address_key
+from materialise.formats import ExcelLimitError, ParquetSizeBoundError
 from materialise.graph import Facet
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
@@ -296,7 +300,10 @@ _HMAC_KEY = "test-caller-key"
 _CLIENT_ADDRESS = "203.0.113.7"
 _CALLER_HEADERS = {"x-forwarded-for": f"198.51.100.1, {_CLIENT_ADDRESS}"}
 _FORMATS = [(fmt, bundle) for fmt in ("csv", "xlsx", "parquet") for bundle in (False, True)]
-_RENDERS = {"fetched": "render_file_location", "derived": "render_derived_file"}
+_RENDERS = {
+    "fetched": (exports_module, "render_file_location"),
+    "derived": (derived_door, "render_derived_file"),
+}
 
 
 @pytest.fixture(autouse=True)
@@ -506,8 +513,8 @@ def test_the_link_redirects_to_the_pinned_file_without_rendering(
     rig: _Rig, monkeypatch: pytest.MonkeyPatch
 ):
     body = rig.prepare("xlsx", bundle=True).json()
-    monkeypatch.setattr(exports_module, "render_derived_file", _forbidden)
-    monkeypatch.setattr(exports_module, "render_file_location", _forbidden)
+    monkeypatch.setattr(*_RENDERS["derived"], _forbidden)
+    monkeypatch.setattr(*_RENDERS["fetched"], _forbidden)
 
     resp = rig.link(body["export_id"])
 
@@ -551,10 +558,18 @@ def test_a_new_pinned_copy_spends_one_unit_of_the_callers_pin_allowance(rig: _Ri
         ({"pin": 0}, 429, "allowance_exhausted", False),
         ({"pin": 0, "pin_budget": 0}, 503, "service_unavailable", True),
         ({"pin": 0, "open_pin_budget": 0}, 503, "service_unavailable", True),
+        ({"pin_budget": 0}, 503, "service_unavailable", True),
+        ({"open_pin_budget": 0}, 503, "service_unavailable", True),
     ],
-    ids=["allowance", "allowance-and-pin-budget", "allowance-and-open-budget"],
+    ids=[
+        "allowance",
+        "allowance-and-pin-budget",
+        "allowance-and-open-budget",
+        "pin-budget",
+        "open-budget",
+    ],
 )
-def test_an_open_caller_past_its_pin_allowance_refuses_as_the_copy_would_before_any_render(
+def test_a_caller_with_a_unit_spent_refuses_as_the_copy_would_before_any_render(
     kind: str,
     spent: dict[str, int],
     status: int,
@@ -564,7 +579,7 @@ def test_an_open_caller_past_its_pin_allowance_refuses_as_the_copy_would_before_
 ):
     """Each refusal holds until UTC midnight, and is the one spending the units would raise."""
     rig = _Rig(kind, monkeypatch, ledger=_ledger(**spent))
-    monkeypatch.setattr(exports_module, _RENDERS[kind], _forbidden)
+    monkeypatch.setattr(*_RENDERS[kind], _forbidden)
 
     resp = rig.prepare("csv", bundle=True)
 
@@ -573,27 +588,6 @@ def test_an_open_caller_past_its_pin_allowance_refuses_as_the_copy_would_before_
     assert int(resp.headers["retry-after"]) > 0
     assert _spent(rig.ledger) == {}
     assert rig.link(_export_id(rig.frame, "csv", bundle=True)).status_code == 404
-
-
-@pytest.mark.parametrize("kind", ["fetched", "derived"])
-def test_a_spent_budget_alone_refuses_at_the_copy_after_the_render(
-    kind: str, monkeypatch: pytest.MonkeyPatch
-):
-    """A concurrent pin can give a budget's unit back, so the early check leaves it alone."""
-    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin_budget=0))
-    render = getattr(exports_module, _RENDERS[kind])
-    renders: list[str] = []
-
-    def counted(*args: Any, **kwargs: Any) -> Any:
-        renders.append(kind)
-        return render(*args, **kwargs)
-
-    monkeypatch.setattr(exports_module, _RENDERS[kind], counted)
-
-    resp = rig.prepare("csv", bundle=True)
-
-    assert resp.status_code == 503, resp.text
-    assert renders == [kind]
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
@@ -612,14 +606,29 @@ def test_a_holder_of_the_pin_grant_has_no_allowance_to_spend(
     assert _spent(rig.ledger) == {(BUDGET_KEY, "pin_budget"): 1}
 
 
-@pytest.mark.parametrize(("kind", "allowance"), [("fetched", 1), ("derived", 2)])
-def test_a_file_pinned_already_asks_for_no_copy(
-    kind: str, allowance: int, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_holder_of_the_pin_grant_refuses_a_spent_budget_before_any_render(
+    kind: str, monkeypatch: pytest.MonkeyPatch
 ):
-    """The second prepare finds the pinned copy, so it spends nothing and copies nothing. A
-    listed dataset file's digest is known first, so the first prepare can spend the caller's
-    last unit. A derived file's digest comes from its render, which needs a unit left."""
-    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=allowance))
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin_budget=0))
+    monkeypatch.setattr(*_RENDERS[kind], _forbidden)
+
+    resp = rig.client.post(
+        "/api/datasets/exports",
+        json={"frame": rig.frame, "format": "csv", "bundle": True},
+        headers={"x-dfo-principal": _PIN_PRINCIPAL},
+    )
+
+    assert resp.status_code == 503, resp.text
+    assert int(resp.headers["retry-after"]) > 0
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_file_pinned_already_asks_for_no_copy(kind: str, monkeypatch: pytest.MonkeyPatch):
+    """The first prepare spends the caller's last unit and lands the copy, and its record goes.
+    The second prepare has no unit to reserve, and the export's reference says the copy landed,
+    so it serves the file, spending nothing and copying nothing."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=1))
     first = rig.prepare("csv")
     assert first.status_code == 200, first.text
     spent = _spent(rig.ledger)
@@ -633,11 +642,20 @@ def test_a_file_pinned_already_asks_for_no_copy(
     assert _spent(rig.ledger) == spent
 
 
-@pytest.mark.parametrize("kind", ["fetched", "derived"])
 def test_the_loser_of_the_last_unit_answers_the_copy_the_winner_landed(
-    kind: str, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    rig = _Rig(kind, monkeypatch)
+    """A listed dataset file spends at its copy, so only it can lose a spend there. A prepare
+    whose copy failed leaves the file listed and unpinned, with its units given back."""
+    rig = _Rig("fetched", monkeypatch)
+
+    def failed(*_: object) -> Any:
+        raise RuntimeError("the copy failed")
+
+    with monkeypatch.context() as copy:
+        copy.setattr(PinReservation, "copy", failed)
+        assert rig.prepare("csv").status_code == 500
+    assert _spent(rig.ledger) == {}
 
     def lost_the_spend(artifacts: Any, digest: str, *, now: Any, **_: object) -> Any:
         artifacts.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
@@ -672,13 +690,13 @@ def test_a_revocation_during_the_copy_refuses_the_export_and_records_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ):
     rig = _Rig("fetched", monkeypatch)
-    copy = exports_module.copy_to_pinned
+    copy = PinReservation.copy
 
     def revoked_meanwhile(*args: Any, **kwargs: Any) -> Any:
         rig.revoke(rig.frame["spec_id"])
         return copy(*args, **kwargs)
 
-    monkeypatch.setattr(exports_module, "copy_to_pinned", revoked_meanwhile)
+    monkeypatch.setattr(PinReservation, "copy", revoked_meanwhile)
 
     resp = rig.prepare("csv")
 
@@ -787,16 +805,16 @@ class _HeldRender:
         self.parked = threading.Event()
         self.release = threading.Event()
         self._results = results
-        self._render = getattr(exports_module, _RENDERS[kind])
-        monkeypatch.setattr(exports_module, _RENDERS[kind], self)
-        sliced_wait = admission._sliced_wait
+        self._render = getattr(*_RENDERS[kind])
+        monkeypatch.setattr(*_RENDERS[kind], self)
+        landed = admission.RebuildFlights.landed
 
-        def parked_wait(attempt: Any, **kwargs: Any) -> bool:
-            if attempt.__qualname__ == "Event.wait":
+        async def parked_wait(flights: Any, subject_id: str, **kwargs: Any) -> None:
+            if subject_id in flights._running:
                 self.parked.set()
-            return sliced_wait(attempt, **kwargs)
+            await landed(flights, subject_id, **kwargs)
 
-        monkeypatch.setattr(admission, "_sliced_wait", parked_wait)
+        monkeypatch.setattr(admission.RebuildFlights, "landed", parked_wait)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         self.calls += 1
@@ -831,7 +849,7 @@ def test_concurrent_prepares_of_one_id_render_once_and_answer_the_record(
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
 def test_a_waiter_runs_its_own_prepare_after_the_one_it_waited_on_failed(
-    kind: str, monkeypatch: pytest.MonkeyPatch
+    kind: str, monkeypatch: pytest.MonkeyPatch, caller_key: str
 ):
     rig = _Rig(kind, monkeypatch)
     failure = ArtifactExpired(id=rig.frame["spec_id"], content_version=rig.frame["content_version"])
@@ -848,6 +866,115 @@ def test_a_waiter_runs_its_own_prepare_after_the_one_it_waited_on_failed(
     assert failed.json()["code"] == "artifact_expired", failed.text
     assert answered.status_code == 200, answered.text
     assert render.calls == 2
+    assert _spent(rig.ledger)[(caller_key, "pin")] == 1
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+@pytest.mark.parametrize(
+    ("refusal", "code"),
+    [
+        (ExportOverCeiling(format="xlsx", count=2, cap=1), "over_ceiling"),
+        (ExcelLimitError("too wide"), "excel_limit"),
+        (ParquetSizeBoundError("too large"), "parquet_size_bound"),
+    ],
+    ids=["over-ceiling", "excel-limit", "parquet-size-bound"],
+)
+def test_a_waiter_answers_the_refusal_its_file_gave_the_prepare_it_waited_on(
+    kind: str,
+    refusal: Exception,
+    code: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The request names the file, and the file decides the refusal, so one render decides it
+    for every waiter, and the units go back."""
+    rig = _Rig(kind, monkeypatch)
+    render = _HeldRender(kind, monkeypatch, results=[refusal])
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        leader = pool.submit(rig.prepare, "xlsx")
+        assert render.entered.wait(10)
+        waiters = [pool.submit(rig.prepare, "xlsx") for _ in range(2)]
+        assert render.parked.wait(10)
+        render.release.set()
+        responses = [leader.result(), *(waiter.result() for waiter in waiters)]
+
+    assert [r.json()["code"] for r in responses] == [code] * 3, [r.text for r in responses]
+    assert render.calls == 1
+    assert _spent(rig.ledger) == {}
+
+
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_burst_from_a_caller_with_one_unit_left_renders_one_file(
+    kind: str, monkeypatch: pytest.MonkeyPatch, caller_key: str
+):
+    """The first prepare holds the unit through its render, so the rest refuse at once."""
+    rig = _Rig(kind, monkeypatch, ledger=_ledger(pin=1))
+    render = _HeldRender(kind, monkeypatch, results=[None])
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        first = pool.submit(rig.prepare, "xlsx")
+        assert render.entered.wait(10)
+        try:
+            burst = [
+                pool.submit(rig.prepare, fmt, bundle=bundle).result(timeout=5)
+                for fmt, bundle in (("xlsx", True), ("parquet", True), ("csv", True))
+            ]
+        finally:
+            render.release.set()
+        answered = first.result()
+
+    assert [r.status_code for r in burst] == [429, 429, 429], [r.text for r in burst]
+    assert answered.status_code == 200, answered.text
+    assert render.calls == 1
+    assert _spent(rig.ledger)[(caller_key, "pin")] == 1
+
+
+def test_waiters_on_one_export_hold_no_work_permit(monkeypatch: pytest.MonkeyPatch):
+    """Three waiters and a pool of two: the other door's work still runs."""
+    monkeypatch.setenv("DATASETS_WORK_MAX_CONCURRENCY", "2")
+    rig = _Rig("fetched", monkeypatch)
+    # Listed and pinned by now, so its second prepare takes a permit and renders nothing.
+    assert rig.prepare("csv").status_code == 200
+    rig.forget_exports()
+    render = _HeldRender("fetched", monkeypatch, results=[None])
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        leader = pool.submit(rig.prepare, "xlsx")
+        assert render.entered.wait(10)
+        waiters = [pool.submit(rig.prepare, "xlsx") for _ in range(3)]
+        assert render.parked.wait(10)
+        try:
+            other = rig.prepare("csv")
+        finally:
+            render.release.set()
+        responses = [leader.result(), *(waiter.result() for waiter in waiters)]
+
+    assert other.status_code == 200, other.text
+    assert [r.status_code for r in responses] == [200] * 4, [r.text for r in responses]
+    assert render.calls == 1
+
+
+def test_a_waiter_gives_up_at_the_materialise_wait_naming_the_running_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Waits a second, the shortest wait whose `Retry-After` differs from the backpressure one."""
+    monkeypatch.setenv("DATASETS_MATERIALISE_WAIT_SECONDS", "1.1")
+    rig = _Rig("fetched", monkeypatch)
+    render = _HeldRender("fetched", monkeypatch, results=[None])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader = pool.submit(rig.prepare, "xlsx")
+        assert render.entered.wait(10)
+        try:
+            refused = pool.submit(rig.prepare, "xlsx").result(timeout=5)
+        finally:
+            render.release.set()
+        assert leader.result().status_code == 200
+
+    assert refused.status_code == 503, refused.text
+    assert (refused.json()["code"], refused.json()["retryable"]) == ("service_unavailable", True)
+    assert "another prepare of this export" in refused.json()["detail"]
+    assert refused.headers["retry-after"] == "2"
 
 
 @pytest.mark.parametrize("kind", ["fetched", "derived"])
@@ -866,7 +993,7 @@ def test_a_prepare_answers_a_record_written_since_the_door_read_it(
     assert again.json() == first.json()
 
 
-def test_a_derived_file_is_rendered_counted_and_stored_inside_one_slot_and_stays_there(
+def test_a_derived_file_is_rendered_and_stored_inside_one_slot_and_stays_there(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Each step sees a slot held, and the bytes are gone by the time the slot releases."""
@@ -882,8 +1009,7 @@ def test_a_derived_file_is_rendered_counted_and_stored_inside_one_slot_and_stays
             held.discard(id(self))
 
     slot = exports_module.bounded_materialise_slot
-    render = exports_module.render_derived_file
-    shape = exports_module.file_shape
+    render = derived_door.render_derived_file
     put = rig.artifact_store.put
 
     @contextmanager
@@ -903,24 +1029,42 @@ def test_a_derived_file_is_rendered_counted_and_stored_inside_one_slot_and_stays
         held.add(id(tracked))
         return replace(file, data=tracked)
 
-    def shaped(*args: Any, **kwargs: Any) -> Any:
-        steps.append(("shape", inside))
-        return shape(*args, **kwargs)
-
     def stored(data: bytes, *, tier: Tier) -> Any:
         steps.append(("store", inside))
         return put(data, tier=tier)
 
-    monkeypatch.setattr(exports_module, "bounded_materialise_slot", watched)
-    monkeypatch.setattr(exports_module, "render_derived_file", rendered)
-    monkeypatch.setattr(exports_module, "file_shape", shaped)
+    monkeypatch.setattr(derived_door, "bounded_materialise_slot", watched)
+    monkeypatch.setattr(derived_door, "render_derived_file", rendered)
+    monkeypatch.setattr(exports_module, "file_shape", _forbidden)
     monkeypatch.setattr(rig.artifact_store, "put", stored)
 
     assert rig.prepare("csv").status_code == 200
 
-    assert steps == [("render", True), ("shape", True), ("store", True)]
+    assert steps == [("render", True), ("store", True)]
     assert slots == 1
     assert held_at_release == [0]
+
+
+def test_both_doors_bound_the_derived_files_permit_wait_by_a_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rig = _Rig("derived", monkeypatch)
+    slot = derived_door.bounded_materialise_slot
+    deadlines: list[float | None] = []
+
+    def watched(*args: Any, deadline: float | None = None, **kwargs: Any) -> Any:
+        deadlines.append(deadline)
+        return slot(*args, deadline=deadline, **kwargs)
+
+    monkeypatch.setattr(derived_door, "bounded_materialise_slot", watched)
+    frame = rig.frame
+
+    assert rig.prepare("csv").status_code == 200
+    file_path = f"/api/datasets/derived/{frame['spec_id']}/{frame['content_version']}/file"
+    assert rig.client.get(file_path).status_code == 200
+
+    assert len(deadlines) == 2
+    assert None not in deadlines
 
 
 def _csv_bytes(rows: list[list[str]]) -> bytes:
@@ -929,12 +1073,12 @@ def _csv_bytes(rows: list[list[str]]) -> bytes:
     return text.getvalue().encode("utf-8")
 
 
-def _bundled(data: bytes) -> bytes:
+def _bundled(data: bytes, *, fmt: str = "csv") -> bytes:
     """`data` as the first data resource of a bundle, beside a second CSV."""
-    resources = [{"path": "data/main.csv"}, {"path": "data/main-totals.csv"}]
+    resources = [{"path": f"data/main.{fmt}"}, {"path": "data/main-totals.csv"}]
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("data/main.csv", data)
+        archive.writestr(f"data/main.{fmt}", data)
         archive.writestr("data/main-totals.csv", b"a\r\n1\r\n2\r\n3\r\n")
         archive.writestr("datapackage.json", json.dumps({"resources": resources}))
     return out.getvalue()
@@ -969,7 +1113,25 @@ def test_a_csv_is_counted_from_chunks_of_the_stream():
     assert exports_module._table_shape(_ChunkedReads(_LONG_CSV), format="csv") == (5_000, 2)
 
 
-def test_a_bundle_unzips_only_its_package_descriptor_whole(monkeypatch: pytest.MonkeyPatch):
+def _parquet_bytes() -> bytes:
+    out = io.BytesIO()
+    pq.write_table(pa.table({"a": ["text"] * 5_000, "b": ["1"] * 5_000}), out)
+    return out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("fmt", "data", "whole"),
+    [
+        ("csv", _LONG_CSV, ["datapackage.json"]),
+        ("parquet", _parquet_bytes(), ["datapackage.json", "data/main.parquet"]),
+    ],
+    ids=["csv-streams", "parquet-seeks"],
+)
+def test_a_bundle_unzips_whole_only_what_seeks_backwards(
+    fmt: str, data: bytes, whole: list[str], monkeypatch: pytest.MonkeyPatch
+):
+    """A zip member re-inflates from its start on each backward seek, so a member a reader
+    seeks in is read whole, and a CSV, read forwards, is streamed."""
     read = zipfile.ZipFile.read
     unzipped: list[str] = []
 
@@ -979,10 +1141,10 @@ def test_a_bundle_unzips_only_its_package_descriptor_whole(monkeypatch: pytest.M
 
     monkeypatch.setattr(zipfile.ZipFile, "read", recorded)
 
-    shape = exports_module.file_shape(_bundled(_LONG_CSV), format="csv", bundle=True)
+    shape = exports_module.file_shape(_bundled(data, fmt=fmt), format=fmt, bundle=True)
 
     assert shape == (5_000, 2)
-    assert unzipped == ["datapackage.json"]
+    assert unzipped == whole
 
 
 def test_an_export_id_is_the_hash_of_the_request_alone(rig: _Rig):

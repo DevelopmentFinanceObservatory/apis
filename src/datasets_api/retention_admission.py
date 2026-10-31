@@ -14,22 +14,25 @@ allowance `AllowanceExhausted`, 429.
 
 The units pay for the copy that stands. A copy that finds the pinned bytes already stored, made
 by a concurrent pin, gives its units back, since that pin's units pay for it, and so does a copy
-whose working bytes are gone, since nothing landed. A copy that stands keeps its units through
-any later failure of the write that asked for it, since the pinned bytes stay. A caller that
-skips the copy for an artifact already pinned spends nothing.
+that fails, since nothing stands. A copy that stands keeps its units through any later failure
+of the write that asked for it, since the pinned bytes stay. A caller that skips the copy for an
+artifact already pinned spends nothing.
 
-`refuse_spent_caller` answers, before work a copy would follow, the refusal that copy would raise
-for a caller whose own `pin` allowance is spent, and spends nothing. A spent budget alone refuses
-at the copy, since a concurrent pin can give its unit back.
+`reserve_pin` spends the units ahead of work a copy follows, a render whose digest names what to
+copy, so a refusal costs that work nothing. The reservation (`PinReservation`) gives them back
+as it closes unless its copy stands, so work that fails, or that finds the bytes pinned, spends
+nothing. A process that dies holding a reservation leaves its units spent until they reset.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
-from types import MappingProxyType
+from types import MappingProxyType, TracebackType
+from typing import Self
 
-from artifact_store import ArtifactNotFoundError, ArtifactStore, StoredArtifact, Tier
+from artifact_store import ArtifactStore, StoredArtifact, Tier
 from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceExhausted,
@@ -44,8 +47,9 @@ from dfo_platform.problem import Refusal
 __all__ = [
     "OpenPinBudgetExhausted",
     "PinBudgetExhausted",
+    "PinReservation",
     "copy_to_pinned",
-    "refuse_spent_caller",
+    "reserve_pin",
 ]
 
 logger = logging.getLogger(__name__)
@@ -104,33 +108,60 @@ def _pin_spends(caller: Caller | None) -> list[Spend]:
     return spends
 
 
-def _refusal(exhausted: AllowanceExhausted, *, now: datetime) -> Refusal:
-    """The refusal a copy raises for the spent unit `exhausted` names."""
-    budget = _BUDGET_REFUSALS.get(exhausted.kind)
-    return exhausted if budget is None else budget(limit=exhausted.limit, now=now)
+@dataclass(kw_only=True)
+class PinReservation:
+    """The units of one new pinned copy, spent ahead of it (`reserve_pin`). Leaving its block
+    gives them back unless `copy` made a copy that stands."""
+
+    allowances: SharedAllowanceLedger
+    spends: list[Spend]
+    now: datetime
+    _stands: bool = False
+
+    def copy(self, artifacts: ArtifactStore, artifact_digest: str) -> StoredArtifact:
+        """Copy `artifact_digest` from the working tier to the pinned tier on these units.
+
+        Raises:
+            ArtifactNotFoundError: The working bytes are gone.
+        """
+        copied = artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        self._stands = not copied.deduplicated
+        return copied
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if not self._stands:
+            _refund(self.allowances, self.spends, now=self.now)
 
 
-def refuse_spent_caller(
-    allowances: SharedAllowanceLedger, caller: Caller, *, now: datetime
-) -> None:
-    """Refuse as `copy_to_pinned` would when `caller`'s `pin` allowance is spent, spending
-    nothing. The first spent unit in spending order names the refusal.
+def reserve_pin(
+    allowances: SharedAllowanceLedger, caller: Caller | None, *, now: datetime
+) -> PinReservation:
+    """Spend the units one new pinned copy takes for `caller` (see `copy_to_pinned`) and return
+    them as a reservation.
 
     Raises:
-        PinBudgetExhausted: The allowance and the day's pin budget are spent.
-        OpenPinBudgetExhausted: The allowance and the open callers' budget are spent.
-        AllowanceExhausted: The allowance alone is spent.
-        DatasetsStoreUnavailable: The ledger could not be read.
+        PinBudgetExhausted: The day's pin budget is spent. Nothing is spent.
+        OpenPinBudgetExhausted: The open callers' budget is spent. Nothing is spent.
+        AllowanceExhausted: The caller's `pin` allowance is spent. Nothing is spent.
+        DatasetsStoreUnavailable: The units could not be spent.
     """
     spends = _pin_spends(caller)
     try:
-        allowances.check_remaining(spends[-1], now)
-    except AllowanceExhausted:
-        try:
-            for spend in spends:
-                allowances.check_remaining(spend, now)
-        except AllowanceExhausted as exhausted:
-            raise _refusal(exhausted, now=now) from None
+        allowances.spend_together(spends, now)
+    except AllowanceExhausted as exhausted:
+        budget = _BUDGET_REFUSALS.get(exhausted.kind)
+        if budget is None:
+            raise
+        raise budget(limit=exhausted.limit, now=now) from None
+    return PinReservation(allowances=allowances, spends=spends, now=now)
 
 
 def copy_to_pinned(
@@ -156,19 +187,8 @@ def copy_to_pinned(
     """
     if allowances is None:
         return artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
-    spends = _pin_spends(caller)
-    try:
-        allowances.spend_together(spends, now)
-    except AllowanceExhausted as exhausted:
-        raise _refusal(exhausted, now=now) from None
-    try:
-        copied = artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
-    except ArtifactNotFoundError:
-        _refund(allowances, spends, now=now)
-        raise
-    if copied.deduplicated:
-        _refund(allowances, spends, now=now)
-    return copied
+    with reserve_pin(allowances, caller, now=now) as reservation:
+        return reservation.copy(artifacts, artifact_digest)
 
 
 def _refund(allowances: SharedAllowanceLedger, spends: list[Spend], *, now: datetime) -> None:

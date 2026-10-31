@@ -3,7 +3,9 @@
 - `POST /api/datasets/exports`, body `ExportRequestBody`, answers 200 `ExportResponse`. A request
   whose export is recorded answers the record on the read executor, rendering and spending
   nothing. Any other prepares on the work executor under the definition deadline, as the file
-  selector renders. It admits every caller, and the site's proxy forwards it. The caller is
+  selector renders. While another prepare of the request runs here, the door waits for it on
+  the event loop, holding no work permit (`_prepared`), for at most `materialise_wait_seconds`.
+  It admits every caller, and the site's proxy forwards it. The caller is
   named as the pin door names it: a holder of the `pin` grant spends the day's pin budget
   alone, and any other caller is resolved (`resolve_caller`) and spends its `pin` allowance, so
   data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`. A frame
@@ -23,7 +25,10 @@ from __future__ import annotations
 
 import functools
 import logging
+import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -36,14 +41,15 @@ from datasets_api.codes_exports import (
     ExportFileIncomplete,
     ExportNotFound,
     ExportOverCeiling,
+    ExportPrepareRunning,
     LicenceNotRedistributable,
     NewestVersionUnservable,
     ProvenanceUnavailable,
 )
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, SpecNotFound
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.current import StoredTraceMissingResolvedStatVars
-from datasets_api.deps import DepsCell
+from datasets_api.current import DefinitionDeps, StoredTraceMissingResolvedStatVars
+from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
 from datasets_api.doors.files import (
     REDIRECT_RESPONSE,
@@ -54,8 +60,10 @@ from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.exports import (
     BareExportFrame,
+    ExportRequest,
     ExportRequestBody,
     ExportResponse,
+    export_id,
     passes_through,
     prepare_export,
     recorded_export,
@@ -69,6 +77,7 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, run_with_timings
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.doors import DoorContribution
+from dfo_platform.timings import PhaseTimings
 from spec_registry import IdentityQuarantined
 from spec_registry.errors import IdentityCollision
 
@@ -84,6 +93,61 @@ class ExportBackpressure(Backpressure):
     code = "service_unavailable"
 
     detail = "the exports door is at its concurrent-call capacity right now; retry"
+
+
+async def _prepared(
+    export_request: ExportRequest,
+    *,
+    request: Request,
+    granted: Principal,
+    current: Deps,
+    retrieval: DefinitionDeps,
+    timings: PhaseTimings,
+) -> Mapping[str, Any]:
+    """The facts of the export `export_request` names: its record, else a new prepare's. While
+    a prepare of it runs in this process, the call waits for that prepare on the event loop and
+    reads what it left, so a waiter holds no work permit (`RebuildFlights.landed`). One wait
+    bounds every turn of the loop.
+
+    Raises:
+        ExportPrepareRunning: The other prepare still runs at `materialise_wait_seconds`, or at
+            the deadline if that comes first.
+    """
+    export = export_id(export_request)
+    wait_seconds = current.settings.materialise_wait_seconds
+    ends = min(time.monotonic() + wait_seconds, cast(float, retrieval.deadline))
+    while True:
+        await retrieval.rebuilds.landed(
+            export,
+            ends=ends,
+            refuse=lambda: ExportPrepareRunning(wait_seconds=wait_seconds),
+        )
+        facts = await current.read_executor.run(
+            functools.partial(
+                run_with_timings, recorded_export, timings, request=export_request, current=current
+            ),
+            refuse=ExportBackpressure,
+        )
+        if facts is not None:
+            return facts
+        # Only a new export can spend, so a repeat needs no caller.
+        caller: Caller | None = (
+            None
+            if Grant.pin in granted.grants
+            else resolve_caller(request, current.settings.caller)
+        )
+        facts = await _run_retrieval(
+            current.work_executor,
+            prepare_export,
+            deps=retrieval,
+            timings=timings,
+            refuse=ExportBackpressure,
+            request=export_request,
+            caller=caller,
+            current=current,
+        )
+        if facts is not None:
+            return facts
 
 
 def build_exports_door(
@@ -119,34 +183,14 @@ def build_exports_door(
                     frame=frame,
                     current=current,
                 )
-            export_request = body.resolved(frame)
-            facts = await current.read_executor.run(
-                functools.partial(
-                    run_with_timings,
-                    recorded_export,
-                    call.timings,
-                    request=export_request,
-                    current=current,
-                ),
-                refuse=ExportBackpressure,
+            facts = await _prepared(
+                body.resolved(frame),
+                request=request,
+                granted=granted,
+                current=current,
+                retrieval=retrieval,
+                timings=call.timings,
             )
-            if facts is None:
-                # Only a new export can spend, so a repeat needs no caller.
-                caller: Caller | None = (
-                    None
-                    if Grant.pin in granted.grants
-                    else resolve_caller(request, current.settings.caller)
-                )
-                facts = await _run_retrieval(
-                    current.work_executor,
-                    prepare_export,
-                    deps=retrieval,
-                    timings=call.timings,
-                    refuse=ExportBackpressure,
-                    request=export_request,
-                    caller=caller,
-                    current=current,
-                )
         return JSONResponse(facts, headers=no_store_headers(server_timing=call.server_timing))
 
     exemplar_day = datetime(2026, 1, 1, tzinfo=UTC)
@@ -170,9 +214,10 @@ def build_exports_door(
             PinBudgetExhausted,
             OpenPinBudgetExhausted,
             AllowanceExhausted,
+            ExportPrepareRunning,
             ExportBackpressure,
-            # The export's turn, a derived file's slot and a render from the stored frame can
-            # each raise this, the last two at the shared materialise permit.
+            # A derived file's slot and a render from the stored frame each raise this at the
+            # shared materialise permit.
             MintBackpressure,
             DatasetsStoreUnavailable,
             *SELECTOR_RENDERING_EXCEPTION_TYPES,
@@ -195,6 +240,7 @@ def build_exports_door(
             PinBudgetExhausted(limit=0, now=exemplar_day),
             OpenPinBudgetExhausted(limit=0, now=exemplar_day),
             AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
+            ExportPrepareRunning(wait_seconds=30),
             ExportBackpressure(),
             DatasetsStoreUnavailable("exemplar"),
             StoredTraceMissingResolvedStatVars(

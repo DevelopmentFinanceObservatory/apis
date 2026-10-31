@@ -613,14 +613,25 @@ def _infer_column_type(values: Iterable[object]) -> str:
     return kind or "any"
 
 
+def _frame_field_type(frame: Frame, column: str) -> str:
+    """`_infer_column_type` of a `Frame` column, known with no cell built but the distinct units:
+    `canonical_frame_schema` fixes `value` as a float and every other column but `unit` as
+    strings or, for `status`, nulls."""
+    cells = frame.table.column(column)
+    if column == UNIT_COLUMN:
+        return _infer_column_type(unit_cells(cells, unit_codes(cells)))
+    if cells.null_count == len(cells):
+        return "any"
+    return "number" if column == VALUE_COLUMN else "string"
+
+
 def _field_types(table: Table, *, rendering: Rendering) -> tuple[str, ...]:
     """Each column's type: the one `rendering.column_types` fixes, else `_infer_column_type`
     of its cells."""
     declared = rendering.column_types or {}
     if isinstance(table, Frame):
         return tuple(
-            declared.get(column) or _infer_column_type(column_cells(table, column))
-            for column in table.columns
+            declared.get(column) or _frame_field_type(table, column) for column in table.columns
         )
     # Read rows once because a chunk's `rows` access can rebuild the full row tuple.
     columns_values: list[list[object]] = [[] for _ in table.columns]

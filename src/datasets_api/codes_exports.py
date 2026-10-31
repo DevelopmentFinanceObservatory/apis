@@ -8,7 +8,9 @@ code stands for why a bare `spec_id` could not be resolved.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 
 from dfo_platform.problem import Refusal
 
@@ -85,6 +87,19 @@ class ExportFileIncomplete(Refusal):
             f"the file of {id!r} at content_version {content_version!r} rendered without its "
             "sources' documentation; retry"
         )
+
+
+class ExportPrepareRunning(Refusal):
+    """Another prepare of the export still runs when the caller's wait for it ends (`wait_seconds`,
+    `materialise_wait_seconds`). Maps to `service_unavailable`, 503, with `Retry-After` of that
+    wait, since a prepare that outlasted one wait has no reason to end within a second."""
+
+    code = "service_unavailable"
+    retryable = True
+
+    def __init__(self, *, wait_seconds: float) -> None:
+        self.headers = MappingProxyType({"Retry-After": str(math.ceil(wait_seconds))})
+        super().__init__("another prepare of this export is still running; retry")
 
 
 class ExportNotFound(Refusal):

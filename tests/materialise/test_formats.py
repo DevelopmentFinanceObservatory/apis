@@ -334,7 +334,8 @@ def _unit_frame(unit: object) -> Frame:
 )
 def test_a_frame_writes_what_its_rows_write_and_never_builds_them(unit, monkeypatch):
     """The rows as `Frame.rows` gives them set the bytes. With `rows` barred, every writer reads
-    the frame column by column, and with `iter_rows` barred too, typing builds no row at all."""
+    the frame column by column, and with `iter_rows` and `_column_cells` barred too, typing reads
+    the schema and the distinct unit cells and builds no row at all."""
     frame = _unit_frame(unit)
     table = _Table(columns=frame.columns, rows=frame.rows)
     expected = (
@@ -353,6 +354,7 @@ def test_a_frame_writes_what_its_rows_write_and_never_builds_them(unit, monkeypa
         excel = write_excel((frame,), rendering=_PLAIN_RENDERING).data
         write_parquet((frame,), rendering=_PLAIN_RENDERING)
         patch.setattr(materialise_formats, "iter_rows", barred)
+        patch.setattr(materialise_formats, "_column_cells", barred)
         schema = table_schema_for(frame, rendering=_PLAIN_RENDERING)
 
     assert (csv_bytes, schema) == expected

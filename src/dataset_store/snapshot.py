@@ -653,6 +653,10 @@ class ArtifactReferenceWriter(Protocol):
         """Set `removed_at` on a matching live row. Missing or removed rows are a no-op."""
         ...
 
+    def holds_live_reference(self, *, principal: str) -> bool:
+        """Whether a live reference names `principal`."""
+        ...
+
     def holds_reference(self, *, subject_id: str, content_version: str) -> bool:
         """Whether any reference row names the version, live or removed, of any principal,
         digest or kind."""

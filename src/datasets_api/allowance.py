@@ -14,8 +14,7 @@ of each of several, all or none, and refuses naming the first spent out. `Allowa
 gives one unit back, `SharedAllowanceLedger.refund_together` gives back one of each of several,
 all or none, and `spending` spends one around a write and refunds it when the write
 fails, so a failed write costs its caller nothing. A pin's units stay spent when its copy
-stands and a later step fails. `SharedAllowanceLedger.check_remaining` refuses as a spend would
-and spends nothing, for work a spend would otherwise refuse only after it ran.
+stands and a later step fails.
 
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
 it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
@@ -35,7 +34,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import Protocol
 
 from dataset_store import DatasetStore
 from datasets_api.config import DatasetsBuildSettings
@@ -146,16 +145,6 @@ def spending(
 
 
 class SharedAllowanceLedger(AllowanceLedger, Protocol):
-    def check_remaining(self, spend: Spend, now: datetime) -> None:
-        """Refuse as `spend_together` would when `spend` has no unit left for the UTC day of
-        `now`, spending nothing. A later spend can still refuse.
-
-        Raises:
-            AllowanceExhausted: The day's limit is spent.
-            DatasetsStoreUnavailable: The ledger could not be read.
-        """
-        ...
-
     def spend_together(self, spends: Sequence[Spend], now: datetime) -> None:
         """Spend one unit of each of `spends` for the UTC day of `now`, all or none.
 
@@ -193,27 +182,6 @@ class LiveAllowanceLedger:
 
     def spend(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
         self.spend_together([Spend(caller.key, kind)], now)
-
-    def check_remaining(self, spend: Spend, now: datetime) -> None:
-        limit = self._limits[spend.kind]
-        row: Mapping[str, object] | None = None
-        failure: str | None = None
-        sqlstate: str | None = None
-        try:
-            with self._store.transaction() as tx:
-                row = tx.fetch_one(
-                    "SELECT count FROM datasets.caller_allowance "
-                    "WHERE caller_key = %s AND kind = %s AND day = %s",
-                    (spend.key, spend.kind.value, _utc_day(now)),
-                )
-        except Exception as exc:
-            failure = f"reading {spend.kind} of {spend.key!r} failed: {safe_diagnostics(exc)}"
-            sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        spent = 0 if row is None else cast(int, row["count"])
-        if spent >= limit:
-            raise AllowanceExhausted(kind=spend.kind, limit=limit, now=now)
 
     def spend_together(self, spends: Sequence[Spend], now: datetime) -> None:
         for spend in spends:
