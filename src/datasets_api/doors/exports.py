@@ -181,10 +181,13 @@ async def _prepared(
             wait_seconds=permit_wait(),
             request=export_request,
             caller=caller,
+            waited=has_waited,
             current=current,
         )
         if facts is not None:
             return facts
+        # Another prepare took the claim first, so this call waits on it as a waiter does.
+        has_waited = True
 
 
 def build_exports_door(
@@ -280,7 +283,7 @@ def build_exports_door(
             OpenPinBudgetExhausted(limit=0, now=exemplar_day),
             AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
             ExportPrepareRunning(wait_seconds=30),
-            ExportClaimUnsettled(retry_after=1),
+            ExportClaimUnsettled(),
             PinUnitHeld(retry_after=1),
             ExportBackpressure(),
             DatasetsStoreUnavailable("exemplar"),

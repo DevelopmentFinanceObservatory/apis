@@ -628,7 +628,7 @@ def test_a_copy_that_raises_is_judged_by_the_pinned_object(
                 super().copy(digest, from_tier=from_tier, to_tier=to_tier)
             raise ArtifactWriteError(object_name=digest, digest=digest)
 
-        def exists(self, digest, *, tier):
+        def exists(self, digest, *, tier, retry=True):
             if bucket_read is not None:
                 raise bucket_read
             return super().exists(digest, tier=tier)
@@ -655,7 +655,7 @@ def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
         _pin_named(store, location, ledger)
 
     assert (refused.value.code, refused.value.retryable) == ("service_unavailable", True)
-    assert refused.value.headers == {"Retry-After": "30"}
+    assert refused.value.headers == {"Retry-After": "5"}
 
 
 def test_pin_at_the_daily_budget_refuses_before_copying_until_utc_midnight():

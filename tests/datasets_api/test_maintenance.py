@@ -156,7 +156,7 @@ def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
 class _BrokenFor(FakeArtifactStore):
     """A bucket whose read of one digest fails."""
 
-    def exists(self, digest: str, *, tier: Tier) -> bool:
+    def exists(self, digest: str, *, tier: Tier, retry: bool = True) -> bool:
         if digest == "sha256:broken":
             raise ArtifactWriteError(object_name=digest, digest=digest)
         return super().exists(digest, tier=tier)
@@ -184,7 +184,7 @@ def test_the_sweep_counts_only_the_claims_it_moved(capsys):
     now = _SPENT_AT + timedelta(minutes=5)
     ledger = _claims()
     copying = ledger.begin_copy(_held(ledger), "sha256:a", expires_at=_SPENT_AT)
-    ledger.settle_copy(copying, landed=True)
+    ledger.settle_copy(copying, landed=True, expires_at=_SPENT_AT)
 
     maintenance.run_export_claim_sweep(
         store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now

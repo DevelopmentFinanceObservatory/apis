@@ -2434,7 +2434,7 @@ def test_an_export_claim_holds_units_and_refunds_them_once_under_real_postgres(l
     assert ledger.claim(export, now=_CLAIMED_AT, expires_at=_CLAIM_LEASE) is None
     with pytest.raises(AllowanceExhausted) as refused:
         ledger.spend_together([spend], _CLAIMED_AT)
-    assert refused.value.held_for == 30
+    assert refused.value.held_for == 5
     ledger.close_claim(held)
     ledger.close_claim(held)
     assert ledger.read_claim(export) is None
@@ -2462,7 +2462,7 @@ def test_a_sweep_behind_a_copy_refunds_nothing_under_real_postgres(live_store, l
 
     current = ledger.begin_copy(held, "sha256:a", expires_at=_CLAIM_LEASE)
     if landed:
-        current = ledger.settle_copy(current, landed=True)
+        current = ledger.settle_copy(current, landed=True, expires_at=_CLAIM_LEASE)
     ledger.close_claim(swept)
 
     assert ledger.read_claim(export) == current
@@ -2478,9 +2478,9 @@ def test_a_sweep_refunds_a_copying_claim_once_against_a_settling_holder_under_re
     )
     swept = next(c for c in ledger.expired_claims(_AFTER_LEASE) if c.export_id == export)
 
-    ledger.settle_copy(copying, landed=False)
+    ledger.settle_copy(copying, landed=False, expires_at=_CLAIM_LEASE)
     ledger.close_claim(swept)
-    ledger.settle_copy(copying, landed=False)
+    ledger.settle_copy(copying, landed=False, expires_at=_CLAIM_LEASE)
 
     assert ledger.read_claim(export).state == ClaimState.open
     assert _unit_count(live_store, spend) == 0
@@ -2531,7 +2531,7 @@ class _PaidBucket:
     def copy(self, digest, *, from_tier, to_tier):
         raise ArtifactNotFoundError(digest=digest, tier=from_tier)
 
-    def exists(self, digest, *, tier):
+    def exists(self, digest, *, tier, retry=True):
         if isinstance(self._pinned, Exception):
             raise self._pinned
         return self._pinned
@@ -2550,7 +2550,7 @@ def test_a_paid_claim_stays_paid_when_a_retry_finds_no_working_bytes_under_real_
     copying = ledger.begin_copy(
         _held_claim(ledger, export, spend), "sha256:a", expires_at=_CLAIM_LEASE
     )
-    ledger.settle_copy(copying, landed=True)
+    ledger.settle_copy(copying, landed=True, expires_at=_CLAIM_LEASE)
     paid = ledger.claim(export, now=_AFTER_LEASE, expires_at=_AFTER_LEASE + timedelta(minutes=3))
 
     with pytest.raises(ArtifactNotFoundError):
@@ -2594,7 +2594,7 @@ def test_a_freed_claim_keeps_its_units_for_the_retry_that_takes_it_under_real_po
     )
     assert taken.generation != copying.generation
     assert _unit_count(live_store, spend) == 1
-    ledger.settle_copy(copying, landed=False)
+    ledger.settle_copy(copying, landed=False, expires_at=_CLAIM_LEASE)
     assert _unit_count(live_store, spend) == 1
 
 

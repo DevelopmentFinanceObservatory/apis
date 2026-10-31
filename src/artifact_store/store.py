@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Protocol
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 from google.cloud.storage import fileio
+from google.cloud.storage.retry import DEFAULT_RETRY
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -43,6 +44,7 @@ from artifact_store.errors import (
 )
 from artifact_store.inventory import ArtifactLocation, InventoryBatch, InventoryEntry
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, emulator_host, sign_get_url
+from dataset_store import BORROW_TIMEOUT_SECONDS, CONNECT_TIMEOUT_SECONDS
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import working_tier_expired
 from dfo_platform.timings import count
@@ -202,9 +204,9 @@ class ArtifactStore(Protocol):
         """
         ...
 
-    def exists(self, digest: str, *, tier: Tier) -> bool:
+    def exists(self, digest: str, *, tier: Tier, retry: bool = True) -> bool:
         """Whether the tier's bucket holds the object of `digest`, whatever the inventory says.
-        The read is short and takes no retry, so a failure raises in seconds."""
+        `retry=False` makes the read short with no retry, so a failure raises in seconds."""
         ...
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
@@ -232,6 +234,28 @@ class ArtifactStore(Protocol):
 
 
 _EXISTS_TIMEOUT_SECONDS = 5.0
+"""The bound on a short existence read, which takes no retry."""
+
+COPY_ATTEMPT_TIMEOUT_SECONDS = 30.0
+"""The bound on one `copy_blob` request. Both tiers' buckets sit in one region in the default
+storage class, so a copy between them rewrites metadata only and returns in one request whatever
+its size, `materialise.formats.PARQUET_MAX_BYTES` (256 MiB) included."""
+
+COPY_RETRY_DEADLINE_SECONDS = 30.0
+"""How long `copy_blob` retries. A last attempt starts by then and runs its own timeout."""
+
+COPY_LANDS_WITHIN = timedelta(
+    seconds=BORROW_TIMEOUT_SECONDS
+    + 2 * CONNECT_TIMEOUT_SECONDS
+    + COPY_RETRY_DEADLINE_SECONDS
+    + COPY_ATTEMPT_TIMEOUT_SECONDS
+)
+"""The longest `LiveArtifactStore.copy` takes to land its object: the inventory read (a pool
+borrow, a dial and one query, each under its timeout), then `copy_blob`'s retries and last
+attempt. What follows the landing, a size read and the inventory write, changes nothing an
+existence read of the object says."""
+
+_COPY_RETRY = DEFAULT_RETRY.with_timeout(COPY_RETRY_DEADLINE_SECONDS)
 
 
 class _HashingSink(io.RawIOBase):
@@ -695,8 +719,10 @@ class LiveArtifactStore:
                 digest=digest, tier=tier, stored_bucket=bucket, stored_object_name=object_name
             )
 
-    def exists(self, digest: str, *, tier: Tier) -> bool:
+    def exists(self, digest: str, *, tier: Tier, retry: bool = True) -> bool:
         bucket = self._client.bucket(self._buckets[tier])
+        if retry:
+            return bucket.get_blob(digest) is not None
         return bucket.get_blob(digest, timeout=_EXISTS_TIMEOUT_SECONDS, retry=None) is not None
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
@@ -719,14 +745,26 @@ class LiveArtifactStore:
         size_bytes: int | None = None
         try:
             dest_blob = source_bucket.copy_blob(
-                source_blob, dest_bucket, new_name=digest, if_generation_match=0
+                source_blob,
+                dest_bucket,
+                new_name=digest,
+                if_generation_match=0,
+                timeout=COPY_ATTEMPT_TIMEOUT_SECONDS,
+                retry=_COPY_RETRY,
             )
             size_bytes = dest_blob.size
         except PreconditionFailed:
             deduplicated = True
         except NotFound:
             try:
-                source_missing = source_bucket.get_blob(location.object_name) is None
+                source_missing = (
+                    source_bucket.get_blob(
+                        location.object_name,
+                        timeout=COPY_ATTEMPT_TIMEOUT_SECONDS,
+                        retry=_COPY_RETRY,
+                    )
+                    is None
+                )
             except Exception:
                 source_missing = False
             copy_failed = not source_missing
@@ -737,7 +775,9 @@ class LiveArtifactStore:
         if copy_failed:
             raise ArtifactWriteError(object_name=digest, digest=digest)
         if size_bytes is None:
-            existing = dest_bucket.get_blob(digest)
+            existing = dest_bucket.get_blob(
+                digest, timeout=COPY_ATTEMPT_TIMEOUT_SECONDS, retry=_COPY_RETRY
+            )
             if existing is None:
                 raise ArtifactWriteError(object_name=digest, digest=digest)
             size_bytes = existing.size

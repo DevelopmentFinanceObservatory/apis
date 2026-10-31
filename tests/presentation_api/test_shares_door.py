@@ -1210,7 +1210,7 @@ _DAY = datetime(2026, 6, 1, tzinfo=UTC)
 @pytest.mark.parametrize(
     ("refusal", "detail"),
     [
-        (PinUnitHeld(retry_after=1), PinUnitHeld.detail),
+        (PinUnitHeld(retry_after=5), PinUnitHeld.detail),
         (PinBudgetExhausted(limit=1, now=_DAY), PinBudgetExhausted.detail),
         (OpenPinBudgetExhausted(limit=1, now=_DAY), OpenPinBudgetExhausted.detail),
     ],

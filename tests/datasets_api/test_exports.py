@@ -669,6 +669,62 @@ def test_a_first_prepare_sheds_at_a_full_pool_at_once(monkeypatch: pytest.Monkey
     assert (shed.status_code, shed.headers["retry-after"]) == (503, "1"), shed.text
 
 
+@pytest.mark.parametrize("waited", [True, False])
+def test_only_a_call_that_waited_reads_the_claim_before_the_checks(waited: bool):
+    """A waiter that a live claim still stands before returns at once. A first call checks first,
+    so an invalid request writes no claim."""
+    frame = {"spec_id": "spec_a", "content_version": "cv1"}
+    request = exports_module.ExportRequest.model_validate({"frame": frame})
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    ledger = _ledger()
+    ledger.claim(_export_id(frame, "csv", bundle=False), now=now, expires_at=now + timedelta(1))
+    checked: list[str] = []
+
+    def check(*_: object, **__: object) -> Any:
+        checked.append("checked")
+        raise ExportOverCeiling(format="csv", count=2, cap=1)
+
+    current = SimpleNamespace(allowances=ledger, now=lambda: now)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(exports_module, "_prepare_dataset", check)
+        if waited:
+            answer = exports_module.prepare_export(
+                request=request, caller=None, waited=True, current=current, deps=None
+            )
+            assert answer is None
+        else:
+            with pytest.raises(ExportOverCeiling):
+                exports_module.prepare_export(
+                    request=request, caller=None, current=current, deps=None
+                )
+
+    assert checked == ([] if waited else ["checked"])
+
+
+def test_a_call_that_lost_the_claim_waits_on_it_and_answers_the_record(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rig = _Rig("fetched", monkeypatch)
+    first = rig.prepare("csv")
+    rig.forget_exports()
+    real = exports_door.prepare_export
+    calls: list[bool] = []
+
+    def lost_once(**kwargs: Any) -> Any:
+        calls.append(kwargs["waited"])
+        if len(calls) == 1:
+            return None
+        return real(**kwargs)
+
+    monkeypatch.setattr(exports_door, "prepare_export", lost_once)
+
+    again = rig.prepare("csv")
+
+    assert again.status_code == 200, again.text
+    assert again.json() == first.json()
+    assert calls == [False, True]
+
+
 def test_a_repeat_prepare_answers_its_record_with_one_read(monkeypatch: pytest.MonkeyPatch):
     rig = _Rig("fetched", monkeypatch)
     first = rig.prepare("csv")
@@ -1098,7 +1154,7 @@ def test_a_burst_from_a_caller_with_one_unit_left_renders_one_file(
 
     assert [r.status_code for r in burst] == [503, 503, 503], [r.text for r in burst]
     assert {r.json()["retryable"] for r in burst} == {True}
-    assert {r.headers["retry-after"] for r in burst} == {"30"}
+    assert {r.headers["retry-after"] for r in burst} == {"5"}
     assert answered.status_code == 200, answered.text
     assert render.calls == 1
     assert _spent(rig.ledger)[(caller_key, "pin")] == 1

@@ -33,8 +33,8 @@ one prepare runs across every instance. A unit on the row is a unit spent:
 | `claim`       | stale `copying`, stale `landed`       | the same   | kept                  |
 | `hold_claim`  | `open`                                | `held`     | spent                 |
 | `begin_copy`  | `held`, `landed` of the same digest   | `copying`  | kept                  |
-| `settle_copy` | `copying`, landed                     | `landed`   | kept                  |
-| `settle_copy` | `copying`, not landed                 | `open`     | refunded              |
+| `settle_copy` | `copying`, landed                     | `landed`   | kept, prepare's lease |
+| `settle_copy` | `copying`, not landed                 | `open`     | refunded, prepare's lease |
 | `reopen_claim`| `landed`                              | `open`     | kept for the old digest |
 | `free_claim`  | any                                   | the same   | kept, lease ended     |
 | `close_claim` | any                                   | no row     | refunded from `held`, `copying` |
@@ -51,8 +51,8 @@ which says the object stands and not who paid it, so a pin landing first leaves 
 A limit-reached spend reads the claims inside its own transaction, whose skipped upsert keeps the
 day's row locked, so no refund can land between the failed spend and the verdict. A unit on a
 `held` or `copying` claim of that day may come back, whether its lease runs or not, so it raises
-`AllowanceExhausted` with `held_for` set, the seconds to wait on the claim
-(`claim_retry_seconds`). A stale claim keeps its unit until a retry takes it over or the sweep
+`AllowanceExhausted` with `held_for` set: `RUNNING_CLAIM_RETRY_SECONDS` while a claim's lease
+runs, else `SWEEP_INTERVAL_SECONDS`. A stale claim keeps its unit until a retry takes it over or the sweep
 settles it. Spends and refunds lock rows in one order (`_in_lock_order`), and a claim's
 row before any of its units.
 
@@ -79,7 +79,7 @@ from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from dataset_store import DatasetStore, Transaction
-from datasets_api.config import DEFAULT_MATERIALISE_WAIT_SECONDS, DatasetsBuildSettings
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.caller import Caller
 from dfo_platform.problem import Refusal
@@ -270,9 +270,12 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         """
         ...
 
-    def settle_copy(self, claim: ExportClaim, *, landed: bool) -> ExportClaim | None:
-        """Move `claim` from `copying` to `landed`, or to `open` with its units refunded. Return
-        `None` when its generation is gone.
+    def settle_copy(
+        self, claim: ExportClaim, *, landed: bool, expires_at: datetime
+    ) -> ExportClaim | None:
+        """Move `claim` from `copying` to `landed`, or to `open` with its units refunded, ending
+        the copy's lease at `expires_at`, the prepare's own. Return `None` when its generation is
+        gone.
 
         Raises:
             DatasetsStoreUnavailable: The claim could not be written.
@@ -351,15 +354,11 @@ def utc_day(now: datetime) -> date:
 
 
 SWEEP_INTERVAL_SECONDS = 300
-"""How often Cloud Scheduler runs `maintenance`'s `sweep-export-claims`."""
+"""How often Cloud Scheduler runs `maintenance`'s `sweep-export-claims`, and so the wait on a
+claim whose lease has passed."""
 
-
-def claim_retry_seconds(expires_at: datetime, now: datetime) -> int:
-    """The seconds a caller waits on a claim with lease `expires_at`: what is left of a running
-    lease, at most the default materialise wait since a prepare ends long before its lease, or
-    the sweep interval for a lease that has passed."""
-    left = math.ceil((expires_at - now).total_seconds())
-    return min(left, DEFAULT_MATERIALISE_WAIT_SECONDS) if left > 0 else SWEEP_INTERVAL_SECONDS
+RUNNING_CLAIM_RETRY_SECONDS = 5
+"""The wait on a claim whose lease runs. A prepare takes about 6 s."""
 
 
 class LiveAllowanceLedger:
@@ -423,10 +422,11 @@ class LiveAllowanceLedger:
                 ClaimState.copying.value,
             ),
         )
-        return min(
-            (claim_retry_seconds(cast(datetime, row["expires_at"]), now) for row in rows),
-            default=None,
-        )
+        if not rows:
+            return None
+        if any(cast(datetime, row["expires_at"]) > now for row in rows):
+            return RUNNING_CLAIM_RETRY_SECONDS
+        return SWEEP_INTERVAL_SECONDS
 
     @contextmanager
     def _spending(
@@ -592,14 +592,26 @@ class LiveAllowanceLedger:
         except _ClaimLost:
             return None
 
-    def settle_copy(self, claim: ExportClaim, *, landed: bool) -> ExportClaim | None:
+    def settle_copy(
+        self, claim: ExportClaim, *, landed: bool, expires_at: datetime
+    ) -> ExportClaim | None:
         try:
             with self._transaction(f"settling the copy of {claim.export_id!r}") as tx:
                 row = self._lock(tx, claim, ClaimState.copying)
                 if landed:
-                    return self._move(tx, claim, "state = %s", (ClaimState.landed.value,))
+                    return self._move(
+                        tx,
+                        claim,
+                        "state = %s, expires_at = %s",
+                        (ClaimState.landed.value, expires_at),
+                    )
                 self._refund_row(tx, row)
-                return self._move(tx, claim, _REOPENED, (ClaimState.open.value, {}))
+                return self._move(
+                    tx,
+                    claim,
+                    f"{_REOPENED}, expires_at = %s",
+                    (ClaimState.open.value, {}, expires_at),
+                )
         except _ClaimLost:
             return None
 
@@ -662,6 +674,8 @@ def _claim(row: Mapping[str, Any]) -> ExportClaim:
 
 __all__ = [
     "BUDGET_KEY",
+    "RUNNING_CLAIM_RETRY_SECONDS",
+    "SWEEP_INTERVAL_SECONDS",
     "AllowanceExhausted",
     "AllowanceKind",
     "AllowanceLedger",
@@ -671,7 +685,6 @@ __all__ = [
     "SharedAllowanceLedger",
     "Spend",
     "allowance_limits",
-    "claim_retry_seconds",
     "seconds_to_reset",
     "spending",
     "utc_day",

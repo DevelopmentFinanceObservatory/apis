@@ -16,7 +16,12 @@ from artifact_store.errors import (
     ArtifactWriteError,
 )
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
-from artifact_store.store import LiveArtifactStore, Tier
+from artifact_store.store import (
+    COPY_ATTEMPT_TIMEOUT_SECONDS,
+    COPY_RETRY_DEADLINE_SECONDS,
+    LiveArtifactStore,
+    Tier,
+)
 
 from .conftest import FakeGCSClient, RecordingArtifactInventory
 
@@ -761,7 +766,30 @@ def test_an_existence_read_is_short_and_takes_no_retry(stored: bool):
     if stored:
         bucket.objects["sha256:a"] = b"bytes"
 
-    assert store.exists("sha256:a", tier=Tier.pinned) is stored
-
+    assert store.exists("sha256:a", tier=Tier.pinned, retry=False) is stored
     assert bucket.get_blob_options["retry"] is None
     assert 0 < bucket.get_blob_options["timeout"] <= 10
+
+    assert store.exists("sha256:a", tier=Tier.pinned) is stored
+    assert bucket.get_blob_options == {}
+
+
+def test_a_copy_names_the_bounds_its_lease_counts_on():
+    """Library defaults cannot move `COPY_LANDS_WITHIN`, since the copy names every bound."""
+    client = FakeGCSClient()
+    store = _store(client, RecordingArtifactInventory())
+    digest = store.put(b"bounded", tier=Tier.working).digest
+    seen: dict[str, object] = {}
+    working = client.bucket(_BUCKETS[Tier.working])
+    copy_blob = working.copy_blob
+
+    def bounded(*args, **options):
+        seen.update(options)
+        return copy_blob(*args, **options)
+
+    working.copy_blob = bounded
+
+    store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
+
+    assert seen["timeout"] == COPY_ATTEMPT_TIMEOUT_SECONDS
+    assert seen["retry"]._timeout == COPY_RETRY_DEADLINE_SECONDS

@@ -885,13 +885,21 @@ def recorded_export(*, request: ExportRequest, current: Deps) -> Mapping[str, An
 
 
 def prepare_export(
-    *, request: ExportRequest, caller: Caller | None, current: Deps, deps: DefinitionDeps
+    *,
+    request: ExportRequest,
+    caller: Caller | None,
+    waited: bool = False,
+    current: Deps,
+    deps: DefinitionDeps,
 ) -> Mapping[str, Any] | None:
     """Prepare the file `request` names, pin it, record it, and return its facts, or answer the
     record a concurrent prepare left. Return `None`, at once, while another prepare holds the
     request's claim, so this work thread is free while the door waits for it. See the module docstring. `caller` names an open caller, whose
     `pin` allowance a new pinned copy spends, and `None` a caller holding the pin grant. `deps`
-    is the request's retrieval view of `current`, under its deadline.
+    is the request's retrieval view of `current`, under its deadline. A call that `waited` on
+    another prepare reads the claim first and returns `None` while a live one stands, before any
+    check, so a prepare that refused wakes no waiter's checks. A first call checks the request
+    before it writes a claim, so an invalid request writes none.
 
     Raises:
         SpecNotFound, IdentityQuarantined, SnapshotNotFound, SnapshotRevoked, ArtifactExpired:
@@ -907,6 +915,10 @@ def prepare_export(
         MintBackpressure: No materialise permit came free.
     """
     export = export_id(request)
+    if waited:
+        running = current.allowances.read_claim(export)
+        if running is not None and running.expires_at > current.now():
+            return None
     check = _prepare_derived if request.frame.spec_id.startswith("ops_") else _prepare_dataset
     prepare = check(request, export=export, current=current, deps=deps)
     now = current.now()

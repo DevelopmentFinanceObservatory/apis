@@ -20,6 +20,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from dataset_store.dbapi import DBAPIConnection
 from dataset_store.errors import DatasetStoreConfigError, DatasetStoreConnectionError
 
+CONNECT_TIMEOUT_SECONDS = 30.0
+"""The default bound on dialling a connection and on each read or write on its socket."""
+
 
 class _Connector(Protocol):
     """Connector interface kept local to avoid importing its optional dependency at module load."""
@@ -128,7 +131,7 @@ def connect(
     user: str,
     password: str | None = None,
     enable_iam_auth: bool = False,
-    timeout: float = 30.0,
+    timeout: float = CONNECT_TIMEOUT_SECONDS,
 ) -> DBAPIConnection:
     """Open one pg8000 connection via Cloud SQL Connector or plain TCP.
 
@@ -207,7 +210,7 @@ class BaseConnectionSettings(BaseSettings):
     password: str | None = None
     enable_iam_auth: bool = False
     pool_size: int
-    connect_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    connect_timeout: float = Field(default=CONNECT_TIMEOUT_SECONDS, gt=0, allow_inf_nan=False)
 
     @field_validator("instance_connection_name", mode="before")
     @classmethod

@@ -441,6 +441,7 @@ class FakeGCSBucket:
         destination_bucket: FakeGCSBucket,
         new_name: str | None = None,
         if_generation_match: int | None = None,
+        **options: object,
     ) -> FakeGCSBlob:
         from google.api_core.exceptions import NotFound, PreconditionFailed
 

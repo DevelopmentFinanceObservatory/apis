@@ -99,7 +99,7 @@ class FakeArtifactStore:
         self.signings.append((digest, tier, object_name, ttl))
         return f"fake://artifact/{tier.value}/{object_name}"
 
-    def exists(self, digest: str, *, tier: Tier) -> bool:
+    def exists(self, digest: str, *, tier: Tier, retry: bool = True) -> bool:
         return (digest, tier.value) in self._objects
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
