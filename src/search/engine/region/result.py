@@ -546,11 +546,19 @@ def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     return shape.declared_roles or ("observationAbout",)
 
 
-def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
+def with_composite_answer(
+    region: RegionResult,
+    spec: Spec,
+    *,
+    observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]],
+) -> RegionResult:
     """`region` answering `spec`, the composite its definite answer was restated as
     (`scope.composite.assemble_composite`). Its trailing slot options, place options and
     observation preview read the one table the region resolved, under that answer's spec_id,
-    so the composite carries none. A task already launched is cancelled and none relaunches."""
+    so a task already launched is cancelled and the composite carries no slot or place
+    options. Its preview is read per component by `observations_relaunch`
+    (`composite_answer.CompositeRelaunch`), which the caller launches on the
+    event loop where the request streams observations (`enrichment._launch_trailing_tasks`)."""
     for task in (region.slot_options_task, region.place_options_task, region.observations_task):
         if task is not None:
             task.cancel()
@@ -562,7 +570,7 @@ def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
         place_options_task=None,
         place_options_relaunch=None,
         observations_task=None,
-        observations_relaunch=None,
+        observations_relaunch=observations_relaunch,
     )
 
 
