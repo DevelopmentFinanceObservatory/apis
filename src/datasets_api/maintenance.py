@@ -16,11 +16,11 @@ database settings `dataset_store.provider.shared_pool` reads.
 
 `sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each claim an
 export or a pin left past its lease by itself (`retention_admission.sweep_copy_claims`), `held`
-ones before `copying` ones, so a claim that fails leaves the rest settled, and starts none after
-`retention_admission.SWEEP_BUDGET`, so one run ends before the next. It writes one
-`datasets_copy_claims_swept` line with the settled, failed and deferred counts, and exits
-non-zero when any failed. Every settlement names the claim's generation, so a second run changes
-nothing. A refund lands on the UTC day that spent the unit.
+ones before `copying` ones, so a claim that fails leaves the rest settled. It starts no claim
+whose worst case, a bucket read included, would run past `retention_admission.SWEEP_BUDGET`, so
+one run ends before the next. It writes one `datasets_copy_claims_swept` line with the settled,
+failed and deferred counts, and exits non-zero when any failed or were deferred, so a backlog
+alerts. Every settlement names the claim's generation, so a second run changes nothing. A refund lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or
@@ -294,7 +294,8 @@ def run_copy_claim_sweep(
     *, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now
 ) -> int:
     """Settle the pin claims past their lease (`retention_admission.sweep_copy_claims`), emit
-    the counts and return how many failed."""
+    the counts and return how many failed or were left for the next run, so a backlog fails the
+    task."""
     settled, failed, deferred = sweep_copy_claims(
         allowances=LiveAllowanceLedger(store=store, limits={}),
         artifacts=artifact_store,
@@ -306,13 +307,13 @@ def run_copy_claim_sweep(
         failed_claims=failed,
         deferred_claims=deferred,
     )
-    return failed
+    return failed + deferred
 
 
 def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> int:
     """Settle expired pin claims, then sweep both tiers whatever that did, emit one line per
     tier with each leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG`
-    names in sorted order, and return how many claims failed."""
+    names in sorted order, and return how many claims failed or were left."""
     try:
         failed = run_copy_claim_sweep(store=store, artifact_store=artifact_store, now=now)
     except Exception as exc:
@@ -1471,7 +1472,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "sweep", help="report orphaned and missing artifact objects per tier"
     ).set_defaults(run=_sweep)
     tasks.add_parser(
-        "sweep-export-claims", help="give back the units of export prepares that left no copy"
+        "sweep-export-claims",
+        help="settle the pin claims of exports and pins past their lease, refunding where no copy stands",
     ).set_defaults(run=_sweep_copy_claims)
     tasks.add_parser(
         "age-operations",

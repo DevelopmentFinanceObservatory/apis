@@ -362,6 +362,8 @@ def test_pinning_a_working_tier_artifact_copies_it_and_records_a_reference():
 
     assert pinned_at == _NOW
     assert (location.artifact_digest, Tier.pinned.value) in store._objects
+    # The copy reads from the location the door holds.
+    assert (location.artifact_digest, Tier.working) not in store.locations
     key = (_PRINCIPAL, location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
     assert reference_writer.records[key] == _NOW
 
@@ -649,7 +651,7 @@ def test_a_copy_that_raises_is_judged_by_the_pinned_object(
 
     assert _spent(ledger) == units
     bucket_read = None  # The sweep reads a bucket that answers.
-    sweep_copy_claims(allowances=ledger, artifacts=store, now=_NOW)
+    sweep_copy_claims(allowances=ledger, artifacts=store, now=_NOW + timedelta(minutes=5))
     assert _spent(ledger) == swept
 
 
@@ -659,7 +661,7 @@ def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
     location = _store_and_locate(store, b"held")
     ledger = _ledger(pin_budget=1)
     claim = ledger.claim("exp_a", now=_NOW, expires_at=_NOW + timedelta(minutes=2))
-    ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], _NOW)
+    ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], clock=lambda: _NOW)
 
     with pytest.raises(PinUnitHeld) as refused:
         _pin_named(store, location, ledger)
@@ -672,7 +674,8 @@ def test_pin_at_the_daily_budget_refuses_before_copying_until_utc_midnight():
     store = _CopyForbiddenArtifactStore()
     location = _store_and_locate(store, b"over-budget")
     ledger = _ledger(pin_budget=2)
-    ledger.spend_together([Spend(BUDGET_KEY, AllowanceKind.pin_budget)] * 2, _NOW)
+    for _ in range(2):
+        ledger.spend(Caller(kind="address", key=BUDGET_KEY), AllowanceKind.pin_budget, _NOW)
 
     with pytest.raises(PinBudgetExhausted) as refused:
         _pin_named(store, location, ledger)
@@ -696,7 +699,8 @@ def test_pin_the_budget_admits_copies_and_records_a_reference(tier: Tier, spent_
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"within-budget", tier=tier)
     ledger = _ledger(pin_budget=2)
-    ledger.spend_together([Spend(BUDGET_KEY, AllowanceKind.pin_budget)] * 2, spent_at)
+    for _ in range(2):
+        ledger.spend(Caller(kind="address", key=BUDGET_KEY), AllowanceKind.pin_budget, spent_at)
 
     pinned_at, writer = _pin_named(store, location, ledger)
 

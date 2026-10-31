@@ -1383,6 +1383,7 @@ class LiveFrameStore:
                 copy_to_pinned(
                     self._artifacts,
                     canonical.artifact_digest,
+                    source=(canonical.bucket, canonical.object_name),
                     allowances=self._allowances,
                     caller=caller,
                     clock=self._now,

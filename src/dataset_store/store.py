@@ -55,10 +55,6 @@ class ConnectionSource(Protocol):
     def borrow(self, *, timeout: float | None = ...) -> AbstractContextManager[DBAPIConnection]: ...
 
 
-BORROW_TIMEOUT_SECONDS = 30.0
-"""How long `LiveDatasetStore.transaction` waits for a pooled connection."""
-
-
 class _LiveTransaction:
     def __init__(self, conn: DBAPIConnection) -> None:
         self._conn = conn
@@ -91,9 +87,7 @@ class _LiveTransaction:
 class LiveDatasetStore:
     """`connections` implements `ConnectionSource`."""
 
-    def __init__(
-        self, *, connections: ConnectionSource, borrow_timeout: float = BORROW_TIMEOUT_SECONDS
-    ) -> None:
+    def __init__(self, *, connections: ConnectionSource, borrow_timeout: float = 30.0) -> None:
         self._connections = connections
         self._borrow_timeout = borrow_timeout
         # The guard is per store and thread. Worker threads start with independent state.

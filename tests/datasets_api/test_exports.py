@@ -1221,12 +1221,15 @@ def test_a_prepare_another_instance_holds_is_waited_for_and_answers_its_record(
 def _dead_prepare(rig: _Rig, spends: list[Spend]) -> CopyClaim:
     """A held claim of the rig's csv export, whose lease has passed."""
     export = _export_id(rig.frame, "csv", bundle=False)
-    past = datetime(2020, 1, 1, tzinfo=UTC)
-    dead = rig.ledger.claim(export, now=past, expires_at=past)
+    now = rig.spent_at
+    dead = rig.ledger.claim(export, now=now, expires_at=now + timedelta(minutes=2))
     assert dead is not None
-    held = rig.ledger.hold_claim(dead, spends, rig.spent_at)
+    held = rig.ledger.hold_claim(dead, spends, clock=lambda: now)
     assert held is not None
-    return held
+    rig.ledger.free_claim(held, now)
+    stale = rig.ledger.read_claim(export)
+    assert stale is not None
+    return stale
 
 
 def test_a_prepare_that_died_before_a_copy_refunds_as_its_retry_takes_over(

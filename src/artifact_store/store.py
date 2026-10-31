@@ -148,6 +148,13 @@ class ExistsRead(StrEnum):
     short = "short"
     long = "long"
 
+    @property
+    def within(self) -> timedelta:
+        """The longest a read takes: retries up to its deadline, then a last attempt's
+        timeout."""
+        attempt, deadline = _EXISTS_READS[self]
+        return timedelta(seconds=deadline + attempt)
+
 
 _EXISTS_READS: Mapping[ExistsRead, tuple[float, float]] = {
     # 5 s attempts retried within 5 s, so one 503 does not leave a copy unsettled and a bucket

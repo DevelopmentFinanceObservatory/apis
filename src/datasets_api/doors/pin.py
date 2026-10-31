@@ -214,6 +214,7 @@ def pin_artifact(
                 copy_to_pinned(
                     artifact_store,
                     artifact_digest,
+                    source=(named.bucket, named.object_name),
                     allowances=allowances,
                     caller=caller,
                     clock=now,

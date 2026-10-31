@@ -4,8 +4,8 @@ Every new pinned copy a caller asks for spends here, over a claim (`allowance.Co
 module holds the state table): `copy_to_pinned` for the pin door's named artifact and each frame
 and derived root a share's create, replace or snapshot conversion pins
 (`presentation_store.LiveFrameStore.pin`), each under a claim of its own, and `PreparingCopy` for
-an export's file (`exports`), under the claim keyed by its export id. The serving-frame copies a pin makes
-(`doors.pin`) and the canonical frames `maintenance` renders again copy without it and spend
+an export's file (`exports`), under the claim keyed by its export id. The serving-frame copies a
+pin makes (`doors.pin`) and the canonical frames `maintenance` renders again copy without it and spend
 nothing. A copy spends one unit of the day's pin budget (`AllowanceKind.pin_budget`,
 `DATASETS_PIN_DAILY_MAX`) and, for an open caller, one unit of the open callers' budget
 (`AllowanceKind.open_pin_budget`, `DATASETS_PIN_OPEN_DAILY_MAX`) and one of the caller's `pin`
@@ -17,7 +17,7 @@ behind a copy whose outcome is unknown, can come back, so its limit refuses `Pin
 with `retryable: true` and a `Retry-After` of `allowance.RUNNING_CLAIM_RETRY_SECONDS` while the
 claim's lease runs, else `allowance.SWEEP_INTERVAL_SECONDS`.
 
-The units pay for the copy that stands, and one mechanism settles every copy. The claim moves to
+The units pay for the copy that stands, and one mechanism settles every copy. The claim is
 `copying` before the copy, and the copy's own result settles it: a new object is `landed`, and a
 deduplicated copy, made by a concurrent pin whose units pay for it, or working bytes gone refund.
 A copy that fails otherwise reads the pinned object with the short read a work permit allows:
@@ -26,14 +26,20 @@ absent refunds, present keeps the units, and a read that fails leaves the claim 
 later failure of the write that asked for it, since the pinned bytes stay. A caller that skips
 the copy for an artifact already pinned spends nothing.
 
+A pin knows its digest and source before it spends, so `copy_to_pinned` spends and writes its
+claim already `copying` in one transaction (`begin_pin_copy`) and deletes it as it settles, also
+one, refunding unless the copy landed. A new copy takes two ledger transactions, and a refusal
+one. Its random key is never retried, so a pin's claim keeps nothing once it settles.
+
 `PreparingCopy` spends an export's units onto its claim ahead of a render, so a refusal costs that
 render nothing, and a prepare that lost its claim copies nothing. A claim paid already keeps its
 units. The prepare's lease is static, with no thread renewing it, since Cloud Run throttles a
 prepare that outlives its request: `definition_timeout_seconds` plus `PREPARE_LEASE_MARGIN`, as the
-worker's static lease does. The copy reads its source location first. `begin_copy` refuses past
-the lease, so a render that outlives it copies nothing, and writes the copy lease, the store's
-`copy_lands_within` plus `_BEGIN_COPY_ALLOWANCE`. The copy starts only while the whole of
-`copy_lands_within` is left on that lease, so the `begin_copy` transaction's own time sits outside
+worker's static lease does. The copy takes its source location from the caller or reads it
+first. `hold_claim` and `begin_copy` refuse past the lease, so a render that outlives it copies
+nothing, and `begin_copy` writes the copy lease, the store's `copy_lands_within` plus
+`_BEGIN_COPY_ALLOWANCE`, from the time it reads once the row is locked. The copy starts only while
+the whole of `copy_lands_within` is left on that lease, so the transaction's own time sits outside
 the copy's budget. Settling the copy writes a fresh claim lease on either outcome, so the owner
 keeps the claim through its reference, shape and record writes. A retry takes over a `copying`
 claim and settles it by the pinned object before any render, refusing `CopyClaimUnsettled` if it
@@ -41,10 +47,11 @@ cannot. A stale claim with no copy begun refunds as it is taken over, so the nex
 for itself. A stale unit answers `PinUnitHeld` until then or until `sweep_copy_claims`, the
 five-minute backstop, settles it.
 
-Counted from the spend, a crash holds a unit for at most the claim's lease plus the copy lease plus
-the sweep interval. Under the default values (a 120-second definition timeout, `CopyBounds()` and
-the five-minute schedule) that is 150 + 100 + 300 = 550 seconds for an export and 100 + 100 + 300
-= 500 for a pin. A refund lands on the UTC day that spent the unit, so after midnight it changes
+Counted from the spend, a crash holds an export's unit for at most the claim's lease plus the
+copy lease plus the sweep interval, and a pin's, whose spend writes its copy lease, for the copy
+lease plus the sweep interval. Under the default values (a 120-second definition timeout,
+`CopyBounds()` and the five-minute schedule) that is 150 + 100 + 300 = 550 seconds for an export
+and 100 + 300 = 400 for a pin. A refund lands on the UTC day that spent the unit, so after midnight it changes
 nothing a caller can see, since that day's limits no longer apply.
 
 Four causes can land a copy after its units came back, each at most one free object per digest:
@@ -95,8 +102,9 @@ _BEGIN_COPY_ALLOWANCE = timedelta(seconds=30)
 `copy_lands_within`. A slower one copies nothing."""
 
 SWEEP_BUDGET = timedelta(seconds=240)
-"""How long one sweep starts claims, under the five-minute schedule, so runs never overlap and a
-slow bucket holds up no refund past the next run."""
+"""How long one sweep's claims may run, under the five-minute schedule. A `copying` claim's
+long read (`ExistsRead.long.within`, 180 seconds) fits inside it, and the minute left over covers
+the last claim's ledger write, so runs never overlap."""
 
 _UNSETTLED_RETRY_SECONDS = 30
 """`CopyClaimUnsettled`'s wait: the pinned bucket could not be read, and a quick retry would
@@ -276,11 +284,12 @@ class PreparingCopy:
         """
         if self._claim.state != ClaimState.open:
             return
-        now = self._clock()
         try:
-            held = self._allowances.hold_claim(self._claim, _pin_spends(self._caller), now)
+            held = self._allowances.hold_claim(
+                self._claim, _pin_spends(self._caller), clock=self._clock
+            )
         except AllowanceExhausted as exhausted:
-            raise _spend_refusal(exhausted, now=now) from None
+            raise _spend_refusal(exhausted, now=self._clock()) from None
         if held is None:
             raise CopyClaimUnsettled()
         self._claim = held
@@ -313,16 +322,17 @@ class PreparingCopy:
                 raise ArtifactNotFoundError(digest=artifact_digest, tier=Tier.working)
             source = (location.bucket, location.object_name)
         lands_within = self._artifacts.copy_lands_within
-        now = self._clock()
         began = self._allowances.begin_copy(
             self._claim,
             artifact_digest,
-            now=now,
-            expires_at=now + lands_within + _BEGIN_COPY_ALLOWANCE,
+            clock=self._clock,
+            lease=lands_within + _BEGIN_COPY_ALLOWANCE,
         )
         if began is None:
             raise CopyClaimUnsettled()
         self._claim = began
+        # The update and commit that follow the transaction's clock read are bounded only by
+        # socket timeouts, so the copy starts only with its whole landing time left.
         if self._clock() + lands_within > began.expires_at:
             self._settle(landed=paid)
             raise CopyClaimUnsettled()
@@ -364,15 +374,19 @@ def copy_to_pinned(
     artifacts: ArtifactStore,
     artifact_digest: str,
     *,
+    source: tuple[str, str],
     allowances: SharedAllowanceLedger | None,
     caller: Caller | None,
     clock: Clock,
 ) -> StoredArtifact:
-    """Copy `artifact_digest` from the working tier to the pinned tier, spending the units one
-    new pinned copy takes onto a claim of its own (see the module docstring), and return the
-    pinned copy. `caller` names an open caller, and `None` a caller holding the pin grant or a
-    service write, which spends the pin budget alone. `allowances=None` copies without spending,
-    for an operator's run.
+    """Copy `artifact_digest` from its working copy at `source`, a bucket and object name, to the
+    pinned tier, spending the units one new pinned copy takes onto a claim of its own (see the
+    module docstring), and return the pinned copy. `caller` names an open caller, and `None` a
+    caller holding the pin grant or a service write, which spends the pin budget alone.
+    `allowances=None` copies without spending, for an operator's run.
+
+    The spend writes the claim already `copying`, and the settle deletes it, so a new copy takes
+    two ledger transactions and a refusal one.
 
     Raises:
         PinBudgetExhausted: The day's pin budget is spent. Nothing is copied.
@@ -386,22 +400,47 @@ def copy_to_pinned(
             when the pinned object is absent, and the sweep settles a read that failed.
     """
     if allowances is None:
-        return artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
-    lease = artifacts.copy_lands_within + _BEGIN_COPY_ALLOWANCE
-    now = clock()
-    claim = allowances.claim(f"pin_{uuid4().hex}", now=now, expires_at=now + lease)
-    if claim is None:
+        return artifacts.copy(
+            artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source
+        )
+    lands_within = artifacts.copy_lands_within
+    try:
+        claim = allowances.begin_pin_copy(
+            f"pin_{uuid4().hex}",
+            _pin_spends(caller),
+            artifact_digest,
+            clock=clock,
+            lease=lands_within + _BEGIN_COPY_ALLOWANCE,
+        )
+    except AllowanceExhausted as exhausted:
+        raise _spend_refusal(exhausted, now=clock()) from None
+    if clock() + lands_within > claim.expires_at:
+        _close_pin_claim(allowances, claim, landed=False)
         raise CopyClaimUnsettled()
-    with PreparingCopy(
-        claim,
-        allowances=allowances,
-        artifacts=artifacts,
-        caller=caller,
-        clock=clock,
-        lease=lease,
-    ) as copying:
-        copying.hold()
-        return copying.copy(artifact_digest)
+    try:
+        copied = artifacts.copy(
+            artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned, source=source
+        )
+    except ArtifactNotFoundError:
+        _close_pin_claim(allowances, claim, landed=False)
+        raise
+    except Exception:
+        landed = _landed(artifacts, artifact_digest)
+        if landed is not None:
+            _close_pin_claim(allowances, claim, landed=landed)
+        raise
+    _close_pin_claim(allowances, claim, landed=not copied.deduplicated)
+    return copied
+
+
+def _close_pin_claim(allowances: SharedAllowanceLedger, claim: CopyClaim, *, landed: bool) -> None:
+    """Delete a pin's claim, refunding its units unless `landed`. Its random key is never
+    retried, so a landed claim has nothing left to keep. The copy's outcome stands, so a write
+    that fails is logged and the sweep settles the claim."""
+    try:
+        allowances.close_claim(claim, landed=landed)
+    except Exception:
+        logger.exception("Settling the claim of %s failed", claim.key)
 
 
 def _settle_stale_claim(
@@ -431,14 +470,17 @@ def sweep_copy_claims(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> tuple[int, int, int]:
     """Settle every claim whose lease has passed at `now`, one by one, `held` ones first, and
-    return how many moved, how many failed and how many were left for the next run once
-    `SWEEP_BUDGET` ran out. Each names its generation, so a second run or a writer that got there
+    return how many moved, how many failed and how many were left for the next run. A claim
+    starts only while `SWEEP_BUDGET` has room for its worst case, a `copying` claim's whole
+    `ExistsRead.long` included. Each names its generation, so a second run or a writer that got there
     first leaves nothing to do."""
     settled = failed = 0
     stop = monotonic() + SWEEP_BUDGET.total_seconds()
+    read_within = ExistsRead.long.within.total_seconds()
     claims = allowances.expired_claims(now)
     for started, claim in enumerate(claims):
-        if monotonic() >= stop:
+        reads = claim.state == ClaimState.copying
+        if monotonic() + (read_within if reads else 0.0) > stop:
             return settled, failed, len(claims) - started
         try:
             settled += _settle_stale_claim(

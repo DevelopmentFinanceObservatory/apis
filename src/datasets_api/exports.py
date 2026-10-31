@@ -28,7 +28,7 @@ render that finds its bytes pinned gives the units back. The claim stays until t
 written, so a retry after a failure past the copy takes it over, finds the copy those units paid
 for and spends nothing more. The lease outlasts the definition deadline, so a client's timeout
 leaves the prepare running and its retry answers its record, and a render that outlives the lease
-still lands while nothing took the claim. A process that dies leaves a stale claim: a claim with
+copies nothing, since `begin_copy` refuses past it, which bounds how long a crash holds a unit. A process that dies leaves a stale claim: a claim with
 no copy begun refunds as the next prepare takes it over or the sweep finds it, and the next caller
 spends for itself. The bytes a render gives are known
 only by rendering, so a caller with no unit left and no claim refuses even when another export or

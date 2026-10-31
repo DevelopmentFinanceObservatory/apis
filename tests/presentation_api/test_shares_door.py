@@ -538,11 +538,12 @@ class _CopyingFrameStore(FakeFrameStore):
 
     def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
         self.callers.append(caller)
-        digest = self.artifacts.put(component_id.encode(), tier=Tier.working).digest
-        if digest not in self.artifacts.list(tier=Tier.pinned):
+        stored = self.artifacts.put(component_id.encode(), tier=Tier.working)
+        if stored.digest not in self.artifacts.list(tier=Tier.pinned):
             copy_to_pinned(
                 self.artifacts,
-                digest,
+                stored.digest,
+                source=(stored.bucket, stored.object_name),
                 allowances=self.ledger,
                 caller=caller,
                 clock=lambda: datetime.now(UTC),

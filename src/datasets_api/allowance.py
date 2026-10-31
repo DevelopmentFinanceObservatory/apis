@@ -7,14 +7,13 @@ A caller (`dfo_platform.caller.Caller`) holds one allowance of each caller kind 
 grant. Two budgets every caller shares are kept the same way, under `BUDGET_KEY`: `pin_budget`
 (`DATASETS_PIN_DAILY_MAX`, default 2,500), the new pinned copies the pin door and the share routes
 make (`datasets_api.retention_admission`), and `open_pin_budget` (`DATASETS_PIN_OPEN_DAILY_MAX`,
-default 2,000), those they make for callers without the pin grant. `AllowanceLedger.spend` takes one unit, or refuses `AllowanceExhausted`
-(429 `allowance_exhausted`) with `Retry-After` counting the seconds to the next UTC midnight,
-when every allowance and budget resets. `SharedAllowanceLedger.spend_together` takes one unit
-of each of several, all or none, and refuses naming the first spent out. `AllowanceLedger.refund`
-gives one unit back, `SharedAllowanceLedger.refund_together` gives back one of each of several,
-all or none, and `spending` spends one around a write and refunds it when the write
-fails, so a failed write costs its caller nothing. A pin's units stay spent when its copy
-stands and a later step fails.
+default 2,000), those they make for callers without the pin grant. `AllowanceLedger.spend`
+takes one unit, or refuses `AllowanceExhausted` (429 `allowance_exhausted`) with `Retry-After`
+counting the seconds to the next UTC midnight, when every allowance and budget resets.
+`AllowanceLedger.refund` gives one unit back, and `spending` spends one around a write and
+refunds it when the write fails, so a failed write costs its caller nothing. A new pinned copy's
+units are spent together onto a claim, all or none, refusing naming the first spent out, and stay
+spent when its copy stands and a later step fails.
 
 Every new pinned copy runs under one row of `datasets.copy_claim`: an export prepare's
 under its export id, so one prepare runs across every instance, and a pin's under a key of its own
@@ -27,18 +26,19 @@ under its export id, so one prepare runs across every instance, and a pin's unde
 | `copying` | spent   | A copy of `digest` began on them. Its outcome is unknown.  |
 | `landed`  | paid    | The object of `digest` stands, so they stay spent.         |
 
-| Transition     | From                                     | To        | Units                           |
-| :------------- | :--------------------------------------- | :-------- | :------------------------------ |
-| `claim`        | no row                                   | `open`    | none                            |
-| `claim`        | stale `open`, stale `held`               | `open`    | refunded from `held`            |
-| `claim`        | stale `copying`, stale `landed`          | the same  | kept                            |
-| `hold_claim`   | `open`                                   | `held`    | spent                           |
-| `begin_copy`   | live `held`, live `landed` of the digest | `copying` | kept                            |
-| `settle_copy`  | `copying`, landed                        | `landed`  | kept, claim's lease             |
-| `settle_copy`  | `copying`, not landed                    | `open`    | refunded, claim's lease         |
-| `reopen_claim` | `landed`                                 | `open`    | kept for the old digest         |
-| `free_claim`   | any                                      | the same  | kept, lease ended               |
-| `close_claim`  | any                                      | no row    | refunded from `held`, `copying` |
+| Transition       | From                                     | To        | Units                   |
+| :--------------- | :--------------------------------------- | :-------- | :---------------------- |
+| `claim`          | no row                                   | `open`    | none                    |
+| `claim`          | stale `open`, stale `held`               | `open`    | refunded from `held`    |
+| `claim`          | stale `copying`, stale `landed`          | the same  | kept                    |
+| `begin_pin_copy` | no row                                   | `copying` | spent                   |
+| `hold_claim`     | live `open`                              | `held`    | spent                   |
+| `begin_copy`     | live `held`, live `landed` of the digest | `copying` | kept                    |
+| `settle_copy`    | `copying`, landed                        | `landed`  | kept, claim's lease     |
+| `settle_copy`    | `copying`, not landed                    | `open`    | refunded, claim's lease |
+| `reopen_claim`   | `landed`                                 | `open`    | kept for the old digest |
+| `free_claim`     | any                                      | the same  | kept, lease ended       |
+| `close_claim`    | any                                      | no row    | refunded unless landed  |
 
 Every write gives the row a new random `generation`, so a value never comes back, even after the
 row is deleted and claimed again. `claim` matches a stale `expires_at`, and every other transition
@@ -58,11 +58,12 @@ settles it. Spends and refunds lock rows in one order (`_in_lock_order`), and a 
 row before any of its units.
 
 `LiveAllowanceLedger` spends each unit with one upsert that adds one to the day's row only while
-it is below the limit, so spends racing on one row cannot pass it. `spend_together` runs its
-upserts in one transaction and rolls them all back when one finds its row at the limit. A
+it is below the limit, so spends racing on one row cannot pass it. A claim's units are upserted in
+the claim's own transaction, which rolls them all back when one finds its row at the limit. A
 refund locks the day's row, then takes one from it or deletes the row it would leave at zero, so
-a spend racing the refund waits for its commit. `refund_together` runs its refunds in one
-transaction.
+a spend racing the refund waits for its commit. `hold_claim`, `begin_copy` and `begin_pin_copy`
+read the time inside their transaction, after any row lock, so the wait for a connection and a
+lock sits outside the lease they write and the lease check they make.
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from dataset_store import DatasetStore, Transaction
+from dataset_store.clock import Clock
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.caller import Caller
@@ -212,25 +214,6 @@ def spending(
 
 
 class SharedAllowanceLedger(AllowanceLedger, Protocol):
-    def spend_together(self, spends: Sequence[Spend], now: datetime) -> None:
-        """Spend one unit of each of `spends` for the UTC day of `now`, all or none.
-
-        Raises:
-            AllowanceExhausted: The first of `spends` whose day's limit is spent. Nothing is
-                spent.
-            DatasetsStoreUnavailable: The ledger could not be read or written.
-        """
-        ...
-
-    def refund_together(self, spends: Sequence[Spend], now: datetime) -> None:
-        """Give back one unit of each of `spends` spent for the UTC day of `now`, all or none. A
-        day with nothing spent stays at nothing.
-
-        Raises:
-            DatasetsStoreUnavailable: The ledger could not be written. Nothing is given back.
-        """
-        ...
-
     def read_claim(self, key: str) -> CopyClaim | None:
         """The claim `key` holds, or `None`.
 
@@ -249,10 +232,11 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         ...
 
     def hold_claim(
-        self, claim: CopyClaim, spends: Sequence[Spend], now: datetime
+        self, claim: CopyClaim, spends: Sequence[Spend], *, clock: Clock
     ) -> CopyClaim | None:
         """Move `claim` from `open` to `held`, spending one unit of each of `spends` onto it, all
-        or none. Return `None` when its generation is gone, with nothing spent.
+        or none, for the UTC day `clock` reads inside the transaction. Return `None` when its
+        generation is gone or its lease has passed, with nothing spent.
 
         Raises:
             AllowanceExhausted: The first of `spends` whose day's limit is reached.
@@ -261,11 +245,12 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         ...
 
     def begin_copy(
-        self, claim: CopyClaim, digest: str, *, now: datetime, expires_at: datetime
+        self, claim: CopyClaim, digest: str, *, clock: Clock, lease: timedelta
     ) -> CopyClaim | None:
-        """Move `claim` to `copying` for `digest`, with its lease moved to `expires_at`, or
-        return `None` when its generation is gone, its lease has passed at `now`, or it paid
-        for another digest.
+        """Move `claim` to `copying` for `digest`, its lease `lease` on from the time `clock`
+        reads inside the transaction once the row is locked, or return `None` when its
+        generation is gone, its lease has passed at that time, or it paid for another digest.
+        The wait for a connection and the row lock sit outside the new lease.
 
         Raises:
             DatasetsStoreUnavailable: The claim could not be written.
@@ -301,9 +286,24 @@ class SharedAllowanceLedger(AllowanceLedger, Protocol):
         """
         ...
 
-    def close_claim(self, claim: CopyClaim) -> bool:
-        """Delete `claim`, refunding the units of a `held` or `copying` row, and return whether
-        its generation still stood.
+    def begin_pin_copy(
+        self, key: str, spends: Sequence[Spend], digest: str, *, clock: Clock, lease: timedelta
+    ) -> CopyClaim:
+        """Spend one unit of each of `spends`, all or none, and write a `copying` claim of them
+        under `key` for `digest`, in one transaction. Its lease runs `lease` on from the time
+        `clock` reads once the units are spent. A pin knows its digest before it spends, so its
+        claim begins its copy.
+
+        Raises:
+            AllowanceExhausted: The first of `spends` whose day's limit is reached. Nothing is
+                written.
+            DatasetsStoreUnavailable: The units could not be written.
+        """
+        ...
+
+    def close_claim(self, claim: CopyClaim, *, landed: bool = False) -> bool:
+        """Delete `claim`, refunding the units of a `held` or `copying` row unless `landed` says
+        its copy stands, and return whether its generation still stood.
 
         Raises:
             DatasetsStoreUnavailable: The claim could not be written.
@@ -324,8 +324,9 @@ class _LimitReached(Exception):
     """Rolls back a transaction's spends when one finds its row at the limit. `held_for` is
     `AllowanceExhausted`'s."""
 
-    def __init__(self, spend: Spend, *, held_for: int | None) -> None:
+    def __init__(self, spend: Spend, *, now: datetime, held_for: int | None) -> None:
         self.spend = spend
+        self.now = now
         self.held_for = held_for
 
 
@@ -373,7 +374,8 @@ class LiveAllowanceLedger:
         self._limits = dict(limits)
 
     def spend(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
-        self.spend_together([Spend(caller.key, kind)], now)
+        with self._spending(f"spending {kind} of {caller.key!r}") as tx:
+            self._spend_in(tx, [Spend(caller.key, kind)], now)
 
     @contextmanager
     def _transaction(self, doing: str) -> Iterator[Transaction]:
@@ -394,6 +396,8 @@ class LiveAllowanceLedger:
 
     def _spend_in(self, tx: Transaction, spends: Sequence[Spend], now: datetime) -> None:
         for spend in _in_lock_order(spends):
+            if self._limits[spend.kind] <= 0:
+                raise _LimitReached(spend, now=now, held_for=None)
             # A day's first spend inserts 1. Later ones add one while the count is below the
             # limit, and at the limit the update is skipped, keeps the row locked and returns
             # no row.
@@ -407,7 +411,7 @@ class LiveAllowanceLedger:
                 (spend.key, spend.kind.value, utc_day(now), self._limits[spend.kind]),
             )
             if row is None:
-                raise _LimitReached(spend, held_for=self._held_for(tx, spend, now))
+                raise _LimitReached(spend, now=now, held_for=self._held_for(tx, spend, now))
 
     def _held_for(self, tx: Transaction, spend: Spend, now: datetime) -> int | None:
         """The shortest wait on a claim holding a unit of `spend` for `now`'s UTC day, or `None`
@@ -433,18 +437,13 @@ class LiveAllowanceLedger:
         return SWEEP_INTERVAL_SECONDS
 
     @contextmanager
-    def _spending(
-        self, spends: Sequence[Spend], now: datetime, *, doing: str
-    ) -> Iterator[Transaction]:
-        """A transaction whose block spends `spends`, all or none.
+    def _spending(self, doing: str) -> Iterator[Transaction]:
+        """A transaction whose block spends units with `_spend_in`, all or none.
 
         Raises:
-            AllowanceExhausted: The first of `spends` whose day's limit is reached.
+            AllowanceExhausted: The first unit whose day's limit is reached.
             DatasetsStoreUnavailable: The units could not be written.
         """
-        for spend in spends:
-            if self._limits[spend.kind] <= 0:
-                raise AllowanceExhausted(kind=spend.kind, limit=self._limits[spend.kind], now=now)
         try:
             with self._transaction(doing) as tx:
                 yield tx
@@ -452,22 +451,13 @@ class LiveAllowanceLedger:
             raise AllowanceExhausted(
                 kind=reached.spend.kind,
                 limit=self._limits[reached.spend.kind],
-                now=now,
+                now=reached.now,
                 held_for=reached.held_for,
             ) from None
 
-    def spend_together(self, spends: Sequence[Spend], now: datetime) -> None:
-        spent = ", ".join(f"{spend.kind} of {spend.key!r}" for spend in spends)
-        with self._spending(spends, now, doing=f"spending {spent}") as tx:
-            self._spend_in(tx, spends, now)
-
     def refund(self, caller: Caller, kind: AllowanceKind, now: datetime) -> None:
-        self.refund_together([Spend(caller.key, kind)], now)
-
-    def refund_together(self, spends: Sequence[Spend], now: datetime) -> None:
-        refunded = ", ".join(f"{spend.kind} of {spend.key!r}" for spend in spends)
-        with self._transaction(f"refunding {refunded}") as tx:
-            self._refund_in(tx, spends, now)
+        with self._transaction(f"refunding {kind} of {caller.key!r}") as tx:
+            self._refund_in(tx, [Spend(caller.key, kind)], now)
 
     def _refund_in(self, tx: Transaction, spends: Sequence[Spend], now: datetime) -> None:
         for spend in _in_lock_order(spends):
@@ -560,11 +550,14 @@ class LiveAllowanceLedger:
         return _claim(row)
 
     def hold_claim(
-        self, claim: CopyClaim, spends: Sequence[Spend], now: datetime
+        self, claim: CopyClaim, spends: Sequence[Spend], *, clock: Clock
     ) -> CopyClaim | None:
         try:
-            with self._spending(spends, now, doing=f"holding units on {claim.key!r}") as tx:
-                self._lock(tx, claim, ClaimState.open)
+            with self._spending(f"holding units on {claim.key!r}") as tx:
+                row = self._lock(tx, claim, ClaimState.open)
+                now = clock()
+                if row["expires_at"] <= now:
+                    raise _ClaimLost
                 self._spend_in(tx, spends, now)
                 return self._move(
                     tx,
@@ -580,11 +573,12 @@ class LiveAllowanceLedger:
             return None
 
     def begin_copy(
-        self, claim: CopyClaim, digest: str, *, now: datetime, expires_at: datetime
+        self, claim: CopyClaim, digest: str, *, clock: Clock, lease: timedelta
     ) -> CopyClaim | None:
         try:
             with self._transaction(f"beginning the copy of {claim.key!r}") as tx:
                 row = self._lock(tx, claim, ClaimState.held, ClaimState.landed)
+                now = clock()
                 if row["expires_at"] <= now or (
                     row["state"] == ClaimState.landed and row["artifact_digest"] != digest
                 ):
@@ -593,10 +587,32 @@ class LiveAllowanceLedger:
                     tx,
                     claim,
                     "state = %s, artifact_digest = %s, expires_at = %s",
-                    (ClaimState.copying.value, digest, expires_at),
+                    (ClaimState.copying.value, digest, now + lease),
                 )
         except _ClaimLost:
             return None
+
+    def begin_pin_copy(
+        self, key: str, spends: Sequence[Spend], digest: str, *, clock: Clock, lease: timedelta
+    ) -> CopyClaim:
+        with self._spending(f"beginning the pin copy {key!r}") as tx:
+            now = clock()
+            self._spend_in(tx, spends, now)
+            row = tx.fetch_one(
+                "INSERT INTO datasets.copy_claim (claim_key, generation, state, expires_at, "
+                "spends, spent_at, artifact_digest) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                f"RETURNING {_CLAIM_COLUMNS}",
+                (
+                    key,
+                    uuid4().hex,
+                    ClaimState.copying.value,
+                    clock() + lease,
+                    {spend.kind.value: spend.key for spend in spends},
+                    now,
+                    digest,
+                ),
+            )
+        return _claim(cast(Mapping[str, Any], row))
 
     def settle_copy(
         self, claim: CopyClaim, *, landed: bool, expires_at: datetime
@@ -636,14 +652,18 @@ class LiveAllowanceLedger:
         ):
             self._move(tx, claim, "expires_at = %s", (now,))
 
-    def close_claim(self, claim: CopyClaim) -> bool:
+    def close_claim(self, claim: CopyClaim, *, landed: bool = False) -> bool:
         with self._transaction(f"closing the claim of {claim.key!r}") as tx:
             row = tx.fetch_one(
                 "DELETE FROM datasets.copy_claim "
                 "WHERE claim_key = %s AND generation = %s RETURNING state, spends, spent_at",
                 (claim.key, claim.generation),
             )
-            if row is not None and row["state"] in (ClaimState.held, ClaimState.copying):
+            if (
+                row is not None
+                and not landed
+                and row["state"] in (ClaimState.held, ClaimState.copying)
+            ):
                 self._refund_row(tx, row)
         return row is not None
 
