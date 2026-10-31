@@ -197,7 +197,12 @@ def test_a_declining_kind_answers_declined_with_its_reason(reason: str):
         "cached_tokens": 0,
     }
     assert response.diagnostics.timing_ms.by_step is not None
-    assert set(response.diagnostics.timing_ms.by_step) == {"coverage", "extract", "entity_check"}
+    assert set(response.diagnostics.timing_ms.by_step) == {
+        "coverage",
+        "extract",
+        "exclusion_read",
+        "entity_check",
+    }
     assert llm.schemas == ["Extraction"], "only extract ran: no bind or other LLM call"
     assert graph.reads == [], "a question naming no place reads nothing from the graph"
     assert _done(events).timed_out is False
@@ -359,6 +364,7 @@ def test_a_repeated_catalogue_question_is_a_layer1_hit():
     assert set(stored.diagnostics.timing_ms.by_step) == {
         "coverage",
         "extract",
+        "exclusion_read",
         "entity_check",
         "cache_lookup",
     }, "a miss books the layer-1 lookup that preceded it"

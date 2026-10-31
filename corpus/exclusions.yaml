@@ -1,0 +1,181 @@
+# Exclusions: a stretch of the query that asks to leave something out is read beside extraction
+# and blanked from every reader of the query's words. Search does not compute it: the answer is
+# the wider question, disclosed. Each case asserts disposition, measure and entities. The
+# departure a case carries is model-dependent, so tests/engine/test_exclusion_read.py pins it.
+
+- id: exclusion-oda-kenya-humanitarian
+  query: "ODA to Kenya excluding humanitarian aid in 2022"
+  why: 'Search does not subtract humanitarian aid: it answers ODA to Kenya in one part and says the exclusion was not applied.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-oda-kenya-not-united-states
+  query: "ODA to Kenya in 2022 not from the United States"
+  why: 'The left-out donor reaches no field, so the origin stays the official donors total, never the United States.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-oda-africa-except-kenya
+  query: "ODA to Africa except Kenya in 2022"
+  why: 'Africa binds the DACAfrica total, which cannot subtract a member, so the answer is Africa and the exclusion is disclosed.'
+  tags: {theme: aid, entity: group, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAfrica, role: destination}]
+
+- id: exclusion-oda-france-except-recipients
+  query: "ODA from France except to Kenya and Uganda in 2022"
+  why: 'The left-out recipients reach no field, so the answer is France''s ODA with no recipient.'
+  tags: {theme: aid, entity: country, direction: origin_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac1.oda_grant_equivalent}
+      entities: [{dcid: country/FRA, role: origin}]
+
+- id: exclusion-aod-kenia-sin-humanitaria
+  query: "AOD a Kenia sin ayuda humanitaria en 2022"
+  why: 'The read works in any language: "sin ayuda humanitaria" leaves the parse, so one part answers ODA to Kenya.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-gross-not-net
+  query: "gross ODA, not net, to Kenya in 2022"
+  why: '"not net" is what the gross answer already leaves out, so the exclusion is met and the answer stands.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_gross_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-not-net-leading
+  query: "not net ODA to Kenya in 2022"
+  why: 'A leading negation leaves the parse with its word, so the answer is ODA on the default basis, with the exclusion disclosed.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-no-humanitarian-aid
+  query: "no humanitarian aid to Kenya in 2022"
+  why: 'The stretch holds the only words naming the measure, and the rest still reads as aid to Kenya, never humanitarian aid.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-everything-but-humanitarian
+  query: "everything but humanitarian aid to Kenya"
+  why: 'With the stretch blanked no measure is left, so the query refuses and the warning carries the phrase.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    no_data: {reason: variable_not_resolved}
+
+- id: exclusion-debt-without-imf-credit
+  query: "long-term external debt of Kenya without IMF credit in 2020"
+  why: '"without IMF credit" is the graph label of a value of the elected shape, so it binds and needs no warning.'
+  tags: {theme: debt, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, bound: {maturityBand: LongTermMaturity, includesIMFCredit: WithoutIMFCredit}}
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: exclusion-debt-kenya-china-debt-relief
+  query: "what does Kenya owe China, excluding debt relief"
+  why: 'The answer is external debt owed to China, with the exclusion disclosed.'
+  tags: {theme: debt, entity: country, direction: both, door: raw_text}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock}
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-oda-kenya-grants
+  query: "ODA to Kenya excluding grants in 2022"
+  why: 'Grants leave the parse and the part, so the answer is ODA with the exclusion disclosed, not a refusal.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-oda-france-standard-grants
+  query: "ODA excluding standard grants from France"
+  why: 'The stretch stops before "from France", so the donor stays and the answer is France''s ODA.'
+  tags: {theme: aid, entity: country, direction: origin_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
+      entities: [{dcid: country/FRA, role: origin}]
+
+- id: exclusion-oda-africa-north-africa
+  query: "ODA to Africa excluding North Africa in 2022"
+  why: 'The DACAfrica total cannot subtract a region, so the answer is Africa and the exclusion is disclosed.'
+  tags: {theme: aid, entity: group, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAfrica, role: destination}]
+
+- id: exclusion-bilateral-oda-bilateral-loans
+  query: "bilateral ODA to Kenya excluding bilateral loans in 2022"
+  why: 'The stretch goes and the measure stays: the answer is the one bilateral ODA to Kenya gets.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-education-multilateral-donors
+  query: "education aid to Kenya excluding multilateral donors"
+  why: 'The CRS answers education aid to Kenya, which counts no core contribution to a multilateral.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: exclusion-control-oda-debt-relief-label
+  query: "official development assistance excluding debt relief to Kenya in 2022"
+  why: 'The whole phrase is the label of DAC2a aid type 250, so nothing is left out and the type binds.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {shape: {population_type: FinancialFlow, measured_property: amount, stat_type: measuredValue}, bound: {dac2aAidType: DAC2aAidType250, financialFlowType: Disbursement, nettingBasis: Net}}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-control-non-humanitarian
+  query: "non-humanitarian aid to Kenya in 2022"
+  why: 'A category name is no exclusion: the read leaves it alone and the refusal stands.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    no_data: {reason: qualifier_not_bound}
+
+- id: exclusion-control-no-later-than
+  query: "ODA to Kenya no later than 2015"
+  why: 'A limit is no exclusion: "no later than" reaches the date reading.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: exclusion-control-only-grants
+  query: "ODA from France to Kenya, only grants"
+  why: 'A restriction is no exclusion: "only grants" binds DAC2a grants.'
+  tags: {theme: aid, entity: country, direction: both, door: raw_text}
+  expect:
+    definite:
+      measure: {shape: {population_type: FinancialFlow, measured_property: amount, stat_type: measuredValue}, bound: {dac2aAidType: DAC2aAidType201, financialFlowType: Disbursement, nettingBasis: Gross}}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: country/KEN, role: destination}]

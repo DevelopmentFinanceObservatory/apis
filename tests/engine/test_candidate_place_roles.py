@@ -1053,37 +1053,6 @@ def test_a_dataset_states_a_word_where_the_parts_party_is_of_the_kind_it_names(
     assert _dataset_stated_words(shape, get_index(), None) == _NOTHING
 
 
-@pytest.mark.parametrize(
-    ("variable", "party", "provenance", "words", "query_text"),
-    [
-        pytest.param(
-            "bilateral ODA", None, _CRS, _STATED, "not bilateral ODA to Kenya", id="stated"
-        ),
-        pytest.param(
-            "multilateral ODA",
-            "country",
-            "OECDDAC2A",
-            frozenset({"multilateral"}),
-            "not multilateral ODA to Kenya",
-            id="party",
-        ),
-    ],
-)
-def test_a_negation_the_variable_left_out_is_read_from_the_query(
-    variable, party, provenance, words, query_text
-) -> None:
-    """The extraction can leave a negation out of the variable, and the verbatim query
-    still holds it, for a word a dataset states and one that names a party alike."""
-    state = _with_multilaterals(_state_naming(variable, party))
-    shape = _flow_shape(provenance)
-    assert _dataset_stated_words(shape, get_index(), state) == words
-
-    state.query_text = query_text
-
-    assert _dataset_stated_words(shape, get_index(), state) == _NOTHING
-    assert held_party_words(state, shape) == ()
-
-
 _MULTILATERALS = "DACMultilaterals"
 _FRA = "country/FRA"
 
@@ -1279,7 +1248,6 @@ def test_a_word_names_a_party_where_every_dataset_declares_it_and_its_axis_is_un
         pytest.param("multilateral ODA", "named-provider", [], id="provider-named"),
         pytest.param("multilateral ODA", "by-donor", [], id="operation-over-the-provider"),
         pytest.param("multilateral ODA", "every-provider", [], id="provider-axis-open"),
-        pytest.param("multilateral ODA", "negated-in-the-query", [], id="negated"),
         pytest.param("ODA from multilaterals", None, [], id="another-word"),
         pytest.param("multi-bi aid", None, [], id="another-token"),
         pytest.param(
@@ -1307,8 +1275,6 @@ def test_intake_reads_the_party_of_a_word_stated_on_an_unnamed_axis(
         state.operations = (Operation(verb="rank", phrase="by donor", over="origin"),)
     elif change == "every-provider":
         state.open_axes = frozenset({"origin"})
-    elif change == "negated-in-the-query":
-        state.query_text = "not multilateral ODA to Kenya"
     elif change == "party-words-off":
         state.party_words_off = True
     state.place_sets = {}

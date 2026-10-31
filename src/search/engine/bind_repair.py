@@ -2,8 +2,10 @@
 
 ``apply_declared_defaults`` binds an open slot to its declared default code when the
 variable, the raw query or another binding triggers it, ``apply_shape_slot_defaults``
-binds the code index's default for a slot of a population type, and ``apply_broad_readings``
-reads a bound value as the broader value the code index declares for it. The helpers that
+binds the code index's default for a slot of a population type, ``apply_broad_readings``
+reads a bound value as the broader value the code index declares for it, and
+``apply_named_exclusions`` binds a value whose label a stretch of the query that leaves
+something out writes word for word. The helpers that
 match a value's label as a whole word outside a negation or exclusion serve the bind phase
 too, and so does the test of whether a part states a word a dataset declares
 (`word_stated`).
@@ -13,10 +15,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from collections.abc import Set as AbstractSet
+from typing import TYPE_CHECKING
 
 from code_index.query import CodeIndex
-from code_index.tokens import tokenize
+from code_index.tokens import tokenize, word_tokens
 from code_index.types import BroadReading, ShapeSlotDefault
 from search.engine.bind import SlotBindingDraft
 from search.engine.function_words import FUNCTION_WORDS
@@ -28,6 +30,9 @@ from search.engine.qualifier_match import (
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
+
+if TYPE_CHECKING:
+    from search.engine.exclusion_read import LeftOut
 
 
 def _label_named_in_text(label: str, text: str) -> bool:
@@ -96,31 +101,11 @@ def occurrence_negated(text: str, start: int, end: int) -> bool:
     return _label_negated_in_text(label, f"{context}{label}")
 
 
-def stated_words_negated(text: str, *, index: CodeIndex) -> tuple[str, ...]:
-    """The words datasets state of their own rows (`DatasetDeclaration.stated_words`) or name
-    a party for (`DatasetDeclaration.party_words`) that an occurrence in `text` negates or
-    excludes (`_label_has_negated_occurrence`), sorted.
-
-    The response cache key includes them because the rules reading those words read them
-    from the verbatim query, which an equal extraction can leave behind: "not bilateral ODA
-    to Kenya" and "bilateral ODA to Kenya" can extract alike, and so can "not multilateral
-    ODA to Kenya" and "multilateral ODA to Kenya".
-    """
-    words = {
-        declared.word
-        for declaration in index.datasets.values()
-        for declared in (*declaration.stated_words, *declaration.party_words)
-    }
-    return tuple(sorted(word for word in words if _label_has_negated_occurrence(word, text)))
-
-
-def word_stated(word: str, texts: Sequence[str], *, negated: AbstractSet[str]) -> bool:
+def word_stated(word: str, texts: Sequence[str]) -> bool:
     """Whether `texts`, a part's variable and typed qualifier phrases, state the casefolded
     `word` as a modifier of the measure (`_modifies_the_measure`), with no occurrence in them
-    negated or excluded (`_label_has_negated_occurrence`), and `word` is not among
-    `negated`, the declared words the verbatim query negates (`stated_words_negated`, which
-    reaches a negation the extraction left out of the variable, as "not bilateral ODA")."""
-    if word in negated or not any(_modifies_the_measure(word, text) for text in texts):
+    negated or excluded (`_label_has_negated_occurrence`)."""
+    if not any(_modifies_the_measure(word, text) for text in texts):
         return False
     return not any(_label_has_negated_occurrence(word, text) for text in texts)
 
@@ -297,6 +282,46 @@ def apply_declared_defaults(
         defaulted.append(result[i])
         result[i] = result[i].model_copy(update={"kind": "value", "value_dcids": [code]})
     return result, defaulted
+
+
+def apply_named_exclusions(
+    bindings: Sequence[SlotBindingDraft],
+    shape_draft: ShapeDraft,
+    *,
+    exclusions: Sequence[LeftOut],
+    pinned_properties: frozenset[str] = frozenset(),
+) -> tuple[list[SlotBindingDraft], frozenset[str]]:
+    """Bind each open slot of `shape_draft` holding a value whose graph label is, word for word,
+    one of the `exclusions`: "without IMF credit" binds `WithoutIMFCredit` on
+    `includesIMFCredit`. An open slot is as `_slot_open_to_default` reads it, and no pin of the
+    elected dataset (`pinned_properties`) holds it. The label is the value's own, so the
+    answer leaves the phrase out by construction.
+
+    Returns the listified bindings, repaired, and the phrases they now bind.
+    """
+    result = list(bindings)
+    if not exclusions:
+        return result, frozenset()
+    labels = shape_draft.value_labels or {}
+    phrases = {
+        tuple(_folded_tokens(exclusion.phrase)): exclusion.phrase for exclusion in exclusions
+    }
+    bound: set[str] = set()
+    for i, binding in enumerate(result):
+        prop = binding.property_dcid
+        if prop is None or prop in pinned_properties:
+            continue
+        for value in (shape_draft.slot_taxonomy or {}).get(f"{binding.axis}:{prop}", ()):
+            phrase = phrases.get(tuple(_folded_tokens(labels.get(value, ""))))
+            if phrase is not None and _slot_open_to_default(binding, shape_draft, prop, value):
+                result[i] = binding.model_copy(update={"kind": "value", "value_dcids": [value]})
+                bound.add(phrase)
+                break
+    return result, frozenset(bound)
+
+
+def _folded_tokens(text: str) -> list[str]:
+    return [token.text.casefold() for token in word_tokens(text)]
 
 
 def apply_shape_slot_defaults(

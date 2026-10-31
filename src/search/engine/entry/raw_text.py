@@ -1,11 +1,16 @@
 """Entry point for ResolveInput.kind == "raw_text": the free-text query
-door. Runs extract() to pull variables/entities/dates out of the query
-before fanning out, or answers a catalogue or declined question straight
-after it.
+door. Reads what the query asks to leave out beside extract(), which pulls
+variables/entities/dates out of the query before fanning out, or answers a
+catalogue or declined question straight after it.
+
+Every reader of the query's words past that read takes the blanked text
+(`exclusion_read.QueryReading.text`). Only the echo and the layer 1 key take the
+query as written.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import re
@@ -33,9 +38,10 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
-from search.engine.deadline import _await_bounded
+from search.engine.deadline import _await_bounded, _cancel_and_await
 from search.engine.departures import (
     WarningKey,
+    exclusion_not_applied,
     measure_not_applied,
     names_request,
     price_basis_not_applied,
@@ -59,6 +65,13 @@ from search.engine.events import (
     InterpretationEvent,
     LateDepartures,
     StepEvent,
+)
+from search.engine.exclusion_read import (
+    LeftOut,
+    QueryReading,
+    admit_exclusions,
+    read_exclusions,
+    stored_exclusion_read,
 )
 from search.engine.extract import (
     DateRequest,
@@ -575,16 +588,68 @@ async def _run_extract_phase(
     return extract_result, extract_usage, timing_extract
 
 
+@dataclasses.dataclass(frozen=True)
+class _DoorRead:
+    """What the door reads of a query before the parts: its extraction with the usage of both
+    calls, what the query leaves out (`reading`), and the time each call took, by step."""
+
+    extract_result: ExtractionResult
+    usage: dict | None
+    reading: QueryReading
+    timing: dict[str, int]
+
+
+async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) -> _DoorRead:
+    """Read what `query` asks to leave out and extract the query without it.
+
+    A read the extraction store holds decides first, so a repeated query waits on neither
+    call. Otherwise the read and a speculative extraction of `query` start together and the
+    read is awaited first: with nothing admitted the parse stands, and an admitted stretch
+    cancels it and extraction takes the blanked text, so a hit costs the read plus one parse.
+
+    A failed read raises as a failed extraction does and fails the query, and the speculative
+    parse goes with it: a query the read could not check for what it leaves out gets no
+    answer that may state the opposite of what it asked.
+    """
+    if (stored := stored_exclusion_read(query, llm=llm)) is not None:
+        reading = admit_exclusions(query, stored)
+        result, usage, timing_extract = await _run_extract_phase(
+            reading.text, llm=llm, deadline=deadline
+        )
+        timing = {"extract": timing_extract, "exclusion_read": 0}
+        return _DoorRead(result, usage, reading, timing)
+
+    t0 = now_ms()
+    speculative = asyncio.create_task(_run_extract_phase(query, llm=llm, deadline=deadline))
+    try:
+        read, read_usage = await _await_bounded(read_exclusions(query, llm=llm), deadline=deadline)
+        timing_read = now_ms() - t0
+        reading = admit_exclusions(query, read)
+        if not reading.left_out:
+            result, usage, timing_extract = await speculative
+        else:
+            await _cancel_and_await(speculative)
+            result, usage, timing_extract = await _run_extract_phase(
+                reading.text, llm=llm, deadline=deadline
+            )
+    finally:
+        speculative.cancel()
+        await asyncio.gather(speculative, return_exceptions=True)
+    timing = {"extract": timing_extract, "exclusion_read": timing_read}
+    return _DoorRead(result, _sum_usage(read_usage, usage), reading, timing)
+
+
 async def _no_variables_response(
     query: str,
     *,
     start_ms: int,
     params: EntryParams,
     extract_usage: dict | None,
-    timing_extract: int,
+    timing: dict[str, int],
+    warnings: Sequence[Warning] = (),
 ) -> AsyncGenerator[Event]:
     """Terminal response when extract() ran but found no variables at all:
-    reports variable_not_resolved with the query's own stripped text.
+    reports variable_not_resolved with the query's own stripped text, and `warnings`.
     """
     echo = make_query_echo(query, extract_skipped=False)
     skills_warnings = [
@@ -602,14 +667,14 @@ async def _no_variables_response(
     diag = make_diagnostics(
         build_commit(),
         skills_warnings,
-        {"extract": timing_extract},
+        timing,
         now_ms() - start_ms,
         llm_usage=extract_usage,
     )
     part = build_no_data_part(
         "variable_not_resolved",
         variable_text=query.strip(),
-        warnings=[],
+        warnings=list(warnings),
         include_skills=params.include_skills,
         skills_index=params.skills_index,
     )
@@ -659,7 +724,7 @@ async def _disposition_response(
     start_ms: int,
     params: EntryParams,
     extract_usage: dict | None,
-    timing_extract: int,
+    timing: dict[str, int],
     scope: CacheScope | None,
 ) -> AsyncGenerator[Event]:
     """Answer a catalogue, out-of-scope or requires-analysis question straight
@@ -689,7 +754,7 @@ async def _disposition_response(
     diag = make_diagnostics(
         build_commit(),
         [],
-        {"extract": timing_extract, "entity_check": timing_entity_check},
+        {**timing, "entity_check": timing_entity_check},
         now_ms() - start_ms,
         llm_usage=extract_usage,
     )
@@ -730,6 +795,11 @@ class _ExtractionPrep:
     forecasting variable's own window without its target years.
     `unit_text` is the dropped phrases that bind as one unit request
     (`_split_unit_phrases`); they stay out of `dropped_qualifier_phrases`.
+    `text` is the query with each stretch it asks to leave out blanked, which every reader of
+    its words takes. `exclusions` are those stretches, less each that leaves out sources alone,
+    which its mentions apply (`SourceScan.source_stretches`), and `exclusion_warnings` one
+    `query_qualifier_dropped` warning for each, parallel to it. Each leg judges its answers
+    on them, and a warning stands unless the answers leave the phrase out (`surviving`).
     `per_variable_unit_texts` runs parallel to `unique`: each part's unit request, as the
     parsed door's `ParsedPart.unit_text` is (`_part_unit_text`).
     `per_variable_measure_qualifiers` runs parallel to `unique` too: the words that narrow
@@ -787,7 +857,32 @@ class _ExtractionPrep:
     per_variable_source_codes: list[str | None]
     per_variable_compiled_codes: list[PartCode | None]
     per_variable_scope_intakes: list[ScopeIntake]
+    text: str
+    exclusions: tuple[LeftOut, ...] = ()
+    exclusion_warnings: tuple[Warning, ...] = ()
     name_corrections: tuple[NameCorrection, ...] = ()
+
+    def _unmet_exclusion_warnings(self, regions: Sequence[RegionResult]) -> list[Warning]:
+        """The `exclusion_warnings` whose phrase some of `regions` does not leave out: one
+        that refuses shows nothing that leaves it out, whatever it judged before refusing."""
+        return [
+            warning
+            for warning, exclusion in zip(self.exclusion_warnings, self.exclusions, strict=True)
+            if not (
+                regions
+                and all(
+                    region.specs and exclusion.phrase in region.met_exclusions for region in regions
+                )
+            )
+        ]
+
+    def surviving(self, regions: Sequence[RegionResult]) -> list[Warning]:
+        """The request-wide warnings that stay true across `regions`: a dropped phrase no
+        region admitted (`_surviving_qualifier_warnings`), and a phrase the query asked to
+        leave out that some region's answers do not leave out."""
+        return _surviving_qualifier_warnings(
+            self.qualifier_warnings, self.dropped_qualifier_phrases, regions
+        ) + self._unmet_exclusion_warnings(regions)
 
     def dropped_phrases_of(self, i: int) -> list[str]:
         """The dropped phrases the part of `unique[i]` reads: the request's, then its own."""
@@ -837,7 +932,10 @@ class _ExtractionPrep:
         return with_entity_words(
             dataclasses.replace(
                 with_departure_facts(region, facts),
-                unapplied_qualifier_warnings=tuple(request_unapplied),
+                unapplied_qualifier_warnings=(
+                    *request_unapplied,
+                    *self._unmet_exclusion_warnings([region]),
+                ),
                 name_corrections=self.name_corrections,
                 members_in_words=True,
             ),
@@ -927,6 +1025,12 @@ def _dropped_phrase_fact(phrase: str) -> DepartureFact | None:
     return measure_not_applied(asked=phrase, property_dcid=None) if names_request(phrase) else None
 
 
+def _exclusion_warning(phrase: str) -> Warning:
+    """The `query_qualifier_dropped` warning for a stretch the query asked to leave out, which
+    quotes it as a dropped phrase is shown."""
+    return qualifier_dropped_warning(phrase[: settings().max_dropped_qualifier_length])
+
+
 def _breakdown_under(phrase: str, *, verbs: Collection[str], query: str) -> RoleAxis | None:
     """The flow axis `phrase` asks one value per member of, under a part's operation
     `verbs`. An each or every phrase ("for each donor") asks it under any verb
@@ -943,9 +1047,11 @@ def _prepare_extraction(
     extract_result: ExtractionResult,
     *,
     query: str,
+    left_out: Sequence[LeftOut] = (),
     name_corrections: tuple[NameCorrection, ...] = (),
 ) -> _ExtractionPrep:
     """Prepare deduped extraction fields, qualifiers, and warnings for `handle`.
+    ``query`` is the text with each of the ``left_out`` stretches blanked.
     ``name_corrections`` are the names the extraction read in place of the query's words
     (`_name_corrections`), which every part receives (`_ExtractionPrep.onto`)."""
     date_request = dates_to_request(extraction.dates)
@@ -960,8 +1066,13 @@ def _prepare_extraction(
         measures=unique,
         entity_spans=[entity.span or entity.text for entity in extraction.entities],
         index=get_index(),
+        left_out=left_out,
     )
     per_variable_sources = scan.per_measure
+    exclusions = tuple(
+        stretch for stretch in left_out if stretch.phrase not in scan.source_stretches
+    )
+    exclusion_warnings = tuple(_exclusion_warning(stretch.phrase) for stretch in exclusions)
     # The extraction names no series code. A token of the query that writes a held one does.
     per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
     # An entity that only asks for one value per member of a flow role ("every donor",
@@ -1092,6 +1203,11 @@ def _prepare_extraction(
         warning_key(warning): fact
         for warning, phrase in zip(qualifier_warnings, dropped_qualifier_phrases, strict=True)
         if (fact := _dropped_phrase_fact(phrase)) is not None
+    } | {
+        warning_key(warning): exclusion_not_applied(
+            asked=stretch.phrase[: settings().max_dropped_qualifier_length]
+        )
+        for warning, stretch in zip(exclusion_warnings, exclusions, strict=True)
     }
     request_phrases = {_normalize(phrase) for phrase in dropped}
     per_variable_measure_qualifiers = [
@@ -1159,8 +1275,25 @@ def _prepare_extraction(
         per_variable_source_codes=per_variable_source_codes,
         per_variable_compiled_codes=per_variable_compiled_codes,
         per_variable_scope_intakes=intakes,
+        text=query,
+        exclusions=exclusions,
+        exclusion_warnings=exclusion_warnings,
         name_corrections=name_corrections,
     )
+
+
+def _disclosed_exclusions(text: str, left_out: Sequence[LeftOut]) -> tuple[LeftOut, ...]:
+    """The `left_out` stretches a refusal reports: each but those that leave out sources alone
+    (`SourceScan.source_stretches`), which refuse nothing a warning should name."""
+    scan = scan_sources(
+        text,
+        dictionary=source_dictionary(current_catalogue()),
+        measures=[],
+        entity_spans=[],
+        index=get_index(),
+        left_out=left_out,
+    )
+    return tuple(stretch for stretch in left_out if stretch.phrase not in scan.source_stretches)
 
 
 def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query: str) -> None:
@@ -1194,7 +1327,7 @@ async def _handle_single_variable(
     prep: _ExtractionPrep,
     *,
     query: str,
-    timing_extract: int,
+    timing: dict[str, int],
     extract_usage: dict | None,
     graph: EngineGraphClient,
     resolver: EntityResolver,
@@ -1218,7 +1351,7 @@ async def _handle_single_variable(
         entity_roles=prep.entity_roles,
         member_entities=prep.member_entities,
         date_request=prep.date_request,
-        query=query,
+        query=prep.text,
         pac=params.pac,
         graph=graph,
         resolver=resolver,
@@ -1231,7 +1364,7 @@ async def _handle_single_variable(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_timing={"extract": timing_extract},
+        base_timing=timing,
         pre_resolved=None,
         entity_surfaces=prep.entity_surfaces,
         entity_words=prep.entity_words,
@@ -1242,7 +1375,8 @@ async def _handle_single_variable(
         per_variable_dropped_qualifier_phrases=[
             prep.dropped_phrases_of(i) for i in range(len(prep.unique))
         ],
-        query_text=query,
+        exclusions=prep.exclusions,
+        query_text=prep.text,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_open_axes=prep.per_variable_open_axes,
@@ -1270,10 +1404,7 @@ async def _handle_single_variable(
     response = assemble_region(
         answered,
         query=query,
-        extra_warnings=prep.clamp_warnings
-        + _surviving_qualifier_warnings(
-            prep.qualifier_warnings, prep.dropped_qualifier_phrases, [region]
-        ),
+        extra_warnings=prep.clamp_warnings + prep.surviving([region]),
         start_ms=start_ms,
         engine_build=build_commit(),
         max_candidates=params.max_candidates,
@@ -1313,7 +1444,7 @@ async def _handle_multi_variable(
     prep: _ExtractionPrep,
     *,
     query: str,
-    timing_extract: int,
+    timing: dict[str, int],
     extract_usage: dict | None,
     graph: EngineGraphClient,
     resolver: EntityResolver,
@@ -1358,7 +1489,7 @@ async def _handle_multi_variable(
         entity_roles=prep.entity_roles,
         member_entities=prep.member_entities,
         date_request=prep.date_request,
-        query=query,
+        query=prep.text,
         pac=params.pac,
         graph=graph,
         resolver=resolver,
@@ -1371,7 +1502,7 @@ async def _handle_multi_variable(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_timing={"extract": timing_extract},
+        base_timing=timing,
         pre_resolved=pre_resolved,
         entity_words=prep.entity_words,
         deadline=params.deadline,
@@ -1381,6 +1512,7 @@ async def _handle_multi_variable(
         per_variable_dropped_qualifier_phrases=[
             prep.dropped_phrases_of(i) for i in range(len(prep.unique))
         ],
+        exclusions=prep.exclusions,
         per_variable_qualifiers=prep.per_variable_qualifiers,
         per_variable_operations=prep.per_variable_operations,
         per_variable_open_axes=prep.per_variable_open_axes,
@@ -1406,10 +1538,7 @@ async def _handle_multi_variable(
             initial_llm_usage=extract_usage,
             query=query,
             # Filter before merging. same_shape unions admitted phrases per group.
-            extra_warnings=prep.clamp_warnings
-            + _surviving_qualifier_warnings(
-                prep.qualifier_warnings, prep.dropped_qualifier_phrases, out.regions
-            ),
+            extra_warnings=prep.clamp_warnings + prep.surviving(out.regions),
             echo=None,
             timed_out=out.timed_out,
             degraded_leg=out.degraded_leg,
@@ -1450,12 +1579,34 @@ async def handle(
                 yield ev
         return
 
-    extract_result, extract_usage, timing_extract = await _run_extract_phase(
-        query, llm=llm, deadline=params.deadline
+    door_read = await _read_and_extract(query, llm=llm, deadline=params.deadline)
+    extract_result, extract_usage, timing = (
+        door_read.extract_result,
+        door_read.usage,
+        door_read.timing,
     )
+    text, left_out = door_read.reading.text, door_read.reading.left_out
     # Record extraction once before the per-variable fan-out.
-    yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing_extract)
+    yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing["extract"])
     extraction = extract_result.extraction
+
+    # Text left without a measure once a stretch is blanked names nothing to answer, so it
+    # refuses and says what went unapplied, whatever else the rest reads as.
+    if left_out and (extraction.kind != "resolution" or not extraction.variables):
+        unread = _disclosed_exclusions(text, left_out)
+        async with aclosing(
+            _no_variables_response(
+                query,
+                start_ms=start_ms,
+                params=params,
+                extract_usage=extract_usage,
+                timing=timing,
+                warnings=[_exclusion_warning(stretch.phrase) for stretch in unread],
+            )
+        ) as events:
+            async for ev in events:
+                yield ev
+        return
 
     # `extract` turns a catalogue or requires-analysis question that names a
     # measure into a resolution.
@@ -1468,7 +1619,7 @@ async def handle(
                 start_ms=start_ms,
                 params=params,
                 extract_usage=extract_usage,
-                timing_extract=timing_extract,
+                timing=timing,
                 scope=scope,
             )
         ) as events:
@@ -1483,7 +1634,7 @@ async def handle(
                 start_ms=start_ms,
                 params=params,
                 extract_usage=extract_usage,
-                timing_extract=timing_extract,
+                timing=timing,
             )
         ) as events:
             async for ev in events:
@@ -1494,7 +1645,7 @@ async def handle(
         update={
             "entities": await _recover_entity_surfaces(
                 extraction.entities,
-                query=query,
+                query=text,
                 resolver=resolver,
                 deadline=params.deadline,
             )
@@ -1503,9 +1654,10 @@ async def handle(
     prep = _prepare_extraction(
         extraction,
         extract_result,
-        query=query,
+        query=text,
+        left_out=left_out,
         name_corrections=await _name_corrections(
-            extraction.entities, query=query, resolver=resolver, deadline=params.deadline
+            extraction.entities, query=text, resolver=resolver, deadline=params.deadline
         ),
     )
 
@@ -1527,6 +1679,8 @@ async def handle(
     if scope is not None:
         cached = await scope.lookup_parsed(
             query=query,
+            text=text,
+            exclusions=prep.exclusions,
             variables=prep.unique,
             entities=extraction.entities,
             dates=extraction.dates,
@@ -1537,7 +1691,7 @@ async def handle(
             entity_roles=prep.entity_roles,
             sources=prep.per_variable_sources,
             source_codes=prep.per_variable_source_codes,
-            query_text=query if len(prep.unique) == 1 else None,
+            query_text=text if len(prep.unique) == 1 else None,
             separate=prep.separate,
             extraction_warnings=prep.clamp_warnings,
             measure_qualifiers=prep.per_variable_measure_qualifiers,
@@ -1545,7 +1699,7 @@ async def handle(
             stated_scopes=prep.per_variable_scope_intakes,
             llm_usage=extract_usage,
         )
-    _log_unclaimed_words(prep, extraction, query=query)
+    _log_unclaimed_words(prep, extraction, query=text)
     if scope is not None and cached is not None:
         async with aclosing(
             scope.hit_events(
@@ -1573,7 +1727,7 @@ async def handle(
             _handle_single_variable(
                 prep,
                 query=query,
-                timing_extract=timing_extract,
+                timing=timing,
                 extract_usage=extract_usage,
                 graph=graph,
                 resolver=resolver,
@@ -1598,7 +1752,7 @@ async def handle(
         _handle_multi_variable(
             prep,
             query=query,
-            timing_extract=timing_extract,
+            timing=timing,
             extract_usage=extract_usage,
             graph=graph,
             resolver=resolver,

@@ -232,6 +232,11 @@ class RegionResult:
     # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
     # across the request.
     admitted_qualifier_phrases: frozenset[str] = frozenset()
+    # The phrases the request asked to leave out that every answer of this region leaves out
+    # (`requirements.Judgement.met_exclusions`) or a repair bound as a value
+    # (`ResolveState.named_exclusions`), as the request wrote them. The entry door drops a
+    # phrase's warning when every region holds it.
+    met_exclusions: frozenset[str] = frozenset()
     # The raw-text door's request-wide `QUERY_QUALIFIER_DROPPED` warnings whose phrase this
     # region leaves unapplied (`raw_text._ExtractionPrep.onto`). The envelope states such a
     # warning only while no region admits its phrase. The part's departures read these

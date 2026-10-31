@@ -121,6 +121,8 @@ class DepartureFact:
       apply: on a door that holds no words (a resubmit) the names of the posted values, and
       for a dropped value no name exists for its slot's words ("a requested gender
       value").
+    - `left_out` (`measure_not_applied`): `asked` is the request's words for something it
+      asked to leave out ("excluding humanitarian aid"), which the answer does not.
     """
 
     code: DepartureCode
@@ -159,6 +161,7 @@ class DepartureFact:
     partial: bool = False
     limits: tuple[str, ...] = ()
     values: tuple[str, ...] = ()
+    left_out: bool = False
 
 
 def ordered_facts(facts: Iterable[DepartureFact]) -> tuple[DepartureFact, ...]:
