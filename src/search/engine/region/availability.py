@@ -33,11 +33,11 @@ import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
-from materialise.place_scope import DefaultPresence
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.extract import DateRequest
+from search.engine.place import ConsultedPresence
 from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
 from search.engine.region.coverage_series import holds_series, requested_window
 from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
@@ -239,13 +239,13 @@ def _subject_has_data(
     return False if covered else None
 
 
-def _default_scope_has_data(shape: ShapeDraft, presence: DefaultPresence | None) -> bool | None:
+def _default_scope_has_data(shape: ShapeDraft, presence: ConsultedPresence | None) -> bool | None:
     """D in the default scope a subject-only shape declares: whether a member's default
     scope holds a place. Unknown when the presence read does not cover every member."""
     members = list(shape.sv_arc_facts or ())
-    if presence is None or not members or any(sv not in presence.scopes for sv in members):
+    if presence is None or not members or not all(presence.covers(sv) for sv in members):
         return None
-    return any(presence.scopes[sv].places for sv in members)
+    return presence.consulted_any_places(members)
 
 
 def has_data_where_asked(

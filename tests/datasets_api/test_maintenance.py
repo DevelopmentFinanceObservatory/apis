@@ -13,13 +13,23 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
+from artifact_store import ExistsRead, LiveArtifactInventory, LiveArtifactStore, Tier
+from artifact_store.errors import ArtifactWriteError
 from dataset_store.migrate import MIGRATIONS_DIR
 from dataset_store.snapshot import WORKING_TIER_RETENTION, FrameLineage, LiveSnapshotReader
 from datasets_api import maintenance
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceKind,
+    ClaimState,
+    CopyClaim,
+    LiveAllowanceLedger,
+    Spend,
+)
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.render import CANONICAL_FRAME_RENDERING
+from datasets_api.retention_admission import sweep_budget, sweep_copy_claims
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from materialise.formats import (
@@ -89,6 +99,178 @@ def test_the_daily_run_logs_counts_and_capped_sorted_names_for_each_tier(capsys)
     assert lines["pinned"]["missing_objects_sample"] == first_names
     assert lines["pinned"]["unreferenced_pinned_digests_sample"] == first_names
     assert "orphaned_objects_sample" not in lines["pinned"]
+
+
+def _claims() -> LiveAllowanceLedger:
+    return LiveAllowanceLedger(
+        store=FakeVersionRecordDatasetStore(),
+        limits={AllowanceKind.pin_budget: 5},
+    )
+
+
+_SPENT_AT = datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+
+def _held(ledger: LiveAllowanceLedger, export: str = "exp_a") -> CopyClaim:
+    claim = ledger.claim(export, now=_SPENT_AT, expires_at=_SPENT_AT + timedelta(minutes=2))
+    return ledger.hold_claim(
+        claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], clock=lambda: _SPENT_AT
+    )
+
+
+def _units(ledger: LiveAllowanceLedger) -> dict[str, int]:
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT kind, count FROM datasets.caller_allowance")
+    return {row["kind"]: row["count"] for row in rows}
+
+
+@pytest.mark.parametrize(
+    ("digest", "pinned", "later", "units", "left"),
+    [
+        pytest.param(None, False, False, {}, False, id="died-mid-render"),
+        pytest.param("sha256:a", False, False, {}, False, id="copy-never-landed"),
+        pytest.param("sha256:a", True, False, {"pin_budget": 1}, True, id="copy-stands-same-day"),
+        pytest.param("sha256:a", True, True, {"pin_budget": 1}, False, id="copy-stands-day-passed"),
+    ],
+)
+def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
+    digest: str | None, pinned: bool, later: bool, units: dict[str, int], left: bool, capsys
+):
+    """A second run changes nothing, and a standing copy is read from the bucket, since its
+    inventory row can be what failed."""
+    now = _SPENT_AT + timedelta(days=1 if later else 0, minutes=5)
+    ledger = _claims()
+    artifact_store = FakeArtifactStore()
+    held = _held(ledger)
+    if digest is not None:
+        ledger.begin_copy(held, digest, clock=lambda: _SPENT_AT, lease=timedelta(0))
+    if pinned:
+        artifact_store._objects[(digest, Tier.pinned.value)] = b"bytes"
+
+    for _ in range(3):
+        maintenance.run_copy_claim_sweep(
+            store=ledger._store, artifact_store=artifact_store, now=lambda: now
+        )
+
+    assert _units(ledger) == units
+    assert (ledger.read_claim("exp_a") is not None) is left
+
+
+class _BrokenFor(FakeArtifactStore):
+    """A bucket whose read of one digest fails."""
+
+    def exists(self, digest: str, *, tier: Tier, read: object = None) -> bool:
+        if digest == "sha256:broken":
+            raise ArtifactWriteError(object_name=digest, digest=digest)
+        return super().exists(digest, tier=tier)
+
+
+def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(capsys):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    ledger.begin_copy(
+        _held(ledger, "exp_a"), "sha256:broken", clock=lambda: _SPENT_AT, lease=timedelta(0)
+    )
+    _held(ledger, "exp_b")
+
+    failed = maintenance.run_copy_claim_sweep(
+        store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
+    )
+
+    assert failed == 1
+    assert ledger.read_claim("exp_a").state == ClaimState.copying
+    assert ledger.read_claim("exp_b") is None
+    assert _units(ledger) == {"pin_budget": 1}
+    line = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (line["settled_claims"], line["failed_claims"], line["deferred_claims"]) == (1, 1, 0)
+
+
+def test_the_sweep_starts_no_claim_whose_read_could_outrun_its_budget():
+    """One run ends before the next starts, whatever the bucket does: a `copying` claim
+    starts only with room left for the whole long read."""
+    ledger = _claims()
+    _held(ledger, "exp_a")
+    ledger.begin_copy(
+        _held(ledger, "exp_b"), "sha256:a", clock=lambda: _SPENT_AT, lease=timedelta(0)
+    )
+    room = (sweep_budget(ledger.bounds) - ExistsRead.long.within).total_seconds()
+    elapsed = iter([0.0, 0.0, room + 1])
+
+    swept = sweep_copy_claims(
+        allowances=ledger,
+        artifacts=FakeArtifactStore(),
+        now=_SPENT_AT + timedelta(minutes=5),
+        monotonic=lambda: next(elapsed),
+    )
+
+    assert swept == (1, 0, 1)
+    assert ledger.read_claim("exp_a") is None
+    assert ledger.read_claim("exp_b").state == ClaimState.copying
+
+
+def test_the_sweep_reserves_a_ledger_write_before_starting_any_claim():
+    ledger = _claims()
+    _held(ledger, "exp_a")
+    elapsed = iter([0.0, sweep_budget(ledger.bounds).total_seconds() + 1])
+
+    swept = sweep_copy_claims(
+        allowances=ledger,
+        artifacts=FakeArtifactStore(),
+        now=_SPENT_AT + timedelta(minutes=5),
+        monotonic=lambda: next(elapsed),
+    )
+
+    assert swept == (0, 0, 1)
+    assert _units(ledger) == {"pin_budget": 1}
+
+
+def test_the_sweep_counts_only_the_claims_it_moved(capsys):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    copying = ledger.begin_copy(
+        _held(ledger), "sha256:a", clock=lambda: _SPENT_AT, lease=timedelta(0)
+    )
+    ledger.settle_copy(copying, landed=True, expires_at=_SPENT_AT)
+
+    maintenance.run_copy_claim_sweep(
+        store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
+    )
+
+    line = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (line["settled_claims"], line["failed_claims"]) == (0, 0)
+
+
+@pytest.mark.parametrize("error", [None, RuntimeError("the ledger is down")], ids=["one", "all"])
+def test_the_daily_sweep_writes_its_report_whatever_the_claims_did(error, capsys, monkeypatch):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    ledger.begin_copy(_held(ledger), "sha256:broken", clock=lambda: _SPENT_AT, lease=timedelta(0))
+    if error is not None:
+
+        def down(**_: object) -> int:
+            raise error
+
+        monkeypatch.setattr(maintenance, "run_copy_claim_sweep", down)
+
+    failed = maintenance.run_sweep(
+        store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
+    )
+
+    assert failed == 1
+    events = [json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()]
+    assert events.count("datasets_reconciliation_sweep") == 2
+
+
+def test_the_sweep_leaves_a_claim_with_a_running_lease():
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    ledger = _claims()
+    ledger.claim("exp_a", now=now, expires_at=now + timedelta(minutes=2))
+
+    maintenance.run_copy_claim_sweep(
+        store=ledger._store, artifact_store=FakeArtifactStore(), now=lambda: now
+    )
+
+    assert ledger.read_claim("exp_a") is not None
 
 
 def test_a_missing_or_unknown_task_is_refused():

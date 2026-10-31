@@ -955,7 +955,8 @@ _UN_SV_B = "undata/who/MORT_U5_RATE.SEX--F"
 
 
 class _DatedGraph:
-    """Labels from `_GRAPH`; a dated facet read that answers `facets` and records its calls."""
+    """Labels and node reads from `_GRAPH`; a dated facet read that answers `facets` and records
+    its calls."""
 
     def __init__(self, facets: dict[str, dict[str, list[Facet]]]) -> None:
         self._facets = facets
@@ -967,6 +968,9 @@ class _DatedGraph:
 
     def node_labels_batch(self, dcids):
         return _GRAPH.node_labels_batch(dcids)
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        return _GRAPH.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
 
 
 def _dated(facet_id: str, points: dict[str, float]) -> Facet:

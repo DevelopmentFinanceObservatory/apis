@@ -420,17 +420,30 @@ def provenance_row(
     source: str | None = None,
     segment: str | None = None,
     dataset: DatasetRef | None = None,
+    name: str | None = None,
 ) -> ProvenanceRow:
-    """A provenance row labelled with its own id, for `restrictive_catalogue`."""
+    """A provenance row named `name`, else labelled with its own id."""
     ref = source or provenance_id
     return ProvenanceRow(
         id=provenance_id,
         data_commons=origin,
         source=SourceRef(ref=ref, label=ref),
-        name=provenance_id,
+        name=name or provenance_id,
         url=f"https://example.org/{provenance_id}",
         segment=segment,
         dataset=dataset,
+    )
+
+
+def listing(names: Mapping[str, str]) -> FakeCatalogue:
+    """A `FakeCatalogue` listing each provenance in `names` under its name, with the origin its
+    id gives (`_origin_of`), as a production catalogue lists every provenance it admits, so
+    naming one reads no node."""
+    return FakeCatalogue(
+        provenances={
+            dcid: provenance_row(dcid, _origin_of(dcid, frozenset()), name=name)
+            for dcid, name in names.items()
+        }
     )
 
 
@@ -440,6 +453,7 @@ __all__ = [
     "empty_dataset_facts",
     "empty_source_documentation",
     "fake_catalogue_service",
+    "listing",
     "provenance_row",
     "restrictive_catalogue",
     "spread_provenance_places",

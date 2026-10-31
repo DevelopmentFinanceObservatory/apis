@@ -609,13 +609,6 @@ def assemble_manifest(
     states them from the trace (`datasets_api.description_record`).
     """
     warnings = [warning_model(w) for w in materialisation.warnings] + list(extra_warnings)
-    capabilities = build_capabilities(
-        capability_version=capability_version,
-        build=materialiser_build,
-        code_index_stamp=code_index.stamp,
-        declarations=code_index.declarations,
-        settings=settings,
-    )
 
     trace = replace(
         materialisation.trace,
@@ -651,14 +644,41 @@ def assemble_manifest(
         artifacts=list(artifacts),
         # The statistics artifact is in `artifacts`. This field carries only its count.
         series_count=materialisation.series_statistics.series_count,
-        output_options=derive_output_options(
-            materialisation.output_profile,
-            identity=stored.identity,
-            capabilities=capabilities,
-            parties=code_index.parties,
-            datasets=source_refs_of(materialisation.trace),
+        output_options=manifest_output_options(
+            materialisation,
+            stored=stored,
+            capability_version=capability_version,
+            materialiser_build=materialiser_build,
+            code_index=code_index,
+            settings=settings,
         ),
         series_coverage_stamp=coverage_stamp,
+    )
+
+
+def manifest_output_options(
+    materialisation: MaterialisationResult,
+    *,
+    stored: StoredDefinition,
+    capability_version: str,
+    materialiser_build: str,
+    code_index: CodeIndex,
+    settings: DatasetsBuildSettings,
+) -> OutputOptionsModel:
+    """The output options a manifest of `materialisation` offers (`derive_output_options`)."""
+    capabilities = build_capabilities(
+        capability_version=capability_version,
+        build=materialiser_build,
+        code_index_stamp=code_index.stamp,
+        declarations=code_index.declarations,
+        settings=settings,
+    )
+    return derive_output_options(
+        materialisation.output_profile,
+        identity=stored.identity,
+        capabilities=capabilities,
+        parties=code_index.parties,
+        datasets=source_refs_of(materialisation.trace),
     )
 
 
@@ -846,26 +866,24 @@ def persisted_manifest(
     *,
     stored: StoredVersion,
     served: Manifest,
-    call_warnings: Sequence[WarningModel] = (),
+    reshape_warnings: Sequence[WarningModel] = (),
 ) -> Manifest:
     """The manifest a write returns when its version record already existed.
 
     Every field comes from the stored version's facts (`stored_manifest`), so a re-mint after
-    a graph rename keeps the stored citation. From `served` it takes only `artifacts`,
-    `output_options`, `series_coverage_stamp` and `diagnostics`, this call's. A
-    `call_warnings` entry is appended when no stored warning has its `code` and `message`; on a
-    match the stored entry stands, so a stored `stat_vars_summed` warning keeps the structured
-    fields and label it was recorded with. `call_warnings` holds this call's reshape warnings
-    and the origin warnings its reads found (`datasets_api.origin`). A stored
-    `origin_catalogue_stale` warning is dropped, since this call's diagnostics state the
-    staleness of the catalogue bound to it.
+    a graph rename keeps the stored citation, and its warnings, the origin findings recorded at
+    mint included. From `served` it takes only `artifacts`, `output_options`,
+    `series_coverage_stamp` and `diagnostics`, this call's. A `reshape_warnings` entry (this
+    call's, `reshape_warning_models`) is appended when no stored warning has its `code` and
+    `message`. A stored `origin_catalogue_stale` warning is dropped, since this call's
+    diagnostics state the staleness of the catalogue bound to it.
     """
     manifest = stored_manifest(stored)
     warnings = [
         warning for warning in manifest.warnings if warning.code != "origin_catalogue_stale"
     ]
     keys = {(warning.code, warning.message) for warning in warnings}
-    for warning in call_warnings:
+    for warning in reshape_warnings:
         if (warning.code, warning.message) not in keys:
             keys.add((warning.code, warning.message))
             warnings.append(warning)
@@ -936,7 +954,7 @@ def collapsed_head_manifest(
     artifact: ArtifactEntryModel,
     statistics_artifact: ArtifactEntryModel,
     series_count: int,
-    output_options: OutputOptionsModel,
+    output_options: OutputOptionsModel | None,
     extra_warnings: Sequence[WarningModel] = (),
 ) -> Manifest:
     """Patches a raw head manifest for a derived identity (`render.DerivedVersion`) without a

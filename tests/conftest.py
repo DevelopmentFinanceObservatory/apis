@@ -325,6 +325,22 @@ def bind_catalogue() -> Iterator[Callable[[Catalogue], None]]:
 
 
 @pytest.fixture
+def serve_catalogue() -> Iterator[Callable[[Catalogue], None]]:
+    """Return a function that makes the process-wide catalogue service serve a catalogue, so a
+    surface built afterwards binds it on every request."""
+    with ExitStack() as stack:
+
+        def install(catalogue: Catalogue) -> None:
+            stack.enter_context(
+                catalogue_service_module._singleton.poisoned_for_test(
+                    fake_catalogue_service(catalogue)
+                )
+            )
+
+        yield install
+
+
+@pytest.fixture
 def published_catalogue_uri(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Publish the sample origin catalogue and point `ORIGIN_CATALOGUE_URI` at it.
 

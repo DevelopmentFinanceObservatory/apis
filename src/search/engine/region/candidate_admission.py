@@ -10,6 +10,7 @@ import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from search.engine.degraded_reads import carry
 from search.engine.region.availability import _shape_group_key
 from search.engine.region.candidates import _Alternate, _Candidate, _materialise_alt_shapes
 from search.engine.region.codes import ALTERNATES_UNEVALUATED
@@ -125,6 +126,9 @@ async def _materialise_candidates(
             coverage=state.coverage,
         )
         merge_presence(state, read.presence)
+        # Every alternate the admission reads shapes the offer.
+        for record in read.consulted:
+            carry(record)
         # An alternate whose presence read after unbinding did not complete is unevaluated,
         # as one the read above left without presence is.
         dropped = {

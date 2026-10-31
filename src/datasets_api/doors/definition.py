@@ -604,10 +604,12 @@ async def _run_retrieval[T](
     deps: DefinitionDeps,
     timings: PhaseTimings,
     refuse: Callable[[], Exception] = DefinitionBackpressure,
+    wait_seconds: float = 0.0,
     **kwargs: object,
 ) -> T:
     """Run `fn(deps=deps, **kwargs)` on `executor` under `deps.deadline`, bound as the request
     deadline (`dfo_platform.request_deadline`) so every graph and SDMX read inside takes it.
+    `wait_seconds` is `DoorExecutor.run`'s wait for a permit.
     The wait ends with the unwind margin after the deadline, however many hops the request
     made before, and answers timeout (504). The worker finishes after a client timeout."""
     deadline = deps.deadline
@@ -617,6 +619,7 @@ async def _run_retrieval[T](
             executor.run(
                 functools.partial(run_with_timings, fn, timings, deps=deps, **kwargs),
                 refuse=refuse,
+                wait_seconds=wait_seconds,
             ),
             timeout=max(0.0, deadline - time.monotonic())
             + _unwind_seconds(deps.settings.definition_timeout_seconds),

@@ -12,7 +12,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 
 from search.engine.assemble import definite_departures
@@ -114,7 +114,7 @@ async def _stream_slot_options(
     response: Resolution | None,
     answered: Sequence[RegionResult],
     place_options_budget_s: float = PLACE_OPTIONS_BUDGET_S,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     """Stream trailing enrichment events as slot, observation, or place tasks finish.
 
     Slot and observation tasks share the request's monotonic deadline. Place tasks

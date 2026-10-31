@@ -62,10 +62,14 @@ is left out, and an input record holding `steps: null` is held, and either leave
 record not final, so a later load reads the inputs again. A
 failed input read raises as a failed record read does.
 
-A version's warnings carry by ref the entities and group members they count and their
-messages do not name: the bound entities and members that served nothing, and the entities a
-conversion left out (`assembler.mint.warned_refs`). These hold no row, so their refs join the
-frame's label read ahead of its own refs, and a card names them by label.
+A version's warnings carry by ref the entities, group members, series and provenances they
+count: the bound entities and members that served nothing, the entities a conversion left out,
+and the series and provenances the registry withheld. A stored warning's message may name
+none of them (`assembler.mint.warned_refs`, `assembler.mint.warned_provenance_refs`). The
+entities, members and series hold no row, so their refs join the frame's label read ahead of
+its own refs. A provenance is named as a source citation names it (`read_source_citations`):
+its catalogue row, else its parent Dataset's name, else its own. A card names them all by
+label.
 
 A frame's continuation (`ResolvedFrame.continuation`, `assembler.frame_view.frame_continuation`)
 comes from its stored version alone: a dataset version's `trace.continuations`, or the
@@ -154,6 +158,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -186,7 +191,7 @@ from assembler.frame_view import (
     frame_continuation,
 )
 from assembler.limits import LABEL_MAX, joined_label
-from assembler.mint import warned_refs
+from assembler.mint import warned_provenance_refs, warned_refs
 from assembler.ports import (
     TRANSIENT_FRAME_REASONS,
     Continuation,
@@ -231,8 +236,10 @@ from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
 from datasets_api.render import servable_frame_location
 from datasets_api.retention_admission import (
+    CopyClaimUnsettled,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
+    PinUnitHeld,
     copy_to_pinned,
 )
 from datasets_api.subject_ids import served_subject_ids
@@ -245,6 +252,7 @@ from description.steps_text import bound_entities, composed_names, step_output_n
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from description.world_bank import WORLD_BANK_NAMESPACE
 from dfo_platform.caller import Caller
+from dfo_platform.executor import submit_with_context
 from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
 from materialise.formats import (
@@ -254,7 +262,12 @@ from materialise.formats import (
     read_frame1,
 )
 from materialise.graph import GraphReader, GraphReadError
-from materialise.provenance_doc import SourceCitation, read_source_citations
+from materialise.provenance_doc import (
+    SourceCitation,
+    provenance_names,
+    read_source_citations,
+    unnamed_provenances,
+)
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
 from origin_catalogue.context import current_words_build
@@ -304,6 +317,13 @@ a derived frame's provenance refs in row order, a root frame's stored citation s
 order. On a derived frame a ref beyond the cap is cited by its ref alone, as a ref the graph does
 not hold is. On a root frame a source beyond the cap keeps its stored fields and documents
 nothing."""
+
+_PROVENANCE_NAME_POOL = ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="frame-provenance-names"
+)
+"""Threads, process-wide, that read a load's provenance names beside its label read
+(`_label_refs`). A name read still queued when the label read ends is cancelled and made on
+the load's own thread, so a busy pool delays no load beyond a serial read."""
 
 _RECHECK = datetime.timedelta(seconds=60)
 """How long a cached frame serves a description record that is not final, or words whose
@@ -551,17 +571,27 @@ def _document_bytes(*, rows: int, columns: int) -> int:
     return rows * (_ROW_LIST_BYTES + 8 * columns + _VALUE_CELL_BYTES)
 
 
+def _provenance_cells(
+    *, columns: Sequence[str], rows: Sequence[Sequence[object]]
+) -> frozenset[str]:
+    """The provenance dcids the `provenance` column of `rows` holds."""
+    if _PROVENANCE_COLUMN not in columns:
+        return frozenset()
+    index = columns.index(_PROVENANCE_COLUMN)
+    return frozenset(cast(str, row[index]) for row in rows if row[index] is not None)
+
+
 def _capped_refs(
     *,
     columns: Sequence[str],
     rows: Sequence[Sequence[object]],
-    leading_stat_vars: Sequence[str] = (),
+    leading_refs: Sequence[str] = (),
     worded: Sequence[str] = (),
     named: frozenset[str] = frozenset(),
 ) -> dict[str, str]:
     """The refs to label in `rows`, each mapped to the bare dcid a graph read takes: stat_var,
     entity, and provenance refs up to `_LABEL_RESOLUTION_CAP`, then unit dcid refs up to
-    `_UNIT_LABEL_CAP`, each in row order. `leading_stat_vars`, then the bare dcids in `worded`,
+    `_UNIT_LABEL_CAP`, each in row order. `leading_refs`, then the bare dcids in `worded`,
     then a composed unit's StatVar sides, count under the first cap ahead of the columns' own
     refs, and a composed unit's string sides as unit refs. A ref in `named` is left out."""
     index_by_column = {column: position for position, column in enumerate(columns)}
@@ -585,7 +615,7 @@ def _capped_refs(
     # composed variable, the refs inputs' titles and steps' names word and the sides of a
     # composed unit come first, since each labels the whole card and frames hold few of them.
     # A bare dcid is its own key and strips to itself.
-    leading = [*leading_stat_vars, *worded]
+    leading = [*leading_refs, *worded]
     leading += [
         cast("Mapping[str, str]", part)["stat_var"]
         for part in unit_parts
@@ -964,6 +994,7 @@ class LiveFrameStore:
                 composed=_composed(record, stored=stored),
                 inputs=inputs,
                 warned=warned_refs(manifest=document),
+                warned_provenances=warned_provenance_refs(manifest=document),
                 deadline=deadline,
             )
             frame = ResolvedFrame(
@@ -1029,6 +1060,7 @@ class LiveFrameStore:
                     composed=_composed(record, stored=stored),
                     inputs=inputs,
                     warned=warned_refs(manifest=document),
+                    warned_provenances=warned_provenance_refs(manifest=document),
                     deadline=deadline,
                 )
                 if record_changed and not labels_resolved:
@@ -1236,15 +1268,15 @@ class LiveFrameStore:
         left_out = cast("Sequence[Mapping[str, object]]", body["left_out"])
         coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
         columns = tuple(dict.fromkeys(column for one in coordinates for column in one))
+        rows = [[one.get(column) for column in columns] for one in coordinates]
         refs = {
             ref: bare
-            for ref, bare in _capped_refs(
-                columns=columns,
-                rows=[[one.get(column) for column in columns] for one in coordinates],
-            ).items()
+            for ref, bare in _capped_refs(columns=columns, rows=rows).items()
             if ref not in frame.labels
         }
-        read, labelled = self._label_refs(refs, deadline=deadline)
+        read, labelled = self._label_refs(
+            refs, provenances=_provenance_cells(columns=columns, rows=rows), deadline=deadline
+        )
         labels = {**frame.labels, **read}
         anchor = RollingAnchor(
             period=cast(str, body["period"]),
@@ -1356,6 +1388,8 @@ class LiveFrameStore:
                 root's pin failed transiently.
             PinBudgetExhausted: The day's pin budget is spent.
             OpenPinBudgetExhausted: The open callers' pin budget is spent.
+            PinUnitHeld: A claim holds the last unit of a limit.
+            CopyClaimUnsettled: The copy ran out of lease before it began.
             AllowanceExhausted: `caller`'s `pin` allowance is spent.
         """
         roots = self._root_closure(frame_ref)
@@ -1472,11 +1506,18 @@ class LiveFrameStore:
                 copy_to_pinned(
                     self._artifacts,
                     canonical.artifact_digest,
+                    source=(canonical.bucket, canonical.object_name),
                     allowances=self._allowances,
                     caller=caller,
-                    now=self._now(),
+                    clock=self._now,
                 )
-            except (PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted):
+            except (
+                PinBudgetExhausted,
+                OpenPinBudgetExhausted,
+                PinUnitHeld,
+                CopyClaimUnsettled,
+                AllowanceExhausted,
+            ):
                 raise
             except ArtifactNotFoundError as exc:
                 raise FrameUnavailable(
@@ -1730,11 +1771,13 @@ class LiveFrameStore:
         composed: Sequence[ComposedVariable],
         inputs: Sequence[DescriptionRecord],
         warned: Sequence[str],
+        warned_provenances: Sequence[str],
         deadline: float,
     ) -> tuple[dict[str, str], dict[str, str], bool]:
-        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities and group
-        members its version's warnings count (`warned`, `assembler.mint.warned_refs`) under
-        their `dcid:` refs, since what served nothing or was left out has no row, and the refs
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), with the entities, group
+        members and series its version's warnings count (`warned`, `assembler.mint.warned_refs`)
+        under their `dcid:` refs, since what served nothing, was left out or was withheld has no
+        row, the provenances they count (`warned_provenances`), and the refs
         each of `inputs` names in its title (`datasets_api.description_record.title_named`) and the
         entities `record`'s steps record on their sides (`bound_entities`) under their bare dcids,
         then add the name of each variable `record` and `composed` name
@@ -1749,9 +1792,10 @@ class LiveFrameStore:
             )
         labels, resolved = self._resolve_ref_labels(
             doc,
-            leading_stat_vars=[*_composed_sides(composed), *warned],
+            leading_refs=[*_composed_sides(composed), *warned],
             worded=sorted(worded),
             named=frozenset(_named_refs(record, composed=composed)),
+            warned_provenances=warned_provenances,
             deadline=deadline,
         )
         labels.update(
@@ -1794,17 +1838,20 @@ class LiveFrameStore:
         self,
         doc: Mapping[str, object],
         *,
-        leading_stat_vars: Sequence[str],
+        leading_refs: Sequence[str],
         named: frozenset[str],
         worded: Sequence[str] = (),
+        warned_provenances: Sequence[str] = (),
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
-        order, then unit dcid refs, capped at 100 in row order, and say whether the graph read
-        succeeded. `leading_stat_vars`, then a composed unit's StatVar sides, count as stat_var
+        order, then unit dcid refs, capped at 100 in row order, with the `dcid:` refs of
+        `warned_provenances` past both caps, and say whether the graph read succeeded. The
+        provenance cells and `warned_provenances` are named as `_label_refs` names a
+        provenance. `leading_refs`, then a composed unit's StatVar sides, count as stat_var
         refs ahead of the columns' own refs, and a composed unit's string sides as unit refs.
         A ref in `named` is left out of the read. Each bare dcid in `worded` counts under the
-        first cap after `leading_stat_vars`. `dcid:spec_...` family refs use stored
+        first cap after `leading_refs`. `dcid:spec_...` family refs use stored
         definitions and `CodeIndex`. Other refs use one graph batch that stops at the absolute
         monotonic `deadline`. Missing readers, lookup/store failures, and over-cap refs remain
         unlabelled without failing the load. A graph failure, the deadline included, preserves
@@ -1818,11 +1865,14 @@ class LiveFrameStore:
         refs = _capped_refs(
             columns=columns,
             rows=rows,
-            leading_stat_vars=leading_stat_vars,
+            leading_refs=leading_refs,
             worded=worded,
             named=named,
         )
-        return self._label_refs(refs, deadline=deadline)
+        warned = {ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in warned_provenances}
+        refs.update(warned)
+        provenances = _provenance_cells(columns=columns, rows=rows) | set(warned.values())
+        return self._label_refs(refs, provenances=provenances, deadline=deadline)
 
     def _computed_labels(
         self,
@@ -1880,15 +1930,23 @@ class LiveFrameStore:
         )
 
     def _label_refs(
-        self, refs: Mapping[str, str], *, deadline: float
+        self, refs: Mapping[str, str], *, provenances: frozenset[str], deadline: float
     ) -> tuple[dict[str, str], bool]:
         """Label `refs`, a map from each ref to its bare dcid, and say whether every read
-        succeeded, as `_resolve_labels` describes."""
+        succeeded, as `_resolve_labels` describes. A ref whose bare dcid is in `provenances` is
+        named by `materialise.provenance_doc.provenance_names`, timed as the call's
+        `provenance_names` phase. Every other graph ref is labelled by one `node_arcs_many` of
+        `name`. When both read the graph, the name read runs beside the label read, so naming
+        a provenance the catalogue does not list adds no serial step."""
+        catalogue = current_catalogue()
         family_refs: dict[str, str] = {}
+        provenance_refs: dict[str, list[str]] = {}
         graph_bare_to_refs: dict[str, list[str]] = {}
         for ref, bare in refs.items():
             if bare.startswith(_FAMILY_REF_PREFIX):
                 family_refs[ref] = bare
+            elif bare in provenances:
+                provenance_refs.setdefault(bare, []).append(ref)
             else:
                 graph_bare_to_refs.setdefault(bare, []).append(ref)
 
@@ -1898,25 +1956,56 @@ class LiveFrameStore:
             family_labels, family_read_ok = self._resolve_family_labels(family_refs)
             labels.update(family_labels)
 
-        if not graph_bare_to_refs or self._graph is None:
+        graph = self._graph
+        if graph is None:
             return labels, family_read_ok
 
+        unlisted = unnamed_provenances(list(provenance_refs), catalogue=catalogue)
+
+        def name_provenances() -> tuple[dict[str, str], bool]:
+            with phase("provenance_names"):
+                return provenance_names(
+                    graph,
+                    list(provenance_refs),
+                    catalogue=catalogue,
+                    deadline=deadline,
+                    unlisted=unlisted,
+                )
+
+        if graph_bare_to_refs and unlisted:
+            named = submit_with_context(_PROVENANCE_NAME_POOL, name_provenances)
+            graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+            # A name read still queued behind other loads' runs here instead.
+            names, named_ok = name_provenances() if named.cancel() else named.result()
+        else:
+            graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+            names, named_ok = name_provenances() if provenance_refs else ({}, True)
+        labels.update(graph_labels)
+        labels.update((ref, name) for bare, name in names.items() for ref in provenance_refs[bare])
+        return labels, family_read_ok and read_ok and named_ok
+
+    @staticmethod
+    def _graph_labels(
+        graph: GraphReader, bare_to_refs: Mapping[str, list[str]], deadline: float
+    ) -> tuple[dict[str, str], bool]:
+        """Each ref of `bare_to_refs` labelled from one `node_arcs_many` of its bare dcid's
+        `name`, and whether the read succeeded."""
+        if not bare_to_refs:
+            return {}, True
         try:
-            arcs_by_bare = self._graph.node_arcs_many(
-                tuple(graph_bare_to_refs), properties=("name",), deadline=deadline
+            arcs_by_bare = graph.node_arcs_many(
+                list(bare_to_refs), properties=("name",), deadline=deadline
             )
         except GraphReadError:
-            return labels, False
-
+            return {}, False
+        labels: dict[str, str] = {}
         for bare, arcs in arcs_by_bare.items():
-            if arcs is None:
+            label = None if arcs is None else label_or_self_name(arcs.get("name", ()), bare)
+            if label is None or bare not in bare_to_refs:
                 continue
-            label = label_or_self_name(arcs.get("name", ()), bare)
-            if label is None:
-                continue
-            for ref in graph_bare_to_refs[bare]:
+            for ref in bare_to_refs[bare]:
                 labels[ref] = label
-        return labels, family_read_ok
+        return labels, True
 
     def _resolve_family_labels(self, family_refs: Mapping[str, str]) -> tuple[dict[str, str], bool]:
         """Label family refs with one batched definition read and `family_label`, and say

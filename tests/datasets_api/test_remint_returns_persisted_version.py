@@ -250,7 +250,7 @@ def test_a_definition_remint_after_a_rename_returns_the_stored_citation(version_
     [["dcid:RemintOriginDefinition"]],
     ids=["definition"],
 )
-def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
+def test_a_remint_of_a_stored_version_keeps_the_warnings_on_record(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
 ):
     client, _artifact_store = _client(
@@ -270,8 +270,9 @@ def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
 
     assert second.status_code == 200, second.text
     assert second.json()["content_version"] == first.json()["content_version"]
+    # A version's facts are fixed at its mint, so a re-mint serves the warnings on record.
     assert "un_system_unavailable" not in [w["code"] for w in first.json()["warnings"]]
-    assert unavailable.model_dump(mode="json") in second.json()["warnings"]
+    assert second.json()["warnings"] == first.json()["warnings"]
 
 
 @pytest.mark.parametrize(
@@ -468,6 +469,67 @@ def test_a_collapse_minted_over_a_renamed_base_cites_the_base_s_stored_citation(
     assert collapsed["prepared_at"] == _prepared(0)
 
 
+def test_a_collapse_reminted_under_a_changed_catalogue_keeps_the_base_s_recorded_warnings(
+    version_store, monkeypatch: pytest.MonkeyPatch
+):
+    """A collapse whose base version is on record under a head that rebuilds renders the
+    derived version from a fresh materialisation and serves the warnings the base recorded,
+    whatever origin warnings the call's catalogue finds. It assembles no manifest of the
+    derived rendering, whose body the stored base gives."""
+    client = definition_door_client(
+        graph=groupby_fixture._graph(),
+        sdmx_transport=groupby_fixture._sdmx_transport(),
+        version_store=version_store,
+        head_writer=LiveHeadStore(store=version_store),
+        code_index=groupby_fixture._code_index(),
+        coverage=groupby_fixture._coverage_service(),
+    )
+    spec_id, sidecar = groupby_fixture._spec_id_and_sidecar()
+    _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
+
+    def unavailable_at(place: str) -> None:
+        warning = WarningModel(
+            code="un_system_unavailable", severity=severity, message=f"{detail} {place}."
+        )
+        monkeypatch.setattr(
+            serve, "un_unavailable_warnings", lambda _blocked, *, request=None: (warning,)
+        )
+
+    unavailable_at("country/GRC")
+    base = groupby_fixture._mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": True})
+    monkeypatch.setattr(get_catalogue_service(), "snapshot", lambda: FakeCatalogue(build_id="b"))
+    unavailable_at("country/ITA")
+    # A head past its maximum age rebuilds, and its version is on record.
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET confirmed_at = %s, materialised_at = %s "
+            "WHERE subject_id = %s",
+            ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", spec_id),
+        )
+    rendered_assemblies: list[object] = []
+    assemble_manifest = serve.assemble_manifest
+
+    def assemble(**kwargs):
+        if kwargs["artifacts"]:
+            rendered_assemblies.append(kwargs["artifacts"])
+        return assemble_manifest(**kwargs)
+
+    monkeypatch.setattr(serve, "assemble_manifest", assemble)
+
+    collapsed = groupby_fixture._mint(
+        client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": True, "groupby": {"by": ["recipient"], "op": "sum"}},
+    )
+
+    assert rendered_assemblies == []
+    assert collapsed["content_version"] != base["content_version"]
+    (recorded,) = _snapshot(client, base)["warnings"]
+    assert recorded["message"].endswith("country/GRC.")
+    assert [w for w in collapsed["warnings"] if w["code"] == "un_system_unavailable"] == [recorded]
+
+
 class _RaceObservingWriter:
     """A `VersionRecordWriter` over `delegate` that keeps what each `write_version` stored.
 
@@ -524,6 +586,41 @@ def test_a_write_that_loses_a_concurrent_insert_returns_the_winner_s_record(vers
     assert lost.json()["content_version"] == won.json()["content_version"]
     assert [source["label"] for source in lost.json()["citation"]["sources"]] == [_FIRST_NAME]
     assert _stored_fields(lost.json()) == _stored_fields(won.json())
+
+
+def test_an_options_read_whose_write_finds_the_version_on_record_serves_its_warnings(
+    version_store, monkeypatch: pytest.MonkeyPatch
+):
+    """A concurrent mint recorded the version before this options read's write, under no
+    warning this call finds. The write finds the version, so the read serves the stored body,
+    as a rendered write does."""
+    stat_vars = ["dcid:RemintOptionsRace"]
+    arcs = _arcs(stat_vars)
+    winner, artifact_store = _client(version_store=version_store, stat_vars=stat_vars, arcs=arcs)
+    won = winner.post("/api/datasets", json=_bundled(stat_vars)).json()
+    _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
+    unavailable = WarningModel(
+        code="un_system_unavailable", severity=severity, message=f"{detail} country/GRC."
+    )
+    monkeypatch.setattr(
+        serve, "un_unavailable_warnings", lambda _blocked, *, request=None: (unavailable,)
+    )
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
+    loser, _ = _client(
+        version_store=version_store,
+        stat_vars=stat_vars,
+        arcs=arcs,
+        artifact_store=artifact_store,
+        version_writer=writer,
+    )
+    spec_id = won["definition"]["spec_id"]
+
+    options = loser.post(f"/api/datasets/{spec_id}/options", json={"definition": won["definition"]})
+
+    assert options.status_code == 200, options.text
+    assert [written.created for written in writer.written] == [False]
+    assert options.json()["content_version"] == won["content_version"]
+    assert options.json()["warnings"] == won["warnings"]
 
 
 def test_a_write_that_loses_a_concurrent_first_mint_returns_the_winner_s_bundle(
@@ -604,6 +701,59 @@ def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_pr
     assert again["content_version"] == collapsed["content_version"]
     assert _stored_fields(again) == _stored_fields(snapshot)
     assert _digests(_bundle_entries(again)) == _digests(_bundle_entries(collapsed))
+
+
+def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_warnings(
+    version_store, monkeypatch: pytest.MonkeyPatch
+):
+    """The base is on record before this call's write, under a warning this call does not
+    find, and both date the same. The write finds the base, records nothing rendered, and the
+    call renders the collapse again from the stored base, so the collapsed version warns as the
+    base on record does."""
+    monkeypatch.setattr(serve, "_prepared_now", lambda: _FIRST_PREPARED)
+    _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
+
+    def unavailable_at(place: str) -> None:
+        warning = WarningModel(
+            code="un_system_unavailable", severity=severity, message=f"{detail} {place}."
+        )
+        monkeypatch.setattr(
+            serve, "un_unavailable_warnings", lambda _blocked, *, request=None: (warning,)
+        )
+
+    spec_store = FakeDatasetStore()
+
+    def client(version_writer=None):
+        return definition_door_client(
+            graph=groupby_fixture._graph(),
+            store=spec_store,
+            sdmx_transport=groupby_fixture._sdmx_transport(),
+            version_store=version_store,
+            version_writer=version_writer,
+            code_index=groupby_fixture._code_index(),
+            coverage=groupby_fixture._coverage_service(),
+        )
+
+    spec_id, sidecar = groupby_fixture._spec_id_and_sidecar()
+    unavailable_at("country/GRC")
+    base = groupby_fixture._mint(
+        client(), spec_id=spec_id, sidecar=sidecar, options={"bundle": False}
+    )
+    unavailable_at("country/ITA")
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
+
+    collapsed = groupby_fixture._mint(
+        client(writer),
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": True, "groupby": {"by": ["recipient"], "op": "sum"}},
+    )
+
+    assert [written.rendered for written in writer.written] == _LOST_THEN_RENDERED
+    (recorded,) = _snapshot(client(), base)["warnings"]
+    assert recorded["message"].endswith("country/GRC.")
+    for served in (collapsed, _snapshot(client(), collapsed)):
+        assert [w for w in served["warnings"] if w["code"] == "un_system_unavailable"] == [recorded]
 
 
 @pytest.mark.parametrize(

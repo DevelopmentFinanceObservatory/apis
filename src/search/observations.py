@@ -32,6 +32,7 @@ from code_index.composites import DECLARED_COMPOSITES
 from code_index.query import CodeIndex
 from description.blocks import documentation_link
 from materialise.enrichment import read_party_kinds
+from materialise.provenance_doc import ProvenanceNameReader, provenance_names
 from materialise.roles import axis_for_role
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from origin_catalogue import ProvenanceRow, current_catalogue
@@ -133,17 +134,11 @@ def _source_and_origin(row: ProvenanceRow) -> tuple[SourceRef, DataCommonsRef]:
     )
 
 
-def unlisted_provenances(dcids: Sequence[str]) -> list[str]:
-    """The distinct provenance dcids the bound catalogue has no row for, in first-seen
-    order. A caller adds these ids to its graph label batch."""
-    catalogue = current_catalogue()
-    return [dcid for dcid in dict.fromkeys(dcids) if catalogue.provenance(dcid) is None]
-
-
 def provenance_ref(dcid: str, labels: Mapping[str, str]) -> ProvenanceRef | None:
     """The provenance ref for `dcid`, with the catalogue row's name, source and Data Commons.
-    A provenance the catalogue does not list takes its graph label from `labels` and has no
-    source or Data Commons. `None` when neither names it."""
+    A provenance the catalogue does not list takes its name from `labels`, which holds what
+    `materialise.provenance_doc.provenance_names` gives it, and has no source or Data Commons.
+    `None` when neither names it."""
     row = current_catalogue().provenance(dcid)
     if row is not None:
         source, origin = _source_and_origin(row)
@@ -161,7 +156,7 @@ def provenance_refs(dcids: Sequence[str], labels: Mapping[str, str]) -> list[Pro
 
 def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef:
     """A series' provenance-axis facet ref for `dcid`, with the catalogue row's members and the
-    route of its document. A provenance the catalogue does not list takes its graph label from
+    route of its document. A provenance the catalogue does not list takes its name from
     `labels`, if any. A declared composite (`code_index.composites`), which neither the graph
     nor the catalogue holds, takes its declared label and no document route."""
     composite = DECLARED_COMPOSITES.get(dcid)
@@ -412,8 +407,9 @@ def observations_converted_bulk(mode: PreviewMode) -> SpecObservations:
 # ---------------------------------------------------------------------------
 
 
-class LabelSource(Protocol):
-    """A graph client that labels nodes. Absent dcids are left out of the result."""
+class LabelSource(ProvenanceNameReader, Protocol):
+    """A graph client that labels nodes and names provenances (`provenance_names`). Absent
+    dcids are left out of the result."""
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]: ...
 
@@ -485,12 +481,16 @@ def _read_labels(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None = None,
 ) -> dict[str, str]:
-    """Every label `reads` show, in one batch: provenances the catalogue does not list, role
-    entities, StatVars, method and unit refs, member constraint values and the target
-    currency. No batch when nothing needs a label."""
+    """Every label `reads` show: role entities, StatVars, method and unit refs, member
+    constraint values and the target currency in one batch, no batch when nothing needs a
+    label, and each provenance's name (`materialise.provenance_doc.provenance_names`). A
+    failed provenance name read, which that function logs, leaves the provenances the
+    catalogue does not list unnamed and calls `on_names_unread`: Search notes a degraded read,
+    and the Datasets observations door refuses."""
     provenance_dcids = [
         *(ref for read in reads.values() if (ref := read.facets.get("provenance")) is not None),
         *(
@@ -502,7 +502,6 @@ def _read_labels(
     label_dcids = list(
         dict.fromkeys(
             [
-                *unlisted_provenances(provenance_dcids),
                 *(dcid for _sv, role_tuple in reads for _role, dcid in role_tuple),
                 *(sv for sv, _role_tuple in reads),
                 *(
@@ -520,7 +519,13 @@ def _read_labels(
             ]
         )
     )
-    return label_source.node_labels_batch(label_dcids) if label_dcids else {}
+    labels = label_source.node_labels_batch(label_dcids) if label_dcids else {}
+    names, read_ok = provenance_names(
+        label_source, provenance_dcids, catalogue=current_catalogue(), deadline=None
+    )
+    if not read_ok:
+        on_names_unread()
+    return labels | names
 
 
 def _series(
@@ -606,6 +611,7 @@ def assemble_per_series(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None,
@@ -628,6 +634,7 @@ def assemble_per_series(
     labels = _read_labels(
         reads,
         label_source=label_source,
+        on_names_unread=on_names_unread,
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
@@ -692,6 +699,7 @@ def assemble_role_bulk(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     order: PreviewOrder,
@@ -720,6 +728,7 @@ def assemble_role_bulk(
     labels = _read_labels(
         shown,
         label_source=label_source,
+        on_names_unread=on_names_unread,
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
@@ -747,6 +756,7 @@ def assemble_scope_bulk(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None = None,
@@ -766,6 +776,7 @@ def assemble_scope_bulk(
     labels = _read_labels(
         reads,
         label_source=label_source,
+        on_names_unread=on_names_unread,
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )

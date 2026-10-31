@@ -367,10 +367,19 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "RUF", "PERF"]
+# SLF001 keeps Search from reading a presence's scopes around `place.ConsultedPresence`,
+# which notes the countries fallbacks a decision consults. It applies to Search alone.
+extend-select = ["SLF001"]
 # The formatter owns line length; E501 only ever fires on strings it cannot split.
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
+"!src/search/**" = ["SLF001"]
+# These reach a partner object's private state by design: the LLM client's memo and model,
+# the response cache's waiters, and the models' private attributes set at construction.
+"src/search/engine/clients/llm.py" = ["SLF001"]
+"src/search/engine/response_cache.py" = ["SLF001"]
+"src/search/models/**" = ["SLF001"]
 # These modules recognize and normalize non-ASCII lookalike characters (unicode
 # dash variants, curly quotes, fullwidth digits, Cyrillic homoglyphs, the real
 # spelling of "Tongan paʻanga") as data, or match/produce them in prose and

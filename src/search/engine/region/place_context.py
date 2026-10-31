@@ -18,11 +18,12 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
-from materialise.place_scope import DefaultPlaceScope, DefaultPresence
+from materialise.place_scope import DefaultPlaceScope
 from materialise.roles import axis_noun
 from search.engine.config import settings
 from search.engine.departures import WarningKey, direction_discarded, warning_key
 from search.engine.errors import DefaultScopeIndexSourcedError
+from search.engine.place import ConsultedPresence
 from search.engine.region.codes import DIRECTION_DISCARDED, PLACE_SCOPE_DEFAULTED
 from search.engine.region.convertibility import survivor_declared_roles
 from search.engine.region.decisions import place_scope_defaulted_warning
@@ -115,7 +116,7 @@ class PlaceContext:
             if name not in self.roles.inferred_directions
         }
 
-    def presence_for(self, presence: DefaultPresence | None) -> DefaultPresence | None:
+    def presence_for(self, presence: ConsultedPresence | None) -> ConsultedPresence | None:
         """The presence read materialisation derives this context's default scope from:
         `presence` on a default scope, else `None`. A default scope with no `presence`
         raises `AssertionError`."""
@@ -318,12 +319,13 @@ def place_context(
     roles: PlaceRoles,
     *,
     stat_vars: Sequence[str],
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
 ) -> PlaceContext:
     """Build `shape`'s place context from its bound places.
 
     A subject-only shape that binds no place (`takes_default_scope`) is probed over the union
-    of the default scopes of `stat_vars` (`DefaultPresence.union_scope`), the StatVars a
+    of the default scopes of `stat_vars` (`ConsultedPresence.consulted_union`, which notes a
+    countries fallback this request alone took), the StatVars a
     Datasets mint serves for it (`state.served_stat_vars`), each of which is read at its own
     scope; the context carries a `PLACE_SCOPE_DEFAULTED` warning. It needs `presence`, and
     raises `AssertionError` without it. Materialisation narrows it to the scopes of the
@@ -337,7 +339,7 @@ def place_context(
             raise AssertionError(
                 f"shape {shape.shape_id!r} binds no place and no default-scope presence was read"
             )
-        scope = presence.union_scope(stat_vars)
+        scope = presence.consulted_union(stat_vars)
         return PlaceContext(
             roles=roles,
             probe_dcids=scope.places,
@@ -360,7 +362,7 @@ class UnsettledPlace:
     admitted: frozenset[tuple[str, str]] = frozenset()
     # The StatVars and presence read a default scope is built from (`place_context`).
     stat_vars: tuple[str, ...] = ()
-    presence: DefaultPresence | None = None
+    presence: ConsultedPresence | None = None
 
     def _role_name(self, key: EntityRoleKey) -> str | None:
         if key == "observationAbout":

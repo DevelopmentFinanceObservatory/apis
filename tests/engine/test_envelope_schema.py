@@ -136,9 +136,8 @@ def test_unsupported_response_validates_against_schema(response_schema, monkeypa
         response_cache=None,
         part_memo=None,
         generation=None,
-        health=None,
-        caller=None,
         budget=None,
+        record=None,
     ):
         echo = make_query_echo("price of X in PPP terms", extract_skipped=True)
         diag = make_diagnostics("test-build", [], {}, 0)

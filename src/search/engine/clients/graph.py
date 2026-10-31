@@ -24,7 +24,7 @@ from code_index.query import CodeIndex, IndexFamily
 from code_index.scope_conventions import BasisMeasure
 from code_index.shared import get_index, per_index
 from code_index.types import StatVarRow
-from dc_graph import Facet, FacetDefaultPolicy
+from dc_graph import ArcTarget, Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
 from search.scope.basis import CONVENTION_DATASETS, names_a_basis, sibling_measures
@@ -578,6 +578,19 @@ class EngineGraphClient(Protocol):
         requested property to a tuple, with ``()`` for a missing arc. Raise
         ``GraphInfraError`` on transport or HTTP failure, or when a dcid remains omitted
         after an individual retry.
+        """
+        ...
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Fetch named out-arcs for each dcid with each target's name and types
+        (``dc_graph.GraphClient.node_arc_targets_many``). Missing nodes map to ``None``.
+        Transport or HTTP failures raise ``GraphInfraError``.
         """
         ...
 

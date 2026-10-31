@@ -3,15 +3,25 @@
 `datasets-maintenance <task>` runs one task and exits non-zero when it fails. Each task is a
 subcommand registered in `main`.
 
-`sweep` runs daily from Cloud Scheduler. It sweeps both artifact tiers with the read-only
-`reconciliation.sweep` at the current time and writes one structured
+`sweep` runs daily from Cloud Scheduler. It settles pin claims past their lease as
+`sweep-export-claims` does, then sweeps both artifact tiers with the read-only
+`reconciliation.sweep` at the current time, whatever the claims did, and writes one structured
 `datasets_reconciliation_sweep` line per tier with its orphaned, missing, expired working and
 unreferenced counts. Missing objects count only rows that should have bytes, so a working row
 past `WORKING_TIER_RETENTION` counts as expired. For each non-empty orphaned, missing or
 unreferenced leg the line also carries the sorted object names, digests for the unreferenced
-leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. It repairs nothing. It reads
-`DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime database
-settings `dataset_store.provider.shared_pool` reads.
+leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. The report repairs nothing. It
+reads `DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime
+database settings `dataset_store.provider.shared_pool` reads.
+
+`sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each claim an
+export or a pin left past its lease by itself (`retention_admission.sweep_copy_claims`), `held`
+ones before `copying` ones, so a claim that fails leaves the rest settled. It starts no claim
+whose worst case, a bucket read included, would run past `retention_admission.sweep_budget`, so
+one run ends before the next. It writes one `datasets_copy_claims_swept` line with the settled,
+failed and deferred counts, and exits non-zero when any failed or were deferred, so a backlog
+alerts. Every settlement names the claim's generation, so a second run changes nothing. A refund
+lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or
@@ -198,6 +208,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from datasets_api.allowance import LiveAllowanceLedger
 from datasets_api.analysis import FrameUnavailable
 from datasets_api.config import DEFAULT_OPERATION_DEADLINE_SECONDS
 from datasets_api.description_record import backfill_record, computed_inputs
@@ -235,6 +246,7 @@ from datasets_api.render import (
     render_and_store_canonical_frame,
     stored_frame_location,
 )
+from datasets_api.retention_admission import sweep_copy_claims
 from datasets_api.serve import refs_from_resolved_stat_vars
 from datasets_api.store_errors import (
     DatasetsStoreUnavailable,
@@ -280,9 +292,35 @@ SWEEP_NAMES_PER_LEG = 20
 """The most object names, or digests, a sweep line carries for one leg."""
 
 
-def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> None:
-    """Sweep both tiers and emit one line per tier with each leg's count and, for each
-    non-empty leg, its first `SWEEP_NAMES_PER_LEG` names in sorted order."""
+def run_copy_claim_sweep(
+    *, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now
+) -> int:
+    """Settle the pin claims past their lease (`retention_admission.sweep_copy_claims`), emit
+    the counts and return how many failed or were left for the next run, so a backlog fails the
+    task."""
+    settled, failed, deferred = sweep_copy_claims(
+        allowances=LiveAllowanceLedger(store=store, limits={}),
+        artifacts=artifact_store,
+        now=now(),
+    )
+    emit(
+        "datasets_copy_claims_swept",
+        settled_claims=settled,
+        failed_claims=failed,
+        deferred_claims=deferred,
+    )
+    return failed + deferred
+
+
+def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> int:
+    """Settle expired pin claims, then sweep both tiers whatever that did, emit one line per
+    tier with each leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG`
+    names in sorted order, and return how many claims failed or were left."""
+    try:
+        failed = run_copy_claim_sweep(store=store, artifact_store=artifact_store, now=now)
+    except Exception as exc:
+        emit("datasets_maintenance_failed", severity="ERROR", task="sweep", error=str(exc))
+        failed = 1
     for report in sweep(store=store, artifact_store=artifact_store, now=now()):
         legs = {
             "orphaned_objects": report.orphaned_objects,
@@ -300,10 +338,15 @@ def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock 
                 if names
             },
         )
+    return failed
 
 
 def _sweep() -> int:
     return _run_over_artifacts("sweep", run_sweep)
+
+
+def _sweep_copy_claims() -> int:
+    return _run_over_artifacts("sweep-export-claims", run_copy_claim_sweep)
 
 
 def _run_over_artifacts(task: str, run: Callable[..., int | None]) -> int:
@@ -1429,6 +1472,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     tasks.add_parser(
         "sweep", help="report orphaned and missing artifact objects per tier"
     ).set_defaults(run=_sweep)
+    tasks.add_parser(
+        "sweep-export-claims",
+        help="settle the pin claims of exports and pins past their lease, refunding where no copy stands",
+    ).set_defaults(run=_sweep_copy_claims)
     tasks.add_parser(
         "age-operations",
         help="fail abandoned operations and delete done and failed ones past their retention",

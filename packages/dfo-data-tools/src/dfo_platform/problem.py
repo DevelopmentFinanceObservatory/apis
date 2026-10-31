@@ -461,37 +461,46 @@ class Envelope:
         Set `Cache-Control: no-store` because refusal statuses can be heuristically
         cacheable. Caller headers such as `Allow` are preserved. Any caller cache-control
         value is removed case-insensitively before setting `no-store`."""
+        return self._problem_response(
+            self.details(
+                status=status,
+                code=code,
+                detail=detail,
+                pointer=pointer,
+                alternatives=alternatives,
+                truncated=truncated,
+                issues=issues,
+                cause=cause,
+                constraint_id=constraint_id,
+                ceiling_kind=ceiling_kind,
+                count=count,
+                cap=cap,
+                retryable=retryable,
+            ),
+            headers=headers,
+        )
+
+    def _problem_response(
+        self, problem: ProblemDetails, *, headers: Mapping[str, str] | None
+    ) -> JSONResponse:
+        """`problem` as the non-2xx JSON response `response` documents."""
         from fastapi.responses import JSONResponse
 
-        problem = self.details(
-            status=status,
-            code=code,
-            detail=detail,
-            pointer=pointer,
-            alternatives=alternatives,
-            truncated=truncated,
-            issues=issues,
-            cause=cause,
-            constraint_id=constraint_id,
-            ceiling_kind=ceiling_kind,
-            count=count,
-            cap=cap,
-            retryable=retryable,
-        )
         merged_headers = {
             key: value for key, value in (headers or {}).items() if key.lower() != "cache-control"
         }
         merged_headers["Cache-Control"] = "no-store"
         return JSONResponse(
-            status_code=status,
+            status_code=problem.status,
             content=problem.to_json(),
             media_type=PROBLEM_JSON,
             headers=merged_headers,
         )
 
-    def render(self, spec: ProblemSpec) -> JSONResponse:
-        """Render a classified refusal through `.response()`."""
-        return self.response(
+    def problem(self, spec: ProblemSpec) -> ProblemDetails:
+        """The body of a classified refusal, every field of `spec`, which a JSON failure and
+        an SSE terminal error both carry."""
+        return self.details(
             status=spec.status,
             code=spec.code,
             detail=spec.detail,
@@ -505,5 +514,8 @@ class Envelope:
             count=spec.count,
             cap=spec.cap,
             retryable=spec.retryable,
-            headers=spec.headers,
         )
+
+    def render(self, spec: ProblemSpec) -> JSONResponse:
+        """Render a classified refusal as the non-2xx JSON response."""
+        return self._problem_response(self.problem(spec), headers=spec.headers)

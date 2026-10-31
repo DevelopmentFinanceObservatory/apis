@@ -38,6 +38,7 @@ from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError, SubjectPage
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
+from origin_catalogue import BASE, DFO
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import assemble_region
@@ -79,6 +80,7 @@ from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import conversion_arcs, recipe_table_bodies
 from tests.materialise.conftest import FakeGraphReader
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 ALAND, BLAND, CREDITOR = "country/AAA", "country/BBB", "country/CRA"
 PLACE_NAMES = {ALAND: "Aland", BLAND: "Bland"}
@@ -87,6 +89,17 @@ SOURCE_LABELS = {IDS: "IDS", ALT: "Alternative", PROJ: "Projections"}
 USD, EUR = "CurrencyUSD", "CurrencyEUR"
 _RECIPE = RECIPE_BODIES["ConversionRecipeDAC"]
 _RATES, _RATE_TABLE = _RECIPE.exchange_rate_variable, _RECIPE.table_provenance
+# The catalogue lists every provenance the world serves, as production's lists every
+# provenance it admits, so naming one reads no node. The rate table carries its recorded name.
+CATALOGUE = FakeCatalogue(
+    provenances={
+        **{
+            source: provenance_row(source, BASE, name=label)
+            for source, label in SOURCE_LABELS.items()
+        },
+        _RATE_TABLE: provenance_row(_RATE_TABLE, DFO, name="ONE Conversion Tables (DAC)"),
+    }
+)
 _ROLE_NAMES = RoleNames(donor="creditor", recipient="debtor")
 # The world's variables are financial flows, a population type the DAC recipe converts. The
 # code index holds real flow families measured as `amount`, so the world's variables carry a

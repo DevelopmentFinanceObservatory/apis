@@ -21,13 +21,14 @@ from dataclasses import asdict
 from typing import Literal, NamedTuple
 
 import rfc8785
-from pydantic import TypeAdapter
+from pydantic import BaseModel
 
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
-from search.engine.events import DoneEvent, Event, ResponseEvent
+from search.engine.events import DoneEvent, Event, LateDepartures, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
+    ALTERNATES_UNEVALUATED,
     AVAILABILITY_PROBE_FAILED,
     MEMBERS_ABSENT_FROM_GRAPH,
     MEMBERSHIP_UNVERIFIED,
@@ -57,14 +58,15 @@ from search.models import (
 # Warnings that mark an answer a dependency could not complete: the skills index, a UN
 # System Data Commons read that failed (`_is_unstorable_warning`), the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
-# offer reads, and the option-coverage, availability and observation reads that failed or
-# ran past the deadline. An elected member the graph read did not return
+# offer reads, the presence read of an alternate, and the option-coverage, availability and
+# observation reads that failed or ran past the deadline. An elected member the graph read did not return
 # (`members_absent_from_graph`) can be a transient drop, so that answer is not kept either.
 _UNSTORABLE_WARNING_CODES = frozenset(
     {
         "skills_index_unavailable",
         "skills_index_incomplete",
         UN_SYSTEM_UNAVAILABLE,
+        ALTERNATES_UNEVALUATED,
         MEMBERSHIP_UNVERIFIED,
         MEMBERS_ABSENT_FROM_GRAPH,
         ROLE_DECLARATION_UNVERIFIED,
@@ -501,7 +503,18 @@ def refresh_response(
     return restored.model_copy(update={"query_echo": echo, "diagnostics": diagnostics})
 
 
-_BUNDLE_ADAPTER: TypeAdapter[list[Event]] = TypeAdapter(list[Event])
+class _StoredDone(BaseModel):
+    """What a bundle keeps of its `done` event. A hit's `done` is fresh otherwise."""
+
+    warnings: list[Warning]
+    late_departures: list[LateDepartures]
+
+
+class _Bundle(BaseModel):
+    """A stored stream: its `response` event and the trailing events after it, then its `done`."""
+
+    events: list[Event]
+    done: _StoredDone
 
 
 def to_bundle(events: Sequence[Event]) -> tuple[bytes, int]:
@@ -510,24 +523,37 @@ def to_bundle(events: Sequence[Event]) -> tuple[bytes, int]:
     The bytes use the SSE surface (`serialize_sse`'s context and null rule), so a restored
     event serialises to the frame the first run sent.
     """
-    encoded = _BUNDLE_ADAPTER.dump_json(list(events), exclude_none=True, context={"surface": "sse"})
+    *streamed, done = events
+    assert isinstance(done, DoneEvent)
+    bundle = _Bundle(
+        events=streamed,
+        done=_StoredDone(warnings=done.warnings, late_departures=done.late_departures),
+    )
+    encoded = bundle.model_dump_json(exclude_none=True, context={"surface": "sse"}).encode()
     return encoded, len(encoded)
 
 
 class StoredBundle(NamedTuple):
-    """A stored bundle's `response` event, the trailing events after it, and its `done` event."""
+    """A stored bundle's `response` event, the trailing events after it, and the warnings and
+    late departures of its `done` event."""
 
     response: ResponseEvent
     trailing: list[Event]
-    done: DoneEvent
+    warnings: list[Warning]
+    late_departures: list[LateDepartures]
 
 
 def from_bundle(entry: bytes) -> StoredBundle:
     """Revalidate a stored bundle: a `response` event, the trailing events, a `done` event."""
-    events = _BUNDLE_ADAPTER.validate_json(entry)
-    response, done = events[0], events[-1]
-    assert isinstance(response, ResponseEvent) and isinstance(done, DoneEvent)
-    return StoredBundle(response=response, trailing=events[1:-1], done=done)
+    bundle = _Bundle.model_validate_json(entry)
+    response = bundle.events[0]
+    assert isinstance(response, ResponseEvent)
+    return StoredBundle(
+        response=response,
+        trailing=bundle.events[1:],
+        warnings=bundle.done.warnings,
+        late_departures=bundle.done.late_departures,
+    )
 
 
 def _is_unstorable_warning(warning: Warning, *, refused_at_build: frozenset[str]) -> bool:
@@ -625,10 +651,9 @@ def is_storable(
 def is_region_storable(region: RegionResult, *, refused_at_build: frozenset[str]) -> bool:
     """Return whether a resubmitted identity's region is complete and safe to memoise.
 
-    Reject a region that is a degraded leg (`RegionResult.leg_degraded`: it swallowed a read
-    failure, a presence read left its default scope unsettled, or it left an alternate
-    unevaluated), or that carries a warning `is_storable` rejects under `refused_at_build`."""
+    Reject a region that swallowed a read failure (`RegionResult.degraded`), or that carries
+    a warning `is_storable` rejects under `refused_at_build`."""
     return not (
-        region.leg_degraded
+        region.degraded
         or _has_unstorable_warning(region.warnings, refused_at_build=refused_at_build)
     )

@@ -76,7 +76,7 @@ async def _test_oversized_publish_counts_but_does_not_store_and_still_wakes_a_wa
     await cache.publish(lease_a, b"too big", 101)
 
     # Oversize affects storage, not the response's storable verdict.
-    assert await waiter_task == (b"too big", False, True)
+    assert await waiter_task == (b"too big", False, False, True)
     assert await cache.get("big") is None
     stats = cache.stats()
     assert stats.entries == 0
@@ -96,7 +96,7 @@ async def _test_unstorable_publish_wakes_a_waiter_with_timed_out_but_stores_noth
 
     await cache.publish(lease_a, b"partial", 7, storable=False, timed_out=True)
 
-    assert await waiter_task == (b"partial", True, False)
+    assert await waiter_task == (b"partial", True, False, False)
     assert await cache.get("k1") is None
     stats = cache.stats()
     assert stats.entries == 0
@@ -156,7 +156,7 @@ async def _test_concurrent_acquire_single_flight_and_await_leader():
 
     await cache.publish(lease_a, b"answer-42", 10)
 
-    assert await waiter_task == (b"answer-42", False, True)
+    assert await waiter_task == (b"answer-42", False, False, True)
 
 
 async def _test_abandon_wakes_waiter_with_none():
@@ -244,7 +244,7 @@ async def _test_clear_sync_does_not_disturb_an_in_flight_lease():
 
     await cache.publish(lease_a, b"answer-1", 10)
 
-    assert await waiter_task == (b"answer-1", False, True)
+    assert await waiter_task == (b"answer-1", False, False, True)
     assert await cache.get("k1") == b"answer-1"
 
 

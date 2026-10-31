@@ -3,7 +3,10 @@
 - `POST /api/datasets/exports`, body `ExportRequestBody`, answers 200 `ExportResponse`. A request
   whose export is recorded answers the record on the read executor, rendering and spending
   nothing. Any other prepares on the work executor under the definition deadline, as the file
-  selector renders. It admits every caller, and the site's proxy forwards it. The caller is
+  selector renders. While a prepare of the request runs on any instance, the door waits for it
+  on the event loop, holding no work permit (`_prepared`), for at most
+  `materialise_wait_seconds`.
+  It admits every caller, and the site's proxy forwards it. The caller is
   named as the pin door names it: a holder of the `pin` grant spends the day's pin budget
   alone, and any other caller is resolved (`resolve_caller`) and spends its `pin` allowance, so
   data-mcp forwards `x-dfo-caller` and `x-dfo-caller-principal`. A frame
@@ -21,9 +24,13 @@ The prepare (`build_exports_door`) binds the `datasets.exports` registry endpoin
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
+import time
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -36,14 +43,15 @@ from datasets_api.codes_exports import (
     ExportFileIncomplete,
     ExportNotFound,
     ExportOverCeiling,
+    ExportPrepareRunning,
     LicenceNotRedistributable,
     NewestVersionUnservable,
     ProvenanceUnavailable,
 )
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, SpecNotFound
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.current import StoredTraceMissingResolvedStatVars
-from datasets_api.deps import DepsCell
+from datasets_api.current import DefinitionDeps, StoredTraceMissingResolvedStatVars
+from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
 from datasets_api.doors.files import (
     REDIRECT_RESPONSE,
@@ -54,8 +62,10 @@ from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.exports import (
     BareExportFrame,
+    ExportRequest,
     ExportRequestBody,
     ExportResponse,
+    export_id,
     passes_through,
     prepare_export,
     recorded_export,
@@ -64,15 +74,26 @@ from datasets_api.exports import (
 )
 from datasets_api.headers import no_store_headers
 from datasets_api.principals import Grant, Principal, Principals, granted_route_class
-from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
+from datasets_api.retention_admission import (
+    CopyClaimUnsettled,
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    PinUnitHeld,
+)
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import door_call, run_with_timings
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.doors import DoorContribution, path_registry_endpoints
+from dfo_platform.timings import PhaseTimings
 from spec_registry import IdentityQuarantined
 from spec_registry.errors import IdentityCollision
 
 logger = logging.getLogger(__name__)
+
+# How often a request waiting for another prepare of its export reads the claim again: first
+# this often, doubling up to the most it sleeps.
+_CLAIM_POLL_SECONDS = 0.05
+_CLAIM_POLL_MAX_SECONDS = 1.0
 
 PREPARE_PATH = "/api/datasets/exports"
 LINK_PATH = "/api/datasets/exports/{export_id}"
@@ -84,6 +105,89 @@ class ExportBackpressure(Backpressure):
     code = "service_unavailable"
 
     detail = "the exports door is at its concurrent-call capacity right now; retry"
+
+
+async def _prepared(
+    export_request: ExportRequest,
+    *,
+    request: Request,
+    granted: Principal,
+    current: Deps,
+    retrieval: DefinitionDeps,
+    timings: PhaseTimings,
+) -> Mapping[str, Any]:
+    """The facts of the export `export_request` names: its record, else a new prepare's. While
+    any instance's prepare holds its claim, the call sleeps on the event loop, holding no work
+    permit, and reads only the claim, backing off from `_CLAIM_POLL_SECONDS` to
+    `_CLAIM_POLL_MAX_SECONDS`. Once a call has waited, each hop waits for its permit until the wait
+    ends, so waiters that wake together all get one. Any other call sheds at a full pool.
+
+    Raises:
+        ExportBackpressure: A pool is full, and this call has not waited.
+        ExportPrepareRunning: The other prepare still runs at `materialise_wait_seconds`, or at
+            the deadline if that comes first.
+    """
+    wait_seconds = current.settings.materialise_wait_seconds
+    ends = min(time.monotonic() + wait_seconds, cast(float, retrieval.deadline))
+    has_waited = False
+
+    def permit_wait() -> float:
+        return max(0.0, ends - time.monotonic()) if has_waited else 0.0
+
+    async def read[T](fn: Callable[..., T], /, **kwargs: object) -> T:
+        return await current.read_executor.run(
+            functools.partial(run_with_timings, fn, timings, **kwargs),
+            refuse=ExportBackpressure,
+            wait_seconds=permit_wait(),
+        )
+
+    async def waited_for_claim() -> bool:
+        """Sleep while a live claim holds the export, and say whether any did."""
+        nonlocal has_waited
+        delay = _CLAIM_POLL_SECONDS
+        started = time.perf_counter()
+        waited = False
+        while True:
+            claim = await read(current.allowances.read_claim, key=export)
+            if claim is None or claim.expires_at <= current.now():
+                if waited:
+                    timings.record("rebuild_wait", (time.perf_counter() - started) * 1000)
+                return waited
+            if time.monotonic() >= ends:
+                raise ExportPrepareRunning(wait_seconds=wait_seconds)
+            await asyncio.sleep(delay)
+            waited = has_waited = True
+            delay = min(delay * 2, _CLAIM_POLL_MAX_SECONDS)
+
+    export = export_id(export_request)
+    while True:
+        facts = await read(recorded_export, request=export_request, current=current)
+        if facts is not None:
+            return facts
+        if await waited_for_claim():
+            continue
+        # Only a new export can spend, so a repeat needs no caller.
+        caller: Caller | None = (
+            None
+            if Grant.pin in granted.grants
+            else resolve_caller(request, current.settings.caller)
+        )
+        facts = await _run_retrieval(
+            current.work_executor,
+            prepare_export,
+            deps=retrieval,
+            timings=timings,
+            refuse=ExportBackpressure,
+            wait_seconds=permit_wait(),
+            request=export_request,
+            caller=caller,
+            waited=has_waited,
+            current=current,
+        )
+        if facts is not None:
+            return facts
+        # Another prepare took the claim first, so this call waits on it as a waiter does.
+        has_waited = True
 
 
 def build_exports_door(
@@ -119,34 +223,14 @@ def build_exports_door(
                     frame=frame,
                     current=current,
                 )
-            export_request = body.resolved(frame)
-            facts = await current.read_executor.run(
-                functools.partial(
-                    run_with_timings,
-                    recorded_export,
-                    call.timings,
-                    request=export_request,
-                    current=current,
-                ),
-                refuse=ExportBackpressure,
+            facts = await _prepared(
+                body.resolved(frame),
+                request=request,
+                granted=granted,
+                current=current,
+                retrieval=retrieval,
+                timings=call.timings,
             )
-            if facts is None:
-                # Only a new export can spend, so a repeat needs no caller.
-                caller: Caller | None = (
-                    None
-                    if Grant.pin in granted.grants
-                    else resolve_caller(request, current.settings.caller)
-                )
-                facts = await _run_retrieval(
-                    current.work_executor,
-                    prepare_export,
-                    deps=retrieval,
-                    timings=call.timings,
-                    refuse=ExportBackpressure,
-                    request=export_request,
-                    caller=caller,
-                    current=current,
-                )
         return JSONResponse(facts, headers=no_store_headers(server_timing=call.server_timing))
 
     exemplar_day = datetime(2026, 1, 1, tzinfo=UTC)
@@ -170,8 +254,12 @@ def build_exports_door(
             PinBudgetExhausted,
             OpenPinBudgetExhausted,
             AllowanceExhausted,
+            ExportPrepareRunning,
+            CopyClaimUnsettled,
+            PinUnitHeld,
             ExportBackpressure,
-            # A render from the stored frame takes the shared materialise permit.
+            # A derived file's slot and a render from the stored frame each raise this at the
+            # shared materialise permit.
             MintBackpressure,
             DatasetsStoreUnavailable,
             *SELECTOR_RENDERING_EXCEPTION_TYPES,
@@ -194,6 +282,9 @@ def build_exports_door(
             PinBudgetExhausted(limit=0, now=exemplar_day),
             OpenPinBudgetExhausted(limit=0, now=exemplar_day),
             AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
+            ExportPrepareRunning(wait_seconds=30),
+            CopyClaimUnsettled(),
+            PinUnitHeld(retry_after=1),
             ExportBackpressure(),
             DatasetsStoreUnavailable("exemplar"),
             StoredTraceMissingResolvedStatVars(

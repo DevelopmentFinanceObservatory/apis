@@ -1357,6 +1357,34 @@ def _role_kind_read(door: str, now: dict[str, Any], limit: dict[str, Any]) -> di
     return {_ROLE_KIND_READ: 1} if door in _RESUBMIT_DOORS and read > 0 else {}
 
 
+def _names_read_in_place_of_labels(
+    now: dict[str, Any],
+    limit: dict[str, Any],
+    *,
+    batched: Mapping[str, int],
+    role_kind: Mapping[str, int],
+) -> dict[str, int]:
+    """The `node_arcs_many` reads a door makes in place of label reads it is allowed and does
+    not make. A provenance's name reads through the citation rule (`materialise.
+    provenance_doc.read_source_names`) in one `node_arcs_many` request, where the recorded
+    door read it in one `node_labels_batch` request. A door is granted one such read for each
+    label read `limit` and the batched reads (`_batched_type_read`) allow it beyond the ones it
+    makes, past its role-kind read (`_role_kind_read`), so its requests never total more than
+    those `limit` allows."""
+    unused = (
+        limit["requests"].get(_LABEL_READ, 0)
+        + batched.get(_LABEL_READ, 0)
+        - now["requests"].get(_LABEL_READ, 0)
+    )
+    added = (
+        now["requests"].get(_ROLE_KIND_READ, 0)
+        - limit["requests"].get(_ROLE_KIND_READ, 0)
+        - role_kind.get(_ROLE_KIND_READ, 0)
+    )
+    count = min(unused, added)
+    return {_ROLE_KIND_READ: count} if count > 0 else {}
+
+
 def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
     """Grant a pair read only when a narrowed discovered scope drops a bulk read.
 
@@ -1375,14 +1403,17 @@ def _held_grants(
 ) -> tuple[dict[str, int], int]:
     """The reads and serial steps `door` may make beyond a recorded door with its answer:
     batched reads in place of per-node reads (`_batched_type_read`), pair reads in place of
-    bulk reads (`_pair_read_in_place_of_bulk`), and a resubmit's role-kind read with its one
-    step (`_role_kind_read`). `i9_latency` and the record's rewrite both hold a door by
+    bulk reads (`_pair_read_in_place_of_bulk`), node reads in place of label reads
+    (`_names_read_in_place_of_labels`), and a resubmit's role-kind read with its one step
+    (`_role_kind_read`). `i9_latency` and the record's rewrite both hold a door by
     these."""
     role_kind_read = _role_kind_read(door, now, limit)
-    granted = (
-        _batched_type_read(now, limit) | _pair_read_in_place_of_bulk(now, limit) | role_kind_read
+    batched = _batched_type_read(now, limit)
+    granted = Counter(batched | _pair_read_in_place_of_bulk(now, limit) | role_kind_read)
+    granted.update(
+        _names_read_in_place_of_labels(now, limit, batched=batched, role_kind=role_kind_read)
     )
-    return granted, len(role_kind_read)
+    return dict(granted), len(role_kind_read)
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1392,10 +1423,10 @@ def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
     A preview serving no series reads nothing. A per-pair read makes one GET per series and
     one label read after them. Under a unit request each series first plans its conversion
     in two reads of materialise's graph, six when it converts, and a converting preview
-    loads the rate table in three reads, which then carry the label read. A bulk route may
-    instead make one bulk read and one label read. Converting, it plans each StatVar from
-    the reads its unit gate made, and between the two reads its request's view of the rate
-    cache rereads the table's refresh date, so the label read carries the table."""
+    loads the rate table in two reads. A bulk route may instead make one bulk read and one
+    label read. Converting, it plans each StatVar from the reads its unit gate made, and
+    between the two reads its request's view of the rate cache rereads the table's refresh
+    date. The catalogue lists the rate table, so no label read carries it."""
     series = [s for said in statements(answer) for s in said.preview or ()]
     if not series:
         return [{"requests": {}, "depth": 0}]
@@ -1404,15 +1435,14 @@ def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
     plans = [0 if cell.unit == "none" else 6 if s.converted else 2 for s in series]
     requests = {_PAIR_READ: len(series), _UNIT_PLAN_READ: sum(plans)}
     if converting:
-        requests |= {_UNIT_PLAN_READ + rates: 1, _PAIR_READ + rates: 1, _LABEL_READ + rates: 1}
-    else:
-        requests[_LABEL_READ] = 1
+        requests |= {_UNIT_PLAN_READ + rates: 1, _PAIR_READ + rates: 1}
+    requests[_LABEL_READ] = 1
     per_pair = {"requests": requests, "depth": max(plans) + (3 if converting else 0) + 2}
     if not cell.route.endswith("bulk"):
         return [per_pair]
     bulk = (
         {
-            "requests": {_BULK_READ: 1, _UNIT_PLAN_READ + rates: 1, _LABEL_READ + rates: 1},
+            "requests": {_BULK_READ: 1, _UNIT_PLAN_READ + rates: 1, _LABEL_READ: 1},
             "depth": 3,
         }
         if converting
@@ -1759,6 +1789,11 @@ def checks_for(cell: Cell) -> dict[str, Callable[[Doors], list[str]]]:
         for invariant, check in CHECKS.items()
         if invariant != "I9" or str(cell) in _I9_CELLS
     }
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(fixture_world.CATALOGUE)
 
 
 @pytest.fixture(scope="module")

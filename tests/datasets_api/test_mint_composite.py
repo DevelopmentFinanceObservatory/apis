@@ -9,9 +9,11 @@ fixture index's members, not recorded figures.
 from __future__ import annotations
 
 import csv
+import gc
 import io
 import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import Mapping
 
@@ -391,6 +393,71 @@ def test_the_stored_version_re_renders_the_composite_frame_and_its_citations():
     assert manifest["content_version"] == minted.json()["content_version"]
     assert manifest["trace"]["components"] == minted.json()["trace"]["components"]
     assert manifest["citation"] == minted.json()["citation"]
+
+
+def test_a_rebuild_of_a_composite_version_on_record_reads_no_origin_findings(monkeypatch):
+    """A version on record serves the origin findings it recorded, so a rebuild that lands on
+    it reads none for any component."""
+    version_store = FakeVersionRecordDatasetStore()
+    _artifacts, client = _composite_client(version_store)
+    reads: list[object] = []
+    origin_findings = serve._origin_findings
+
+    def counted(*args, **kwargs):
+        reads.append(args[0])
+        return origin_findings(*args, **kwargs)
+
+    monkeypatch.setattr(serve, "_origin_findings", counted)
+    minted = _mint(client)
+    assert minted.status_code == 200, minted.text
+    first_mint_reads = len(reads)
+    # A head past its maximum age rebuilds, and its version is on record.
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET confirmed_at = %s, materialised_at = %s "
+            "WHERE subject_id = %s",
+            (
+                "2000-01-01T00:00:00+00:00",
+                "2000-01-01T00:00:00+00:00",
+                minted.json()["definition"]["spec_id"],
+            ),
+        )
+
+    rebuilt = _mint(client)
+
+    assert rebuilt.status_code == 200, rebuilt.text
+    assert rebuilt.json()["content_version"] == minted.json()["content_version"]
+    assert rebuilt.json()["trace"]["served_from"] != "head"
+    assert first_mint_reads == 2
+    assert len(reads) == first_mint_reads
+
+
+def test_a_composite_s_component_frames_are_freed_before_its_origin_findings(monkeypatch):
+    """A component run keeps only what its origin findings read, so no component's
+    materialisation outlives the composition into the findings' graph reads."""
+    _artifacts, client = _composite_client()
+    component_results: list[weakref.ref] = []
+    alive_at_findings: list[int] = []
+    compose = serve.compose_components
+    component_findings = serve._component_findings
+
+    def composing(results, **kwargs):
+        component_results.extend(weakref.ref(component.result) for component in results)
+        return compose(results, **kwargs)
+
+    def finding(runs, **kwargs):
+        gc.collect()
+        alive_at_findings.append(sum(ref() is not None for ref in component_results))
+        return component_findings(runs, **kwargs)
+
+    monkeypatch.setattr(serve, "compose_components", composing)
+    monkeypatch.setattr(serve, "_component_findings", finding)
+
+    minted = _mint(client)
+
+    assert minted.status_code == 200, minted.text
+    assert len(component_results) == 2
+    assert alive_at_findings == [0]
 
 
 def _same_purpose_pair() -> tuple[str, str]:
