@@ -11,33 +11,38 @@ the caller's `pin` allowance (`DATASETS_PIN_DAILY_ALLOWANCE`), all together befo
 (`allowance.SharedAllowanceLedger.spend_together`), so a refusal by one spends none of the
 others. A spent budget refuses `PinBudgetExhausted` or `OpenPinBudgetExhausted`, 503 with
 `retryable: true` and `Retry-After` naming the reset at the next UTC midnight, and a spent
-allowance `AllowanceExhausted`, 429. A unit a running export prepare holds is not spent yet, so
-its limit refuses `PinUnitHeld`, 503 with `retryable: true` and a one-second `Retry-After`.
+allowance `AllowanceExhausted`, 429. A unit a running export prepare holds, or one behind a copy
+whose outcome is unknown, can come back, so its limit refuses `PinUnitHeld`, 503 with
+`retryable: true` and a one-second `Retry-After`.
 
 The units pay for the copy that stands. A copy that finds the pinned bytes already stored, made
 by a concurrent pin, gives its units back, since that pin's units pay for it, and so does a copy
-whose working bytes are gone, since only that proves nothing landed. Any other failure of a copy
-leaves its outcome unknown, because the bytes can land before it raises, so the units stay, and
-a retry that finds the bytes stored gives its own set back. A copy that stands keeps its units
+whose working bytes are gone. A copy that fails otherwise reads the pinned object: absent gives
+the units back, and present keeps them, as does a read that fails too, since the bytes can land
+before the copy raises. So one copy spends one set of units. A copy that stands keeps its units
 through any later failure of the write that asked for it, since the pinned bytes stay. A caller
 that skips the copy for an artifact already pinned spends nothing.
 
-`PreparingCopy` runs one export prepare over its claim (`allowance.ExportClaim`). It spends the
-units onto the claim ahead of a render, so a refusal costs that render nothing, and names the
-digest on the claim before the copy. When the prepare ends, a claim with no digest gives its
-units back and goes. So does a claim with a digest the prepare recorded, keeping them. A failed
-prepare with a digest frees the claim and leaves it: the copy may stand, so the retry that takes
-over inherits the paid units and spends nothing more. The sweep settles what no retry took
-(`sweep_export_claims`), and a process that dies leaves its claim to the sweep too.
+`PreparingCopy` runs one export prepare over its claim (`allowance.ExportClaim`, whose module
+holds the state table). It spends the units onto the claim ahead of a render, so a refusal costs
+that render nothing, and moves the claim to `copying` before every copy, so a prepare that lost
+its claim copies nothing. The copy's own result settles it: a new object is `landed`, and a
+deduplicated copy or absent bytes refund. A heartbeat renews the lease while the prepare runs, so
+a slow render keeps its claim past any client's timeout, and only a dead process's claim goes
+stale. A retry takes over a `copying` claim and settles it by the pinned object first. A stale
+claim with no copy begun refunds as it is taken over or as a limit-reached spend finds it, so the
+next caller spends for itself. `sweep_export_claims` is the backstop for claims nothing retried.
+A refund lands on the UTC day that spent the unit, so after midnight it changes nothing a caller
+can see, since that day's limits no longer apply.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Collection, Sequence
-from datetime import UTC, datetime
+import threading
+from datetime import datetime, timedelta
 from types import MappingProxyType, TracebackType
-from typing import Self
+from typing import Self, cast
 
 from artifact_store import ArtifactNotFoundError, ArtifactStore, StoredArtifact, Tier
 from dataset_store.clock import Clock
@@ -45,17 +50,25 @@ from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceExhausted,
     AllowanceKind,
+    ClaimState,
     ExportClaim,
     SharedAllowanceLedger,
     Spend,
     seconds_to_reset,
+    utc_day,
 )
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_exports import ExportFileRefused
 from dfo_platform.caller import Caller
 from dfo_platform.problem import Refusal
 
+PREPARE_LEASE = timedelta(seconds=30)
+"""How long a prepare's claim outlives its last heartbeat."""
+
+_HEARTBEAT_SECONDS = 10.0
+
 __all__ = [
+    "PREPARE_LEASE",
     "ExportClaimLost",
     "OpenPinBudgetExhausted",
     "PinBudgetExhausted",
@@ -137,84 +150,117 @@ def _pin_spends(caller: Caller | None) -> list[Spend]:
     return spends
 
 
-def _spend_refusal(
-    exhausted: AllowanceExhausted,
-    *,
-    allowances: SharedAllowanceLedger,
-    spends: Sequence[Spend],
-    now: datetime,
-) -> Refusal:
+def _spend_refusal(exhausted: AllowanceExhausted, *, now: datetime) -> Refusal:
     """The refusal of the spend `exhausted` stopped: `PinUnitHeld` when a live claim holds the
     unit, else the copy's own for a day that spent it."""
-    unit = next(spend for spend in spends if spend.kind == exhausted.kind)
-    if allowances.holds_unit(unit, now):
+    if exhausted.held:
         return PinUnitHeld()
     budget = _BUDGET_REFUSALS.get(exhausted.kind)
     return exhausted if budget is None else budget(limit=exhausted.limit, now=now)
 
 
+def _landed(artifacts: ArtifactStore, digest: str) -> bool | None:
+    """Whether the pinned object of `digest` exists, `None` when the read fails."""
+    try:
+        return artifacts.exists(digest, tier=Tier.pinned)
+    except Exception:
+        logger.exception("Reading the pinned object %s failed", digest)
+        return None
+
+
 class PreparingCopy:
-    """One export prepare's pinned copy, over `claim`, as a block. See the module docstring."""
+    """One export prepare's pinned copy, over `claim`, as a block that keeps the claim's lease
+    alive. See the module docstring."""
 
     def __init__(
         self,
         claim: ExportClaim,
         *,
         allowances: SharedAllowanceLedger,
+        artifacts: ArtifactStore,
         caller: Caller | None,
         clock: Clock,
     ) -> None:
         self._claim = claim
         self._allowances = allowances
+        self._artifacts = artifacts
         self._caller = caller
         self._clock = clock
-        self._digest = claim.digest
+        self._finished = threading.Event()
+        self._heartbeat = threading.Thread(target=self._beat, daemon=True)
+
+    def _beat(self) -> None:
+        while not self._finished.wait(_HEARTBEAT_SECONDS):
+            try:
+                self._allowances.renew_claim(self._claim, self._clock() + PREPARE_LEASE)
+            except Exception:
+                logger.exception("Renewing the claim of %s failed", self._claim.export_id)
+
+    def _settle(self, *, landed: bool) -> None:
+        """Move the claim out of `copying`. A write that fails leaves it there for a retry or
+        the sweep, so the prepare's own outcome stands."""
+        try:
+            settled = self._allowances.settle_copy(self._claim, landed=landed)
+        except Exception:
+            logger.exception("Settling the copy of %s failed", self._claim.export_id)
+            return
+        if settled is not None:
+            self._claim = settled
+
+    def settle_earlier(self) -> None:
+        """Judge a copy an earlier attempt began, by the pinned object."""
+        if self._claim.state == ClaimState.copying:
+            landed = _landed(self._artifacts, cast(str, self._claim.digest))
+            if landed is not None:
+                self._settle(landed=landed)
 
     def hold(self) -> None:
-        """Spend the copy's units onto the claim, unless it holds them from an earlier attempt.
+        """Spend the copy's units onto the claim, unless it stands behind a copy already.
 
         Raises:
             PinBudgetExhausted, OpenPinBudgetExhausted, AllowanceExhausted, PinUnitHeld: As
                 `copy_to_pinned`.
-            ExportClaimLost: The claim's lease ended and another prepare may hold it.
+            ExportClaimLost: Another writer moved the claim.
         """
-        if self._claim.spends:
+        if self._claim.state != ClaimState.open:
             return
-        spends, now = _pin_spends(self._caller), self._clock()
+        now = self._clock()
         try:
-            held = self._allowances.hold_claim(self._claim, spends, now)
+            held = self._allowances.hold_claim(self._claim, _pin_spends(self._caller), now)
         except AllowanceExhausted as exhausted:
-            refusal = _spend_refusal(exhausted, allowances=self._allowances, spends=spends, now=now)
-            raise refusal from None
+            raise _spend_refusal(exhausted, now=now) from None
         if held is None:
             raise ExportClaimLost()
         self._claim = held
 
-    def copy(self, artifacts: ArtifactStore, artifact_digest: str) -> StoredArtifact:
-        """Copy `artifact_digest` to the pinned tier on the held units, naming it on the claim
-        first. A deduplicated copy pays for nothing, unless an earlier attempt named the same
-        digest, whose own copy may be the one found.
+    def copy(self, artifact_digest: str) -> StoredArtifact:
+        """Copy `artifact_digest` to the pinned tier on the held units, moving the claim to
+        `copying` first and settling it by what the copy shows.
 
         Raises:
             ArtifactNotFoundError: The working bytes are gone.
-            ExportClaimLost: The claim's lease ended and another prepare may hold it.
+            ExportClaimLost: Another writer moved the claim. Nothing is copied.
         """
-        earlier = self._digest == artifact_digest
-        if not earlier:
-            if not self._allowances.name_claim_digest(self._claim, artifact_digest):
-                raise ExportClaimLost()
-            self._digest = artifact_digest
+        paid = self._claim.state == ClaimState.landed
+        began = self._allowances.begin_copy(self._claim, artifact_digest)
+        if began is None:
+            raise ExportClaimLost()
+        self._claim = began
         try:
-            copied = artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
+            copied = self._artifacts.copy(
+                artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned
+            )
         except ArtifactNotFoundError:
-            if not earlier:
-                self._digest = None
+            self._settle(landed=False)
             raise
-        if copied.deduplicated and not earlier:
-            self._digest = None
+        except Exception:
+            self.settle_earlier()
+            raise
+        self._settle(landed=paid or not copied.deduplicated)
         return copied
 
     def __enter__(self) -> Self:
+        self._heartbeat.start()
         return self
 
     def __exit__(
@@ -223,16 +269,19 @@ class PreparingCopy:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        self._finished.set()
+        self._heartbeat.join()
         # The prepare's own outcome stands, so a write that fails is logged and the sweep
         # settles the claim.
+        state = self._claim.state
+        unsettled = state == ClaimState.copying or (exc is not None and state == ClaimState.landed)
         try:
-            decided = isinstance(exc, Refusal) and exc.decided_by_request and not exc.retryable
-            if decided and self._digest is None:
-                self._allowances.refuse_claim(self._claim, ExportFileRefused.facts_of(exc))
-            elif exc is None or self._digest is None:
-                self._allowances.close_claim(self._claim, refund=self._digest is None)
-            else:
+            if unsettled:
                 self._allowances.free_claim(self._claim, self._clock())
+            elif isinstance(exc, Refusal) and exc.decided_by_request and not exc.retryable:
+                self._allowances.refuse_claim(self._claim, ExportFileRefused.facts_of(exc))
+            else:
+                self._allowances.close_claim(self._claim)
         except Exception:
             logger.exception("Settling the claim of %s failed", self._claim.export_id)
 
@@ -258,7 +307,8 @@ def copy_to_pinned(
         PinUnitHeld: A running export prepare holds the last unit. Nothing is copied.
         DatasetsStoreUnavailable: The units could not be spent. Nothing is copied.
         ArtifactNotFoundError: The working bytes are gone. The units are given back.
-        ArtifactWriteError, ArtifactInventoryError: The copy's outcome is unknown. The units stay.
+        ArtifactWriteError, ArtifactInventoryError: The copy failed. The units are given back
+            only when the pinned object is absent.
     """
     if allowances is None:
         return artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
@@ -266,11 +316,15 @@ def copy_to_pinned(
     try:
         allowances.spend_together(spends, now)
     except AllowanceExhausted as exhausted:
-        raise _spend_refusal(exhausted, allowances=allowances, spends=spends, now=now) from None
+        raise _spend_refusal(exhausted, now=now) from None
     try:
         copied = artifacts.copy(artifact_digest, from_tier=Tier.working, to_tier=Tier.pinned)
     except ArtifactNotFoundError:
         _refund(allowances, spends, now=now)
+        raise
+    except Exception:
+        if _landed(artifacts, artifact_digest) is False:
+            _refund(allowances, spends, now=now)
         raise
     if copied.deduplicated:
         _refund(allowances, spends, now=now)
@@ -286,26 +340,37 @@ def _refund(allowances: SharedAllowanceLedger, spends: list[Spend], *, now: date
         logger.exception("Refunding the pin units %s failed", spends)
 
 
+def _settle_stale_claim(
+    claim: ExportClaim,
+    *,
+    allowances: SharedAllowanceLedger,
+    artifacts: ArtifactStore,
+    now: datetime,
+) -> None:
+    """Move one stale claim on. A `copying` claim is judged by the pinned object, and a `landed`
+    one stays through its UTC day so that a retry finds its paid copy: from the next day a retry
+    has units of its own, which the pinned bytes give back."""
+    if claim.state == ClaimState.copying and artifacts.exists(
+        cast(str, claim.digest), tier=Tier.pinned
+    ):
+        allowances.settle_copy(claim, landed=True)
+    elif claim.state != ClaimState.landed or utc_day(cast(datetime, claim.spent_at)) < utc_day(now):
+        allowances.close_claim(claim, stale_at=now)
+
+
 def sweep_export_claims(
-    *, allowances: SharedAllowanceLedger, pinned: Callable[[], Collection[str]], now: datetime
-) -> int:
-    """Settle every claim whose lease has passed at `now`, and return how many went. A claim
-    whose digest has no object in `pinned`, the raw pinned bucket since an inventory row can be
-    what failed, holds no copy, so its units come back. A claim behind a standing copy keeps
-    them, and stays through their UTC day so that a retry finds its paid copy: from the next
-    day a retry has units of its own, which the pinned bytes give back. A second run finds
-    nothing new to do, and a claim a prepare took over meanwhile keeps its new lease."""
-    claims = allowances.expired_claims(now)
-    objects = pinned() if any(claim.digest for claim in claims) else ()
-    settled = 0
-    for claim in claims:
-        stands = claim.digest in objects
-        if stands and claim.spent_at is not None and _same_day(claim.spent_at, now):
-            continue
-        allowances.close_claim(claim, refund=not stands)
-        settled += 1
-    return settled
-
-
-def _same_day(first: datetime, second: datetime) -> bool:
-    return first.astimezone(UTC).date() == second.astimezone(UTC).date()
+    *, allowances: SharedAllowanceLedger, artifacts: ArtifactStore, now: datetime
+) -> tuple[int, int]:
+    """Settle every claim whose lease has passed at `now`, one by one, and return how many went
+    through and how many failed. Each is fenced, so a second run or a writer that got there
+    first leaves nothing to do."""
+    settled = failed = 0
+    for claim in allowances.expired_claims(now):
+        try:
+            _settle_stale_claim(claim, allowances=allowances, artifacts=artifacts, now=now)
+        except Exception:
+            logger.exception("Settling the claim of %s failed", claim.export_id)
+            failed += 1
+        else:
+            settled += 1
+    return settled, failed

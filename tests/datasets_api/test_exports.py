@@ -42,6 +42,8 @@ from datasets_api.allowance import (
     BUDGET_KEY,
     AllowanceExhausted,
     AllowanceKind,
+    ClaimState,
+    ExportClaim,
     LiveAllowanceLedger,
     Spend,
 )
@@ -68,7 +70,6 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.caller import CallerUnresolved, address_key
-from dfo_platform.problem import Refusal
 from materialise.formats import (
     ExcelIllegalCharacterError,
     ExcelLimitError,
@@ -896,15 +897,15 @@ class _HeldRender:
         self._results = results
         self._render = getattr(*_RENDERS[kind])
         monkeypatch.setattr(*_RENDERS[kind], self)
-        progress = exports_door.prepare_progress
+        read_claim = LiveAllowanceLedger.read_claim
 
-        def parked_read(**kwargs: Any) -> Any:
-            facts, running = progress(**kwargs)
-            if running:
+        def parked_read(ledger: LiveAllowanceLedger, export_id: str) -> Any:
+            claim = read_claim(ledger, export_id)
+            if claim is not None:
                 self.parked.set()
-            return facts, running
+            return claim
 
-        monkeypatch.setattr(exports_door, "prepare_progress", parked_read)
+        monkeypatch.setattr(LiveAllowanceLedger, "read_claim", parked_read)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         self.calls += 1
@@ -965,9 +966,15 @@ def test_a_waiter_runs_its_own_prepare_after_the_one_it_waited_on_failed(
     [
         (ExportOverCeiling(format="xlsx", count=2, cap=1), "over_ceiling"),
         (ExcelLimitError("too wide"), "excel_limit"),
+        (ExcelIllegalCharacterError("bad cell", row=1, column=1), "excel_illegal_character"),
         (ParquetSizeBoundError("too large"), "parquet_size_bound"),
+        (RollupNotSummableError("no", axis="a", precondition="b"), "rollup_not_summable"),
+        (
+            StoredTraceMissingResolvedStatVars(subject_id="s", content_version="c"),
+            "internal_error",
+        ),
     ],
-    ids=["over-ceiling", "excel-limit", "parquet-size-bound"],
+    ids=["over-ceiling", "excel-limit", "excel-character", "parquet", "rollup", "stored-trace"],
 )
 def test_a_waiter_answers_the_refusal_its_file_gave_the_prepare_it_waited_on(
     kind: str,
@@ -976,37 +983,41 @@ def test_a_waiter_answers_the_refusal_its_file_gave_the_prepare_it_waited_on(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """The request names the file, and the file decides the refusal, so one render decides it
-    for every waiter, and the units go back."""
+    for a caller that waited on it, and the units go back."""
     rig = _Rig(kind, monkeypatch)
     render = _HeldRender(kind, monkeypatch, results=[refusal])
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=2) as pool:
         leader = pool.submit(rig.prepare, "xlsx")
         assert render.entered.wait(10)
-        waiters = [pool.submit(rig.prepare, "xlsx") for _ in range(2)]
+        waiter = pool.submit(rig.prepare, "xlsx")
         assert render.parked.wait(10)
         render.release.set()
-        responses = [leader.result(), *(waiter.result() for waiter in waiters)]
+        responses = [leader.result(), waiter.result()]
 
-    assert [r.json()["code"] for r in responses] == [code] * 3, [r.text for r in responses]
+    assert [r.json()["code"] for r in responses] == [code] * 2, [r.text for r in responses]
     assert len({(r.status_code, r.json()["detail"]) for r in responses}) == 1
     assert render.calls == 1
     assert _spent(rig.ledger) == {}
 
 
-@pytest.mark.parametrize(
-    "refusal",
-    [
-        ExportOverCeiling,
-        ExcelLimitError,
-        ExcelIllegalCharacterError,
-        ParquetSizeBoundError,
-        RollupNotSummableError,
-        StoredTraceMissingResolvedStatVars,
-    ],
-)
-def test_every_refusal_of_the_file_is_shared_by_its_class(refusal: type[Refusal]):
-    assert refusal.decided_by_request is True
+@pytest.mark.parametrize("kind", ["fetched", "derived"])
+def test_a_caller_after_a_refused_prepare_runs_every_guard_again(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+):
+    """A refusal left on the claim answers only the callers that waited on that prepare."""
+    rig = _Rig(kind, monkeypatch)
+    render = _HeldRender(kind, monkeypatch, results=[ExcelLimitError("too wide"), None])
+    render.release.set()
+
+    refused = rig.prepare("xlsx")
+    export = _export_id(rig.frame, "xlsx", bundle=False)
+    assert rig.ledger.read_claim(export).state == ClaimState.refused
+    answered = rig.prepare("xlsx")
+
+    assert refused.json()["code"] == "excel_limit", refused.text
+    assert answered.status_code == 200, answered.text
+    assert render.calls == 2
 
 
 def test_a_kept_refusal_is_data_with_every_field_a_problem_renders():
@@ -1063,7 +1074,8 @@ def test_a_prepare_another_instance_holds_is_waited_for_and_answers_its_record(
     rig.forget_exports()
     export = first.json()["export_id"]
     now = datetime.now(UTC)
-    assert rig.ledger.claim(export, now=now, expires_at=now + timedelta(minutes=5)) is not None
+    claim = rig.ledger.claim(export, now=now, expires_at=now + timedelta(minutes=5))
+    assert claim is not None
 
     def landed() -> None:
         time.sleep(0.4)
@@ -1083,6 +1095,7 @@ def test_a_prepare_another_instance_holds_is_waited_for_and_answers_its_record(
                     now,
                 ),
             )
+        rig.ledger.close_claim(claim)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(landed)
@@ -1093,21 +1106,42 @@ def test_a_prepare_another_instance_holds_is_waited_for_and_answers_its_record(
     assert "rebuild_wait" in answered.headers["server-timing"]
 
 
-def test_a_prepare_that_died_leaves_its_units_to_the_retry_that_takes_over(
-    monkeypatch: pytest.MonkeyPatch, caller_key: str
-):
-    rig = _Rig("derived", monkeypatch, ledger=_ledger(pin=1))
+def _dead_prepare(rig: _Rig, spends: list[Spend]) -> ExportClaim:
+    """A held claim of the rig's csv export, whose lease has passed."""
     export = _export_id(rig.frame, "csv", bundle=False)
     past = datetime(2020, 1, 1, tzinfo=UTC)
     dead = rig.ledger.claim(export, now=past, expires_at=past)
     assert dead is not None
-    spends = [Spend(caller_key, AllowanceKind.pin)]
-    assert rig.ledger.hold_claim(dead, spends, datetime.now(UTC)) is not None
+    held = rig.ledger.hold_claim(dead, spends, datetime.now(UTC))
+    assert held is not None
+    return held
+
+
+def test_a_prepare_that_died_before_a_copy_refunds_as_its_retry_takes_over(
+    monkeypatch: pytest.MonkeyPatch, caller_key: str
+):
+    """The last unit comes back, so the retry spends for itself and answers."""
+    rig = _Rig("derived", monkeypatch, ledger=_ledger(pin=1))
+    held = _dead_prepare(rig, [Spend(caller_key, AllowanceKind.pin)])
 
     retry = rig.prepare("csv")
 
     assert retry.status_code == 200, retry.text
-    assert rig.ledger.read_claim(export) is None
+    assert rig.ledger.read_claim(held.export_id) is None
+    assert _spent(rig.ledger)[(caller_key, "pin")] == 1
+
+
+def test_a_stale_claim_answers_a_limit_with_its_unit_instead_of_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, caller_key: str
+):
+    """A dead prepare held the budget's last unit, and no sweep has run."""
+    rig = _Rig("derived", monkeypatch, ledger=_ledger(pin_budget=1))
+    _dead_prepare(rig, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)])
+
+    answered = rig.prepare("xlsx")
+
+    assert answered.status_code == 200, answered.text
+    assert _spent(rig.ledger)[(BUDGET_KEY, "pin_budget")] == 1
 
 
 def test_waiters_past_the_read_pool_all_answer_the_record(monkeypatch: pytest.MonkeyPatch):
@@ -1115,13 +1149,13 @@ def test_waiters_past_the_read_pool_all_answer_the_record(monkeypatch: pytest.Mo
     monkeypatch.setenv("DATASETS_READ_MAX_CONCURRENCY", "2")
     rig = _Rig("derived", monkeypatch)
     render = _HeldRender("derived", monkeypatch, results=[None])
-    progress = exports_door.prepare_progress
+    read_claim = LiveAllowanceLedger.read_claim
 
-    def slow(**kwargs: Any) -> Any:
+    def slow(ledger: LiveAllowanceLedger, export_id: str) -> Any:
         time.sleep(0.02)
-        return progress(**kwargs)
+        return read_claim(ledger, export_id)
 
-    monkeypatch.setattr(exports_door, "prepare_progress", slow)
+    monkeypatch.setattr(LiveAllowanceLedger, "read_claim", slow)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         leader = pool.submit(rig.prepare, "csv")
@@ -1189,7 +1223,7 @@ def test_a_prepare_answers_a_record_written_since_the_door_read_it(
 ):
     rig = _Rig(kind, monkeypatch)
     first = rig.prepare("csv")
-    monkeypatch.setattr(exports_door, "prepare_progress", lambda **_: (None, False))
+    monkeypatch.setattr(exports_door, "recorded_export", lambda **_: None)
     monkeypatch.setattr(exports_module, "_prepare_dataset", _forbidden)
     monkeypatch.setattr(exports_module, "_prepare_derived", _forbidden)
 

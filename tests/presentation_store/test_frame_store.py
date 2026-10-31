@@ -250,6 +250,9 @@ class _FakeArtifactStore:
     ) -> str:
         raise NotImplementedError("not exercised by LiveFrameStore")
 
+    def exists(self, digest: str, *, tier: Tier) -> bool:
+        return (tier, digest) in self.objects
+
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         self.calls.append(("copy", from_tier, digest))
         if self.copy_raises is not None:

@@ -28,7 +28,7 @@ import asyncio
 import functools
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -66,9 +66,10 @@ from datasets_api.exports import (
     ExportRequest,
     ExportRequestBody,
     ExportResponse,
+    export_id,
     passes_through,
     prepare_export,
-    prepare_progress,
+    recorded_export,
     resolve_export_frame,
     sign_export,
 )
@@ -90,8 +91,10 @@ from spec_registry.errors import IdentityCollision
 
 logger = logging.getLogger(__name__)
 
-# How often a request waiting for another prepare of its export reads the claim again.
-_CLAIM_POLL_SECONDS = 0.25
+# How often a request waiting for another prepare of its export reads the claim again: first
+# this often, doubling up to the most it sleeps.
+_CLAIM_POLL_SECONDS = 0.05
+_CLAIM_POLL_MAX_SECONDS = 1.0
 
 PREPARE_PATH = "/api/datasets/exports"
 LINK_PATH = "/api/datasets/exports/{export_id}"
@@ -115,33 +118,38 @@ async def _prepared(
     timings: PhaseTimings,
 ) -> Mapping[str, Any]:
     """The facts of the export `export_request` names: its record, else a new prepare's. While
-    any instance's prepare holds its claim, the call sleeps on the event loop and reads what the
-    prepare left (`prepare_progress`), so a waiter holds no work permit, and each hop waits for
-    a permit until the wait ends, so waiters that wake together all get one.
+    any instance's prepare holds its claim, the call sleeps on the event loop, holding no work
+    permit, and reads only the claim, backing off from `_CLAIM_POLL_SECONDS` to
+    `_CLAIM_POLL_MAX_SECONDS`. Each hop waits for its permit until the wait ends, so waiters that
+    wake together all get one. A refusal left on the claim answers a call that was waiting.
 
     Raises:
+        ExportFileRefused: The prepare this call waited on refused.
         ExportPrepareRunning: The other prepare still runs at `materialise_wait_seconds`, or at
             the deadline if that comes first.
     """
     wait_seconds = current.settings.materialise_wait_seconds
     ends = min(time.monotonic() + wait_seconds, cast(float, retrieval.deadline))
+
+    async def read[T](fn: Callable[..., T], /, **kwargs: object) -> T:
+        return await current.read_executor.run(
+            functools.partial(run_with_timings, fn, timings, **kwargs),
+            refuse=ExportBackpressure,
+            wait_seconds=max(0.0, ends - time.monotonic()),
+        )
+
+    export = export_id(export_request)
+    delay = _CLAIM_POLL_SECONDS
     waited = 0.0
     try:
         while True:
-            facts, running = await current.read_executor.run(
-                functools.partial(
-                    run_with_timings,
-                    prepare_progress,
-                    timings,
-                    request=export_request,
-                    current=current,
-                ),
-                refuse=ExportBackpressure,
-                wait_seconds=max(0.0, ends - time.monotonic()),
-            )
-            if facts is not None:
-                return facts
-            if not running:
+            claim = await read(current.allowances.read_claim, export_id=export)
+            if claim is not None and claim.refusal is not None and waited:
+                raise ExportFileRefused(**claim.refusal)
+            if claim is None or claim.refusal is not None or claim.expires_at <= current.now():
+                facts = await read(recorded_export, request=export_request, current=current)
+                if facts is not None:
+                    return facts
                 # Only a new export can spend, so a repeat needs no caller.
                 caller: Caller | None = (
                     None
@@ -164,8 +172,9 @@ async def _prepared(
             if time.monotonic() >= ends:
                 raise ExportPrepareRunning(wait_seconds=wait_seconds)
             started = time.perf_counter()
-            await asyncio.sleep(_CLAIM_POLL_SECONDS)
+            await asyncio.sleep(delay)
             waited += time.perf_counter() - started
+            delay = min(delay * 2, _CLAIM_POLL_MAX_SECONDS)
     finally:
         if waited:
             timings.record("rebuild_wait", waited * 1000)

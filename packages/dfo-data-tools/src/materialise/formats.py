@@ -219,6 +219,7 @@ class ExcelLimitError(MaterialisationError):
 
     code = "excel_limit"
     status = 422
+    decided_by_request = True
 
     def __init__(self, *args: object, detail: str | None = None) -> None:
         super().__init__(*args, detail=detail)
@@ -231,6 +232,7 @@ class ExcelIllegalCharacterError(MaterialisationError):
 
     code = "excel_illegal_character"
     status = 422
+    decided_by_request = True
 
     def __init__(self, *args: object, row: int, column: int, detail: str | None = None) -> None:
         super().__init__(*args, detail=detail)
@@ -244,6 +246,7 @@ class ParquetSizeBoundError(MaterialisationError):
 
     code = "parquet_size_bound"
     status = 422
+    decided_by_request = True
 
     def __init__(self, *args: object, detail: str | None = None) -> None:
         super().__init__(*args, detail=detail)

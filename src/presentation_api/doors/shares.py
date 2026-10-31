@@ -1175,7 +1175,7 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         return ProblemSpec(
             status=503,
             code="service_unavailable",
-            detail=str(exc),
+            detail=exc.detail or str(exc),
             retryable=True,
             headers=exc.headers,
         )

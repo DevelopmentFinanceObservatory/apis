@@ -202,6 +202,10 @@ class ArtifactStore(Protocol):
         """
         ...
 
+    def exists(self, digest: str, *, tier: Tier) -> bool:
+        """Whether the tier's bucket holds the object of `digest`, whatever the inventory says."""
+        ...
+
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         """Copy to the destination bucket. An existing digest is a deduplication.
 
@@ -686,6 +690,9 @@ class LiveArtifactStore:
             raise ArtifactLocationDriftError(
                 digest=digest, tier=tier, stored_bucket=bucket, stored_object_name=object_name
             )
+
+    def exists(self, digest: str, *, tier: Tier) -> bool:
+        return self._client.bucket(self._buckets[tier]).get_blob(digest) is not None
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         """Copy from the recorded source location. Record the destination after success. A

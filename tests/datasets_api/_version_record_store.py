@@ -130,6 +130,8 @@ CREATE TABLE datasets.export (
 );
 CREATE TABLE datasets.export_prepare_claim (
     export_id TEXT PRIMARY KEY,
+    generation TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
     expires_at TEXT NOT NULL,
     spends TEXT NOT NULL DEFAULT '{}',
     spent_at TEXT,

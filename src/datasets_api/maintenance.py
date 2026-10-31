@@ -3,15 +3,22 @@
 `datasets-maintenance <task>` runs one task and exits non-zero when it fails. Each task is a
 subcommand registered in `main`.
 
-`sweep` runs daily from Cloud Scheduler. It sweeps both artifact tiers with the read-only
-`reconciliation.sweep` at the current time and writes one structured
+`sweep` runs daily from Cloud Scheduler. It settles export claims past their lease as
+`sweep-export-claims` does, then sweeps both artifact tiers with the read-only
+`reconciliation.sweep` at the current time, whatever the claims did, and writes one structured
 `datasets_reconciliation_sweep` line per tier with its orphaned, missing, expired working and
 unreferenced counts. Missing objects count only rows that should have bytes, so a working row
 past `WORKING_TIER_RETENTION` counts as expired. For each non-empty orphaned, missing or
 unreferenced leg the line also carries the sorted object names, digests for the unreferenced
-leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. It repairs nothing. It reads
-`DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime database
-settings `dataset_store.provider.shared_pool` reads.
+leg, at most `SWEEP_NAMES_PER_LEG` of them, under `<leg>_sample`. The report repairs nothing. It
+reads `DATASETS_ARTIFACT_BUCKET_WORKING`, `DATASETS_ARTIFACT_BUCKET_PINNED` and the runtime
+database settings `dataset_store.provider.shared_pool` reads.
+
+`sweep-export-claims` runs every five minutes from Cloud Scheduler. It settles each export claim
+past its lease by itself (`retention_admission.sweep_export_claims`), so a claim that fails
+leaves the rest settled, and writes one `datasets_export_claims_swept` line with the settled and
+failed counts. It exits non-zero when any failed. Every settlement is fenced, so a second run
+changes nothing. A refund lands on the UTC day that spent the unit.
 
 `age-operations` runs daily. It first fails every abandoned row of `datasets.operation`
 (`Operation.abandoned`) as retryable `internal_error`, so a row nobody polls leaves `pending` or
@@ -283,22 +290,27 @@ SWEEP_NAMES_PER_LEG = 20
 
 def run_export_claim_sweep(
     *, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now
-) -> None:
-    """Settle the export claims past their lease (`retention_admission.sweep_export_claims`)
-    and emit how many went."""
-    settled = sweep_export_claims(
+) -> int:
+    """Settle the export claims past their lease (`retention_admission.sweep_export_claims`),
+    emit the counts and return how many failed."""
+    settled, failed = sweep_export_claims(
         allowances=LiveAllowanceLedger(store=store, limits={}),
-        pinned=lambda: artifact_store.list(tier=Tier.pinned),
+        artifacts=artifact_store,
         now=now(),
     )
-    emit("datasets_export_claims_swept", settled_claims=settled)
+    emit("datasets_export_claims_swept", settled_claims=settled, failed_claims=failed)
+    return failed
 
 
-def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> None:
-    """Settle expired export claims, sweep both tiers and emit one line per tier with each
-    leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG` names in sorted
-    order."""
-    run_export_claim_sweep(store=store, artifact_store=artifact_store, now=now)
+def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock = utc_now) -> int:
+    """Settle expired export claims, then sweep both tiers whatever that did, emit one line per
+    tier with each leg's count and, for each non-empty leg, its first `SWEEP_NAMES_PER_LEG`
+    names in sorted order, and return how many claims failed."""
+    try:
+        failed = run_export_claim_sweep(store=store, artifact_store=artifact_store, now=now)
+    except Exception as exc:
+        emit("datasets_maintenance_failed", severity="ERROR", task="sweep", error=str(exc))
+        failed = 1
     for report in sweep(store=store, artifact_store=artifact_store, now=now()):
         legs = {
             "orphaned_objects": report.orphaned_objects,
@@ -316,6 +328,7 @@ def run_sweep(*, store: DatasetStore, artifact_store: ArtifactStore, now: Clock 
                 if names
             },
         )
+    return failed
 
 
 def _sweep() -> int:

@@ -606,6 +606,43 @@ def test_a_copy_that_landed_and_raised_ends_with_one_set_of_units():
     assert _spent(ledger) == {(BUDGET_KEY, "pin_budget"): 1}
 
 
+@pytest.mark.parametrize(
+    ("landed", "bucket_read", "units"),
+    [
+        pytest.param(False, None, {}, id="absent-refunds"),
+        pytest.param(True, None, {(BUDGET_KEY, "pin_budget"): 1}, id="present-keeps"),
+        pytest.param(
+            False,
+            ArtifactWriteError(object_name="d", digest="d"),
+            {(BUDGET_KEY, "pin_budget"): 1},
+            id="failed-read-keeps",
+        ),
+    ],
+)
+def test_a_copy_that_raises_is_judged_by_the_pinned_object(
+    landed: bool, bucket_read: Exception | None, units: dict
+):
+    class _Raises(FakeArtifactStore):
+        def copy(self, digest, *, from_tier, to_tier):
+            if landed:
+                super().copy(digest, from_tier=from_tier, to_tier=to_tier)
+            raise ArtifactWriteError(object_name=digest, digest=digest)
+
+        def exists(self, digest, *, tier):
+            if bucket_read is not None:
+                raise bucket_read
+            return super().exists(digest, tier=tier)
+
+    store = _Raises()
+    location = _store_and_locate(store, b"judged")
+    ledger = _ledger()
+
+    with pytest.raises(ArtifactWriteError):
+        _pin_named(store, location, ledger)
+
+    assert _spent(ledger) == units
+
+
 def test_a_unit_a_running_export_holds_refuses_a_pin_retryably_and_briefly():
     """The unit can come back, so its limit reads as capacity, and not as a day that spent it."""
     store = _CopyForbiddenArtifactStore()

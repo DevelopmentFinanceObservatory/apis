@@ -14,10 +14,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
+from artifact_store.errors import ArtifactWriteError
 from dataset_store.migrate import MIGRATIONS_DIR
 from dataset_store.snapshot import WORKING_TIER_RETENTION, FrameLineage, LiveSnapshotReader
 from datasets_api import maintenance
-from datasets_api.allowance import BUDGET_KEY, AllowanceKind, LiveAllowanceLedger, Spend
+from datasets_api.allowance import (
+    BUDGET_KEY,
+    AllowanceKind,
+    ClaimState,
+    ExportClaim,
+    LiveAllowanceLedger,
+    Spend,
+)
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.reconciliation import sweep_tier
 from datasets_api.render import CANONICAL_FRAME_RENDERING
@@ -99,6 +107,20 @@ def _claims() -> LiveAllowanceLedger:
     )
 
 
+_SPENT_AT = datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+
+def _held(ledger: LiveAllowanceLedger, export: str = "exp_a") -> ExportClaim:
+    claim = ledger.claim(export, now=_SPENT_AT, expires_at=_SPENT_AT + timedelta(minutes=2))
+    return ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], _SPENT_AT)
+
+
+def _units(ledger: LiveAllowanceLedger) -> dict[str, int]:
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT kind, count FROM datasets.caller_allowance")
+    return {row["kind"]: row["count"] for row in rows}
+
+
 @pytest.mark.parametrize(
     ("digest", "pinned", "later", "units", "left"),
     [
@@ -113,26 +135,70 @@ def test_the_sweep_gives_back_the_units_of_a_claim_only_when_no_copy_stands(
 ):
     """A second run changes nothing, and a standing copy is read from the bucket, since its
     inventory row can be what failed."""
-    spent_at = datetime(2026, 6, 1, 12, tzinfo=UTC)
-    now = spent_at + timedelta(days=1 if later else 0, minutes=5)
+    now = _SPENT_AT + timedelta(days=1 if later else 0, minutes=5)
     ledger = _claims()
     artifact_store = FakeArtifactStore()
-    claim = ledger.claim("exp_a", now=spent_at, expires_at=spent_at + timedelta(minutes=2))
-    held = ledger.hold_claim(claim, [Spend(BUDGET_KEY, AllowanceKind.pin_budget)], spent_at)
+    held = _held(ledger)
     if digest is not None:
-        ledger.name_claim_digest(held, digest)
+        ledger.begin_copy(held, digest)
     if pinned:
         artifact_store._objects[(digest, Tier.pinned.value)] = b"bytes"
 
-    for _ in range(2):
+    for _ in range(3):
         maintenance.run_export_claim_sweep(
             store=ledger._store, artifact_store=artifact_store, now=lambda: now
         )
 
-    with ledger._store.transaction() as tx:
-        rows = tx.fetch_all("SELECT kind, count FROM datasets.caller_allowance")
-    assert {row["kind"]: row["count"] for row in rows} == units
+    assert _units(ledger) == units
     assert (ledger.read_claim("exp_a") is not None) is left
+
+
+class _BrokenFor(FakeArtifactStore):
+    """A bucket whose read of one digest fails."""
+
+    def exists(self, digest: str, *, tier: Tier) -> bool:
+        if digest == "sha256:broken":
+            raise ArtifactWriteError(object_name=digest, digest=digest)
+        return super().exists(digest, tier=tier)
+
+
+def test_a_claim_that_fails_leaves_the_rest_settled_and_the_sweep_counts_it(capsys):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    ledger.begin_copy(_held(ledger, "exp_a"), "sha256:broken")
+    _held(ledger, "exp_b")
+
+    failed = maintenance.run_export_claim_sweep(
+        store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
+    )
+
+    assert failed == 1
+    assert ledger.read_claim("exp_a").state == ClaimState.copying
+    assert ledger.read_claim("exp_b") is None
+    assert _units(ledger) == {"pin_budget": 1}
+    line = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (line["settled_claims"], line["failed_claims"]) == (1, 1)
+
+
+@pytest.mark.parametrize("error", [None, RuntimeError("the ledger is down")], ids=["one", "all"])
+def test_the_daily_sweep_writes_its_report_whatever_the_claims_did(error, capsys, monkeypatch):
+    now = _SPENT_AT + timedelta(minutes=5)
+    ledger = _claims()
+    ledger.begin_copy(_held(ledger), "sha256:broken")
+    if error is not None:
+
+        def down(**_: object) -> int:
+            raise error
+
+        monkeypatch.setattr(maintenance, "run_export_claim_sweep", down)
+
+    failed = maintenance.run_sweep(
+        store=ledger._store, artifact_store=_BrokenFor(), now=lambda: now
+    )
+
+    assert failed == 1
+    events = [json.loads(line)["event"] for line in capsys.readouterr().out.splitlines()]
+    assert events.count("datasets_reconciliation_sweep") == 2
 
 
 def test_the_sweep_leaves_a_claim_with_a_running_lease():

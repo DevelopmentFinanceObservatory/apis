@@ -29,7 +29,6 @@ class MaterialisationError(Refusal):
     never becomes the refusal's own pointer."""
 
     status: int
-    decided_by_request = True
 
     def __init__(
         self,

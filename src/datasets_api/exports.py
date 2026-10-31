@@ -18,19 +18,20 @@ dataset file's do. The file is then copied to the pinned tier
 pin budgets as a pin does. A file with a pinned copy needs no copy and spends nothing, whichever
 version or export pinned it.
 
-A prepare runs under a claim of its export id (`allowance.ExportClaim`), which holds across
-instances. A file its version lists names its digest, so its units are spent at its copy, and
-only if it has no pinned copy. A file that must render first, a derived frame's or a dataset file
-its version does not list, has no digest until it renders, so its units are spent onto the claim
-ahead of the render and refuse there what the copy would refuse. Every unit, the caller's and
-both budgets, takes this one path, so a spent day costs no render. A failed render, a refusal
-below, or a render that finds its bytes pinned gives the units back. The claim names the digest
-before the copy, and stays until the record is written, so a retry after a failure past that
-point takes it over and finds its paid copy, spending nothing more. The bytes a render gives are
-known only by rendering, so a caller with no unit left and no claim refuses even when another
-export or a pin holds the same bytes. A process that dies leaves its claim to a lease and the
-sweep (`retention_admission.sweep_export_claims`), which gives the units back when no copy
-stands.
+A prepare runs under a claim of its export id, across instances (`allowance`'s state table). A
+file its version lists names its digest, so its units are spent at its copy, and only if it has
+no pinned copy. A file that must render first, a derived frame's or a dataset file its version
+does not list, has no digest until it renders, so its units are spent onto the claim ahead of the
+render and refuse there what the copy would refuse. Every unit, the caller's and both budgets,
+takes this one path, so a spent day costs no render. A failed render, a refusal below, or a
+render that finds its bytes pinned gives the units back. The claim stays until the record is
+written, so a retry after a failure past the copy takes it over, finds the copy those units paid
+for and spends nothing more. A heartbeat keeps a running prepare's lease, so a client's timeout
+leaves it running and its retry answers its record. A process that dies leaves a stale claim: a
+claim with no copy begun refunds as the next prepare takes it over, or as a limit-reached spend
+or the sweep finds it, and the next caller spends for itself. The bytes a render gives are known
+only by rendering, so a caller with no unit left and no claim refuses even when another export or
+a pin holds the same bytes.
 
 An `artifact_reference` row of kind `export`
 (`reference_store.EXPORT_REFERENCE_KIND`) then keeps the copy from any deletion keyed on references, under the transactional revocation
@@ -42,12 +43,13 @@ Concurrent prepares of one id share one prepare, on any instance. The first take
 work thread (`prepare_export`), and each other reads the claim from the door with no work
 permit, at most `materialise_wait_seconds` and refusing `ExportPrepareRunning` (code
 `service_unavailable`) after that, then answers the record as a repeat prepare does. A refusal
-the request alone decides (`Refusal.decided_by_request`) stays on the claim as data for the rest
-of its lease and answers every waiter (`ExportFileRefused`). After a prepare that failed any
-other way, a waiter takes the claim, and a spent unit refuses each waiter at its own spend, for
-no render. A prepare that outlives its lease can run beside the one that took over. Every render
-is deterministic (bundle members carry fixed timestamps), so they give one file, which the
-content-addressed store holds once, and the second record write returns the first's row.
+the request alone decides (`Refusal.decided_by_request`) stays on the claim as data and answers
+the callers waiting on that prepare (`ExportFileRefused`). A caller that arrives after it runs
+every guard and prepares again. After a prepare that failed any other way, a waiter takes the
+claim, and a spent unit refuses each waiter at its own spend, for no render. Two prepares can run
+together only when one's heartbeat has failed for a lease. Every render is deterministic (bundle
+members carry fixed timestamps), so they give one file, which the content-addressed store holds
+once, and the second record write returns the first's row.
 
 The first prepare, a repeat prepare and the export link (`sign_export`) answer a record through
 one guard (`_servable_facts`), so they cannot disagree. A version's revocation, or its base
@@ -90,7 +92,6 @@ import math
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import IO, Any, Literal, cast
 
@@ -107,7 +108,6 @@ from datasets_api.analysis import AnalysisPending
 from datasets_api.analysis_roots import newest_spec_version
 from datasets_api.codes_exports import (
     ExportFileIncomplete,
-    ExportFileRefused,
     ExportNotFound,
     ExportOverCeiling,
     LicenceNotRedistributable,
@@ -137,6 +137,7 @@ from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import EXPORT_REFERENCE_KIND
 from datasets_api.render import is_incomplete_rendering
 from datasets_api.retention_admission import (
+    PREPARE_LEASE,
     OpenPinBudgetExhausted,
     PinBudgetExhausted,
     PinUnitHeld,
@@ -357,7 +358,7 @@ def _copied_to_pinned(
     try:
         copy.hold()
         with phase("copy"):
-            copied = copy.copy(current.artifact_store, digest)
+            copied = copy.copy(digest)
     except ArtifactNotFoundError as exc:
         raise ArtifactExpired(id=frame.spec_id, content_version=frame.content_version) from exc
     except _SPENT_REFUSALS:
@@ -838,34 +839,12 @@ def recorded_export(*, request: ExportRequest, current: Deps) -> Mapping[str, An
     return _servable_facts(record, current=current)
 
 
-def prepare_progress(
-    *, request: ExportRequest, current: Deps
-) -> tuple[Mapping[str, Any] | None, bool]:
-    """The facts of the request's record, or `None`, and whether a prepare of it holds a live
-    claim, read for the door between its turns.
-
-    Raises:
-        IdentityQuarantined, SnapshotRevoked, LicenceNotRedistributable: As `_servable_facts`.
-        ExportFileRefused: A prepare of this request refused, and its lease still runs.
-    """
-    facts = recorded_export(request=request, current=current)
-    if facts is not None:
-        return facts, False
-    claim = current.allowances.read_claim(export_id(request))
-    if claim is None or claim.expires_at <= current.now():
-        return None, False
-    if claim.refusal is not None:
-        raise ExportFileRefused(**claim.refusal)
-    return None, True
-
-
 def prepare_export(
     *, request: ExportRequest, caller: Caller | None, current: Deps, deps: DefinitionDeps
 ) -> Mapping[str, Any] | None:
     """Prepare the file `request` names, pin it, record it, and return its facts, or answer the
     record a concurrent prepare left. Return `None`, at once, while another prepare holds the
-    request's claim, so this work thread is free while the caller waits for it
-    (`prepare_progress`). See the module docstring. `caller` names an open caller, whose
+    request's claim, so this work thread is free while the door waits for it. See the module docstring. `caller` names an open caller, whose
     `pin` allowance a new pinned copy spends, and `None` a caller holding the pin grant. `deps`
     is the request's retrieval view of `current`, under its deadline.
 
@@ -884,16 +863,17 @@ def prepare_export(
     """
     export = export_id(request)
     now = current.now()
-    claim = current.allowances.claim(
-        export,
-        now=now,
-        expires_at=now + timedelta(seconds=deps.settings.definition_timeout_seconds),
-    )
+    claim = current.allowances.claim(export, now=now, expires_at=now + PREPARE_LEASE)
     if claim is None:
         return None
     with PreparingCopy(
-        claim, allowances=current.allowances, caller=caller, clock=current.now
+        claim,
+        allowances=current.allowances,
+        artifacts=current.artifact_store,
+        caller=caller,
+        clock=current.now,
     ) as copy:
+        copy.settle_earlier()
         # A prepare can end between the door's read and this claim, so the claim reads again.
         recorded = recorded_export(request=request, current=current)
         if recorded is not None:

@@ -30,12 +30,18 @@ from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api import maintenance
 from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger
 from datasets_api.principals import Grant, Principals
-from datasets_api.retention_admission import copy_to_pinned
+from datasets_api.retention_admission import (
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    PinUnitHeld,
+    copy_to_pinned,
+)
 from dfo_platform import ProblemDetails
 from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
 from dfo_platform.codes import bound_registry_endpoint, registered_status
 from dfo_platform.config import CallerSettings
+from dfo_platform.problem import Refusal
 from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_COMPONENTS_MAX_CONCURRENCY
 from presentation_api.doors import shares as shares_door
@@ -1196,3 +1202,19 @@ def test_a_read_that_waits_past_the_admission_wait_refuses_503(
 
     body = _assert_refused(refused, status=503, code="service_unavailable")
     assert body["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        PinUnitHeld(),
+        PinBudgetExhausted(limit=1, now=datetime(2026, 6, 1, tzinfo=UTC)),
+        OpenPinBudgetExhausted(limit=1, now=datetime(2026, 6, 1, tzinfo=UTC)),
+    ],
+    ids=["held", "budget", "open-budget"],
+)
+def test_a_pin_capacity_refusal_tells_the_caller_why(refusal: Refusal):
+    spec = shares_door.classify_shares_exception(refusal)
+
+    assert (spec.status, spec.code) == (503, "service_unavailable")
+    assert spec.detail
