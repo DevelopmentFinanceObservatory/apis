@@ -207,7 +207,7 @@ class _Store:
         )
 
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
-        assert sql.endswith("ORDER BY subject_id, recorded_at, content_version LIMIT %s"), sql
+        assert sql.endswith("ORDER BY subject_id, content_version LIMIT %s"), sql
         *after, limit = params[3:]
         assert isinstance(limit, int)
         assert limit <= self.page_rows, f"a read asked for {limit} rows"
@@ -241,8 +241,8 @@ class _Store:
         return {"subject_id": subject_id}
 
 
-def _key(row: Mapping[str, Any]) -> tuple[str, datetime, str]:
-    return (row["subject_id"], row["recorded_at"], row["content_version"])
+def _key(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (row["subject_id"], row["content_version"])
 
 
 def _row(
@@ -644,14 +644,16 @@ def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
     assert failed["reason"] == "named_member_served"
 
 
-def test_a_dry_run_writes_nothing_and_compares_a_mint_split(capsys):
+# A count stored as a numeral string reads as `WarningModel` reads it, as a serving read does.
+@pytest.mark.parametrize("count", [1, "1"])
+def test_a_dry_run_writes_nothing_and_compares_a_mint_split(count, capsys):
     old = _warning([_IN])
     split = {
         "code": "coverage_below_scope",
         "severity": "warn",
         "message": f"{_DETAIL} 1 of 2 series hold no observations in the requested years.",
         "member_count": 2,
-        "out_of_window_members": {"count": 1, "refs": ["dcid:Var_Out"]},
+        "out_of_window_members": {"count": count, "refs": ["dcid:Var_Out"]},
     }
     store = _Store(
         [
@@ -763,36 +765,51 @@ def test_a_store_outage_stops_the_run(capsys):
 
 
 class _PageOutageStore(_Store):
-    """A store whose second page read fails as an unreachable pool does."""
+    """A store whose page read numbered `failing` fails as an unreachable pool does."""
 
-    def __init__(self, rows: Sequence[Mapping[str, Any]], *, page_rows: int) -> None:
+    def __init__(self, rows: Sequence[Mapping[str, Any]], *, page_rows: int, failing: int) -> None:
         super().__init__(rows, page_rows=page_rows)
         self.pages = 0
+        self.failing = failing
 
     def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
         self.pages += 1
-        if self.pages == 2:
+        if self.pages == self.failing:
             raise PoolTimeoutError("no connection came free")
         return super().fetch_all(sql, params)
 
 
-def test_a_failed_page_read_reports_the_rows_left_and_raises(capsys):
+# The fourth read of three rows, one a page, is the one that would have found none.
+@pytest.mark.parametrize(("failing", "rewritten", "remaining"), [(2, 1, 2), (4, 3, 0)])
+def test_a_failed_page_read_reports_the_rows_left_and_raises(failing, rewritten, remaining, capsys):
     store = _PageOutageStore(
-        [_row(_warning([_IN]), zero=[_IN], subject_id=f"spec_{n}") for n in "abc"], page_rows=1
+        [_row(_warning([_IN]), zero=[_IN], subject_id=f"spec_{n}") for n in "abc"],
+        page_rows=1,
+        failing=failing,
     )
 
     with pytest.raises(PoolTimeoutError):
         _run(store)
 
-    assert store.updates == 1
+    assert store.updates == rewritten
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
-    assert (summary["rewritten"], summary["remaining"], summary["severity"]) == (1, 2, "ERROR")
+    assert (summary["rewritten"], summary["remaining"]) == (rewritten, remaining)
 
 
 @pytest.mark.parametrize(
     "malformed",
-    ["not a warning", {"code": "coverage_below_scope", "severity": "warn"}],
-    ids=["not-an-object", "no-message"],
+    [
+        "not a warning",
+        {"code": "coverage_below_scope", "severity": "warn"},
+        {
+            "code": "coverage_below_scope",
+            "severity": "warn",
+            "message": f"{_DETAIL} 1 of 2 series hold no observations in the requested years.",
+            "member_count": 2,
+            "out_of_window_members": {"count": "one", "refs": ["dcid:Var_Out"]},
+        },
+    ],
+    ids=["not-an-object", "no-message", "non-integer-count"],
 )
 def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malformed, capsys):
     bad = _row(_warning([_IN]), zero=[_IN], subject_id="spec_b")
@@ -821,6 +838,29 @@ def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malf
     assert (failed["refused"], failed["transient"]) == (True, False)
     (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
     assert (summary["rewritten"], summary["permanent"], summary["failed"]) == (2, 1, 0)
+
+
+def test_a_warning_the_run_does_not_rewrite_is_written_back_as_stored():
+    # It lacks the member fields, and its count is a numeral string a `WarningModel` reads as 1.
+    other = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": "The data covers fewer years.",
+        "requested_years": {"end": 2021},
+        "unserved_entities": {"count": "1", "refs": [f"dcid:{_KEN}"]},
+    }
+    row = _row(_warning([_IN]), zero=[_IN])
+    row["warnings"] = [*row["warnings"], other]
+    row["immutable_body"] = {**row["immutable_body"], "warnings": row["warnings"]}
+    store = _Store([row])
+
+    assert _run(store) == 0
+
+    stored = store.rows[("spec_a", "cv_a")]
+    (rewritten, kept) = stored["warnings"]
+    assert "off_cadence_members" in rewritten
+    assert json.dumps(kept) == json.dumps(other)
+    assert stored["immutable_body"]["warnings"] == stored["warnings"]
 
 
 def test_a_run_reads_one_page_at_a_time_and_reaches_every_row(capsys):
