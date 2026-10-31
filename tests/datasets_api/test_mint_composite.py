@@ -393,6 +393,43 @@ def test_the_stored_version_re_renders_the_composite_frame_and_its_citations():
     assert manifest["citation"] == minted.json()["citation"]
 
 
+def test_a_rebuild_of_a_composite_version_on_record_reads_no_origin_findings(monkeypatch):
+    """A version on record serves the origin findings it recorded, so a rebuild that lands on
+    it reads none for any component."""
+    version_store = FakeVersionRecordDatasetStore()
+    _artifacts, client = _composite_client(version_store)
+    reads: list[object] = []
+    origin_findings = serve._origin_findings
+
+    def counted(*args, **kwargs):
+        reads.append(args[0])
+        return origin_findings(*args, **kwargs)
+
+    monkeypatch.setattr(serve, "_origin_findings", counted)
+    minted = _mint(client)
+    assert minted.status_code == 200, minted.text
+    first_mint_reads = len(reads)
+    # A head past its maximum age rebuilds, and its version is on record.
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET confirmed_at = %s, materialised_at = %s "
+            "WHERE subject_id = %s",
+            (
+                "2000-01-01T00:00:00+00:00",
+                "2000-01-01T00:00:00+00:00",
+                minted.json()["definition"]["spec_id"],
+            ),
+        )
+
+    rebuilt = _mint(client)
+
+    assert rebuilt.status_code == 200, rebuilt.text
+    assert rebuilt.json()["content_version"] == minted.json()["content_version"]
+    assert rebuilt.json()["trace"]["served_from"] != "head"
+    assert first_mint_reads == 2
+    assert len(reads) == first_mint_reads
+
+
 def _same_purpose_pair() -> tuple[str, str]:
     """A CRS member and an imputed member of one purpose code."""
     index = get_index()

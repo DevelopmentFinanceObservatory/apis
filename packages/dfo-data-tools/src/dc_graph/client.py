@@ -484,6 +484,18 @@ class GraphClient:
             else None
         )
         self._label_counters = _CacheCounters()
+        # `node_arc_targets_many` answers, sized as the label cache, since they name nodes.
+        self._arc_targets_cache: (
+            cachetools.TLRUCache[tuple[str, str, tuple[str, ...]], dict[str, tuple[ArcTarget, ...]]]
+            | None
+        ) = (
+            cachetools.TLRUCache(
+                maxsize=label_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
+            )
+            if label_cache_size > 0
+            else None
+        )
+        self._arc_targets_counters = _CacheCounters()
         self._type_cache: cachetools.TLRUCache[tuple[str, str], str | None] | None = (
             cachetools.TLRUCache(
                 maxsize=type_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
@@ -1197,16 +1209,37 @@ class GraphClient:
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
         target's name and types need no read of their own, or `None` for a node the graph
-        answers with none of them. The reads are `node_arcs_many`'s initial chunks and pages,
-        bounded by `deadline`, with no retry of an empty answer. This method is uncached."""
+        answers with none of them. The reads are `node_arcs_many`'s initial chunks and pages
+        for the dcids the optional cache (sized `label_cache_size`) does not hold under the
+        generation stamp, bounded by `deadline`, with no retry of an empty answer. A node
+        answered with arcs is cached; an empty answer is not, since a batch can empty an entry
+        depending on which other dcids share it."""
         if not dcids:
             return {}
-        data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
+        stamp = self._generation.stamp()
+        wanted = tuple(sorted(properties))
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
-        for dcid in dict.fromkeys(dcids):
+        misses: list[str] = []
+        with self._cache_lock:
+            for dcid in dict.fromkeys(dcids):
+                key = (stamp.key, dcid, wanted)
+                if self._arc_targets_cache is not None and key in self._arc_targets_cache:
+                    self._arc_targets_counters.hits += 1
+                    result[dcid] = self._arc_targets_cache[key]
+                else:
+                    self._arc_targets_counters.misses += 1
+                    misses.append(dcid)
+        if not misses:
+            return result
+        data = self._post_node_arcs_chunked(misses, properties=properties, deadline=deadline)
+        for dcid in misses:
             arcs = (data.get(dcid) or {}).get("arcs", {})
-            result[dcid] = parse_arc_targets(arcs, properties) if arcs else None
-        return result
+            targets = parse_arc_targets(arcs, properties) if arcs else None
+            result[dcid] = targets
+            if targets is not None and self._arc_targets_cache is not None:
+                with self._cache_lock:
+                    self._arc_targets_cache[(stamp.key, dcid, wanted)] = targets
+        return {dcid: result[dcid] for dcid in dict.fromkeys(dcids)}
 
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
@@ -2308,6 +2341,11 @@ class GraphClient:
                 "label_hits": self._label_counters.hits,
                 "label_misses": self._label_counters.misses,
                 "label_entries": 0 if self._label_cache is None else len(self._label_cache),
+                "arc_targets_hits": self._arc_targets_counters.hits,
+                "arc_targets_misses": self._arc_targets_counters.misses,
+                "arc_targets_entries": 0
+                if self._arc_targets_cache is None
+                else len(self._arc_targets_cache),
                 "type_hits": self._type_counters.hits,
                 "type_misses": self._type_counters.misses,
                 "type_entries": 0 if self._type_cache is None else len(self._type_cache),
@@ -2337,6 +2375,8 @@ class GraphClient:
         with self._cache_lock:
             if self._label_cache is not None:
                 self._label_cache.clear()
+            if self._arc_targets_cache is not None:
+                self._arc_targets_cache.clear()
             if self._type_cache is not None:
                 self._type_cache.clear()
             if self._arcs_cache is not None:

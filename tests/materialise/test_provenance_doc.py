@@ -24,6 +24,7 @@ from dfo_provenance_docs import (
 )
 
 import materialise.provenance_doc as provenance_doc_module
+from code_index.composites import DECLARED_COMPOSITES
 from materialise.graph import UNRESOLVED_NODE, GraphReadError, SubjectPage, parse_arcs
 from materialise.provenance_doc import (
     _DATASET_PROPERTIES,
@@ -1680,6 +1681,7 @@ class TestDeadlineForwarding:
 
 
 _WHO = "dc/base/WHO_GHO"
+_HEADLINE_ODA = "provenance/ONEOECDHeadlineODA"
 _WHO_NAMING_ARCS = {
     _WHO: {"typeOf": ("Provenance",), "name": ("WHO_GHO",), "isPartOf": ("dc/d/WHO_GHO",)},
     "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("WHO Global Health Observatory",)},
@@ -1690,6 +1692,11 @@ _WHO_NAMING_ARCS = {
     ("dcid", "arcs", "name", "reads"),
     [
         pytest.param("dc/base/Listed", {}, "Listed dataset", 0, id="listed"),
+        # A declared composite is neither a catalogue row nor a graph node, so its declaration
+        # names it.
+        pytest.param(
+            _HEADLINE_ODA, {}, DECLARED_COMPOSITES[_HEADLINE_ODA].label, 0, id="composite"
+        ),
         # A base provenance is named for its import, so its parent Dataset names it, from the
         # name the mixer answers beside the `isPartOf` target.
         pytest.param(

@@ -302,26 +302,26 @@ def _named_refs(field: _RefField, names: Sequence[str], *, count: int, budget: i
     `" and N more"` for the `count` not named, closed by a full stop. When no name fits, the
     count stands for them all, whatever the budget, so the field keeps its count.
 
-    A `provenance` field states its `count` in brackets after its lead and names each distinct
-    name once, since provenances of one Dataset share its name, so the names need not add up
-    to it: `" Withheld sources (8): A, B and others."`, `" Withheld sources (8)."` when no name
-    fits. "and others" closes the names when the field counts a provenance it does not carry
-    or a name does not fit."""
+    A `provenance` field states its `count` with the field's noun and names each distinct name
+    once in brackets, since provenances of one Dataset share its name:
+    `" Withheld sources: 8 sources (A, B and others)."`, `" Withheld sources: 8 sources."` when
+    no name fits. "and others" closes the names whenever fewer names show than the count."""
     lead = field.lead
+    counted = f"{count} {field.one if count == 1 else field.many}"
     if field.provenance:
         distinct = list(dict.fromkeys(names))
         for shown in range(len(distinct), 0, -1):
-            rest = " and others" if shown < len(distinct) or count > len(names) else ""
-            text = f" {lead} ({count}): {', '.join(distinct[:shown])}{rest}."
+            rest = " and others" if shown < count else ""
+            text = f" {lead}: {counted} ({', '.join(distinct[:shown])}{rest})."
             if len(text) <= budget:
                 return text
-        return f" {lead} ({count})."
+        return f" {lead}: {counted}."
     for shown in range(len(names), 0, -1):
         hidden = count - shown
         text = f" {lead}: {', '.join(names[:shown])}{f' and {hidden} more' if hidden > 0 else ''}."
         if len(text) <= budget:
             return text
-    return f" {lead}: {count} {field.one if count == 1 else field.many}."
+    return f" {lead}: {counted}."
 
 
 @dataclass(frozen=True)

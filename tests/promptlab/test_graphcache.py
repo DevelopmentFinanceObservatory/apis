@@ -338,6 +338,30 @@ def test_node_arc_targets_many_serves_a_written_target_s_name_and_types(tmp_path
     assert inner.calls["node_arc_targets_many"] == 1
 
 
+def test_read_only_node_arc_targets_many_names_a_miss_from_its_captured_label(tmp_path):
+    """A capture holding provenance names as `node_label` rows replays a name read."""
+    path = tmp_path / "graph.sqlite"
+    writer = GraphCache(
+        _CountingGraph(FakeGraph(nodes={"dc/base/WHO_GHO": {"label": "WHO_GHO"}})), path=path
+    )
+    writer.node_labels_batch(["dc/base/WHO_GHO", "dc/base/Gone"])
+    writer.close()
+    read_only = GraphCache(FakeGraph(raise_on_call=True), path=path, read_only=True)
+
+    served = read_only.node_arc_targets_many(
+        ["dc/base/WHO_GHO", "dc/base/Gone"], properties=("isPartOf", "name", "typeOf")
+    )
+
+    assert served == {
+        "dc/base/WHO_GHO": {"name": (ArcTarget(value="WHO_GHO"),)},
+        "dc/base/Gone": None,
+    }
+    with pytest.raises(CacheMiss):
+        read_only.node_arc_targets_many(["dc/base/Other"], properties=("name",))
+    with pytest.raises(CacheMiss):
+        read_only.node_arc_targets_many(["dc/base/WHO_GHO"], properties=("isPartOf",))
+
+
 def test_node_subjects_many_hit_miss_write_back(tmp_path):
     nodes = {
         "child1": {"arcs": {"financingProvider": {"nodes": [{"dcid": "lead1"}]}}},

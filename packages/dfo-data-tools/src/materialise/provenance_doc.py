@@ -132,6 +132,7 @@ from dfo_provenance_docs import (
     parse_transformations,
 )
 
+from code_index.composites import DECLARED_COMPOSITES
 from dc_graph import ArcTarget, GraphReadError, display_name
 from dfo_platform.roles import RoleAxis
 from materialise.cadence import known_cadence_label
@@ -605,11 +606,6 @@ def read_provenance_doc(
 
     publisher = node_label(batch.get(source_dcid), source_dcid) if source_dcid is not None else None
 
-    dataset_name = (
-        node_label(dataset_arcs, dataset_dcid)
-        if dataset_arcs is not None and dataset_dcid is not None
-        else None
-    )
     own_row = (
         catalogue.provenance(dcid)
         if catalogue is not None
@@ -618,10 +614,16 @@ def read_provenance_doc(
         and catalogue.is_admitted(dcid)
         else None
     )
-    if own_row is not None:
-        name_of_source = own_row.name
-    else:
-        name_of_source = dataset_name if dataset_name is not None else node_label(node, dcid)
+    name_of_source = (
+        own_row.name
+        if own_row is not None
+        else cited_name(
+            dcid,
+            node.get("name", ()),
+            parent=dataset_dcid,
+            parent_names=() if dataset_arcs is None else dataset_arcs.get("name", ()),
+        )
+    )
 
     licence = agreed_child_value(child_properties, "licenseType")
     licence_labels = (
@@ -872,50 +874,72 @@ PROVENANCE_NAME_PROPERTIES: tuple[str, ...] = ("name", "typeOf", "isPartOf")
 """The arcs `provenance_names` reads of each provenance the catalogue does not list."""
 
 
+def cited_name(
+    dcid: str, names: Sequence[str], *, parent: str | None, parent_names: Sequence[str]
+) -> str | None:
+    """The name a citation and `provenance_names` give provenance `dcid`: its parent Dataset
+    `parent`'s `parent_names`, else its own `names`, each through `display_name`."""
+    named_parent = display_name(tuple(parent_names), parent) if parent is not None else None
+    return named_parent or display_name(tuple(names), dcid)
+
+
+def unnamed_provenances(dcids: Sequence[str], *, catalogue: Catalogue) -> list[str]:
+    """The distinct dcids of `dcids` that `provenance_names` reads the graph for: those neither
+    a declared composite (`code_index.composites`) nor a row of `catalogue`, in first-seen
+    order."""
+    return [
+        dcid
+        for dcid in dict.fromkeys(dcids)
+        if dcid not in DECLARED_COMPOSITES and catalogue.provenance(dcid) is None
+    ]
+
+
 def provenance_names(
     graph: ProvenanceNameReader,
     dcids: Sequence[str],
     *,
     catalogue: Catalogue,
     deadline: float | None,
-    targets: Mapping[str, Mapping[str, tuple[ArcTarget, ...]] | None] | None = None,
 ) -> tuple[dict[str, str], bool]:
     """The name of each distinct provenance of `dcids`, by dcid, and whether the graph read
     succeeded. This is the name a source citation gives it (`read_source_citations`), since a
     base provenance's own graph `name` is its import's, such as `WHO_GHO`.
 
-    A provenance `catalogue` lists takes its row's name with no read. Every other is read in
-    one `node_arc_targets_many` of `PROVENANCE_NAME_PROPERTIES`, bounded by `deadline`, or
-    taken from `targets` when the caller read those properties for it already. A node typed
-    Dataset is named by its own `name`. Any other is named by its first `isPartOf` target
-    typed Dataset (`first_dataset_parent`'s rule), from the name the read carries beside that
-    target, else by its own `name`. Each name passes `display_name`'s guard, and a dcid with
-    no name is absent. A target carries the first of several names where `display_name`
-    takes the greatest; the 680 Dataset parents of the dev graph's 1,277 Provenances each
-    carry one.
+    A declared composite, which neither the catalogue nor the graph holds, takes its declared
+    label, and a provenance `catalogue` lists takes its row's name, each with no read. Every
+    other (`unnamed_provenances`) is read in one `node_arc_targets_many` of
+    `PROVENANCE_NAME_PROPERTIES`, bounded by `deadline`. A node typed Dataset is named by its
+    own `name`. Any other is named by its first `isPartOf` target typed Dataset
+    (`first_dataset_parent`'s rule), from the name the read carries beside that target, else
+    by its own `name`. Each name passes `display_name`'s guard, and a dcid with no name is
+    absent. A target carries the first of several names where `display_name` takes the
+    greatest; the 680 Dataset parents of the dev graph's 1,277 Provenances each carry one.
 
-    A call makes no request when the catalogue lists every dcid, or one otherwise. A failed
-    read, `GraphReadError` with the deadline included, is logged and returns the catalogue's
-    names with `False`.
+    A call makes no request when every dcid is named without a read, or one otherwise, which
+    the graph client may answer from its cache. A failed read, `GraphReadError` with the
+    deadline included, is logged and returns the names found without a read, with `False`.
     """
-    unique = list(dict.fromkeys(dcids))
-    names = {dcid: row.name for dcid in unique if (row := catalogue.provenance(dcid)) is not None}
-    unlisted = [dcid for dcid in unique if dcid not in names]
+    unlisted = unnamed_provenances(dcids, catalogue=catalogue)
+    names: dict[str, str] = {}
+    for dcid in dict.fromkeys(dcids):
+        if (composite := DECLARED_COMPOSITES.get(dcid)) is not None:
+            names[dcid] = composite.label
+        elif (row := catalogue.provenance(dcid)) is not None:
+            names[dcid] = row.name
     if not unlisted:
         return names, True
-    if targets is None:
-        try:
-            targets = graph.node_arc_targets_many(
-                unlisted, properties=PROVENANCE_NAME_PROPERTIES, deadline=deadline
-            )
-        except GraphReadError:
-            logger.warning(
-                "Provenance name read failed for %d provenances the catalogue does not list; "
-                "naming the listed ones alone",
-                len(unlisted),
-                exc_info=True,
-            )
-            return names, False
+    try:
+        targets = graph.node_arc_targets_many(
+            unlisted, properties=PROVENANCE_NAME_PROPERTIES, deadline=deadline
+        )
+    except GraphReadError:
+        logger.warning(
+            "Provenance name read failed for %d provenances the catalogue does not list; "
+            "naming the others alone",
+            len(unlisted),
+            exc_info=True,
+        )
+        return names, False
     for dcid in unlisted:
         node = targets.get(dcid)
         if node is None:
@@ -928,11 +952,12 @@ def provenance_names(
                 None,
             )
         )
-        name = (
-            display_name(() if parent.name is None else (parent.name,), parent.value)
-            if parent is not None
-            else None
-        ) or display_name(tuple(target.value for target in node.get("name", ())), dcid)
+        name = cited_name(
+            dcid,
+            tuple(target.value for target in node.get("name", ())),
+            parent=None if parent is None else parent.value,
+            parent_names=() if parent is None or parent.name is None else (parent.name,),
+        )
         if name is not None:
             names[dcid] = name
     return names, True
@@ -1099,11 +1124,15 @@ def _read_unlisted_citations(
             if DATASET_TYPE in node.get("typeOf", ())
             else first_dataset_parent(node.get("isPartOf", ()), linked)
         )
-        publication = parent or dcid
         publication_arcs = parent_arcs or node
         citations[dcid] = SourceCitation(
             dcid=dcid,
-            name=node_label(publication_arcs, publication) or node_label(node, dcid),
+            name=cited_name(
+                dcid,
+                node.get("name", ()),
+                parent=parent,
+                parent_names=() if parent_arcs is None else parent_arcs.get("name", ()),
+            ),
             url=_first(node.get("url", ())) or _first(publication_arcs.get("url", ())),
             licence=licence.label,
             licence_type=licence.type,

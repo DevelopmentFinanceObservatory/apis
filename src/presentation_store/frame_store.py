@@ -159,6 +159,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -238,6 +239,7 @@ from description.steps_text import bound_entities, composed_names, step_output_n
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from description.world_bank import WORLD_BANK_NAMESPACE
 from dfo_platform.caller import Caller
+from dfo_platform.executor import submit_with_context
 from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
 from materialise.formats import (
@@ -245,12 +247,12 @@ from materialise.formats import (
     canonical_frame_document,
     read_canonical_frame_table,
 )
-from materialise.graph import ArcTarget, GraphReader, GraphReadError
+from materialise.graph import GraphReader, GraphReadError
 from materialise.provenance_doc import (
-    PROVENANCE_NAME_PROPERTIES,
     SourceCitation,
     provenance_names,
     read_source_citations,
+    unnamed_provenances,
 )
 from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
@@ -1822,26 +1824,20 @@ class LiveFrameStore:
         """Label `refs`, a map from each ref to its bare dcid, and say whether every read
         succeeded, as `_resolve_labels` describes. A ref whose bare dcid is in `provenances` is
         named by `materialise.provenance_doc.provenance_names`, timed as the call's
-        `provenance_names` phase. A listed one is read for nothing, and an unlisted one rides
-        the labels' one read, which then reads `PROVENANCE_NAME_PROPERTIES` with each target's
-        name and types (`node_arc_targets_many`)."""
+        `provenance_names` phase. Every other graph ref is labelled by one `node_arcs_many` of
+        `name`. When both read the graph, the name read runs beside the label read, so naming
+        a provenance the catalogue does not list adds no serial step."""
         catalogue = current_catalogue()
         family_refs: dict[str, str] = {}
         provenance_refs: dict[str, list[str]] = {}
         graph_bare_to_refs: dict[str, list[str]] = {}
-        read: list[str] = []
         for ref, bare in refs.items():
             if bare.startswith(_FAMILY_REF_PREFIX):
                 family_refs[ref] = bare
-                continue
-            if bare in provenances:
+            elif bare in provenances:
                 provenance_refs.setdefault(bare, []).append(ref)
-                if catalogue.provenance(bare) is not None:
-                    continue
             else:
                 graph_bare_to_refs.setdefault(bare, []).append(ref)
-            read.append(bare)
-        read = list(dict.fromkeys(read))
 
         labels: dict[str, str] = {}
         family_read_ok = True
@@ -1849,56 +1845,55 @@ class LiveFrameStore:
             family_labels, family_read_ok = self._resolve_family_labels(family_refs)
             labels.update(family_labels)
 
-        if self._graph is None:
+        graph = self._graph
+        if graph is None:
             return labels, family_read_ok
 
-        # A provenance the catalogue does not list rides the labels' one read, which then
-        # carries each target's name and types (`provenance_names`).
-        named_read = any(bare in provenance_refs for bare in read)
-        targets: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
-        read_ok = True
-        if read:
-            try:
-                if named_read:
-                    targets = self._graph.node_arc_targets_many(
-                        read, properties=PROVENANCE_NAME_PROPERTIES, deadline=deadline
-                    )
-                    names_by_bare = {
-                        bare: None
-                        if node is None
-                        else tuple(target.value for target in node.get("name", ()))
-                        for bare, node in targets.items()
-                    }
-                else:
-                    names_by_bare = {
-                        bare: None if arcs is None else arcs.get("name", ())
-                        for bare, arcs in self._graph.node_arcs_many(
-                            read, properties=("name",), deadline=deadline
-                        ).items()
-                    }
-            except GraphReadError:
-                read_ok = False
-                names_by_bare = {}
-            for bare, names in names_by_bare.items():
-                label = None if names is None else label_or_self_name(names, bare)
-                if label is None or bare not in graph_bare_to_refs:
-                    continue
-                for ref in graph_bare_to_refs[bare]:
-                    labels[ref] = label
-        if provenance_refs:
+        def name_provenances() -> tuple[dict[str, str], bool]:
             with phase("provenance_names"):
-                names, named_ok = provenance_names(
-                    self._graph,
-                    list(provenance_refs),
-                    catalogue=catalogue,
-                    deadline=deadline,
-                    targets=targets,
+                return provenance_names(
+                    graph, list(provenance_refs), catalogue=catalogue, deadline=deadline
                 )
-            read_ok = read_ok and named_ok
-            labels.update(
-                (ref, name) for bare, name in names.items() for ref in provenance_refs[bare]
+
+        beside = bool(graph_bare_to_refs) and bool(
+            unnamed_provenances(list(provenance_refs), catalogue=catalogue)
+        )
+        if beside:
+            with ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="frame-provenance-names"
+            ) as pool:
+                named = submit_with_context(pool, name_provenances)
+                graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+                names, named_ok = named.result()
+        else:
+            graph_labels, read_ok = self._graph_labels(graph, graph_bare_to_refs, deadline)
+            names, named_ok = name_provenances() if provenance_refs else ({}, True)
+        labels.update(graph_labels)
+        labels.update((ref, name) for bare, name in names.items() for ref in provenance_refs[bare])
+        return labels, family_read_ok and read_ok and named_ok
+
+    @staticmethod
+    def _graph_labels(
+        graph: GraphReader, bare_to_refs: Mapping[str, list[str]], deadline: float
+    ) -> tuple[dict[str, str], bool]:
+        """Each ref of `bare_to_refs` labelled from one `node_arcs_many` of its bare dcid's
+        `name`, and whether the read succeeded."""
+        if not bare_to_refs:
+            return {}, True
+        try:
+            arcs_by_bare = graph.node_arcs_many(
+                list(bare_to_refs), properties=("name",), deadline=deadline
             )
-        return labels, family_read_ok and read_ok
+        except GraphReadError:
+            return {}, False
+        labels: dict[str, str] = {}
+        for bare, arcs in arcs_by_bare.items():
+            label = None if arcs is None else label_or_self_name(arcs.get("name", ()), bare)
+            if label is None or bare not in bare_to_refs:
+                continue
+            for ref in bare_to_refs[bare]:
+                labels[ref] = label
+        return labels, True
 
     def _resolve_family_labels(self, family_refs: Mapping[str, str]) -> tuple[dict[str, str], bool]:
         """Label family refs with one batched definition read and `family_label`, and say

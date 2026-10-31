@@ -21,17 +21,13 @@ from dfo_platform.named import named_capped
 from dfo_platform.roles import FlowFamily
 from materialise.provenance_doc import ProvenanceNameReader, provenance_names
 from origin_catalogue import current_catalogue
-from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import EngineInputError
 from search.engine.ground import _ref_from_label
-from search.engine.retrieval.coverage import citable_source_ids
 from search.models import (
     EntityRoleKey,
     GraphRef,
-    ProvenanceRef,
 )
-from search.observations import provenance_refs
 from search.role_kinds import RoleKindRefused, TypesRead, check_role_kinds
 
 
@@ -77,13 +73,6 @@ def provenance_labels(
     if not read_ok:
         note_degraded_read("provenance names")
     return names
-
-
-def _build_source_refs(facets: list[Facet], graph: EngineGraphClient) -> list[ProvenanceRef]:
-    """Provenance refs for the facets' citable provenance ids, in first-seen order, each
-    named by `provenance_labels`, omitting the ids nothing names."""
-    dcids = citable_source_ids(facets)
-    return provenance_refs(dcids, provenance_labels(dcids, graph, deadline=None))
 
 
 def confirm_dcids_present(

@@ -316,7 +316,11 @@ class GraphCache:
         properties: Sequence[str],
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
-        """Cache each dcid's targets under its sorted `properties`, as `node_arcs_many` does."""
+        """Cache each dcid's targets under its sorted `properties`, as `node_arcs_many` does.
+
+        Read-only, a miss on a read of `name` takes the dcid's `node_label` row as its one
+        `name` target, since a capture made before provenance names were read this way holds
+        those names as labels (`_captured_label_targets`)."""
         del deadline
         if not dcids:
             return {}
@@ -339,9 +343,13 @@ class GraphCache:
                 )
             else:
                 misses.append(dcid)
-        if misses:
-            if self._read_only:
+        if misses and self._read_only:
+            labelled = self._captured_label_targets(misses) if "name" in properties else None
+            if labelled is None:
                 raise CacheMiss(_key("node_arc_targets_many", *sorted(misses), sorted_properties))
+            result.update(labelled)
+            misses = []
+        if misses:
             with self._semaphore:
                 fetched = self._inner.node_arc_targets_many(misses, properties=properties)
             for dcid in misses:
@@ -358,6 +366,19 @@ class GraphCache:
                 )
                 result[dcid] = entry
         return result
+
+    def _captured_label_targets(
+        self, dcids: Sequence[str]
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None] | None:
+        """Each of `dcids` as a `name` read of its stored `node_label` row, `None` for a dcid
+        stored as unnamed, or `None` when any of them has no row."""
+        targets: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        for dcid in dcids:
+            hit, label = self._store.get(_key("node_label", dcid))
+            if not hit:
+                return None
+            targets[dcid] = None if label is None else {"name": (ArcTarget(value=label),)}
+        return targets
 
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None

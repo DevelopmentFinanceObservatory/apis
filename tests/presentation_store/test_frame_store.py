@@ -118,6 +118,7 @@ from tests.materialise._canonical_frame import (
     canonical_frame_parquet,
     stored_canonical_frame_959f8bc,
 )
+from tests.origin_catalogue import test_graph as origin_graph
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -301,6 +302,9 @@ class _FakeGraphReader:
         self.node_arcs_many_requests: list[
             tuple[tuple[str, ...], tuple[str, ...], float | None]
         ] = []
+        self.node_arc_targets_many_requests: list[
+            tuple[tuple[str, ...], tuple[str, ...], float | None]
+        ] = []
 
     def generation_stamp(self) -> GenerationStamp:
         return self._generation.stamp()
@@ -331,6 +335,23 @@ class _FakeGraphReader:
         dcids = tuple(dcids)
         self.node_arcs_many_calls.append(dcids)
         self.node_arcs_many_requests.append((dcids, tuple(properties), deadline))
+        return self._read(dcids, properties)
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline: float | None = None):
+        """The arcs `node_arcs_many` answers, each target carrying the name and type this
+        double holds, recorded apart from `node_arcs_many`'s."""
+        self.calls += 1
+        dcids = tuple(dcids)
+        self.node_arc_targets_many_requests.append((dcids, tuple(properties), deadline))
+        nodes = {
+            **{dcid: {"name": (label,)} for dcid, label in self._labels.items()},
+            **self._arcs,
+        }
+        return arc_targets(self._read(dcids, properties), nodes)
+
+    def _read(
+        self, dcids: tuple[str, ...], properties
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         if any(dcid in self.raise_for for dcid in dcids) or (
             tuple(properties) == self.raise_for_properties
         ):
@@ -343,15 +364,6 @@ class _FakeGraphReader:
             label = self._labels.get(dcid)
             result[dcid] = {"name": (label,)} if label is not None else None
         return result
-
-    def node_arc_targets_many(self, dcids, *, properties, deadline: float | None = None):
-        """`node_arcs_many`, each target carrying the name and type this double holds."""
-        read = self.node_arcs_many(dcids, properties=properties, deadline=deadline)
-        nodes = {
-            **{dcid: {"name": (label,)} for dcid, label in self._labels.items()},
-            **self._arcs,
-        }
-        return arc_targets(read, nodes)
 
     def node_names_many(
         self,
@@ -804,10 +816,10 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels(bind_catalogue):
     assert resolved.labels["dcid:MalariaGrantDisbursements"] == "Malaria Grant Disbursements"
     assert resolved.labels["country/ETH"] == "Ethiopia"
     assert resolved.labels["src_oecd_dac"] == "OECD DAC"
-    assert graph.calls == 1  # one batched call covers every distinct ref
-    assert sorted(graph.node_arcs_many_calls[0]) == sorted(
-        ["MalariaGrantDisbursements", "country/ETH", "src_oecd_dac"]
-    )
+    # One batched label read covers every ref but the unlisted provenance, which its name read
+    # covers.
+    assert sorted(graph.node_arcs_many_calls) == [("MalariaGrantDisbursements", "country/ETH")]
+    assert [dcids for dcids, _, _ in graph.node_arc_targets_many_requests] == [("src_oecd_dac",)]
     assert (resolved.graph_generation, resolved.catalogue_build) == (
         "gen-1",
         f"build-1@{current_release().release_id}",
@@ -867,15 +879,15 @@ def test_load_labels_the_entities_and_members_a_coverage_warning_counts():
         resolved.labels["dcid:YouthRate"],
         resolved.labels["dcid:AdultRate"],
     ) == ("Senegal", "Youth rate", "Adult rate")
-    assert graph.calls == 1
-    assert {"country/SEN", "YouthRate", "AdultRate"} <= set(graph.node_arcs_many_calls[0])
+    (label_read,) = graph.node_arcs_many_calls
+    assert {"country/SEN", "YouthRate", "AdultRate"} <= set(label_read)
 
 
 def test_load_names_row_and_withheld_provenances_by_their_dataset_in_the_label_read():
     """A base provenance node is named for its import, so the row's provenance and a withheld
-    one take the name of their parent Dataset, as a source citation does. Both ride the
-    frame's one label read, which carries their parents' names, timed as
-    `provenance_names`."""
+    one take the name of their parent Dataset, as a source citation does. Both ride one name
+    read, which carries their parents' names and is timed as `provenance_names`, and the
+    frame's other refs ride its label read."""
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
     _with_withheld_provenance(snapshots, frame_ref)
     graph = _FakeGraphReader(
@@ -902,13 +914,12 @@ def test_load_names_row_and_withheld_provenances_by_their_dataset_in_the_label_r
     assert resolved.labels["src_oecd_dac"] == "OECD DAC"
     assert resolved.labels["dcid:dc/base/WHO_GHO"] == "WHO Global Health Observatory"
     assert resolved.labels["dcid:YouthRate"] == "Youth rate"
-    (label_read,) = [
-        dcids
-        for dcids, properties, _ in graph.node_arcs_many_requests
-        if properties == PROVENANCE_NAME_PROPERTIES
-    ]
-    assert {"src_oecd_dac", "dc/base/WHO_GHO", "YouthRate"} <= set(label_read)
-    assert not any("dc/d/WHO_GHO" in dcids for dcids, _, _ in graph.node_arcs_many_requests)
+    assert [
+        (set(dcids), properties) for dcids, properties, _ in graph.node_arc_targets_many_requests
+    ] == [({"src_oecd_dac", "dc/base/WHO_GHO"}, PROVENANCE_NAME_PROPERTIES)]
+    (label_read,) = graph.node_arcs_many_calls
+    assert "YouthRate" in label_read
+    assert not {"src_oecd_dac", "dc/base/WHO_GHO", "dc/d/WHO_GHO"} & set(label_read)
     assert "provenance_names" in timings.snapshot()
 
 
@@ -934,6 +945,7 @@ def test_load_names_a_listed_row_provenance_from_the_catalogue_and_leaves_the_gr
 
     assert resolved.labels["src_oecd_dac"] == "OECD DAC"
     assert "src_oecd_dac" not in graph.node_arcs_many_calls[0]
+    assert graph.node_arc_targets_many_requests == []
 
 
 def test_load_keeps_the_catalogue_name_of_a_withheld_provenance_when_the_graph_read_fails(
@@ -976,11 +988,13 @@ def test_load_keeps_the_catalogue_name_of_a_withheld_provenance_when_the_graph_r
 _WDI_GDP = "worldBank/NY_GDP_MKTP_CD"
 
 
-def _world_bank_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef]:
-    """`_happy_path_fixture` over a frame whose rows hold one World Development Indicators
-    variable."""
+def _world_bank_fixture(
+    variable: str = _WDI_GDP,
+) -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef]:
+    """`_happy_path_fixture` over a frame whose rows hold one `variable`, a World Development
+    Indicators one by default."""
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
-    rows = [{**row, "stat_var": f"dcid:{_WDI_GDP}"} for row in malaria_ethiopia_rows()]
+    rows = [{**row, "stat_var": f"dcid:{variable}"} for row in malaria_ethiopia_rows()]
     digest = artifacts.seed(
         tier=Tier.working,
         data=json.dumps(build_frame_doc(role_keys=("recipient",), rows=rows)).encode("utf-8"),
@@ -1003,6 +1017,31 @@ def _world_bank_record(frame_ref: FrameRef, *, variable: str | None) -> _RecordR
             update={"variables": record.variables.model_copy(update={"variable": variable})}
         )
     )
+
+
+def test_load_labels_a_un_variable_from_the_tables_beside_an_unlisted_provenance(
+    bind_catalogue,
+):
+    """The origin client answers a UN variable's label from the catalogue's UN tables with no
+    request, so a frame naming a provenance the catalogue does not list reads only that
+    provenance's name and its other refs' labels."""
+    snapshots, artifacts, frame_ref = _world_bank_fixture(origin_graph._UN_MORTALITY)
+    graph = origin_graph._Graph(
+        labels={
+            origin_graph._UN_MORTALITY: "Under-five mortality (live)",
+            "country/ETH": "Ethiopia",
+            "src_oecd_dac": "OECD DAC",
+        }
+    )
+    bind_catalogue(origin_graph._catalogue())
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=origin_graph._client(graph))
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels[f"dcid:{origin_graph._UN_MORTALITY}"] == "Under-five mortality"
+    assert resolved.labels["src_oecd_dac"] == "OECD DAC"
+    assert graph.on(origin_graph._UN_HOST) == []
+    assert origin_graph._UN_MORTALITY not in graph.dcids_sent(origin_graph._OURS_HOST)
 
 
 def test_load_reads_the_description_of_the_versions_one_world_bank_variable():
@@ -1052,9 +1091,10 @@ def test_load_reads_no_description_unless_the_version_resolved_to_one_world_bank
     resolved = store.load(frame_ref=frame_ref)
 
     assert resolved.descriptions == {}
-    # The frame's provenance is one the catalogue does not list, so the label read also reads
-    # what names it.
-    assert [properties for _, properties, _ in graph.node_arcs_many_requests] == [
+    # The frame's provenance is one the catalogue does not list, so a name read beside the
+    # label read names it.
+    assert [properties for _, properties, _ in graph.node_arcs_many_requests] == [("name",)]
+    assert [properties for _, properties, _ in graph.node_arc_targets_many_requests] == [
         PROVENANCE_NAME_PROPERTIES
     ]
 
@@ -1244,10 +1284,7 @@ def test_a_failed_refresh_keeps_its_retry_wait_through_a_citation_retry(
     graph.raise_for = frozenset({"country/ETH"})
 
     def label_reads() -> int:
-        return sum(
-            properties == PROVENANCE_NAME_PROPERTIES
-            for _, properties, _ in graph.node_arcs_many_requests
-        )
+        return sum(properties == ("name",) for _, properties, _ in graph.node_arcs_many_requests)
 
     before = label_reads()
     loads = [store.load(frame_ref=frame_ref) for _ in range(4)]
@@ -1725,7 +1762,6 @@ def test_load_labels_unit_refs_under_their_own_cap_after_the_dimension_refs(monk
                 "Count_Person",
                 "MalariaGrantDisbursements",
                 "country/ETH",
-                "src_oecd_dac",
                 "USDollar",
                 "CurrencyEUR",
             ),
@@ -2115,7 +2151,7 @@ def _quotient_of_inputs_store(
     [
         pytest.param(
             None,
-            ("Amount_Oda", "GNI", "country/ETH", "src_oecd_dac"),
+            ("Amount_Oda", "GNI", "country/ETH"),
             "Gross ODA to Ethiopia per gross national income to Ethiopia",
             id="every-ref-labelled",
         ),
@@ -2455,7 +2491,7 @@ def test_load_names_each_variable_of_a_join_of_two_quotients_from_the_step_that_
         "dcid:ops_per_person": "Gross ODA disbursements per population",
         "country/ETH": "Ethiopia",
     }
-    assert graph.node_arcs_many_calls[0] == ("country/ETH", "src_oecd_dac")
+    assert graph.node_arcs_many_calls[0] == ("country/ETH",)
 
 
 def test_load_names_a_comparison_of_one_variable_by_the_entities_its_sides_hold():
@@ -2499,7 +2535,7 @@ _STEPS_WITHOUT_STAT_VAR: list[dict[str, object]] = [
     [
         pytest.param(
             None,
-            ("Count_Person", "country/ETH", "src_oecd_dac", "USDollar"),
+            ("Count_Person", "country/ETH", "USDollar"),
             {
                 "dcid:Count_Person": "Total population",
                 f"dcid:{_FAMILY_ON_A_SIDE}": "Education",
@@ -2887,10 +2923,10 @@ def test_load_labels_a_family_ref_from_the_stored_definition_through_the_code_in
 
     assert resolved.labels == {f"dcid:{family_spec_id}": "Education, ODA Grants"}
     assert spec_reader.calls == [(family_spec_id,)]
-    # No graph node names a family -- `_resolve_labels` never sends the
-    # family ref itself to `node_arcs_many`, only the frame's other ref
-    # (its provenance column).
-    assert graph.node_arcs_many_calls == [("src_oecd_dac",)]
+    # No graph node names a family, so the graph reads only the frame's other ref, its
+    # provenance column, which the name read names.
+    assert graph.node_arcs_many_calls == []
+    assert [dcids for dcids, _, _ in graph.node_arc_targets_many_requests] == [("src_oecd_dac",)]
 
 
 def test_load_labels_a_family_ref_on_a_published_ops_frame():

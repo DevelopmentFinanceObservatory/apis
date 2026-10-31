@@ -443,10 +443,11 @@ def _holds_rendered_facts(state: VersionState, write: VersionWrite) -> bool:
 
 
 def _as_stored(value: object) -> object:
-    """`value` as a JSON column stores it: tuples read back as lists."""
+    """`value` as a JSON column stores it: tuples read back as lists. `prepared_at`, a timestamp
+    column, compares as the datetime it is."""
     if isinstance(value, datetime):
         return value
-    return json.loads(json.dumps(value, default=str))
+    return json.loads(json.dumps(value))
 
 
 class LiveVersionRecordWriter:

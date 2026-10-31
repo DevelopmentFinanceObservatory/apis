@@ -3,128 +3,14 @@
 from __future__ import annotations
 
 from origin_catalogue import BASE, UN_SYSTEM, ProvenanceRow, SourceRef
-from search.engine.clients.graph import Facet
-from search.engine.region import _build_source_refs
+from search.engine.region.refs import provenance_labels
 from search.models import DataCommonsRef, ProvenanceRef
 from search.models import SourceRef as WireSourceRef
+from search.observations import provenance_refs
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _minimal_graph(*, nodes: dict | None = None, obs: dict | None = None) -> FakeGraph:
-    """Build a minimal graph for source-reference tests."""
-    return FakeGraph(
-        nodes=nodes or {},
-        obs=obs or {},
-        detect={},
-        resolve={},
-    )
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: _build_source_refs
-# ---------------------------------------------------------------------------
-
-
-class TestBuildSourceRefs:
-    def test_provenance_id_confirmed(self):
-        """A facet with a provenanceId that resolves yields one GraphRef."""
-        graph = _minimal_graph(
-            nodes={"dc/base/HumanCRS": {"label": "Human CRS"}},
-        )
-        facets = [
-            Facet(
-                earliest_date="2010",
-                latest_date="2020",
-                obs_count=10,
-                provenance_id="dc/base/HumanCRS",
-            )
-        ]
-        refs = _build_source_refs(facets, graph)
-        assert len(refs) == 1
-        assert refs[0].ref == "dc/base/HumanCRS"
-        assert refs[0].label == "Human CRS"
-
-    def test_unresolvable_provenance_id_omitted(self):
-        """A facet whose provenanceId does not resolve is omitted."""
-        graph = _minimal_graph(nodes={})
-        facets = [
-            Facet(
-                earliest_date="2010",
-                latest_date="2020",
-                obs_count=5,
-                provenance_id="dc/base/UnknownImport",
-            )
-        ]
-        refs = _build_source_refs(facets, graph)
-        assert refs == []
-
-    def test_mixed_facets_only_confirmed_returned(self):
-        """Only confirmed sources appear; the unresolvable facet is omitted."""
-        graph = _minimal_graph(
-            nodes={"dc/base/HumanCRS": {"label": "Human CRS"}},
-        )
-        facets = [
-            Facet(
-                earliest_date="2010",
-                latest_date="2020",
-                obs_count=10,
-                provenance_id="dc/base/HumanCRS",
-            ),
-            Facet(
-                earliest_date="2010",
-                latest_date="2020",
-                obs_count=5,
-                provenance_id="dc/base/UnknownImport",
-            ),
-        ]
-        refs = _build_source_refs(facets, graph)
-        assert len(refs) == 1
-        assert refs[0].ref == "dc/base/HumanCRS"
-
-    def test_deduplication_multiple_facets_same_source(self):
-        """Multiple facets pointing to the same provenanceId yield exactly one ref."""
-        graph = _minimal_graph(
-            nodes={"dc/base/HumanCRS": {"label": "Human CRS"}},
-        )
-        facets = [
-            Facet(
-                earliest_date="2010",
-                latest_date="2020",
-                obs_count=10,
-                provenance_id="dc/base/HumanCRS",
-            ),
-            Facet(
-                earliest_date="2018",
-                latest_date="2018",
-                obs_count=1,
-                provenance_id="dc/base/HumanCRS",
-            ),
-        ]
-        refs = _build_source_refs(facets, graph)
-        assert len(refs) == 1
-        assert refs[0].ref == "dc/base/HumanCRS"
-
-    def test_empty_facets_returns_empty(self):
-        """No facets yields no refs."""
-        graph = _minimal_graph()
-        assert _build_source_refs([], graph) == []
-
-    def test_facets_with_no_provenance_fields_returns_empty(self):
-        """Facets without a provenanceId produce no refs."""
-        graph = _minimal_graph()
-        facets = [
-            Facet(earliest_date="2010", latest_date="2020", obs_count=10),
-            Facet(earliest_date="2015", latest_date="2020", obs_count=5),
-        ]
-        assert _build_source_refs(facets, graph) == []
-
 
 # ---------------------------------------------------------------------------
 # Integration test: resolved_sources populated end-to-end
@@ -168,10 +54,9 @@ _UN_WHO = ProvenanceRow(
 )
 
 
-def _facet(provenance_id: str) -> Facet:
-    return Facet(
-        earliest_date="2010", latest_date="2020", obs_count=10, provenance_id=provenance_id
-    )
+def _source_refs(dcids: list[str], graph: FakeGraph) -> list[ProvenanceRef]:
+    """The refs a part's sources carry, built as grounding builds them."""
+    return provenance_refs(dcids, provenance_labels(dcids, graph, deadline=None))
 
 
 class TestCatalogueRows:
@@ -186,7 +71,7 @@ class TestCatalogueRows:
             }
         )
 
-        refs = _build_source_refs([_facet("dc/base/HumanCRS"), _facet("dc/base/Other")], graph)
+        refs = _source_refs(["dc/base/HumanCRS", "dc/base/Other"], graph)
 
         assert refs == [
             ProvenanceRef(
@@ -208,7 +93,7 @@ class TestCatalogueRows:
         bind_catalogue(restrictive_catalogue(provenances=[_UN_WHO]))
         graph = _LabelSpyGraph(nodes={})
 
-        (ref,) = _build_source_refs([_facet("undata/p/WHO")], graph)
+        (ref,) = _source_refs(["undata/p/WHO"], graph)
 
         assert ref.source is not None
         assert ref.source.ref == ref.ref

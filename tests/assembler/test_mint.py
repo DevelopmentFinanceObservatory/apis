@@ -2062,31 +2062,39 @@ def test_a_counted_field_warning_names_what_it_counts_by_label(
 @pytest.mark.parametrize(
     ("count", "refs", "message", "detail"),
     [
-        # Provenances of one Dataset share its name, which a card gives once. The count leads,
-        # so the names never stand for a total of their own.
+        # Provenances of one Dataset share its name, which a card gives once. The count leads
+        # with its noun, and "and others" closes names that fall short of it.
         pytest.param(
             8,
             ["A1", "A2", "A3", "B1", "B2"],
             "The message.",
-            "Withheld sources (8): Alpha, Beta and others.",
+            "Withheld sources: 8 sources (Alpha, Beta and others).",
             id="eight-counted-five-carried-two-names",
+        ),
+        pytest.param(
+            5,
+            ["A1", "A2", "A3", "B1", "B2"],
+            "The message.",
+            "Withheld sources: 5 sources (Alpha, Beta and others).",
+            id="five-carried-two-names",
         ),
         pytest.param(
             6,
             ["A1", "A2", "A3", "A4", "A5"],
             "The message.",
-            "Withheld sources (6): Alpha and others.",
+            "Withheld sources: 6 sources (Alpha and others).",
             id="six-counted-five-carried-one-name",
         ),
         pytest.param(
             2,
             ["A1", "B1"],
             "The message.",
-            "Withheld sources (2): Alpha, Beta.",
+            "Withheld sources: 2 sources (Alpha, Beta).",
             id="every-one-carried",
         ),
+        pytest.param(1, ["A1"], "The message.", "Withheld sources: 1 source (Alpha).", id="one"),
         # A message that leaves no room for a name states the count alone, in the same words.
-        pytest.param(3, ["A1", "B1"], "M" * 470, "Withheld sources (3).", id="no-name-fits"),
+        pytest.param(3, ["A1", "B1"], "M" * 470, "Withheld sources: 3 sources.", id="no-name-fits"),
     ],
 )
 def test_a_withheld_provenance_field_states_its_count_and_each_distinct_name(

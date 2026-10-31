@@ -481,6 +481,7 @@ def _read_labels(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None = None,
 ) -> dict[str, str]:
@@ -488,7 +489,8 @@ def _read_labels(
     constraint values and the target currency in one batch, no batch when nothing needs a
     label, and each provenance's name (`materialise.provenance_doc.provenance_names`). A
     failed provenance name read, which that function logs, leaves the provenances the
-    catalogue does not list unnamed."""
+    catalogue does not list unnamed and calls `on_names_unread`: Search notes a degraded read,
+    and the Datasets observations door refuses."""
     provenance_dcids = [
         *(ref for read in reads.values() if (ref := read.facets.get("provenance")) is not None),
         *(
@@ -518,9 +520,11 @@ def _read_labels(
         )
     )
     labels = label_source.node_labels_batch(label_dcids) if label_dcids else {}
-    names, _read_ok = provenance_names(
+    names, read_ok = provenance_names(
         label_source, provenance_dcids, catalogue=current_catalogue(), deadline=None
     )
+    if not read_ok:
+        on_names_unread()
     return labels | names
 
 
@@ -607,6 +611,7 @@ def assemble_per_series(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None,
@@ -629,6 +634,7 @@ def assemble_per_series(
     labels = _read_labels(
         reads,
         label_source=label_source,
+        on_names_unread=on_names_unread,
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
@@ -693,6 +699,7 @@ def assemble_role_bulk(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     order: PreviewOrder,
@@ -721,6 +728,7 @@ def assemble_role_bulk(
     labels = _read_labels(
         shown,
         label_source=label_source,
+        on_names_unread=on_names_unread,
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
@@ -748,6 +756,7 @@ def assemble_scope_bulk(
     reads: Mapping[SeriesKey, SeriesRead],
     *,
     label_source: LabelSource,
+    on_names_unread: Callable[[], None],
     index: CodeIndex,
     member_constraints: Mapping[str, Mapping[str, str]],
     target_currency_ref: str | None = None,
@@ -767,6 +776,7 @@ def assemble_scope_bulk(
     labels = _read_labels(
         reads,
         label_source=label_source,
+        on_names_unread=on_names_unread,
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )

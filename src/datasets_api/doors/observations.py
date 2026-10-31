@@ -490,6 +490,7 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 return assemble_role_bulk(
                     series,
                     label_source=labels,
+                    on_names_unread=_names_unread,
                     index=deps.code_index,
                     member_constraints=constraints,
                     order=order,
@@ -498,12 +499,14 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 return assemble_scope_bulk(
                     series,
                     label_source=labels,
+                    on_names_unread=_names_unread,
                     index=deps.code_index,
                     member_constraints=constraints,
                 )
             return assemble_per_series(
                 series,
                 label_source=labels,
+                on_names_unread=_names_unread,
                 index=deps.code_index,
                 member_constraints=constraints,
                 target_currency_ref=stored.target_currency_ref,
@@ -511,6 +514,13 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
     except GraphReadError as exc:
         logger.warning("Datasets observations door's graph read failed: %s", exc)
         raise ObservationsGraphUnavailable() from exc
+
+
+def _names_unread() -> None:
+    """A provenance name read the assembly could not make refuses as a failed label read
+    does."""
+    logger.warning("Datasets observations door's provenance name read failed")
+    raise ObservationsGraphUnavailable()
 
 
 def observations_body(observations: SpecObservations) -> dict[str, object]:

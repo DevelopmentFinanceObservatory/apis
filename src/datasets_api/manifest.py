@@ -609,13 +609,6 @@ def assemble_manifest(
     states them from the trace (`datasets_api.description_record`).
     """
     warnings = [warning_model(w) for w in materialisation.warnings] + list(extra_warnings)
-    capabilities = build_capabilities(
-        capability_version=capability_version,
-        build=materialiser_build,
-        code_index_stamp=code_index.stamp,
-        declarations=code_index.declarations,
-        settings=settings,
-    )
 
     trace = replace(
         materialisation.trace,
@@ -651,14 +644,41 @@ def assemble_manifest(
         artifacts=list(artifacts),
         # The statistics artifact is in `artifacts`. This field carries only its count.
         series_count=materialisation.series_statistics.series_count,
-        output_options=derive_output_options(
-            materialisation.output_profile,
-            identity=stored.identity,
-            capabilities=capabilities,
-            parties=code_index.parties,
-            datasets=source_refs_of(materialisation.trace),
+        output_options=manifest_output_options(
+            materialisation,
+            stored=stored,
+            capability_version=capability_version,
+            materialiser_build=materialiser_build,
+            code_index=code_index,
+            settings=settings,
         ),
         series_coverage_stamp=coverage_stamp,
+    )
+
+
+def manifest_output_options(
+    materialisation: MaterialisationResult,
+    *,
+    stored: StoredDefinition,
+    capability_version: str,
+    materialiser_build: str,
+    code_index: CodeIndex,
+    settings: DatasetsBuildSettings,
+) -> OutputOptionsModel:
+    """The output options a manifest of `materialisation` offers (`derive_output_options`)."""
+    capabilities = build_capabilities(
+        capability_version=capability_version,
+        build=materialiser_build,
+        code_index_stamp=code_index.stamp,
+        declarations=code_index.declarations,
+        settings=settings,
+    )
+    return derive_output_options(
+        materialisation.output_profile,
+        identity=stored.identity,
+        capabilities=capabilities,
+        parties=code_index.parties,
+        datasets=source_refs_of(materialisation.trace),
     )
 
 

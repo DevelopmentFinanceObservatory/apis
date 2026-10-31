@@ -8,6 +8,7 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp
 from code_index.types import PartyRow
+from materialise.graph import GraphReadError
 from materialise.series_conversion import SeriesConversion
 from origin_catalogue import BASE
 from search.observations import (
@@ -78,6 +79,10 @@ class _Labels:
 
     def node_arc_targets_many(self, dcids, *, properties, deadline=None):
         raise AssertionError(f"the catalogue lists every provenance served, not {dcids}")
+
+
+def _names_read() -> None:
+    raise AssertionError("the catalogue lists every provenance this world serves")
 
 
 def _read(*values: float | None, total: int | None = None, **kwargs) -> SeriesRead:
@@ -164,6 +169,7 @@ def test_per_series_ranks_by_latest_value_and_labels_from_one_batch() -> None:
             (_POP, _NOR): _read(3.0, None, facets={"unit": "USDollar"}),
         },
         label_source=labels,
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=None,
@@ -190,6 +196,7 @@ def test_per_series_ranks_within_unit_groups_ordered_by_their_best_series() -> N
             (_POP, (("observationAbout", "country/USA"),)): _read(2.0, facets={"unit": "Percent"}),
         },
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=None,
@@ -217,6 +224,7 @@ def test_a_series_carries_its_member_constraints_as_axes_from_the_one_batch(asse
     observations = assemble(
         {(_POP, _KEN): _read(1.0)},
         label_source=labels,
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={_POP: {"gender": "gender-value/Female", "age": "Years15Onwards"}},
         target_currency_ref=None,
@@ -234,6 +242,7 @@ def test_a_series_whose_stat_var_declares_no_constraints_has_no_axes() -> None:
     observations = assemble_per_series(
         {(_POP, _KEN): _read(1.0)},
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=None,
@@ -252,6 +261,7 @@ def test_a_converted_series_shows_the_target_unit_and_its_conversion(
     observations = assemble(
         {(_POP, _KEN): _read(1.0, facets={"unit": "USDollar"}, conversion=_conversion())},
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=target,
@@ -271,6 +281,7 @@ def test_per_series_over_the_inline_cap_keeps_each_series_latest_points(search_s
     observations = assemble_per_series(
         {(_POP, _KEN): _read(1.0, 2.0, 3.0), (_POP, _GHA): _read(4.0)},
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=None,
@@ -284,6 +295,7 @@ def test_a_row_limited_read_marks_the_preview_truncated() -> None:
     observations = assemble_per_series(
         {(_POP, _KEN): _read(1.0, total=5)},
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=None,
@@ -301,10 +313,32 @@ def test_a_label_source_error_propagates() -> None:
         assemble_per_series(
             {(_POP, _KEN): _read(1.0)},
             label_source=_Failing(),
+            on_names_unread=_names_read,
             index=_INDEX,
             member_constraints={},
             target_currency_ref=None,
         )
+
+
+def test_a_failed_provenance_name_read_calls_on_names_unread_and_leaves_the_source_unnamed():
+    class _Failing(_Labels):
+        def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+            raise GraphReadError("graph down")
+
+    unread: list[str] = []
+    unlisted = "dc/base/Unlisted"
+
+    observations = assemble_per_series(
+        {(_POP, _KEN): _read(1.0, facets={"provenance": unlisted})},
+        label_source=_Failing(),
+        on_names_unread=lambda: unread.append("names"),
+        index=_INDEX,
+        member_constraints={},
+        target_currency_ref=None,
+    )
+
+    assert unread == ["names"]
+    assert observations.series[0].facet["provenance"].label is None
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +362,7 @@ def test_role_bulk_ranked_shows_the_most_recent_and_largest_and_counts_every_row
             (_AID, _flow("country/KEN")): _read(99.0),
         },
         label_source=labels,
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         order="ranked",
@@ -355,6 +390,7 @@ def test_each_flow_entity_carries_the_party_kind_the_index_lists(assemble) -> No
             (_AID, _flow("Org/Unkinded")): _read(3.0),
         },
         label_source=labels,
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         target_currency_ref=None,
@@ -380,7 +416,12 @@ def test_role_bulk_fixed_takes_stat_vars_newest_year_first_round_robin(search_se
         (new, _flow("country/NOR")): _read(1.0, 2.0),
     }
     observations = assemble_role_bulk(
-        reads, label_source=_Labels(), index=_INDEX, member_constraints={}, order="fixed"
+        reads,
+        label_source=_Labels(),
+        on_names_unread=_names_read,
+        index=_INDEX,
+        member_constraints={},
+        order="fixed",
     )
     # The newer StatVar gives its first series by identity, then the older its first, then
     # the newer its second. The three show in rank order, newest year first.
@@ -396,6 +437,7 @@ def test_role_bulk_over_the_inline_cap_keeps_each_series_latest_points(search_se
     observations = assemble_role_bulk(
         {(_AID, _flow("country/KEN")): _read(1.0, 2.0, 3.0)},
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
         order="ranked",
@@ -416,6 +458,7 @@ def test_scope_bulk_shows_each_place_latest_point_ranked_by_value() -> None:
             (_POP, _GHA): _read(1.0, 8.0, total=3),
         },
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
     )
@@ -430,6 +473,7 @@ def test_scope_bulk_is_not_truncated_when_every_place_holds_one_row() -> None:
     observations = assemble_scope_bulk(
         {(_POP, _KEN): _read(2.0), (_POP, _GHA): _read(8.0)},
         label_source=_Labels(),
+        on_names_unread=_names_read,
         index=_INDEX,
         member_constraints={},
     )

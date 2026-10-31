@@ -474,7 +474,8 @@ def test_a_collapse_reminted_under_a_changed_catalogue_keeps_the_base_s_recorded
 ):
     """A collapse whose base version is on record under a head that rebuilds renders the
     derived version from a fresh materialisation and serves the warnings the base recorded,
-    whatever origin warnings the call's catalogue finds."""
+    whatever origin warnings the call's catalogue finds. It assembles no manifest of the
+    derived rendering, whose body the stored base gives."""
     client = definition_door_client(
         graph=groupby_fixture._graph(),
         sdmx_transport=groupby_fixture._sdmx_transport(),
@@ -505,6 +506,15 @@ def test_a_collapse_reminted_under_a_changed_catalogue_keeps_the_base_s_recorded
             "WHERE subject_id = %s",
             ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", spec_id),
         )
+    rendered_assemblies: list[object] = []
+    assemble_manifest = serve.assemble_manifest
+
+    def assemble(**kwargs):
+        if kwargs["artifacts"]:
+            rendered_assemblies.append(kwargs["artifacts"])
+        return assemble_manifest(**kwargs)
+
+    monkeypatch.setattr(serve, "assemble_manifest", assemble)
 
     collapsed = groupby_fixture._mint(
         client,
@@ -513,6 +523,7 @@ def test_a_collapse_reminted_under_a_changed_catalogue_keeps_the_base_s_recorded
         options={"bundle": True, "groupby": {"by": ["recipient"], "op": "sum"}},
     )
 
+    assert rendered_assemblies == []
     assert collapsed["content_version"] != base["content_version"]
     (recorded,) = _snapshot(client, base)["warnings"]
     assert recorded["message"].endswith("country/GRC.")
@@ -575,6 +586,41 @@ def test_a_write_that_loses_a_concurrent_insert_returns_the_winner_s_record(vers
     assert lost.json()["content_version"] == won.json()["content_version"]
     assert [source["label"] for source in lost.json()["citation"]["sources"]] == [_FIRST_NAME]
     assert _stored_fields(lost.json()) == _stored_fields(won.json())
+
+
+def test_an_options_read_whose_write_finds_the_version_on_record_serves_its_warnings(
+    version_store, monkeypatch: pytest.MonkeyPatch
+):
+    """A concurrent mint recorded the version before this options read's write, under no
+    warning this call finds. The write finds the version, so the read serves the stored body,
+    as a rendered write does."""
+    stat_vars = ["dcid:RemintOptionsRace"]
+    arcs = _arcs(stat_vars)
+    winner, artifact_store = _client(version_store=version_store, stat_vars=stat_vars, arcs=arcs)
+    won = winner.post("/api/datasets", json=_bundled(stat_vars)).json()
+    _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
+    unavailable = WarningModel(
+        code="un_system_unavailable", severity=severity, message=f"{detail} country/GRC."
+    )
+    monkeypatch.setattr(
+        serve, "un_unavailable_warnings", lambda _blocked, *, request=None: (unavailable,)
+    )
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
+    loser, _ = _client(
+        version_store=version_store,
+        stat_vars=stat_vars,
+        arcs=arcs,
+        artifact_store=artifact_store,
+        version_writer=writer,
+    )
+    spec_id = won["definition"]["spec_id"]
+
+    options = loser.post(f"/api/datasets/{spec_id}/options", json={"definition": won["definition"]})
+
+    assert options.status_code == 200, options.text
+    assert [written.created for written in writer.written] == [False]
+    assert options.json()["content_version"] == won["content_version"]
+    assert options.json()["warnings"] == won["warnings"]
 
 
 def test_a_write_that_loses_a_concurrent_first_mint_returns_the_winner_s_bundle(
