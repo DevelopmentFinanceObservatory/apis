@@ -9,6 +9,7 @@ from typing import Literal
 import pytest
 
 from search.engine.config import settings
+from search.engine.exclusion_read import LeftOut
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.response_cache_flow import compute_layer2_signals
@@ -125,7 +126,6 @@ def _layer2_key(
     unsupported_qualifier_phrases: list[str] | None = None,
     declared_default_trigger_words: list[dict[str, str]] | None = None,
     declared_default_slots_named: list[str] | None = None,
-    query_text_negated_stated_words: list[str] | None = None,
     query_text_value_source: str | None = None,
     scope: dict | None = None,
     source_codes: list[str | None] | None = None,
@@ -136,6 +136,7 @@ def _layer2_key(
     measure_qualifiers: list[tuple[str, ...]] | None = None,
     open_axes: list[frozenset[str]] | None = None,
     stated_scopes: list[dict[str, object] | None] | None = None,
+    exclusions: list[LeftOut] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -175,9 +176,6 @@ def _layer2_key(
             declared_default_slots_named if declared_default_slots_named is not None else []
         ),
         scope=scope if scope is not None else _scope(),
-        query_text_negated_stated_words=(
-            query_text_negated_stated_words if query_text_negated_stated_words is not None else ()
-        ),
         query_text_value_source=query_text_value_source,
         source_codes=source_codes if source_codes is not None else (),
         unit_texts=unit_texts if unit_texts is not None else (),
@@ -189,6 +187,7 @@ def _layer2_key(
         measure_qualifiers=measure_qualifiers if measure_qualifiers is not None else (),
         open_axes=open_axes if open_axes is not None else (),
         stated_scopes=stated_scopes if stated_scopes is not None else (),
+        exclusions=exclusions if exclusions is not None else (),
     )
 
 
@@ -578,25 +577,6 @@ def test_raw_text_naming_a_defaulted_slot_alone_changes_layer2_key() -> None:
     assert keys[0] != keys[1]
 
 
-@pytest.mark.parametrize("word", ["bilateral", "multilateral"])
-def test_raw_text_negating_a_stated_word_alone_changes_layer2_key(word: str) -> None:
-    """The stated-word and party-word rules read a negation from the raw query, so equal
-    extractions of "bilateral ODA to Kenya" and "not bilateral ODA to Kenya" key apart, as
-    do those of "multilateral ODA to Kenya" and "not multilateral ODA to Kenya", and a query
-    that negates no declared word keys as before the signal existed."""
-    keys = []
-    for raw in (f"{word} ODA to Kenya", f"not {word} ODA to Kenya"):
-        signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
-        keys.append(
-            _layer2_key(
-                variables=[f"{word} ODA"],
-                query_text_negated_stated_words=list(signals.query_text_negated_stated_words),
-            )
-        )
-    assert keys[0] != keys[1]
-    assert keys[0] == _layer2_key(variables=[f"{word} ODA"])
-
-
 def test_dropped_qualifiers_content_alone_changes_layer2_key() -> None:
     """A dropped "across all flows" phrase changes the key because it suppresses a default."""
     with_breadth = _layer2_key(dropped_qualifiers=["across all flows"])
@@ -703,6 +683,27 @@ def test_the_role_a_part_lists_member_by_member_changes_layer2_key() -> None:
     second = _layer2_key(variables=variables, open_axes=[frozenset(), frozenset({"origin"})])
     assert len({plain, first, second}) == 3
     assert plain == _layer2_key(variables=variables, open_axes=[frozenset(), frozenset()])
+
+
+def test_what_a_query_leaves_out_changes_layer2_key() -> None:
+    """Two queries that blank to one text key apart by the stretch each left out, and by what
+    it leaves out, which decides how the legs judge it; a query leaving out nothing keys as
+    one that omits the field."""
+
+    def stretch(phrase: str, *things: str) -> LeftOut:
+        return LeftOut(phrase=phrase, things=things, at=0)
+
+    keys = {
+        _layer2_key(exclusions=exclusions)
+        for exclusions in (
+            [],
+            [stretch("excluding grants", "grants")],
+            [stretch("excluding loans", "loans")],
+            [stretch("excluding loans", "grants")],
+        )
+    }
+    assert len(keys) == 4
+    assert _layer2_key(exclusions=[]) == _layer2_key()
 
 
 def test_the_scope_a_query_states_changes_layer2_key() -> None:

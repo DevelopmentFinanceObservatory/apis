@@ -3,6 +3,7 @@ code index."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from origin_catalogue import CatalogueSnapshot, bound_catalogue
 from origin_catalogue.artifact import load_catalogue
 from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine.entry import raw_text
+from search.engine.exclusion_read import Exclusion, ExclusionRead, QueryReading, admit_exclusions
 from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
 from search.engine.source_code import SourceCodeRefusal
 from search.engine.source_scan import scan_sources, source_phrases
@@ -43,59 +45,7 @@ def _out(text: str) -> SourceMention:
 # source mentions. Rows with an id after a corpus query carry that query's recorded
 # extraction.
 _SCANS = [
-    # A table is a source wherever it stands, and a negation cue just before it, past
-    # articles and "from", excludes it.
-    ("education aid to Kenya excluding the CRS", ["education aid"], ["Kenya"], [[_out("CRS")]]),
-    ("aid to Kenya, not from the CRS", ["aid"], ["Kenya"], [[_out("CRS")]]),
-    ("ODA to Kenya other than the CRS", ["ODA"], ["Kenya"], [[_out("CRS")]]),
-    # A cue may end in a filler word.
-    ("education aid to Kenya apart from the CRS", ["education aid"], ["Kenya"], [[_out("CRS")]]),
-    ("ODA to Kenya aside from DAC2a", ["ODA"], ["Kenya"], [[_out("DAC2a")]]),
-    # A source joined to the one before by coordinators alone takes its polarity, unless a
-    # cue of its own stands before it.
-    (
-        "ODA to Kenya excluding CRS and DAC2a",
-        ["ODA"],
-        ["Kenya"],
-        [[_out("CRS"), _out("DAC2a")]],
-    ),
-    ("ODA to Kenya excluding CRS, DAC2a", ["ODA"], ["Kenya"], [[_out("CRS"), _out("DAC2a")]]),
-    ("debt of Kenya from IDS and not CRS", ["debt"], ["Kenya"], [[_in("IDS"), _out("CRS")]]),
-    (
-        "ODA to Kenya excluding CRS and including DAC2a",
-        ["ODA"],
-        ["Kenya"],
-        [[_out("CRS"), _in("DAC2a")]],
-    ),
-    # An entity in the list joins it, "neither" is a negation cue, and "from" joins nothing.
-    (
-        "aid to Kenya excluding the CRS, the World Bank and DAC2a",
-        ["aid"],
-        ["Kenya", "World Bank"],
-        [[_out("CRS"), _out("DAC2a")]],
-    ),
-    (
-        "aid to Kenya excluding the CRS, Norway and DAC2a",
-        ["aid"],
-        ["Kenya", "Norway"],
-        [[_out("CRS"), _out("DAC2a")]],
-    ),
-    (
-        "ODA to Kenya from neither the CRS nor DAC2a",
-        ["ODA"],
-        ["Kenya"],
-        [[_out("CRS"), _out("DAC2a")]],
-    ),
-    ("ODA to Kenya, neither CRS nor DAC2a", ["ODA"], ["Kenya"], [[_out("CRS"), _out("DAC2a")]]),
-    ("ODA to Kenya without CRS, from DAC2a", ["ODA"], ["Kenya"], [[_out("CRS"), _in("DAC2a")]]),
-    ("ODA to Kenya excluding CRS from DAC2a", ["ODA"], ["Kenya"], [[_out("CRS"), _in("DAC2a")]]),
-    # A source qualifying another measure keeps its own polarity.
-    (
-        "GDP of Kenya excluding the WEO and IDS external debt of Kenya",
-        ["GDP", "external debt"],
-        ["Kenya"],
-        [[_out("WEO")], [_in("IDS")]],
-    ),
+    # A table is a source wherever it stands.
     ("education aid to Kenya from the CRS", ["education aid"], ["Kenya", "CRS"], [[_in("CRS")]]),
     ("DAC2a ODA to Kenya", ["ODA"], ["Kenya"], [[_in("DAC2a")]]),
     (
@@ -138,7 +88,6 @@ _SCANS = [
     ("aid to UN peacekeeping from Norway", ["aid"], ["Norway"], [[]]),
     # Measure words name no table: "imputed multilateral" ODA is a DAC2a aid type. The
     # ONE table's own name does.
-    ("aid to Kenya, not imputed", ["aid"], ["Kenya"], [[]]),
     (
         "Imputed multilateral ODA from Norway",
         ["imputed multilateral ODA"],
@@ -288,10 +237,142 @@ def test_the_raw_text_door_keeps_an_entity_read_as_a_source_only_once(
     assert prep.per_variable_sources == [(_in("World Bank"),)]
 
 
+def _left_out(query: str, *stretches: str, things: Sequence[str] = ()) -> QueryReading:
+    """`query` with each of `stretches` admitted, each leaving out `things`, else its words
+    less its first."""
+    return admit_exclusions(
+        query,
+        ExclusionRead(
+            exclusions=[
+                Exclusion(phrase=stretch, left_out=list(things) or stretch.split()[1:])
+                for stretch in stretches
+            ]
+        ),
+    )
+
+
+# Each row: the query, the stretch it leaves out, the extraction's variables and entity spans
+# of the blanked text, each variable's source mentions, and whether the stretch leaves out
+# sources alone.
+_STRETCHES = [
+    (
+        "aid to Kenya excluding the CRS",
+        "excluding the CRS",
+        ["aid"],
+        ["Kenya"],
+        [[_out("CRS")]],
+        True,
+    ),
+    (
+        "aid to Kenya, not from the CRS",
+        "not from the CRS",
+        ["aid"],
+        ["Kenya"],
+        [[_out("CRS")]],
+        True,
+    ),
+    (
+        "ODA to Kenya apart from DAC2a",
+        "apart from DAC2a",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("DAC2a")]],
+        True,
+    ),
+    ("AOD a Kenia sin el CRS", "sin el CRS", ["AOD"], ["Kenia"], [[_out("CRS")]], True),
+    # Every source of a list goes, and a source outside the stretch stays asked for.
+    (
+        "ODA to Kenya excluding CRS and DAC2a",
+        "excluding CRS and DAC2a",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("CRS"), _out("DAC2a")]],
+        True,
+    ),
+    (
+        "ODA to Kenya, neither the CRS nor DAC2a",
+        "neither the CRS nor DAC2a",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("CRS"), _out("DAC2a")]],
+        True,
+    ),
+    (
+        "debt of Kenya from IDS and not CRS",
+        "not CRS",
+        ["debt"],
+        ["Kenya"],
+        [[_in("IDS"), _out("CRS")]],
+        True,
+    ),
+    (
+        "ODA to Kenya excluding CRS and including DAC2a",
+        "excluding CRS",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("CRS"), _in("DAC2a")]],
+        True,
+    ),
+    (
+        "ODA to Kenya without CRS, from DAC2a",
+        "without CRS",
+        ["ODA"],
+        ["Kenya"],
+        [[_out("CRS"), _in("DAC2a")]],
+        True,
+    ),
+    # An item of the list naming no source leaves the stretch to its disclosure.
+    (
+        "aid to Kenya excluding the CRS, Norway and DAC2a",
+        "excluding the CRS, Norway and DAC2a",
+        ["aid"],
+        ["Kenya"],
+        [[_out("CRS"), _out("DAC2a")]],
+        False,
+    ),
+    # A source word inside a longer thing left out is no source.
+    (
+        "external debt of Kenya without IMF credit",
+        "without IMF credit",
+        ["external debt"],
+        ["Kenya"],
+        [[]],
+        False,
+    ),
+    ("aid to Kenya, not imputed", "not imputed", ["aid"], ["Kenya"], [[]], False),
+    # A source attaches from the stretch's blank, to the nearest measure before it.
+    (
+        "GDP of Kenya excluding the WEO and IDS external debt of Kenya",
+        "excluding the WEO",
+        ["GDP", "external debt"],
+        ["Kenya"],
+        [[_out("WEO")], [_in("IDS")]],
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize(("query", "stretch", "measures", "spans", "mentions", "alone"), _STRETCHES)
+def test_a_stretch_is_read_for_the_sources_it_leaves_out(
+    dictionary: SourceDictionary, query, stretch, measures, spans, mentions, alone
+):
+    reading = _left_out(query, stretch)
+    scan = scan_sources(
+        reading.text,
+        dictionary=dictionary,
+        measures=measures,
+        entity_spans=spans,
+        index=get_index(),
+        left_out=reading.left_out,
+    )
+    assert [list(part) for part in scan.per_measure] == mentions
+    assert (stretch in scan.source_stretches) is alone
+
+
 @pytest.mark.parametrize(
     ("phrase", "covered"),
     [
-        ("excluding the CRS", True),
+        ("the CRS", True),
         ("selon le SNPC", True),
         ("IMF", True),
         ("from the April 2025 World Economic Outlook", False),
@@ -303,22 +384,27 @@ def test_a_dropped_phrase_naming_only_a_source_is_applied_by_it(phrase: str, cov
     assert (phrase in source_phrases([phrase], mentions)) is covered
 
 
-def test_raw_door_keeps_publisher_exclusion_when_extracted_as_entity(catalogue: CatalogueSnapshot):
-    query = "education aid to Kenya excluding the World Bank"
+def test_raw_door_reads_a_stretch_that_leaves_out_a_publisher(catalogue: CatalogueSnapshot):
+    reading = _left_out(
+        "education aid to Kenya excluding the World Bank", "excluding the World Bank"
+    )
     extraction = Extraction(
         kind="resolution",
         variables=["education aid"],
         entities=[
-            ExtractedEntity(text="World Bank", span="World Bank"),
             ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
         ],
     )
     with bound_catalogue(catalogue):
         prep = raw_text._prepare_extraction(
-            extraction, ExtractionResult(extraction=extraction, qualifiers={}), query=query
+            extraction,
+            ExtractionResult(extraction=extraction, qualifiers={}),
+            query=reading.text,
+            left_out=reading.left_out,
         )
     assert prep.entities == ["Kenya"]
     assert prep.per_variable_sources == [(_out("World Bank"),)]
+    assert prep.exclusions == ()
 
 
 @pytest.mark.parametrize(

@@ -18,6 +18,7 @@ from search.engine.bind import SlotBindingDraft, validate_requested_all_bindings
 from search.engine.bind_repair import (
     apply_broad_readings,
     apply_declared_defaults,
+    apply_named_exclusions,
     apply_shape_slot_defaults,
     defaulted_slot_notes,
     defaulted_slots_named,
@@ -1039,8 +1040,9 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     """Repair bindings and apply measure elections and defaults.
 
     In order, bind the values an unexported family shares, bind the values a series code's
-    StatVars share, apply declared defaults (none on a slot an invariant of the dataset the
-    part names fixes), and read each bound value the code index reads more broadly as that
+    StatVars share, bind the values a stretch left out of the query names
+    (`apply_named_exclusions`), apply declared defaults (none on a slot an invariant of the
+    dataset the part names fixes), and read each bound value the code index reads more broadly as that
     value (`apply_broad_readings`). None of these reads the query's role keys. The query's
     places then bind to the elected shape, and the steps that read their role keys settle
     the bindings under them (`_bind_query_places`): the measure election, the shape's slot
@@ -1084,6 +1086,13 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     # A slot an invariant of the named dataset fixes takes its value in canonical form, so
     # no declared default binds it and no default warning names it.
     pinned = frozenset(shape_invariants(state.shape_draft))
+
+    # A stretch that leaves something out can be a value's own label ("without IMF credit").
+    # It binds before the defaults, which would otherwise take the slot.
+    bindings, state.named_exclusions = apply_named_exclusions(
+        bindings, state.shape_draft, exclusions=state.exclusions, pinned_properties=pinned
+    )
+    state.bindings = with_sampled_claims(bindings, claims)
 
     # Apply a declared default when the variable, raw query, or bindings trigger it. Raw
     # query text is available only for a single-variable request and participates in the

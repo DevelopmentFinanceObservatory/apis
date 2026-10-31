@@ -182,7 +182,7 @@ class TestForStageIdentity:
         llm = LLM()
         assert for_stage(llm, "extract") is llm
 
-    @pytest.mark.parametrize("stage", ["extract", "bind"])
+    @pytest.mark.parametrize("stage", ["extract", "bind", "exclusion_read"])
     def test_fake_llm_returned_unchanged(self, stage):
         fake = FakeLLM()
         assert for_stage(fake, stage) is fake

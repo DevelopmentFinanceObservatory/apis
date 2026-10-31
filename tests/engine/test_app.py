@@ -215,13 +215,21 @@ class TestResolveEndpoint:
             retryable=True,
         )
 
-    def test_503_on_llm_infra_error(self):
-        # An LLM that raises LLMInfraError at extract routes to 503
+    @pytest.mark.reads_exclusions
+    @pytest.mark.parametrize("failing", ["Extraction", "ExclusionRead"])
+    def test_503_on_llm_infra_error(self, failing):
+        # An LLM that raises LLMInfraError at extract, or at the exclusion read while
+        # extraction succeeds, routes to 503
         from search.engine.errors import LLMInfraError
+        from search.engine.exclusion_read import ExclusionRead
 
         class _ErrorLLM:
             async def generate_structured(self, *, prompt, system, schema):
-                raise LLMInfraError("simulated LLM error")
+                if schema.__name__ == failing:
+                    raise LLMInfraError("simulated LLM error")
+                if schema is ExclusionRead:
+                    return ExclusionRead(exclusions=[]), None
+                return Extraction(kind="resolution", variables=["health ODA grants"]), None
 
         client = make_client(llm=_ErrorLLM())
 

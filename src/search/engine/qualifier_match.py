@@ -1049,6 +1049,55 @@ def is_coded_only_phrase(
     return spans, matches
 
 
+# A party's graph name ends in the name of the list that publishes it: "non-DAC countries
+# (DAC)". Code labels come without it (`CodeRow.label`).
+_PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\([^()]*\)\s*$")
+
+# Each index's party lookup, by index object id. A weakref finalizer removes the entry
+# before Python can reuse the id.
+_party_lookup_cache: dict[int, TokenLookup[str]] = {}
+
+
+def _party_lookup(index: CodeIndex) -> TokenLookup[str]:
+    """Every party of `index` with a label, found by its label less a trailing
+    parenthetical. Built once per index."""
+    key = id(index)
+    cached = _party_lookup_cache.get(key)
+    if cached is not None:
+        return cached
+    cached = TokenLookup(
+        (_PARENTHETICAL_SUFFIX_RE.sub("", party.label), party.dcid)
+        for party in index.parties.values()
+        if party.label
+    )
+    _party_lookup_cache[key] = cached
+    weakref.finalize(index, _party_lookup_cache.pop, key, None)
+    return cached
+
+
+def label_runs(
+    query: str, index: CodeIndex, measure_index: MeasureIndex | None = None
+) -> tuple[tuple[int, int], ...]:
+    """The character ranges of `query` a code or measure row names, as the scan in every
+    system claims them (`_recognise_raw`), and those a run of its words names a party of
+    `index` (`_party_lookup`): "official development assistance excluding debt relief" (DAC2a
+    aid type 250) and "non-DAC countries" are each one run."""
+    runs = [
+        (span.start, span.end)
+        for span in _recognise_raw(query, _lexicon(index, measure_index), None)
+    ]
+    parties = _party_lookup(index)
+    tokens = tokenize(query)
+    words = [position for position, token in enumerate(tokens) if token.kind == "word"]
+    runs.extend(
+        (tokens[start].start, tokens[stop].end)
+        for first, start in enumerate(words)
+        for stop in words[first:]
+        if parties.get(tokens[start : stop + 1])
+    )
+    return tuple(runs)
+
+
 def match_qualifier_ties(
     query: str, index: CodeIndex, measure_index: MeasureIndex | None = None
 ) -> tuple[QualifierTie, ...]:

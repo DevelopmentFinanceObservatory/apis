@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -39,11 +40,13 @@ from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder
+from search.engine.entry import raw_text
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
     GraphInfraError,
 )
+from search.engine.exclusion_read import Exclusion, ExclusionRead
 from search.engine.extract import ExtractedEntity, ExtractedOperation, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind as rank_bind_module
@@ -226,6 +229,22 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
             "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
         },
     )
+
+
+@pytest.fixture(autouse=True)
+def _read_each_excluded_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read each "excluding <source>" and "not from <source>" stretch of a question as the
+    model reads it, since the doubles of this module script no read."""
+
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
+        found = re.finditer(
+            r"(?:excluding|not from) (?:the )?(.+?)(?= excluding | from | but |$)", query
+        )
+        return ExclusionRead(
+            exclusions=[Exclusion(phrase=m.group(0), left_out=[m.group(1)]) for m in found]
+        ), None
+
+    monkeypatch.setattr(raw_text, "read_exclusions", read)
 
 
 class _RecordedLLM:

@@ -210,14 +210,17 @@ _RECORDED_SCHEMA_NAMES = (
     "_UniversalBindOutput",
     "QuantityOutput",
     "StatedWordsOutput",
+    "ExclusionRead",
 )
 
 
 def _schema_and_stage(
     schema_name: str,
-) -> tuple[type[BaseModel], Literal["extract", "bind", "quantity", "stated_words"]]:
-    """Map `Extraction`, `_UniversalBindOutput`, `QuantityOutput` and `StatedWordsOutput` to
-    a schema and stage.
+) -> tuple[
+    type[BaseModel], Literal["extract", "bind", "quantity", "stated_words", "exclusion_read"]
+]:
+    """Map `Extraction`, `_UniversalBindOutput`, `QuantityOutput`, `StatedWordsOutput` and
+    `ExclusionRead` to a schema and stage.
 
     Unknown names raise `HarvestError`.
     """
@@ -237,6 +240,10 @@ def _schema_and_stage(
         from search.engine.stated_words_read import StatedWordsOutput
 
         return StatedWordsOutput, "stated_words"
+    if schema_name == "ExclusionRead":
+        from search.engine.exclusion_read import ExclusionRead
+
+        return ExclusionRead, "exclusion_read"
     raise HarvestError(
         f"no schema registered for schema_name={schema_name!r}; add it to "
         f"_schema_and_stage in {Path(__file__).name} before harvesting"

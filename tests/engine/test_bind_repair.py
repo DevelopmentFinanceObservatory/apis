@@ -20,10 +20,12 @@ from search.engine.bind import (
 from search.engine.bind_repair import (
     _label_named_in_text,
     apply_declared_defaults,
+    apply_named_exclusions,
     declared_default_slots_named,
     defaulted_slot_notes,
     defaulted_slots_named,
 )
+from search.engine.exclusion_read import LeftOut
 from search.engine.qualifier_match import QualifierMatch, QualifierTie
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
@@ -222,6 +224,79 @@ def _finance(
         value_dcids=[value] if kind == "value" else [],
         evidence=evidence,
     )
+
+
+def _imf_shape(*, labelled: bool = True) -> ShapeDraft:
+    """An IDS shape whose `includesIMFCredit` slot holds one value, labelled in the graph."""
+    return shape_draft_from(
+        shape_id="ids_debt",
+        label="External debt",
+        pop_type_dcid="FinancialPosition",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        constraint_props=["includesIMFCredit"],
+        prop_labels={"includesIMFCredit": "includes IMF credit"},
+        prop_observed_values={"includesIMFCredit": ["WithoutIMFCredit"]},
+        sv_arc_facts={},
+        slot_taxonomy={"how:includesIMFCredit": ["WithoutIMFCredit"]},
+        place_available=True,
+        value_labels={"WithoutIMFCredit": "without IMF credit"} if labelled else None,
+        recalled=False,
+    )
+
+
+def _imf_slot(**update: object) -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="how", property_dcid="includesIMFCredit", kind="unbound", evidence="mentioned"
+    ).model_copy(update=update)
+
+
+_WITHOUT_IMF = LeftOut(phrase="without IMF credit", things=("IMF credit",), at=0)
+
+
+class TestApplyNamedExclusions:
+    def test_a_stretch_that_is_a_values_own_label_binds_it_and_counts_as_met(self):
+        repaired, met = apply_named_exclusions(
+            [_imf_slot()], _imf_shape(), exclusions=[_WITHOUT_IMF]
+        )
+
+        assert [(b.kind, b.value_dcids) for b in repaired] == [("value", ["WithoutIMFCredit"])]
+        assert met == {"without IMF credit"}
+
+    @pytest.mark.parametrize(
+        ("binding", "shape", "exclusion", "pinned"),
+        [
+            pytest.param(
+                _imf_slot(evidence="requested_all"),
+                _imf_shape(),
+                _WITHOUT_IMF,
+                frozenset(),
+                id="slot-asked-in-full",
+            ),
+            pytest.param(
+                _imf_slot(), _imf_shape(), _WITHOUT_IMF, {"includesIMFCredit"}, id="pinned"
+            ),
+            pytest.param(_imf_slot(), _imf_shape(labelled=False), _WITHOUT_IMF, (), id="no-label"),
+            pytest.param(
+                _imf_slot(),
+                _imf_shape(),
+                LeftOut(phrase="excluding IMF credit", things=("IMF credit",), at=0),
+                (),
+                id="another-wording",
+            ),
+        ],
+    )
+    def test_anything_but_an_open_slot_and_an_exact_label_binds_nothing(
+        self, binding, shape, exclusion, pinned
+    ):
+        repaired, met = apply_named_exclusions(
+            [binding], shape, exclusions=[exclusion], pinned_properties=frozenset(pinned)
+        )
+
+        assert repaired == [binding]
+        assert met == frozenset()
 
 
 class TestApplyDeclaredDefaultsFires:

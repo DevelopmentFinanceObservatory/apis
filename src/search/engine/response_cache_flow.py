@@ -13,6 +13,7 @@ import logging
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from code_index.shared import get_index, get_measure_index
@@ -21,7 +22,6 @@ from origin_catalogue import current_catalogue
 from search.engine.bind_repair import (
     declared_default_slots_named,
     declared_default_words_named,
-    stated_words_negated,
 )
 from search.engine.binders import Binder, Fallbacks
 from search.engine.deadline import _await_bounded
@@ -75,6 +75,9 @@ from search.models import (
 from search.scope.state import ScopeIntake
 from series_coverage.shared import CoverageSnapshot
 
+if TYPE_CHECKING:
+    from search.engine.exclusion_read import LeftOut
+
 logger = logging.getLogger(__name__)
 
 type ReplayedPlaceOptions = Callable[
@@ -88,8 +91,7 @@ type ReplayedPlaceOptions = Callable[
 # Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
 # checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
 # every member of (`role_text.every_member_axis`). Single-variable requests also read
-# qualifier vocabulary, defaults, written phrases, negated dataset words and graph value
-# names.
+# qualifier vocabulary, defaults, written phrases and graph value names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Graph value names are known only after retrieval, so their signal keeps the whole
 # query. The other signals reuse the pipeline helpers and index.
@@ -112,7 +114,6 @@ class Layer2Signals:
     declared_default_trigger_words: tuple[dict[str, str], ...]
     declared_default_slots_named: tuple[str, ...]
     written_variable_phrases: tuple[str | None, ...]
-    query_text_negated_stated_words: tuple[str, ...]
     every_member_axes: tuple[str | None, ...]
     query_text_value_source: str | None
 
@@ -163,7 +164,6 @@ def compute_layer2_signals(
             declared_default_trigger_words=(),
             declared_default_slots_named=(),
             written_variable_phrases=(),
-            query_text_negated_stated_words=(),
             every_member_axes=every_member_axes,
             query_text_value_source=None,
         )
@@ -194,7 +194,6 @@ def compute_layer2_signals(
         written_variable_phrases=tuple(
             written_phrase(variable, query_text) for variable in variables
         ),
-        query_text_negated_stated_words=stated_words_negated(query_text, index=index),
         every_member_axes=every_member_axes,
         query_text_value_source=query_text,
     )
@@ -392,6 +391,8 @@ class CacheScope:
         variable_qualifiers: Sequence[tuple[CodedQualifier, ...]],
         operations: Sequence[tuple[Operation, ...]],
         query: str,
+        text: str | None = None,
+        exclusions: Sequence[LeftOut] = (),
         entity_roles: Mapping[str, Sequence[DoorRole]],
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
@@ -417,7 +418,9 @@ class CacheScope:
         one asks one value per member of. `stated_scopes` runs parallel to `variables`
         and holds the scope entries and total intent each one's words state.
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
-        serves as stored. This lookup
+        serves as stored. `query` is what a hit echoes, and `text` what the signals read: the
+        query with each stretch it asks to leave out blanked, `query` itself when `None`.
+        `exclusions` are those stretches that a part judges or discloses. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
         A binder that reads the query's own text looks up nothing here (`CacheScope`).
 
@@ -429,7 +432,7 @@ class CacheScope:
             return None
         assert self._scope is not None
         signals = compute_layer2_signals(
-            query=query,
+            query=query if text is None else text,
             entity_roles=entity_roles,
             query_text=query_text,
             variables=variables,
@@ -454,11 +457,11 @@ class CacheScope:
             declared_default_trigger_words=signals.declared_default_trigger_words,
             declared_default_slots_named=signals.declared_default_slots_named,
             written_variable_phrases=signals.written_variable_phrases,
-            query_text_negated_stated_words=signals.query_text_negated_stated_words,
             every_member_axes=signals.every_member_axes,
             query_text_value_source=signals.query_text_value_source,
             scope=self._scope,
             separate=separate,
+            exclusions=exclusions,
             extraction_warnings=extraction_warnings,
             measure_qualifiers=measure_qualifiers,
             open_axes=open_axes,

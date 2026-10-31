@@ -68,6 +68,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "unbound_release: runs with no graph release bound, opting out of "
         "`_bound_fixture_index_release`",
     )
+    config.addinivalue_line(
+        "markers",
+        "reads_exclusions: the raw-text door's exclusion read runs for real on every client, "
+        "opting out of `_doubles_read_no_exclusion`",
+    )
     _session_services.enter_context(
         catalogue_service_module._singleton.poisoned_for_test(fake_catalogue_service())
     )
@@ -244,6 +249,37 @@ def _fresh_family_memo() -> Iterator[None]:
     if bound_values is not None:
         bound_values.clear_family_memo()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _doubles_read_no_exclusion(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Read nothing left out on every LLM client but a `FakeLLM` replaying the recorded bank
+    (`FakeLLM.recorded`). Other LLM doubles, a `FakeLLM` holding scripted responses among them,
+    answer the calls their test scripts and assert on the schema they receive, so the door's
+    extra call stays off them. A run that never imported the door has none to
+    replace, and installs without the engine extras cannot import it.
+
+    It patches by hand: an autouse fixture holding `monkeypatch` would undo a test's own patches
+    (a scripted `time.monotonic`) only after the other autouse fixtures have torn down."""
+    raw_text = sys.modules.get("search.engine.entry.raw_text")
+    if raw_text is None or request.node.get_closest_marker("reads_exclusions"):
+        yield
+        return
+    from search.engine.exclusion_read import ExclusionRead
+    from tests.fixtures import FakeLLM
+
+    read_exclusions = raw_text.read_exclusions
+
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
+        if isinstance(llm, FakeLLM) and llm.recorded:
+            return await read_exclusions(query, llm=llm)
+        return ExclusionRead(exclusions=[]), None
+
+    raw_text.read_exclusions = read
+    try:
+        yield
+    finally:
+        raw_text.read_exclusions = read_exclusions
 
 
 @pytest.fixture(autouse=True)
