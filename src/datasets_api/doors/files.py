@@ -113,6 +113,7 @@ from datasets_api.timings import door_call, phase, run_with_timings
 from datasets_api.version_store import current_rendering_keys, rendering_key
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
+from materialise.errors import OverCeilingError
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 from materialise.reshape import RollupNotSummableError
 from spec_registry import IdentityQuarantined
@@ -465,7 +466,8 @@ SELECTOR_QUERY_KEYS = frozenset({"format", "bundle", "layout"})
 serves."""
 
 # The rendering refusals a render from the stored frame can raise for a format, a bundle, a
-# layout and a derived version's own minting options.
+# layout and a derived version's own minting options. `OverCeilingError` is a stored frame1
+# document past the decode bound or a fold past its row ceiling.
 SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     StoredTraceMissingResolvedStatVars,
     CapabilityUnavailable,
@@ -473,6 +475,7 @@ SELECTOR_RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     ExcelIllegalCharacterError,
     ParquetSizeBoundError,
     RollupNotSummableError,
+    OverCeilingError,
 )
 
 

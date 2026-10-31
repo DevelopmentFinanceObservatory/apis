@@ -66,6 +66,7 @@ from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call, run_with_timings
 from dfo_platform.doors import DoorContribution, path_registry_endpoints
+from materialise.errors import OverCeilingError
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 
 logger = logging.getLogger(__name__)
@@ -260,10 +261,12 @@ def build_derived_door(*, deps: DepsCell) -> DoorContribution:
 
 _BINARY = {"type": "string", "format": "binary"}
 
+# `OverCeilingError` is a stored frame1 document past the decode bound.
 _FILE_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     ExcelLimitError,
     ExcelIllegalCharacterError,
     ParquetSizeBoundError,
+    OverCeilingError,
 )
 
 
@@ -303,6 +306,7 @@ def build_derived_files_door(*, deps: DepsCell) -> DoorContribution:
             ArtifactExpired(id="ops_exemplar", content_version="ocv_exemplar"),
             QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
             DerivedBackpressure(),
+            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
         ),
     )
 

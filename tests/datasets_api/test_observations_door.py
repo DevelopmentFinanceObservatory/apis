@@ -312,6 +312,9 @@ class _World:
             classify=door.classify,
             exception_types=door.exception_types,
             exception_exemplars=door.exception_exemplars,
+            # Binds `datasets.observations`, so a refusal takes its status from that endpoint's
+            # registry mappings, as it does when served.
+            registry_endpoints=door.registry_endpoints,
             request_scope=lambda: bound_catalogue(catalogue),
         )
         return TestClient(create_app([surface]), raise_server_exceptions=False)

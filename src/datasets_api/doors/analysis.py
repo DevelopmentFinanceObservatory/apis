@@ -81,7 +81,7 @@ from datasets_api.headers import NO_STORE_HEADERS
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
-from dfo_analysis_engine.refusal import AnalysisRefused, RetryMode
+from dfo_analysis_engine.refusal import AnalysisRefused, RefusalCode, RetryMode
 from dfo_analysis_engine.refusal import Refusal as EngineRefusal
 from dfo_platform import ProblemSpec
 from dfo_platform.caller import CallerHeaderInvalid, CallerUnresolved, resolve_caller
@@ -424,7 +424,11 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
             RefreshRebuildFailed,
         ),
         exception_exemplars=(
-            AnalysisRefused(EngineRefusal.op_spec_invalid(detail="exemplar")),
+            # A run refuses with any engine code.
+            *(
+                AnalysisRefused(EngineRefusal(code=code, message="exemplar", fix={}))
+                for code in RefusalCode
+            ),
             SeveralMembers(verb="quotient_of", side="data", spec_ids=["spec_a", "spec_b"]),
             RootNotStored(spec_id="spec_exemplar", content_version="cv_exemplar", reason="absent"),
             RootExpired(spec_id="spec_exemplar", content_version="cv_exemplar", reason="expired"),

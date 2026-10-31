@@ -92,6 +92,7 @@ from datasets_api.timings import door_call, phase, run_with_timings
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from dfo_platform.problem import Refusal
+from materialise.errors import OverCeilingError
 from materialise.formats import (
     frame_entity_columns,
 )
@@ -559,6 +560,8 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             ObservationsBackpressure,
             ObservationsGraphUnavailable,
             StoredFrameCorrupt,
+            # A stored frame1 document past the decode bound refuses before it is read.
+            OverCeilingError,
         ),
         exception_exemplars=(
             IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
@@ -570,5 +573,6 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             StoredFrameCorrupt(
                 id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
             ),
+            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
         ),
     )

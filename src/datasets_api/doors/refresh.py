@@ -536,6 +536,8 @@ def build_refresh_door(
             RefreshRebuildFailed,
             RefreshBackpressure,
             RefreshNotPermitted,
+            # `stored_rendering` reads the frame's version, which may not exist.
+            SnapshotNotFound,
         ),
         exception_exemplars=(
             FrameNotRefreshable(spec_id="ops_exemplar"),
@@ -543,6 +545,7 @@ def build_refresh_door(
             RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
             RefreshBackpressure(),
             RefreshNotPermitted(presented=False),
+            SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
         ),
     )
 

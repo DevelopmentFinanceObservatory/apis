@@ -5,15 +5,16 @@ validation codes stay with the contract whose request model determines them.
 
 The contract-wide comparison misses a code served at the wrong endpoint or status, as when the
 publish door emitted `identity_collision` (409) and `pin_not_permitted` (403), which other Datasets
-endpoints already registered. The per-endpoint check compares `(code, status)` for
-`datasets.publish`, `datasets.operations`, `datasets.exports` and `datasets.export_link`, the
-Datasets doors with reproducible exception exemplars. Other endpoints also serve validation codes or codes raised outside their door
-classifiers, so comparing them would report false gaps. Shared Search observation warnings must
+endpoints already registered, or when the observations door refused `over_ceiling` on an endpoint
+that did not map it, which answered 500. The per-endpoint check compares `(code, status)` on every
+Datasets and Presentation endpoint: each exemplar of a type a door declares, classified with the
+endpoint bound, against the endpoint's registry mappings. Shared Search observation warnings must
 list every resolve door. A mismatch fails in either direction.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import get_args
 
 import pytest
@@ -29,17 +30,22 @@ import presentation_api.codes as presentation_codes
 import search.engine.codes as search_codes
 import search.observations as search_observations
 import skills_api.codes as skills_codes
-from datasets_api.app import classify_datasets_exception
+from assembler.fakes import FakeReleaseRegistry
+from datasets_api.app import classify_datasets_exception, datasets_doors
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
-from datasets_api.doors.exports import build_export_link_door, build_exports_door
-from datasets_api.doors.meta import build_meta_door
-from datasets_api.doors.publish import build_publish_door
+from datasets_api.door_executor import build_door_executor
+from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES
+from dfo_platform import ProblemSpec
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
+from presentation_api.app import presentation_surface
+from presentation_api.doors.components import build_components_door
+from presentation_api.doors.frames import build_frames_door
+from presentation_api.doors.shares import build_shares_door
 from search.engine.config import SEARCH_RESOLVE_DOORS
 from search.models import NoDataReason
-from tests.code_registry import registered_status_codes
+from tests.code_registry import registered_endpoints, registered_status_codes
 
 _REGISTRY = load_registry()
 
@@ -186,68 +192,146 @@ def test_shared_observations_warnings_name_every_resolve_door():
         )
 
 
-# One `DoorContribution` per Datasets endpoint this module can verify
-# byte-for-byte against the registry's own per-(code, http_status) mapping
-# -- see this module's own docstring for why only these, and why every
-# other Datasets endpoint (and every other contract) stays out.
-_ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
-    "datasets.publish": build_publish_door(
-        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
+# Codes the platform answers on a route outside every door's classifier: request validation
+# (`request_invalid`, `unsupported_schema_version`), a request past its deadline (`timeout`) and an
+# exception no classifier recognises (`internal_error`). An endpoint registers them without a door
+# exemplar.
+_PLATFORM_ANSWERED: frozenset[tuple[str, int]] = frozenset(
+    {
+        ("request_invalid", 400),
+        ("unsupported_schema_version", 422),
+        ("timeout", 504),
+        ("internal_error", 500),
+    }
+)
+
+# Mappings the registry holds that no route of the endpoint raises. Nothing in Datasets raises
+# `entities_unbound` or `resolution_ambiguous`, and the definition and options routes admit a
+# posted definition with no scope, so no scope role refuses there.
+_REGISTERED_NOT_RAISED: dict[str, frozenset[tuple[str, int]]] = {
+    "datasets.definition": frozenset(
+        {
+            ("entities_unbound", 422),
+            ("invalid_role_ref", 422),
+            ("resolution_ambiguous", 422),
+            ("role_incompatible", 422),
+        }
     ),
-    "datasets.operations": build_meta_door(
-        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
+    "datasets.options": frozenset(
+        {("entities_unbound", 422), ("resolution_ambiguous", 422), ("role_incompatible", 422)}
     ),
-    "datasets.exports": build_exports_door(
-        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
-    ),
-    "datasets.export_link": build_export_link_door(deps=DepsCell()),
+    "datasets.mint": frozenset({("entities_unbound", 422), ("resolution_ambiguous", 422)}),
 }
 
 
-def _served_status_codes(
-    contribution: DoorContribution, *, endpoint: str
-) -> frozenset[tuple[str, int]]:
-    """Returns classifier `(code, status)` pairs under `endpoint`, bound as the route binds it;
-    an unrecognized exemplar signals a test mismatch."""
-    outcomes: set[tuple[str, int]] = set()
-    for exemplar in contribution.exception_exemplars:
-        with bound_registry_endpoint(endpoint):
-            spec = classify_datasets_exception(exemplar)
-        assert spec is not None, (
-            f"{exemplar!r} (type {type(exemplar).__name__}) was declared as this door's own "
-            "exception_exemplars but classify_datasets_exception returned None for it"
+def _door_exemplars(
+    door: DoorContribution, *, pool: tuple[BaseException, ...]
+) -> dict[str, tuple[BaseException, ...]]:
+    """Per endpoint `door` binds, its exemplars and any exemplar in `pool` of exactly a type it
+    declares for that endpoint, since a door may declare a type it shares and leave the exemplar
+    to the door that owns it. A door that binds several endpoints declares their types per route,
+    and its own exemplars count where their type is declared."""
+    endpoints = set(door.registry_endpoints.values())
+    if len(endpoints) == 1:
+        declared = door.exception_types
+        pooled = tuple(ex for ex in pool if type(ex) in declared)
+        return dict.fromkeys(endpoints, (*door.exception_exemplars, *pooled))
+    assert endpoints <= set(ROUTE_EXCEPTION_TYPES), (
+        f"door binding {sorted(endpoints)} declares no exception types per endpoint"
+    )
+    return {
+        endpoint: (
+            *(ex for ex in door.exception_exemplars if isinstance(ex, declared)),
+            *(ex for ex in pool if type(ex) in declared),
         )
+        for endpoint, declared in ((e, ROUTE_EXCEPTION_TYPES[e]) for e in endpoints)
+    }
+
+
+@pytest.fixture(scope="module")
+def datasets_exemplars() -> dict[str, tuple[BaseException, ...]]:
+    """Per Datasets endpoint, the exemplars of every door that binds it (`_door_exemplars`)."""
+    doors = datasets_doors(deps=DepsCell(), settings=DatasetsBuildSettings.from_env())
+    pool = tuple(exemplar for door in doors for exemplar in door.exception_exemplars)
+    by_endpoint: dict[str, tuple[BaseException, ...]] = {}
+    for door in doors:
+        for endpoint, exemplars in _door_exemplars(door, pool=pool).items():
+            by_endpoint[endpoint] = (*by_endpoint.get(endpoint, ()), *exemplars)
+    return by_endpoint
+
+
+@pytest.fixture(scope="module")
+def presentation_exemplars() -> tuple[
+    dict[str, tuple[BaseException, ...]], Callable[[BaseException], ProblemSpec | None]
+]:
+    """Per Presentation endpoint, the exemplars its door declares, and the surface's classifier."""
+    release_registry = FakeReleaseRegistry()
+    reads = build_door_executor(1, "test-registry-binding", surface="presentation")
+    doors = (
+        build_components_door(release_registry=release_registry, bare_reads=reads),
+        build_frames_door(bare_reads=reads),
+        build_shares_door(release_registry=release_registry),
+    )
+    exemplars = {
+        endpoint: tuple(declared)
+        for door in doors
+        for endpoint, declared in door.endpoint_exemplars.items()
+    }
+    return exemplars, presentation_surface(release_registry=release_registry).classify
+
+
+def _served_status_codes(
+    exemplars: tuple[BaseException, ...],
+    *,
+    endpoint: str,
+    classify: Callable[[BaseException], ProblemSpec | None],
+) -> frozenset[tuple[str, int]]:
+    """Classifier `(code, status)` pairs under `endpoint`, bound as the route binds it. An
+    exemplar the classifier leaves alone, or whose code `endpoint` does not map, fails."""
+    outcomes: set[tuple[str, int]] = set()
+    for exemplar in exemplars:
+        with bound_registry_endpoint(endpoint):
+            try:
+                spec = classify(exemplar)
+            except LookupError as exc:
+                pytest.fail(f"{endpoint}: {exemplar!r} has no registered status: {exc}")
+        assert spec is not None, f"{endpoint}: nothing classifies {exemplar!r}"
         outcomes.add((spec.code, spec.status))
     return frozenset(outcomes)
 
 
-def _assert_endpoint_bijection(*, endpoint: str, contribution: DoorContribution) -> None:
-    served = frozenset(_served_status_codes(contribution, endpoint=endpoint))
+def _assert_endpoint_bijection(*, endpoint: str, served: frozenset[tuple[str, int]]) -> None:
     registered = registered_status_codes(endpoint)
     unregistered = sorted(served - registered)
-    unserved = sorted(registered - served)
-    assert not unregistered and not unserved, (
-        f"{endpoint}: served/registered (code, http_status) mismatch -- "
-        f"served but not registered onto {endpoint}: {unregistered}; "
-        f"registered onto {endpoint} but never served: {unserved}"
+    unserved = sorted(registered - served - _PLATFORM_ANSWERED)
+    assert not unregistered, f"{endpoint}: served but not registered: {unregistered}"
+    assert unserved == sorted(_REGISTERED_NOT_RAISED.get(endpoint, ())), (
+        f"{endpoint}: registered but never served: {unserved}"
     )
 
 
-def test_datasets_publish_served_codes_match_registry_by_status():
-    _assert_endpoint_bijection(
-        endpoint="datasets.publish", contribution=_ENDPOINT_DOOR_EXEMPLARS["datasets.publish"]
+def test_every_datasets_endpoint_binds_a_door(datasets_exemplars):
+    assert set(datasets_exemplars) == registered_endpoints("datasets.")
+
+
+def test_every_presentation_endpoint_binds_a_door(presentation_exemplars):
+    exemplars, _classify = presentation_exemplars
+    assert set(exemplars) == registered_endpoints("presentation.")
+
+
+@pytest.mark.parametrize("endpoint", sorted(registered_endpoints("datasets.")))
+def test_datasets_served_codes_match_registry_by_status(endpoint: str, datasets_exemplars):
+    served = _served_status_codes(
+        datasets_exemplars[endpoint], endpoint=endpoint, classify=classify_datasets_exception
     )
+    _assert_endpoint_bijection(endpoint=endpoint, served=served)
 
 
-def test_datasets_operations_served_codes_match_registry_by_status():
-    _assert_endpoint_bijection(
-        endpoint="datasets.operations", contribution=_ENDPOINT_DOOR_EXEMPLARS["datasets.operations"]
-    )
-
-
-@pytest.mark.parametrize("endpoint", ["datasets.exports", "datasets.export_link"])
-def test_datasets_exports_served_codes_match_registry_by_status(endpoint: str):
-    _assert_endpoint_bijection(endpoint=endpoint, contribution=_ENDPOINT_DOOR_EXEMPLARS[endpoint])
+@pytest.mark.parametrize("endpoint", sorted(registered_endpoints("presentation.")))
+def test_presentation_served_codes_match_registry_by_status(endpoint: str, presentation_exemplars):
+    exemplars, classify = presentation_exemplars
+    served = _served_status_codes(exemplars[endpoint], endpoint=endpoint, classify=classify)
+    _assert_endpoint_bijection(endpoint=endpoint, served=served)
 
 
 def test_no_served_code_resolves_to_a_retired_registry_entry():
