@@ -23,6 +23,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.render import CANONICAL_FRAME_RENDERING
 from datasets_api.version_store import rendering_key
 from materialise.formats import (
+    CANONICAL_FRAME_MEDIA_TYPE,
     EXCEL_MAX_ROWS,
     FRAME1_MEDIA_TYPE,
     ExcelLimitError,
@@ -179,9 +180,9 @@ def test_head_hit_with_a_converted_base_mints_the_same_collapsed_content_version
     assert served["artifacts"][0]["bytes"] == fresh["artifacts"][0]["bytes"]
 
 
-def _collapse_client() -> tuple[
-    httpx.Client, FakeVersionRecordDatasetStore, _RenderableArtifactStore
-]:
+def _collapse_client(
+    settings: DatasetsBuildSettings | None = None,
+) -> tuple[httpx.Client, FakeVersionRecordDatasetStore, _RenderableArtifactStore]:
     version_store = FakeVersionRecordDatasetStore()
     artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
     client = _client(
@@ -192,14 +193,29 @@ def _collapse_client() -> tuple[
         artifact_store=artifact_store,
         code_index=_code_index(),
         coverage=_coverage_service(),
+        settings=settings,
     )
     return client, version_store, artifact_store
 
 
-def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone():
+def _spy_on_base_frame_hashes(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """The frames a head hit takes the base frame's hash of (`stored_frame_sha256`)."""
+    hashed: list[object] = []
+    take = current_module.stored_frame_sha256
+
+    def spy(frame, *, recorded):
+        hashed.append(frame)
+        return take(frame, recorded=recorded)
+
+    monkeypatch.setattr(current_module, "stored_frame_sha256", spy)
+    return hashed
+
+
+def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone(monkeypatch):
     """A base version that links a frame1 document and no canonical frame, as a version minted
     before canonical frames does, collapses on a head hit to the version and bytes a fresh
-    groupby mint gives."""
+    groupby mint gives. The collapse holds fewer rows than the base frame, so it cannot be the
+    base version and the base frame is never hashed."""
     spec_id, sidecar = _spec_id_and_sidecar()
     fresh_client, _, _ = _collapse_client()
     fresh = _mint(fresh_client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
@@ -208,6 +224,7 @@ def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone()
     link_frame1_only(
         version_store, artifact_store, subject_id=spec_id, content_version=base["content_version"]
     )
+    hashed = _spy_on_base_frame_hashes(monkeypatch)
 
     got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
 
@@ -216,6 +233,63 @@ def test_a_groupby_head_hit_collapses_a_base_stored_as_a_frame1_document_alone()
     assert served["trace"]["served_from"] == "head"
     assert served["content_version"] == fresh["content_version"] != base["content_version"]
     assert served["artifacts"][0]["artifact_digest"] == fresh["artifacts"][0]["artifact_digest"]
+    assert hashed == []
+
+
+def _frame_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The media types of the stored frames a head hit decodes."""
+    decoded: list[str] = []
+    read = current_module.read_stored_frame
+
+    def spy(data, *, media_type, digest):
+        decoded.append(media_type)
+        return read(data, media_type=media_type, digest=digest)
+
+    monkeypatch.setattr(current_module, "read_stored_frame", spy)
+    return decoded
+
+
+@pytest.mark.parametrize(
+    ("stored", "ceiling_kind", "decoded"),
+    [
+        pytest.param("canonical", "rows", [CANONICAL_FRAME_MEDIA_TYPE], id="canonical-frame"),
+        pytest.param("frame1", "bytes", [], id="frame1-document"),
+    ],
+)
+def test_a_groupby_head_hit_past_the_fold_ceiling_refuses_without_hashing_the_base_frame(
+    monkeypatch, stored, ceiling_kind, decoded
+):
+    """A canonical frame past the fold ceiling refuses on its rows once read. A frame1
+    document refuses on its recorded size before it is read or decoded, since its decode and
+    the fold of its rows would pass the memory a fold at the ceiling takes
+    (`render.frame1_decode_max_bytes`). Neither hashes the base frame, which only a collapse
+    the size of the base frame compares with."""
+    spec_id, sidecar = _spec_id_and_sidecar()
+    client, version_store, artifact_store = _collapse_client(
+        DatasetsBuildSettings(groupby_fold_max_rows=1)
+    )
+    base = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.version_record SET frame_sha256 = NULL WHERE subject_id = %s",
+            (spec_id,),
+        )
+    if stored == "frame1":
+        link_frame1_only(
+            version_store,
+            artifact_store,
+            subject_id=spec_id,
+            content_version=base["content_version"],
+        )
+    hashed = _spy_on_base_frame_hashes(monkeypatch)
+    reads = _frame_reads(monkeypatch)
+
+    got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+
+    assert got.status_code == 422, got.text
+    assert (got.json()["code"], got.json()["ceiling_kind"]) == ("over_ceiling", ceiling_kind)
+    assert reads == decoded
+    assert hashed == []
 
 
 def _edit_stored_trace(

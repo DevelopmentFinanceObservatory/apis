@@ -83,10 +83,10 @@ from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, 
 from datasets_api.config import DOWNLOAD_SIGNED_URL_TTL
 from datasets_api.current import (
     DefinitionDeps,
-    StoredFrame,
     StoredTraceMissingResolvedStatVars,
     head_rendering,
     plan_stored_render,
+    read_located_frame,
 )
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
@@ -291,18 +291,17 @@ def _render_renewed(
     render: Callable[..., Manifest | None],
     deps: DefinitionDeps,
 ) -> Manifest | None:
-    """Renew `aged_frame`'s object (`_reupload`) and render from the renewed bytes with
-    `render`, on a coverage snapshot taken here, returning what `render` returns. Bytes that
-    are gone render nothing and return `None`. The caller holds a materialise permit and binds
-    no frame itself, so the bytes are freed when this returns, before the permit is
-    released."""
-    data = _reupload(aged_frame, deps=deps)
-    if data is None:
-        return None
-    return render(
-        coverage_snapshot=deps.coverage.snapshot(),
-        frame=StoredFrame(location=aged_frame, data=data),
+    """Renew `aged_frame`'s object (`_reupload`) and render the frame its renewed bytes read as
+    (`current.read_located_frame`, which drops the bytes once decoded) with `render`, on a
+    coverage snapshot taken here, returning what `render` returns. Bytes that are gone render
+    nothing and return `None`. The caller holds a materialise permit and binds no frame
+    itself, so the frame is freed when this returns, before the permit is released."""
+    frame = read_located_frame(
+        aged_frame, read=functools.partial(_reupload, aged_frame, deps=deps), deps=deps
     )
+    if frame is None:
+        return None
+    return render(coverage_snapshot=deps.coverage.snapshot(), frame=frame)
 
 
 def _render_from_stored_frame(

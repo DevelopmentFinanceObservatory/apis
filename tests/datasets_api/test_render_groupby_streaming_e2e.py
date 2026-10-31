@@ -8,9 +8,9 @@ import contextvars
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import cast
 
 import pytest
+from dfo_frame_grammar import Frame
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
@@ -21,9 +21,9 @@ from datasets_api.render import render_and_store
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import OverCeilingError
 from materialise.frame_build import ParquetFrameChunks, ParquetFrameSink, build_frame
-from materialise.reshape import Table
 
 from ._artifact_doubles import FakeArtifactStore
+from ._frame_chunks import frame_chunks_of, frame_of_rows
 from ._graph_doubles import FakeMintGraphReader
 from ._render_inputs import PREPARED_AT, SITE
 
@@ -123,7 +123,7 @@ _RESOLVED_STAT_VAR_REFS = ("dcid:SV_A", "dcid:SV_B", "dcid:SV_C")
 
 
 def _render(
-    chunks: tuple[Table, ...] | ParquetFrameChunks,
+    chunks: tuple[Frame, ...] | ParquetFrameChunks,
     *,
     groupby_fold_max_rows: int = 2_000_000,
     frame_rows: int | None = None,
@@ -155,12 +155,10 @@ def _render(
     return rendered, artifact_store.fetch(rendered.artifact.url)
 
 
-def test_a_three_way_split_matches_the_single_chunk_artifact_digest():
-    one_chunk = (Table(columns=_TABLE_COLUMNS, rows=_ROWS),)
-    three_chunks = tuple(Table(columns=_TABLE_COLUMNS, rows=(row,)) for row in _ROWS)
-
-    one_rendered, one_bytes = _render(one_chunk)
-    three_rendered, three_bytes = _render(three_chunks)
+def test_a_three_way_split_matches_the_single_chunk_artifact_digest(monkeypatch):
+    one_rendered, one_bytes = _render((frame_of_rows(_TABLE_COLUMNS, _ROWS),))
+    monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", 1)
+    three_rendered, three_bytes = _render(_frames())
 
     assert one_rendered.artifact.artifact_digest == three_rendered.artifact.artifact_digest
     assert one_bytes == three_bytes
@@ -169,21 +167,9 @@ def test_a_three_way_split_matches_the_single_chunk_artifact_digest():
     assert "7.0" in body  # SV_C stays apart (malaria)
 
 
-def _frames() -> tuple[Table, ...]:
-    """`_ROWS` as three one-row Arrow frames, which `render_and_store` takes as its `Table`
-    chunks."""
-    return cast(
-        "tuple[Table, ...]",
-        tuple(
-            build_frame(
-                role_keys=("recipient",),
-                rows=[
-                    dict(zip(_TABLE_COLUMNS, (*row[:4], "unit/USD", row[5]), strict=True)),
-                ],
-            )
-            for row in _ROWS
-        ),
-    )
+def _frames() -> tuple[Frame, ...]:
+    """`_ROWS` as three one-row Arrow frames."""
+    return tuple(frame_chunks_of(_TABLE_COLUMNS, [(row,) for row in _ROWS])())
 
 
 def _parquet_frame() -> ParquetFrameChunks:
@@ -199,11 +185,6 @@ def _parquet_frame() -> ParquetFrameChunks:
     return ParquetFrameChunks(sink.finish(), columns=frame.columns)
 
 
-def _row_tables() -> tuple[Table, ...]:
-    """`_ROWS` as three one-row tuple tables."""
-    return tuple(Table(columns=_TABLE_COLUMNS, rows=(row,)) for row in _ROWS)
-
-
 @pytest.mark.parametrize(
     ("chunks", "frame_rows", "fold_functions"),
     [
@@ -213,15 +194,13 @@ def _row_tables() -> tuple[Table, ...]:
             ("widen_frame_table", "decode_table", "fold_groupby_sum_table"),
             id="arrow-slices-read",
         ),
-        pytest.param(_row_tables, len(_ROWS), ("fold_groupby_sum_chunks",), id="row-tuples-stated"),
     ],
 )
 def test_a_frame_past_the_fold_ceiling_refuses_before_any_fold(
     monkeypatch, chunks, frame_rows, fold_functions
 ):
-    """A collapse of a frame of more rows than the fold ceiling, over Arrow slices or row
-    tuples, refuses `over_ceiling` (`rows`) before any fold runs. A frame at the ceiling renders
-    as an uncapped render does."""
+    """A collapse of a frame of more rows than the fold ceiling refuses `over_ceiling` (`rows`)
+    before any fold runs. A frame at the ceiling renders as an uncapped render does."""
     monkeypatch.setattr(render, "_RESHAPE_CHUNK_ROWS", 1)
 
     uncapped, uncapped_bytes = _render(chunks())

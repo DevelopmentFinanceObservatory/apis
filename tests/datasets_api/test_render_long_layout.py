@@ -23,16 +23,17 @@ from dfo_frame_grammar.grammar import UnitRequest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
 from code_index.types import PartyRow, RoleAxis, StatVarRow, WholeMarker
+from datasets_api import render as render_module
 from datasets_api.manifest_models import CitationSource
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.render import RenderedDefinition, render_and_store
 from dc_graph import GraphDeadlineExceededError, GraphReadError
 from materialise.enrichment import EnrichmentLookup
-from materialise.frame_build import ParquetFrameChunks, build_frame
-from materialise.reshape import Table
+from materialise.frame_build import ParquetFrameChunks
 
 from ._artifact_doubles import FakeArtifactStore
+from ._frame_chunks import frame_chunks_of
 from ._graph_doubles import FakeMintGraphReader
 from ._render_inputs import PREPARED_AT, SITE
 
@@ -176,13 +177,12 @@ def _render(
     citations: dict[str, CitationSource] | None = None,
     deadline: float | None = None,
     spec: dict[str, object] | None = None,
-    source: str = "tuples",
+    source: str = "arrow",
     parties: dict[str, PartyRow] = _PARTIES,
     stat_var_refs: Sequence[str] | None = None,
 ) -> tuple[RenderedDefinition, bytes]:
-    """`chunks` render as tuple tables, as the Arrow frames a single-member mint streams with
-    `source="arrow"`, or as the row groups of a group mint's Parquet frame with
-    `source="parquet"`. The definition resolves `stat_var_refs`, by default the rows'
+    """`chunks` render as the Arrow frames a single-member mint streams with `source="arrow"`,
+    or as the row groups of a group mint's Parquet frame with `source="parquet"`. The definition resolves `stat_var_refs`, by default the rows'
     StatVars."""
     chunks = chunks if chunks is not None else (rows,)
     rows = [row for chunk in chunks for row in chunk]
@@ -213,24 +213,13 @@ def _render(
     return rendered, store.fetch(rendered.artifact.url)
 
 
-def _frame(rows: Sequence[tuple[object, ...]]) -> Frame:
-    return build_frame(
-        role_keys=_ENTITY_COLUMNS,
-        rows=[
-            {column: cell for column, cell in zip(_FRAME_COLUMNS, row, strict=True) if cell}
-            for row in rows
-        ],
-    )
-
-
 def _frame_chunks(
     chunks: Sequence[Sequence[tuple[object, ...]]], *, source: str
-) -> Callable[[], Iterator[Table | Frame]]:
-    if source == "tuples":
-        return lambda: iter(Table(columns=_FRAME_COLUMNS, rows=tuple(rows)) for rows in chunks)
-    frames = [_frame(rows) for rows in chunks]
+) -> Callable[[], Iterator[Frame]]:
+    frame_chunks = frame_chunks_of(_FRAME_COLUMNS, chunks)
     if source == "arrow":
-        return lambda: iter(frames)
+        return frame_chunks
+    frames = list(frame_chunks())
     sink = io.BytesIO()
     with pq.ParquetWriter(sink, frames[0].table.schema) as writer:
         for frame in frames:
@@ -394,7 +383,11 @@ not hold."""
     ],
 )
 def test_the_unit_splits_into_node_label_currency_basis_and_year(unit, stat_var, spec, expected):
-    rows = [(stat_var or row[0], *row[1:5], unit, *row[6:]) for row in _ROWS]
+    # One stat var over every row keeps the rows apart by their years.
+    rows = [
+        (stat_var or row[0], *row[1:3], str(2019 + index), row[4], unit, *row[6:])
+        for index, row in enumerate(_ROWS)
+    ]
 
     rendered, body = _render(MintOptions(format="csv", bundle=False), rows=rows, spec=spec)
 
@@ -628,15 +621,17 @@ def test_a_decode_gap_warning_names_the_label_column():
     assert _unavailable(rendered) == [("crsPurpose_label", 1)]
 
 
-def test_every_chunk_of_a_render_reads_names_against_one_deadline(clock):
+def test_every_chunk_of_a_render_reads_names_against_one_deadline(clock, monkeypatch):
     """A later chunk's new names are read against the deadline the render started with, so a
     slow first read leaves later reads less time."""
+    monkeypatch.setattr(render_module, "_RESHAPE_CHUNK_ROWS", 3)
     graph = _SlowGraph(clock=clock, read_seconds=5.0)
-    later = [(*row[:2], "country/GHA", *row[3:]) for row in _ROWS]
+    # In row order the first chunk's three rows name Kenya, and the second names Ghana first.
+    later = [(*_ROWS[3][:2], "country/GHA", *_ROWS[3][3:]), _ROWS[3]]
 
     rendered, _body = _render(
         MintOptions(format="csv", bundle=False),
-        chunks=(_ROWS, later),
+        chunks=(_ROWS[:3], later),
         graph=graph,
         deadline=clock.now + 1.0,
     )
@@ -779,8 +774,10 @@ _RECIPIENT_ROWS = (
     ("dcid:SV_A", "country/USA", "DACAfrica", "2021", 12.0, "USD", None, "p1", None),
     ("dcid:SV_A", "country/USA", "DACDevelopingCountries", "2022", 40.0, "USD", None, "p1", None),
 )
-_PARTY_ROWS = ["country/KEN", "DACAfricaUnallocated"]
+# The recipients in the frame's row order, which sorts them.
+_PARTY_ROWS = ["DACAfricaUnallocated", "country/KEN"]
 _TOTAL_ROWS = ["DACAfrica", "DACDevelopingCountries"]
+_ALL_RECIPIENTS = ["DACAfrica", "DACAfricaUnallocated", "DACDevelopingCountries", "country/KEN"]
 
 
 def _spec(identity: dict[str, object]) -> dict[str, object]:
@@ -822,7 +819,7 @@ def _sheet_rows(body: bytes, sheet: str) -> list[tuple[object, ...]]:
             ["DACDevelopingCountries"],
             id="one-bound-total-keeps-every-row",
         ),
-        pytest.param(None, _RECIPIENT_ROWS, [*_PARTY_ROWS, *_TOTAL_ROWS], id="no-identity"),
+        pytest.param(None, _RECIPIENT_ROWS, _ALL_RECIPIENTS, id="no-identity"),
     ],
 )
 def test_a_bare_csv_leaves_out_the_totals_of_an_open_or_several_bound_role(spec, rows, kept):
@@ -862,13 +859,13 @@ _WHOLE_TOTALS = _totals_published(
         pytest.param(
             _totals_published(datasets=("p1",), axes=("origin",)),
             [],
-            [*_PARTY_ROWS, *_TOTAL_ROWS],
+            _ALL_RECIPIENTS,
             id="totals-only-as-donors",
         ),
         pytest.param(
             _totals_published(datasets=("p2",), axes=("destination",)),
             [],
-            [*_PARTY_ROWS, *_TOTAL_ROWS],
+            _ALL_RECIPIENTS,
             id="totals-of-another-provenance",
         ),
     ],
@@ -989,22 +986,19 @@ def test_parquet_and_a_pivot_keep_every_row(options, header_at):
 
     if options.format == "parquet":
         table = pq.read_table(io.BytesIO(body))
-        assert table.column("financingRecipient").to_pylist() == [*_PARTY_ROWS, *_TOTAL_ROWS]
+        assert table.column("financingRecipient").to_pylist() == _ALL_RECIPIENTS
         assert str(table.schema.field("time_period").type) == "int64"
     else:
-        assert [record["financingRecipient"] for record in _records(body)] == [
-            *_PARTY_ROWS,
-            *_TOTAL_ROWS,
-        ]
+        assert [record["financingRecipient"] for record in _records(body)] == _ALL_RECIPIENTS
 
 
-def test_totals_spread_over_chunks_keep_the_first_written_chunk_typed():
+def test_totals_spread_over_chunks_keep_the_first_written_chunk_typed(monkeypatch):
     """A chunk of totals alone empties the main table's first chunk. The writer still types
     its columns from a chunk with rows, so a bundle's schema reads numbers."""
+    # The frame's first row is a total, `DACAfrica`, so its one-row first chunk is totals alone.
+    monkeypatch.setattr(render_module, "_RESHAPE_CHUNK_ROWS", 1)
     _rendered, body = _render(
-        MintOptions(format="csv", bundle=True),
-        chunks=(_RECIPIENT_ROWS[2:], _RECIPIENT_ROWS[:2]),
-        spec=_OPEN_RECIPIENTS,
+        MintOptions(format="csv", bundle=True), rows=_RECIPIENT_ROWS, spec=_OPEN_RECIPIENTS
     )
     archive = zipfile.ZipFile(io.BytesIO(body))
     resource = next(
@@ -1019,25 +1013,25 @@ def test_totals_spread_over_chunks_keep_the_first_written_chunk_typed():
 
 
 @pytest.mark.parametrize(
-    ("chunks", "answers", "columns"),
+    ("answers", "columns"),
     [
-        pytest.param((_RECIPIENT_ROWS,), 0, None, id="first-read-fails"),
-        pytest.param((_RECIPIENT_ROWS[:2], _RECIPIENT_ROWS[2:]), 1, None, id="later-read-fails"),
-        pytest.param((_RECIPIENT_ROWS,), 0, ["party_kind"], id="bare-kind-token"),
-        pytest.param(
-            (_RECIPIENT_ROWS,), 0, ["financingRecipient_party_kind"], id="qualified-kind-token"
-        ),
+        pytest.param(0, None, id="first-read-fails"),
+        pytest.param(1, None, id="later-read-fails"),
+        pytest.param(0, ["party_kind"], id="bare-kind-token"),
+        pytest.param(0, ["financingRecipient_party_kind"], id="qualified-kind-token"),
     ],
 )
-def test_a_failed_name_read_still_sets_the_index_totals_apart(chunks, answers, columns):
+def test_a_failed_name_read_still_sets_the_index_totals_apart(answers, columns, monkeypatch):
     """The code index gives a listed party its kind with no graph read, so a graph outage from
     the first read or partway through the render moves every listed total, in every chunk. A
     token naming a party role's kind gives the same default column."""
+    # Two chunks of two rows, the second naming recipients the first does not.
+    monkeypatch.setattr(render_module, "_RESHAPE_CHUNK_ROWS", 2)
     graph = _FailingGraph(GraphReadError("graph unavailable"), answers=answers)
 
     rendered, body = _render(
         MintOptions(format="csv", bundle=True, columns=columns),
-        chunks=chunks,
+        rows=_RECIPIENT_ROWS,
         graph=graph,
         spec=_OPEN_RECIPIENTS,
         deadline=time.monotonic() + 60.0,
@@ -1054,8 +1048,8 @@ def test_a_failed_name_read_still_sets_the_index_totals_apart(chunks, answers, c
     assert _recipients(data) == _PARTY_ROWS
     assert _recipients(totals) == _TOTAL_ROWS
     assert [record["financingRecipient_kind"] for record in data] == [
-        "country or organisation",
         "unallocated",
+        "country or organisation",
     ]
     assert [record["financingRecipient_kind"] for record in totals] == ["total", "total"]
     assert "data/p1-totals.csv" in resources["data/p1.csv"]["description"]
@@ -1089,7 +1083,7 @@ _PIVOT_BY_YEAR = {"index": "financingRecipient", "columns": "time_period"}
         pytest.param(
             MintOptions(format="parquet", bundle=False, layout="frame", columns=["party_kind"]),
             _RECIPIENT_ROWS,
-            ["party", "residual", "total", "total"],
+            ["total", "residual", "total", "party"],
             0,
             id="frame-bare",
         ),
@@ -1101,7 +1095,7 @@ _PIVOT_BY_YEAR = {"index": "financingRecipient", "columns": "time_period"}
                 columns=["financingRecipient_party_kind"],
             ),
             (*_RECIPIENT_ROWS, _UNLISTED_RECIPIENT_ROW),
-            ["party", "residual", "total", "total", ""],
+            ["total", "residual", "total", "", "party"],
             0,
             id="frame-qualified-unlisted-party",
         ),
@@ -1147,7 +1141,7 @@ _MIXED_PERIOD_ROWS = (
         pytest.param((_MIXED_PERIOD_ROWS[::-1],), False, id="span-first"),
     ],
 )
-@pytest.mark.parametrize("source", ["tuples", "arrow", "parquet"])
+@pytest.mark.parametrize("source", ["arrow", "parquet"])
 @pytest.mark.parametrize("format_", ["csv", "parquet"])
 def test_a_frame_mixing_year_points_and_spans_writes_every_period_as_text(
     format_, source, chunks, typed, monkeypatch
@@ -1251,33 +1245,34 @@ def _recipient_row(recipient: str, period: str, provenance: str) -> tuple[object
 
 
 _WINDOWED_ROWS = (
-    _recipient_row("country/KEN", "2021", _DAC2A),
     _recipient_row("DACAllRecipients", "2019", _DAC2A),
+    _recipient_row("DACAllRecipients", "2020", _DAC2B),
     _recipient_row("DACAllRecipients", "2021", _DAC2A),
+    _recipient_row("DACAllRecipients", "2021", _DAC2B),
     _recipient_row("DACAllRecipients", "2021-06", _DAC2A),
     _recipient_row("DACAllRecipients", "2021/2022", _DAC2A),
     _recipient_row("DACAllRecipients", "2022", _DAC2A),
-    _recipient_row("DACAllRecipients", "2021", _DAC2B),
-    _recipient_row("DACAllRecipients", "2020", _DAC2B),
+    _recipient_row("country/KEN", "2021", _DAC2A),
 )
-_WINDOWED_WHOLE = [None, False, True, True, False, False, False, False]
+"""In the frame's row order."""
+_WINDOWED_WHOLE = [False, False, True, False, True, False, False, None]
 """Whether each total of `_WINDOWED_ROWS` is whole there, in order (`None` for the party). The
 total is whole in DAC2A inside its marker's years (2020 to 2021), and not in DAC2A outside
 them, across years, or in any DAC2B row, where it carries no marker."""
 
 _WINDOWED_KINDS = [
-    "country or organisation",
-    *("whole total" if whole else "total" for whole in _WINDOWED_WHOLE[1:]),
+    "country or organisation" if whole is None else "whole total" if whole else "total"
+    for whole in _WINDOWED_WHOLE
 ]
 _WINDOWED_CELLS = [
-    ("party", "false"),
+    ("total", "false"),
     ("total", "false"),
     ("total", "true"),
+    ("total", "false"),
     ("total", "true"),
     ("total", ""),
     ("total", "false"),
-    ("total", "false"),
-    ("total", "false"),
+    ("party", "false"),
 ]
 """The frame cells of `_WINDOWED_ROWS`, which follow `_WINDOWED_WHOLE` except on the DAC2A row
 across 2021 and 2022: that row names no one year for the marker's window, so its `party_whole`
@@ -1346,7 +1341,7 @@ def test_a_whole_cell_a_pivot_indexes_by_is_empty_for_a_windowed_whole_total():
         ],
         pivot={"index": "financingRecipient_party_whole", "columns": "time_period"},
     )
-    one_row_per_year = (_WINDOWED_ROWS[1], _WINDOWED_ROWS[2], _WINDOWED_ROWS[5])
+    one_row_per_year = (_WINDOWED_ROWS[0], _WINDOWED_ROWS[2], _WINDOWED_ROWS[6])
 
     _rendered, body = _render(options, rows=one_row_per_year, spec=None, parties=_DAC_PARTIES)
 
@@ -1364,8 +1359,9 @@ def test_a_dac2a_ethiopia_2021_download_reads_official_private_and_whole_total_p
         MintOptions(format="csv", bundle=False), rows=rows, spec=None, parties=_DAC_PARTIES
     )
 
+    # In row order: DACOfficialDonors, GatesFoundation, country/USA.
     assert [record["financingProvider_kind"] for record in _records(body)] == [
-        "official",
-        "private",
         "whole total",
+        "private",
+        "official",
     ]

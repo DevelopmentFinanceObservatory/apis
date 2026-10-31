@@ -68,7 +68,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from collections import Counter, deque
+from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -226,7 +226,6 @@ from materialise.reshape import (
     EnrichmentUnavailableWarning,
     ExpectedPopulation,
     GroupbyPlan,
-    GroupbySumChunksOutcome,
     ParsedColumns,
     PivotPlan,
     ReshapePlan,
@@ -234,7 +233,6 @@ from materialise.reshape import (
     apply_reshapes,
     classify_columns,
     enrichment_unavailable_warning,
-    fold_groupby_sum_chunks,
     fold_pivot_chunks,
     known_pivot_cap_violation,
     lookup_cell,
@@ -421,14 +419,12 @@ frame-grammar import, so this door re-slices Arrow frames before row-reading res
 chunk can otherwise trigger a `to_pylist()` rebuild about 12 times larger than writer chunks."""
 
 
-def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
+def _reslice_chunks(chunks: Iterable[Frame]) -> Iterator[Table]:
     """Yields `_FrameSlice`s of `_RESHAPE_CHUNK_ROWS` rows counted from the first row, cut from
-    Arrow frames with the tables of short chunks joined, and row-tuple tables of at most that
-    size cut from other tables. A writer types its
-    columns from its first chunk, so the cut keeps a rendering's bytes independent of how the
-    materialiser chunked the frame. An empty frame yields one empty table, since an empty
-    materialisation can yield one. `_reshape_stream` applies the bound before each streaming
-    path.
+    the frame's chunks with the tables of short chunks joined. A writer types its columns from
+    its first chunk, so the cut keeps a rendering's bytes independent of how the materialiser
+    chunked the frame. An empty frame yields one empty slice, since an empty materialisation
+    can yield one. `_reshape_stream` applies the bound before each streaming path.
 
     The readers downstream (decode, enrichment, groupby and the long layout) each read `rows`,
     and each `Frame.rows` access rebuilds the rows as Python objects, so a frame slice
@@ -439,26 +435,15 @@ def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
     pending_rows = 0
     yielded = False
     for chunk in chunks:
-        if isinstance(chunk, Frame):
-            columns = chunk.columns
-            pending.append(chunk.table)
-            pending_rows += chunk.table.num_rows
-            while pending_rows >= _RESHAPE_CHUNK_ROWS:
-                buffered = pa.concat_tables(pending)
-                yield _frame_rows(columns, buffered.slice(0, _RESHAPE_CHUNK_ROWS))
-                yielded = True
-                pending = [buffered.slice(_RESHAPE_CHUNK_ROWS)]
-                pending_rows -= _RESHAPE_CHUNK_ROWS
-            continue
-        rows = chunk.rows
-        if not rows:
-            yield chunk
-            continue
-        for start in range(0, len(rows), _RESHAPE_CHUNK_ROWS):
-            yield cast(
-                Table,
-                ReshapeTable(columns=chunk.columns, rows=rows[start : start + _RESHAPE_CHUNK_ROWS]),
-            )
+        columns = chunk.columns
+        pending.append(chunk.table)
+        pending_rows += chunk.table.num_rows
+        while pending_rows >= _RESHAPE_CHUNK_ROWS:
+            buffered = pa.concat_tables(pending)
+            yield _frame_rows(columns, buffered.slice(0, _RESHAPE_CHUNK_ROWS))
+            yielded = True
+            pending = [buffered.slice(_RESHAPE_CHUNK_ROWS)]
+            pending_rows -= _RESHAPE_CHUNK_ROWS
     if columns is not None and (pending_rows or not yielded):
         yield _frame_rows(columns, pa.concat_tables(pending))
 
@@ -490,77 +475,25 @@ def _stream_first_axis_collapse(
     missing_declared_as_zero: bool,
     expected_population: ExpectedPopulation,
     decode_plan: DecodePlan | None,
-) -> tuple[
-    GroupbySumChunksOutcome | ColumnarFoldOutcome,
-    frozenset[str],
-    tuple[MaterialisationWarning, ...],
-]:
-    """Decodes each chunk and folds it into `axis` in one pass. Collects distinct StatVars for
-    the caller's collision check. `_reshape` checks collisions before raising fold violations,
-    matching whole-table error order.
+) -> tuple[ColumnarFoldOutcome, frozenset[str], tuple[MaterialisationWarning, ...]]:
+    """Decodes each frame slice (`_FrameSlice`, as `_reslice_chunks` cuts it) and folds them
+    into `axis` as Arrow (`_fold_frame_slices`). Collects distinct StatVars for the caller's
+    collision check. `_reshape` checks collisions before raising fold violations, matching
+    whole-table error order.
 
-    Frame slices (`_FrameSlice`) are decoded and folded as Arrow (`groupby_columnar`), holding
-    the whole decoded frame at once, and the outcome's table is Arrow when the sums need no row
-    fold. Other chunks fold row by row, one chunk at a time, retaining per-group accumulators.
-    Memory on either path grows with the frame. On spec_09ff's 488,979 rows, whose first axis
-    keeps one group a row, the Arrow fold peaks at about 1 KiB a row (430 MiB of Arrow above its
-    input and 75 MiB of Python), and the row fold at about 2.8 KiB a group (1.39 GiB, 1.9 KiB a
-    group of fold state before the final sort)."""
-    chunks = iter(frame_chunks)
-    first_chunk = next(chunks, None)
-    if isinstance(first_chunk, _FrameSlice):
-        slices: deque[_FrameSlice] = deque((first_chunk,))
-        for chunk in chunks:
-            if not isinstance(chunk, _FrameSlice):
-                frame_chunks = itertools.chain(_drained(slices), (chunk,), chunks)
-                break
-            slices.append(chunk)
-        else:
-            return _fold_frame_slices(
-                list(slices),
-                axis=axis,
-                classification=classification,
-                summable_axes=summable_axes,
-                missing_declared_as_zero=missing_declared_as_zero,
-                expected_population=expected_population,
-                decode_plan=decode_plan,
-            )
-    elif first_chunk is not None:
-        frame_chunks = itertools.chain((first_chunk,), chunks)
-    else:
-        frame_chunks = ()
-    distinct_dcids: set[str] = set()
-    stat_var_pos: list[int] = []
-    warnings: list[MaterialisationWarning] = []
-
-    def _decoded_chunks() -> Iterator[Table]:
-        for chunk in frame_chunks:
-            if decode_plan is not None:
-                decoded, decode_warnings = apply_reshapes(
-                    chunk, plan=ReshapePlan(decode=decode_plan)
-                )
-                decoded = cast(Table, decoded)
-                warnings.extend(decode_warnings)
-            else:
-                decoded = chunk
-            if not stat_var_pos:
-                stat_var_pos.append(decoded.columns.index(_STAT_VAR_COLUMN))
-            pos = stat_var_pos[0]
-            for row in decoded.rows:
-                cell = row[pos]
-                if isinstance(cell, str):
-                    distinct_dcids.add(cell)
-            yield decoded
-
-    outcome = fold_groupby_sum_chunks(
-        _decoded_chunks(),
+    The fold holds the whole decoded frame at once, and the outcome's table is Arrow when the
+    sums need no row fold, so memory grows with the frame. On spec_09ff's 488,979 rows, whose
+    first axis keeps one group a row, it peaks at about 1 KiB a row (430 MiB of Arrow above its
+    input and 75 MiB of Python)."""
+    return _fold_frame_slices(
+        [cast(_FrameSlice, chunk) for chunk in frame_chunks],
         axis=axis,
         classification=classification,
         summable_axes=summable_axes,
         missing_declared_as_zero=missing_declared_as_zero,
         expected_population=expected_population,
+        decode_plan=decode_plan,
     )
-    return outcome, frozenset(distinct_dcids), tuple(warnings)
 
 
 @cache
@@ -609,6 +542,50 @@ def _refuse_past_fold_ceiling(rows: int, *, cap: int) -> None:
         )
 
 
+_ARROW_FOLD_BYTES_PER_ROW = 1_083
+"""Bytes the Arrow fold holds per frame row above the frame it reads: 505 MiB over spec_09ff's
+488,979 rows (`_stream_first_axis_collapse`). A fold at `groupby_fold_max_rows` takes that
+many rows of it."""
+
+_FRAME1_DECODE_BYTES_PER_BYTE = 10
+"""Peak bytes `read_frame1` holds per byte of the document it decodes, the document included:
+8.8 to 9.3 measured over 300,000-row documents of 68, 124 and 169 bytes a row, rounded up."""
+
+_FRAME1_MIN_BYTES_PER_ROW = 68
+"""Bytes of the shortest frame1 row measured: a 6-character stat var, short role codes, a
+whole value and null optional cells. A shorter row puts more rows, and more fold, in a byte."""
+
+
+def frame1_decode_max_bytes(fold_max_rows: int) -> int:
+    """The largest frame1 document a render decodes. Its decode and the Arrow fold of its rows
+    fit the memory a fold at the ceiling takes, `fold_max_rows` rows at
+    `_ARROW_FOLD_BYTES_PER_ROW`. Each document byte costs `_FRAME1_DECODE_BYTES_PER_BYTE` to
+    decode and a row's fold over `_FRAME1_MIN_BYTES_PER_ROW` bytes. At the default 2,000,000
+    rows that is 83,543,959 bytes: 1,228,587 rows of 68 bytes, or 494,342 of a CRS document's
+    169."""
+    return (
+        fold_max_rows
+        * _ARROW_FOLD_BYTES_PER_ROW
+        * _FRAME1_MIN_BYTES_PER_ROW
+        // (_FRAME1_DECODE_BYTES_PER_BYTE * _FRAME1_MIN_BYTES_PER_ROW + _ARROW_FOLD_BYTES_PER_ROW)
+    )
+
+
+def refuse_frame1_past_decode_bound(size_bytes: int, *, fold_max_rows: int) -> None:
+    """Raises `OverCeilingError` (`bytes`) when a frame1 document of `size_bytes` is past
+    `frame1_decode_max_bytes`, before it is read or decoded."""
+    cap = frame1_decode_max_bytes(fold_max_rows)
+    if size_bytes > cap:
+        raise OverCeilingError(
+            f"the stored frame holds more than {cap} bytes, past the ceiling of a render "
+            "that reads it. Narrow the identity (another slot binding, a shorter window) "
+            "to bring the frame under the ceiling.",
+            ceiling_kind="bytes",
+            count=size_bytes,
+            cap=cap,
+        )
+
+
 def _within_fold_ceiling(chunks: Iterable[Table], *, cap: int) -> Iterator[Table]:
     """`chunks` in order, raising `OverCeilingError` (`rows`) at the chunk that carries the
     frame past `cap`. A frame whose row count is known refuses before the fold waits for a
@@ -618,7 +595,7 @@ def _within_fold_ceiling(chunks: Iterable[Table], *, cap: int) -> Iterator[Table
     allocation."""
     rows = 0
     for chunk in chunks:
-        rows += chunk.table.num_rows if isinstance(chunk, _FrameSlice) else len(chunk.rows)
+        rows += cast(_FrameSlice, chunk).table.num_rows
         _refuse_past_fold_ceiling(rows, cap=cap)
         yield chunk
 
@@ -633,13 +610,6 @@ def _known_frame_rows(
     if isinstance(frame_chunks, ParquetFrameChunks):
         return frame_chunks.num_rows
     return stated
-
-
-def _drained(slices: deque[_FrameSlice]) -> Iterator[_FrameSlice]:
-    """`slices` in order, each released once read, so a slice's rows are not kept after its
-    fold."""
-    while slices:
-        yield slices.popleft()
 
 
 def _fold_frame_slices(
@@ -1994,12 +1964,11 @@ def _nonempty_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
         yield last
 
 
-def _frame_period_grain(frame_chunks: Callable[[], Iterator[Table]]) -> str | None:
+def _frame_period_grain(frame_chunks: Callable[[], Iterator[Frame]]) -> str | None:
     """The period grain of the whole frame `frame_chunks` holds
     (`materialise.projection.period_grain`), each distinct `time_period` read once
     (`pc.unique`). A frame held as Parquet reads that column alone of each row group
-    (`ParquetFrameChunks.column_chunks`), an Arrow frame its table, and any other table row by
-    row."""
+    (`ParquetFrameChunks.column_chunks`), any other its tables."""
 
     def periods() -> Iterator[object]:
         if isinstance(frame_chunks, ParquetFrameChunks):
@@ -2007,13 +1976,7 @@ def _frame_period_grain(frame_chunks: Callable[[], Iterator[Table]]) -> str | No
                 yield from pc.unique(column).to_pylist()
             return
         for chunk in frame_chunks():
-            if TIME_PERIOD_COLUMN not in chunk.columns:
-                continue
-            if isinstance(chunk, Frame):
-                yield from pc.unique(chunk.table[TIME_PERIOD_COLUMN]).to_pylist()
-                continue
-            at = chunk.columns.index(TIME_PERIOD_COLUMN)
-            yield from (row[at] for row in chunk.rows)
+            yield from pc.unique(chunk.table[TIME_PERIOD_COLUMN]).to_pylist()
 
     return period_grain(periods())
 
@@ -2605,7 +2568,7 @@ def _decoded_code_systems(decode_plan: DecodePlan | None) -> tuple[str, ...]:
 
 
 def groupby_collapse_sha256(
-    frame_chunks: Callable[[], Iterator[Table]],
+    frame_chunks: Callable[[], Iterator[Frame]],
     *,
     options: MintOptions,
     code_index: CodeIndex,
@@ -2645,7 +2608,7 @@ def groupby_collapse_sha256(
 
 
 def _reshape_stream(
-    frame_chunks: Iterable[Table],
+    frame_chunks: Iterable[Frame],
     *,
     options: MintOptions,
     entity_columns: Sequence[str],
@@ -2883,7 +2846,7 @@ class RenderedDefinition:
 
 def render_and_store(
     *,
-    frame_chunks: Callable[[], Iterator[Table]],
+    frame_chunks: Callable[[], Iterator[Frame]],
     options: MintOptions,
     spec: dict[str, object],
     provenance_refs: list[str],
@@ -2902,12 +2865,12 @@ def render_and_store(
     output_profile: OutputProfile | None = None,
     frame_rows: int | None = None,
     deadline: float | None = None,
-    base_frame_sha256: str | None = None,
+    base_frame_sha256: Callable[[], str] | None = None,
     frame_mode: FrameMode = FrameMode.RAW,
     citation_refs: Sequence[str] | None = None,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
-    `frame_chunks` returns a fresh pass over the materialised frame's chunks in order. Long
+    `frame_chunks` returns a fresh pass over the materialised frame's `Frame` chunks in order. Long
     output reads the frame's period grain first (`_frame_period_grain`), which types every
     `time_period` cell of the file alike, and every render reads one pass to write.
 
@@ -2943,11 +2906,13 @@ def render_and_store(
     version records.
 
     A collapse frame that is the base frame is the base version, so its collapse carries
-    `content_version`. The frames are compared by hash. `base_frame_sha256` is the hash of
+    `content_version`. The frames are compared by hash. `base_frame_sha256` gives the hash of
     the frame `frame_chunks` holds (`stored_frame_sha256`), given when that frame is read back
-    from the store, whose version may carry a token of an earlier frame grammar. Without it
-    `content_version` is the token minted from `frame_chunks`, which equals the collapse's
-    exactly when the frames are equal.
+    from the store, whose version may carry a token of an earlier frame grammar. It is called
+    only for a collapse of as many rows as `frame_rows` counts, so a collapse that changes the
+    row count, or a render that refuses before its collapse, hashes no stored frame.
+    Without it `content_version` is the token minted from `frame_chunks`, which equals the
+    collapse's exactly when the frames are equal.
     The family ref a summed collapse writes in `stat_var` is labelled with
     `code_index.labels.family_label` over `spec`'s identity.
 
@@ -2956,7 +2921,7 @@ def render_and_store(
     kinds from `enrichment.parties`. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
-    renders the frame as it is. Every chunk `frame_chunks` yields is then a `Frame`.
+    renders the frame as it is.
 
     `frame_mode` says what `frame_chunks` holds of the version (`FrameMode`). A derived
     version's own stored frame is not cut again, and a summed one is not collapsed again either
@@ -2968,11 +2933,9 @@ def render_and_store(
     cited_refs = list(citation_refs) if citation_refs is not None else provenance_refs
     subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
-    # A cut reads `Frame` chunks, which `datasets_api.current` and `datasets_api.serve` pass.
-    frames = cast("Callable[[], Iterator[Frame]]", frame_chunks)
     party_cut = (
         cut_party_totals(
-            frames,
+            frame_chunks,
             roles=open_party_roles(identity, entity_columns),
             parties=enrichment.parties,
         )
@@ -2980,7 +2943,7 @@ def render_and_store(
         else None
     )
     cut = (
-        cut_frame(frames, party_cut, role_columns=entity_columns)
+        cut_frame(frame_chunks, party_cut, role_columns=entity_columns)
         if party_cut is not None and party_cut.left_out
         else None
     )
@@ -3046,7 +3009,12 @@ def render_and_store(
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
-        if collapse is not None and collapse.frame_sha256 == base_frame_sha256:
+        if (
+            collapse is not None
+            and base_frame_sha256 is not None
+            and (frame_rows is None or collapse.frame.table.num_rows == frame_rows)
+            and collapse.frame_sha256 == base_frame_sha256()
+        ):
             collapse = replace(collapse, content_version=content_version)
         derived = _derived_version(
             collapse, cut=cut, content_version=content_version, entity_columns=entity_columns
@@ -3584,7 +3552,7 @@ def frame_file_location(
 
 def render_and_store_frame_file(
     *,
-    frame_chunks: Callable[[], Iterator[Table]],
+    frame_chunks: Callable[[], Iterator[Frame]],
     subject_id: str,
     content_version: str,
     prepared_at: datetime,

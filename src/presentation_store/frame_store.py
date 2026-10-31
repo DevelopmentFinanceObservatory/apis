@@ -168,9 +168,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from dfo_frame_grammar import (
     STAT_VAR_COLUMN,
-    TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
-    Frame,
 )
 from dfo_frame_grammar.grammar import (
     STAT_VAR_REF_PREFIX,
@@ -518,22 +516,17 @@ def _decode_frame(
 
 def _canonical_table(data: bytes, *, location: StoredArtifactLocation, max_rows: int) -> pa.Table:
     """The table of the canonical frame `data` holds, refused past `max_rows` from its footer
-    before any row is decoded, and for a null `time_period`.
+    before any row is decoded, then read by `read_canonical_frame_table`, the check Datasets
+    reads one by.
 
     Raises:
-        FrameError: The schema is not a canonical frame's, or a `time_period` cell is null.
+        FrameError, pa.ArrowException, OSError, ValueError: As `read_canonical_frame_table`.
         FrameUnavailable: `missing_rendering` past `max_rows`.
     """
-    footer = pq.ParquetFile(pa.BufferReader(data))
-    rows = footer.metadata.num_rows
+    rows = pq.ParquetFile(pa.BufferReader(data)).metadata.num_rows
     if rows > max_rows:
         raise _over_row_bound(location, rows=rows, max_rows=max_rows)
-    schema = footer.schema_arrow
-    Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
-    table = read_canonical_frame_table(data, columns=schema.names)
-    if table.column(TIME_PERIOD_COLUMN).null_count:
-        raise FrameError("invalid_time_period", "a time_period cell is null")
-    return table
+    return read_canonical_frame_table(data)
 
 
 def _over_row_bound(

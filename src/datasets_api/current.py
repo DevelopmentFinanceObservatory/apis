@@ -112,6 +112,7 @@ from datasets_api.render import (
     entity_roles,
     is_incomplete_rendering,
     is_statistics_rendering,
+    refuse_frame1_past_decode_bound,
     refuse_pivot_over_stored_caps,
     render_and_store,
     render_and_store_canonical_frame,
@@ -169,6 +170,8 @@ from materialise.dependencies import (
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
 from materialise.facets import VariableBreadthReader, bound_variable_breadth
 from materialise.formats import (
+    FRAME1_MEDIA_TYPE,
+    Frame,
     frame_entity_columns,
 )
 from materialise.graph import GraphReader
@@ -503,10 +506,37 @@ def _record_head_hit_derived(
 
 @dataclass(frozen=True)
 class StoredFrame:
-    """A version's stored frame (`render.servable_frame_location`) and its verified bytes."""
+    """A version's stored frame (`render.servable_frame_location`) and the frame its verified
+    bytes read as (`read_located_frame`)."""
 
     location: StoredArtifactLocation
-    data: bytes
+    frame: Frame
+
+
+def read_located_frame(
+    location: StoredArtifactLocation, *, read: Callable[[], bytes | None], deps: DefinitionDeps
+) -> StoredFrame | None:
+    """The stored frame at `location`, its bytes read by `read`, or `None` when `read` finds
+    none. A frame1 document past `render.frame1_decode_max_bytes` refuses on its recorded size
+    before it is read. The bytes are dropped once decoded, so a render holds the frame alone.
+
+    Raises:
+        OverCeilingError: `bytes`, for a frame1 document past the bound.
+        StoredFrameUnreadable: The bytes do not read as a frame.
+    """
+    if location.media_type == FRAME1_MEDIA_TYPE:
+        refuse_frame1_past_decode_bound(
+            location.size_bytes, fold_max_rows=deps.settings.groupby_fold_max_rows
+        )
+    data = read()
+    if data is None:
+        return None
+    return StoredFrame(
+        location=location,
+        frame=read_stored_frame(
+            data, media_type=location.media_type, digest=location.artifact_digest
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -668,11 +698,7 @@ def _render_frame(
     """
     # `_render_stored_rendering` reads no frame of a version its own frame does not serve.
     assert plan.frame_mode is not None
-    table = read_stored_frame(
-        frame.data,
-        media_type=frame.location.media_type,
-        digest=frame.location.artifact_digest,
-    )
+    table = frame.frame
     # A collapse's kept code axes render as the decoded codes its mint wrote them as.
     entity_columns = entity_roles(frame_entity_columns(table.columns))
     facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
@@ -730,7 +756,7 @@ def _render_frame(
         # Only a groupby of a frame it has not collapsed yields a collapse frame to compare
         # with the stored one.
         base_frame_sha256=(
-            stored_frame_sha256(table, recorded=plan.frame_sha256)
+            functools.partial(stored_frame_sha256, table, recorded=plan.frame_sha256)
             if options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
             else None
         ),
@@ -815,18 +841,21 @@ def _render_located_frame(
     coverage_index: CoverageIndex,
     plan: StoredRenderPlan,
 ) -> Manifest | None:
-    """Read the stored frame at `location`, one of the version's links, and render it
-    (`_render_frame`), or return `None` for missing or corrupt frame bytes. The caller holds a
-    materialise permit and binds no frame itself, so the bytes are freed when this returns,
-    before the permit is released."""
-    try:
-        stored_frame = StoredFrame(
-            location=location,
-            data=deps.artifact_store.get(
+    """Read the stored frame at `location`, one of the version's links (`read_located_frame`),
+    and render it (`_render_frame`), or return `None` for missing or corrupt frame bytes. The
+    caller holds a materialise permit and binds no frame itself, so the frame is freed when
+    this returns, before the permit is released."""
+
+    def read() -> bytes | None:
+        try:
+            return deps.artifact_store.get(
                 artifact_digest=location.artifact_digest, tier=Tier(location.tier)
-            ),
-        )
-    except (ArtifactNotFoundError, ArtifactIntegrityError):
+            )
+        except (ArtifactNotFoundError, ArtifactIntegrityError):
+            return None
+
+    stored_frame = read_located_frame(location, read=read, deps=deps)
+    if stored_frame is None:
         return None
     return _render_frame(
         subject_id=subject_id,

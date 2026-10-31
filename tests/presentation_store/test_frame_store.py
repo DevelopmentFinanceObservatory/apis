@@ -1029,6 +1029,9 @@ def _stored_cell(data: bytes, name: str, cell: object) -> bytes:
         ),
         pytest.param("time_period", None, id="null-period"),
         pytest.param("time_period", "20:0", id="unparseable-period"),
+        pytest.param("stat_var", None, id="null-stat-var"),
+        pytest.param("recipient", None, id="null-role"),
+        pytest.param("value", None, id="null-value"),
     ],
 )
 def test_a_malformed_stored_cell_refuses_missing_rendering_naming_its_digest(

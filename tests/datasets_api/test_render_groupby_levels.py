@@ -13,12 +13,13 @@ import pytest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import ReshapeResult, _RenderReads, _reshape
+from datasets_api.render import ReshapeResult, _RenderReads, _reshape, _reslice_chunks
 from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import build_frame
 from materialise.reshape import Table
 
+from ._frame_chunks import frame_of_rows
 from ._graph_doubles import FakeMintGraphReader
 
 _STAMP = IndexStamp(
@@ -144,6 +145,10 @@ def _options(levels: dict[str, int] | None) -> MintOptions:
 def _reshape_with(
     options: MintOptions, *, chunked: bool = False, table: Table = _TABLE
 ) -> ReshapeResult:
+    """`table` reshaped whole, or `chunked` as the one frame slice a streamed render cuts from
+    its frame."""
+    if chunked:
+        (table,) = _reslice_chunks([frame_of_rows(table.columns, table.rows)])
     return _reshape(
         table,
         options=options,

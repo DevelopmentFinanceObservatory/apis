@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -783,15 +785,36 @@ def _frame1_bytes(frame) -> bytes:
     return sink.data
 
 
-@pytest.mark.parametrize("dropped", ["unit", "measurementMethod", "status"])
-def test_backfill_converts_a_frame1_that_predates_an_optional_column(dropped, capsys):
-    """A frame1 document written before a column it may lack reads as a frame whose own frame1
-    differs from it, and converts to the canonical frame of that frame."""
+def _without(column: str) -> Callable[[dict[str, Any]], None]:
+    def drop(document: dict[str, Any]) -> None:
+        index = document["columns"].index(column)
+        del document["columns"][index]
+        for row in document["rows"]:
+            del row[index]
+
+    return drop
+
+
+def _first_unit_recipe(document: dict[str, Any]) -> None:
+    index = document["columns"].index("unit")
+    document["rows"][0][index] = {**document["rows"][0][index], "recipe": "r1"}
+
+
+@pytest.mark.parametrize(
+    "older",
+    [
+        pytest.param(_without("unit"), id="no-unit"),
+        pytest.param(_without("measurementMethod"), id="no-measurement-method"),
+        pytest.param(_without("status"), id="no-status"),
+        pytest.param(_first_unit_recipe, id="a-unit-recipe"),
+    ],
+)
+def test_backfill_converts_a_frame1_whose_own_frame1_differs(older, capsys):
+    """A frame1 document written before a column it may lack, or holding a unit recipe, reads
+    as a frame whose own frame1 differs from it, and converts to the canonical frame of that
+    frame, in that frame's `unit` layout."""
     document = json.loads(_frame1_bytes(_frame(1.0)))
-    index = document["columns"].index(dropped)
-    del document["columns"][index]
-    for row in document["rows"]:
-        del row[index]
+    older(document)
     data = json.dumps(document).encode()
     store = FakeVersionRecordDatasetStore()
     try:

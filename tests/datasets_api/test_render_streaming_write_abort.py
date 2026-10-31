@@ -11,16 +11,18 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from dfo_frame_grammar import Frame
 
 from artifact_store.store import LiveArtifactStore, Tier
+from datasets_api import render as render_module
 from datasets_api.mint_models import MintOptions
 from datasets_api.render import (
     render_and_store,
 )
 from materialise.enrichment import EnrichmentLookup
-from materialise.reshape import Table
 
 from ..artifact_store.conftest import FakeGCSClient, RecordingArtifactInventory
+from ._frame_chunks import frame_of_rows
 from ._graph_doubles import FakeMintGraphReader
 from ._render_inputs import PREPARED_AT, SITE
 
@@ -53,7 +55,12 @@ def _assert_nothing_landed(client: FakeGCSClient, inventory: RecordingArtifactIn
     assert inventory.calls == [], "no inventory row should have been recorded"
 
 
-_ROW = ("dcid:MalariaGrantDisbursements", "country/KEN", "2020", 1.0, "USD")
+def _rows(count: int) -> list[tuple[object, ...]]:
+    """`count` rows, one a recipient."""
+    return [
+        ("dcid:MalariaGrantDisbursements", f"country/R{index:04d}", "2020", 1.0, "USD")
+        for index in range(count)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -70,14 +77,17 @@ def test_render_and_store_streaming_write_aborts_when_the_chunk_iterator_raises(
     monkeypatch, failing_pass, rows, staged
 ):
     store, client, inventory = _live_store(monkeypatch)
+    # The render passes each 1,000 rows on as they arrive, before the iterator raises.
+    monkeypatch.setattr(render_module, "_RESHAPE_CHUNK_ROWS", 1_000)
     passes: list[int] = []
+    frame = frame_of_rows(_COLUMNS, _rows(rows))
 
     class _UpstreamFailure(Exception):
         pass
 
-    def _chunks() -> Iterator[Table]:
+    def _chunks() -> Iterator[Frame]:
         passes.append(len(passes) + 1)
-        yield Table(columns=_COLUMNS, rows=(_ROW,) * rows)
+        yield frame
         if len(passes) == failing_pass:
             raise _UpstreamFailure("fetch died mid-stream")
 

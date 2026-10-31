@@ -45,6 +45,7 @@ from dfo_frame_grammar import (
     unit_cells,
     unit_codes,
     unit_column_cells,
+    widen_frame_table,
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 from dfo_frame_grammar.grammar import (
@@ -898,6 +899,9 @@ def _frame1_values(cells: Sequence[object]) -> pa.Array:
 _PLAIN_UNIT_TYPE = canonical_frame_schema(derive_columns(())).field(UNIT_COLUMN).type
 """The `unit` column's type when no cell carries a recipe."""
 
+_RECIPE_UNIT_TYPE = canonical_frame_schema(derive_columns(()), recipe=True).field(UNIT_COLUMN).type
+"""The `unit` column's type when some cell carries a recipe."""
+
 
 def _frame1_units(cells: Sequence[object]) -> pa.Array:
     """The `unit` cells as an Arrow column `build_frame_from_arrow` reads: text when every cell
@@ -1018,11 +1022,17 @@ _CANONICAL_FRAME_COMPRESSION = "zstd"
 def write_canonical_frame(chunks: Iterable[Frame], *, sink: Sink) -> WrittenArtifact:
     """Streams the canonical frame of the rows of `chunks`, in order, into `sink` and returns
     `CANONICAL_FRAME_MEDIA_TYPE` metadata. Requires grammar `Frame` chunks sharing one column
-    tuple, in canonical row order, which `Frame.from_table` trusts on read. The bytes, digest and
-    size equal those of one frame holding every row, for one PyArrow version. At most one row
-    group of rows is buffered."""
+    tuple, in canonical row order, which `Frame.from_table` trusts on read. The file takes the
+    first chunk's `unit` layout, the recipe layout when one of its cells carries a recipe, and
+    a later chunk without one is widened to it. The bytes, digest and size equal those of one
+    frame holding every row, for one PyArrow version. At most one row group of rows is buffered.
+
+    Raises:
+        MaterialisationUsageError: A chunk carries a recipe where the first chunk holds none.
+    """
     first, stream = _prepare_stream(chunks)
-    schema = canonical_frame_schema(first.columns)
+    recipe = cast(Frame, first).table.schema.field(UNIT_COLUMN).type == _RECIPE_UNIT_TYPE
+    schema = canonical_frame_schema(first.columns, recipe=recipe)
     hashing = _HashingWriteWrapper(sink)
     # Stubs require nominal `IO`. Runtime accepts this `RawIOBase` write/flush/tell/closed shape.
     writer = pq.ParquetWriter(
@@ -1030,9 +1040,14 @@ def write_canonical_frame(chunks: Iterable[Frame], *, sink: Sink) -> WrittenArti
     )
     pending: list[pa.Table] = []
     pending_rows = 0
-    for chunk in stream:
-        pending.append(cast(Frame, chunk).table)
-        pending_rows += cast(Frame, chunk).table.num_rows
+    for index, chunk in enumerate(stream):
+        table = widen_frame_table(cast(Frame, chunk).table, recipe=recipe)
+        if table.schema.field(UNIT_COLUMN).type != schema.field(UNIT_COLUMN).type:
+            raise MaterialisationUsageError(
+                f"chunk {index} carries a unit recipe, but the first chunk holds none"
+            )
+        pending.append(table)
+        pending_rows += table.num_rows
         while pending_rows >= _CANONICAL_FRAME_ROW_GROUP_ROWS:
             buffered = pa.concat_tables(pending)
             group = buffered.slice(0, _CANONICAL_FRAME_ROW_GROUP_ROWS)
@@ -1050,28 +1065,64 @@ def write_canonical_frame(chunks: Iterable[Frame], *, sink: Sink) -> WrittenArti
 
 def read_canonical_frame_table(data: bytes, *, columns: Sequence[str] | None = None) -> pa.Table:
     """The stored canonical frame's table, or only `columns` of it, read from `data` for
-    `canonical_frame_rows` and `canonical_frame_document`. Its string columns stay dictionary
-    encoded, so each distinct string is decoded once. `pa.Table.validate` checks each dictionary
-    index and string before a reader takes them to Python.
+    `canonical_frame_rows` and `canonical_frame_document` and checked as `_checked_canonical_table`
+    checks it. Its string columns stay dictionary encoded, so each distinct string is decoded
+    once.
 
     Raises:
-        pa.ArrowInvalid: `data` is no Parquet file, or holds an array its own buffers contradict.
+        FrameError, pa.ArrowException, OSError, ValueError: As `_checked_canonical_table`.
     """
-    names = list(columns) if columns is not None else pq.read_schema(pa.BufferReader(data)).names
-    strings = [name for name in names if name not in _NON_STRING_FRAME_COLUMNS]
-    table = pq.read_table(pa.BufferReader(data), columns=names, read_dictionary=strings)
-    table.validate(full=True)
-    return table
+    return _checked_canonical_table(data, columns=columns, dictionary=True)
+
+
+def read_canonical_frame(data: bytes) -> Frame:
+    """The stored canonical frame `data` holds, every column, as a `Frame`, checked as
+    `_checked_canonical_table` checks it.
+
+    Raises:
+        FrameError, pa.ArrowException, OSError, ValueError: As `_checked_canonical_table`.
+    """
+    table = _checked_canonical_table(data, columns=None, dictionary=False)
+    return Frame.from_table(columns=tuple(table.column_names), table=table)
 
 
 _NON_STRING_FRAME_COLUMNS = frozenset((VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN))
 
 
-def read_canonical_frame(data: bytes) -> Frame:
-    """The stored canonical frame `data` holds, every column, as a `Frame`. Raises `FrameError`
-    `schema_violation` for a table outside the canonical schema."""
-    table = pq.read_table(pa.BufferReader(data))
-    return Frame.from_table(columns=tuple(table.column_names), table=table)
+def _checked_canonical_table(
+    data: bytes, *, columns: Sequence[str] | None, dictionary: bool
+) -> pa.Table:
+    """The one check of a stored canonical frame, which every reader of one takes: the file's
+    schema is a canonical frame's (`Frame.from_table`), `pa.Table.validate` checks each array,
+    dictionary index and string before a reader takes them to Python, and no grain or `value`
+    cell read is null. `Frame.from_table` trusts the cells, so a null grain cell would read
+    through it and fail where its rows are built. With `dictionary`, string columns stay
+    dictionary encoded.
+
+    Raises:
+        FrameError: `schema_violation` for a schema or a null cell outside the frame grammar.
+        pa.ArrowException, OSError, ValueError: `data` is no Parquet file, or holds an array its
+            own buffers contradict.
+    """
+    file = pq.ParquetFile(pa.BufferReader(data))
+    schema = file.schema_arrow
+    Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
+    names = list(columns) if columns is not None else schema.names
+    table = pq.read_table(
+        pa.BufferReader(data),
+        columns=names,
+        read_dictionary=(
+            [name for name in names if name not in _NON_STRING_FRAME_COLUMNS]
+            if dictionary
+            else None
+        ),
+    )
+    table.validate(full=True)
+    required = {STAT_VAR_COLUMN, *frame_entity_columns(schema.names), TIME_PERIOD_COLUMN}
+    for name in names:
+        if (name in required or name == VALUE_COLUMN) and table.column(name).null_count:
+            raise FrameError("schema_violation", f"a {name} cell is null")
+    return table
 
 
 def read_stored_frame(data: bytes, *, media_type: str) -> Frame:

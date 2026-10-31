@@ -10,6 +10,7 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp
 from code_index.types import StatVarRow
+from datasets_api import render as render_module
 from datasets_api.mint_models import GroupbyOptions, MintOptions, PivotOptions
 from datasets_api.render import _RenderReads, _reshape, _stream_bare_pivot, render_and_store
 from materialise.enrichment import EnrichmentLookup
@@ -18,6 +19,7 @@ from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.reshape import PivotNotUniqueError, RollupNotSummableError, Table
 
 from ._artifact_doubles import FakeArtifactStore
+from ._frame_chunks import frame_chunks_of
 from ._graph_doubles import FakeMintGraphReader
 from ._render_inputs import PREPARED_AT, SITE
 
@@ -269,9 +271,9 @@ def test_render_and_store_never_builds_a_concatenated_frame_chunks_for_this_comb
         )
 
     monkeypatch.setattr(ConcatenatedFrameChunks, "from_chunks", _refuse)
-    chunks = tuple(Table(columns=_COLUMNS, rows=(row,)) for row in _ONE_CONTRIBUTOR_ROWS)
+    monkeypatch.setattr(render_module, "_RESHAPE_CHUNK_ROWS", 1)
     rendered = render_and_store(
-        frame_chunks=lambda: iter(chunks),
+        frame_chunks=frame_chunks_of(_COLUMNS, (_ONE_CONTRIBUTOR_ROWS,)),
         options=_options(),
         spec={"spec_id": "collapses-nothing-pivot-e2e"},
         provenance_refs=["p1"],

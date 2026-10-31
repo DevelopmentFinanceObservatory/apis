@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 from dfo_frame_grammar import STATUS_COLUMN, FrameError
 
 from dfo_platform import ProblemSpec
@@ -61,52 +61,61 @@ class StoredFrameUnreadable(Exception):
         super().__init__(f"stored frame artifact_digest {digest!r} does not read as a frame")
 
 
+_UNDECODABLE = (FrameError, pa.ArrowException, OSError, ValueError)
+"""What a reader of stored frame bytes raises for bytes that do not decode as a frame: the
+grammar's refusal, and the Parquet and JSON readers' own errors for bytes they cannot parse."""
+
+
+@contextmanager
+def _decoding(digest: str) -> Iterator[None]:
+    """Refuse a failure of the block to decode the stored frame at `digest` as
+    `StoredFrameUnreadable`. `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing
+    about the bytes and propagates."""
+    try:
+        yield
+    except MemoryError:
+        raise
+    except _UNDECODABLE as exc:
+        raise StoredFrameUnreadable(digest=digest) from exc
+
+
 def read_stored_frame(data: bytes, *, media_type: str, digest: str) -> Frame:
     """A version's stored frame `data`, at `digest`, as a `Frame`: its frame1 document when
     `media_type` names one, read by `read_frame1`, else its canonical frame. The one way a
     Datasets reader reads a stored frame, so every door refuses the same artifact alike.
 
     Raises:
-        StoredFrameUnreadable: `materialise.formats.read_stored_frame` raised `FrameError`.
+        StoredFrameUnreadable: The bytes do not decode as a stored frame (`_decoding`).
     """
-    try:
+    with _decoding(digest):
         return formats.read_stored_frame(data, media_type=media_type)
-    except FrameError as exc:
-        raise StoredFrameUnreadable(digest=digest) from exc
 
 
 def stored_frame_rows(
     data: bytes, *, media_type: str, digest: str
 ) -> tuple[tuple[str, ...], Iterator[tuple[object, ...]]]:
     """The columns and rows of a version's stored frame `data`, at `digest`, without its
-    `status` column: its frame1 document read by `read_frame1`, or its canonical frame, whose
-    schema `Frame.from_table` checks before its columns are read. The rows are built a slice at
-    a time (`canonical_frame_rows`).
+    `status` column: its frame1 document read by `read_frame1`, or its canonical frame read by
+    `read_canonical_frame_table`, the check Presentation reads one by. The rows are built a
+    slice at a time (`canonical_frame_rows`).
 
     Raises:
-        StoredFrameUnreadable: The bytes do not read as a stored frame, when they are read or
-            while the rows are built.
+        StoredFrameUnreadable: The bytes do not decode as a stored frame (`_decoding`), when
+            they are read or while the rows are built.
     """
-    try:
+    with _decoding(digest):
         if media_type == formats.FRAME1_MEDIA_TYPE:
-            table = formats.read_frame1(data).table.drop_columns(STATUS_COLUMN)
+            table = formats.read_frame1(data).table
         else:
-            schema = pq.read_schema(pa.BufferReader(data))
-            Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
-            table = formats.read_canonical_frame_table(
-                data, columns=[name for name in schema.names if name != STATUS_COLUMN]
-            )
-    except (FrameError, pa.ArrowInvalid) as exc:
-        raise StoredFrameUnreadable(digest=digest) from exc
+            table = formats.read_canonical_frame_table(data)
+    table = table.drop_columns(STATUS_COLUMN)
     return tuple(table.column_names), _readable_rows(formats.canonical_frame_rows(table), digest)
 
 
 def _readable_rows(rows: Iterator[tuple[object, ...]], digest: str) -> Iterator[tuple[object, ...]]:
     """`rows`, with a cell that does not read raising `StoredFrameUnreadable` at `digest`."""
-    try:
+    with _decoding(digest):
         yield from rows
-    except FrameError as exc:
-        raise StoredFrameUnreadable(digest=digest) from exc
 
 
 def classify_store_exception(exc: BaseException) -> ProblemSpec | None:
