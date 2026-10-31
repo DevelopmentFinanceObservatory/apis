@@ -66,7 +66,8 @@ class CaseOutcome(StrEnum):
     """What `record_case` did with one stored recipe, and why a skipped one was skipped."""
 
     WRITTEN = "written"
-    # The frame holds no recipe, or it, a root version or a root's frame is no longer held.
+    # The frame holds no recipe, or it, a root version or a root's frame is no longer held, or
+    # the recipe reads a root with options the replay does not read (`RootRenderingUnreadable`).
     NOT_HELD = "not_held"
     # The frames together pass the byte limit.
     PAST_MAX_BYTES = "past_max_bytes"

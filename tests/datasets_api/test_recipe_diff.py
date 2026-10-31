@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from dfo_frame_grammar import Frame
 
-from datasets_api import recipe_replay
+from datasets_api import analysis, recipe_replay
 from datasets_api.analysis import (
     AnalysisBounds,
     AnalysisRequest,
@@ -176,26 +176,42 @@ def test_a_root_past_the_decode_bound_is_over_ceiling_and_compared_with_nothing(
     assert _counts(capsys)["severity"] == "INFO"
 
 
-def test_roots_past_the_root_row_cap_are_over_ceiling_and_compared_with_nothing(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("bound", "outcome", "differs"),
+    [
+        pytest.param("root_rows", "over_ceiling", 0, id="root-rows-over-ceiling"),
+        pytest.param("output_rows", "differs", 1, id="output-rows-differs"),
+    ],
+)
+def test_a_row_cap_refusal_is_over_ceiling_unless_the_output_outgrew_the_stored_one(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    bound: str,
+    outcome: str,
+    differs: int,
 ) -> None:
+    """Roots past the root-row cap refuse before anything is compared. An output past the rows
+    the publish door stores differs, since the stored output was published under that cap."""
     stores = Stores()
     _store_root(stores, AID, AID_V1, aid_frame())
     _store_root(stores, POPULATION, POPULATION_V1, population_frame())
     _analysed(stores, _PER_PERSON)
-    monkeypatch.setattr(
-        recipe_replay,
-        "compute_analysis",
-        functools.partial(compute_analysis, bounds=AnalysisBounds(max_root_rows=1)),
-    )
+    if bound == "root_rows":
+        monkeypatch.setattr(
+            recipe_replay,
+            "compute_analysis",
+            functools.partial(compute_analysis, bounds=AnalysisBounds(max_root_rows=1)),
+        )
+    else:
+        monkeypatch.setattr(analysis, "PUBLISH_MAX_ROWS", 1)
 
-    differs, lines = _diff(stores)
+    found, lines = _diff(stores)
 
-    assert differs == 0
+    assert found == differs
     (line,) = lines
-    assert (line["outcome"], line["computed"]) == ("over_ceiling", None)
-    assert line["detail"].startswith("analysis_root_rows: ")
-    assert _counts(capsys)["over_ceiling"] == 1
+    assert (line["outcome"], line["computed"]) == (outcome, None)
+    assert line["detail"].startswith(f"analysis_{bound}: ")
+    assert _counts(capsys)[outcome] == 1
 
 
 def _objects(stores: Stores) -> dict[str, dict[str, bytes]]:

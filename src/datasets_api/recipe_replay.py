@@ -22,12 +22,14 @@ reports the stored frame's `cv_` alone. Its `Replay.outcome` is one of:
 
 - `equal`: both match;
 - `differs`: either differs, or the runner refuses or fails on a recipe whose roots and stored
-  frame it read;
+  frame it read, an output past the rows the publish door stores (`analysis_output_rows`)
+  included, since the stored output, published under that cap, holds fewer;
 - `roots_unreadable`: a root version or its frame is no longer held, or the recipe reads a
   root with options the runner does not read;
-- `over_ceiling`: the runner refuses past a bound before anything is compared, a root stored
-  as a frame1 document past the decode bound, roots past the root-row cap, or an output past
-  the rows the publish door stores, its `detail` naming the ceiling kind;
+- `over_ceiling`: the runner refuses past a bound before anything is compared, a tree past the
+  node cap (`analysis_nodes`), roots past the root-row cap (`analysis_root_rows`), or a root
+  stored as a frame1 document past the decode bound (`bytes`), its `detail` naming the ceiling
+  kind;
 - `frame_unreadable`: the stored frame itself is no longer held.
 
 `recipe_family` sorts a recipe as `compare` when any of its steps is a `compare`, else `sum_of`
@@ -336,7 +338,11 @@ def replay_recipe(
         return replay(outcome=ReplayOutcome.ROOTS_UNREADABLE, stored=stored, detail=str(unreadable))
     except (AnalysisTooLarge, OverCeilingError) as bounded:
         return replay(
-            outcome=ReplayOutcome.OVER_CEILING,
+            outcome=(
+                ReplayOutcome.DIFFERS
+                if bounded.ceiling_kind == "analysis_output_rows"
+                else ReplayOutcome.OVER_CEILING
+            ),
             stored=stored,
             detail=f"{bounded.ceiling_kind}: {bounded}",
         )
