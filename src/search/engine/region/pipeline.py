@@ -349,11 +349,15 @@ async def resolve_variable(
         )
 
     async def attempt(
-        *, party_words_off: bool, sink: EventSink | None, carried: Sequence[str] = ()
-    ) -> tuple[RegionResult, tuple[str, ...]]:
-        """One resolution of the part and the reads it swallowed, read with or without the
-        words that name a party. `carried` are reads an abandoned resolution
-        swallowed, noted on this one."""
+        *,
+        party_words_off: bool,
+        sink: EventSink | None,
+        carried: DegradedReads | None = None,
+        carried_consulted: bool = False,
+    ) -> tuple[RegionResult, DegradedReads]:
+        """One resolution of the part and its record, read with or without the words that
+        name a party. `carried` is the record of an abandoned resolution, carried into this
+        one with its consulted scopes when `carried_consulted` (`degraded_reads.carry`)."""
         state = new_state(
             pool="ours",
             emit=sink,
@@ -375,8 +379,8 @@ async def resolve_variable(
                 recording_degraded_reads() as lost,
                 scoped_reads(allowed if source_scope is not None and source_scope.named else None),
             ):
-                for read in carried:
-                    note_degraded_read(read)
+                if carried is not None:
+                    carry(carried, consulted=carried_consulted)
                 with recording_un_blocked_places() as un_blocked:
                     enter_phase("recall")
                     with scoped_reads(allowed):
@@ -413,7 +417,7 @@ async def resolve_variable(
                             result, state.graph, deadline=state.deadline
                         )
         except PartyReadingWithdrawn as exc:
-            raise PartyReadingWithdrawn(lost=tuple(lost.reads)) from exc
+            raise PartyReadingWithdrawn(lost=lost) from exc
         except Exception as exc:
             # A party reading that fails or refuses is withdrawn, whatever the cause: the
             # resolution without party words makes the reads and elections the base makes,
@@ -434,9 +438,9 @@ async def resolve_variable(
                 logger.exception(
                     "the party reading of part %d (%r) failed", variable_index, variable
                 )
-            raise PartyReadingWithdrawn(
-                lost=(*lost.reads, "party reading") if failed_read else tuple(lost.reads),
-            ) from exc
+            if failed_read:
+                lost.reads.append("party reading")
+            raise PartyReadingWithdrawn(lost=lost) from exc
         if result.specs and state.scope is not None and state.scope.named:
             # An included source none of whose provenances the answer binds served nothing of
             # it, and only the read knows which provenances served.
@@ -451,7 +455,7 @@ async def resolve_variable(
             # the exclusions that removed nothing.
             result = dataclasses.replace(result, source_scope=state.scope)
         result = dataclasses.replace(result, degraded=True) if lost.degraded else result
-        return result, tuple(lost.reads)
+        return result, lost
 
     # A part stating a word that names a party (`place_roles.stated_party_words`) is read
     # with it first. The answer stands only when every Spec binds the party on the word's
@@ -459,7 +463,9 @@ async def resolve_variable(
     # of a request that states none, so nothing of the first reading reaches the reply: its
     # events are held back until it stands. The reply reports the model usage of both
     # readings, the first's read from every call it made wherever it ended
-    # (`recording_llm_usage`), and notes the reads the first swallowed or failed.
+    # (`recording_llm_usage`), and carries the first's record: its lost reads always, and the
+    # scopes it consulted when its answer was withdrawn for want of data, which those scopes
+    # decided.
     probe = new_state(
         pool="ours", emit=None, deadline=_options.deadline, timing={}, party_words_off=False
     )
@@ -478,14 +484,17 @@ async def resolve_variable(
                 party_words_off=False, sink=None if emit is None else hold
             )
         except PartyReadingWithdrawn as withdrawn:
-            carried = withdrawn.lost
+            carried, no_data = withdrawn.lost, False
         else:
             if binds_each_party(first, named):
                 if emit is not None:
                     for event in held:
                         await emit(event)
                 return first
-    result, _lost = await attempt(party_words_off=True, sink=emit, carried=carried)
+            no_data = not first.specs
+    result, _lost = await attempt(
+        party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
+    )
     usage = functools.reduce(_sum_usage, spent.calls, result.llm_usage)
     return dataclasses.replace(result, llm_usage=usage)
 

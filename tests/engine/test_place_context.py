@@ -55,6 +55,7 @@ from tests.engine._builders import flow_place_roles, subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
+from tests.engine._presence import raw_presence
 from tests.fixtures import FakeGraph
 
 _KEN = "country/KEN"
@@ -213,7 +214,7 @@ class TestReadDefaultPresence:
         assert sorted(sdmx.reads) == [_FEMALE, _MALE]
         assert presence.consulted_scope(_FEMALE) == _PRESENCE.scope(_FEMALE)
         assert presence.consulted_scope(_MALE) == _PRESENCE.scope(_MALE)
-        assert presence._presence.unsettled == frozenset()
+        assert raw_presence(presence).unsettled == frozenset()
 
     def test_an_earth_listing_naming_no_country_refuses_as_a_graph_failure(self) -> None:
         """Search refuses an Earth listing that names no country as it refuses any failed
@@ -241,7 +242,7 @@ class TestReadDefaultPresence:
         sdmx.reads.clear()
 
         assert _read(graph, sdmx, [_FEMALE], known=known) is known
-        assert _read(graph, sdmx, [])._presence.scopes == {}
+        assert raw_presence(_read(graph, sdmx, [])).scopes == {}
         assert graph.calls == []
         assert sdmx.reads == []
 
@@ -687,8 +688,8 @@ def test_the_alternates_presence_read_is_merged_into_the_requests_presence() -> 
     reason = asyncio.run(_await_alternates_presence(cast(Any, state), alternates_read))
 
     assert reason is None
-    assert state.default_presence._presence.countries == countries
-    assert dict(state.default_presence._presence.scopes) == {
+    assert raw_presence(state.default_presence).countries == countries
+    assert dict(raw_presence(state.default_presence).scopes) == {
         _MALE: _PRESENCE.scope(_MALE),
         _FEMALE: _PRESENCE.scope(_FEMALE),
     }

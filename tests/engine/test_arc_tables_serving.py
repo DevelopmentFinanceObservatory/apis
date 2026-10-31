@@ -40,7 +40,6 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import FamilyNotResolvableError, GraphReadFailure
 from search.engine.place import ConsultedPresence
 from search.engine.quantity import QuantityRequirement
@@ -117,6 +116,7 @@ from tests.engine._binders import elected_reply
 from tests.engine._builders import subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._presence import raw_presence
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.graph_release.recorded import recorded_dfo_arcs
@@ -1049,7 +1049,7 @@ def test_unbinding_reads_the_presence_the_relaxed_resolve_needs(
 
     def read_default_presence(*, stat_vars, known, **_kwargs: object) -> ConsultedPresence:
         asked.append(list(stat_vars))
-        return _presence_of([*known._presence.scopes, *stat_vars])
+        return _presence_of([*raw_presence(known).scopes, *stat_vars])
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
     state = SimpleNamespace(
@@ -1070,7 +1070,7 @@ def test_unbinding_reads_the_presence_the_relaxed_resolve_needs(
     assert read == [_BONDS]
     assert asked == [[_IMF_GG]]
     assert set(default_scope_members(shape, [debtor], ())) <= set(
-        state.default_presence._presence.scopes
+        raw_presence(state.default_presence).scopes
     )
 
 
@@ -1592,26 +1592,26 @@ def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
     known = _presence_of([_BONDS])
 
     def read_default_presence(*, stat_vars, known, **_kwargs: object) -> ConsultedPresence:
-        return _presence_of([*known._presence.scopes, *stat_vars], unsettled=stat_vars)
+        return _presence_of([*raw_presence(known).scopes, *stat_vars], unsettled=stat_vars)
 
     monkeypatch.setattr(region_state, "read_default_presence", read_default_presence)
     place = place_context(shape, subject_place_roles(), stat_vars=[_BONDS], presence=known)
 
-    with recording_degraded_reads() as lost:
-        read = _materialise_alt_shapes(
-            [alternate],
-            places=[place],
-            presence=known,
-            named_place_dcids=[],
-            graph=client,
-            sdmx=FakeSdmxClient(observations={}, availability={}),
-            date_request=None,
-            coverage=empty_coverage_snapshot(),
-        )
+    read = _materialise_alt_shapes(
+        [alternate],
+        places=[place],
+        presence=known,
+        named_place_dcids=[],
+        graph=client,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        date_request=None,
+        coverage=empty_coverage_snapshot(),
+    )
 
-    assert lost.unsettled == set()
-    assert [record.unsettled for _, record in read.consulted] == [{_IMF_GG}]
-    assert read.presence is not None and _BONDS not in read.presence._presence.unsettled
+    # The alternate's reading consulted its top-up's countries fallback into its own record,
+    # which admission carries (`candidate_admission`).
+    assert [record.unsettled for record in read.consulted] == [{_IMF_GG}]
+    assert read.presence is not None and _BONDS not in raw_presence(read.presence).unsettled
 
 
 def test_each_default_scope_taker_is_elected_once_off_the_event_loop(

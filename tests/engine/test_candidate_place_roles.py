@@ -39,7 +39,7 @@ from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
-from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
@@ -99,6 +99,7 @@ from tests.engine._fake_coverage import (
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query, offline_resolve
+from tests.engine._presence import raw_presence
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine._search_app import search_app
 from tests.engine._virtual_clock import VirtualRequests
@@ -2095,7 +2096,8 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
     assert asyncio.run(_phase_place_bindings(state)) is None
     assert state.default_presence is not None
     assert {
-        sv: frozenset(scope.places) for sv, scope in state.default_presence._presence.scopes.items()
+        sv: frozenset(scope.places)
+        for sv, scope in raw_presence(state.default_presence).scopes.items()
     } == {
         _GNI_PPP: frozenset({_GHA}),
         atlas: frozenset({_NOR}),
@@ -2864,7 +2866,11 @@ def test_an_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
         candidate_admission,
         "_materialise_alt_shapes",
         lambda alternates, *args, presence, **kwargs: _AlternatesRead(
-            [], None, presence, tuple((alternate, reason) for alternate in alternates)
+            [],
+            None,
+            presence,
+            tuple((alternate, reason) for alternate in alternates),
+            tuple(DegradedReads() for _ in alternates),
         ),
     )
 

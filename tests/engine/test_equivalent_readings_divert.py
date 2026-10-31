@@ -15,6 +15,7 @@ from materialise import place_scope
 from search.engine.binders import Binder
 from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.envelope import now_ms
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
@@ -227,6 +228,28 @@ def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
     [twin] = result.specs[0].resolved.equivalent_readings or []
     assert _sv_refs(twin) == {_ELEC_SDG}
     assert result.degraded is unsettled
+
+
+@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
+def test_an_equivalent_passed_over_on_an_unsettled_scope_keeps_the_answer_uncached(
+    monkeypatch: pytest.MonkeyPatch, unsettled: bool
+) -> None:
+    """The elected series has no data, so its equivalents stand in, in menu order
+    (`_reelect_zero_observation_sibling`). The SDG copy, read over its own default scope,
+    shows none, and the DFO series answers: the SDG copy's scope decided the choice. The
+    DFO series' member walk settles nothing here, a lost read either way, so the test reads
+    the scopes the part consulted."""
+    with recording_degraded_reads() as lost:
+        result = _placeless(
+            monkeypatch,
+            [_MORT_WB, _MORT_SDG, _MORT_DFO],
+            {f"{_MORT_DFO}|country/KEN": [_facet(provenance_id="source/DFO")]},
+            unsettled=frozenset({_MORT_SDG} if unsettled else ()),
+        )
+
+    assert result.status == "definite", result
+    assert _sv_refs(result.specs[0]) == {_MORT_DFO}
+    assert lost.unsettled == ({_MORT_SDG} if unsettled else set())
 
 
 # A genuine twin diverts: definite, with the twin named in equivalent_readings.

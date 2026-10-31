@@ -18,9 +18,14 @@ pass runs, so `pipeline._fill_gap` notes them then, and a place-options scope's 
 does not hold.
 
 The record spans every pass of a resolution, so a fact noted in a pass reaches the region
-whichever pass answers. A party reading abandoned for the reading without party words hands its
-lost reads to that reading (`pipeline.resolve_variable`), and keeps the scopes it consulted:
-those shaped an answer the reply does not hold.
+whichever pass answers. A reading the part may set aside records into a record of its own,
+and the outcome that compares readings hands each record on with `carry` under one rule: its
+lost reads always, and the scopes it consulted only when the outcome's rule compared that
+reading's result. A party reading withdrawn for want of data hands on both
+(`pipeline.resolve_variable`), and one withdrawn for another reason its lost reads alone. A
+re-election stand-in hands on both when the choice compared it, the winner and the equivalents
+ahead of it (`phase_place_materialise._reelect_zero_observation_sibling`), and every
+alternate admission reads hands on both (`candidate_admission`).
 
 Only a read an answer depends on is noted. A fact left unknown because no read was asked for
 is not: a one-shape bind menu skips the availability read over a named set's places
@@ -61,11 +66,13 @@ _RECORD: ContextVar[DegradedReads | None] = ContextVar("search_degraded_reads", 
 def recording_degraded_reads(
     *, detached: bool = False, into: DegradedReads | None = None
 ) -> Iterator[DegradedReads]:
-    """Collect, for the body of the `with` block, the reads it swallows, in `into` when given,
-    so one reading recorded in several blocks keeps one record. A `detached` record keeps
-    them from the outer record when it closes."""
+    """Collect, for the body of the `with` block, the reads it swallows. A `detached` record
+    keeps them from the outer record when it closes. Given `into`, the block records into
+    that record, which belongs to one reading recorded over several blocks, and is detached:
+    its owner carries it (`carry`)."""
     outer = _RECORD.get()
     record = DegradedReads() if into is None else into
+    detached = detached or into is not None
     token = _RECORD.set(record)
     try:
         yield record

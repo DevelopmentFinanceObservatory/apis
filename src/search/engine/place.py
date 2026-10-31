@@ -11,7 +11,7 @@ query that names no place takes the default place scope the datasets mint takes
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -88,7 +88,6 @@ def default_place_scope_message(scope: DefaultPlaceScope) -> str:
     )
 
 
-@dataclass(frozen=True)
 class ConsultedPresence:
     """A default-scope presence read (`materialise.place_scope.DefaultPresence`) as Search
     reads it.
@@ -98,9 +97,26 @@ class ConsultedPresence:
     alone took (`degraded_reads.note_unsettled_scope`), so the answer the decision shapes
     stays out of the response cache. A cache warm reads through `warming_places`, which
     notes nothing, and `covers` reads no scope. A presence no decision consults notes
-    nothing."""
+    nothing. The read itself stays private, so Search cannot read a scope around them."""
 
-    _presence: DefaultPresence
+    __slots__ = ("_presence",)
+
+    def __init__(self, presence: DefaultPresence) -> None:
+        self._presence = presence
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ConsultedPresence) and self._presence == other._presence
+
+    def __hash__(self) -> int:
+        return hash(self._presence)
+
+    def __repr__(self) -> str:
+        return f"ConsultedPresence({self._presence!r})"
+
+    def read_more(self, read: Callable[[DefaultPresence], DefaultPresence]) -> ConsultedPresence:
+        """The presence `read` gives over this one, this one itself when it adds nothing."""
+        presence = read(self._presence)
+        return self if presence is self._presence else ConsultedPresence(presence)
 
     def consulted_scope(self, stat_var: str) -> DefaultPlaceScope:
         """The default scope of `stat_var`, for a decision that reads it."""
@@ -165,19 +181,16 @@ def read_default_presence(
     reader started, so the error carries no SDMX client's type. A read the deadline
     ends raises `place_scope.PlaceScopeDeadlineError`, a `TimeoutError`, which Search refuses
     as a timeout."""
-    try:
-        presence = place_scope.read_default_presence(
-            graph=graph,
-            availability=sdmx,
-            stat_vars=stat_vars,
-            known=None if known is None else known._presence,
-            deadline=deadline,
-        )
-    except (DefaultScopeUnknownError, PlaceScopeReadError) as exc:
-        raise GraphReadFailure(str(exc), upstream_status=exc.upstream_status) from exc
-    return (
-        known if known is not None and presence is known._presence else ConsultedPresence(presence)
-    )
+
+    def read(raw: DefaultPresence | None) -> DefaultPresence:
+        try:
+            return place_scope.read_default_presence(
+                graph=graph, availability=sdmx, stat_vars=stat_vars, known=raw, deadline=deadline
+            )
+        except (DefaultScopeUnknownError, PlaceScopeReadError) as exc:
+            raise GraphReadFailure(str(exc), upstream_status=exc.upstream_status) from exc
+
+    return ConsultedPresence(read(None)) if known is None else known.read_more(read)
 
 
 def earth_countries(

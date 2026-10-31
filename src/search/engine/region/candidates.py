@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from dc_graph import GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
@@ -108,7 +108,10 @@ class _Candidate:
     status rule offers it beside the elected shape (`status_rule`), `None` for the elected
     shape itself and for a reading that rides on a refusal, and the records of the words its
     own read leaves unread, its coverage records (`phase_election.judge_answer_coverage`), `None`
-    for the elected shape, which reads the elected answer's (`requirements.judge`)."""
+    for the elected shape, which reads the elected answer's (`requirements.judge`). An
+    alternate's `consulted` is the record of its own reading (`_materialise_alt_shapes`),
+    which the outcome that offers or answers through it carries; the elected shape's
+    reading records into the part's own record, so its `consulted` is empty."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
@@ -117,6 +120,7 @@ class _Candidate:
     walked: WalkedMembers | None
     basis: CandidateBasis | None = None
     uncovered: tuple[ResolvedQualifier, ...] | None = None
+    consulted: DegradedReads = field(default_factory=DegradedReads)
 
 
 def _prewarm_places(
@@ -385,10 +389,10 @@ class _AlternatesRead(NamedTuple):
     blocking: UnsupportedDraft | None
     presence: ConsultedPresence | None
     unevaluated: tuple[tuple[_Alternate, AlternateUnevaluatedReason], ...]
-    # Each alternate's own record of the scopes its reading consulted and the reads it lost
-    # (`degraded_reads.carry`), in `alternates` order. The caller carries those of the
-    # readings the answer stands on.
-    consulted: tuple[tuple[_Alternate, DegradedReads], ...] = ()
+    # Each alternate's own record of the scopes its reading consulted and the reads it lost,
+    # in `alternates` order. The caller carries those of the readings its rule compared
+    # (`degraded_reads.carry`).
+    consulted: tuple[DegradedReads, ...]
 
 
 def _materialise_alt_shapes(
@@ -442,15 +446,14 @@ def _materialise_alt_shapes(
     """
     # Prewarm key: one for every default-scoped shape, else the probe places themselves.
     # Each batch maps its members to the places they are read at, the first shape's first.
-    readable: list[tuple[_Alternate, PlaceContext | UnsettledPlace]] = []
     # What each alternate's own reading consulted and lost, in a record of its own.
-    consulted: dict[int, DegradedReads] = {}
+    consulted = tuple(DegradedReads() for _ in alternates)
+    readable: list[tuple[_Alternate, PlaceContext | UnsettledPlace, DegradedReads]] = []
     prewarms: dict[tuple[str, ...] | None, dict[str, tuple[str, ...]]] = {}
-    for alternate, unsettled in zip(alternates, places, strict=True):
+    for alternate, unsettled, record in zip(alternates, places, consulted, strict=True):
         shape = alternate.shape
-        record = consulted[id(alternate)] = DegradedReads()
         try:
-            with recording_degraded_reads(detached=True, into=record):
+            with recording_degraded_reads(into=record):
                 place = unread_context(unsettled)
         except PlaceSetTooLargeError as exc:
             _drop_over_bound(alternate, exc, over_bound)
@@ -461,7 +464,7 @@ def _materialise_alt_shapes(
                 alternate.shape.shape_id,
             )
             continue
-        readable.append((alternate, unsettled))
+        readable.append((alternate, unsettled, record))
         if is_role_bearing(shape):
             # It resolves from coverage (`graph_confirm_resolve`), so it reads no warmed facet.
             continue
@@ -494,8 +497,8 @@ def _materialise_alt_shapes(
 
     results: list[_Candidate] = []
     unevaluated: list[tuple[_Alternate, AlternateUnevaluatedReason]] = []
-    for alternate, unsettled in readable:
-        with recording_degraded_reads(detached=True, into=consulted[id(alternate)]):
+    for alternate, unsettled, record in readable:
+        with recording_degraded_reads(into=record):
             bindings = list(alternate.bindings)
             # The presence the alternate is read over, the last topped up after unbinding.
             presences = [presence]
@@ -574,13 +577,7 @@ def _materialise_alt_shapes(
                 # Its presence read under the relaxed bindings failed (`_presence_after_unbinding`).
                 continue
             if isinstance(result, UnsupportedDraft):
-                return _AlternatesRead(
-                    results,
-                    result,
-                    presence,
-                    tuple(unevaluated),
-                    tuple((a, consulted[id(a)]) for a in alternates),
-                )
+                return _AlternatesRead(results, result, presence, tuple(unevaluated), consulted)
             if isinstance(result, Materialised) and result.has_data:
                 if alternate.unverified:
                     result = dataclasses.replace(result, membership_unverified=True)
@@ -591,15 +588,10 @@ def _materialise_alt_shapes(
                         result,
                         place.settled(result),
                         alternate.walked,
+                        consulted=record,
                     )
                 )
-    return _AlternatesRead(
-        results,
-        None,
-        presence,
-        tuple(unevaluated),
-        tuple((a, consulted[id(a)]) for a in alternates),
-    )
+    return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)
 
 
 def _presence_after_unbinding(

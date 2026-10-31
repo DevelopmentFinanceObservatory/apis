@@ -48,6 +48,7 @@ from search.engine.region.candidate_options import _elected_sibling_warning
 from search.engine.region.candidates import (
     _Alternate,
     _AlternatesRead,
+    _Candidate,
     _materialise_alt_shapes,
     alternate_representative,
     settle_alternate,
@@ -1911,26 +1912,22 @@ async def _reelect_zero_observation_sibling(
     )
     # Siblings sharing probe places share one materialise call, so its facet prewarm covers
     # them in one read, and the calls of separate probe places run side by side.
-    # What each stand-in's own reading consulted and lost, by menu index. Only the readings the
-    # part goes on to stand on carry what they consulted (`_carry_stand_ins`).
-    stand_ins: dict[int, list[DegradedReads]] = {i: [] for i in _walked}
-    by_scope: dict[tuple[str, ...] | None, list[tuple[_Alternate, UnsettledPlace]]] = {}
+    by_scope: dict[tuple[str, ...] | None, list[tuple[int, _Alternate, UnsettledPlace]]] = {}
     for (i, walked), place in zip(_walked.items(), places, strict=True):
         try:
-            with recording_degraded_reads(detached=True) as grouping:
+            # Grouping decides nothing; the stand-in's own reading consults these scopes again.
+            with recording_degraded_reads(detached=True):
                 scope = place.unread().probe_dcids
         except PlaceSetRefusedError:
             # A sibling that cannot bind its places is not probed or offered.
             continue
-        finally:
-            stand_ins[i].append(grouping)
-        by_scope.setdefault(scope, []).append((walked.alternate, place))
+        by_scope.setdefault(scope, []).append((i, walked.alternate, place))
     _scope_results: list[_AlternatesRead] = await asyncio.gather(
         *[
             asyncio.to_thread(
                 _materialise_alt_shapes,
-                [alternate for alternate, _ in members],
-                places=[place for _, place in members],
+                [alternate for _, alternate, _ in members],
+                places=[place for _, _, place in members],
                 presence=state.default_presence,
                 named_place_dcids=state.standard_place_dcids,
                 graph=state.graph,
@@ -1942,14 +1939,16 @@ async def _reelect_zero_observation_sibling(
             for members in by_scope.values()
         ]
     )
+    # Each stand-in's reading, its record, by menu index.
+    readings = dict(
+        sorted(
+            (i, record)
+            for members, _scope_read in zip(by_scope.values(), _scope_results, strict=True)
+            for (i, _, _), record in zip(members, _scope_read.consulted, strict=True)
+        )
+    )
     for _scope_read in _scope_results:
         merge_presence(state, _scope_read.presence)
-        stand_ins.update(
-            (i, [*stand_ins[i], record])
-            for i in _walked
-            for alternate, record in _scope_read.consulted
-            if _walked[i].alternate is alternate
-        )
         record_unevaluated(
             state,
             {
@@ -1964,43 +1963,37 @@ async def _reelect_zero_observation_sibling(
     _index_by_group = {_shape_group_key(_walked[i].shape): i for i in _walked}
     # An over-cap sibling, or one whose presence read after unbinding did not complete, is
     # unevaluated. Keep the elected no-observations result rather than treating that sibling
-    # as disproven or surfacing a cap refusal.
+    # as disproven or surfacing a cap refusal. It stands whatever the stand-ins read.
     if any(
         _scope_read.blocking is not None or _scope_read.unevaluated
         for _scope_read in _scope_results
     ):
-        # The elected result stands whatever the stand-ins read.
-        _carry_stand_ins(stand_ins, standing=())
+        _carry_readings(readings, compared=())
         return mat_result
-    _sibling_candidates = [
-        cand for _scope_read in _scope_results for cand in _scope_read.candidates
-    ]
-    if not _sibling_candidates:
-        # Every stand-in showed no data, so each one's scope shaped the elected answer.
-        _carry_stand_ins(stand_ins, standing=_walked)
+    _with_data = {
+        _index_by_group[_shape_group_key(cand.shape)]: cand
+        for _scope_read in _scope_results
+        for cand in _scope_read.candidates
+    }
+    # The first equivalent reading with data answers, compared in menu order, so the
+    # equivalents ahead of it, which showed none, decided the choice with it. Failing one, a
+    # lone qualifier sibling with data answers, and several are offered; either outcome
+    # compared every stand-in, as does keeping the elected result when none has data.
+    _winner: _Candidate | None = None
+    compared: list[int] = []
+    for i in readings:
+        if i in equivalents:
+            compared.append(i)
+            if (_winner := _with_data.get(i)) is not None:
+                break
+    if _winner is None:
+        compared = list(readings)
+        if len(_with_data) == 1:
+            [_winner] = _with_data.values()
+    _carry_readings(readings, compared=compared)
+    if not _with_data:
         return mat_result
-    # ``state.reelection_siblings`` ascend, so this restores menu order across scope groups.
-    _sibling_candidates.sort(key=lambda cand: _index_by_group[_shape_group_key(cand.shape)])
-
-    _answering = [
-        cand
-        for cand in _sibling_candidates
-        if _index_by_group[_shape_group_key(cand.shape)] in equivalents
-    ]
-    if not _answering and len(_sibling_candidates) == 1:
-        _answering = _sibling_candidates
-    if _answering:
-        _winner = _answering[0]
-        _winner_index = _index_by_group[_shape_group_key(_winner.shape)]
-        # The first equivalent with data answers, so the equivalents ahead of it, which
-        # showed none, shaped the choice too. A lone qualifier sibling answers because no
-        # other stand-in showed data.
-        _carry_stand_ins(
-            stand_ins,
-            standing=[i for i in _walked if i in equivalents and i <= _winner_index]
-            if _winner_index in equivalents
-            else _walked,
-        )
+    if _winner is not None:
         _no_data_label = state.shape_draft.label
         _install_shape(
             state,
@@ -2017,24 +2010,17 @@ async def _reelect_zero_observation_sibling(
         )
         state.warnings.append(state.reelection_warning)
     else:
-        state.sibling_candidates = {
-            _index_by_group[_shape_group_key(cand.shape)]: cand for cand in _sibling_candidates
-        }
-        _carry_stand_ins(stand_ins, standing=_walked)
+        state.sibling_candidates = dict(sorted(_with_data.items()))
     return mat_result
 
 
-def _carry_stand_ins(
-    stand_ins: Mapping[int, list[DegradedReads]], *, standing: Iterable[int]
-) -> None:
-    """Carry each stand-in's records into the part's (`degraded_reads.carry`): every lost
-    read, and the scopes consulted only by the stand-ins at `standing`, those whose reads
-    decided what the part answers or offers. A stand-in the choice never reached shaped no
-    answer the reply holds."""
-    standing = frozenset(standing)
-    for i, records in stand_ins.items():
-        for record in records:
-            carry(record, consulted=i in standing)
+def _carry_readings(readings: Mapping[int, DegradedReads], *, compared: Iterable[int]) -> None:
+    """Carry each stand-in reading's record into the part's (`degraded_reads.carry`): every
+    lost read, and the scopes consulted by the readings at `compared`, those the outcome's
+    rule compared. A reading the rule never reached shaped no answer the reply holds."""
+    compared = frozenset(compared)
+    for i, record in readings.items():
+        carry(record, consulted=i in compared)
 
 
 async def _phase_materialise(state: ResolveState) -> RegionResult | None:

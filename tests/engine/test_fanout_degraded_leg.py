@@ -19,7 +19,7 @@ from search.engine.errors import GraphInfraError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.place import ConsultedPresence, read_default_presence
 from search.engine.region import RegionResult
-from search.engine.region.phase_place_materialise import _carry_stand_ins
+from search.engine.region.phase_place_materialise import _carry_readings
 from search.engine.region.result import any_degraded
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -249,7 +249,7 @@ def test_a_stand_in_s_scopes_count_only_where_it_decided_the_answer() -> None:
     )
 
     with recording_degraded_reads() as lost:
-        _carry_stand_ins({0: [standing], 1: [passed_over]}, standing=[0])
+        _carry_readings({0: standing, 1: passed_over}, compared=[0])
 
     assert (lost.reads, lost.unsettled) == (["walk", "dates"], {_SERVED})
 

@@ -127,7 +127,7 @@ async def _materialise_candidates(
         )
         merge_presence(state, read.presence)
         # Every alternate the admission reads shapes the offer.
-        for _alternate, record in read.consulted:
+        for record in read.consulted:
             carry(record)
         # An alternate whose presence read after unbinding did not complete is unevaluated,
         # as one the read above left without presence is.
