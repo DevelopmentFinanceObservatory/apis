@@ -11,9 +11,12 @@ HTTP error bodies use the shared RFC 9457 `ProblemDetails` type from
 
 from __future__ import annotations
 
+from fastapi.exceptions import RequestValidationError
+
 import dc_graph
 from dc_sdmx import SdmxClientError
-from dfo_platform import Alternative, Cause, ProblemSpec
+from dfo_platform import Alternative, Cause, ProblemSpec, refusal
+from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
 from materialise.errors import UpstreamResponseError, UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 
@@ -75,9 +78,9 @@ as failed reads and omits what they leave unread, beside `TimeoutError` for the 
 SDMX deadline (`observations.fetch`, `observations.bulk_conversion`)."""
 
 
-def engine_problem(exc: BaseException) -> ProblemSpec | None:
-    """The refusal a pipeline failure answers with, or `None` when it is not one of Search's
-    own. It logs nothing, so the `resolve` log line can name the code the route serves."""
+def search_problem(exc: BaseException) -> ProblemSpec | None:
+    """The refusal Search answers `exc` with, or `None` to defer to the platform's. It logs
+    nothing (`app.classify_search_exception` is the logging wrapper)."""
     if isinstance(exc, EngineInputError):
         # Code-less routing failures keep generic code and detail to prevent ID probing.
         code = exc.code if exc.code is not None else "request_invalid"
@@ -104,9 +107,40 @@ def engine_problem(exc: BaseException) -> ProblemSpec | None:
         if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
             return ProblemSpec(status=502, code="upstream_error", retryable=True)
         return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+    if isinstance(exc, RequestValidationError):
+        # The platform maps body errors to 400 and schema-version errors to 422. Search adds
+        # a field-specific refinement below.
+        problem = validation_problem(exc)
+        errors = exc.errors()
+        # Unsupported identity versions and recognised future facet axes also map to 422.
+        # Match the nested field path or Pydantic error type. A top-level schema-version error
+        # already maps to 422 in the platform.
+        if problem.code == "request_invalid":
+            version_error = next(
+                (
+                    e
+                    for e in errors
+                    if error_field_loc(e)[-1:] == ["identity_version"]
+                    or e.get("type") == "facet_axis_higher_schema_version"
+                ),
+                None,
+            )
+            if version_error is not None:
+                problem = problem._replace(
+                    code="unsupported_schema_version",
+                    status=422,
+                    pointer=pointer_for_error(exc, version_error),
+                    detail=None,
+                )
+        return problem
     if isinstance(exc, TimeoutError):
         return ProblemSpec(status=504, code="timeout", retryable=True)
     return None
+
+
+def served_problem(exc: BaseException) -> ProblemSpec:
+    """The refusal the route serves for `exc`, Search's own else the platform's."""
+    return search_problem(exc) or refusal.default_problem(exc)
 
 
 class LLMInfraError(EngineInfraError):

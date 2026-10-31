@@ -320,16 +320,6 @@ class CacheScope:
         """
         return self._outcome
 
-    @property
-    def served_timed_out(self) -> bool:
-        """Whether a cache hit came from a leader whose run timed out.
-
-        The caller reports this in `done.timed_out`; restored diagnostics omit
-        it. Stored hits return `False`. `store()` also uses the leader's
-        `_served_storable` verdict when republishing a hit.
-        """
-        return self._served_timed_out
-
     async def _acquire(self, key: str) -> tuple[bytes | None, Lease | None]:
         """Return `key`'s value, or `None` with the leader lease this request now holds.
 
@@ -523,12 +513,6 @@ class CacheScope:
         self._timed_out = self._timed_out or timed_out
         self._degraded_leg = self._degraded_leg or degraded_leg
         self._trailing_incomplete = self._trailing_incomplete or trailing_incomplete
-
-    @property
-    def degraded_leg(self) -> bool:
-        """Whether a fresh run noted a degraded leg. A cache hit reports False here, and
-        `hit_events` reports the leader's verdict."""
-        return self._degraded_leg
 
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.

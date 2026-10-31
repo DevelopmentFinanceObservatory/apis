@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import aclosing
 
 from pydantic import ValidationError
@@ -573,7 +573,7 @@ async def handle(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     scope: CacheScope | None = None,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     """Answer a parsed request, from `scope`'s layer 2 when it holds the same input.
 
     A fresh run reports its health to `scope` so the caller stores only a complete
@@ -723,6 +723,7 @@ async def handle(
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=out.timed_out,
+            degraded_leg=out.degraded_leg,
             trace_id=get_trace_id(),
             telemetry=DoneTelemetry(llm_usage=total_usage),
             warnings=slot_options_warnings,

@@ -69,7 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from code_index.shared import get_index
@@ -366,7 +366,7 @@ async def handle(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     memo: PartMemoScope | None = None,
-) -> AsyncIterator[Event]:
+) -> AsyncGenerator[Event]:
     # Validate placeholder codes and candidate counts before creating tasks.
     # These static errors precede resolution failures and point to their entry.
     for i, entry in enumerate(inp.entries):

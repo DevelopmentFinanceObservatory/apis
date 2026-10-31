@@ -328,7 +328,8 @@ def _placeholder_no_data(
 
     Its restatement and operations use the leg's own inputs. The door's axis map supplies
     entity roles; without an axis, a non-empty `role_query` makes direction
-    uncertain and suppresses the echo.
+    uncertain and suppresses the echo. A placeholder is `degraded` unless the deadline cut it,
+    which `timed_out` reports.
     """
     restatement = _leg_restatement(
         variable,
@@ -355,6 +356,7 @@ def _placeholder_no_data(
         restatement=restatement,
         operations=operations,
         separate=separate,
+        degraded=reason != "timed_out",
     )
 
 
@@ -597,7 +599,6 @@ async def _stream_one_variable(
             open_axes=open_axes,
             separate=separate,
         )
-        region = dataclasses.replace(region, degraded=True)
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
         # restatement (it has no ParsedPart dependency), so this leg's own

@@ -42,7 +42,7 @@ from search.engine.extract import DateRequest
 from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
-from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
+from search.engine.region.codes import UN_SYSTEM_UNAVAILABLE
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -83,6 +83,7 @@ from search.engine.region.result import (
     RegionResult,
     every_member_phrases,
     with_composite_answer,
+    with_leg_health_of,
 )
 from search.engine.region.source_choice import (
     allows_un_system,
@@ -849,17 +850,13 @@ async def _fill_gap(
     other = result if chosen is second else second
     # The dropped answer's trailing reads serve a Spec the response never names.
     await _cancel_trailing_tasks([other])
-    carried = (
-        ()
-        if chosen.alternates_left_out
-        else tuple(w for w in other.warnings if w.code == ALTERNATES_UNEVALUATED)
-    )
-    return dataclasses.replace(
-        chosen,
-        warnings=(*chosen.warnings, *carried),
-        timing_by_step=timing,
-        llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
-        scope_unsettled=result.scope_unsettled or second.scope_unsettled,
+    return with_leg_health_of(
+        dataclasses.replace(
+            chosen,
+            timing_by_step=timing,
+            llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
+        ),
+        [other],
     )
 
 

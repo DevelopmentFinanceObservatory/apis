@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -478,6 +478,28 @@ class RegionResult:
         `degraded`, `alternates_left_out` or `scope_unsettled`. Every door reports such a
         region as a degraded leg (`DoneEvent.degraded_leg`), so no cache stores it."""
         return self.degraded or self.alternates_left_out or self.scope_unsettled
+
+
+def with_leg_health_of(region: RegionResult, others: Iterable[RegionResult]) -> RegionResult:
+    """`region` standing on the reads of `others` too, so it is `leg_degraded` when any of them
+    is, for an answer built from regions it then drops. Every flag `leg_degraded` reads is
+    combined here."""
+    regions = (region, *others)
+    carried = () if region.alternates_left_out else _first_alternates_warning(regions)
+    return dataclasses.replace(
+        region,
+        warnings=(*region.warnings, *carried),
+        degraded=any(r.degraded for r in regions),
+        scope_unsettled=any(r.scope_unsettled for r in regions),
+    )
+
+
+def _first_alternates_warning(regions: Iterable[RegionResult]) -> tuple[Warning, ...]:
+    for region in regions:
+        for warning in region.warnings:
+            if warning.code == ALTERNATES_UNEVALUATED:
+                return (warning,)
+    return ()
 
 
 def source_refusal_result(

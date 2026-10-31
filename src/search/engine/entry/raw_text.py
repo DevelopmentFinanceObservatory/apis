@@ -704,7 +704,11 @@ async def _disposition_response(
         case _:
             raise AssertionError(f"not a disposition kind: {extraction.kind!r}")
     for ev in _terminal_events(
-        response, start_ms=start_ms, timed_out=timed_out, llm_usage=extract_usage
+        response,
+        start_ms=start_ms,
+        timed_out=timed_out,
+        degraded_leg=degraded,
+        llm_usage=extract_usage,
     ):
         yield ev
 
@@ -1302,6 +1306,7 @@ async def _handle_single_variable(
     yield DoneEvent(
         elapsed_ms=now_ms() - start_ms,
         timed_out=out.timed_out,
+        degraded_leg=out.degraded_leg,
         trace_id=get_trace_id(),
         telemetry=DoneTelemetry(llm_usage=total_usage),
         warnings=slot_options_warnings,

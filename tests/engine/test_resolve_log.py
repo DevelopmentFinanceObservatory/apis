@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
-import time
 import unicodedata
+from collections.abc import Iterator
 
 import pytest
+from pydantic import SecretStr
 
-from dfo_platform.trace import get_trace_id
-from search.engine.core import RequestBudget, _log_resolve, _ResolveRecord, resolve_events
-from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
+from dfo_platform.trace import reset_trace_id, set_trace_id
+from search.engine.core import _log_resolve, _ResolveRecord, resolve_events
+from search.engine.envelope import make_diagnostics, make_query_echo
 from search.engine.errors import EngineInfraError, EngineInputError
-from search.engine.events import DoneEvent, DoneTelemetry
+from search.engine.events import DoneEvent, DoneTelemetry, ResponseEvent
+from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_flow import CacheScope
+from search.engine.response_cache_keys import normalise_query
 from search.models import (
     RESOLVE_RESPONSE_ADAPTER,
     CatalogueAnswer,
@@ -35,10 +40,19 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, resolve_log_lines
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
+_KEY = "query-key"
+_TRACE_ID = "abc123"
 _USAGE = {"input_tokens": 120, "output_tokens": 30, "cached_tokens": 0}
 # The response echoes this word on every row, and the line must not.
 _ECHOED_WORD = "fertility"
-_HARD_AHEAD = time.monotonic() + 3600
+
+
+@pytest.fixture(autouse=True)
+def _bound_trace_id() -> Iterator[None]:
+    """Bind the id these tests read, so none stays bound for later tests in the worker."""
+    token = set_trace_id(_TRACE_ID)
+    yield
+    reset_trace_id(token)
 
 
 def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
@@ -54,7 +68,7 @@ def _done(*, timed_out: bool = False, degraded_leg: bool = False) -> DoneEvent:
 def _logged(request: ResolveRequest, record: _ResolveRecord) -> dict:
     """The JSON object of the one line `_log_resolve` writes for `record`."""
     with resolve_log_lines() as lines:
-        _log_resolve(request, record, caller=None, transport="buffered", hard=_HARD_AHEAD)
+        _log_resolve(request, record, caller=None, transport="buffered")
     [line] = lines
     return line
 
@@ -86,12 +100,12 @@ def _resolution(parts: list) -> Resolution:
     return Resolution(query_echo=_echo(), diagnostics=_diagnostics(), parts=parts)
 
 
-def _sha(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
+def _hmac(text: str, *, key: str = _KEY) -> str:
+    return hmac.new(key.encode(), text.encode(), hashlib.sha256).hexdigest()
 
 
 _RAW = make_request(f"  {_ECHOED_WORD.title()} Rate in KENYA ")
-_RAW_SHA = _sha(f"{_ECHOED_WORD} rate in kenya")
+_RAW_HMAC = _hmac(f"{_ECHOED_WORD} rate in kenya")
 _PARSED = ResolveRequest(input=ParsedInput(parts=[ParsedPart(variable_text=_ECHOED_WORD)]))
 _RESUBMIT = ResolveRequest(
     input=DatasetResubmitInput(
@@ -114,7 +128,8 @@ def _row(
     unsupported_codes: tuple[str, ...] = (),
     done: DoneEvent | None = None,
     request: ResolveRequest = _RAW,
-    query_sha256: str | None = _RAW_SHA,
+    key: str = _KEY,
+    query_hmac: str | None = _RAW_HMAC,
 ):
     return pytest.param(
         family,
@@ -124,7 +139,8 @@ def _row(
         list(unsupported_codes),
         done,
         request,
-        query_sha256,
+        key,
+        query_hmac,
         id=id,
     )
 
@@ -138,7 +154,8 @@ def _row(
         "unsupported_codes",
         "done",
         "request_",
-        "query_sha256",
+        "key",
+        "query_hmac",
     ),
     [
         _row("definite", "definite", "definite", part_statuses=("definite",), done=_done()),
@@ -176,28 +193,36 @@ def _row(
         _row("declined", "declined", "declined"),
         _row("catalogue", "catalogue", "catalogue"),
         _row("no_response", "no_response", None),
-        _row("parsed_door", "no_response", None, request=_PARSED, query_sha256=None),
-        _row("resubmit_door", "no_response", None, request=_RESUBMIT, query_sha256=None),
+        _row(
+            "another_key",
+            "no_response",
+            None,
+            key="another-key",
+            query_hmac=_hmac(f"{_ECHOED_WORD} rate in kenya", key="another-key"),
+        ),
+        _row("no_key", "no_response", None, key="", query_hmac=None),
+        _row("parsed_door", "no_response", None, request=_PARSED, query_hmac=None),
+        _row("resubmit_door", "no_response", None, request=_RESUBMIT, query_hmac=None),
         _row(
             "inner_whitespace",
             "no_response",
             None,
             request=make_request("aid  to\tKenya"),
-            query_sha256=_sha("aid to kenya"),
+            query_hmac=_hmac("aid to kenya"),
         ),
         _row(
             "nbsp",
             "no_response",
             None,
             request=make_request("aid\u00a0to Kenya"),
-            query_sha256=_sha("aid to kenya"),
+            query_hmac=_hmac("aid to kenya"),
         ),
         _row(
             "nfd",
             "no_response",
             None,
             request=make_request(unicodedata.normalize("NFD", "Côte d'Ivoire")),
-            query_sha256=_sha("côte d'ivoire"),
+            query_hmac=_hmac("côte d'ivoire"),
         ),
     ],
 )
@@ -210,8 +235,11 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
     unsupported_codes,
     done,
     request_,
-    query_sha256,
+    key,
+    query_hmac,
+    search_settings,
 ):
+    search_settings(query_hmac_key=SecretStr(key))
     definite = _definite_part(worked_example_response)
     response = {
         "definite": _resolution([definite]),
@@ -230,7 +258,7 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
 
     logged = _logged(request_, record)
 
-    assert logged["trace_id"] == get_trace_id()
+    assert logged["trace_id"] == _TRACE_ID
     assert logged["outcome"] == outcome
     assert logged["part_statuses"] == part_statuses
     assert logged["no_data_reasons"] == no_data_reasons
@@ -239,48 +267,169 @@ def test_the_resolve_line_reports_the_outcome_of_each_answer_family(
     assert logged["error_code"] is None
     assert logged["timed_out"] == (done.timed_out if done is not None else None)
     assert logged["degraded_leg"] == (done.degraded_leg if done is not None else None)
-    assert logged["query_sha256"] == query_sha256
+    assert logged["query_hmac"] == query_hmac
     assert _ECHOED_WORD not in json.dumps(logged).casefold()
+    bare_text = normalise_query(getattr(request_.input, "query", "")).casefold()
+    assert hashlib.sha256(bare_text.encode()).hexdigest() not in json.dumps(logged)
+
+
+_NEVER = 60.0
+_SOON = 0.01
+
+
+def _ending(
+    id: str,
+    error_code: str | None,
+    timed_out: bool | None,
+    *,
+    raises: Exception | None = None,
+    cap_in: float = _NEVER,
+    responds: bool = False,
+    done: bool = False,
+    sse: bool = False,
+    unwinds_s: float = 0,
+):
+    return pytest.param(
+        error_code, timed_out, raises, cap_in, responds, done, sse, unwinds_s, id=id
+    )
 
 
 @pytest.mark.parametrize(
-    ("emits", "raises", "hard_in", "error_code", "timed_out"),
+    (
+        "error_code",
+        "timed_out",
+        "raises",
+        "cap_in",
+        "responds",
+        "done",
+        "sse",
+        "unwinds_s",
+    ),
     [
-        pytest.param(
-            (),
-            EngineInputError("no such door", code="door_not_implemented", status=501),
-            60,
+        _ending(
+            "refused",
             "door_not_implemented",
             None,
-            id="refused",
+            raises=EngineInputError("no such door", code="door_not_implemented", status=501),
         ),
-        pytest.param(
-            (), EngineInfraError("graph down"), 60, "service_unavailable", None, id="infra"
+        _ending("infra", "service_unavailable", None, raises=EngineInfraError("graph down")),
+        _ending("unhandled", "internal_error", None, raises=RuntimeError("boom")),
+        _ending("soft_deadline_failure", "timeout", True, raises=TimeoutError("past it")),
+        _ending("hard_cap", "timeout", True, cap_in=_SOON),
+        _ending("disconnect", "cancelled", None),
+        _ending("disconnect_after_response", "cancelled", None, responds=True),
+        _ending("disconnect_crossing_the_cap", "cancelled", None, cap_in=0.02, unwinds_s=0.5),
+        _ending("sse_cap_after_done", None, False, cap_in=_SOON, done=True, sse=True),
+        _ending("sse_teardown_after_done", None, False, done=True, sse=True),
+        _ending(
+            "sse_failure_after_done", None, False, raises=RuntimeError("boom"), done=True, sse=True
         ),
-        pytest.param((), RuntimeError("boom"), 60, "internal_error", None, id="unhandled"),
-        pytest.param((), TimeoutError("past the deadline"), 60, "timeout", True, id="soft_failure"),
-        pytest.param((), None, -1, "timeout", True, id="hard_cap"),
-        pytest.param((), None, 60, "cancelled", None, id="disconnect"),
-        pytest.param((_done(),), None, -1, None, False, id="teardown_after_done"),
+        _ending("buffered_cap_after_done", "timeout", True, cap_in=_SOON, done=True),
+        _ending(
+            "buffered_failure_after_done",
+            "internal_error",
+            False,
+            raises=RuntimeError("boom"),
+            done=True,
+        ),
     ],
 )
 def test_the_resolve_line_says_how_a_cut_request_ended(
-    monkeypatch, emits, raises, hard_in, error_code, timed_out
+    monkeypatch, error_code, timed_out, raises, cap_in, responds, done, sse, unwinds_s
 ):
-    """A request that raises ends with it; one that does not stalls until it is cancelled."""
-    reached_the_end = asyncio.Event()
+    """A request that raises ends with it. One that does not stalls until the cap fires or,
+    when no cap is due, its task is cancelled."""
+    stalled = asyncio.Event()
 
     async def _pipeline(*_args, **_kwargs):
-        for event in emits:
-            yield event
+        if responds:
+            yield ResponseEvent(response=_resolution([_NO_DATA]))
+        if done:
+            yield _done()
         if raises is not None:
             raise raises
-        reached_the_end.set()
-        await asyncio.Event().wait()
+        stalled.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(unwinds_s)
 
     monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
-    now = time.monotonic()
-    budget = RequestBudget(start_ms=now_ms(), soft=now, hard=now + hard_in)
+    graph = FakeGraph()
+
+    async def _capped() -> None:
+        async with asyncio.timeout(cap_in) as cap:
+            async for _event in resolve_events(
+                make_request("q"),
+                graph=graph,
+                resolver=make_resolver(graph),
+                llm=FakeLLM(),
+                sdmx=FakeSdmxClient(),
+                stream_slot_options=sse,
+                hard_cap=cap,
+            ):
+                pass
+
+    async def _run() -> None:
+        request = asyncio.create_task(_capped())
+        await asyncio.wait(
+            {request, asyncio.create_task(stalled.wait())},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cap_in != _SOON:
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+    with resolve_log_lines() as lines:
+        asyncio.run(_run())
+
+    [logged] = lines
+    assert logged["error_code"] == error_code
+    assert logged["timed_out"] is timed_out
+    assert logged["outcome"] == ("no_data" if responds else None)
+
+
+def test_a_request_closed_at_a_yield_logs_after_the_pipeline_finished(monkeypatch):
+    """Closing the stream closes the pipeline first, so its `finally` reaches the line."""
+    events: list[str] = []
+
+    async def _pipeline(*_args, record, **_kwargs):
+        try:
+            yield _done()
+        finally:
+            record.cache = "miss"
+            events.append("pipeline")
+
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
+    graph = FakeGraph()
+
+    async def _run() -> None:
+        stream = resolve_events(
+            make_request("q"),
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=FakeLLM(),
+            sdmx=FakeSdmxClient(),
+        )
+        await anext(stream)
+        await stream.aclose()
+
+    with resolve_log_lines() as lines:
+        asyncio.run(_run())
+
+    [logged] = lines
+    assert logged["cache"] == "miss"
+
+
+def test_a_request_cancelled_in_the_cache_lookup_reports_its_cache(monkeypatch, search_settings):
+    search_settings(response_cache_enabled=True)
+    in_lookup = asyncio.Event()
+
+    async def _stalled_lookup(self, query):
+        in_lookup.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(CacheScope, "lookup_raw", _stalled_lookup)
     graph = FakeGraph()
 
     async def _drain() -> None:
@@ -290,30 +439,19 @@ def test_the_resolve_line_says_how_a_cut_request_ended(
             resolver=make_resolver(graph),
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(),
-            budget=budget,
+            response_cache=ResponseCache(),
         ):
             pass
 
     async def _run() -> None:
-        stream = asyncio.create_task(_drain())
-        await asyncio.wait(
-            {stream, asyncio.create_task(reached_the_end.wait())},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        stream.cancel()
-        await asyncio.gather(stream, return_exceptions=True)
+        request = asyncio.create_task(_drain())
+        await in_lookup.wait()
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
 
     with resolve_log_lines() as lines:
         asyncio.run(_run())
 
     [logged] = lines
-    assert logged["error_code"] == error_code
-    assert logged["timed_out"] is timed_out
-
-
-def test_a_cancellation_after_the_response_keeps_the_outcome_on_the_line():
-    record = _ResolveRecord(response=_resolution([_NO_DATA]), raised=asyncio.CancelledError())
-
-    logged = _logged(_RAW, record)
-
-    assert (logged["outcome"], logged["error_code"]) == ("no_data", "cancelled")
+    assert logged["cache"] == "miss"
+    assert logged["error_code"] == "cancelled"

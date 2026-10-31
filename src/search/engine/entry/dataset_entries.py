@@ -37,6 +37,7 @@ from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.result import with_leg_health_of
 from search.engine.region.state import EngineOptions
 from search.engine.region.whole_totals import with_containing_total
 from search.models import (
@@ -150,7 +151,8 @@ def _build_candidates_region(
     Each survivor carries its candidate's assumptions echo. A set reads each reading with
     its own, and a lone survivor's definite part states its own. Candidates that rebuild
     to one spec_id keep the first, with its echo, as a first-pass set keeps one reading
-    per spec_id.
+    per spec_id. The part keeps every promote's leg health, survivor or not: an answer built
+    from what remained stands on less when a promote's reads failed (`with_leg_health_of`).
     """
     echoes = [
         None if candidate.assumptions is None else tuple(candidate.assumptions)
@@ -164,7 +166,7 @@ def _build_candidates_region(
     timing_by_step = _merge_timing_by_step(promoted)
 
     if len(survivors) >= 2:
-        return RegionResult(
+        region = RegionResult(
             variable_text=entry.variable_text,
             status="candidates",
             specs=tuple(r.spec for r in survivors),
@@ -189,9 +191,10 @@ def _build_candidates_region(
                 if r.assumption_echo is not None
             },
         )
+        return with_leg_health_of(region, promoted)
     if len(survivors) == 1:
         (only,) = survivors
-        return dataclasses.replace(
+        region = dataclasses.replace(
             only,
             variable_text=entry.variable_text,
             warnings=(
@@ -206,6 +209,7 @@ def _build_candidates_region(
             earliest_index=index,
             separate=entry.separate,
         )
+        return with_leg_health_of(region, promoted)
     # Zero survivors. CandidateSet.specs has min_length=2, so there is no
     # "unsupported candidates" wire shape to fall back to either -- this
     # collapses to no_data regardless of which reason(s) the individual
@@ -215,7 +219,7 @@ def _build_candidates_region(
     # holds no member.
     first = promoted[0]
     reason = first.no_data_reason if first.status == "no_data" else "no_matching_slice"
-    return dataclasses.replace(
+    region = dataclasses.replace(
         first,
         variable_text=entry.variable_text,
         status="no_data",
@@ -230,6 +234,7 @@ def _build_candidates_region(
         earliest_index=index,
         separate=entry.separate,
     )
+    return with_leg_health_of(region, promoted)
 
 
 def check_candidates_ceiling(entry: ResubmitCandidatesEntry, *, index: int) -> None:

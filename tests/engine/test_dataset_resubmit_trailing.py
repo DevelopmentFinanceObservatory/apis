@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -20,18 +21,29 @@ from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
 from search.engine.config import settings
 from search.engine.entry import dataset_resubmit
+from search.engine.entry.dataset_entries import _build_candidates_region
 from search.engine.entry.params import EntryParams
 from search.engine.events import DoneEvent
-from search.models import DatasetResubmitInput, ResubmitIdentityEntry
+from search.engine.region import RegionResult
+from search.engine.region.candidate_admission import alternates_unevaluated_warning
+from search.models import (
+    DatasetResubmitInput,
+    ResubmitCandidate,
+    ResubmitCandidatesEntry,
+    ResubmitIdentityEntry,
+)
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine.test_entry_rate_cache import _gdp_identity, _stub_region
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 
-def _run(regions, *, deadline: float, stream: bool) -> tuple[list[float], list[DoneEvent]]:
-    """Resubmit one identity entry per region in `regions`, each resolving to its region.
-    Returns the deadlines the trailing stream ran to and the `DoneEvent`s."""
+def _run(
+    regions, *, deadline: float, stream: bool, candidates: bool = False
+) -> tuple[list[float], list[DoneEvent]]:
+    """Resubmit one identity entry per region in `regions`, each resolving to its region, or
+    with `candidates` one candidates entry promoting one candidate to each. Returns the
+    deadlines the trailing stream ran to and the `DoneEvent`s."""
     pending = list(regions)
     trailing: list[float] = []
 
@@ -48,6 +60,17 @@ def _run(regions, *, deadline: float, stream: bool) -> tuple[list[float], list[D
         ResubmitIdentityEntry(variable_text=f"GDP {i}", identity=_gdp_identity())
         for i in range(len(regions))
     ]
+    if candidates:
+        entries = [
+            ResubmitCandidatesEntry(
+                variable_text="GDP",
+                ordering="broadest_first",
+                truncated=False,
+                candidates=[
+                    ResubmitCandidate(identity=_gdp_identity(), entity_groups={}) for _ in regions
+                ],
+            )
+        ]
     params = EntryParams(
         deadline=deadline,
         max_candidates=5,
@@ -81,6 +104,10 @@ def _run(regions, *, deadline: float, stream: bool) -> tuple[list[float], list[D
     with (
         patch(
             "search.engine.entry.dataset_resubmit.resolve_spec_resubmit",
+            _fake_resolve_spec_resubmit,
+        ),
+        patch(
+            "search.engine.entry.dataset_entries.resolve_spec_resubmit",
             _fake_resolve_spec_resubmit,
         ),
         patch(
@@ -125,3 +152,51 @@ def test_a_degraded_part_marks_the_done_event_degraded_leg(
     _trailing, done = _run(regions, deadline=time.monotonic() + 30, stream=stream)
 
     assert [event.degraded_leg for event in done] == [degraded]
+
+
+@pytest.mark.parametrize("flag", ["degraded", "scope_unsettled"])
+def test_a_degraded_candidate_marks_the_done_event_degraded_leg(flag: str):
+    regions = [_stub_region(None), dataclasses.replace(_stub_region(None), **{flag: True})]
+
+    _trailing, done = _run(regions, deadline=time.monotonic() + 30, stream=False, candidates=True)
+
+    assert [event.degraded_leg for event in done] == [True]
+
+
+def _promote(status: str, spec_id: str = "") -> RegionResult:
+    if status == "no_data":
+        return _stub_region(None)
+    spec = SimpleNamespace(spec_id=spec_id)
+    return dataclasses.replace(
+        _stub_region(None), status=status, specs=(spec,), no_data_reason=None
+    )
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        {"degraded": True},
+        {"scope_unsettled": True},
+        {"warnings": (alternates_unevaluated_warning("timed_out"),)},
+    ],
+    ids=["degraded", "scope_unsettled", "alternates_left_out"],
+)
+@pytest.mark.parametrize("survivors", [0, 1, 2])
+def test_a_candidates_part_keeps_the_read_health_of_a_discarded_promote(survivors: int, flag: dict):
+    """Each branch of `_build_candidates_region` keeps it: rebuilding a set, collapsing to a
+    survivor and collapsing to no_data."""
+    promoted = [
+        *(_promote("definite", f"spec-{i}") for i in range(survivors)),
+        dataclasses.replace(_promote("no_data"), **flag),
+    ]
+    entry = SimpleNamespace(
+        variable_text="GDP",
+        candidates=[SimpleNamespace(assumptions=None) for _ in promoted],
+        ordering="broadest_first",
+        truncated=False,
+        separate=False,
+    )
+
+    region = _build_candidates_region(entry, promoted, index=0)
+
+    assert region.leg_degraded is True

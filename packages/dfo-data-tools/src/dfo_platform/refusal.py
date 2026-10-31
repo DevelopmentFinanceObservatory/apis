@@ -171,22 +171,29 @@ def render_http_exception_refusal(
     )
 
 
-def classify_default(exc: BaseException) -> ProblemSpec:
-    """Classify validation, timeout, and HTTP errors.
-
-    Log other exceptions and map them to the catch-all. Surface classifiers use this when they
-    return `None`."""
+def default_problem(exc: BaseException) -> ProblemSpec:
+    """The refusal for validation, timeout, and HTTP errors, and the catch-all for any other.
+    It logs nothing."""
     if isinstance(exc, RequestValidationError):
         return validation_problem(exc)
     if isinstance(exc, asyncio.TimeoutError):
-        _logger.error("Request timed out")
         return render_timeout_refusal()
     if isinstance(exc, StarletteHTTPException):
         return render_http_exception_refusal(
             status=exc.status_code, detail=exc.detail, headers=exc.headers
         )
-    _logger.error("Unhandled platform error: %s", exc, exc_info=exc)
     return render_unhandled_refusal()
+
+
+def classify_default(exc: BaseException) -> ProblemSpec:
+    """`default_problem`, logging a timeout and any exception the catch-all takes.
+
+    Surface classifiers use this when they return `None`."""
+    if isinstance(exc, asyncio.TimeoutError):
+        _logger.error("Request timed out")
+    elif not isinstance(exc, (RequestValidationError, StarletteHTTPException)):
+        _logger.error("Unhandled platform error: %s", exc, exc_info=exc)
+    return default_problem(exc)
 
 
 _DEFAULT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (

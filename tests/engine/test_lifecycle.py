@@ -30,7 +30,7 @@ from search.engine.spec_build import build_unsupported_definition
 from search.models import RawTextInput, Resolution, ResolveRequest
 from tests.conftest import OfflineContractViolation
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import EMPTY_SDMX
+from tests.engine._harness import EMPTY_SDMX, resolve_log_lines
 from tests.engine._options_fixtures import _options_request
 from tests.engine.test_llm_transport import install_scripted_models
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
@@ -216,6 +216,31 @@ class TestResolveAsyncLifecycle:
         assert graph_closes == [True]
         assert sdmx_closes == [True]
         assert len(released) == 1
+
+    def test_a_setup_failure_closes_the_graph_built_before_it_and_logs_the_line(self):
+        """Setup builds the clients one by one, so the first can outlive a failure in the next."""
+        closes: list[bool] = []
+
+        class _SpyGraph(FakeGraph):
+            def close(self):
+                closes.append(True)
+
+        class _FakeLiveGraphClientClass:
+            @staticmethod
+            def from_search_settings(*_args, **_kwargs):
+                return _SpyGraph()
+
+        with (
+            patch("search.engine.core.LiveGraphClient", new=_FakeLiveGraphClientClass),
+            patch("search.engine.core.LiveSdmxClient", side_effect=RuntimeError("no sdmx")),
+            resolve_log_lines() as lines,
+            pytest.raises(RuntimeError, match="no sdmx"),
+        ):
+            _run("health ODA grants from USA to Ethiopia", graph=None, sdmx=None)
+
+        assert closes == [True]
+        [logged] = lines
+        assert logged["error_code"] == "internal_error"
 
 
 def test_lifespan_leaves_the_search_logger_to_propagate_to_root():

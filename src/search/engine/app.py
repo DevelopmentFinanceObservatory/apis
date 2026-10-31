@@ -48,7 +48,6 @@ from dfo_platform.named import cut
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from dfo_platform.trace import get_trace_id
-from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
 from entity_resolution import (
     Admission,
     EntityResolver,
@@ -104,7 +103,7 @@ from search.engine.errors import (
     EngineInputError,
     GraphInfraError,
     LLMInfraError,
-    engine_problem,
+    search_problem,
 )
 from search.engine.events import DoneEvent, ErrorEvent, Event, serialize_sse
 from search.engine.extraction_store import build_extraction_store
@@ -184,33 +183,7 @@ def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
         logger.error("Engine infrastructure error: %s", exc, exc_info=exc)
     elif isinstance(exc, asyncio.TimeoutError):
         logger.error("Request hit its hard deadline")
-    if isinstance(exc, RequestValidationError):
-        # The platform maps body errors to 400 and schema-version errors to 422. Search adds
-        # a field-specific refinement below.
-        problem = validation_problem(exc)
-        errors = exc.errors()
-        # Unsupported identity versions and recognised future facet axes also map to 422.
-        # Match the nested field path or Pydantic error type. A top-level schema-version error
-        # already maps to 422 in the platform.
-        if problem.code == "request_invalid":
-            version_error = next(
-                (
-                    e
-                    for e in errors
-                    if error_field_loc(e)[-1:] == ["identity_version"]
-                    or e.get("type") == "facet_axis_higher_schema_version"
-                ),
-                None,
-            )
-            if version_error is not None:
-                problem = problem._replace(
-                    code="unsupported_schema_version",
-                    status=422,
-                    pointer=pointer_for_error(exc, version_error),
-                    detail=None,
-                )
-        return problem
-    return engine_problem(exc)
+    return search_problem(exc)
 
 
 # Module-level sentinels for the SSE merge queue.
@@ -219,7 +192,7 @@ _SENTINEL = object()
 
 
 async def _event_source(
-    stream: AsyncIterator[Event], *, hard_deadline: float
+    open_stream: Callable[..., AsyncIterator[Event]], *, hard_deadline: float
 ) -> AsyncIterator[str]:
     """Merge events with 10-second heartbeat comments. Stop at the terminal event and cancel
     both helper tasks on completion or disconnect. `resolve_events` owns the soft deadline.
@@ -227,15 +200,16 @@ async def _event_source(
     `hard_deadline`, an absolute `time.monotonic()` value, caps the stream. The producer
     cancels the pipeline then and ends the stream with the 504 `timeout` error event. It also
     bounds every read the pipeline makes (`request_deadline`). The cap wraps the producer's
-    loop, so it never fires inside a `yield` the consumer resumes.
+    loop, so it never fires inside a `yield` the consumer resumes. `open_stream` takes the
+    cap as `hard_cap`, so the pipeline can tell it from any other cancellation.
     """
     queue: asyncio.Queue[object] = asyncio.Queue()
 
     async def produce() -> None:
         try:
             with request_deadline(hard_deadline):
-                async with asyncio.timeout(hard_deadline - time.monotonic()):
-                    async for ev in stream:
+                async with asyncio.timeout(hard_deadline - time.monotonic()) as cap:
+                    async for ev in open_stream(hard_cap=cap):
                         await queue.put(ev)
         except Exception as exc:
             # This is the sole conversion of a pipeline failure into a terminal ErrorEvent.
@@ -442,7 +416,9 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     if _accepts_sse(request):
         return StreamingResponse(
             _event_source(
-                resolve_events(body, stream_slot_options=True, budget=budget, **pipeline_deps),
+                functools.partial(
+                    resolve_events, body, stream_slot_options=True, budget=budget, **pipeline_deps
+                ),
                 hard_deadline=budget.hard,
             ),
             media_type="text/event-stream",
@@ -459,10 +435,10 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     # later, ends a request whose unfinished work does not unwind in time.
     health = ResolveHealth()
     with request_deadline(budget.hard):
-        result: ResolveResponse = await asyncio.wait_for(
-            resolve_async(body, health=health, budget=budget, **pipeline_deps),
-            timeout=budget.hard - time.monotonic(),
-        )
+        async with asyncio.timeout(budget.hard - time.monotonic()) as cap:
+            result: ResolveResponse = await resolve_async(
+                body, health=health, budget=budget, hard_cap=cap, **pipeline_deps
+            )
     # The degraded-leg flag rides in a header so the body contract stays unchanged.
     headers = {DEGRADED_LEG_HEADER: "1"} if health.degraded_leg else None
     return JSONResponse(result.model_dump(mode="json", exclude_none=True), headers=headers)

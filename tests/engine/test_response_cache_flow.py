@@ -356,7 +356,7 @@ async def _test_layer2_follower_of_a_timed_out_leader_gets_no_layer1_entry(base:
 
     result = await follower_task
     assert result is not None
-    assert follower.served_timed_out is True
+    assert (await _done_of_hit(follower, result)).timed_out is True
     assert follower.outcome == "hit layer2"
     await follower.store(result)  # the ResponseEvent branch core.py drives on every response
 
@@ -555,7 +555,7 @@ async def _test_store_wakes_a_waiter_with_the_response_when_unstorable(base: Res
     result = await waiter_task
     assert result is not None
     assert result.query_echo.raw_query == query
-    assert waiter.served_timed_out is True
+    assert (await _done_of_hit(waiter, result)).timed_out is True
 
     later = _make_scope(cache)
     assert await later.lookup_raw(query) is None  # nothing was ever stored under the key

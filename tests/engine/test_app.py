@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
@@ -298,7 +297,7 @@ class TestResolveEndpoint:
         assert body["parts"][0]["no_data"]["reason"] == "variable_not_resolved"
 
     def test_504_on_timeout(self, monkeypatch):
-        # asyncio.wait_for timeout raises asyncio.TimeoutError -> 504
+        # asyncio.TimeoutError -> 504
         async def _slow_resolve(*args, **kwargs):
             raise TimeoutError()
 
@@ -1083,7 +1082,7 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
     assert logged["llm_usage"] == body["diagnostics"].get("llm_usage")
     assert logged["timed_out"] is False
     assert logged["degraded_leg"] is False
-    assert logged["query_sha256"] == hashlib.sha256(b"fertility rate in kenya").hexdigest()
+    assert logged["query_hmac"] is None
 
 
 def test_sse_pipeline_failure_logs_its_traceback_once(monkeypatch):
@@ -1202,21 +1201,32 @@ async def _stalled_pipeline(*_args: object, **_kwargs: object):
     yield  # pragma: no cover - makes this an async generator
 
 
+@pytest.mark.parametrize("use_uvloop", [False, True], ids=["asyncio", "uvloop"])
 @pytest.mark.parametrize("transport", ["buffered", "sse"])
 def test_the_hard_cap_reads_as_a_timeout_on_the_resolve_line(
-    monkeypatch, search_settings, transport
+    monkeypatch, search_settings, transport, use_uvloop
 ):
-    """The hard cap reaches `resolve_events` as cancellation on both transports."""
+    """The hard cap reaches `resolve_events` as cancellation on both transports and on either
+    loop. Production runs uvloop, whose timers fire ahead of the instant they were set for."""
     search_settings(request_timeout_s=0.05, finalise_grace_s=0.05)
     monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _stalled_pipeline)
     headers = {"Accept": "text/event-stream"} if transport == "sse" else {}
+    client = TestClient(
+        make_client().app,
+        raise_server_exceptions=False,
+        backend_options={"use_uvloop": use_uvloop},
+    )
     with resolve_log_lines() as lines:
-        make_client().post(
+        resp = client.post(
             "/api/search/resolve",
             json={"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}},
             headers=headers,
         )
 
+    if transport == "buffered":
+        assert resp.status_code == 504
+    else:
+        assert [event for event, _data in _parse_sse(resp.text)] == ["error"]
     [logged] = lines
     assert (logged["error_code"], logged["timed_out"]) == ("timeout", True)
     assert logged["outcome"] is None
