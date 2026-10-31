@@ -26,17 +26,17 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from datasets_api.artifact_delivery import artifact_content_disposition
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from materialise.formats import ExcelIllegalCharacterError
-from presentation_api.codes import retryable_for, served_status
+from presentation_api.codes import retryable_for
 from presentation_api.path_params import require_component_id
+from presentation_api.routes import COMPONENT_DATA_PATH
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
 
 logger = logging.getLogger(__name__)
 
-COMPONENT_DATA_PATH = "/api/presentation/components/{component_id}/revisions/{revision}/data"
 COMPONENT_DATA_MEDIA_TYPES = (
     "application/zip",
     "text/csv",
@@ -48,25 +48,22 @@ _CACHE_CONTROL = "private, max-age=3600"
 
 def classify_component_data_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, ComponentHoldsNoData):
-        return ProblemSpec(
-            status=served_status("not_found"),
-            code="not_found",
+        return refused(
+            "not_found",
             detail=exc.detail,
             retryable=retryable_for("not_found"),
         )
     if isinstance(exc, ComponentExportMismatch):
         logger.error("Component data export refused: %s", exc)
-        return ProblemSpec(
-            status=served_status("internal_error"),
-            code="internal_error",
+        return refused(
+            "internal_error",
             detail="the frame rows behind this revision do not match the values it shows",
             retryable=retryable_for("internal_error"),
         )
     if isinstance(exc, ExcelIllegalCharacterError):
         # The writer's detail tells the caller to request csv or parquet instead.
-        return ProblemSpec(
-            status=served_status("request_invalid"),
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=exc.detail or str(exc),
             retryable=False,
         )

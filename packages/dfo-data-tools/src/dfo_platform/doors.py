@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.routing import APIRoute
 
 from dfo_platform import ProblemSpec
-from dfo_platform.codes import bound_endpoint
+from dfo_platform.codes import bound_endpoint, bound_registry_endpoint
 
 # A route as `registry_endpoints` names it: its method, and its path as the router declares it.
 type RouteKey = tuple[str, str]
@@ -23,6 +24,8 @@ class DoorContribution:
     Routers carry full paths. Classifiers return `None` for unrecognised exceptions. Lifespans enter
     together. Middleware checks run synchronously before FastAPI parses the request body. Each
     check decides for itself, for example by path, whether a request concerns it.
+    `endpoint_exemplars` holds, for a door that declares them, an exemplar of every refusal the
+    routes of each code registry endpoint raise (`check_endpoint_exemplars`).
     `registry_endpoints` maps each route's `RouteKey` to the code registry endpoint it serves
     (`dfo_platform.app.Surface.registry_endpoints`), and `public_paths` names the route paths any
     origin may read (`dfo_platform.app.Surface.public_paths`).
@@ -32,6 +35,7 @@ class DoorContribution:
     classify: Callable[[BaseException], ProblemSpec | None]
     exception_types: tuple[type[Exception], ...] = ()
     exception_exemplars: tuple[BaseException, ...] = ()
+    endpoint_exemplars: Mapping[str, tuple[BaseException, ...]] = field(default_factory=dict)
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
     registry_endpoints: Mapping[RouteKey, str] = field(default_factory=dict)
@@ -102,3 +106,43 @@ def route_keys(router: APIRouter) -> frozenset[RouteKey]:
 def route_registry_endpoints(router: APIRouter, endpoint: str) -> dict[RouteKey, str]:
     """Map every route on `router` to the one code registry `endpoint` its door serves."""
     return dict.fromkeys(route_keys(router), endpoint)
+
+
+def path_registry_endpoints(router: APIRouter, endpoints: Mapping[str, str]) -> dict[RouteKey, str]:
+    """Map every method `router` declares on each path of `endpoints` to that path's code
+    registry endpoint, so a method added to a path is bound with it.
+
+    Raises:
+        ValueError: `endpoints` names a path no route on `router` declares.
+    """
+    keys = {key: endpoints[key[1]] for key in route_keys(router) if key[1] in endpoints}
+    unrouted = sorted(set(endpoints) - {path for _, path in keys})
+    if unrouted:
+        raise ValueError(f"no route declares the registry-bound paths {unrouted!r}")
+    return keys
+
+
+def check_endpoint_exemplars(
+    doors: Iterable[DoorContribution],
+    classify: Callable[[BaseException], ProblemSpec | None],
+) -> None:
+    """Classify each door's `endpoint_exemplars` with their endpoint bound, as a request is, so
+    a refusal with no one registered status there fails at startup. Classifiers log what they
+    recognise, and an exemplar is no fault, so logging is off for the sweep.
+
+    Raises:
+        LookupError: The code registry maps no one status for a code on the endpoint whose
+            routes raise it, or `classify` does not recognise an exemplar.
+    """
+    previous = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        for door in doors:
+            for endpoint, exemplars in door.endpoint_exemplars.items():
+                for exemplar in exemplars:
+                    with bound_registry_endpoint(endpoint):
+                        spec = classify(exemplar)
+                    if spec is None:
+                        raise LookupError(f"nothing classifies {exemplar!r} on {endpoint}")
+    finally:
+        logging.disable(previous)

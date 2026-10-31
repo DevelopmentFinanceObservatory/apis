@@ -162,7 +162,7 @@ from typing import Protocol, TypeGuard, cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
+from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN, Frame
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 from pydantic import ValidationError
 from pydantic.experimental.missing_sentinel import MISSING
@@ -170,6 +170,7 @@ from pydantic.experimental.missing_sentinel import MISSING
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from assembler.bind import role_columns, series_label
+from assembler.errors import BindingInvalid
 from assembler.frame_view import (
     compute_structural_view,
     continuation_known,
@@ -412,22 +413,45 @@ def _is_frame_document(doc: object) -> TypeGuard[Mapping[str, object]]:
     )
 
 
+@contextmanager
+def _decoding(location: StoredArtifactLocation) -> Iterator[None]:
+    """Refuse what the block raises while it builds a frame from the bytes `location` names.
+
+    The bytes are in memory and passed their digest check, so no failure to decode them is a
+    failed read. Bytes that do not validate and build as a frame refuse `missing_rendering`
+    whatever raised, and the refusal is logged, since a stored artifact that cannot decode is a
+    server fault. Only `MemoryError`, which `pa.ArrowMemoryError` subclasses, says nothing about
+    the bytes, so it refuses the retryable `io`."""
+    try:
+        yield
+    except (FrameUnavailable, BindingInvalid):
+        raise
+    except MemoryError as exc:
+        raise _io_failure(action="decoding", digest=location.artifact_digest, exc=exc) from None
+    except Exception as exc:
+        logger.error(
+            "artifact_digest %r did not decode as a frame: %s: %s",
+            location.artifact_digest,
+            type(exc).__name__,
+            exc,
+        )
+        raise FrameUnavailable(
+            reason="missing_rendering",
+            detail=(
+                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
+                f"{type(exc).__name__}"
+            ),
+        ) from None
+
+
 def _decode_frame(
     data: bytes, *, location: StoredArtifactLocation, max_rows: int
 ) -> tuple[Mapping[str, object], int]:
     """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
     document parsed, at its byte length, or a canonical frame built into one, at
-    `_document_bytes`. A canonical frame whose Parquet footer counts more than `max_rows` rows
-    refuses `missing_rendering` before any row is decoded.
-
-    `data` is in memory and passed its digest check, so a decoder's verdict on it is final. Bytes
-    the decoders reject as malformed refuse `missing_rendering`: `ValueError`, which covers
-    `pa.ArrowInvalid` and malformed JSON; `OSError`, which is how pyarrow reports a corrupt footer,
-    page, or column chunk, and no read here touches a file; `RecursionError` from JSON nested past
-    the parser's depth; and a parsed document that is not a frame. Any other Arrow failure and
-    `MemoryError` say nothing about the bytes, since an allocation failure or a codec this build
-    lacks clears on another instance or release, so they refuse the retryable `io`."""
-    try:
+    `_document_bytes`. The grammar checks a canonical frame's schema, and `max_rows` its footer's
+    row count, before any row is decoded. `_decoding` refuses what does not decode."""
+    with _decoding(location):
         if location.media_type == FRAME1_MEDIA_TYPE:
             parsed = json.loads(data)
             if not _is_frame_document(parsed):
@@ -436,17 +460,9 @@ def _decode_frame(
         rows = pq.read_metadata(pa.BufferReader(data)).num_rows
         if rows > max_rows:
             raise _over_row_bound(location, rows=rows, max_rows=max_rows)
+        schema = pq.read_schema(pa.BufferReader(data))
+        Frame.from_table(columns=tuple(schema.names), table=schema.empty_table())
         doc = canonical_frame_document(read_canonical_frame_table(data))
-    except (ValueError, OSError, RecursionError) as exc:
-        raise FrameUnavailable(
-            reason="missing_rendering",
-            detail=(
-                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
-                f"{type(exc).__name__}"
-            ),
-        ) from None
-    except (MemoryError, pa.ArrowException) as exc:
-        raise _io_failure(action="decoding", digest=location.artifact_digest, exc=exc) from None
     rows = cast("Sequence[Sequence[object]]", doc["rows"])
     return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
 
@@ -900,10 +916,12 @@ class LiveFrameStore:
                 deadline=deadline,
             )
             continuation = frame_continuation(manifest=document)
+            with _decoding(canonical):
+                view = compute_structural_view(frame=doc, continuation=continuation)
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
-                structural_view=compute_structural_view(frame=doc, continuation=continuation),
+                structural_view=view,
                 continuation=continuation,
                 manifest=document,
                 labels=labels,
@@ -942,11 +960,11 @@ class LiveFrameStore:
                 # The late steps of a version published without them replace its stored
                 # continuations, in the write that fills its record's steps, and the backfill
                 # fills those of a version recorded before versions stored them.
+                with _decoding(canonical):
+                    view = compute_structural_view(frame=frame.frame, continuation=continuation)
                 frame = replace(
                     frame,
-                    structural_view=compute_structural_view(
-                        frame=frame.frame, continuation=continuation
-                    ),
+                    structural_view=view,
                     continuation=continuation,
                 )
             refreshing = not record_changed and self._words_stale(cached, now=now)

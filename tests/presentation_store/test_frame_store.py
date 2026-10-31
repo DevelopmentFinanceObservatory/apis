@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -797,15 +798,42 @@ def test_load_refuses_a_canonical_frame_whose_bytes_do_not_decode(corrupt):
     assert excinfo.value.reason == "missing_rendering"
 
 
+def test_load_refuses_a_frame_of_another_schema():
+    """A Parquet file that is no canonical frame decodes, and the grammar refuses its schema."""
+    snapshots, artifacts, frame_ref = _canonical_frame_version(_parquet_bytes())
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def test_every_bit_flip_of_a_canonical_frame_loads_or_refuses_missing_rendering():
+    """A stored frame's bytes can break anywhere, and whatever the decoders then raise is a
+    permanent refusal."""
+    data = canonical_frame_parquet(
+        (Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows()),)
+    )
+    rng = random.Random(7)
+    for _ in range(1000):
+        mutant = bytearray(data)
+        mutant[rng.randrange(len(mutant))] ^= 1 << rng.randrange(8)
+        snapshots, artifacts, frame_ref = _canonical_frame_version(bytes(mutant))
+        store = _store(snapshots=snapshots, artifacts=artifacts)
+        try:
+            store.load(frame_ref=frame_ref)
+        except FrameUnavailable as refused:
+            assert refused.reason == "missing_rendering"
+
+
 @pytest.mark.parametrize(
     "raised",
     [
         pytest.param(MemoryError(), id="python-out-of-memory"),
         pytest.param(pa.ArrowMemoryError("exemplar"), id="arrow-out-of-memory"),
-        pytest.param(pa.ArrowNotImplementedError("codec not built"), id="codec-not-built"),
     ],
 )
-def test_load_refuses_io_for_a_decode_failure_that_says_nothing_about_the_bytes(
+def test_load_refuses_io_when_decoding_runs_out_of_memory(
     monkeypatch: pytest.MonkeyPatch, raised: Exception
 ):
     def fail(_data: bytes) -> Never:
@@ -818,6 +846,18 @@ def test_load_refuses_io_for_a_decode_failure_that_says_nothing_about_the_bytes(
         _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
 
     assert excinfo.value.reason == "io"
+
+
+def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
+    caplog: pytest.LogCaptureFixture,
+):
+    snapshots, artifacts, frame_ref = _canonical_frame_version(b"not a parquet file")
+
+    with caplog.at_level(logging.ERROR), pytest.raises(FrameUnavailable) as excinfo:
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert "ArrowInvalid" in caplog.text
+    assert excinfo.value.detail.split("'")[1] in caplog.text
 
 
 @pytest.mark.parametrize(

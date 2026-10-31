@@ -12,12 +12,14 @@ from fastapi.exceptions import RequestValidationError
 
 from assembler.errors import BindingInvalid, FrameUnavailable
 from assembler.ports import FrameUnavailableReason
-from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec
+from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec, refused
+from dfo_platform.codes import registered_status
 from dfo_platform.validation import validation_problem
-from presentation_api.codes import retryable_for, served_status
+from presentation_api.codes import retryable_for
 
 __all__ = [
     "EXPIRED_FRAME_FIX",
+    "FRAME_UNAVAILABLE_EXEMPLARS",
     "binding_invalid_spec",
     "frame_unavailable_spec",
     "request_validation_spec",
@@ -43,9 +45,8 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
             )
             for dimension in exc.structural_view.dimensions
         ]
-    return ProblemSpec(
-        status=served_status("binding_invalid"),
-        code="binding_invalid",
+    return refused(
+        "binding_invalid",
         detail=exc.detail,
         pointer=exc.pointer,
         alternatives=[
@@ -61,8 +62,7 @@ def binding_invalid_spec(exc: BindingInvalid) -> ProblemSpec:
 # The code and retryability each `FrameUnavailable` reason refuses with. `expired`,
 # `ops_unsupported` and `recipe_pending` can succeed once the frame is republished or its recipe
 # written. Revoked, missing, digest mismatch, quarantined, and unknown refs are permanent. A store
-# that fails to answer (`io`) and a newest version not ready to serve (`pending`) are
-# `service_unavailable`. A recipe the store cannot read (`recipe_unreadable`) is write-once, so no
+# that fails to answer (`io`) is `service_unavailable`. A recipe the store cannot read (`recipe_unreadable`) is write-once, so no
 # retry clears it.
 _FRAME_UNAVAILABLE_OUTCOME: dict[FrameUnavailableReason, tuple[str, bool]] = {
     "expired": ("frame_unavailable", True),
@@ -74,7 +74,6 @@ _FRAME_UNAVAILABLE_OUTCOME: dict[FrameUnavailableReason, tuple[str, bool]] = {
     "recipe_pending": ("frame_unavailable", True),
     "unknown": ("frame_unavailable", False),
     "io": ("service_unavailable", True),
-    "pending": ("service_unavailable", True),
     "recipe_unreadable": ("internal_error", False),
 }
 
@@ -87,6 +86,11 @@ if set(_FRAME_UNAVAILABLE_OUTCOME) != set(get_args(FrameUnavailableReason)):
 
 # The reasons that name a server fault.
 _LOGGED_REASONS: frozenset[str] = frozenset({"io", "recipe_unreadable"})
+
+# One exemplar of every reason, for each door whose routes load or pin a frame.
+FRAME_UNAVAILABLE_EXEMPLARS: tuple[FrameUnavailable, ...] = tuple(
+    FrameUnavailable(reason=reason, detail="exemplar") for reason in _FRAME_UNAVAILABLE_OUTCOME
+)
 
 
 # An expired frame aged out of the working tier. A card made on it draws again from current
@@ -105,19 +109,14 @@ def frame_unavailable_spec(exc: FrameUnavailable) -> ProblemSpec:
     if exc.reason in _LOGGED_REASONS:
         logger.error("Frame refused for reason %s: %s", exc.reason, exc.detail)
     detail = f"{exc.detail}; {EXPIRED_FRAME_FIX}" if exc.reason == "expired" else exc.detail
-    return ProblemSpec(
-        status=served_status(code),
-        code=code,
-        detail=detail,
-        retryable=retryable,
-        cause=Cause(code=exc.reason),
-    )
+    return refused(code, detail=detail, retryable=retryable, cause=Cause(code=exc.reason))
 
 
 def request_validation_spec(exc: BaseException) -> ProblemSpec | None:
-    """Return the platform validation spec unchanged, or `None` for other exceptions.
-    Malformed requests inherit `retryable=False`.
+    """Return the platform validation spec at the registry's status, or `None` for other
+    exceptions. Malformed requests inherit `retryable=False`.
     """
     if not isinstance(exc, RequestValidationError):
         return None
-    return validation_problem(exc)
+    spec = validation_problem(exc)
+    return spec._replace(status=registered_status(spec.code))

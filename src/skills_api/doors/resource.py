@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from skills_api.deps import (
     CACHE_CONTROL,
@@ -54,9 +54,8 @@ class SkillResourceNotFound(Exception):
 
 def classify_resource_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, ResourcePathTooLong):
-        return ProblemSpec(
-            status=400,
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=(
                 f"path exceeds the {RESOURCE_PATH_MAX_LENGTH}-character ceiling "
                 f"(received {exc.length} characters)"
@@ -65,9 +64,8 @@ def classify_resource_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
         )
     if isinstance(exc, SkillResourceNotFound):
-        return ProblemSpec(
-            status=404,
-            code="skill_resource_not_found",
+        return refused(
+            "skill_resource_not_found",
             detail=str(exc),
             pointer="/path",
             retryable=False,

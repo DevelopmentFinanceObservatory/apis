@@ -110,7 +110,7 @@ alone.
 
 ### FrameUnavailable outcome by reason
 
-`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) names the code and retryability of each reason in `assembler.ports.FrameUnavailableReason`, and importing the module fails if the two differ. HTTP is the status the code registry gives the code on the bound endpoint: this table shows the write, read and share routes, and on a render route `frame_unavailable` answers 409. `cause.code` carries the reason on every code. `recipe_pending` and `recipe_unreadable` refuse a pin, so only the share routes raise them.
+`_FRAME_UNAVAILABLE_OUTCOME` (`presentation_api.refusals`) names the code and retryability of each reason in `assembler.ports.FrameUnavailableReason`, and importing the module fails if the two differ, and a bare `spec_id` whose newest version is not ready refuses `service_unavailable` with `Retry-After` and no `cause`. HTTP is the status the code registry gives the code on the bound endpoint: this table shows the write, read and share routes, and on a render route `frame_unavailable` answers 409. `cause.code` carries the reason on every code. `io` is a failure to obtain a frame's bytes or the memory to decode them. Stored bytes that pass their digest and do not validate and build as a frame refuse `missing_rendering`, and the store logs an error naming the digest and the cause. `recipe_pending` and `recipe_unreadable` refuse a pin, so only the share routes raise them.
 
 | Reason            | Code                | HTTP | retryable |
 | ----------------- | ------------------- | ---- | --------- |
@@ -123,7 +123,6 @@ alone.
 | recipe_pending    | frame_unavailable   | 404  | true      |
 | unknown           | frame_unavailable   | 404  | false     |
 | io                | service_unavailable | 503  | true      |
-| pending           | service_unavailable | 503  | true      |
 | recipe_unreadable | internal_error      | 500  | false     |
 
 ## Registry binding
@@ -138,17 +137,27 @@ that comparison: it has no `CODE_RETRY_MODE` entry, since that table mirrors the
 manifest's `retry_modes` byte for byte, so `CODE_RETRY_MODE`'s own key set alone would leave the
 code out of the served set on both sides.
 
-Each route binds the registry endpoint it serves, keyed by method and path
-(`Surface.registry_endpoints`): `presentation.write` to create and revise,
-`presentation.component_read` to C5, `presentation.component_data` to the data route,
-`presentation.render` to C7b and C7c, `presentation.frames` to both frames routes, and
-`presentation.shares` to every shares door route. The release and meta routes serve no endpoint.
-Every classifier reads a refusal's status from the registry under the bound endpoint
-(`presentation_api.codes.served_status`), so no Presentation source holds one, and
-`compute_presentation_capability_version` hashes the status of each code on each
-`presentation.*` endpoint. A code a route raises that its endpoint leaves unmapped answers its
-status on `presentation.write`, or else on the first endpoint that maps it, and logs an error.
-`tests/presentation_api/test_refusal_registry.py` enumerates the composed surface's routes and
-asserts that every route but those is bound, that every `presentation.*` endpoint is bound, that
-one door owns each endpoint, and that every exemplar and `FrameUnavailable` reason a route raises
-goes out at the one status the registry gives its code there.
+`presentation_api.routes.ROUTE_ENDPOINTS` names the registry endpoint of each route by method and
+path: `presentation.write` for create and revise, `presentation.component_read` for C5,
+`presentation.component_data` for the data route, `presentation.render` for C7b and C7c,
+`presentation.frames` for both frames routes, and `presentation.shares` for every shares door
+route. A door reads `registry_endpoints` from it, so a route with no row fails when the door is
+built. The release and meta routes serve no endpoint and classify nothing.
+
+Every classifier on this surface takes a refusal's status from the registry under the bound
+endpoint: `dfo_platform.problem.refused` gives the status from the code, `request_validation_spec`
+restates `validation_problem`'s, and `classify_live_refresh_exception` calls `registered_status`.
+`version.py` renders its hashed exemplars at a fixed `status=400`, which reaches only the hash.
+The platform's own defaults (`dfo_platform.refusal`), such as `timeout` and an unclassified
+`internal_error`, keep their statuses. Each door declares `endpoint_exemplars`, an exemplar of
+every refusal each endpoint's routes raise, and `presentation_surface` classifies them with the
+endpoint bound (`dfo_platform.doors.check_endpoint_exemplars`), so a pair the registry leaves
+unmapped fails startup. `compute_presentation_capability_version` hashes the status of each code
+on each `presentation.*` endpoint, `ROUTE_ENDPOINTS`, and the render routes' replay rule.
+`tests/presentation_api/test_refusal_registry.py` asserts that every route but the release and
+meta routes is bound, that one door owns each endpoint, that every declared exception type has an
+exemplar, and that each goes out at the one status the registry gives its code there.
+
+The Skills surface reads its classifiers' statuses the same way. The Search and Graph surfaces bind
+their routes (`Surface.registry_endpoints`) and still state literal statuses in their classifiers,
+which their refusal sweeps check against the registry.

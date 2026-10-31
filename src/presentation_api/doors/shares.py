@@ -203,23 +203,29 @@ from datasets_api.principals import Grant, Principal, Principals, granted_route_
 from datasets_api.retention_admission import OpenPinBudgetExhausted, PinBudgetExhausted
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.caller import Caller, CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.config import CallerSettings, PublicSiteSettings
-from dfo_platform.doors import DoorContribution, route_registry_endpoints
+from dfo_platform.doors import DoorContribution
 from dfo_platform.state import StateSlot
 from materialise.formats import ExcelIllegalCharacterError
-from presentation_api.codes import SHARES_ENDPOINT, served_status
 from presentation_api.config import (
     PRESENTATION_COMPONENTS_MAX_CONCURRENCY,
     PRESENTATION_COMPONENTS_TIMEOUT_SECONDS,
     PresentationSettings,
 )
 from presentation_api.doors.component_data import (
+    COMPONENT_DATA_EXCEPTION_EXEMPLARS,
     COMPONENT_DATA_MEDIA_TYPES,
     classify_component_data_exception,
 )
-from presentation_api.doors.components import WRITE_TOKEN_HEADER, classify_components_exception
+from presentation_api.doors.components import (
+    DRAW_EXEMPLARS,
+    LOOKUP_EXEMPLARS,
+    STORE_EXEMPLARS,
+    WRITE_TOKEN_HEADER,
+    classify_components_exception,
+)
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import (
     SharedResponse,
@@ -232,7 +238,19 @@ from presentation_api.models import (
 )
 from presentation_api.newest_frames import NewestFrames
 from presentation_api.path_params import PathParamInvalid, require_component_id, require_share_id
+from presentation_api.refusals import FRAME_UNAVAILABLE_EXEMPLARS
 from presentation_api.retention import stated_retention
+from presentation_api.routes import (
+    SHARE_HISTORY_PATH,
+    SHARE_IMPORT_PATH,
+    SHARE_PATH,
+    SHARE_SLOT_DATA_PATH,
+    SHARE_SLOT_PATH,
+    SHARE_SNAPSHOT_PATH,
+    SHARES_ENDPOINT,
+    SHARES_PATH,
+    door_registry_endpoints,
+)
 from presentation_api.share_slots import (
     HISTORY_PAGE_DEFAULT,
     HISTORY_PAGE_MAX,
@@ -276,23 +294,12 @@ __all__ = [
     "MAX_SHARE_CARDS",
     "MAX_SHARE_PAYLOAD_BYTES",
     "SHARES_DEPS_SLOT",
-    "SHARES_ENDPOINT",
     "SharesDeps",
     "build_shares_door",
     "classify_shares_exception",
 ]
 
 logger = logging.getLogger(__name__)
-
-"""The code registry endpoint every share route serves."""
-
-SHARES_PATH = "/api/presentation/shares"
-SHARE_PATH = "/api/presentation/shares/{share_id}"
-SHARE_SNAPSHOT_PATH = f"{SHARE_PATH}/snapshot"
-SHARE_IMPORT_PATH = f"{SHARE_PATH}/import"
-SHARE_HISTORY_PATH = f"{SHARE_PATH}/history"
-SHARE_SLOT_PATH = f"{SHARE_PATH}/slots/{{slot}}"
-SHARE_SLOT_DATA_PATH = f"{SHARE_SLOT_PATH}/data"
 
 MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
@@ -1133,72 +1140,61 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
     """The share refusals, then the components door's for the card, store and frame failures
     the share routes share with it."""
     if isinstance(exc, WriteTokenRequired):
-        return ProblemSpec(
-            status=served_status("write_token_required"),
-            code="write_token_required",
+        return refused(
+            "write_token_required",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, WriteTokenInvalid):
-        return ProblemSpec(
-            status=served_status("write_token_invalid"),
-            code="write_token_invalid",
+        return refused(
+            "write_token_invalid",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, ShareNotReplaceable):
-        return ProblemSpec(
-            status=served_status("share_not_replaceable"),
-            code="share_not_replaceable",
+        return refused(
+            "share_not_replaceable",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, ShareIdTaken):
-        return ProblemSpec(
-            status=served_status("share_id_taken"),
-            code="share_id_taken",
+        return refused(
+            "share_id_taken",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, ShareImportNotPermitted):
-        return ProblemSpec(
-            status=served_status("share_import_not_permitted"),
-            code="share_import_not_permitted",
+        return refused(
+            "share_import_not_permitted",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, SlotDrawsNoFrame):
-        return ProblemSpec(
-            status=served_status("request_invalid"),
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=str(exc),
             pointer=f"/slots/{exc.index}/frame",
             retryable=False,
         )
     if isinstance(exc, ShareNotFound | ShareSlotEmpty):
-        return ProblemSpec(
-            status=served_status("not_found"), code="not_found", detail=str(exc), retryable=False
-        )
+        return refused("not_found", detail=str(exc), retryable=False)
     if isinstance(exc, AllowanceExhausted):
-        return ProblemSpec(
-            status=served_status("allowance_exhausted"),
-            code="allowance_exhausted",
+        return refused(
+            "allowance_exhausted",
             detail=str(exc),
             retryable=exc.retryable,
             headers=exc.headers,
         )
     if isinstance(exc, PinBudgetExhausted | OpenPinBudgetExhausted):
-        return ProblemSpec(
-            status=served_status("service_unavailable"),
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
             detail=str(exc),
             retryable=True,
             headers=exc.headers,
         )
     if isinstance(exc, CallerHeaderInvalid):
-        return ProblemSpec(
-            status=served_status("request_invalid"),
-            code="request_invalid",
+        return refused(
+            "request_invalid",
             detail=str(exc),
             retryable=False,
         )
@@ -1206,51 +1202,24 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
         # A deployment fault a retry does not clear. This surface's `service_unavailable` is
         # retryable, so it answers `internal_error`.
         logger.error("Shares door cannot name a caller: %s", exc)
-        return ProblemSpec(
-            status=served_status("internal_error"),
-            code="internal_error",
+        return refused(
+            "internal_error",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, SharePayloadTooLarge):
-        return ProblemSpec(
-            status=served_status("payload_too_large"),
-            code="payload_too_large",
+        return refused(
+            "payload_too_large",
             detail=str(exc),
             retryable=False,
         )
     if isinstance(exc, SharesUnavailable):
-        return ProblemSpec(
-            status=served_status("service_unavailable"),
-            code="service_unavailable",
+        return refused(
+            "service_unavailable",
             detail=str(exc),
             retryable=True,
         )
     return classify_components_exception(exc) or classify_component_data_exception(exc)
-
-
-SHARES_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
-    WriteTokenRequired("Ab3dEf7h"),
-    WriteTokenInvalid("Ab3dEf7h"),
-    ShareNotReplaceable("Ab3dEf7h"),
-    ShareIdTaken("Ab3dEf7h"),
-    ShareImportNotPermitted(presented=False),
-    SlotDrawsNoFrame(index=0, component_id="cmp_a", revision=1),
-    ShareNotFound("Ab3dEf7h"),
-    ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),
-    SharePayloadTooLarge("exemplar"),
-    SharesUnavailable(),
-    FrameUnavailable(reason="io", detail="exemplar"),
-    FrameUnavailable(reason="expired", detail="exemplar"),
-    AllowanceExhausted(kind=AllowanceKind.share, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-    PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-    OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-    CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
-    CallerHeaderInvalid(),
-    CallerUnresolved("exemplar"),
-    GeneratedIdCollision(subject_kind="share"),
-    ExcelIllegalCharacterError("exemplar", row=0, column=0),
-)
 
 
 def build_shares_door(
@@ -1505,7 +1474,7 @@ def build_shares_door(
 
     return DoorContribution(
         router=router,
-        registry_endpoints=route_registry_endpoints(router, SHARES_ENDPOINT),
+        registry_endpoints=door_registry_endpoints(router),
         public_paths=frozenset(
             (SHARE_PATH, SHARE_HISTORY_PATH, SHARE_SLOT_PATH, SHARE_SLOT_DATA_PATH)
         ),
@@ -1547,6 +1516,33 @@ def build_shares_door(
             SpecRegistryStoreError,
             RequestValidationError,
         ),
-        exception_exemplars=SHARES_EXCEPTION_EXEMPLARS,
+        endpoint_exemplars={
+            SHARES_ENDPOINT: (
+                *LOOKUP_EXEMPLARS,
+                *STORE_EXEMPLARS,
+                *DRAW_EXEMPLARS,
+                *FRAME_UNAVAILABLE_EXEMPLARS,
+                *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
+                WriteTokenRequired("Ab3dEf7h"),
+                WriteTokenInvalid("Ab3dEf7h"),
+                ShareNotReplaceable("Ab3dEf7h"),
+                ShareIdTaken("Ab3dEf7h"),
+                ShareImportNotPermitted(presented=False),
+                SlotDrawsNoFrame(index=0, component_id="cmp_a", revision=1),
+                ShareNotFound("Ab3dEf7h"),
+                ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),
+                SharePayloadTooLarge("exemplar"),
+                SharesUnavailable(),
+                AllowanceExhausted(
+                    kind=AllowanceKind.share, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
+                ),
+                PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+                OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+                CreateRequestInvalid(pointer="/write_token", detail="exemplar"),
+                CallerHeaderInvalid(),
+                CallerUnresolved("exemplar"),
+                GeneratedIdCollision(subject_kind="share"),
+            )
+        },
         lifespan=lifespan,
     )

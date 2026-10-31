@@ -82,7 +82,7 @@ from dfo_provenance_docs import DocumentErrorReason
 from fastapi import APIRouter, Request, Response
 
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.refusal import TIMEOUT_DEFAULT
 from dfo_platform.single_flight_cache import SingleFlightCache
 from dfo_platform.static_response import FrozenJSON, freeze_public_json, gapped_public_json
@@ -444,7 +444,9 @@ def build_sources_door() -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={("GET", "/api/graph/documentation/{dcid:dcid}"): "graph.documentation"},
+        registry_endpoints=path_registry_endpoints(
+            router, {"/api/graph/documentation/{dcid:dcid}": "graph.documentation"}
+        ),
         classify=classify_sources_exception,
         exception_types=(
             SourceDocumentNotFound,

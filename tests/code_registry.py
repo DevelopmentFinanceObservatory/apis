@@ -2,50 +2,29 @@
 
 from __future__ import annotations
 
-from dfo_spec_kit.registry import REGISTRY, CodeMapping
-
 from dfo_platform.app import Surface
+from dfo_platform.codes import endpoint_statuses
 from dfo_platform.doors import RouteKey, route_keys
 
 
-def _problem_mappings(code: str) -> tuple[CodeMapping, ...]:
-    entry = REGISTRY[code] if code in REGISTRY else None  # noqa: SIM401 -- CodeRegistry has no .get()
-    mappings = entry.mappings if entry is not None else ()
-    return tuple(
-        mapping
-        for mapping in mappings
-        if mapping.channel == "problem_details" and mapping.http_status is not None
-    )
-
-
 def problem_statuses(code: str, endpoint: str) -> set[int]:
-    """The statuses the registry gives `code`'s problem details on `endpoint`."""
-    return {
-        status
-        for mapping in _problem_mappings(code)
-        if mapping.endpoint == endpoint and (status := mapping.http_status) is not None
-    }
+    """The statuses the registry gives active `code`'s problem details on `endpoint`."""
+    return set(endpoint_statuses("").get(endpoint, {}).get(code, ()))
 
 
 def registered_status_codes(endpoint: str) -> frozenset[tuple[str, int]]:
     """The active `problem_details` code-status pairs on `endpoint`. Manifest warnings use a
     separate channel without HTTP statuses."""
     return frozenset(
-        (entry.code, status)
-        for entry in REGISTRY.entries
-        if entry.lifecycle == "active"
-        for status in problem_statuses(entry.code, endpoint)
+        (code, status)
+        for code, statuses in endpoint_statuses("").get(endpoint, {}).items()
+        for status in statuses
     )
 
 
 def registered_endpoints(prefix: str) -> set[str]:
-    """Every registry endpoint whose name starts with `prefix`."""
-    return {
-        mapping.endpoint
-        for entry in REGISTRY.entries
-        for mapping in entry.mappings
-        if mapping.endpoint.startswith(prefix)
-    }
+    """Every registry endpoint whose name starts with `prefix` and maps a problem status."""
+    return set(endpoint_statuses(prefix))
 
 
 def unbound_routes(surface: Surface) -> frozenset[RouteKey]:

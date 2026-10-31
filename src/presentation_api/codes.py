@@ -10,8 +10,8 @@ uses platform code `unsupported_schema_version` (422) with `retryable=False`, ou
 authoritative. `request_invalid` has a retryable headline mode but always returns false.
 
 Every classifier reads a refusal's status from the code registry under the endpoint the platform
-binds for the route (`served_status`), and `presentation_statuses` holds the registry's map for
-the surface. `schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
+binds for the route (`dfo_platform.problem.refused`), and a door's exemplars are checked against
+the registry at startup (`dfo_platform.doors.check_endpoint_exemplars`). `schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
 `resource_exhausted` are 400 on the write routes, and `frame_unavailable` 404. The render routes
 serve `binding_invalid` and `constraint_violation` at 422 and `frame_unavailable`,
 `release_mismatch`, and `resource_exhausted` at 409. Their caller replays a stored intent and
@@ -44,49 +44,19 @@ constraint fixes, and limit names appear in `detail`.
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Mapping
-from functools import cache
-from types import MappingProxyType
-
-from dfo_spec_kit.registry import REGISTRY
-
-from dfo_platform.codes import (
-    PLATFORM_CODE_CATALOGUE,
-    CodeCatalogue,
-    merge_catalogues,
-    registered_status,
-)
+from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, CodeCatalogue, merge_catalogues
 
 __all__ = [
     "CODE_CATALOG",
     "CODE_RETRY_MODE",
-    "COMPONENT_DATA_ENDPOINT",
-    "COMPONENT_READ_ENDPOINT",
-    "FRAMES_ENDPOINT",
     "PRESENTATION_CODE_CATALOGUE",
     "PRESENTATION_SERVED_CODES",
     "PRESENTATION_SERVED_PLATFORM_CODES",
-    "RENDER_ENDPOINT",
-    "SHARES_ENDPOINT",
     "SHARE_CODE_CATALOGUE",
-    "WRITE_ENDPOINT",
     "WRITE_SERVED_PLATFORM_CODES",
-    "presentation_statuses",
     "replay_retryable",
     "retryable_for",
-    "served_status",
 ]
-
-logger = logging.getLogger(__name__)
-
-# The code registry endpoints the surface's routes serve.
-WRITE_ENDPOINT = "presentation.write"
-COMPONENT_READ_ENDPOINT = "presentation.component_read"
-COMPONENT_DATA_ENDPOINT = "presentation.component_data"
-RENDER_ENDPOINT = "presentation.render"
-FRAMES_ENDPOINT = "presentation.frames"
-SHARES_ENDPOINT = "presentation.shares"
 
 PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "schema_invalid": (
@@ -250,42 +220,6 @@ def replay_retryable(code: str, *, retryable: bool) -> bool:
     occurrence's own value when `code`'s mode is in `_UNCHANGED_RETRY_MODES`, else false.
     """
     return retryable and CODE_RETRY_MODE.get(code) in _UNCHANGED_RETRY_MODES
-
-
-@cache
-def presentation_statuses() -> Mapping[str, Mapping[str, int]]:
-    """The status the code registry gives each code's problem details, by `presentation.*`
-    endpoint."""
-    statuses: dict[str, dict[str, int]] = {}
-    for entry in REGISTRY.entries:
-        for mapping in entry.mappings:
-            if (
-                mapping.endpoint.startswith("presentation.")
-                and mapping.channel == "problem_details"
-                and mapping.http_status is not None
-            ):
-                statuses.setdefault(mapping.endpoint, {})[entry.code] = mapping.http_status
-    return MappingProxyType({endpoint: statuses[endpoint] for endpoint in sorted(statuses)})
-
-
-def served_status(code: str) -> int:
-    """The status the code registry gives `code` on the bound endpoint. A code that endpoint
-    does not map answers the status of the first Presentation endpoint that does,
-    `presentation.write` before the others, and logs an error, so the client reads the refusal
-    and not a 500. `tests/presentation_api/test_refusal_registry.py` fails on such a pair.
-
-    Raises:
-        LookupError: No Presentation endpoint maps `code`.
-    """
-    try:
-        return registered_status(code)
-    except LookupError:
-        statuses = presentation_statuses()
-        for endpoint in (WRITE_ENDPOINT, *statuses):
-            if code in statuses[endpoint]:
-                logger.error("The bound registry endpoint maps no status for %s", code)
-                return statuses[endpoint][code]
-        raise
 
 
 def _catalogue_covers(catalogue: CodeCatalogue) -> None:

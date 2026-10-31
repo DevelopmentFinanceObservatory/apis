@@ -63,7 +63,7 @@ from datasets_api.publish_models import RecipeAnchor, RecipeDroppedSeries
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.timings import door_call, run_with_timings
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from materialise.formats import ExcelIllegalCharacterError, ExcelLimitError, ParquetSizeBoundError
 
 logger = logging.getLogger(__name__)
@@ -225,7 +225,7 @@ def build_derived_door(*, deps: DepsCell) -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={("GET", MANIFEST_PATH): "datasets.snapshot"},
+        registry_endpoints=path_registry_endpoints(router, {MANIFEST_PATH: "datasets.snapshot"}),
         classify=classify_datasets_refusal,
         exception_types=(
             SnapshotNotFound,
@@ -270,7 +270,7 @@ def build_derived_files_door(*, deps: DepsCell) -> DoorContribution:
     )
     return DoorContribution(
         router=router,
-        registry_endpoints={("GET", FILE_PATH): "datasets.files"},
+        registry_endpoints=path_registry_endpoints(router, {FILE_PATH: "datasets.files"}),
         classify=classify_files_exception,
         exception_types=(
             SnapshotNotFound,

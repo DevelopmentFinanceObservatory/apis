@@ -1,9 +1,9 @@
 """`compute_presentation_capability_version` returns `pres_` plus 16 SHA-256 hex digits for
 the release this surface serves. The hash covers the release document with a fixed
 `catalog_version`, strict intent schemas, formatter profile, grammar members, encoding classes,
-constraints, rendered refusal exemplars, frame-unavailable outcomes, and the status the code
-registry gives each code on each `presentation.*` endpoint. Wording in the release schemas
-affects the hash.
+constraints, rendered refusal exemplars, frame-unavailable outcomes, the status the code registry
+gives each code on each `presentation.*` endpoint, the endpoint each route serves, and the
+replay rule of the render routes. Wording in the release schemas affects the hash.
 """
 
 from __future__ import annotations
@@ -16,16 +16,21 @@ from collections.abc import Mapping
 from assembler.catalogue import CatalogueRelease
 from assembler.ports import FrameUnavailableReason
 from dfo_platform import Alternative, CodeCatalogue, Envelope, ProblemIssue
+from dfo_platform.codes import endpoint_statuses
+from dfo_platform.doors import RouteKey
 from dfo_platform.trace import set_trace_id
 from presentation_api.codes import (
+    _UNCHANGED_RETRY_MODES,
     CODE_RETRY_MODE,
     PRESENTATION_CODE_CATALOGUE,
-    presentation_statuses,
 )
 from presentation_api.doors.release import release_document
 from presentation_api.refusals import _FRAME_UNAVAILABLE_OUTCOME
+from presentation_api.routes import RENDER_ENDPOINT, ROUTE_ENDPOINTS
 
 __all__ = ["compute_presentation_capability_version"]
+
+PRESENTATION_STATUSES = endpoint_statuses("presentation.")
 
 # Fixed values keep exemplar hashes independent of request context and the computed digest.
 _EXEMPLAR_TRACE_ID = "0" * 32
@@ -81,10 +86,11 @@ def compute_presentation_capability_version(
     frame_unavailable_outcome: Mapping[
         FrameUnavailableReason, tuple[str, bool]
     ] = _FRAME_UNAVAILABLE_OUTCOME,
-    registry_statuses: Mapping[str, Mapping[str, int]] | None = None,
+    registry_statuses: Mapping[str, Mapping[str, tuple[int, ...]]] = PRESENTATION_STATUSES,
+    route_endpoints: Mapping[RouteKey, str] = ROUTE_ENDPOINTS,
+    replay_modes: frozenset[str] = _UNCHANGED_RETRY_MODES,
 ) -> str:
     """Return the capability hash for `release` and the supplied refusal data."""
-    statuses = presentation_statuses() if registry_statuses is None else registry_statuses
     refusal_exemplars = contextvars.copy_context().run(
         _render_refusal_exemplars, code_catalogue, retry_modes
     )
@@ -105,7 +111,11 @@ def compute_presentation_capability_version(
         "frame_unavailable_outcome": {
             reason: list(outcome) for reason, outcome in frame_unavailable_outcome.items()
         },
-        "registry_statuses": {endpoint: dict(codes) for endpoint, codes in statuses.items()},
+        "registry_statuses": {
+            endpoint: dict(codes) for endpoint, codes in registry_statuses.items()
+        },
+        "route_endpoints": sorted((*key, endpoint) for key, endpoint in route_endpoints.items()),
+        "replay": {"endpoint": RENDER_ENDPOINT, "retry_modes": sorted(replay_modes)},
         "release_document": pinned_release_document,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))

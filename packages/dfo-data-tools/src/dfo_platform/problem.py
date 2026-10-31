@@ -10,7 +10,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, Field, TypeAdapter
 
@@ -265,6 +265,17 @@ _PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(ProblemSpec)
 # refuses at once, and a running read or work thread frees within a request, so a client
 # waits the shortest `Retry-After`, one second, before it retries.
 BACKPRESSURE_HEADERS: Mapping[str, str] = MappingProxyType({"Retry-After": "1"})
+
+
+def refused(code: str, *, retryable: bool, **fields: Any) -> ProblemSpec:
+    """`code`'s problem at the status the code registry gives it on the bound endpoint, so a
+    classifier cannot state one apart from the other. `fields` are the other `ProblemSpec`
+    members.
+
+    Raises:
+        LookupError: The registry maps no one status for `code` there (`registered_status`).
+    """
+    return ProblemSpec(registered_status(code), code, retryable, **fields)
 
 
 class Refusal(Exception):

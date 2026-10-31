@@ -79,9 +79,9 @@ from datasets_api.live_refresh import (
     classify_live_refresh_exception,
 )
 from datasets_api.recipe_store import RecipeReader
-from dfo_platform import ProblemSpec
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_endpoint
-from presentation_api.codes import RENDER_ENDPOINT, replay_retryable, retryable_for, served_status
+from presentation_api.codes import replay_retryable, retryable_for
 from presentation_api.doors.component_data import COMPONENT_DATA_MEDIA_TYPES
 from presentation_api.models import ComponentReadResponse
 from presentation_api.path_params import (
@@ -91,12 +91,10 @@ from presentation_api.path_params import (
 )
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
+from presentation_api.routes import RENDER_DATA_PATH, RENDER_ENDPOINT, RENDER_PATH
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
-
-RENDER_PATH = "/api/presentation/components/{component_id}/revisions/{revision}/render"
-RENDER_DATA_PATH = f"{RENDER_PATH}/data"
 
 _DATASET_SPEC_PREFIX = "spec_"
 _DERIVED_SPEC_PREFIX = "ops_"
@@ -119,16 +117,14 @@ class RenderTargetMismatch(Exception):
 
 def classify_render_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, RenderTargetMismatch):
-        return ProblemSpec(
-            status=served_status("render_target_mismatch"),
-            code="render_target_mismatch",
+        return refused(
+            "render_target_mismatch",
             detail=str(exc),
             retryable=retryable_for("render_target_mismatch"),
         )
     if isinstance(exc, ComponentHoldsNoFrame):
-        return ProblemSpec(
-            status=served_status("render_target_mismatch"),
-            code="render_target_mismatch",
+        return refused(
+            "render_target_mismatch",
             detail=exc.detail,
             retryable=retryable_for("render_target_mismatch"),
         )

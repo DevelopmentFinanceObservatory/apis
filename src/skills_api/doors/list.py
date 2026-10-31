@@ -16,16 +16,16 @@ from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
 from skills_api.deps import (
     CACHE_CONTROL,
-    INDEX_NOT_BUILT_PROBLEM,
     SkillsDepsDep,
     SkillsIndexNotBuilt,
+    index_not_built_problem,
 )
 from skills_api.models import SkillListResponse, skill_summary, split_skill_warnings
 from skills_index import SkillsIndex
 
 
 def classify_list_exception(exc: BaseException) -> ProblemSpec | None:
-    return INDEX_NOT_BUILT_PROBLEM if isinstance(exc, SkillsIndexNotBuilt) else None
+    return index_not_built_problem() if isinstance(exc, SkillsIndexNotBuilt) else None
 
 
 def _build_response(index: SkillsIndex) -> SkillListResponse:

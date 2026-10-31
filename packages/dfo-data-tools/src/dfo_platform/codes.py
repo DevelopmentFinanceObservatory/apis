@@ -250,6 +250,21 @@ def _problem_statuses(code: str) -> Mapping[str, frozenset[int]]:
     return {endpoint: frozenset(found) for endpoint, found in statuses.items()}
 
 
+@cache
+def endpoint_statuses(prefix: str) -> Mapping[str, Mapping[str, tuple[int, ...]]]:
+    """The statuses the code registry gives each active code's problem details, sorted, on each
+    endpoint whose name starts with `prefix`. A tuple of more than one is a code
+    `registered_status` refuses to pick for."""
+    statuses: dict[str, dict[str, tuple[int, ...]]] = {}
+    for entry in sorted(REGISTRY.entries, key=lambda entry: entry.code):
+        if entry.lifecycle != "active":
+            continue
+        for endpoint, found in _problem_statuses(entry.code).items():
+            if endpoint.startswith(prefix):
+                statuses.setdefault(endpoint, {})[entry.code] = tuple(sorted(found))
+    return {endpoint: statuses[endpoint] for endpoint in sorted(statuses)}
+
+
 def registered_status(code: str) -> int:
     """The HTTP status the code registry gives `code` on the bound endpoint
     (`bound_registry_endpoint`), or, with no endpoint bound, the one status it gives `code` on

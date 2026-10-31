@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from dfo_platform import ProblemSpec, codes
 from dfo_platform.app import Surface, SurfaceConfigurationError, create_app
 from dfo_platform.codes import bound_registry_endpoint, registered_status
+from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.problem import Refusal, classify_refusal
 
 _CODE = "facet_binding_unsupported"
@@ -93,6 +94,22 @@ def test_a_refusal_renders_at_the_status_of_its_routes_endpoint(path: str, statu
     response = _client().get(path)
 
     assert response.status_code == status, response.text
+
+
+def test_a_path_binding_covers_every_method_and_refuses_an_unrouted_path() -> None:
+    router = APIRouter()
+
+    @router.get("/api/t/a")
+    @router.post("/api/t/a")
+    async def route_a() -> None:
+        return None
+
+    assert path_registry_endpoints(router, {"/api/t/a": "t.a"}) == {
+        ("GET", "/api/t/a"): "t.a",
+        ("POST", "/api/t/a"): "t.a",
+    }
+    with pytest.raises(ValueError, match="/api/t/missing"):
+        path_registry_endpoints(router, {"/api/t/missing": "t.a"})
 
 
 def test_two_methods_on_one_path_serve_their_own_endpoints() -> None:

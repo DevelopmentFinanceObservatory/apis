@@ -618,7 +618,6 @@ def test_a_slot_the_share_does_not_have_refuses(door: _Door, path: str, status: 
         ("recipe_pending", 404, "frame_unavailable", True),
         ("unknown", 404, "frame_unavailable", False),
         ("io", 503, "service_unavailable", True),
-        ("pending", 503, "service_unavailable", True),
         ("recipe_unreadable", 500, "internal_error", False),
     ],
 )

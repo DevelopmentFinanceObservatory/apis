@@ -29,7 +29,8 @@ for a Spec root `{spec_id}` (`datasets_api.analysis_roots.newest_spec_version`).
 served definition's newest version in the root's default rendering, rebuilt when its head is stale.
 A rebuild too large for the call's budget (`doors.definition.inline_definition_deps`) goes to an
 operation, so a retry finds it, and the call answers `NewestPending`.
-`resolve_bare_spec` turns its refusals into the `FrameUnavailable` the presentation doors refuse.
+`resolve_bare_spec` turns its refusals into the `FrameUnavailable` the presentation doors refuse,
+or `NewestNotReady` for a version a retry may find ready.
 
 `DatasetsNewestFrames` reads the Datasets surface's `DepsCell`, so it answers only in an app
 that mounts that surface (`dfo_apis.app` passes the cell and the `RunningAnalyses` to both).
@@ -68,6 +69,7 @@ from datasets_api.doors.analysis import (
 from datasets_api.doors.definition import definition_deps, inline_definition_deps
 from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
 from datasets_api.exports import resolve_endpoint
+from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.trace import get_trace_id
 
@@ -75,7 +77,9 @@ __all__ = [
     "FRESHNESS_WINDOW",
     "DatasetsNewestFrames",
     "NewestFrames",
+    "NewestNotReady",
     "NewestPending",
+    "newest_not_ready_spec",
     "resolve_bare_spec",
 ]
 
@@ -198,12 +202,32 @@ class DatasetsNewestFrames:
             ).body()
 
 
+class NewestNotReady(Exception):
+    """A bare `spec_id`'s newest version is not ready to serve, and a retry after
+    `retry_after_s` seconds may find it. Maps to retryable `service_unavailable` with
+    `Retry-After` (`newest_not_ready_spec`)."""
+
+    def __init__(self, detail: str, *, retry_after_s: float) -> None:
+        self.retry_after_s = retry_after_s
+        super().__init__(detail)
+
+
+def newest_not_ready_spec(exc: NewestNotReady) -> ProblemSpec:
+    return refused(
+        "service_unavailable",
+        detail=str(exc),
+        retryable=True,
+        headers={"Retry-After": str(math.ceil(exc.retry_after_s))},
+    )
+
+
 def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
     """The frame a bare `spec_id` names (`NewestFrames.newest_of_spec`).
 
     Raises:
-        FrameUnavailable: `pending` (retryable) while the version builds or for a refusal a
-            retry may clear; `quarantined` for a quarantined identity; `revoked` for a revoked
+        NewestNotReady: While the version builds, or for a retryable Datasets refusal that
+            names when to retry.
+        FrameUnavailable: `io` for any other retryable Datasets refusal; `quarantined` for a quarantined identity; `revoked` for a revoked
             version; `unknown` (404) for any other refusal below status 500, the Datasets code
             and detail in its detail; and
             `unknown` when no Datasets surface is mounted beside this one, so no bare id
@@ -226,8 +250,14 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             problem = classify_datasets_exception(exc)
         if problem is None:
             raise
+        retry_after = (problem.headers or {}).get("Retry-After")
+        if problem.retryable and retry_after is not None:
+            raise NewestNotReady(
+                f"the newest version of {spec_id} is not ready: {problem.detail}",
+                retry_after_s=float(retry_after),
+            ) from exc
         if problem.retryable:
-            reason = "pending"
+            reason = "io"
         elif problem.code == "identity_quarantined":
             reason = "quarantined"
         elif problem.code == "snapshot_revoked":
@@ -243,9 +273,9 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             f"{problem.detail}",
         ) from exc
     if isinstance(resolved, NewestPending):
-        raise FrameUnavailable(
-            reason="pending",
-            detail=f"the newest version of {spec_id} is building; retry in "
+        raise NewestNotReady(
+            f"the newest version of {spec_id} is building; retry in "
             f"{math.ceil(resolved.retry_after_s)} s",
+            retry_after_s=resolved.retry_after_s,
         )
     return resolved

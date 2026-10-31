@@ -44,6 +44,7 @@ from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
+from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.named import cut
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
@@ -1248,10 +1249,10 @@ def search_surface(
             UpstreamVersionChangedError("exemplar rate table changed version during its load"),
         ),
         lifespan=lifespan,
-        registry_endpoints={
-            ("POST", "/api/search/resolve"): "search.resolve",
-            ("POST", "/api/search/options"): "search.options",
-        },
+        registry_endpoints=path_registry_endpoints(
+            router,
+            {"/api/search/resolve": "search.resolve", "/api/search/options": "search.options"},
+        ),
         request_scope=lambda: _request_scope(catalogue, release, conversions, variable_breadth),
     )
 

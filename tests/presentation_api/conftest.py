@@ -18,8 +18,13 @@ from assembler.testing import (
     malaria_ethiopia_resolved_frame,
     malaria_ethiopia_rows,
 )
+from datasets_api.door_executor import build_door_executor
 from dfo_platform.app import create_app
+from dfo_platform.doors import DoorContribution
 from presentation_api.app import presentation_surface
+from presentation_api.doors.components import build_components_door
+from presentation_api.doors.frames import build_frames_door
+from presentation_api.doors.shares import build_shares_door
 from presentation_api.newest_frames import NewestPending
 from tests.spec_kit_bundle import require_catalogue_dir
 
@@ -56,6 +61,28 @@ def revision_store() -> FakeRevisionStore:
 @pytest.fixture
 def release_registry(release: CatalogueRelease) -> FakeReleaseRegistry:
     return FakeReleaseRegistry(release=release)
+
+
+@pytest.fixture
+def doors(release_registry: FakeReleaseRegistry) -> tuple[DoorContribution, ...]:
+    """The doors whose routes refuse, as `presentation_surface` builds them."""
+    reads = build_door_executor(1, "test-frames-bare", surface="presentation")
+    return (
+        build_components_door(release_registry=release_registry, bare_reads=reads),
+        build_frames_door(bare_reads=reads),
+        build_shares_door(release_registry=release_registry),
+    )
+
+
+@pytest.fixture
+def door_refusals(doors: tuple[DoorContribution, ...]) -> list[tuple[str, BaseException]]:
+    """Each refusal a door declares, with the endpoint whose routes raise it."""
+    return [
+        (endpoint, exemplar)
+        for door in doors
+        for endpoint, exemplars in door.endpoint_exemplars.items()
+        for exemplar in exemplars
+    ]
 
 
 @pytest.fixture
