@@ -30,12 +30,18 @@ from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api import maintenance
 from datasets_api.allowance import AllowanceExhausted, AllowanceKind, LiveAllowanceLedger
 from datasets_api.principals import Grant, Principals
-from datasets_api.retention_admission import copy_to_pinned
+from datasets_api.retention_admission import (
+    OpenPinBudgetExhausted,
+    PinBudgetExhausted,
+    PinUnitHeld,
+    copy_to_pinned,
+)
 from dfo_platform import ProblemDetails
 from dfo_platform.app import create_app
 from dfo_platform.caller import Caller, address_key
 from dfo_platform.codes import bound_registry_endpoint, registered_status
 from dfo_platform.config import CallerSettings
+from dfo_platform.problem import Refusal
 from presentation_api.app import presentation_surface
 from presentation_api.config import PRESENTATION_COMPONENTS_MAX_CONCURRENCY
 from presentation_api.doors import shares as shares_door
@@ -532,10 +538,15 @@ class _CopyingFrameStore(FakeFrameStore):
 
     def pin(self, *, frame_ref: FrameRef, component_id: str, caller: Caller | None = None) -> bool:
         self.callers.append(caller)
-        digest = self.artifacts.put(component_id.encode(), tier=Tier.working).digest
-        if digest not in self.artifacts.list(tier=Tier.pinned):
+        stored = self.artifacts.put(component_id.encode(), tier=Tier.working)
+        if stored.digest not in self.artifacts.list(tier=Tier.pinned):
             copy_to_pinned(
-                self.artifacts, digest, allowances=self.ledger, caller=caller, now=datetime.now(UTC)
+                self.artifacts,
+                stored.digest,
+                source=(stored.bucket, stored.object_name),
+                allowances=self.ledger,
+                caller=caller,
+                clock=lambda: datetime.now(UTC),
             )
         return super().pin(frame_ref=frame_ref, component_id=component_id)
 
@@ -1196,3 +1207,21 @@ def test_a_read_that_waits_past_the_admission_wait_refuses_503(
 
     body = _assert_refused(refused, status=503, code="service_unavailable")
     assert body["retryable"] is True
+
+
+_DAY = datetime(2026, 6, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("refusal", "detail"),
+    [
+        (PinUnitHeld(retry_after=10), PinUnitHeld.detail),
+        (PinBudgetExhausted(limit=1, now=_DAY), PinBudgetExhausted.detail),
+        (OpenPinBudgetExhausted(limit=1, now=_DAY), OpenPinBudgetExhausted.detail),
+    ],
+    ids=["held", "budget", "open-budget"],
+)
+def test_a_pin_capacity_refusal_answers_the_pin_doors_detail(refusal: Refusal, detail: str):
+    spec = shares_door.classify_shares_exception(refusal)
+
+    assert (spec.status, spec.code, spec.detail) == (503, "service_unavailable", detail)

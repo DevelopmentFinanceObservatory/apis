@@ -18,7 +18,7 @@ from entity_resolution.membership import MembershipPolicy
 from origin_catalogue import current_catalogue, note_un_unserved, recording_un_blocked_places
 from search.engine.clients.graph import DetectedSV, force_full_facets, with_entry_basis_siblings
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
+from search.engine.degraded_reads import carry, note_degraded_read, recording_degraded_reads
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import EngineInfraError, RoleSignatureError
 from search.engine.interpret import Recall, recall
@@ -747,9 +747,7 @@ async def _un_shapes(state: ResolveState, rcl: Recall) -> UnPool:
                 round((time.monotonic() - started) * 1000),
                 len(candidates),
             )
-    return UnPool(
-        shapes=shapes, missed=missed, unserved=un_blocked.snapshot(), lost=tuple(lost.reads)
-    )
+    return UnPool(shapes=shapes, missed=missed, unserved=un_blocked.snapshot(), lost=lost)
 
 
 async def un_pool_shapes(leg: UnLeg, *, bound: float | None) -> UnPool:
@@ -791,8 +789,7 @@ async def _merge_un_pool(state: ResolveState, leg: UnLeg) -> None:
         return
     state.shapes_found = [*state.shapes_found, *pool.shapes]
     note_un_unserved(pool.unserved)
-    for read in pool.lost:
-        note_degraded_read(read)
+    carry(pool.lost)
 
 
 def _with_entry_basis(state: ResolveState, hits: Sequence[DetectedSV]) -> Sequence[DetectedSV]:

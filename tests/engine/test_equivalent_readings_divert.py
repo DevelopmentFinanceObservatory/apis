@@ -6,22 +6,26 @@ Offline scenarios use hand-built graph and LLM doubles with registry dcids.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Callable
 
 import pytest
 
+from materialise import place_scope
 from search.engine.binders import Binder
 from search.engine.config import SearchSettings
 from search.engine.conjoin import assemble_region
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.envelope import now_ms
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.state import EngineOptions
+from search.engine.stated_words_read import StatedWordsOutput
 from tests.engine._binders import ReplyBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._quantity import NO_QUANTITY
+from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph, make_resolver
 
 _KEN_NODE = {"country/KEN": {"label": "Kenya", "type": "Country"}}
@@ -92,6 +96,8 @@ class _CandidateBindLLM:
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
             return NO_QUANTITY
+        if schema is StatedWordsOutput:
+            return NO_RATING
         assert schema.__name__ == "_UniversalBindOutput"
         return elected_reply(
             self._chosen_shape_index, bindings=[], also_plausible=self._also_plausible
@@ -156,6 +162,94 @@ def _sv_refs(spec) -> set[str]:
 
 def _warning_codes(result) -> set[str]:
     return {w.code for w in result.warnings}
+
+
+def _placeless(
+    monkeypatch: pytest.MonkeyPatch, svs: list[str], obs: dict, *, unsettled: frozenset[str]
+):
+    """`svs` resolved with no place named, the first elected and the rest nominated, each
+    over its own default scope, `unsettled` of them by a countries fallback this request
+    alone took."""
+    read = place_scope.read_default_presence
+
+    def reading(**kwargs):
+        return dataclasses.replace(read(**kwargs), unsettled=unsettled)
+
+    monkeypatch.setattr(place_scope, "read_default_presence", reading)
+    graph = FakeGraph(
+        nodes=_NODES,
+        detect={
+            "electricity access": {
+                "svs": svs,
+                "cosine_scores": [0.9 - 0.05 * i for i in range(len(svs))],
+            }
+        },
+        obs=obs,
+        children={"Earth": {"Country": ["country/KEN"]}},
+    )
+    return asyncio.run(
+        resolve_variable(
+            "electricity access",
+            entities=[],
+            date_request=None,
+            detect_query="electricity access",
+            role_query="electricity access",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_CandidateBindLLM(chosen_shape_index=0, also_plausible=list(range(1, len(svs)))),
+            base_timing={},
+            sdmx=FakeSdmxClient(
+                observations={}, availability={}, scope_availability=graph.scope_availability
+            ),
+            coverage=empty_coverage_snapshot(),
+            options=EngineOptions(),
+        )
+    )
+
+
+@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
+def test_a_twin_read_over_an_unsettled_scope_keeps_the_answer_uncached(
+    monkeypatch: pytest.MonkeyPatch, unsettled: bool
+) -> None:
+    """With no place named, the twin diverted into `equivalent_readings` is read over its
+    own default scope. A countries fallback there holds for this request only."""
+    result = _placeless(
+        monkeypatch,
+        [_ELEC_WB, _ELEC_SDG],
+        {
+            f"{_ELEC_WB}|country/KEN": [_facet(provenance_id="source/WorldBank")],
+            f"{_ELEC_SDG}|country/KEN": [_facet(provenance_id="source/SDG")],
+        },
+        unsettled=frozenset({_ELEC_SDG} if unsettled else ()),
+    )
+
+    assert result.status == "definite", result
+    [twin] = result.specs[0].resolved.equivalent_readings or []
+    assert _sv_refs(twin) == {_ELEC_SDG}
+    assert result.degraded is unsettled
+
+
+@pytest.mark.parametrize("unsettled", [True, False], ids=["fallback", "settled"])
+def test_an_equivalent_passed_over_on_an_unsettled_scope_keeps_the_answer_uncached(
+    monkeypatch: pytest.MonkeyPatch, unsettled: bool
+) -> None:
+    """The elected series has no data, so its equivalents stand in, in menu order
+    (`_reelect_zero_observation_sibling`). The SDG copy, read over its own default scope,
+    shows none, and the DFO series answers: the SDG copy's scope decided the choice. The
+    DFO series' member walk settles nothing here, a lost read either way, so the test reads
+    the scopes the part consulted."""
+    with recording_degraded_reads() as lost:
+        result = _placeless(
+            monkeypatch,
+            [_MORT_WB, _MORT_SDG, _MORT_DFO],
+            {f"{_MORT_DFO}|country/KEN": [_facet(provenance_id="source/DFO")]},
+            unsettled=frozenset({_MORT_SDG} if unsettled else ()),
+        )
+
+    assert result.status == "definite", result
+    assert _sv_refs(result.specs[0]) == {_MORT_DFO}
+    assert lost.unsettled == ({_MORT_SDG} if unsettled else set())
 
 
 # A genuine twin diverts: definite, with the twin named in equivalent_readings.

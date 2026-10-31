@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import functools
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -50,6 +51,7 @@ from datasets_api.derived import (
     read_derived_manifest,
     render_derived_file,
 )
+from datasets_api.doors.definition import _sdmx_deadline
 from datasets_api.doors.files import (
     SELECTOR_QUERY_PARAMETERS,
     classify_files_exception,
@@ -145,20 +147,31 @@ def _manifest(*, id: str, content_version: str, current: Deps) -> dict[str, Any]
     return DerivedManifest.model_validate(manifest_body(facts)).model_dump(mode="json")
 
 
-def derived_file(
-    *, id: str, content_version: str, options: MintOptions, current: Deps
-) -> DerivedFile:
-    """The derived frame's file in `options` (`derived.render_derived_file`), rendered under a
-    materialise permit."""
+def derived_file[T](
+    *,
+    id: str,
+    content_version: str,
+    options: MintOptions,
+    current: Deps,
+    deadline: float,
+    then: Callable[[DerivedFile], T],
+) -> T:
+    """What `then` makes of the derived frame's file in `options` (`derived.render_derived_file`),
+    rendered and handed over under one materialise permit, whose wait `deadline` bounds. Nothing
+    here binds the file, so the permit releases with its bytes freed once `then` keeps none."""
     with bounded_materialise_slot(
-        current.materialise_semaphore, wait_seconds=current.settings.materialise_wait_seconds
+        current.materialise_semaphore,
+        wait_seconds=current.settings.materialise_wait_seconds,
+        deadline=deadline,
     ):
-        return render_derived_file(
-            spec_id=id,
-            content_version=content_version,
-            options=options,
-            reads=derived_reads(current),
-            site=current.settings.site,
+        return then(
+            render_derived_file(
+                spec_id=id,
+                content_version=content_version,
+                options=options,
+                reads=derived_reads(current),
+                site=current.settings.site,
+            )
         )
 
 
@@ -200,6 +213,8 @@ class _DerivedRoutes:
                     content_version=content_version,
                     options=options,
                     current=current,
+                    deadline=_sdmx_deadline(current.settings.definition_timeout_seconds),
+                    then=lambda file: file,
                 ),
                 refuse=DerivedBackpressure,
             )

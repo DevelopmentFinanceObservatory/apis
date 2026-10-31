@@ -12,6 +12,7 @@ import logging
 
 from materialise.place_scope import DefaultPlaceScope
 from search.engine.clients.graph import EngineGraphClient
+from search.engine.degraded_reads import DegradedReads
 from search.engine.place import default_place_scope_message
 from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
 from search.engine.region.place_set import PlaceSet
@@ -80,11 +81,12 @@ class PartyReadingWithdrawn(Exception):
     answer from that party: no pooled shape binds it, or another shape reads a phrase the
     shapes binding it do not (`phase_rank_bind.with_party_reading`), or a read failed. The
     part is resolved again without the party reading (`pipeline.resolve_variable`), which
-    notes `lost`, the reads the withdrawn reading swallowed or failed."""
+    carries `lost`, the withdrawn reading's record, without the scopes it consulted, which
+    decided nothing the reply holds."""
 
-    def __init__(self, *, lost: tuple[str, ...] = ()) -> None:
+    def __init__(self, *, lost: DegradedReads | None = None) -> None:
         super().__init__("party reading withdrawn")
-        self.lost = lost
+        self.lost = lost if lost is not None else DegradedReads()
 
 
 class PlaceSetNotAdmittedError(PlaceSetRefusedError):

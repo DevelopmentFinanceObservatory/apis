@@ -53,6 +53,7 @@ from search.models import (
 from search.render.plan import render_sentence
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
+    FIXTURE_PROVENANCE,
     FakeCoverageService,
     build_coverage_index,
     empty_coverage_snapshot,
@@ -72,10 +73,13 @@ from tests.engine.test_cited_sources import (
     _ALT,
     _BLAND,
     _CREDITOR,
+    _EUR_SOURCE,
     _FLOW,
     _IDS,
+    _LABELS,
     _ROUTES,
     _TWO_SOURCES,
+    _USD_SOURCE,
     _fertility,
     _resubmit,
     _resubmit_fertility,
@@ -84,6 +88,7 @@ from tests.engine.test_cited_sources import (
 )
 from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
+from tests.origin_catalogue.fake_catalogue import listing
 
 _CLAND = "country/CCC"
 _GRAPH_METHODS = frozenset(
@@ -91,6 +96,20 @@ _GRAPH_METHODS = frozenset(
     for name in dir(EngineGraphClient)
     if not name.startswith("_") and name not in _UNRECORDED_METHODS
 )
+
+
+@pytest.fixture(autouse=True)
+def _listed_catalogue(bind_catalogue) -> None:
+    bind_catalogue(
+        listing(
+            {
+                **_LABELS,
+                _USD_SOURCE: "USD Source",
+                _EUR_SOURCE: "EUR Source",
+                FIXTURE_PROVENANCE: "Coverage fixture",
+            }
+        )
+    )
 
 
 def _year_unavailable_shown(spec: Spec) -> list[str | None]:
@@ -169,10 +188,10 @@ def _sdmx_requests(clients: list[FakeSdmxClient]) -> int:
 # The graph requests each route makes for a first answer and an unchanged resubmit: the
 # shape, labels, types and facet policies, and for an answer resolved through the event
 # stream whether the graph declares facet defaults at all. Dating, scoping and the read decision read the plan and
-# the coverage index alone, so they add none. The trailing label read of each names the values
-# its facet options offer (`_maybe_build_facet_options`), after a facets read on the standard
-# route; a role route reads its facets, and the named places' availability, from the coverage
-# index.
+# the coverage index alone, so they add none. The catalogue names the sources each route's facet
+# options offer (`_maybe_build_facet_options`), so a role route's options read no label, and the
+# standard route's trailing label read, after a facets read, names the units its options offer.
+# A role route reads its facets, and the named places' availability, from the coverage index.
 _NAMED_FIRST = [
     "detect_svs",
     "resolve_by_arc",
@@ -185,7 +204,6 @@ _NAMED_FIRST = [
     "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
-    "node_labels_batch",
 ]
 _NAMED_RESUBMIT = [
     "node_arcs_batch",
@@ -197,14 +215,13 @@ _NAMED_RESUBMIT = [
     "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
-    "node_labels_batch",
 ]
 _DISCOVERED_FIRST = [
     "detect_svs",
     "node_arcs_batch",
     "node_labels_batch",
     *["default_facet_policy"] * 3,
-    *["node_labels_batch"] * 3,
+    *["node_labels_batch"] * 2,
     "node_types_batch",
 ]
 _DISCOVERED_RESUBMIT = [
@@ -213,15 +230,6 @@ _DISCOVERED_RESUBMIT = [
     "node_labels_batch",
     "node_labels_batch",
     "node_types_batch",
-    "node_labels_batch",
-]
-# A resubmit pinning a source also reads that source's label.
-_DISCOVERED_PINNED_RESUBMIT = [
-    "node_arcs_batch",
-    *["default_facet_policy"] * 3,
-    *["node_labels_batch"] * 3,
-    "node_types_batch",
-    "node_labels_batch",
 ]
 _STANDARD_FIRST = [
     "detect_svs",
@@ -608,7 +616,8 @@ def test_a_source_pin_lists_the_scope_members_the_pinned_source_serves(
             "No provider was named, so the answer covers every provider with data.",
         ),
     ]
-    assert requests == _DISCOVERED_PINNED_RESUBMIT
+    # The catalogue names the pinned source, so pinning it reads nothing more.
+    assert requests == _DISCOVERED_RESUBMIT
 
 
 def _fan_out_rows() -> list:

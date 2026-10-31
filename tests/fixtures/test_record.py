@@ -8,11 +8,13 @@ from collections.abc import Sequence
 import pytest
 
 import tests.fixtures.record as record
+from materialise.provenance_doc import PROVENANCE_NAME_PROPERTIES
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.eval.cases import Case, validate_case
 from search.eval.runner import build_request
 from tests.engine._fake_sdmx import FakeSdmxClient, _facet_from_dict, _parse_role_tuple
+from tests.fixtures import FakeGraph
 from tests.fixtures.record import (
     _facet_to_dict,
     _facet_to_graph_obs_dict,
@@ -1609,3 +1611,31 @@ def test_build_request_builds_raw_text_input_for_a_raw_text_case():
     )
 
     assert build_request(case)["input"] == {"kind": "raw_text", "query": "aid disbursed to Kenya"}
+
+
+def test_node_arc_targets_many_records_what_the_replay_graph_answers(monkeypatch):
+    """A recorded name read replays as the live one answered: the node's name and type, its
+    parent arc, and the parent's name and type beside it."""
+    _no_sleep(monkeypatch)
+    live = FakeGraph(
+        nodes={
+            "dc/base/WHO_GHO": {
+                "label": "WHO_GHO",
+                "type": "Provenance",
+                "arcs": {"isPartOf": {"nodes": [{"dcid": "dc/d/WHO_GHO"}]}},
+            },
+            "dc/d/WHO_GHO": {"label": "WHO Global Health Observatory", "type": "Dataset"},
+        },
+        obs={},
+        detect={},
+        resolve={},
+    )
+    nodes: dict = {}
+    recording = _RecordingGraph(live, nodes=nodes, obs={}, detect={}, resolve={})
+    dcids = ["dc/base/WHO_GHO", "dc/base/Absent"]
+
+    recorded = recording.node_arc_targets_many(dcids, properties=PROVENANCE_NAME_PROPERTIES)
+    replay = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+
+    assert replay.node_arc_targets_many(dcids, properties=PROVENANCE_NAME_PROPERTIES) == recorded
+    assert recorded["dc/base/WHO_GHO"]["isPartOf"][0].name == "WHO Global Health Observatory"

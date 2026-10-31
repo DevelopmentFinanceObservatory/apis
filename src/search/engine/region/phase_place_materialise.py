@@ -18,17 +18,17 @@ from typing import Final, Literal, cast
 import dc_graph
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
-from materialise.place_scope import DefaultPresence
 from materialise.roles import RoleAxis, axis_for_role
 from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import SEARCH_MAX_UNIT_ALTERNATIVES, settings
+from search.engine.degraded_reads import DegradedReads, carry, recording_degraded_reads
 from search.engine.departures import direction_inferred
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.interpret import PinnedResolved, Recall
-from search.engine.place import earth_countries, read_default_presence
+from search.engine.place import ConsultedPresence, earth_countries, read_default_presence
 from search.engine.quantity import (
     NamedDenominator,
     check_denominator,
@@ -48,6 +48,7 @@ from search.engine.region.candidate_options import _elected_sibling_warning
 from search.engine.region.candidates import (
     _Alternate,
     _AlternatesRead,
+    _Candidate,
     _materialise_alt_shapes,
     alternate_representative,
     settle_alternate,
@@ -879,14 +880,14 @@ def _lacks_presence(
     `takers` or the capped shapes at `group`'s indices (`_group_stat_vars`)."""
     known = state.default_presence
     return known is None or any(
-        sv not in known.scopes for sv in _group_stat_vars(state, group, takers)
+        not known.covers(sv) for sv in _group_stat_vars(state, group, takers)
     )
 
 
 async def _unsettled_places(
     state: ResolveState,
     shapes: Sequence[tuple[ShapeDraft, list[SlotBindingDraft], PlaceAssignment]],
-    presence: DefaultPresence | None,
+    presence: ConsultedPresence | None,
 ) -> list[UnsettledPlace]:
     """The places of each of `shapes` before its place sets settle, each with its bindings
     and its assignment, in order, over `presence`. A shape that takes a default scope takes
@@ -1321,7 +1322,7 @@ async def _walked_alternates(
 
 def _start_alternates_presence_read(
     state: ResolveState, plan: _AdmissionPlan
-) -> Future[DefaultPresence] | None:
+) -> Future[ConsultedPresence] | None:
     """Start the presence read a role-bearing elected shape's alternates need, to run beside
     the elected shape's materialisation, and return it; `None` when none is needed or none
     was started.
@@ -1360,13 +1361,13 @@ def _submit_alternates_read[T](read: Callable[..., T], /, **kwargs: object) -> F
 
 def _presence_after_listing(
     *,
-    listing: Future[DefaultPresence] | None,
+    listing: Future[ConsultedPresence] | None,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
     stat_vars: list[str],
-    known: DefaultPresence | None,
+    known: ConsultedPresence | None,
     deadline: float | None,
-) -> DefaultPresence:
+) -> ConsultedPresence:
     """`read_default_presence`, taking Earth's countries from `listing` when the read knows
     no presence yet. The listing runs on another worker of the alternates' pool, so waiting
     for it holds no worker it needs, and its failure is the read's."""
@@ -1379,7 +1380,7 @@ def _presence_after_listing(
 
 def _submit_alternates_presence_read(
     state: ResolveState, stat_vars: list[str]
-) -> Future[DefaultPresence] | None:
+) -> Future[ConsultedPresence] | None:
     """Submit the presence read of `stat_vars` (`_presence_after_listing`) on
     `_ALTERNATES_POOL` (`_submit_alternates_read`), or return `None` when none is free. The
     listing of Earth's countries started on that pool beside the elected shape's walk
@@ -1395,10 +1396,9 @@ def _submit_alternates_presence_read(
     )
 
 
-def merge_presence(state: ResolveState, presence: DefaultPresence | None) -> None:
+def merge_presence(state: ResolveState, presence: ConsultedPresence | None) -> None:
     """Merge `presence`, a read made over the request's presence when it started, into
-    `state.default_presence`, so a read made since keeps what it added and the pass's
-    unsettled scopes (`pipeline._scope_unsettled`) include those `presence` left."""
+    `state.default_presence`, so a read made since keeps what it added."""
     if presence is None:
         return
     known = state.default_presence
@@ -1426,7 +1426,7 @@ def record_unevaluated(
 
 
 async def _await_alternates_presence(
-    state: ResolveState, read: Future[DefaultPresence]
+    state: ResolveState, read: Future[ConsultedPresence]
 ) -> AlternateUnevaluatedReason | None:
     """Await `read` and merge its presence into the request's, or return why it did not
     complete. The read was made over the presence known when it was submitted, so a read
@@ -1913,20 +1913,22 @@ async def _reelect_zero_observation_sibling(
     )
     # Siblings sharing probe places share one materialise call, so its facet prewarm covers
     # them in one read, and the calls of separate probe places run side by side.
-    by_scope: dict[tuple[str, ...] | None, list[tuple[_Alternate, UnsettledPlace]]] = {}
-    for walked, place in zip(_walked.values(), places, strict=True):
+    by_scope: dict[tuple[str, ...] | None, list[tuple[int, _Alternate, UnsettledPlace]]] = {}
+    for (i, walked), place in zip(_walked.items(), places, strict=True):
         try:
-            scope = place.unread().probe_dcids
+            # Grouping decides nothing; the stand-in's own reading consults these scopes again.
+            with recording_degraded_reads(detached=True):
+                scope = place.unread().probe_dcids
         except PlaceSetRefusedError:
             # A sibling that cannot bind its places is not probed or offered.
             continue
-        by_scope.setdefault(scope, []).append((walked.alternate, place))
+        by_scope.setdefault(scope, []).append((i, walked.alternate, place))
     _scope_results: list[_AlternatesRead] = await asyncio.gather(
         *[
             asyncio.to_thread(
                 _materialise_alt_shapes,
-                [alternate for alternate, _ in members],
-                places=[place for _, place in members],
+                [alternate for _, alternate, _ in members],
+                places=[place for _, _, place in members],
                 presence=state.default_presence,
                 named_place_dcids=state.standard_place_dcids,
                 graph=state.graph,
@@ -1937,6 +1939,14 @@ async def _reelect_zero_observation_sibling(
             )
             for members in by_scope.values()
         ]
+    )
+    # Each stand-in's reading, its record, by menu index.
+    readings = dict(
+        sorted(
+            (i, record)
+            for members, _scope_read in zip(by_scope.values(), _scope_results, strict=True)
+            for (i, _, _), record in zip(members, _scope_read.consulted, strict=True)
+        )
     )
     for _scope_read in _scope_results:
         merge_presence(state, _scope_read.presence)
@@ -1954,29 +1964,37 @@ async def _reelect_zero_observation_sibling(
     _index_by_group = {_shape_group_key(_walked[i].shape): i for i in _walked}
     # An over-cap sibling, or one whose presence read after unbinding did not complete, is
     # unevaluated. Keep the elected no-observations result rather than treating that sibling
-    # as disproven or surfacing a cap refusal.
+    # as disproven or surfacing a cap refusal. It stands whatever the stand-ins read.
     if any(
         _scope_read.blocking is not None or _scope_read.unevaluated
         for _scope_read in _scope_results
     ):
+        _carry_readings(readings, compared=())
         return mat_result
-    _sibling_candidates = [
-        cand for _scope_read in _scope_results for cand in _scope_read.candidates
-    ]
-    if not _sibling_candidates:
+    _with_data = {
+        _index_by_group[_shape_group_key(cand.shape)]: cand
+        for _scope_read in _scope_results
+        for cand in _scope_read.candidates
+    }
+    # The first equivalent reading with data answers, compared in menu order, so the
+    # equivalents ahead of it, which showed none, decided the choice with it. Failing one, a
+    # lone qualifier sibling with data answers, and several are offered; either outcome
+    # compared every stand-in, as does keeping the elected result when none has data.
+    _winner: _Candidate | None = None
+    compared: list[int] = []
+    for i in readings:
+        if i in equivalents:
+            compared.append(i)
+            if (_winner := _with_data.get(i)) is not None:
+                break
+    if _winner is None:
+        compared = list(readings)
+        if len(_with_data) == 1:
+            [_winner] = _with_data.values()
+    _carry_readings(readings, compared=compared)
+    if not _with_data:
         return mat_result
-    # ``state.reelection_siblings`` ascend, so this restores menu order across scope groups.
-    _sibling_candidates.sort(key=lambda cand: _index_by_group[_shape_group_key(cand.shape)])
-
-    _answering = [
-        cand
-        for cand in _sibling_candidates
-        if _index_by_group[_shape_group_key(cand.shape)] in equivalents
-    ]
-    if not _answering and len(_sibling_candidates) == 1:
-        _answering = _sibling_candidates
-    if _answering:
-        _winner = _answering[0]
+    if _winner is not None:
         _no_data_label = state.shape_draft.label
         _install_shape(
             state,
@@ -1993,10 +2011,17 @@ async def _reelect_zero_observation_sibling(
         )
         state.warnings.append(state.reelection_warning)
     else:
-        state.sibling_candidates = {
-            _index_by_group[_shape_group_key(cand.shape)]: cand for cand in _sibling_candidates
-        }
+        state.sibling_candidates = dict(sorted(_with_data.items()))
     return mat_result
+
+
+def _carry_readings(readings: Mapping[int, DegradedReads], *, compared: Iterable[int]) -> None:
+    """Carry each stand-in reading's record into the part's (`degraded_reads.carry`): every
+    lost read, and the scopes consulted by the readings at `compared`, those the outcome's
+    rule compared. A reading the rule never reached shaped no answer the reply holds."""
+    compared = frozenset(compared)
+    for i, record in readings.items():
+        carry(record, consulted=i in compared)
 
 
 async def _phase_materialise(state: ResolveState) -> RegionResult | None:

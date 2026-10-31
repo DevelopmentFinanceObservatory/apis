@@ -61,7 +61,6 @@ from search.engine.region.option_coverage import (
 )
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.refs import (
-    _build_source_refs,
     _ref_or_miss,
     _refs_present,
 )
@@ -95,7 +94,6 @@ __all__ = [
     "_build_entity",
     "_build_observations",
     "_build_shape_event",
-    "_build_source_refs",
     "_emit_step",
     "_gather_slot_options_events",
     "_grade_confidence",

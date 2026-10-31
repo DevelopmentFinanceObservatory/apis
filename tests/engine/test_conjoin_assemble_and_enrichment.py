@@ -1053,7 +1053,13 @@ def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse():
     assert first.spec.spec_id == folded.spec.spec_id, "the two parts must fold"
     assert [w.code for w in folded.warnings] == [BINDING_FOLDED]
 
-    done = DoneEvent(elapsed_ms=1, trace_id="t", telemetry=DoneTelemetry(), late_departures=late)
+    done = DoneEvent(
+        elapsed_ms=1,
+        degraded_leg=False,
+        trace_id="t",
+        telemetry=DoneTelemetry(),
+        late_departures=late,
+    )
     frame = json.loads(serialize_sse(done).split("data: ", 1)[1])
     modelled = {"code": "modelled_values", "text": "Some of these values are modelled estimates."}
     by_index = {entry["part_index"]: entry for entry in frame["late_departures"]}

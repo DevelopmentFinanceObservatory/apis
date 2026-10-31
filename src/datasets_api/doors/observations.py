@@ -97,7 +97,7 @@ from materialise.formats import (
     read_canonical_frame_table,
     read_frame1_table,
 )
-from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
+from materialise.graph import UNRESOLVED_NODE, ArcTarget, GraphReader, GraphReadError
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from search.models import SpecObservations
 from search.observations import (
@@ -166,7 +166,7 @@ def classify_observations_exception(exc: BaseException) -> ProblemSpec | None:
 @dataclass(frozen=True)
 class _IndexLabels:
     """A `search.observations.LabelSource` over the graph's labels, each passed through the
-    code index (`code_index.labels.normalize_label`) as live labels are."""
+    code index (`code_index.labels.normalize_label`) as live labels are, and its node reads."""
 
     graph: GraphReader
     index: CodeIndex
@@ -174,6 +174,11 @@ class _IndexLabels:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         raw = self.graph.node_labels_batch(dcids)
         return {dcid: normalize_label(dcid, label, index=self.index) for dcid, label in raw.items()}
+
+    def node_arc_targets_many(
+        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        return self.graph.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
 
 
 @dataclass(frozen=True)
@@ -485,6 +490,7 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 return assemble_role_bulk(
                     series,
                     label_source=labels,
+                    on_names_unread=_names_unread,
                     index=deps.code_index,
                     member_constraints=constraints,
                     order=order,
@@ -493,12 +499,14 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 return assemble_scope_bulk(
                     series,
                     label_source=labels,
+                    on_names_unread=_names_unread,
                     index=deps.code_index,
                     member_constraints=constraints,
                 )
             return assemble_per_series(
                 series,
                 label_source=labels,
+                on_names_unread=_names_unread,
                 index=deps.code_index,
                 member_constraints=constraints,
                 target_currency_ref=stored.target_currency_ref,
@@ -506,6 +514,13 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
     except GraphReadError as exc:
         logger.warning("Datasets observations door's graph read failed: %s", exc)
         raise ObservationsGraphUnavailable() from exc
+
+
+def _names_unread() -> None:
+    """A provenance name read the assembly could not make refuses as a failed label read
+    does."""
+    logger.warning("Datasets observations door's provenance name read failed")
+    raise ObservationsGraphUnavailable()
 
 
 def observations_body(observations: SpecObservations) -> dict[str, object]:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy
 from statvar_members import CANDIDATE_CAP
+from tests.fixtures.provenance import arc_targets
 from tests.materialise.conftest import as_read
 
 
@@ -208,6 +209,11 @@ class FakeMintGraphReader:
             )
         return result
 
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        return arc_targets(
+            self.node_arcs_many(dcids, properties=properties, deadline=deadline), self._arcs
+        )
+
     def node_names_many(
         self,
         dcids: Sequence[str],
@@ -356,6 +362,9 @@ class BlockingFakeMintGraphReader:
             individual_probe_budget=individual_probe_budget,
             deadline=deadline,
         )
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        return self._delegate.node_arc_targets_many(dcids, properties=properties, deadline=deadline)
 
     def node_names_many(
         self,

@@ -7,6 +7,7 @@ receives its dependencies through the constructor.
 
 from __future__ import annotations
 
+from dataset_store.bounds import DEFAULT_TRANSACTION_BOUNDS, TransactionBounds
 from dataset_store.connection import ConnectionSettings, build_connector, connect, default_is_broken
 from dataset_store.dbapi import DBAPIConnection, DBAPICursor
 from dataset_store.errors import (
@@ -20,6 +21,7 @@ from dataset_store.provider import close_shared_pool, shared_pool
 from dataset_store.store import ConnectionSource, DatasetStore, LiveDatasetStore, Transaction
 
 __all__ = [
+    "DEFAULT_TRANSACTION_BOUNDS",
     "ConnectionPool",
     "ConnectionSettings",
     "ConnectionSource",
@@ -32,6 +34,7 @@ __all__ = [
     "LiveDatasetStore",
     "PoolTimeoutError",
     "Transaction",
+    "TransactionBounds",
     "build_connector",
     "close_shared_pool",
     "connect",

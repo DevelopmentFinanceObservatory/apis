@@ -260,15 +260,18 @@ class CitationModel(BaseModel):
 
 class CountedRefsModel(BaseModel):
     """The things of one kind a warning counts: how many, and the `dcid:` refs of the first
-    five, or ten for a conversion's left-out entities (`materialise.codes.CountedRefs`). The message states the count and names none, so a
-    reader labels the refs."""
+    five of them (the first ten for a conversion's left-out `omitted_entities`;
+    `materialise.codes.CountedRefs`). A message states the count and may name none, so a
+    reader labels the refs. A group's members come in request order and entities sorted;
+    for `withheld_by_registry`, `unserved_entities` come in the order the request names them
+    and `withheld_provenances` in the order they first occur across those places."""
 
     model_config = ConfigDict(extra="forbid")
     count: int = Field(description="how many there are")
     refs: list[str] = Field(
         description=(
-            "the `dcid:` refs of the first five of them, ten for omitted_entities: a "
-            "group's members in request order, entities sorted"
+            "the `dcid:` refs of the first five of them, ten for omitted_entities, in the order "
+            "the field's warning states"
         )
     )
 
@@ -314,9 +317,12 @@ class WarningModel(BaseModel):
     """One manifest warning. Only `stat_vars_summed` sets its three structured fields, a
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
-    `omitted_entities`, and `deflator_missing_omitted` `omitted_entity_years`. A `None` field
-    is left out of every dump, so other codes' warnings, on the wire and in stored version
-    bodies, stay exactly `{code, severity, message}`.
+    `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
+    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`.
+    A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
+    withhold with none of its three. A `None` field is left out of every dump, so other codes'
+    warnings, on the wire and in stored version bodies, stay exactly `{code, severity,
+    message}`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -388,8 +394,9 @@ class WarningModel(BaseModel):
         default=None,
         exclude_if=_is_none,
         description=(
-            "coverage_below_scope only: the entities the request binds that served no "
-            "observation, sorted; absent when there are none"
+            "coverage_below_scope: the entities the request binds that served no observation, "
+            "sorted; withheld_by_registry: the places among them at which the registry "
+            "withholds data, in the order the request names them; absent when there are none"
         ),
     )
     requested_years: YearRangeModel | None = Field(
@@ -406,6 +413,24 @@ class WarningModel(BaseModel):
         description=(
             "coverage_below_scope only: the years the data covers, both bounds set, beside "
             "requested_years; absent otherwise"
+        ),
+    )
+    withheld_members: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "withheld_by_registry only: the series the finding read, that of the first request "
+            "that left a subject entity without rows, so one; absent when there are none or the "
+            "stored warning does not carry them"
+        ),
+    )
+    withheld_provenances: CountedRefsModel | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "withheld_by_registry only: the provenances the registry withholds that hold data for "
+            "that series at those places, in the order they first occur across the places; "
+            "absent when there are none or the stored warning does not carry them"
         ),
     )
     omitted_entities: CountedRefsModel | None = Field(

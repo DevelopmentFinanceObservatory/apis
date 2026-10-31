@@ -37,6 +37,7 @@ from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.result import any_degraded
 from search.engine.region.state import EngineOptions
 from search.engine.region.whole_totals import with_containing_total
 from search.models import (
@@ -150,8 +151,10 @@ def _build_candidates_region(
     Each survivor carries its candidate's assumptions echo. A set reads each reading with
     its own, and a lone survivor's definite part states its own. Candidates that rebuild
     to one spec_id keep the first, with its echo, as a first-pass set keeps one reading
-    per spec_id.
+    per spec_id. The part is `degraded` when any promote is, survivor or not: an answer built
+    from what remained stands on less when a promote's reads failed.
     """
+    degraded = any_degraded(promoted)
     echoes = [
         None if candidate.assumptions is None else tuple(candidate.assumptions)
         for candidate in entry.candidates
@@ -167,6 +170,7 @@ def _build_candidates_region(
         return RegionResult(
             variable_text=entry.variable_text,
             status="candidates",
+            degraded=degraded,
             specs=tuple(r.spec for r in survivors),
             no_data_reason=None,
             warnings=tuple(w for r in survivors for w in r.warnings),
@@ -193,6 +197,7 @@ def _build_candidates_region(
         (only,) = survivors
         return dataclasses.replace(
             only,
+            degraded=degraded,
             variable_text=entry.variable_text,
             warnings=(
                 *only.warnings,
@@ -217,6 +222,7 @@ def _build_candidates_region(
     reason = first.no_data_reason if first.status == "no_data" else "no_matching_slice"
     return dataclasses.replace(
         first,
+        degraded=degraded,
         variable_text=entry.variable_text,
         status="no_data",
         specs=(),

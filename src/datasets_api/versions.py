@@ -216,6 +216,10 @@ class VersionDescriber(Protocol):
 # The facts a rendered artifact carries. An artifact links to a version only when the stored
 # record holds the same values, so every linked artifact dates and cites as its record.
 RENDERED_FACT_FIELDS = ("prepared_at", "citation")
+# The facts a collapsed version takes from its base record beyond those (`render._render_pass`,
+# `manifest.collapsed_head_manifest`). A collapse is written only when the stored base holds the
+# same values, so a collapsed version warns and traces as the base on record does.
+COLLAPSED_FACT_FIELDS = (*RENDERED_FACT_FIELDS, "warnings", "trace")
 
 
 @dataclass(frozen=True)
@@ -226,7 +230,7 @@ class VersionWrite:
     depend on no option and carry no fact a render reads) are linked whoever inserted it. `rendered`
     are artifacts rendered from `record`'s `RENDERED_FACT_FIELDS`, and `collapsed` the full-collapse
     version recorded from that render with its own artifacts. Both are written only when the stored
-    record holds those fields. That is so when this call inserts it, or when `record` carries the
+    record holds those fields, and `COLLAPSED_FACT_FIELDS` with a collapse. That is so when this call inserts it, or when `record` carries the
     stored facts it was read from. `inventory` holds the inventory row each written artifact owes.
     """
 

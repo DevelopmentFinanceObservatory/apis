@@ -317,6 +317,7 @@ def test_a_resolver_failure_answers_without_a_place_and_is_not_cached():
     assert isinstance(response, CatalogueAnswer)
     assert response.scope.place is None
     assert _done(events).timed_out is False
+    assert _done(events).degraded_leg is True
 
     repeat = _events("What can I find on Kenya?", llm, _StubResolver(), response_cache=cache)
     assert _shape(repeat) == _SHORT_CIRCUIT_SEQUENCE, "a degraded answer is not stored"

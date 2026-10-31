@@ -24,7 +24,8 @@ from dfo_provenance_docs import (
 )
 
 import materialise.provenance_doc as provenance_doc_module
-from materialise.graph import UNRESOLVED_NODE, SubjectPage, parse_arcs
+from code_index.composites import DECLARED_COMPOSITES
+from materialise.graph import UNRESOLVED_NODE, GraphReadError, SubjectPage, parse_arcs
 from materialise.provenance_doc import (
     _DATASET_PROPERTIES,
     _NODE_PROPERTIES,
@@ -41,7 +42,9 @@ from materialise.provenance_doc import (
     TooManyChildProvenances,
     _compute_gaps,
     _read_document,
+    provenance_names,
     read_provenance_doc,
+    read_source_citations,
 )
 from origin_catalogue import BASE, UN_SYSTEM, SourceRef
 from origin_catalogue.card_facts import DOCUMENT_PROPERTIES, LICENCE_PROPERTIES
@@ -1675,3 +1678,86 @@ class TestDeadlineForwarding:
 
         assert doc.name_of_source == "Real Name"
         assert graph.deadlines_seen == [None, None]
+
+
+_WHO = "dc/base/WHO_GHO"
+_HEADLINE_ODA = "provenance/ONEOECDHeadlineODA"
+_WHO_NAMING_ARCS = {
+    _WHO: {"typeOf": ("Provenance",), "name": ("WHO_GHO",), "isPartOf": ("dc/d/WHO_GHO",)},
+    "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("WHO Global Health Observatory",)},
+}
+
+
+@pytest.mark.parametrize(
+    ("dcid", "arcs", "name", "reads"),
+    [
+        pytest.param("dc/base/Listed", {}, "Listed dataset", 0, id="listed"),
+        # A declared composite is neither a catalogue row nor a graph node, so its declaration
+        # names it.
+        pytest.param(
+            _HEADLINE_ODA, {}, DECLARED_COMPOSITES[_HEADLINE_ODA].label, 0, id="composite"
+        ),
+        # A base provenance is named for its import, so its parent Dataset names it, from the
+        # name the mixer answers beside the `isPartOf` target.
+        pytest.param(
+            _WHO, _WHO_NAMING_ARCS, "WHO Global Health Observatory", 1, id="unlisted-with-parent"
+        ),
+        # A Dataset's `isPartOf` is its Source, so it is named by its own name.
+        pytest.param(
+            "dc/d/WHO_GHO",
+            {
+                **_WHO_NAMING_ARCS,
+                "dc/d/WHO_GHO": {**_WHO_NAMING_ARCS["dc/d/WHO_GHO"], "isPartOf": ("dc/s/WHO",)},
+                "dc/s/WHO": {"typeOf": ("Source",), "name": ("World Health Organization",)},
+            },
+            "WHO Global Health Observatory",
+            1,
+            id="dataset-typed",
+        ),
+        # A parent named only by its own dcid names nothing, so the node's own name stands.
+        pytest.param(
+            _WHO,
+            {
+                **_WHO_NAMING_ARCS,
+                "dc/d/WHO_GHO": {"typeOf": ("Dataset",), "name": ("dc/d/WHO_GHO",)},
+            },
+            "WHO_GHO",
+            1,
+            id="parent-self-named",
+        ),
+    ],
+)
+def test_provenance_names_reads_the_least_that_names_a_provenance_as_its_citation(
+    dcid, arcs, name, reads
+):
+    """A listed provenance takes the catalogue's name with no read. An unlisted one is named
+    by one read of its arcs and their targets' names and types, and the name equals its
+    citation's wherever the citation reads the same nodes."""
+    catalogue = restrictive_catalogue(
+        provenances=[provenance_row("dc/base/Listed", BASE, name="Listed dataset")]
+    )
+    graph = FakeGraphReader(arcs=arcs)
+
+    names, read_ok = provenance_names(graph, [dcid, dcid], catalogue=catalogue, deadline=None)
+
+    assert (names, read_ok) == ({dcid: name}, True)
+    assert (graph.calls["node_arc_targets_many"], graph.calls["node_labels_batch"]) == (reads, 0)
+    if dcid in arcs and name != "WHO_GHO":
+        cited = read_source_citations(FakeGraphReader(arcs=arcs), [dcid], catalogue=catalogue)
+        assert cited[dcid].name == name
+
+
+def test_provenance_names_keeps_the_catalogue_names_when_the_graph_read_fails():
+    class _Failing(FakeGraphReader):
+        def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+            raise GraphReadError("transport")
+
+    catalogue = restrictive_catalogue(
+        provenances=[provenance_row("dc/base/Listed", BASE, name="Listed dataset")]
+    )
+
+    names, read_ok = provenance_names(
+        _Failing(), ["dc/base/Listed", _WHO], catalogue=catalogue, deadline=None
+    )
+
+    assert (names, read_ok) == ({"dc/base/Listed": "Listed dataset"}, False)

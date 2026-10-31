@@ -313,7 +313,14 @@ class _CopyRecordingArtifactStore(FakeArtifactStore):
         super().__init__()
         self.copied: list[str] = []
 
-    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+    def copy(
+        self,
+        digest: str,
+        *,
+        from_tier: Tier,
+        to_tier: Tier,
+        source: tuple[str, str] | None = None,
+    ) -> StoredArtifact:
         stored = super().copy(digest, from_tier=from_tier, to_tier=to_tier)
         self.copied.append(digest)
         return stored

@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from dfo_frame_grammar import Frame
+
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactNotFoundError
 from dataset_store.clock import Clock
@@ -83,8 +85,8 @@ from materialise.bundle_sources import source_provenance
 from materialise.formats import (
     Rendering,
     Table,
+    column_cells,
     frame_entity_columns,
-    iter_rows,
     read_stored_frame,
     table_schema_for,
     write_csv,
@@ -288,11 +290,13 @@ def manifest_body(facts: DerivedManifestFacts) -> dict[str, Any]:
 
 @dataclass(frozen=True, kw_only=True)
 class DerivedFile:
-    """One rendered file of a derived frame."""
+    """One rendered file of a derived frame, with the rows and columns of its data table."""
 
     data: bytes
     media_type: str
     file_name: str
+    rows: int
+    columns: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -378,8 +382,7 @@ def _provenance_refs(table: Table) -> list[str]:
     """The distinct refs of `table`'s `provenance` column, in first-seen order."""
     if _PROVENANCE_COLUMN not in table.columns:
         return []
-    index = table.columns.index(_PROVENANCE_COLUMN)
-    refs = (row[index] for row in iter_rows(table))
+    refs = column_cells(table, _PROVENANCE_COLUMN)
     return [ref for ref in dict.fromkeys(refs) if isinstance(ref, str)]
 
 
@@ -400,6 +403,8 @@ def render_derived_file(
     """
     frame = _read_stored_frame(spec_id=spec_id, content_version=content_version, reads=reads)
     table, prepared_at = frame.table, frame.stored_on
+    rows = table.num_rows if isinstance(table, Frame) else len(table.rows)
+    columns = len(table.columns)
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
     sources = tuple(
@@ -425,6 +430,8 @@ def render_derived_file(
             file_name=bare_file_name(
                 slug=slug, prepared=prepared_at.date(), tag=tag, extension=options.format
             ),
+            rows=rows,
+            columns=columns,
         )
 
     scan = TableScan(role_columns=frame_entity_columns(table.columns))
@@ -472,4 +479,6 @@ def render_derived_file(
         file_name=zip_file_name(
             slug=slug, prepared=prepared_at.date(), format=options.format, tag=tag
         ),
+        rows=rows,
+        columns=columns,
     )

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from dataset_store.bounds import TransactionBounds
 from dataset_store.errors import DatasetStoreConnectionError, DatasetStoreError
 from dataset_store.pool import ConnectionPool
 from dataset_store.store import LiveDatasetStore
@@ -23,6 +24,8 @@ from .conftest import (
 class _RecordingConnectionSource:
     """Record each borrow timeout and yield `conn`."""
 
+    connect_timeout = 30.0
+
     def __init__(self, conn: RecordingConnection) -> None:
         self._conn = conn
         self.borrow_timeouts: list[float | None] = []
@@ -34,6 +37,16 @@ class _RecordingConnectionSource:
 
 
 # LiveDatasetStore with a recording connection.
+
+
+def test_a_store_states_the_bounds_it_was_configured_with():
+    source = _RecordingConnectionSource(RecordingConnection())
+    source.connect_timeout = 7.0
+
+    store = LiveDatasetStore(connections=source, borrow_timeout=5.0)
+
+    assert store.bounds == TransactionBounds(borrow=5.0, connect=7.0)
+    assert store.bounds.stall.total_seconds() == 19.0
 
 
 def test_commit_once_on_clean_exit():

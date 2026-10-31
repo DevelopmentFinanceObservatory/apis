@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dc_graph import ArcTarget
 from graph_generation import UNKNOWN_STAMP, GenerationStamp
 from promptlab.bindmenu import parse_menu
 from promptlab.expectations import LegExpectation, leg_expectation
@@ -366,6 +367,15 @@ class _NoLiveGraph:
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         return self._unreachable("node_arcs_many")
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        return self._unreachable("node_arc_targets_many")
 
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
