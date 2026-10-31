@@ -50,6 +50,16 @@ def shape_carries_measure_match(shape: ShapeDraft, match: QualifierMatch) -> boo
     return carried in reading
 
 
+def shape_reads_measure_axis(shape: ShapeDraft, axis: str) -> bool:
+    """Whether `shape` states a value on the measure axis `axis` of its five-tuple, the
+    origin registry's declared price basis standing for a UN series' measurementQualifier
+    (`declared_measurement_qualifier`). A shape that states none sums over the axis."""
+    carried = getattr(shape, _MEASURE_AXIS_DRAFT_FIELDS[axis])
+    if carried is None and axis == "measurementQualifier":
+        carried = declared_measurement_qualifier(shape)
+    return carried is not None
+
+
 def bound_value_reads_measure(
     shape: ShapeDraft, match: QualifierMatch, bindings: Sequence[SlotBindingDraft]
 ) -> bool:

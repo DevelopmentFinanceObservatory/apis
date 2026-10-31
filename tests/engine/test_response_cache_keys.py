@@ -136,7 +136,7 @@ def _layer2_key(
     measure_qualifiers: list[tuple[str, ...]] | None = None,
     open_axes: list[frozenset[str]] | None = None,
     stated_scopes: list[dict[str, object] | None] | None = None,
-    exclusions: list[LeftOut] | None = None,
+    exclusions: list[tuple[LeftOut, tuple[int, ...]]] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -686,23 +686,26 @@ def test_the_role_a_part_lists_member_by_member_changes_layer2_key() -> None:
 
 
 def test_what_a_query_leaves_out_changes_layer2_key() -> None:
-    """Two queries that blank to one text key apart by the stretch each left out, and by what
-    it leaves out, which decides how the legs judge it; a query leaving out nothing keys as
-    one that omits the field."""
+    """Two queries that blank to one text key apart by the stretch each left out, by what it
+    leaves out, which decides how the legs judge it, and by the parts it qualifies; a query
+    leaving out nothing keys as one that omits the field."""
 
-    def stretch(phrase: str, *things: str) -> LeftOut:
-        return LeftOut(phrase=phrase, things=things, at=0)
+    def stretch(phrase: str, *things: str, parts: tuple[int, ...] = (0,)):
+        return LeftOut(phrase=phrase, things=things, at=0), parts
 
+    variables = ["ODA", "OOF"]
     keys = {
-        _layer2_key(exclusions=exclusions)
+        _layer2_key(variables=variables, exclusions=exclusions)
         for exclusions in (
             [],
             [stretch("excluding grants", "grants")],
             [stretch("excluding loans", "loans")],
             [stretch("excluding loans", "grants")],
+            [stretch("excluding loans", "grants", parts=(1,))],
+            [stretch("excluding loans", "grants", parts=(0, 1))],
         )
     }
-    assert len(keys) == 4
+    assert len(keys) == 6
     assert _layer2_key(exclusions=[]) == _layer2_key()
 
 

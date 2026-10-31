@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
@@ -156,6 +157,36 @@ def _normalised(query: str) -> tuple[str, list[int], list[int]] | None:
     return text, [start for _, start, _ in folded], [end for _, _, end in folded]
 
 
+@dataclass(frozen=True, slots=True)
+class _Base:
+    """The text a read's phrases are found in (`text`), the string the blanks are cut from
+    (`source`), the offsets in `source` where each character of `text` starts and ends, and
+    how a phrase is written to be found in `text` (`fold`)."""
+
+    text: str
+    source: str
+    starts: list[int]
+    ends: list[int]
+    fold: Callable[[str], str]
+
+
+def _base(query: str) -> _Base:
+    """The text layer 1 keys `query` on, mapped back to `query`'s own characters
+    (`_normalised`). Where NFKC cannot be mapped back, the query in NFC, which phrases are
+    found and blanked in as they are written."""
+    if (mapped := _normalised(query)) is not None:
+        text, starts, ends = mapped
+        return _Base(text, query, starts, ends, normalise_query)
+    nfc = unicodedata.normalize("NFC", query)
+    return _Base(
+        nfc,
+        nfc,
+        list(range(len(nfc))),
+        list(range(1, len(nfc) + 1)),
+        lambda phrase: unicodedata.normalize("NFC", phrase).strip(),
+    )
+
+
 def _occurrences(phrase: str, text: str) -> list[tuple[int, int]]:
     """The character ranges of `text` where `phrase` stands as whole words."""
     ranges: list[tuple[int, int]] = []
@@ -170,15 +201,29 @@ def _occurrences(phrase: str, text: str) -> list[tuple[int, int]]:
     return ranges
 
 
-def _residue(phrase: str, intake: ScopeIntake | None) -> list[tuple[int, int, int, int]]:
+@dataclass(frozen=True, slots=True)
+class _Piece:
+    """One stretch of a read phrase, as offsets in the phrase: the range it blanks, the range
+    it is disclosed as, a verbatim span starting at its negating cue, and the range of the
+    words it leaves out."""
+
+    blank: tuple[int, int]
+    phrase: tuple[int, int]
+    shown: tuple[int, int]
+
+
+def _pieces(phrase: str, intake: ScopeIntake | None) -> list[_Piece]:
     """Each item of `phrase`'s list outside the phrases stating the part's provider scope
-    (`stated_scope.scope_phrase_spans`): the range to blank, from its first word to its last,
-    and the range it shows, less a coordinator at either end. The words a scope phrase runs
-    into before a comma or coordinator are its own noun, so "not including multilateral
-    flows" leaves nothing, and "not including multilateral or humanitarian aid" blanks "or
-    humanitarian aid" and shows "humanitarian aid"."""
-    pieces: list[tuple[int, int, int, int]] = []
-    offset = 0
+    (`stated_scope.scope_phrase_spans`), each its own stretch. It blanks from its first word
+    to its last and shows its words less a coordinator at either end. The words a scope
+    phrase runs into before a comma or coordinator are its own noun, so "not including
+    multilateral flows" leaves nothing. An item after a scope phrase is disclosed from the
+    scope phrase's cue, which is its own: "not including multilateral or humanitarian aid"
+    blanks "or humanitarian aid" and is disclosed as written, and "excluding debt relief and
+    not including multilateral or loans" gives "excluding debt relief" and "not including
+    multilateral or loans"."""
+    pieces: list[_Piece] = []
+    offset, cue = 0, 0
     for start, end in [*scope_phrase_spans(phrase, intake), (len(phrase), len(phrase))]:
         words = word_tokens(phrase[offset:start])
         if offset:
@@ -199,85 +244,99 @@ def _residue(phrase: str, intake: ScopeIntake | None) -> list[tuple[int, int, in
         while shown and shown[-1].text.casefold() in _COORDINATORS:
             shown = shown[:-1]
         if shown:
+            first = offset + shown[0].start
             pieces.append(
-                (
-                    offset + words[0].start,
-                    offset + words[-1].end,
-                    offset + shown[0].start,
-                    offset + shown[-1].end,
+                _Piece(
+                    blank=(offset + words[0].start, offset + words[-1].end),
+                    phrase=(cue if offset else first, offset + shown[-1].end),
+                    shown=(first, offset + shown[-1].end),
                 )
             )
-        offset = end
+        offset, cue = end, start
     return pieces
+
+
+def _left_out_words(left_out: list[str], shown: str, *, whole: bool) -> list[str]:
+    """The words of `left_out` a stretch showing `shown` leaves out: all of them for the
+    whole phrase, else each item whose words all lie in `shown`, else its words that do."""
+    if whole:
+        return left_out
+    kept = {token.text.casefold() for token in word_tokens(shown)}
+    items = [
+        thing
+        for thing in left_out
+        if (tokens := word_tokens(thing)) and all(t.text.casefold() in kept for t in tokens)
+    ]
+    return items or [
+        token.text
+        for thing in left_out
+        for token in word_tokens(thing)
+        if token.text.casefold() in kept
+    ]
 
 
 def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
     """`query` with each stretch of `read` that passes admission blanked with ";", every
     occurrence of it. Each phrase is found in the query as layer 1 keys it
     (`response_cache_keys.normalise_query`: NFKC, whitespace collapsed) and blanked at the
-    query's own characters. A stretch is admitted when:
+    query's own characters; where NFKC cannot be mapped back, in the query's NFC text
+    (`_base`). A stretch is admitted when:
 
     1. it occurs in the query as whole words and is shorter than the query;
     2. no occurrence lies inside a run of words the query uses as one code, measure or party
        label (`qualifier_match.label_runs`): "excluding debt relief" in "official development
        assistance excluding debt relief" belongs to DAC2a's aid type 250;
     3. something outlives the phrases stating the part's provider scope
-       (`stated_scope.scope_phrase_spans`) and the noun each runs into (`_residue`), whose
+       (`stated_scope.scope_phrase_spans`) and the noun each runs into (`_pieces`), whose
        reader takes the text: "not including multilateral flows" is that scope alone. Only
        what outlives them is blanked, so "not including multilateral or humanitarian aid"
-       leaves "not including multilateral ;", which still states the bilateral scope, and the
-       stretch is "humanitarian aid".
+       leaves "not including multilateral ;", which still states the bilateral scope.
 
-    A stretch the query does not write as read, even so normalised, is kept unblanked with no
-    `at`, so the answer discloses it. A query with no stretch blanked comes back as it was
-    written.
+    Each item that outlives a scope phrase is a stretch of its own, disclosed as a verbatim
+    span of the query from its negating cue (`_pieces`), and leaves out the read's words it
+    shows. A stretch the query does not write as read, even so normalised, is kept unblanked
+    with no `at`, so the answer discloses it. A query with no stretch blanked comes back as
+    it was written.
     """
     if not read.exclusions:
         return QueryReading(text=query)
-    mapped = _normalised(query)
-    normal = mapped[0] if mapped is not None else normalise_query(query)
+    base = _base(query)
+    normal = base.text
     labels: tuple[tuple[int, int], ...] | None = None
     (intake,) = part_scope_intakes(message=normal, part_texts=[normal])
     things: dict[str, list[str]] = {}
     ranges: dict[str, list[tuple[int, int]]] = {}
     for exclusion in read.exclusions:
-        phrase = normalise_query(exclusion.phrase)
+        phrase = base.fold(exclusion.phrase)
         if not phrase or len(phrase) >= len(normal):
             continue
-        found = _occurrences(phrase, normal) if mapped is not None else []
+        found = _occurrences(phrase, normal)
         if not found:
-            things.setdefault(phrase, []).extend(map(normalise_query, exclusion.left_out))
+            things.setdefault(phrase, []).extend(map(base.fold, exclusion.left_out))
             continue
         if labels is None:
             labels = label_runs(normal, get_index(), get_measure_index())
         if any(lo <= s and e <= hi for s, e in found for lo, hi in labels):
             continue
-        pieces = _residue(phrase, intake)
-        if not pieces:
-            continue
-        shown = " ".join(phrase[s:e] for _, _, s, e in pieces)
-        left = [normalise_query(thing) for thing in exclusion.left_out]
-        if shown != phrase:
-            kept = {token.text.casefold() for token in word_tokens(shown)}
-            left = [
-                token.text
-                for thing in left
-                for token in word_tokens(thing)
-                if token.text.casefold() in kept
-            ]
-        ranges.setdefault(shown, []).extend(
-            (s + a, s + b) for s, _ in found for a, b, _, _ in pieces
-        )
-        things.setdefault(shown, []).extend(left)
+        left = [base.fold(thing) for thing in exclusion.left_out]
+        for piece in _pieces(phrase, intake):
+            stretch = phrase[slice(*piece.phrase)]
+            ranges.setdefault(stretch, []).extend(
+                (s + piece.blank[0], s + piece.blank[1]) for s, _ in found
+            )
+            shown = phrase[slice(*piece.shown)]
+            things.setdefault(stretch, []).extend(
+                _left_out_words(left, shown, whole=shown == phrase)
+            )
     if not things:
         return QueryReading(text=query)
-    if mapped is None or not ranges:
+    if not ranges:
         return QueryReading(
             text=query,
             left_out=tuple(LeftOut(phrase, tuple(words), None) for phrase, words in things.items()),
         )
 
-    _, starts, ends = mapped
+    starts, ends, source = base.starts, base.ends, base.source
     blanked: list[tuple[int, int]] = []
     for start, end in sorted(
         (starts[s], ends[e - 1]) for spans in ranges.values() for s, e in spans
@@ -290,11 +349,11 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
     offset = 0
     at: dict[int, int] = {}
     for start, end in blanked:
-        pieces_out.append(query[offset:start])
+        pieces_out.append(source[offset:start])
         at[start] = sum(map(len, pieces_out))
         pieces_out.append(";")
         offset = end
-    pieces_out.append(query[offset:])
+    pieces_out.append(source[offset:])
 
     def blank_of(phrase: str) -> int | None:
         if phrase not in ranges:

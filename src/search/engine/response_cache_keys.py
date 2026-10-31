@@ -273,7 +273,7 @@ def layer2_key(
     measure_qualifiers: Sequence[tuple[str, ...]] = (),
     open_axes: Sequence[frozenset[str]] = (),
     stated_scopes: Sequence[Mapping[str, object] | None] = (),
-    exclusions: Sequence[LeftOut] = (),
+    exclusions: Sequence[tuple[LeftOut, tuple[int, ...]]] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -305,9 +305,11 @@ def layer2_key(
     part whose words state none, so "ODA to Kenya", "bilateral ODA to Kenya" and "net ODA
     to Kenya" key apart whatever their extractions. The key states them and
     adds nothing when no part states any.
-    `exclusions` are the stretches of the query a part judges or discloses. The blanked text
-    no longer holds them, and each moves the answer's departures, so the key states each
-    phrase with the words naming what it leaves out, and adds nothing when there is none.
+    `exclusions` are the stretches of the query a part judges or discloses, each with the
+    positions in `variables` of the parts it qualifies. The blanked text no longer holds
+    them, and each moves the departures of the parts it qualifies, so the key states each
+    phrase with the words naming what it leaves out and those parts, and adds nothing when
+    there is none.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -344,8 +346,8 @@ def layer2_key(
     }
     if exclusions:
         document["exclusions"] = [
-            {"phrase": exclusion.phrase, "left_out": list(exclusion.things)}
-            for exclusion in exclusions
+            {"phrase": exclusion.phrase, "left_out": list(exclusion.things), "parts": list(parts)}
+            for exclusion, parts in exclusions
         ]
     if query_text_value_source is not None:
         document["query_text_value_source"] = " ".join(query_text_value_source.split())

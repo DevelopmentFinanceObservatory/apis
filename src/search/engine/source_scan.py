@@ -310,6 +310,45 @@ def _attach(
     return tuple(range(len(spans)))
 
 
+def _stretch_attach(
+    key: tuple[str, ...],
+    at: int,
+    words: Sequence[_Word],
+    measure_words: Sequence[tuple[str, ...]],
+    spans: Sequence[tuple[int, int] | None],
+) -> tuple[int, ...]:
+    """The positions of the measures a stretch written as `key`, blanked at the query's
+    character `at`, qualifies: those whose words hold it, else every measure but where the
+    blank lies in one clause of the query's measures. Measures the query writes joined only
+    by commas and coordinators ("ODA and OOF") share a clause, which runs from the first of
+    them to the next clause's first measure: "aid to Kenya and education aid to Kenya, not
+    from the OECD" leaves the OECD out of education aid alone, and "ODA and OOF to Kenya
+    excluding debt relief" judges both. A stretch before every measure, or in a query with
+    one clause or a measure it does not write, qualifies every measure."""
+    holding = tuple(position for position, held in enumerate(measure_words) if _holds(held, key))
+    if holding:
+        return holding
+    every = tuple(range(len(spans)))
+    if any(span is None for span in spans):
+        return every
+    located = sorted((span, position) for position, span in enumerate(spans) if span is not None)
+    clauses: list[tuple[int, list[int]]] = []
+    previous_end: int | None = None
+    for (start, end), position in located:
+        between = [
+            w.folded for w in words if previous_end is not None and previous_end <= w.start < start
+        ]
+        if clauses and all(word in _COORDINATORS for word in between):
+            clauses[-1][1].append(position)
+        else:
+            clauses.append((start, [position]))
+        previous_end = max(end, previous_end or end)
+    if len(clauses) < 2:
+        return every
+    held = [positions for start, positions in clauses if start <= at]
+    return tuple(sorted(held[-1])) if held else every
+
+
 @dataclass(frozen=True, slots=True)
 class SourceScan:
     """What `scan_sources` reads in a query: each measure's source mentions
@@ -318,8 +357,9 @@ class SourceScan:
     stretches that leave out sources and nothing else (`source_stretches`), which their
     mentions apply. A span is taken when it occurs in the query and a source covers every
     occurrence of it that lies inside no longer entity span's. `stretch_targets` runs
-    parallel to the stretches: the positions of the measures each qualifies, read from its
-    blank as a source's are (`_attach`), every measure for a stretch with no blank."""
+    parallel to the stretches: the positions of the measures each qualifies, read from the
+    clause its blank lies in (`_stretch_attach`), every measure for a stretch with no
+    blank."""
 
     per_measure: list[tuple[SourceMention, ...]]
     source_entities: frozenset[str]
@@ -384,7 +424,7 @@ def scan_sources(
     """The sources `find_source_hits` finds in `query`, the text with each of the `left_out`
     stretches blanked, and those each stretch leaves out (`left_out_sources`), attached to the
     measures they qualify, and the entity spans they cover. A stretch and its sources attach
-    from its blank. A measure keeps one mention per wording and polarity, at most
+    to the measures of the clause its blank lies in (`_stretch_attach`). A measure keeps one mention per wording and polarity, at most
     `_PARSED_MAX_PART_SOURCES`, and an entity span leaves the entities only when every
     occurrence of it that lies inside no longer entity span's lies under a source."""
     hits = find_source_hits(
@@ -399,19 +439,11 @@ def scan_sources(
         if (at := stretch.at) is None:
             stretch_targets.append(tuple(range(len(measures))))
             continue
-        stretch_targets.append(
-            _attach(_folded(stretch.phrase), at, at + 1, measure_words, measure_spans)
-        )
+        targets = _stretch_attach(_folded(stretch.phrase), at, words, measure_words, measure_spans)
+        stretch_targets.append(targets)
         found, whole = left_out_sources(stretch, dictionary=dictionary, index=index)
         hits += [
-            replace(
-                hit,
-                start=at,
-                end=at + 1,
-                polarity="exclude",
-                targets=_attach(_folded(hit.text), at, at + 1, measure_words, measure_spans),
-            )
-            for hit in found
+            replace(hit, start=at, end=at + 1, polarity="exclude", targets=targets) for hit in found
         ]
         if whole:
             source_stretches.add(stretch.phrase)

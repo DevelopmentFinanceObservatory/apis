@@ -286,6 +286,13 @@ class TestApplyNamedExclusions:
                 (),
                 id="another-wording",
             ),
+            pytest.param(
+                _imf_slot(),
+                _imf_shape(),
+                LeftOut(phrase="without IMF credit", things=("without IMF credit",), at=0),
+                (),
+                id="the-phrase-is-what-it-leaves-out",
+            ),
         ],
     )
     def test_anything_but_an_open_slot_and_an_exact_label_binds_nothing(

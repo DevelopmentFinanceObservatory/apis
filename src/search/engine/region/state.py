@@ -587,6 +587,9 @@ def exclusion_requirements(
             for tie in ties:
                 runs.setdefault(tie.phrase, []).extend(tie.rows)
             things = words(" ".join(exclusion.things)) - FUNCTION_WORDS
+            # A run holding none of the words it leaves out reads the phrase's other words,
+            # such as the provider scope a stretch runs from.
+            runs = {run: rows for run, rows in runs.items() if words(run) & things}
             judged = bool(things) and things <= set().union(*map(words, runs))
             read[exclusion] = runs if judged else None
         return read[exclusion]

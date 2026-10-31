@@ -385,7 +385,7 @@ class CacheScope:
         operations: Sequence[tuple[Operation, ...]],
         query: str,
         text: str | None = None,
-        exclusions: Sequence[LeftOut] = (),
+        exclusions: Sequence[tuple[LeftOut, tuple[int, ...]]] = (),
         entity_roles: Mapping[str, Sequence[DoorRole]],
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
@@ -413,7 +413,8 @@ class CacheScope:
         `extraction_warnings` holds the warnings extraction adds to the answer, which a hit
         serves as stored. `query` is what a hit echoes, and `text` what the signals read: the
         query with each stretch it asks to leave out blanked, `query` itself when `None`.
-        `exclusions` are those stretches that a part judges or discloses. This lookup
+        `exclusions` are those stretches that a part judges or discloses, each with the
+        positions in `variables` of the parts it qualifies. This lookup
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
         A binder that reads the query's own text looks up nothing here (`CacheScope`).
 

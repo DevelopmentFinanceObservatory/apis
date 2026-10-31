@@ -635,9 +635,9 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     read is awaited first: with nothing admitted the parse stands, and an admitted stretch
     cancels it and extraction takes the blanked text, so a hit costs the read plus one parse.
 
-    The speculative parse a hit discards runs on beside the parse of the blanked text, and
-    its tokens count in the usage when it has finished by the time that parse ends. One still
-    running then is cancelled, and the usage counts it as one uncounted call
+    A hit cancels the speculative parse when the read is admitted, before the parse of the
+    blanked text starts, so no second extraction runs to its end. Its tokens count in the
+    usage when it had already finished, else it counts as one uncounted call
     (`_discarded_usage`): its request was sent, and no response reports its tokens. A read
     whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the text as it was,
     so the speculative parse stands.
@@ -663,10 +663,11 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         if reading.text == query:
             result, usage, timing_extract = await speculative
         else:
+            discarded = await _discarded_usage(speculative)
             result, usage, timing_extract = await _run_extract_phase(
                 reading.text, llm=llm, deadline=deadline
             )
-            usage = _sum_usage(usage, await _discarded_usage(speculative))
+            usage = _sum_usage(usage, discarded)
     finally:
         speculative.cancel()
         await asyncio.gather(speculative, return_exceptions=True)
@@ -1122,7 +1123,7 @@ def _prepare_extraction(
         left_out=left_out,
     )
     per_variable_sources = scan.per_measure
-    # Each stretch qualifies the measures it attaches to from its blank, as a source does.
+    # Each stretch qualifies the measures of the clause its blank lies in, else every one.
     disclosed = [
         (stretch, targets)
         for stretch, targets in zip(left_out, scan.stretch_targets, strict=True)
@@ -1751,7 +1752,7 @@ async def handle(
         cached = await scope.lookup_parsed(
             query=query,
             text=text,
-            exclusions=prep.exclusions,
+            exclusions=tuple(zip(prep.exclusions, prep.exclusion_targets, strict=True)),
             variables=prep.unique,
             entities=extraction.entities,
             dates=extraction.dates,

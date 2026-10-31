@@ -9,7 +9,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import ExitStack
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 import dc_graph
 from code_index.composites import composite_ref
@@ -113,9 +113,6 @@ from search.scope.provider import (
 from search.scope.state import ScopeIntake, ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

@@ -494,13 +494,41 @@ def test_the_raw_text_door_reads_a_series_code_the_query_writes(
             ["ODA", "GDP"],
             (0,),
         ),
+        pytest.param(
+            "ODA and OOF to Kenya excluding debt relief",
+            "excluding debt relief",
+            ["ODA", "OOF"],
+            (0, 1),
+            id="coordinated-measures",
+        ),
+        pytest.param(
+            "ODA and OOF to Kenya, both excluding debt relief",
+            "excluding debt relief",
+            ["ODA", "OOF"],
+            (0, 1),
+            id="coordinated-measures-both",
+        ),
+        pytest.param(
+            "aid and loans to Kenya excluding debt relief",
+            "excluding debt relief",
+            ["official development assistance", "loans"],
+            (0, 1),
+            id="a-measure-the-query-does-not-write",
+        ),
+        pytest.param(
+            "excluding debt relief, ODA and OOF to Kenya",
+            "excluding debt relief",
+            ["ODA", "OOF"],
+            (0, 1),
+            id="before-every-measure",
+        ),
     ],
 )
 def test_a_stretch_qualifies_the_measure_it_attaches_to(
     dictionary: SourceDictionary, query, stretch, measures, targets
 ):
-    """A stretch qualifies a measure as a source does, from its blank, so only that part
-    discloses it."""
+    """A stretch qualifies every measure, but the measures of one clause when its blank lies
+    in that clause, so only those parts disclose it."""
     reading = _left_out(query, stretch)
     scan = scan_sources(
         reading.text,

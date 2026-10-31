@@ -34,7 +34,7 @@ from search.engine.departures import (
 from search.engine.qualifier_match import _normalize
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_rank_bind import judge_value_requirements
-from search.engine.region.qualifier_readings import answer_reads_measure
+from search.engine.region.qualifier_readings import answer_reads_measure, shape_reads_measure_axis
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     CodeRule,
@@ -374,7 +374,14 @@ def judge(
                     prices is not None and _serves_price_basis(rule.code, prices)
                 )
                 if rule.code.excluded is not None:
-                    answer.append("unmet" if reads else "met")
+                    # A shape that states no value on the axis sums over it, so it leaves
+                    # nothing out.
+                    if reads:
+                        answer.append("unmet")
+                    elif shape_reads_measure_axis(shape, rule.match.code_system):
+                        answer.append("met")
+                    else:
+                        answer.append("outside")
                 else:
                     answer.append("met" if reads else _code_outcome(rule.code, held, bound))
             elif isinstance(rule, ValueRule) and requirement.origin == "set_value":
@@ -751,7 +758,9 @@ def meets_stray_values(
 def met_measure_phrases(judgement: Judgement | None) -> frozenset[str]:
     """The phrases of the measure values every final answer `judgement` judged carries
     (`MeasureRule`), which binding repair can bind after election. The part admits them, so
-    no raw-text warning names a measure value its answer applies."""
+    no raw-text warning names a measure value its answer applies. An excluded rule is met
+    only by an answer whose shape states a value on the axis other than the one excluded
+    (`judge`), so a phrase leaving out a value of an axis the answer sums over stays out."""
     if judgement is None:
         return frozenset()
     measures = {r.phrase for r in judgement.requirements if isinstance(r.rule, MeasureRule)}
