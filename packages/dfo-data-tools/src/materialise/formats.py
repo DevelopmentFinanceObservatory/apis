@@ -1125,12 +1125,13 @@ def _checked_canonical_table(
     return table
 
 
-STORED_FRAME_DECODE_ERRORS = (FrameError, pa.ArrowException, OSError, ValueError)
+STORED_FRAME_DECODE_ERRORS = (FrameError, pa.ArrowException, OSError, UnicodeDecodeError)
 """What reading a stored frame's bytes raises for bytes that do not decode as a frame: the
-grammar's `FrameError`, and the Parquet, Arrow and JSON readers' own errors, `UnicodeDecodeError`
-among them. `pa.ArrowMemoryError` is an `ArrowException` and a `MemoryError`, and says nothing
-about the bytes, so a reader that refuses these catches `MemoryError` first. Datasets and
-Presentation refuse the same bytes by it."""
+grammar's `FrameError`, which `read_frame1` raises for a document that is not JSON, the Parquet
+and Arrow readers' own errors, and `UnicodeDecodeError` for a text cell that is not UTF-8. A bare
+`ValueError` is a defect in the reading code, so it stays out. `pa.ArrowMemoryError` is an
+`ArrowException` and a `MemoryError`, and says nothing about the bytes, so a reader that refuses
+these catches `MemoryError` first. Datasets and Presentation refuse the same bytes by it."""
 
 
 def read_stored_frame(data: bytes, *, media_type: str) -> Frame:

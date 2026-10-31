@@ -828,6 +828,35 @@ def test_load_refuses_a_canonical_frame_over_the_row_bound_before_fetching_it():
     assert [call for call in artifacts.calls if call[0] == "get"] == []
 
 
+@pytest.mark.parametrize(
+    ("size_bytes", "loads"),
+    [pytest.param(200_000_000, True, id="under"), pytest.param(250_000_000, False, id="past")],
+)
+def test_load_bounds_a_frame1_document_by_its_recorded_size_as_datasets_does(
+    size_bytes: int, loads: bool
+):
+    """A frame1 document recorded at 250 MB is past the 216,600,000 bytes a Datasets read that
+    decodes it alone takes (`render.frame1_decode_max_bytes` at the default fold ceiling), so it
+    refuses `missing_rendering` before its object is fetched, as the Datasets observations door
+    refuses it `over_ceiling` (`tests/datasets_api/test_observations_door.py`). One at 200 MB
+    loads."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    snapshots.locations[key] = [
+        replace(location, size_bytes=size_bytes) for location in snapshots.locations[key]
+    ]
+    store = _store(snapshots=snapshots, artifacts=artifacts)
+
+    if loads:
+        assert store.load(frame_ref=frame_ref)
+        return
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    assert [call for call in artifacts.calls if call[0] == "get"] == []
+
+
 def _parquet_bytes() -> bytes:
     sink = io.BytesIO()
     table = pa.table({"name": [f"row {index}" for index in range(5000)]})
@@ -919,7 +948,9 @@ DECODE_FAILURES = [
     pytest.param(FrameError("schema_violation", "exemplar"), id="frame-error"),
     pytest.param(pa.ArrowInvalid("exemplar"), id="arrow-invalid"),
     pytest.param(OSError("exemplar"), id="os-error"),
-    pytest.param(ValueError("exemplar"), id="value-error"),
+    pytest.param(
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), id="unicode-decode-error"
+    ),
 ]
 """A failure of each kind a reader of stored frame bytes raises for bytes that do not decode,
 which Datasets refuses alike (`tests/datasets_api/test_stored_frame1.py`)."""
@@ -1123,6 +1154,22 @@ def test_a_stored_frame_that_does_not_decode_logs_its_digest_and_cause(
     assert digest == location.artifact_digest
     assert cause == "ArrowInvalid"
     assert record.exc_info[0] is pa.ArrowInvalid
+
+
+def _a_defect(**_: object) -> Never:
+    raise ValueError("a defect in the reading code")
+
+
+def test_a_value_error_in_the_structural_view_is_a_defect(monkeypatch: pytest.MonkeyPatch):
+    """A bare `ValueError` is a defect in the reading code, not malformed content
+    (`materialise.formats.STORED_FRAME_DECODE_ERRORS`). Raised in the structural view, it
+    propagates, so the door answers `internal_error` (500) and no share reads the frame as
+    gone."""
+    snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
+    monkeypatch.setattr(frame_store, "compute_structural_view", _a_defect)
+
+    with pytest.raises(ValueError, match="a defect"):
+        _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
 
 
 @pytest.mark.parametrize(

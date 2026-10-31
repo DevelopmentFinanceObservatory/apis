@@ -219,6 +219,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.allowance import AllowanceExhausted, SharedAllowanceLedger
 from datasets_api.codes_snapshot import SpecNotFound
+from datasets_api.config import DEFAULT_GROUPBY_FOLD_MAX_ROWS
 from datasets_api.derived import recipe_citation
 from datasets_api.description_record import composed_variables, title_named
 from datasets_api.doors.publish import PUBLISH_MAX_ROWS
@@ -231,7 +232,7 @@ from datasets_api.manifest import (
 from datasets_api.manifest_models import CitationModel
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.recorded_rendering import RenderingNotRecorded, rendering_of
-from datasets_api.render import servable_frame_location
+from datasets_api.render import frame1_decode_max_bytes, servable_frame_location
 from datasets_api.retention_admission import (
     CopyClaimUnsettled,
     OpenPinBudgetExhausted,
@@ -519,7 +520,7 @@ def _canonical_table(data: bytes, *, location: StoredArtifactLocation, max_rows:
     reads one by.
 
     Raises:
-        FrameError, pa.ArrowException, OSError, ValueError: As `read_canonical_frame_table`.
+        FrameError, pa.ArrowException, OSError: As `read_canonical_frame_table`.
         FrameUnavailable: `missing_rendering` past `max_rows`.
     """
     rows = pq.ParquetFile(pa.BufferReader(data)).metadata.num_rows
@@ -536,6 +537,16 @@ def _over_row_bound(
         detail=(
             f"artifact_digest {location.artifact_digest!r} holds {rows} rows, over the "
             f"{max_rows} rows Presentation loads"
+        ),
+    )
+
+
+def _over_byte_bound(location: StoredArtifactLocation, *, max_bytes: int) -> FrameUnavailable:
+    return FrameUnavailable(
+        reason="missing_rendering",
+        detail=(
+            f"artifact_digest {location.artifact_digest!r} is a frame1 document of "
+            f"{location.size_bytes} bytes, over the {max_bytes} bytes Presentation decodes"
         ),
     )
 
@@ -799,7 +810,11 @@ class LiveFrameStore:
     docstring describes, for a caller that sets no door deadline. `frame_max_rows` bounds the
     rows of a canonical frame `load()` decodes, since the whole frame is built in memory. A
     larger frame refuses `missing_rendering`, before its object is fetched when the version's
-    facts record its row count.
+    facts record its row count. `fold_max_rows` is Datasets' `groupby_fold_max_rows`, which
+    bounds a frame1 document by its recorded size as a Datasets read that decodes it alone
+    bounds it (`render.frame1_decode_max_bytes`). A larger document refuses
+    `missing_rendering` before its object is fetched, so one stored document is served or
+    refused by both surfaces alike.
     """
 
     def __init__(
@@ -819,6 +834,7 @@ class LiveFrameStore:
         cache_max_bytes: int = _FRAME_CACHE_MAX_BYTES,
         read_budget_seconds: float = _READ_BUDGET_SECONDS,
         frame_max_rows: int = PUBLISH_MAX_ROWS,
+        fold_max_rows: int = DEFAULT_GROUPBY_FOLD_MAX_ROWS,
     ) -> None:
         self._snapshots = snapshots
         self._artifacts = artifacts
@@ -834,6 +850,7 @@ class LiveFrameStore:
         self._cache_max_bytes = cache_max_bytes
         self._read_budget_seconds = read_budget_seconds
         self._frame_max_rows = frame_max_rows
+        self._frame1_max_bytes = frame1_decode_max_bytes(fold_max_rows, folds=False)
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[str, str], _CachedFrame] = {}
         self._cache_bytes = 0
@@ -974,6 +991,11 @@ class LiveFrameStore:
                 and recorded_rows > self._frame_max_rows
             ):
                 raise _over_row_bound(canonical, rows=recorded_rows, max_rows=self._frame_max_rows)
+            if (
+                canonical.media_type == FRAME1_MEDIA_TYPE
+                and canonical.size_bytes > self._frame1_max_bytes
+            ):
+                raise _over_byte_bound(canonical, max_bytes=self._frame1_max_bytes)
             record, inputs, description_final = self._description_records(frame_ref)
             data = self._fetch_bytes(canonical)
             doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)

@@ -36,6 +36,9 @@ from statvar_members import DEFAULT_SUBJECT_CEILING
 # `DatasetsBuildSettings.operation_deadline_seconds`.
 DEFAULT_OPERATION_DEADLINE_SECONDS = 36_000
 DEFAULT_MATERIALISE_WAIT_SECONDS = 30
+# `DATASETS_GROUPBY_FOLD_MAX_ROWS` where the environment sets none, which also sizes the frame1
+# document a read decodes (`render.frame1_decode_max_bytes`).
+DEFAULT_GROUPBY_FOLD_MAX_ROWS = 2_000_000
 
 
 class DatasetsConfigError(Exception):
@@ -86,7 +89,7 @@ class DatasetsBuildSettings(BaseSettings):
     # (rows). The Arrow fold peaks at about 1 KiB a row above the frame it reads (505 MiB over
     # spec_09ff's 488,979 rows), so a fold at this ceiling takes about 2 GiB. A frame1 document
     # a read decodes is held to that memory too (`render.frame1_decode_max_bytes`).
-    groupby_fold_max_rows: int = Field(default=2_000_000, ge=1)
+    groupby_fold_max_rows: int = Field(default=DEFAULT_GROUPBY_FOLD_MAX_ROWS, ge=1)
 
     # Groupby folds the process runs at once. Permits times the fold's 2 GiB at its ceiling must
     # fit the service's fold memory, so the 4 GiB service takes one. A further collapse waits.

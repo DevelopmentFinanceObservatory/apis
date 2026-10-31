@@ -513,30 +513,49 @@ class StoredFrame:
 
 
 def render_folds(options: MintOptions, plan: StoredRenderPlan) -> bool:
-    """Whether a render of `options` from a stored frame `plan` reads folds it: a groupby of a
-    frame it has not collapsed."""
+    """Whether a render of `options` from a stored frame `plan` reads may fold it: a groupby of
+    a frame it has not collapsed. This is conservative. Whether the groupby sums
+    (`render._probe_groupby_collapse`) reads the code axes of the `stat_var` cells and the
+    composite of the `provenance` cells of the frame's first chunk, and the record does not
+    bound either: nothing holds a frame's `stat_var` cells to the trace's
+    `resolved_stat_vars`. So a groupby that will collapse nothing still pays the fold's share of
+    the decode bound."""
     return options.groupby is not None and plan.frame_mode is not FrameMode.SUMMED
 
 
-def read_located_frame(
+def refuse_located_frame_past_decode_bound(
     location: StoredArtifactLocation,
     *,
-    read: Callable[[], bytes | None],
-    folds: bool,
+    options: MintOptions,
+    plan: StoredRenderPlan,
     deps: DefinitionDeps,
-) -> StoredFrame | None:
-    """The stored frame at `location`, its bytes read by `read`, or `None` when `read` finds
-    none. A frame1 document past `render.frame1_decode_max_bytes` for a render that `folds`
-    it or not refuses on its recorded size before it is read. The bytes are dropped once
-    decoded, so a render holds the frame alone.
+) -> None:
+    """Refuse a render of `options` from the frame1 document at `location` past
+    `render.frame1_decode_max_bytes`, by whether the render folds it (`render_folds`). Its
+    recorded size and `plan` decide it, so a caller makes it before it takes a materialise
+    permit, as `plan_stored_render` makes the refusals it decides.
 
     Raises:
         OverCeilingError: `bytes`, for a frame1 document past the bound.
-        StoredFrameUnreadable: The bytes do not read as a frame.
     """
     refuse_frame1_past_decode_bound(
-        location, fold_max_rows=deps.settings.groupby_fold_max_rows, folds=folds
+        location,
+        fold_max_rows=deps.settings.groupby_fold_max_rows,
+        folds=render_folds(options, plan),
     )
+
+
+def read_located_frame(
+    location: StoredArtifactLocation, *, read: Callable[[], bytes | None]
+) -> StoredFrame | None:
+    """The stored frame at `location`, its bytes read by `read`, or `None` when `read` finds
+    none. The caller has refused a frame1 document past the decode bound before its permit
+    (`refuse_located_frame_past_decode_bound`). The bytes are dropped once decoded, so a
+    render holds the frame alone.
+
+    Raises:
+        StoredFrameUnreadable: The bytes do not read as a frame.
+    """
     data = read()
     if data is None:
         return None
@@ -863,9 +882,7 @@ def _render_located_frame(
         except (ArtifactNotFoundError, ArtifactIntegrityError):
             return None
 
-    stored_frame = read_located_frame(
-        location, read=read, folds=render_folds(options, plan), deps=deps
-    )
+    stored_frame = read_located_frame(location, read=read)
     if stored_frame is None:
         return None
     return _render_frame(
@@ -907,7 +924,9 @@ def _render_stored_rendering(
     are not reentrant, and the caller took `coverage_snapshot` under it.
 
     Once a servable frame location exists, and before the permit and the frame read,
-    `plan_stored_render` makes every refusal the stored version decides. A version with no
+    `plan_stored_render` makes every refusal the stored version decides, and
+    `refuse_located_frame_past_decode_bound` refuses a frame1 document past the decode bound on
+    its recorded size. A version with no
     servable frame returns `None` before any plan, so its caller rebuilds as it would without
     the stored record's refusals. Whether a servable location's bytes are still in the store
     is known only by fetching them, so a refusal the plan makes also answers a version whose
@@ -958,6 +977,7 @@ def _render_stored_rendering(
     decided = planned(lambda: locations)
     if decided.frame_mode is None:
         return None
+    refuse_located_frame_past_decode_bound(location, options=options, plan=decided, deps=deps)
     # The frame loads whole, so the load and the render share the semaphore that bounds a
     # mint's materialisation.
     with bounded_materialise_slot(

@@ -461,16 +461,20 @@ def test_a_version_without_a_frame1_refuses_observations_unavailable():
 
 
 def test_a_frame1_document_past_the_decode_bound_refuses_before_it_is_read(frame_storage):
-    """A stored frame recorded at 300 MB is past the 216,600,000 bytes a read that decodes a
-    frame1 document alone may take, so the document refuses `over_ceiling` (`bytes`) unread.
-    A canonical frame's rows are bounded where they are read, so it serves."""
+    """A stored frame recorded at 250 MB is past the 216,600,000 bytes a read that decodes a
+    frame1 document alone may take, so the document refuses `over_ceiling` (`bytes`) unread, as
+    Presentation's frame store refuses it (`tests/presentation_store/test_frame_store.py`). Its
+    record decides that, so it refuses with the materialise permit held, where a wait for the
+    permit would refuse a retryable 503. A canonical frame's rows are bounded where they are
+    read, so it serves."""
     world = _standard_world()
     csv, frame = world.reader.locations[(_SPEC, _CV)]
-    world.reader.locations[(_SPEC, _CV)] = [csv, replace(frame, size_bytes=300_000_000)]
-
-    response = world.get()
+    world.reader.locations[(_SPEC, _CV)] = [csv, replace(frame, size_bytes=250_000_000)]
 
     if frame_storage == "frame1":
+        assert world.permits.acquire(timeout=0)
+        response = world.get()
+
         assert response.status_code == 422, response.text
         assert (response.json()["code"], response.json()["ceiling_kind"]) == (
             "over_ceiling",
@@ -478,7 +482,7 @@ def test_a_frame1_document_past_the_decode_bound_refuses_before_it_is_read(frame
         )
         assert frame.artifact_digest not in {digest for digest, _tier in world.store.gets}
     else:
-        assert response.status_code == 200, response.text
+        assert world.get().status_code == 200
 
 
 def test_a_groupby_collapse_refuses_observations_unavailable():

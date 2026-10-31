@@ -17,6 +17,7 @@ import pytest
 import rfc8785
 from dfo_frame_grammar.grammar import UnitRequest
 
+from artifact_store import LiveArtifactInventory
 from datasets_api import analysis_roots
 from datasets_api.analysis import AnalysisPending, RootRendering, RootRenderingUnreadable, SpecRoot
 from datasets_api.analysis_roots import (
@@ -35,10 +36,14 @@ from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
 from dfo_analysis_engine.frame_ref import FrameRef
 
-from ._deps_doubles import Unwired
+from ._deps_doubles import Unwired, closable_permits
+from ._frame_doubles import link_frame1_only
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
-from .test_definition_door_groupby_collapse import _hierarchical_code_index
+from .test_definition_door_groupby_collapse import (
+    _hierarchical_code_index,
+    _RenderableArtifactStore,
+)
 from .test_meta_doors import _operation
 from .test_refresh_door import (
     _GROUPBY,
@@ -190,6 +195,8 @@ def test_a_spec_root_is_one_serve_of_the_default_enrichment_of_its_version(
         lambda **_: SimpleNamespace(spec_id=_SPEC, identity=identity),
     )
     monkeypatch.setattr(analysis_roots, "serve_spec", serve)
+    # The stored frame a root reads is located as it resolves, which this test does not read.
+    monkeypatch.setattr(LiveRootSource, "_stored_frame", lambda _self, **_: None)
     roots = LiveRootSource(deps=Unwired("deps"), recipes=Unwired("recipes"))  # ty: ignore[invalid-argument-type]
 
     resolved = roots.resolve(SpecRoot(spec_id=_SPEC), latest=False, trace_id=None)
@@ -516,6 +523,51 @@ def test_a_live_root_s_recorded_rows_refuse_a_run_before_its_frame_is_read(
         "count": minted["coverage"]["rows"],
         "cap": 1,
     }
+
+
+def test_a_frame1_root_past_the_decode_bound_refuses_with_every_permit_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root stored as a frame1 document recorded at 250 MB is past the 216,600,000 bytes a
+    read that decodes it alone takes. The root resolves its stored frame before the run takes
+    its materialise permit, so the run refuses `over_ceiling` (`bytes`) with every permit held,
+    where a wait for one would refuse a retryable 503."""
+    permits = closable_permits(monkeypatch)
+    store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=store))
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        artifact_store=artifact_store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    minted = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)
+    digest = link_frame1_only(
+        store, artifact_store, subject_id=spec_id, content_version=minted["content_version"]
+    )
+    with store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (250_000_000, digest),
+        )
+    for held in permits:
+        held.closed = True
+    root = {"spec_id": spec_id, "content_version": minted["content_version"]}
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": {**root, "rendering": {"columns": []}}},
+    }
+
+    response = client.post("/api/datasets/analysis", json={"tree": tree})
+
+    assert response.status_code == 422, response.text
+    assert (response.json()["code"], response.json()["ceiling_kind"]) == ("over_ceiling", "bytes")
 
 
 @pytest.mark.parametrize(

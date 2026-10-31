@@ -47,6 +47,7 @@ from datasets_api.deps import Deps, DepsCell
 from datasets_api.derived import (
     DerivedFile,
     DerivedReads,
+    locate_derived_frame,
     manifest_body,
     read_derived_manifest,
     render_derived_file,
@@ -159,21 +160,19 @@ def derived_file[T](
     then: Callable[[DerivedFile], T],
 ) -> T:
     """What `then` makes of the derived frame's file in `options` (`derived.render_derived_file`),
-    rendered and handed over under one materialise permit, whose wait `deadline` bounds. Nothing
-    here binds the file, so the permit releases with its bytes freed once `then` keeps none."""
+    rendered and handed over under one materialise permit, whose wait `deadline` bounds. The
+    frame is located first (`derived.locate_derived_frame`), so the refusals its record decides
+    come before the permit. Nothing here binds the file, so the permit releases with its bytes
+    freed once `then` keeps none."""
+    reads = derived_reads(current)
+    source = locate_derived_frame(spec_id=id, content_version=content_version, reads=reads)
     with bounded_materialise_slot(
         current.materialise_semaphore,
         wait_seconds=current.settings.materialise_wait_seconds,
         deadline=deadline,
     ):
         return then(
-            render_derived_file(
-                spec_id=id,
-                content_version=content_version,
-                options=options,
-                reads=derived_reads(current),
-                site=current.settings.site,
-            )
+            render_derived_file(source, options=options, reads=reads, site=current.settings.site)
         )
 
 

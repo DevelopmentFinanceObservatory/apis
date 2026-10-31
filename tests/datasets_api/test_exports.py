@@ -1387,9 +1387,9 @@ def test_a_derived_file_is_rendered_and_stored_inside_one_slot_and_stays_there(
             inside = False
             held_at_release.append(len(held))
 
-    def rendered(**kwargs: Any) -> Any:
+    def rendered(*args: Any, **kwargs: Any) -> Any:
         steps.append(("render", inside))
-        file = render(**kwargs)
+        file = render(*args, **kwargs)
         tracked = _Bytes(file.data)
         held.add(id(tracked))
         return replace(file, data=tracked)

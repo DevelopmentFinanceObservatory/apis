@@ -312,10 +312,9 @@ def _load_series_reads(
     content_version: str,
 ) -> dict[SeriesKey, SeriesRead]:
     """Read the stored frame at `frame`, decode it and group its rows (`_series_reads`). The
-    caller holds a materialise permit and binds neither the bytes nor the decoded rows, so
-    both are freed when this returns, before the permit is released. A frame1 document past
-    `render.frame1_decode_max_bytes` refuses on its recorded size before it is read."""
-    refuse_frame1_past_decode_bound(frame, fold_max_rows=deps.settings.groupby_fold_max_rows)
+    caller refused a frame1 document past the decode bound before it took the materialise
+    permit it holds, and binds neither the bytes nor the decoded rows, so both are freed when
+    this returns, before the permit is released."""
     with phase("frame_load"):
         data = deps.artifact_store.get(artifact_digest=frame.artifact_digest, tier=Tier(frame.tier))
     with phase("frame_decode"):
@@ -422,6 +421,9 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 id=id, content_version=content_version, reason="holds no servable stored frame"
             )
         conversions = stored_series_conversions(facts)
+        # The recorded size decides it, so it refuses before the permit, which a refusal
+        # bound to come would otherwise wait on.
+        refuse_frame1_past_decode_bound(frame, fold_max_rows=deps.settings.groupby_fold_max_rows)
         try:
             with bounded_materialise_slot(
                 deps.materialise_semaphore, wait_seconds=deps.settings.materialise_wait_seconds

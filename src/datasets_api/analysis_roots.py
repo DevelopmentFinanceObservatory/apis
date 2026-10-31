@@ -63,7 +63,7 @@ from dfo_frame_grammar.grammar import (
 
 from artifact_store import Tier
 from artifact_store.errors import ArtifactNotFoundError
-from dataset_store.snapshot import select_servable_locations
+from dataset_store.snapshot import StoredArtifactLocation, select_servable_locations
 from datasets_api.analysis import (
     AnalysisPending,
     DatasetRoot,
@@ -183,9 +183,11 @@ def record_options(options: Mapping[str, Any], *, coverage: CoverageModel) -> di
 
 @dataclass(frozen=True, kw_only=True)
 class _Handle:
-    """What `read` reads: the frame-layout file, or the version's stored frame."""
+    """What `read` reads: the frame-layout file `artifact`, or with none the version's stored
+    frame at `frame`."""
 
     artifact: ArtifactEntryModel | None
+    frame: StoredArtifactLocation | None = None
 
 
 def _data_artifact(manifest: Manifest) -> ArtifactEntryModel | None:
@@ -375,8 +377,37 @@ class LiveRootSource:
             record=record,
             rendering=root_rendering(options),
             rows=manifest.coverage.rows,
-            source=_Handle(artifact=artifact),
+            source=_Handle(
+                artifact=artifact,
+                frame=(
+                    self._stored_frame(spec_id=spec_id, content_version=content_version)
+                    if artifact is None
+                    else None
+                ),
+            ),
         )
+
+    def _stored_frame(self, *, spec_id: str, content_version: str) -> StoredArtifactLocation:
+        """The servable stored frame of the version, located as the root resolves, outside the
+        run's materialise permit, so a frame1 document past `render.frame1_decode_max_bytes`
+        refuses on its recorded size before the run waits for the permit.
+
+        Raises:
+            RootExpired: The version has no servable stored frame.
+            OverCeilingError: `bytes`, for a frame1 document past the bound.
+        """
+        locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
+        location = stored_frame_location(select_servable_locations(locations, now=self._deps.now()))
+        if location is None:
+            raise RootExpired(
+                spec_id=spec_id,
+                content_version=content_version,
+                reason="its stored frame has expired",
+            )
+        refuse_frame1_past_decode_bound(
+            location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
+        )
+        return location
 
     def read(self, root: ResolvedRoot) -> Frame:
         handle = root.source
@@ -393,17 +424,8 @@ class LiveRootSource:
                     spec_id=spec_id, content_version=content_version, reason="its file is gone"
                 ) from None
             return frame_from_frame_layout(data)
-        locations = self._deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
-        location = stored_frame_location(select_servable_locations(locations, now=self._deps.now()))
-        if location is None:
-            raise RootExpired(
-                spec_id=spec_id,
-                content_version=content_version,
-                reason="its stored frame has expired",
-            )
-        refuse_frame1_past_decode_bound(
-            location, fold_max_rows=self._deps.settings.groupby_fold_max_rows
-        )
+        location = handle.frame
+        assert location is not None, "a root with no frame-layout file resolves its stored frame"
         try:
             data = store.get(artifact_digest=location.artifact_digest, tier=Tier(location.tier))
         except ArtifactNotFoundError:

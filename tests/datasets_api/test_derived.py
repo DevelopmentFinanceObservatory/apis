@@ -40,6 +40,8 @@ from ._analysis_doubles import (
     step,
 )
 from ._app_factories import make_client
+from ._deps_doubles import closable_permits
+from ._frame_doubles import link_frame1_only
 from ._render_inputs import SITE
 from .conftest import FakeDatasetStore
 
@@ -293,6 +295,37 @@ def test_a_frame_stored_without_its_file_links_the_file_its_first_read_stores(
     assert "sha256:" + hashlib.sha256(response.content).hexdigest() == digest
     linked = frame_file_location(_locations(stores, member), site=SITE)
     assert linked is not None and linked.artifact_digest == digest
+
+
+def test_a_frame1_file_past_the_decode_bound_refuses_with_every_permit_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A derived frame stored as a frame1 document recorded at 250 MB is past the 216,600,000
+    bytes a read that decodes it alone takes. Its record decides that, so the file route
+    refuses `over_ceiling` (`bytes`) with every materialise permit held, where a wait for one
+    would refuse a retryable 503."""
+    permits = closable_permits(monkeypatch)
+    stores = Stores()
+    member = _stored(stores)
+    digest = link_frame1_only(
+        stores.store,
+        stores.artifact_store,
+        subject_id=member["spec"]["spec_id"],
+        content_version=member["content_version"],
+    )
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_inventory SET size_bytes = %s WHERE artifact_digest = %s",
+            (250_000_000, digest),
+        )
+
+    with _client(stores, monkeypatch) as client:
+        for held in permits:
+            held.closed = True
+        response = client.get(_path(member, "/file?format=csv&bundle=false"))
+
+    assert response.status_code == 422, response.text
+    assert (response.json()["code"], response.json()["ceiling_kind"]) == ("over_ceiling", "bytes")
 
 
 def test_an_unknown_frame_refuses_snapshot_not_found(monkeypatch: pytest.MonkeyPatch) -> None:

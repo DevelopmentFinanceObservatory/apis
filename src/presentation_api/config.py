@@ -12,7 +12,7 @@ import os
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from datasets_api.config import DatasetsSettings
+from datasets_api.config import DEFAULT_GROUPBY_FOLD_MAX_ROWS, DatasetsSettings
 from dfo_platform.config import env_validation_error_message
 
 __all__ = [
@@ -75,7 +75,9 @@ class PresentationSettings(BaseModel):
     `graph_token` is the exception: it is read here, under the same
     `DATASETS_GRAPH_TOKEN` env var `datasets_api.config.DatasetsBuildSettings`
     reads, so this surface's `OriginGraphClient` construction reads it
-    from `PresentationSettings` alone. Nothing below the presentation
+    from `PresentationSettings` alone. `groupby_fold_max_rows` is read the
+    same way, under `DATASETS_GROUPBY_FOLD_MAX_ROWS`, so the frame store bounds
+    a frame1 document as Datasets does. Nothing below the presentation
     lifespan reads the environment directly.
     """
 
@@ -83,10 +85,14 @@ class PresentationSettings(BaseModel):
 
     datasets: DatasetsSettings
     graph_token: str
+    groupby_fold_max_rows: int = Field(default=DEFAULT_GROUPBY_FOLD_MAX_ROWS, ge=1)
 
     @classmethod
     def from_env(cls) -> PresentationSettings:
         return cls(
             datasets=DatasetsSettings.from_env(),
             graph_token=os.environ.get("DATASETS_GRAPH_TOKEN", ""),
+            groupby_fold_max_rows=os.environ.get(
+                "DATASETS_GROUPBY_FOLD_MAX_ROWS", DEFAULT_GROUPBY_FOLD_MAX_ROWS
+            ),
         )

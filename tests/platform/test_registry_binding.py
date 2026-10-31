@@ -3,13 +3,12 @@ Graph, Skills, and the platform. Served codes come from each contract's doors an
 including warning and no-data channels. Platform catch-all codes stay under `platform`. Request
 validation codes stay with the contract whose request model determines them.
 
-The contract-wide comparison misses a code served at the wrong endpoint or status, as when the
-publish door emitted `identity_collision` (409) and `pin_not_permitted` (403), which other Datasets
-endpoints already registered, or when the observations door refused `over_ceiling` on an endpoint
-that did not map it, which answered 500. The per-endpoint check compares `(code, status)` on every
-Datasets and Presentation endpoint: each exemplar of a type a door declares, classified with the
-endpoint bound, against the endpoint's registry mappings. Shared Search observation warnings must
-list every resolve door. A mismatch fails in either direction.
+The per-endpoint check compares `(code, status)` on every Datasets and Presentation endpoint a
+door binds: each exemplar of a type a door declares for the endpoint, classified with the
+endpoint bound as a request binds it, against the endpoint's registry mappings, so a code served
+at an endpoint or status the registry does not map fails, and so does a mapping no exemplar
+serves. Every declared type has an exemplar of exactly that type. Shared Search observation
+warnings must list every resolve door.
 """
 
 from __future__ import annotations
@@ -39,6 +38,7 @@ from datasets_api.doors.definition import ROUTE_EXCEPTION_TYPES
 from dfo_platform import ProblemSpec
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution
+from dfo_platform.problem import Refusal
 from presentation_api.app import presentation_surface
 from presentation_api.doors.components import build_components_door
 from presentation_api.doors.frames import build_frames_door
@@ -224,6 +224,26 @@ _REGISTERED_NOT_RAISED: dict[str, frozenset[tuple[str, int]]] = {
 }
 
 
+# A declared type a door never raises bare, so it has no exemplar of its own: the mint declares
+# `Refusal`, the base of every refusal, so the surface handles each subclass, and each subclass
+# the mint raises has its exemplar.
+_DECLARED_WITHOUT_EXEMPLAR: frozenset[tuple[str, type[BaseException]]] = frozenset(
+    {("datasets.mint", Refusal)}
+)
+
+
+def _declared_types(door: DoorContribution) -> dict[str, tuple[type[BaseException], ...]]:
+    """The exception types each endpoint `door` binds can raise: the door's own, or for a door
+    that binds several endpoints, the per-route table it builds them from."""
+    endpoints = set(door.registry_endpoints.values())
+    if len(endpoints) == 1:
+        return dict.fromkeys(endpoints, door.exception_types)
+    assert endpoints <= set(ROUTE_EXCEPTION_TYPES), (
+        f"door binding {sorted(endpoints)} declares no exception types per endpoint"
+    )
+    return {endpoint: ROUTE_EXCEPTION_TYPES[endpoint] for endpoint in endpoints}
+
+
 def _door_exemplars(
     door: DoorContribution, *, pool: tuple[BaseException, ...]
 ) -> dict[str, tuple[BaseException, ...]]:
@@ -231,28 +251,28 @@ def _door_exemplars(
     declares for that endpoint, since a door may declare a type it shares and leave the exemplar
     to the door that owns it. A door that binds several endpoints declares their types per route,
     and its own exemplars count where their type is declared."""
-    endpoints = set(door.registry_endpoints.values())
-    if len(endpoints) == 1:
-        declared = door.exception_types
-        pooled = tuple(ex for ex in pool if type(ex) in declared)
-        return dict.fromkeys(endpoints, (*door.exception_exemplars, *pooled))
-    assert endpoints <= set(ROUTE_EXCEPTION_TYPES), (
-        f"door binding {sorted(endpoints)} declares no exception types per endpoint"
-    )
+    declared_by_endpoint = _declared_types(door)
+    single = len(declared_by_endpoint) == 1
     return {
         endpoint: (
-            *(ex for ex in door.exception_exemplars if isinstance(ex, declared)),
+            *(ex for ex in door.exception_exemplars if single or isinstance(ex, declared)),
             *(ex for ex in pool if type(ex) in declared),
         )
-        for endpoint, declared in ((e, ROUTE_EXCEPTION_TYPES[e]) for e in endpoints)
+        for endpoint, declared in declared_by_endpoint.items()
     }
 
 
 @pytest.fixture(scope="module")
-def datasets_exemplars() -> dict[str, tuple[BaseException, ...]]:
-    """Per Datasets endpoint, the exemplars of every door that binds it (`_door_exemplars`)."""
+def datasets_built() -> tuple[tuple[DoorContribution, ...], tuple[BaseException, ...]]:
+    """Every Datasets door, and every exemplar they declare."""
     doors = datasets_doors(deps=DepsCell(), settings=DatasetsBuildSettings.from_env())
-    pool = tuple(exemplar for door in doors for exemplar in door.exception_exemplars)
+    return doors, tuple(exemplar for door in doors for exemplar in door.exception_exemplars)
+
+
+@pytest.fixture(scope="module")
+def datasets_exemplars(datasets_built) -> dict[str, tuple[BaseException, ...]]:
+    """Per Datasets endpoint, the exemplars of every door that binds it (`_door_exemplars`)."""
+    doors, pool = datasets_built
     by_endpoint: dict[str, tuple[BaseException, ...]] = {}
     for door in doors:
         for endpoint, exemplars in _door_exemplars(door, pool=pool).items():
@@ -261,10 +281,10 @@ def datasets_exemplars() -> dict[str, tuple[BaseException, ...]]:
 
 
 @pytest.fixture(scope="module")
-def presentation_exemplars() -> tuple[
-    dict[str, tuple[BaseException, ...]], Callable[[BaseException], ProblemSpec | None]
+def presentation_built() -> tuple[
+    tuple[DoorContribution, ...], Callable[[BaseException], ProblemSpec | None]
 ]:
-    """Per Presentation endpoint, the exemplars its door declares, and the surface's classifier."""
+    """The Presentation doors that bind an endpoint, and the surface's classifier."""
     release_registry = FakeReleaseRegistry()
     reads = build_door_executor(1, "test-registry-binding", surface="presentation")
     doors = (
@@ -272,12 +292,57 @@ def presentation_exemplars() -> tuple[
         build_frames_door(bare_reads=reads),
         build_shares_door(release_registry=release_registry),
     )
+    return doors, presentation_surface(release_registry=release_registry).classify
+
+
+@pytest.fixture(scope="module")
+def presentation_exemplars(
+    presentation_built,
+) -> tuple[dict[str, tuple[BaseException, ...]], Callable[[BaseException], ProblemSpec | None]]:
+    """Per Presentation endpoint, the exemplars its door declares, and the surface's classifier."""
+    doors, classify = presentation_built
     exemplars = {
         endpoint: tuple(declared)
         for door in doors
         for endpoint, declared in door.endpoint_exemplars.items()
     }
-    return exemplars, presentation_surface(release_registry=release_registry).classify
+    return exemplars, classify
+
+
+def test_every_declared_type_has_an_exemplar_of_exactly_that_type(
+    datasets_built, presentation_built
+):
+    """A declared type with no exemplar of its own leaves the bijection below nothing to classify
+    for it, so each has one, among the exemplars the endpoint's doors declare, apart from
+    `_DECLARED_WITHOUT_EXEMPLAR`."""
+    datasets_doors_, pool = datasets_built
+    presentation_doors, _classify = presentation_built
+    declared = [
+        (endpoint, exc_type, exemplars)
+        for door in datasets_doors_
+        for (endpoint, types), exemplars in zip(
+            _declared_types(door).items(), _door_exemplars(door, pool=pool).values(), strict=True
+        )
+        for exc_type in types
+    ] + [
+        # A Presentation door declares its types for all its endpoints together.
+        (
+            ",".join(sorted(door.endpoint_exemplars)),
+            exc_type,
+            tuple(exemplar for group in door.endpoint_exemplars.values() for exemplar in group),
+        )
+        for door in presentation_doors
+        for exc_type in door.exception_types
+    ]
+    assert declared
+    missing = {
+        (endpoint, exc_type)
+        for endpoint, exc_type, exemplars in declared
+        if not any(type(exemplar) is exc_type for exemplar in exemplars)
+    }
+    assert sorted((e, t.__qualname__) for e, t in missing) == sorted(
+        (e, t.__qualname__) for e, t in _DECLARED_WITHOUT_EXEMPLAR
+    )
 
 
 def _served_status_codes(
