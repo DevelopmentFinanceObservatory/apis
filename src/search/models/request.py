@@ -254,7 +254,10 @@ class ParsedEntity(StrictModel):
             "is honoured for a continent or subregion that the membership policy holds or "
             "omits, whatever the node's graph type, and refuses request_invalid "
             "for a group's own node, whose members a pin cannot supply. One part names a "
-            "set once: the same entity posted with both values refuses request_invalid"
+            "set once on each flow end its `role_text` gives, so one entity can be asked for "
+            "as its members on one end and whole on the other; the same entity posted with "
+            "both values on one end, or with both values and a row with no recognised "
+            "`role_text`, refuses request_invalid"
         ),
     )
 

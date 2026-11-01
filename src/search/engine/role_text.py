@@ -672,9 +672,27 @@ class DoorRole:
     axis (`debt_axes`) or a receipt axis (`receipt_axes`). On raw text, any other direction is stated when the extractor's
     validated cue (`ExtractedEntity.role_span`) attaches to the place, as a cue before it
     or a verb after it (`raw_text._cue_states_direction`). A possessive, "of" or a national
-    adjective reads the direction off the measure, so it states none.
+    adjective reads the direction off the measure, so it states none. ``members`` is
+    whether the occurrence asks for the members of the set the name names
+    (`ExtractedEntity.members`, `ParsedEntity.members`), on its own end alone
+    (`asks_members`).
     """
 
     axis: RoleAxis
     span: str
     stated: bool = True
+    members: bool = False
+
+
+def asks_members(roles: Sequence[DoorRole], axis: RoleAxis | None, *, asked: bool) -> bool:
+    """Whether a name whose directed occurrences are `roles` asks for its set's members on
+    the `axis` end, where `asked` is whether any occurrence of the name asks for them
+    (`ResolveState.member_entities`).
+
+    An occurrence that asks for the members asks on its own end, so one name can read a
+    place as its members on one end and whole on the other. A name no directed occurrence
+    asks the members of, whose ask came with no end, asks them on every end it has.
+    """
+    if not any(role.members for role in roles):
+        return asked
+    return any(role.members and role.axis == axis for role in roles)
