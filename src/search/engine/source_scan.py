@@ -81,12 +81,10 @@ _SOURCE_CUES: tuple[tuple[str, ...], ...] = (
     ("as", "reported", "to"),
     ("reported", "to"),
     ("as", "published", "by"),
-    ("per", "the"),
     ("selon",),
     ("según",),
 )
-"""The word runs that, just before an organisation, make it the source of the numbers. "per"
-counts only with "the": "ODA per DAC member" divides by members."""
+"""The word runs that, just before an organisation, make it the source of the numbers."""
 
 _DATA_WORDS = frozenset(
     {"data", "dataset", "database", "estimates", "figures", "numbers", "series", "statistics"}

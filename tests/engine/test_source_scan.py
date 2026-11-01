@@ -76,7 +76,7 @@ _SCANS = [
     ),
     ("ODA from DAC countries", ["ODA"], ["DAC countries"], [[]]),
     # An organisation that is an entity or lies in a measure's words is a party, unless a
-    # data word follows it or a source cue ("according to", "reported to", "per the")
+    # data word follows it or a source cue ("according to", "reported to")
     # precedes it.
     ("Ghana debt service to the World Bank", ["debt service"], ["Ghana", "World Bank"], [[]]),
     (
@@ -94,8 +94,9 @@ _SCANS = [
         [[_in("OECD")]],
     ),
     ("GDP of Kenya according to the IMF", ["GDP"], ["Kenya", "IMF"], [[_in("IMF")]]),
-    ("Germany ODA per the DAC", ["ODA"], ["Germany", "DAC"], [[_in("DAC")]]),
+    ("Germany ODA per the DAC", ["ODA"], ["Germany", "DAC"], [[]]),
     ("ODA per DAC member", ["ODA"], ["DAC"], [[]]),
+    ("ODA per the OECD member", ["ODA"], ["OECD"], [[]]),
     ("ODA to Kenya reported to the DAC", ["ODA"], ["Kenya", "DAC"], [[_in("DAC")]]),
     ("ODA from Germany as published by the DAC", ["ODA"], ["Germany", "DAC"], [[_in("DAC")]]),
     ("IMF GDP current prices Kenya", ["GDP"], ["Kenya"], [[_in("IMF")]]),
@@ -420,7 +421,7 @@ _SOURCE_PHRASE_ROWS = [
         "as reported to the DAC",
         True,
     ),
-    ("Germany total ODA per the DAC", "total ODA", "Germany", "per the DAC", True),
+    ("Germany total ODA per the DAC", "total ODA", "Germany", "per the DAC", False),
     (
         "Germany total ODA, as published by the DAC",
         "total ODA",
