@@ -573,13 +573,14 @@ def with_composite_answer(
     """`region` answering `spec`, the composite its definite answer was restated as
     (`scope.composite.assemble_composite`). Its trailing slot options, place options and
     observation preview read the one table the region resolved, under that answer's spec_id,
-    so a task already launched is cancelled and the composite carries no slot or place
-    options. Its preview is read per component by `observations_relaunch`
-    (`composite_answer.CompositeRelaunch`), which the caller launches on the
-    event loop where the request streams observations (`enrichment._launch_trailing_tasks`)."""
-    for task in (region.slot_options_task, region.place_options_task, region.observations_task):
-        if task is not None:
-            task.cancel()
+    so the composite carries none of their tasks and no slot or place options. Its preview
+    is read per component by `observations_relaunch` (`composite_answer.CompositeRelaunch`),
+    which the caller launches on the event loop where the request streams observations
+    (`enrichment._launch_trailing_tasks`).
+
+    The restatement touches no task, so it runs on any thread. A task `region` held belongs
+    to the request's event loop, and the caller cancels it there
+    (`cancel_dropped_tasks`)."""
     return dataclasses.replace(
         region,
         specs=(spec, *region.specs[1:]),
@@ -590,6 +591,16 @@ def with_composite_answer(
         observations_task=None,
         observations_relaunch=observations_relaunch,
     )
+
+
+def cancel_dropped_tasks(before: RegionResult, after: RegionResult) -> None:
+    """Cancel each trailing task `before` holds that `after`, its restatement, does not
+    (`with_composite_answer`). `Task.cancel` is not thread-safe, so the caller runs this on
+    the event loop the tasks belong to."""
+    held = (after.slot_options_task, after.place_options_task, after.observations_task)
+    for task in (before.slot_options_task, before.place_options_task, before.observations_task):
+        if task is not None and all(task is not kept for kept in held):
+            task.cancel()
 
 
 def with_runnable_operations(region: RegionResult, operations: Sequence[Operation]) -> RegionResult:

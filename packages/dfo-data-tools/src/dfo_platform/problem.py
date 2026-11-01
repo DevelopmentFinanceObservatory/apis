@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Annotated, NamedTuple
 
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.codes import CodeCatalogue, registered_status
 from dfo_platform.trace import get_trace_id
 
@@ -219,11 +220,13 @@ class ProblemSpec(NamedTuple):
     cap: int | None = None
     headers: Mapping[str, str] | None = None
     # What `log_problem` logs for a refusal a surface's classifier or admission check returns,
-    # so both stay pure, with the classified exception's traceback when `log_traceback`. None
-    # reaches the wire or `to_canonical_data`.
+    # so both stay pure, with the classified exception's traceback when `log_traceback`, and
+    # `log_event` as the line's `event` field, which a log metric matches whatever logger
+    # writes the line. None reaches the wire or `to_canonical_data`.
     log: str | None = None
     log_level: int = logging.ERROR
     log_traceback: bool = False
+    log_event: str | None = None
 
     def to_canonical_data(self) -> dict[str, object]:
         """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes."""
@@ -262,9 +265,13 @@ class ProblemSpec(NamedTuple):
         return _PROBLEM_SPEC_ADAPTER.validate_python(data)
 
 
+_LOG_FIELDS = frozenset({"log", "log_level", "log_traceback", "log_event"})
+"""The `ProblemSpec` fields `log_problem` reads, which `to_canonical_data` leaves out."""
+
+
 def _without_log_fields(data: object) -> object:
     """`data`, refused if it names a field `to_canonical_data` does not write."""
-    if isinstance(data, Mapping) and data.keys() & {"log", "log_level", "log_traceback"}:
+    if isinstance(data, Mapping) and data.keys() & _LOG_FIELDS:
         raise ValueError("canonical problem data holds no log fields")
     return data
 
@@ -295,6 +302,7 @@ def refused(
     log: str | None = None,
     log_level: int = logging.ERROR,
     log_traceback: bool = False,
+    log_event: str | None = None,
 ) -> ProblemSpec:
     """`code`'s problem at the status the code registry gives it on the bound endpoint, so a
     classifier cannot state one apart from the other.
@@ -317,6 +325,7 @@ def refused(
         log=log,
         log_level=log_level,
         log_traceback=log_traceback,
+        log_event=log_event,
     )
 
 
@@ -328,16 +337,17 @@ def log_problem(
     context: str | None,
 ) -> None:
     """Log the line `spec` names (`ProblemSpec.log`) at its level, after `context` when one is
-    given, with `exc`'s traceback when `spec.log_traceback`. A spec naming no line logs
-    nothing. The request path calls this once per classified request, and a reader that
+    given, with `exc`'s traceback when `spec.log_traceback` and `spec.log_event` as its
+    `event` field when it names one. A spec naming no line logs nothing. The request path calls this once per classified request, and a reader that
     classifies outside a request calls it itself."""
     if spec.log is None:
         return
     exc_info = exc if spec.log_traceback else None
+    extra = None if spec.log_event is None else {JSON_FIELDS_ATTR: {"event": spec.log_event}}
     if context is None:
-        logger.log(spec.log_level, "%s", spec.log, exc_info=exc_info)
+        logger.log(spec.log_level, "%s", spec.log, exc_info=exc_info, extra=extra)
     else:
-        logger.log(spec.log_level, "%s: %s", context, spec.log, exc_info=exc_info)
+        logger.log(spec.log_level, "%s: %s", context, spec.log, exc_info=exc_info, extra=extra)
 
 
 class Refusal(Exception):

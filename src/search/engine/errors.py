@@ -59,6 +59,11 @@ class EngineInfraError(Exception):
     """
 
 
+ENGINE_INFRA_ERROR_EVENT = "search_engine_infra_error"
+"""The `event` field of the ERROR line a refused `EngineInfraError` logs, on the JSON routes
+and the stream alike. The apis stack's `search_engine_infra_error` log metric matches it."""
+
+
 RATE_TABLE_REFUSALS = (
     RateTableInvalidError,
     UpstreamVersionChangedError,
@@ -118,7 +123,11 @@ def classify_refusal(exc: BaseException) -> ProblemSpec | None:
             if client_side
             else ProblemSpec(status=503, code="service_unavailable", retryable=True)
         )
-        return problem._replace(log=f"Engine infrastructure error: {exc}", log_traceback=True)
+        return problem._replace(
+            log=f"Engine infrastructure error: {exc}",
+            log_traceback=True,
+            log_event=ENGINE_INFRA_ERROR_EVENT,
+        )
     if isinstance(exc, RequestValidationError):
         # The platform maps body errors to 400 and schema-version errors to 422. Search adds
         # a field-specific refinement below.
