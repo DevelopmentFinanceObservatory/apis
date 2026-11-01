@@ -90,6 +90,7 @@ from artifact_store import (
     StoredArtifact,
     Tier,
 )
+from artifact_store.errors import ArtifactIntegrityError
 from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
@@ -130,12 +131,13 @@ from datasets_api.manifest_models import (
     CitationModel,
     CitationSource,
     Manifest,
+    PartyTotalsLeftOutModel,
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.party_totals import CutFrame, cut_frame, cut_party_totals, open_party_roles
 from datasets_api.query_options import QueryOptionsInvalid
-from datasets_api.store_errors import read_stored_frame
+from datasets_api.store_errors import StoredFrameUnreadable, read_stored_frame
 from datasets_api.timings import phase
 from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import (
@@ -151,6 +153,7 @@ from datasets_api.versions import (
 )
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
@@ -178,7 +181,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, is_party_role
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup
 from materialise.errors import OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -209,11 +212,11 @@ from materialise.groupby_columnar import (
 )
 from materialise.profile import OutputProfile, PivotFeasibility
 from materialise.projection import (
-    KIND_SUFFIX,
     LongProjection,
     PriceBasis,
     UnitNaming,
     axis_source_column,
+    long_layout_written_tokens,
     long_output_selection,
     period_grain,
     plan_long_projection,
@@ -335,7 +338,7 @@ class DerivedVersion:
     frame_sha256: str
     content_version: str
     summed: bool
-    party_totals_left_out: tuple[dict[str, object], ...]
+    party_totals_left_out: tuple[PartyTotalsLeftOutModel, ...]
 
 
 class FrameMode(StrEnum):
@@ -1718,19 +1721,11 @@ def _long_output_tokens(
 ) -> tuple[list[str], tuple[str, ...]]:
     """The `options.columns` tokens a long output parses, and the roles whose name or kind the
     list asked for. Long output writes `status` nowhere, and writes each role's `<role>_label`
-    and each party role's `<role>_kind` by default (`materialise.projection`), so those tokens
-    are dropped. `<role>_kind` reads every party field (`PARTY_FIELDS`), so their tokens, bare
-    or qualified, are dropped too. A list that selects keeps each named role's entity column,
-    which its name and kind sit beside."""
-    party_roles = [role for role in entity_columns if is_party_role(role)]
-    defaults = {
-        f"{role}_label": role for role in entity_columns if f"{role}_label" not in table_columns
-    } | {
-        column: role
-        for role in party_roles
-        for suffix in (KIND_SUFFIX, *(f"_{field}" for field in PARTY_FIELDS))
-        if (column := f"{role}{suffix}") not in table_columns
-    }
+    and each party role's `<role>_kind` by default, and `<role>_kind` reads every party field
+    (`PARTY_FIELDS`), so those tokens (`long_layout_written_tokens`) and the bare party field
+    tokens are dropped. A list that selects keeps each named role's entity column, which its
+    name and kind sit beside."""
+    defaults = long_layout_written_tokens(entity_columns, table_columns=table_columns)
     dropped = {_STATUS_COLUMN, *(field for field in PARTY_FIELDS if field not in table_columns)}
     tokens = [token for token in columns if token not in dropped and token not in defaults]
     named_roles = tuple(dict.fromkeys(defaults[t] for t in columns if t in defaults))
@@ -3492,14 +3487,18 @@ def linked_stored_frame(
     locations: Sequence[StoredArtifactLocation], *, artifact_store: ArtifactStore, now: datetime
 ) -> Frame | None:
     """The version's stored frame read from `artifact_store` at the first of its links
-    `locations` whose object a tier still holds, or `None` when none does. Its servable
-    locations come first, then those past retention, whose objects may outlive it; within each,
-    its canonical frame comes before its frame1 document (`stored_frame_location`). It applies
-    no decode bound, so a caller reads only a frame its writer bounded.
+    `locations` whose object a tier still holds and reads as a frame, or `None` when no tier
+    holds one. Its servable locations come first, then those past retention, whose objects may
+    outlive it; within each, its canonical frame comes before its frame1 document
+    (`stored_frame_location`). An object that does not hash to its digest is passed over as a
+    missing one is, as the stored-frame reads in `current` do, and so is one that does not
+    decode; each such copy logs a WARNING (`STORED_FRAME_COPY_PASSED_OVER`). It applies no
+    decode bound, so a caller reads only a frame its writer bounded.
 
     Raises:
-        StoredFrameUnreadable: The bytes do not decode as a stored frame.
+        StoredFrameUnreadable: A copy does not decode as a stored frame and no later copy reads.
     """
+    unreadable: StoredFrameUnreadable | None = None
     servable = select_servable_locations(locations, now=now)
     aged_out = [link for link in locations if link not in servable]
     for group in (servable, aged_out):
@@ -3519,8 +3518,47 @@ def linked_stored_frame(
                 )
             except ArtifactNotFoundError:
                 continue
-            return read_stored_frame(data, media_type=link.media_type, digest=link.artifact_digest)
+            except ArtifactIntegrityError as exc:
+                _log_passed_over(link, reason="integrity", computed_digest=exc.computed_digest)
+                continue
+            try:
+                return read_stored_frame(
+                    data, media_type=link.media_type, digest=link.artifact_digest
+                )
+            except StoredFrameUnreadable as exc:
+                _log_passed_over(link, reason="undecodable", computed_digest=None)
+                unreadable = exc
+    if unreadable is not None:
+        raise unreadable
     return None
+
+
+STORED_FRAME_COPY_PASSED_OVER = "datasets_stored_frame_copy_passed_over"
+"""The event of the WARNING `linked_stored_frame` logs for each stored frame copy it passes over,
+so storage corruption a later copy hides still shows."""
+
+
+def _log_passed_over(
+    link: StoredArtifactLocation, *, reason: str, computed_digest: str | None
+) -> None:
+    """Log `link` as a stored frame copy `linked_stored_frame` passed over: `reason` is
+    `integrity` for an object that does not hash to its digest, with the digest it hashes to,
+    or `undecodable` for one that does not decode as a frame."""
+    logger.warning(
+        "stored frame copy passed over artifact_digest=%s tier=%s reason=%s",
+        link.artifact_digest,
+        link.tier,
+        reason,
+        extra={
+            JSON_FIELDS_ATTR: {
+                "event": STORED_FRAME_COPY_PASSED_OVER,
+                "artifact_digest": link.artifact_digest,
+                "tier": link.tier,
+                "reason": reason,
+                "computed_digest": computed_digest,
+            }
+        },
+    )
 
 
 STATISTICS_MEDIA_TYPE = "application/vnd.apache.parquet"

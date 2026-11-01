@@ -52,9 +52,9 @@ def citation_line(
 
     A version whose figures the DFO passes through unchanged reads "OECD Creditor Reporting
     System (2026), via the Development Finance Observatory". A version whose figures the DFO
-    changed (`processed`), such as a computed version naming its inputs as `sources`, reads
-    "Gross ODA disbursements and Gross national income (2026), processed by the Development
-    Finance Observatory". With no sources the line reads "Development Finance Observatory
+    changed (`processed`), such as a computed version naming the sources its inputs credit,
+    reads "OECD Creditor Reporting System and World Development Indicators (2026), processed
+    by the Development Finance Observatory". With no sources the line reads "Development Finance Observatory
     (2026)". A line longer than `MAX_CITE_TEXT_LENGTH` is clipped to it, ending in "…".
     """
     if not sources:
@@ -94,8 +94,10 @@ def cite(
     which has none, the name its steps derive (`title`, when `composed`); else `title` with a
     gap. Then the citation line, naming `sources` where given and else the version's, routed
     through the DFO as the steps known to have made the cited result decide
-    (`figures_processed`): the version's, then a card's own `steps`. Then the version's
-    identity and retrieval date; the link to its data; and a computed version's inputs."""
+    (`figures_processed`): the version's, then a card's own `steps`. A computed version's line
+    names `sources`, the sources its inputs credit, and its inputs where none are given. Then
+    the version's identity and retrieval date; the link to its data; and a computed version's
+    inputs."""
     prepared = record.evidence.prepared
     cited = record.evidence.title
     if cited is None and record.computed is not None and composed:
@@ -109,7 +111,11 @@ def cite(
             for n, version in enumerate(record.computed.inputs)
         ]
         block["text"] = citation_line(
-            retrieved=prepared, sources=[item["label"] for item in inputs], processed=True
+            retrieved=prepared,
+            sources=[source_name(source, words) for source in sources]
+            if sources
+            else [item["label"] for item in inputs],
+            processed=True,
         )
     else:
         inputs = None

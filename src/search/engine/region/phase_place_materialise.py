@@ -762,6 +762,7 @@ def _install_shape(
     state.elected_index = index
     state.bindings = with_where(bindings, place)
     state.place = place
+    state.places_bound = True
     state.unsettled_place = unsettled
     install_place_warnings(state.warnings, place, departure_facts=state.departure_facts)
 

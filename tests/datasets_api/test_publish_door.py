@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -48,11 +49,14 @@ from datasets_api.publish_models import (
 )
 from datasets_api.render import (
     CANONICAL_FRAME_RENDERING,
+    STORED_FRAME_COPY_PASSED_OVER,
     frame_file_rendering,
     render_and_store_canonical_frame,
 )
+from datasets_api.store_errors import StoredFrameUnreadable
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, NullVersionRecordWriter, VersionRecord
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from materialise.errors import OverCeilingError
 from materialise.formats import (
     CANONICAL_FRAME_MEDIA_TYPE,
@@ -256,9 +260,9 @@ def _record_stored_pair(
     media_type: str,
     rendering: dict[str, object],
     frame_sha256: str | None = None,
-) -> None:
+) -> str:
     """Record the pair holding `data` as its only stored frame, with `frame_sha256` as the
-    frame hash on its record."""
+    frame hash on its record, and return the frame's digest."""
     stored = deps.artifact_store.put(data, tier=Tier.working)
     deps.version_writer.record_version(
         VersionRecord(
@@ -275,6 +279,7 @@ def _record_stored_pair(
             frame_sha256=frame_sha256,
         )
     )
+    return stored.digest
 
 
 class _BytesSink:
@@ -370,6 +375,87 @@ def test_a_hashless_pair_past_retention_matches_by_reading_its_held_frame(deps: 
 
     assert repeat.created is False
     assert counting.reads > 0
+
+
+@pytest.mark.parametrize("unreadable", ["corrupt-pinned-object", "undecodable-canonical-frame"])
+def test_a_hashless_pair_passes_over_an_unreadable_copy_to_one_that_reads(
+    deps: _Deps, unreadable: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A hashless pair's frame is read from the first linked copy that reads: past a servable
+    pinned object that does not hash to its digest, or past a canonical frame that does not
+    decode, to the frame1 document. Each copy passed over logs a WARNING naming it."""
+    digest = _record_stored_pair(
+        deps,
+        data=partial_frame1_document(_frame1_document(1.0)),
+        media_type=FRAME1_MEDIA_TYPE,
+        rendering={"format": "frame1"},
+    )
+    if unreadable == "corrupt-pinned-object":
+        deps.artifact_store.copy(digest, from_tier=Tier.working, to_tier=Tier.pinned)
+        pinned = deps.artifact_store._client.buckets["pinned-bucket"].objects
+        for name in pinned:
+            pinned[name] = b"{not a frame1 document"
+    else:
+        undecodable = deps.artifact_store.put(b"not a parquet file", tier=Tier.working)
+        deps.version_writer.record_artifact(
+            subject_id=_SPEC_ID,
+            content_version=_CONTENT_VERSION,
+            artifact=ArtifactRecord(
+                artifact_digest=undecodable.digest,
+                rendering=dict(CANONICAL_FRAME_RENDERING),
+                media_type=CANONICAL_FRAME_MEDIA_TYPE,
+            ),
+        )
+
+    with caplog.at_level(logging.WARNING, logger="datasets_api.render"):
+        repeat = deps.publish(rows=_rows(1.0))
+
+    assert repeat.created is False
+    (passed_over,) = _passed_over(caplog)
+    if unreadable == "corrupt-pinned-object":
+        assert passed_over["artifact_digest"] == digest
+        assert (passed_over["tier"], passed_over["reason"]) == ("pinned", "integrity")
+        assert passed_over["computed_digest"] not in (None, digest)
+    else:
+        assert passed_over == {
+            "event": STORED_FRAME_COPY_PASSED_OVER,
+            "artifact_digest": undecodable.digest,
+            "tier": "working",
+            "reason": "undecodable",
+            "computed_digest": None,
+        }
+
+
+def _passed_over(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    """The structured fields of each stored frame copy `linked_stored_frame` passed over."""
+    fields = [getattr(record, JSON_FIELDS_ATTR, {}) for record in caplog.records]
+    return [field for field in fields if field.get("event") == STORED_FRAME_COPY_PASSED_OVER]
+
+
+def test_a_hashless_pair_whose_only_frame_copy_does_not_decode_refuses_unreadable(
+    deps: _Deps, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With no copy that reads, the pair has no frame to name it by: the copy that did not
+    decode refuses, and through the door answers `internal_error`, the answer of every stored
+    frame that does not decode."""
+    _record_stored_pair(
+        deps,
+        data=b"not a parquet file",
+        media_type=CANONICAL_FRAME_MEDIA_TYPE,
+        rendering=dict(CANONICAL_FRAME_RENDERING),
+    )
+    client = _build_client(deps)
+
+    with caplog.at_level(logging.WARNING, logger="datasets_api.render"):
+        with pytest.raises(StoredFrameUnreadable):
+            deps.publish(rows=_rows(1.0))
+        response = client.post(
+            "/api/datasets/frames/publish", json=_publish_body(), headers=_AUTH_HEADERS
+        )
+
+    assert response.status_code == 500, response.text
+    assert (response.json()["code"], response.json()["retryable"]) == ("internal_error", False)
+    assert [held["reason"] for held in _passed_over(caplog)] == ["undecodable", "undecodable"]
 
 
 def test_a_hashless_pair_whose_frame1_object_is_gone_is_named_by_its_digest(deps: _Deps) -> None:

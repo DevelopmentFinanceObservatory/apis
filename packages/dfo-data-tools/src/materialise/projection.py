@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import functools
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from operator import itemgetter
 from typing import Literal
@@ -54,7 +54,7 @@ from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
 from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
-from materialise.enrichment import is_party_role, is_whole_total, period_year
+from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import Table, TableLike
 from materialise.unit_cells import unit_cell_text
@@ -109,6 +109,27 @@ def long_layout_default_enrichments(entity_columns: Sequence[str]) -> tuple[str,
         if is_party_role(entity):
             columns.append(f"{entity}{KIND_SUFFIX}")
     return tuple(columns)
+
+
+def long_layout_written_tokens(
+    entity_columns: Sequence[str], *, table_columns: Collection[str]
+) -> dict[str, str]:
+    """The `options.columns` tokens whose information long output writes with no token, each
+    mapped to its role: every role's `<role>_label` and each party role's `<role>_kind`
+    (`long_layout_default_enrichments`), and each party role's party field tokens
+    (`<role>_party_kind`, `<role>_party_class`, `<role>_party_whole`), which `<role>_kind`
+    reads in words. A token naming a column of `table_columns` selects that column and is left
+    out. The render drops these tokens from a long output's list, and the options document
+    flags the enrichments among them (`in_long_layout`), so both read this one rule."""
+    tokens: dict[str, str] = {}
+    for role in entity_columns:
+        suffixes = (_LABEL_SUFFIX,)
+        if is_party_role(role):
+            suffixes += (KIND_SUFFIX, *(f"_{field}" for field in PARTY_FIELDS))
+        for suffix in suffixes:
+            if (token := f"{role}{suffix}") not in table_columns:
+                tokens[token] = role
+    return tokens
 
 
 def long_kind_cell(
@@ -246,22 +267,27 @@ class UnitParts:
     """One `unit` cell split into the published unit columns.
 
     `unit` is the unit node dcid, the cell itself for a native unit and `Currency<ISO>` for a
-    converted one. `currency` is the ISO 4217 code, `None` for a non-currency unit.
+    converted one. `currency` is the ISO 4217 code, `None` for a non-currency unit. `chained`
+    is true for chain-linked constant prices.
     """
 
     unit: str
     currency: str | None
     price_basis: PriceBasis | None
     base_year: int | None
+    chained: bool = False
 
 
 @dataclass(frozen=True)
 class NativeCurrency:
-    """The currency of a native unit node: its ISO 4217 code, and the base year of a unit in
-    constant prices of that year (`ChainedUSDollarBaseYr2017`), else `None`."""
+    """The currency of a native unit node: its ISO 4217 code, and the prices its node states
+    (`SDG_CU_USD` current, `CR_USD_K` constant), with the base year and chaining of constant
+    prices (`ChainedUSDollarBaseYr2017`). `prices` is `None` when the node states none."""
 
     currency: str
+    prices: PriceBasis | None = None
     base_year: int | None = None
+    chained: bool = False
 
 
 def split_unit(
@@ -274,9 +300,9 @@ def split_unit(
 
     A converted cell (`UnitRequest`) names one concrete currency per row, a role-currency
     request included (`validate_unit_request`), and states its own prices and base year. A
-    native unit is a currency when `currency_of` gives its currency. A unit with a base year
-    is in constant prices of that year. Any other takes `native_price_basis`, the price basis
-    of the row's StatVar. A composed cell (`ComposedUnit`) is no one currency: `unit` holds
+    native unit is a currency when `currency_of` gives its currency. A unit that states its
+    prices keeps them, with its base year and chaining. Any other takes `native_price_basis`,
+    the price basis of the row's StatVar. A composed cell (`ComposedUnit`) is no one currency: `unit` holds
     the JCS text of its `as_json`, as the tabular writers render it, and the rest are `None`.
     """
     if isinstance(cell, ComposedUnit):
@@ -298,9 +324,13 @@ def split_unit(
     native = currency_of(cell)
     if native is None:
         return UnitParts(unit=cell, currency=None, price_basis=None, base_year=None)
-    if native.base_year is not None:
+    if native.prices is not None:
         return UnitParts(
-            unit=cell, currency=native.currency, price_basis="constant", base_year=native.base_year
+            unit=cell,
+            currency=native.currency,
+            price_basis=native.prices,
+            base_year=native.base_year,
+            chained=native.chained,
         )
     return UnitParts(
         unit=cell, currency=native.currency, price_basis=native_price_basis, base_year=None

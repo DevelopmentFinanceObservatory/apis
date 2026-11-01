@@ -261,7 +261,6 @@ def _words() -> Vocabulary:
                 publisher=_OECD, last_downloaded="2026-10-08", next_release="2026-09"
             )
         },
-        currency_units={"CurrencyUSD": "USD", "USDollar": "USD"},
         graph_generation="gen-1",
         catalogue_build="ocb_20260927",
     )

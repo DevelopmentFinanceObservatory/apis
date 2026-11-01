@@ -184,9 +184,18 @@ def test_a_role_currency_request_reads_as_the_roles_currency(role: str, expected
     assert (token.text, token.binding_ref) == (expected, UNIT_REF)
 
 
-def test_a_chained_dollar_unit_reads_constant_prices_of_its_base_year():
-    _, plan = _render(facets=_unit("ChainedUSDollarBaseYr2017"))
-    assert next(t for t in plan if t.axis == "unit").text == "Constant 2017 US dollars"
+@pytest.mark.parametrize(
+    ("unit", "expected"),
+    [
+        pytest.param("ChainedUSDollarBaseYr2017", "Chained 2017 US dollars", id="chained"),
+        pytest.param("undata/UNIT_MEASURE-CR_USD_K", "Constant US dollars", id="constant"),
+        pytest.param("SDG_CU_USD", "Current US dollars", id="current"),
+    ],
+)
+def test_a_priced_dollar_unit_reads_the_registry_price_basis(unit, expected):
+    """The unit registry's prices, base year and chaining set the byline's price basis."""
+    _, plan = _render(facets=_unit(unit))
+    assert next(t for t in plan if t.axis == "unit").text == expected
 
 
 @pytest.mark.parametrize(
@@ -258,15 +267,24 @@ def test_only_a_graph_name_is_read_for_its_currency(measure_label, expected):
     assert [t.text for t in plan if t.axis == "unit" and t.segment == "byline"] == expected
 
 
-def test_a_unit_facet_with_no_currency_reads_no_unit():
-    """Only the facet's ISO code (`ResolvedFacet.currency`), set where the graph's
-    currency units are read, makes a unit US dollars."""
+@pytest.mark.parametrize(
+    ("ref", "expected"),
+    [
+        pytest.param("CurrencyUSD", ["US dollars"], id="registry-money"),
+        pytest.param("CurrencyKES", ["Kenyan shillings"], id="registry-national-currency"),
+        pytest.param("ExampleGraphCurrency", [], id="unregistered"),
+    ],
+)
+def test_a_unit_facet_with_no_currency_reads_the_registry_currency(ref, expected):
+    """The unit registry types a money unit's currency, so a facet without its ISO code
+    (`ResolvedFacet.currency`) still reads it; a unit the registry does not type reads its
+    currency from that code alone."""
     spec = _spec(
-        facets={"unit": ResolvedFacet(basis="fallback", ref="CurrencyUSD", label="US Dollar")},
+        facets={"unit": ResolvedFacet(basis="fallback", ref=ref, label="Label")},
         resolved_sources=[_CRS],
     )
     plan = render_sentence_plan(spec)
-    assert not any(t.axis == "unit" for t in plan)
+    assert [t.text for t in plan if t.axis == "unit"] == expected
 
 
 def test_a_latest_request_states_its_year_and_opens_the_byline_with_the_label():

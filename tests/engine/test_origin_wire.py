@@ -217,6 +217,23 @@ def test_resolved_provenance_per_series_drops_the_members():
     assert facets["provenance"] == ResolvedFacet(basis="fallback", selection="per_series")
 
 
+def test_resolved_units_per_series_list_the_units_in_series_order():
+    """A unit facet the series disagree on lists their units, a unitless series adding
+    none, so the heading reads every unit (`render.what._per_head`)."""
+    facets = _resolved_facets(
+        [
+            {"unit": SeriesFacetRef(ref="CurrencyUSD")},
+            {},
+            {"unit": SeriesFacetRef(ref="CurrencyKES")},
+            {"unit": SeriesFacetRef(ref="CurrencyUSD")},
+        ],
+        {},
+    )
+    assert facets["unit"] == ResolvedFacet(
+        basis="fallback", selection="per_series", refs=["CurrencyUSD", "CurrencyKES"]
+    )
+
+
 def test_resolved_facet_refuses_source_without_ref():
     with pytest.raises(ValueError, match="alongside ref"):
         ResolvedFacet(basis="fallback", selection="per_series", source=_WDI_FACET.source)

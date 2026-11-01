@@ -924,11 +924,11 @@ def test_group_request_falls_to_ordinary_default_when_no_native_currency_candida
 
 
 def test_group_request_resolved_to_a_non_currency_ref_raises_non_currency_unit_error():
-    facet_bare_usd = Facet(
-        facet_id="facetBareUSD",
+    facet_percent = Facet(
+        facet_id="facetPercent",
         provenance_id="PROV1",
         measurement_method="METH1",
-        unit="USD",
+        unit="Percent",
         obs_count=5,
         earliest_date="2020",
         latest_date="2020",
@@ -936,9 +936,9 @@ def test_group_request_resolved_to_a_non_currency_ref_raises_non_currency_unit_e
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
 
     with pytest.raises(NonCurrencyUnitError) as excinfo:
-        select_group_facets(requests, [[facet_bare_usd], [facet_bare_usd]], graph=FakeGraphReader())
+        select_group_facets(requests, [[facet_percent], [facet_percent]], graph=FakeGraphReader())
 
-    assert excinfo.value.unit == "USD"
+    assert excinfo.value.unit == "Percent"
 
 
 def test_group_request_declared_policy_agreed_across_members_wins_over_ranking():

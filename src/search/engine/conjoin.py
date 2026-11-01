@@ -408,15 +408,15 @@ def _option(
 def _entity_options(
     region: RegionResult, part: ParsedPart, *, asked: Mapping[str, str]
 ) -> list[NoDataOption | None]:
-    """One option per ambiguous wording and candidate: the part with every entity that
-    resolved to one node pinned, and every row with the wording pinned to the candidate.
-    A pinned row posts its words and the dcid, which is its identity, with no name. A row
+    """One option per ambiguous group and candidate: the part with every entity that
+    resolved to one node pinned, and every row of the group's wording on the group's flow
+    end pinned to the candidate. A pinned row posts its words and the dcid, which is its identity, with no name. A row
     asked for its members takes a group's own node by the group's registered name, with no
     dcid, since a pin cannot ask for a group's members; a group node with no registered
     name that resolves to it alone has no option. Every other ambiguous row posts as the
     parsed door reads it back to the same outcome (`_asked_row`, from `asked`, the region's
     `_asked_words`), so it asks its choice again and "aid from Congo to Congo" settles one
-    end per option. The option's mentions quote the asked words. Each option names its
+    end per option, whether its ends carry one name or two. The option's mentions quote the asked words. Each option names its
     group's index in `region.ambiguous_entities` (`NoDataOption.entity_choice`), since two
     groups can share one wording."""
 
@@ -440,7 +440,10 @@ def _entity_options(
     for i, group in enumerate(region.ambiguous_entities):
         for candidate in group.candidates:
             entities = [
-                chosen(entity, candidate) if entity.identity == group.text else entity
+                chosen(entity, candidate)
+                if entity.identity == group.text
+                and group.role in (None, role_axis_for_text(entity.role_text))
+                else entity
                 for entity in base
             ]
             if None in entities:

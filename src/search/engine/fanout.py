@@ -266,19 +266,12 @@ def _leg_restatement(
     """Build the parsed-door echo, or `None` when no echo is safe.
 
     The echo is the leg's parsed form (`_leg_parsed_form`) when every direction is
-    named. If one name occurs on both axes, or direction is known but no entity has
-    an axis, return `None`; an entity-free directional leg can still echo. If
-    `ParsedPart` bounds reject any input, return `None`.
+    named. If direction is known but no entity has an axis, return `None`; an
+    entity-free directional leg can still echo. If `ParsedPart` bounds reject any input,
+    return `None`.
     """
     roles = entity_roles or {}
-    axes: set[RoleAxis] = set()
-    for name in entities:
-        occurrences = roles.get(name) or ()
-        if len({role.axis for role in occurrences}) > 1:
-            return None
-        if occurrences:
-            axes.add(occurrences[0].axis)
-    if entities and directional and not axes:
+    if entities and directional and not any(roles.get(name) for name in entities):
         return None
     return _leg_parsed_form(
         variable_text,

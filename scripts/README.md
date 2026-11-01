@@ -198,6 +198,14 @@ uv run python scripts/record_origin_catalogue_fixture.py --eval-from /tmp/catalo
 
 By hand, when `tests/origin_catalogue/test_fixture.py` reports that a committed build stopped loading or matching, as after a change to `origin_catalogue.schema.CATALOGUE_FORMAT_VERSION`. The eval build comes from `python -m origin_catalogue.job --local-dir` (see `tests/fixtures/origin_catalogue_eval/README.md`).
 
+## `record_per_n_units.py`
+
+Records every unit whose ref or label reads as a value per N of something, from the three unit classes on the dev graph and the UN System Data Commons, to `tests/fixtures/per_n_units.json`. `tests/unit_words/test_per_n_units.py` holds each one to the unit registry, so a new unit needs a registry row or a named exclusion. Needs `SEARCH_GRAPH_BASE`. `SEARCH_GRAPH_TOKEN`, when set, goes as the `x-graph-token` header, and a `*.run.app` base also takes a Cloud Run ID token from Application Default Credentials, so run `gcloud auth application-default login` first. The UN System Data Commons needs neither.
+
+```bash
+uv run --env-file .env python scripts/record_per_n_units.py
+```
+
 ## `record_rate_tables.py`
 
 Records one whole rate or deflator table for `materialise.rate_tables`, in the wire shapes `dc_sdmx.client.SdmxClient` parses: the `/availability` body listing the StatVar's `observationAbout` entities, the `/data` SDMX-CSV body for all of them, and the table provenance's `lastDataRefreshDate`.

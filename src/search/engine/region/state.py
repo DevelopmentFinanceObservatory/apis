@@ -1206,6 +1206,10 @@ class ResolveState:
     # (`UnsettledPlace.unread`); once the elected result stands it is the context the
     # answer is read over (`PlaceContext.settled`).
     place: PlaceContext = field(default_factory=empty_place_context)
+    # Whether a shape's places are installed in `place` (`_install_shape`). A part refused
+    # before then binds none of its places, whether or not a shape is elected
+    # (`place_roles.bound_entity_refs`).
+    places_bound: bool = False
     # The elected shape's places before its place sets settle. Materialisation settles
     # them on the shape's own read (`place_context.settle_sets`).
     unsettled_place: UnsettledPlace | None = None

@@ -200,7 +200,6 @@ def _vocabulary(ethiopia: str = "Ethiopia", crs: str = _CRS_NAME) -> Vocabulary:
                 publisher=None, last_downloaded=_DOWNLOADED, next_release=_NEXT_RELEASE
             )
         },
-        currency_units={"CurrencyUSD": "USD"},
         graph_generation=None,
         catalogue_build=None,
     )
@@ -838,7 +837,6 @@ def test_a_card_whose_drawn_definitions_overrun_the_envelope_degrades_and_mints(
         measure_index=base.measure_index,
         labels={**base.labels, **{code: code.ljust(label_length, "x") for code in codes}},
         sources=base.sources,
-        currency_units=base.currency_units,
         graph_generation=None,
         catalogue_build=None,
         definitions=dict.fromkeys(codes, "d" * 4096),
@@ -2087,9 +2085,86 @@ def test_a_card_over_a_computed_version_names_its_inputs_by_their_titles(
     description = _description(created.resolved_payload)
 
     assert description["title"] == title
-    assert [source["label"] for source in description["sources"]] == labels
+    inputs = [source for source in description["sources"] if "content_version" in source]
+    assert [source["label"] for source in inputs] == labels
     retrieved = [step for step in description["steps"] if step["op"] == "retrieve"]
     assert [step["input"].get("label") for step in retrieved] == step_labels
+
+
+def test_a_card_names_and_lists_only_the_inputs_its_variable_was_computed_from(
+    frame_store, revision_store, release_registry
+):
+    """A card drawing a variable the version computed from its second input alone lists that
+    input as its source, and its series names it, so the minted card's source refs name a
+    listed source."""
+    frame = _computed_frame()
+    record = _quotient_record(frame)
+    retrieved = (record.steps or [])[:2]
+    growth = Step(
+        id="s3",
+        op="growth",
+        input="s2",
+        policy="growth_endpoint_years",
+        params={"start": "2020", "end": "2022"},
+        stat_var="MalariaGrantDisbursements",
+    )
+    frame_store.put(
+        resolved_frame=dataclasses.replace(
+            _described(frame, record.model_copy(update={"steps": [*retrieved, growth]})),
+            input_records=_input_records(),
+        )
+    )
+    created = _write(
+        _intent(frame, "line_chart", title="Growth of gross national income"),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    payload = created.resolved_payload
+
+    inputs = [
+        source["ref"] for source in _description(payload)["sources"] if "content_version" in source
+    ]
+    assert inputs == [_GNI.spec_id]
+    assert set(_source_refs(payload["component"])) == {_GNI.spec_id}
+
+
+@pytest.mark.parametrize("inputs_read", [True, False], ids=["inputs-read", "input-read-failed"])
+def test_a_card_over_a_computed_version_credits_the_sources_its_inputs_records_hold(
+    frame_store, revision_store, release_registry, inputs_read
+):
+    """A card over an `ops_` version whose frame holds its inputs' records lists the source
+    both inputs credit once, counting the series the card draws, ahead of the inputs, and
+    its citation line names it. Where the input read failed, it lists and cites the inputs."""
+    frame = _computed_frame()
+    frame_store.put(
+        resolved_frame=dataclasses.replace(
+            _described(frame, _quotient_record(frame)),
+            input_records=_input_records() if inputs_read else (),
+        )
+    )
+    created = _write(
+        _intent(frame, "line_chart", title="Malaria grants per dollar of GNI"),
+        vocabulary=_vocabulary(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    description = _description(created.resolved_payload)
+    malaria = malaria_ethiopia_frame_ref()
+
+    credited = [source for source in description["sources"] if "content_version" not in source]
+    inputs = [source["ref"] for source in description["sources"] if "content_version" in source]
+    assert inputs == [malaria.spec_id, _GNI.spec_id]
+    if inputs_read:
+        (source,) = credited
+        assert (source["ref"], source["label"]) == (_CRS, _CRS_NAME)
+        assert source["series"] == 1, "the one series the card draws names no source"
+        assert description["cite"]["text"].startswith(f"{_CRS_NAME} (")
+    else:
+        assert credited == []
+        assert not description["cite"]["text"].startswith(f"{_CRS_NAME} (")
 
 
 @pytest.mark.parametrize(

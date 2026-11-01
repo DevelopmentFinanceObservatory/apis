@@ -1697,6 +1697,21 @@ def group_request_names(state: ResolveState) -> dict[str, str]:
     return {**groups, **wholes}
 
 
+def single_node_dcids(state: ResolveState) -> dict[str, str]:
+    """The node each entity name of the part resolved to alone, in query order: a set with
+    a node that is neither a group nor read as its members. A group, a set read as its
+    members, and an ambiguous or unresolved name are left out, since re-resolving such a
+    text keeps its members or its candidates."""
+    return {
+        name: place_set.node.dcid
+        for name in dict.fromkeys(state.entities)
+        if (place_set := state.place_sets.get(name)) is not None
+        and place_set.kind != "group"
+        and place_set.reading != "members"
+        and place_set.node is not None
+    }
+
+
 def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     """The places the part's settled binding (`ResolveState.place`) holds for each entity
     text, in `place_order` (`RegionResult.entity_refs`).
@@ -1706,9 +1721,14 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     as its members states its own ref first, so a client matches the set it named: its
     node, else its total, else its registry id (`PlaceSet.group_id`). A text naming a whole
     population ("all donors", `ResolveState.whole_named`) binds the parties it names that
-    the binding holds. A text with neither, ambiguous or unresolved, is left out, as is
-    every text before the part's places are bound.
+    the binding holds. A text with neither, ambiguous or unresolved, is left out.
+
+    A part refused before a shape's places are installed (`ResolveState.places_bound`),
+    whether before election or after it, states the node each text names alone
+    (`single_node_dcids`).
     """
+    if not state.places_bound:
+        return {text: (dcid,) for text, dcid in single_node_dcids(state).items()}
     bound = {dcid for dcid, _role in state.place.roles.roles}
     readings = state.place.roles.readings
     refs: dict[str, tuple[str, ...]] = {}

@@ -7,7 +7,6 @@ Skipped by default. Set DFO_DATASET_STORE_LIVE_DSN
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 import threading
@@ -27,7 +26,7 @@ from artifact_store import ArtifactLocation, ArtifactNotFoundError, CopyBounds
 from artifact_store.errors import ArtifactWriteError
 from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import StoredArtifact, Tier
-from dataset_store import ConnectionPool, LiveDatasetStore, connect
+from dataset_store import ConnectionPool, LiveDatasetStore
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
     VERSION_FACT_COLUMNS,
@@ -86,6 +85,13 @@ from spec_registry import (
     SpecRegistryStoreError,
     recompute_identity,
 )
+from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
+    SERVER_DSN,
+    cluster_lock,
+    connect_live,
+    connect_to,
+    live_database,
+)
 from tests.datasets_api._app_factories import offline_allowances
 from tests.datasets_api._legacy_conversion_trace import (
     LEGACY_CONVERSION,
@@ -98,7 +104,9 @@ from tests.datasets_api._version_record_store import TEST_BASIS, materialisation
 from tests.spec_registry.conftest import minimal_identity, shape_for
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-_DSN = os.environ.get("DFO_DATASET_STORE_LIVE_DSN")
+# The server DSN gates the live tests. Each runs against `live_database`, a copy of the
+# database it names.
+_DSN = SERVER_DSN
 
 # The safe-default settings every `LiveOperationStore` below resolves for
 # itself when built with no explicit `settings=`.
@@ -113,6 +121,7 @@ def _live_params(now: datetime) -> tuple[datetime, datetime, datetime, datetime]
 
 pytestmark = [
     pytest.mark.live,
+    pytest.mark.usefixtures("live_database"),
     pytest.mark.skipif(
         not _DSN, reason="set DFO_DATASET_STORE_LIVE_DSN to run live dataset_store tests"
     ),
@@ -120,19 +129,7 @@ pytestmark = [
 
 
 def _pool(*, size: int = 2) -> ConnectionPool:
-    parts = urlsplit(_DSN)
-    return ConnectionPool(
-        connect=lambda: connect(
-            connector=None,
-            instance_connection_name=None,
-            host=parts.hostname,
-            port=parts.port or 5432,
-            database=parts.path.lstrip("/"),
-            user=parts.username,
-            password=parts.password,
-        ),
-        size=size,
-    )
+    return ConnectionPool(connect=connect_live, size=size)
 
 
 @pytest.fixture
@@ -614,7 +611,8 @@ def _an_advisory_lock_is_blocked(live_store) -> bool:
     with live_store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT count(*) AS n FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND wait_event = 'advisory' "
             "AND query LIKE 'SELECT pg_advisory_xact_lock%'"
         )
     return row is not None and row["n"] > 0
@@ -1527,7 +1525,8 @@ def _wait_until_an_operation_update_is_blocked(
         with live_store.transaction() as tx:
             row = tx.fetch_one(
                 "SELECT count(*) AS n FROM pg_stat_activity "
-                "WHERE wait_event_type = 'Lock' AND starts_with(query, %s)",
+                "WHERE datname = current_database() "
+                "AND wait_event_type = 'Lock' AND starts_with(query, %s)",
                 (statement,),
             )
         if row is not None and row["n"] > 0:
@@ -2781,7 +2780,8 @@ def _waits_on_a_lock(store, *, table: str) -> bool:
     with store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT count(*) AS n FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
             "AND pid <> pg_backend_pid()",
             (table,),
         )
@@ -2942,22 +2942,10 @@ def test_record_reference_unless_revoked_reactivates_a_soft_deleted_row(live_sto
 
 def test_0002_spec_registry_migration_creates_tables_and_constraints():
     # The schema-qualified PostgreSQL DDL uses types and foreign keys that SQLite cannot exercise.
-    parts = urlsplit(_DSN)
-    runtime_user = parts.username
-
-    def _connect():
-        return connect(
-            connector=None,
-            instance_connection_name=None,
-            host=parts.hostname,
-            port=parts.port or 5432,
-            database=parts.path.lstrip("/"),
-            user=parts.username,
-            password=parts.password,
-        )
+    runtime_user = urlsplit(_DSN).username
 
     apply_pending(
-        connect=_connect,
+        connect=connect_live,
         migrations_dir=MIGRATIONS_DIR,
         substitutions={"RUNTIME_DB_USER": runtime_user},
     )
@@ -2997,39 +2985,24 @@ def test_0002_spec_registry_migration_creates_tables_and_constraints():
         pool.close_all()
 
 
-def _scratch_connect(database: str):
-    parts = urlsplit(_DSN)
-    return lambda: connect(
-        connector=None,
-        instance_connection_name=None,
-        host=parts.hostname,
-        port=parts.port or 5432,
-        database=database,
-        user=parts.username,
-        password=parts.password,
-    )
-
-
 @contextmanager
 def _scratch_database():
     """A database of its own, dropped on exit, for a migration test that must start from a
-    schema older than the shared database's. Yields its connect callable."""
+    schema older than the shared database's. Yields its connect callable. Creating it and its
+    roles holds the cluster lock, since roles are shared by every worker's scratch database."""
     name = f"dataset_store_scratch_{uuid4().hex[:12]}"
-    admin = _scratch_connect(urlsplit(_DSN).path.lstrip("/"))()
-    admin.autocommit = True
-    try:
+    with cluster_lock() as admin:
         admin.run(f"CREATE DATABASE {name}")
         for role in ("dataset-store-scratch-runtime", "dataset-store-scratch-worker"):
             admin.run(
                 f'DO $$ BEGIN CREATE ROLE "{role}" NOLOGIN; '
                 "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
             )
-        try:
-            yield _scratch_connect(name)
-        finally:
-            admin.run(f"DROP DATABASE {name} WITH (FORCE)")
+    try:
+        yield connect_to(name)
     finally:
-        admin.close()
+        with cluster_lock() as admin:
+            admin.run(f"DROP DATABASE {name} WITH (FORCE)")
 
 
 def test_0024_leaves_an_in_flight_old_worker_run_to_its_heartbeat():
@@ -3128,17 +3101,8 @@ def _rerun_migration(live_store, version: str) -> list[str]:
             "DELETE FROM datasets.dataset_store_schema_migrations WHERE version = %s",
             (version,),
         )
-    parts = urlsplit(_DSN)
     return apply_pending(
-        connect=lambda: connect(
-            connector=None,
-            instance_connection_name=None,
-            host=parts.hostname,
-            port=parts.port or 5432,
-            database=parts.path.lstrip("/"),
-            user=parts.username,
-            password=parts.password,
-        ),
+        connect=connect_live,
         migrations_dir=MIGRATIONS_DIR,
         substitutions={},
     )
@@ -4493,7 +4457,8 @@ def _settle_is_waiting_on_a_lock(store) -> bool:
     with store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT count(*) AS n FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
             "AND pid <> pg_backend_pid()"
         )
     return row is not None and row["n"] > 0

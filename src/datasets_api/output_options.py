@@ -28,7 +28,12 @@ from dfo_platform.roles import role_key_axis
 from materialise.enrichment import PARTY_FIELDS, PARTY_KIND_FIELD
 from materialise.formats import FORMAT_COLUMN_CAPS
 from materialise.profile import EnrichmentCoverage, OutputProfile, PivotFeasibility
-from materialise.projection import long_layout_default_enrichments, totals_axes, totals_roles
+from materialise.projection import (
+    long_layout_default_enrichments,
+    long_layout_written_tokens,
+    totals_axes,
+    totals_roles,
+)
 from materialise.reshape import enrichment_qualifies
 
 # `materialise.formats.FORMAT_COLUMN_CAPS` keys its Excel entry "excel".
@@ -60,6 +65,9 @@ def derive_output_options(
     code index's `parties` and the provenances the definition read, `datasets`.
     """
     role_columns = [column.name for column in profile.columns if column.kind == "role"]
+    long_layout_tokens = long_layout_written_tokens(
+        role_columns, table_columns={column.name for column in profile.columns}
+    )
     return OutputOptionsModel(
         capability_version=capabilities.capability_version,
         columns=[
@@ -77,7 +85,12 @@ def derive_output_options(
             option
             for stored in profile.enrichments
             for coverage in _party_field_coverages(stored)
-            if (option := _enrichment_option(coverage, capabilities=capabilities)) is not None
+            if (
+                option := _enrichment_option(
+                    coverage, capabilities=capabilities, long_layout_tokens=long_layout_tokens
+                )
+            )
+            is not None
         ],
         long_layout_defaults=list(long_layout_default_enrichments(role_columns)),
         long_layout_totals=list(
@@ -151,7 +164,10 @@ def _party_field_coverages(coverage: EnrichmentCoverage) -> tuple[EnrichmentCove
 
 
 def _enrichment_option(
-    coverage: EnrichmentCoverage, *, capabilities: Capabilities
+    coverage: EnrichmentCoverage,
+    *,
+    capabilities: Capabilities,
+    long_layout_tokens: Collection[str],
 ) -> EnrichmentOptionModel | None:
     # Disabled fields appear in the capability document, not frame-specific options. A stored
     # profile can list a subject column's kind, which the columns option refuses
@@ -161,10 +177,11 @@ def _enrichment_option(
     ):
         return None
     available = coverage.covered == coverage.entities
+    token = f"{coverage.column}_{coverage.field}"
     return EnrichmentOptionModel(
         column=coverage.column,
         field=coverage.field,
-        token=f"{coverage.column}_{coverage.field}",
+        token=token,
         state="available" if available else "partial",
         reason=None if available else _ENRICHMENT_PARTIAL_REASON,
         coverage=EnrichmentCoverageCountsModel(
@@ -172,6 +189,7 @@ def _enrichment_option(
         ),
         missing=[MissingEntityModel(ref=ref, label=label) for ref, label in coverage.missing],
         truncated=coverage.truncated,
+        in_long_layout=token in long_layout_tokens,
     )
 
 

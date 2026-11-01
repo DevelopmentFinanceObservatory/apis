@@ -1490,8 +1490,9 @@ def _store(
     Raises:
         AnalysisStoreDiverges: The pair holds a recipe or frame bytes that differ from these.
         SnapshotRevoked: The pair answered is taken down.
-        StoredFrameUnreadable: A pair recording no frame hash holds a stored frame that does
-            not decode, read to name it (`_frame_content_version`, `publish_built_frame`).
+        StoredFrameUnreadable: A pair recording no frame hash holds a copy of its stored frame
+            that does not decode, read to name it (`_frame_content_version`,
+            `publish_built_frame`), and no other copy reads (`render.linked_stored_frame`).
     """
     recipe = _recipe(evaluation, roots)
     ref = evaluation.ref
