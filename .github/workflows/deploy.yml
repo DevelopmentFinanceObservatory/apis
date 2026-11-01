@@ -480,6 +480,7 @@ jobs:
       # jobs above have exited 0, so the service never serves an image ahead
       # of the schema it expects.
       - name: Point Cloud Run at the new image
+        id: apis_service
         if: steps.decide.outputs.deploy == 'true'
         run: |
           set -euo pipefail
@@ -503,7 +504,9 @@ jobs:
       # concurrent write or was left by the budget, and the next deploy
       # carries on from the rows that remain. A row it refuses for good is
       # logged as one ERROR line and fails the settle step after it, which
-      # counts every version row still holding an old warning shape.
+      # counts every version row still holding an old warning shape. A failure
+      # of this step holds back neither the settle nor the description
+      # backfill: both run whenever the apis service moved.
       - name: Backfill warning counts
         if: steps.decide.outputs.deploy == 'true'
         run: |
@@ -529,10 +532,12 @@ jobs:
       # a warning in an old shape (`dataset_store.warning_formats`), and fails
       # the step when any count is above 0. It runs as an execution of the maintenance job, whose
       # container command is `datasets-maintenance`, with the task as its
-      # args. The step must run on every deploy: a raw pin reference matches
-      # no caller's label.
+      # args. The step must run on every deploy that moved the apis service,
+      # also after the warning backfill failed: a raw pin reference matches no
+      # caller's label. So it runs on the move step's outcome, and the warning
+      # rows the backfill left fail it after its statements commit.
       - name: Settle rows the previous image wrote
-        if: steps.decide.outputs.deploy == 'true'
+        if: ${{ !cancelled() && steps.decide.outputs.deploy == 'true' && steps.apis_service.outcome == 'success' }}
         run: |
           set -euo pipefail
           gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
@@ -558,9 +563,12 @@ jobs:
       # task starts no version after 45 minutes, within the Job's
       # 3600-second timeout, and the next deploy carries on from the versions
       # still without a record. It runs last, so no failure of it holds back
-      # an earlier step.
+      # an earlier step. It needs no settled row: it reads no pin reference,
+      # and a warning still in an old shape leaves only that fact unstated in
+      # its record. So it runs, like the settle, on the move step's outcome,
+      # also when the warning backfill or the settle failed.
       - name: Backfill description records
-        if: steps.decide.outputs.deploy == 'true'
+        if: ${{ !cancelled() && steps.decide.outputs.deploy == 'true' && steps.apis_service.outcome == 'success' }}
         run: |
           set -euo pipefail
           gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \

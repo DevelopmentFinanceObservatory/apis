@@ -385,6 +385,55 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
     assert names.index(warnings) < names.index(settle) < names.index(backfill)
 
 
+_AFTER_THE_MOVE = ("Settle rows the previous image wrote", "Backfill description records")
+_STATUS_CHECK = re.compile(r"\b(?:success|failure|always|cancelled)\(\)")
+
+
+def _runs(
+    step: dict, *, deploy: str, move: str, earlier_failure: bool, cancelled: bool = False
+) -> bool:
+    """Whether Actions runs `step`, given `decide`'s output, the outcome of the apis service
+    move (`apis_service`), whether an earlier step failed, and whether the run was cancelled.
+    An `if` naming no status check is read with the `success() &&` Actions adds to it."""
+    expression = step["if"].strip().removeprefix("${{").removesuffix("}}").strip()
+    if not _STATUS_CHECK.search(expression):
+        expression = f"success() && ({expression})"
+    python = re.sub(r"!(?!=)", " not ", expression.replace("&&", " and ").replace("||", " or "))
+    python = python.replace("steps.decide.outputs.deploy", "deploy")
+    python = python.replace("steps.apis_service.outcome", "move")
+    return bool(
+        eval(
+            python,
+            {"__builtins__": {}},
+            {
+                "deploy": deploy,
+                "move": move,
+                "success": lambda: not earlier_failure and not cancelled,
+                "failure": lambda: earlier_failure,
+                "always": lambda: True,
+                "cancelled": lambda: cancelled,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("name", _AFTER_THE_MOVE)
+def test_settle_and_the_description_backfill_run_whenever_the_apis_service_moved(name):
+    """A failed warning backfill (or settle) holds back neither step, since settle must run on
+    every deploy that moved the service. Neither runs when the move failed or was skipped, or
+    when the run was cancelled. A condition naming any step but `decide` and the move fails to
+    evaluate."""
+    step = _named(name)
+    assert _named("Point Cloud Run at the new image")["id"] == "apis_service"
+
+    assert _runs(step, deploy="true", move="success", earlier_failure=False)
+    assert _runs(step, deploy="true", move="success", earlier_failure=True)
+    assert not _runs(step, deploy="true", move="failure", earlier_failure=True)
+    assert not _runs(step, deploy="true", move="skipped", earlier_failure=True)
+    assert not _runs(step, deploy="false", move="skipped", earlier_failure=False)
+    assert not _runs(step, deploy="true", move="success", earlier_failure=False, cancelled=True)
+
+
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     """The settle step needs the maintenance job, so an environment that does not name it fails
     the check before the build, and the maintenance steps carry no guard of their own."""
@@ -442,7 +491,10 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     later = steps[decide_index + 1 :]
     assert len(later) == 19
     for step in later:
-        assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+        if step.get("name") in _AFTER_THE_MOVE:
+            assert "steps.decide.outputs.deploy == 'true'" in step["if"], step
+        else:
+            assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():
