@@ -23,6 +23,7 @@ import pytest
 
 from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
+from origin_catalogue import BASE
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
 from search.engine.departures import served_datasets
@@ -45,6 +46,7 @@ from search.models import (
     Resolution,
     ResolveRequest,
     ResubmitIdentityEntry,
+    SourceMention,
     Spec,
 )
 from search.scope.basis import (
@@ -62,6 +64,7 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _USA = "country/USA"
 _KEN = "country/KEN"
@@ -1091,6 +1094,36 @@ def test_a_donor_window_crossing_2018_is_counted_on_the_oecd_headline_per_year()
     assert _served_basis(net) == _NET_DAC1
     back = _switch(scope.base.identity, "measure_basis:oecd_headline", choice.id)
     assert back.spec_id == spec.spec_id
+
+
+def test_a_donor_window_crossing_2018_from_dac1_is_counted_on_the_headline_it_splices(
+    bind_catalogue,
+):
+    """A part that names DAC1 is served the OECD headline per year, since the headline
+    composite splices only DAC1's own series, so the composite takes the place of the
+    source the part named."""
+    bind_catalogue(FakeCatalogue(provenances={_DAC1: provenance_row(_DAC1, BASE)}))
+    spec = _resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="aid",
+                        entities=[ParsedEntity(text="United States", role_text="from")],
+                        time_text="2015-2020",
+                        sources=[SourceMention(ref=_DAC1)],
+                    )
+                ]
+            )
+        ),
+        "aid",
+    )
+
+    assert _basis_choice(spec) == ("measure_basis:oecd_headline", "default", None)
+    assert (spec.definition.identity.facets or {})["provenance"] == IdentityBindingValue(
+        ref=_HEADLINE
+    )
+    assert [source.ref for source in spec.resolved.trace.resolved_sources] == [_DAC1]
 
 
 def test_a_donor_with_no_grant_equivalent_series_keeps_net_flows(monkeypatch):
