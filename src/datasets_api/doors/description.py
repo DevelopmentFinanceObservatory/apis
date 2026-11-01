@@ -24,8 +24,10 @@ A description costs the record read, for a computed version one read of the reco
 inputs it was computed from, code-index lookups for codes, one batched label read for the places,
 organisations, variables and unindexed properties the version's record names and those each
 input's title names (`EnrichmentLookup.lookup`), and the source citations with their documents
-(`materialise.provenance_doc.read_source_citations`), which give each source's current name,
-publisher and latest download date and read nothing for a source the origin catalogue lists.
+(`materialise.provenance_doc.read_source_citations`) of the sources the version credits, or for
+a computed version the sources its inputs' records credit, which give each source's current
+name, publisher and latest download date and read nothing for a source the origin catalogue
+lists.
 Each input is named by its title (`description.compose.version_title`). Both reads share one deadline, `_GRAPH_READ_SECONDS` (10 s)
 from the start of the first. A failed, expired or size-capped graph read leaves the words at the labels the record kept at mint
 (`at_mint`) and the dates it could not read as gaps, and that render answers `no-store`. Any
@@ -82,7 +84,7 @@ from datasets_api.schema import (
 )
 from datasets_api.timings import door_call, run_with_timings
 from dc_graph import GraphCapExceededError, GraphReadError
-from description.blocks import Words
+from description.blocks import Words, input_evidence
 from description.compose import describe_version, version_title
 from description.facts import DescriptionRecord, DimensionValue
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
@@ -207,7 +209,9 @@ def render_description(*, id: str, content_version: str, deps: Deps) -> Rendered
         enrichment=deps.enrichment,
         index=deps.code_index,
     )
-    return RenderedDescription(body=describe_version(record, vocabulary), degraded=degraded)
+    return RenderedDescription(
+        body=describe_version(record, vocabulary, inputs=inputs), degraded=degraded
+    )
 
 
 def _input_records(record: DescriptionRecord, *, deps: Deps) -> list[DescriptionRecord]:
@@ -260,7 +264,7 @@ def _vocabulary(
         else:
             labels = {ref: label for ref, read in fields.items() if (label := read.get("label"))}
     sources: dict[str, SourceDocumentFacts] = {}
-    refs = [source.ref for source in record.evidence.sources]
+    refs = [source.ref for source in [*record.evidence.sources, *input_evidence(inputs)]]
     catalogue = current_catalogue()
     if refs:
         try:
@@ -510,12 +514,14 @@ def build_description_door(*, deps: DepsCell) -> DoorContribution:
             SnapshotRevoked,
             DescriptionBackpressure,
         ),
-        exception_exemplars=(
-            DescriptionRequestInvalid("/property", "exemplar"),
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            DescriptionBackpressure(),
-        ),
+        endpoint_exemplars={
+            "datasets.description": (
+                DescriptionRequestInvalid("/property", "exemplar"),
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                DescriptionBackpressure(),
+            )
+        },
     )

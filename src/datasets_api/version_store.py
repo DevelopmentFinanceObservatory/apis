@@ -52,9 +52,13 @@ A worker run passes its claim as a `HeadFence`, and the same transaction first t
 that `datasets.operation` row and checks it is still `running` at the claim's attempt
 (`_holds_fence`). The lock conflicts with a claim's update, so a claim either commits first and the
 advance raises `HeadFenceLost` having written nothing, or waits until the advance commits.
-`confirm_head` updates only `confirmed_at` while the version matches. `read_head` reports no
-dependencies for a head whose run made another version, as a head another writer advanced without
-naming its run does. The `signal` column keeps its default on every head this store writes.
+Both writes store the head's `family`, the member family the run or the confirming check stated
+with the confirmation it was stated at and its basis, in one JSON object
+(`materialise.trace.recorded_family_json`).
+`confirm_head` updates only `confirmed_at` and `family` while the version matches. `read_head`
+reports no dependencies for a head whose run made another version, as a head another writer
+advanced without naming its run does. The `signal` column keeps its default on every head this
+store writes.
 """
 
 from __future__ import annotations
@@ -108,6 +112,12 @@ from datasets_api.versions import (
 )
 from description.facts import DescriptionRecord
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
+from materialise.trace import (
+    RecordedFamily,
+    StatedFamily,
+    parse_recorded_family,
+    recorded_family_json,
+)
 
 Clock = Callable[[], datetime]
 
@@ -805,12 +815,15 @@ def _stored_role_columns(rows: Sequence[Mapping[str, object]]) -> dict[str, Sequ
     }
 
 
-_HEAD_COLUMNS = "content_version, confirmed_at, materialised_at, materialisation_id, dependencies"
+_HEAD_COLUMNS = (
+    "content_version, confirmed_at, materialised_at, materialisation_id, dependencies, family"
+)
 
 # A head's columns with its fingerprint kept only while its run produced its version.
 _JUDGED_HEAD_SELECT = (
     "SELECT h.content_version, h.confirmed_at, h.materialised_at, h.materialisation_id, "
-    "CASE WHEN m.content_version = h.content_version THEN h.dependencies END AS dependencies "
+    "CASE WHEN m.content_version = h.content_version THEN h.dependencies END AS dependencies, "
+    "h.family "
     "FROM datasets.subject_head h "
     "LEFT JOIN datasets.materialisation m ON m.id = h.materialisation_id "
     "WHERE h.subject_id = %s"
@@ -868,6 +881,7 @@ def _head(subject_id: str, row: Mapping[str, object]) -> SubjectHead:
         materialised_at=cast(datetime, row["materialised_at"]),
         materialisation_id=cast("int | None", row["materialisation_id"]),
         dependencies=cast("Mapping[str, object] | None", row["dependencies"]),
+        family=parse_recorded_family(row["family"]),
     )
 
 
@@ -880,6 +894,8 @@ class LiveHeadStore:
         self,
         *,
         materialisation: MaterialisationRecord,
+        family: StatedFamily,
+        basis: str,
         expected_materialisation_id: int | None,
         fence: HeadFence | None = None,
     ) -> SubjectHead | None:
@@ -900,14 +916,15 @@ class LiveHeadStore:
                     row = tx.fetch_one(
                         "INSERT INTO datasets.subject_head "
                         "(subject_id, content_version, confirmed_at, materialised_at, "
-                        "materialisation_id, dependencies) "
-                        "VALUES (%s, %s, %s, %s, %s, %s) "
+                        "materialisation_id, dependencies, family) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
                         "ON CONFLICT (subject_id) DO UPDATE SET "
                         "content_version = EXCLUDED.content_version, "
                         "confirmed_at = EXCLUDED.confirmed_at, "
                         "materialised_at = EXCLUDED.materialised_at, "
                         "materialisation_id = EXCLUDED.materialisation_id, "
-                        "dependencies = EXCLUDED.dependencies "
+                        "dependencies = EXCLUDED.dependencies, "
+                        "family = EXCLUDED.family "
                         "WHERE datasets.subject_head.materialisation_id "
                         "IS NOT DISTINCT FROM %s "
                         f"RETURNING {_HEAD_COLUMNS}",
@@ -918,6 +935,9 @@ class LiveHeadStore:
                             now,
                             materialisation_id,
                             dict(materialisation.dependencies),
+                            recorded_family_json(
+                                RecordedFamily(stated=family, confirmed_at=now, basis=basis)
+                            ),
                             expected_materialisation_id,
                         ),
                     )
@@ -936,7 +956,9 @@ class LiveHeadStore:
             return None
         return _head(subject_id, row)
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+    def confirm_head(
+        self, *, subject_id: str, content_version: str, family: StatedFamily, basis: str
+    ) -> SubjectHead | None:
         confirmed_at = self._now()
         failure: str | None = None
         sqlstate: str | None = None
@@ -944,10 +966,17 @@ class LiveHeadStore:
         try:
             with self._store.transaction() as tx:
                 row = tx.fetch_one(
-                    "UPDATE datasets.subject_head SET confirmed_at = %s "
+                    "UPDATE datasets.subject_head SET confirmed_at = %s, family = %s "
                     "WHERE subject_id = %s AND content_version = %s "
                     f"RETURNING {_HEAD_COLUMNS}",
-                    (confirmed_at, subject_id, content_version),
+                    (
+                        confirmed_at,
+                        recorded_family_json(
+                            RecordedFamily(stated=family, confirmed_at=confirmed_at, basis=basis)
+                        ),
+                        subject_id,
+                        content_version,
+                    ),
                 )
         except Exception as exc:
             failure = (

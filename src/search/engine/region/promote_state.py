@@ -288,7 +288,7 @@ class _PromoteState:
     unit_request_basis: dict[str, RequestBasis] | None = None
     # decide_spec_unit's own per-stat_var selection map for a bound
     # request-form unit (region/convertibility.py), kept so _phase_finalize
-    # can pass it straight to _build_observations/_observations_relaunch_closure
+    # can pass it straight to the answer's PreviewRead
     # as `elected=`, steering the preview onto the same facet(s)
     # _phase_ground_build already confirmed convertible. None when no unit
     # request was bound, or role bindings were empty during grounding.

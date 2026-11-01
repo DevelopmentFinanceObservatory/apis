@@ -36,7 +36,11 @@ from datasets_api.background_admission import (
     leaving_headroom,
 )
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
-from datasets_api.doors.definition import OPERATION_SUBMITTED_RESPONSES, ROUTE_EXCEPTION_TYPES
+from datasets_api.doors.definition import (
+    OPERATION_SUBMITTED_RESPONSES,
+    ROUTE_EXCEPTION_EXEMPLARS,
+    ROUTE_EXCEPTION_TYPES,
+)
 from datasets_api.doors.mint_errors import (
     MintBackgroundDeclined,
     MintBackpressure,
@@ -204,5 +208,11 @@ def build_mint_door(*, deps: DepsCell) -> DoorContribution:
         exception_types=tuple(
             dict.fromkeys((*MINT_EXCEPTION_TYPES, *ROUTE_EXCEPTION_TYPES["datasets.definition"]))
         ),
-        exception_exemplars=MINT_EXCEPTION_EXEMPLARS,
+        endpoint_exemplars={
+            "datasets.mint": tuple(
+                dict.fromkeys(
+                    (*MINT_EXCEPTION_EXEMPLARS, *ROUTE_EXCEPTION_EXEMPLARS["datasets.definition"])
+                )
+            )
+        },
     )

@@ -217,7 +217,81 @@ def write_component(
         if is_create and composition_id == "new"
         else None
     )
+    return _write(
+        intent=intent,
+        component_id=component_id,
+        composition_id=composition_id,
+        client_create=client_create,
+        new_write_token=new_write_token,
+        new_composition_write_token=new_composition_write_token,
+        release=release,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        vocabulary_source=vocabulary_source,
+        clock=clock,
+    )
 
+
+def remint_component(
+    *,
+    component_id: str,
+    frame_store: FrameStore,
+    revision_store: RevisionStore,
+    release_registry: ReleaseRegistry,
+    vocabulary_source: VocabularySource,
+    apply: bool = False,
+    clock: Callable[[], datetime.datetime] = _utc_now,
+) -> WriteReply:
+    """Revise the component at `component_id` with an empty patch, as an owner's revise
+    that changes nothing does, so its head is minted again over today's frame, description
+    records and words. A head that comes out equal in everything a reader sees is a no-op, and
+    the reply carries the head (`_structurally_equal`). Otherwise the reply carries the next
+    revision.
+
+    The write path is `write_component`'s, without its write-token check, for operators'
+    maintenance jobs, which hold no card's token. Without `apply` the revision is minted inside
+    the write transaction and not appended, so the reply shows what an apply would store and
+    nothing is written. Its `composition_revision` is `None`.
+
+    Raises:
+        DraftNotFound: No component has `component_id`.
+        ReleaseMismatch: The head was minted under a newer catalogue release.
+    """
+    return _write(
+        intent={},
+        component_id=component_id,
+        composition_id=None,
+        client_create=None,
+        new_write_token=None,
+        new_composition_write_token=None,
+        release=release_registry.pinned(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        vocabulary_source=vocabulary_source,
+        clock=clock,
+        rehearse=not apply,
+    )
+
+
+def _write(
+    *,
+    intent: Mapping[str, object],
+    component_id: str | None,
+    composition_id: str | None,
+    client_create: _ClientCreate | None,
+    new_write_token: str | None,
+    new_composition_write_token: str | None,
+    release: CatalogueRelease,
+    frame_store: FrameStore,
+    revision_store: RevisionStore,
+    vocabulary_source: VocabularySource | None,
+    clock: Callable[[], datetime.datetime],
+    rehearse: bool = False,
+) -> WriteReply:
+    """Create a component, or revise the one at `component_id`, once the caller's write
+    token has been checked (`write_component`). With `rehearse` the revision is minted and not
+    appended."""
+    is_create = component_id is None
     current: RevisionRecord | None
     if is_create:
         current = None
@@ -336,8 +410,10 @@ def write_component(
                     if ctx.composition_id is not None
                     else None
                 )
-                composition_revision = ctx.append(
-                    record=record, composition_entry=composition_entry
+                composition_revision = (
+                    None
+                    if rehearse
+                    else ctx.append(record=record, composition_entry=composition_entry)
                 )
                 minted_composition_id = ctx.composition_id
     except WriteTokenInUse:

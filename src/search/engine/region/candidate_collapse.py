@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+from collections.abc import Callable
 from typing import cast
 
 from materialise import GraphReader
@@ -52,15 +53,16 @@ from search.engine.region.codes import (
     NO_MEMBER_HAS_DATA_AT_PLACE,
     ONLY_ALTERNATE_HAS_DATA,
     _elect_no_data_reason,
+    _ObsProbeResult,
 )
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.equivalent_series import shared_cluster
 from search.engine.region.materialise_step import lone_breakdown_absent
 from search.engine.region.observations.dispatch import (
+    PreviewRead,
+    PreviewReader,
     _attach_observations,
-    _resolve_spec_observations,
 )
-from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.phase_election import judge_answer_coverage
 from search.engine.region.phase_place_materialise import (
     note_denominator_unverified,
@@ -89,7 +91,9 @@ from search.engine.region.requirements import (
     settle_flagged,
 )
 from search.engine.region.result import RegionResult
+from search.engine.region.scope_decision import decide_spec_scope, guarded_scope_decision
 from search.engine.region.state import ResolveState, raised_facts
+from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
@@ -544,97 +548,117 @@ async def _assemble_definite(
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
     _obs_svs, _obs_entities = grounded.cand_obs_entities.get(_survivor_spec.spec_id, ([], {}))
-    # The related reads run beside the streamed preview and the options below.
-    _survivor_id = _survivor_spec.spec_id
-    _related_read = related_read_for(
-        state,
-        stat_vars=_obs_svs,
-        measure_partition=grounded.cand_measure_partitions.get(_survivor_id),
-        places=grounded.cand_places[_survivor_id].roles.roles,
-        arcs=grounded.cand_role_axis_facts[_survivor_id][0].sv_arc_facts,
-    )
-    if state.bound_unit_outcome is not None:
-        # State the unit lexicon version. A streamed answer also states its preview's facets
-        # and warning with its immediate response; a flagged-unavailable carrier holds nothing
-        # to read and states `_UNIT_CHECK_NOT_PROBED`.
-        _survivor_spec = with_unit_lexicon_version(_survivor_spec, state.bound_unit_outcome)
-        if state.stream_observations:
-            # An inline preview states its own warning (`_resolve_spec_observations`).
-            _streamed = (
-                _UNIT_CHECK_NOT_PROBED
-                if _survivor_spec.resolved.available_at_place is False
-                else await asyncio.to_thread(
-                    _build_observations,
-                    grounded.cand_plans.get(_survivor_spec.spec_id),
-                    _obs_svs,
-                    _obs_entities,
-                    graph=state.graph,
-                    materialise_graph=state.materialise_graph,
-                    materialise_sdmx=state.materialise_sdmx,
-                    # A ref-form unit filters literally; a request converts.
-                    facet_filter=(
-                        None if state.unit_request is not None else state.unit_facet_filter
-                    ),
-                    scope=grounded.cand_bulk_scope.get(_survivor_spec.spec_id),
-                    sdmx=state.sdmx,
-                    deadline=state.deadline,
-                    rate_cache=rate_cache,
-                    unit_request=state.unit_request,
-                    elected=grounded.cand_elected.get(_survivor_spec.spec_id),
-                    coverage=state.coverage,
-                    member_facts=grounded.cand_candidates[_survivor_id].mat.member_facts,
-                )
-            )
-            _survivor_spec = _attach_observations(
-                _survivor_spec, _streamed, state.warnings, include_points=False
-            )
-    # Keep this timing key identical to the single-shape path.
-    _options_t0 = now_ms()
-    _survivor_spec = await _attach_candidate_slot_options(state, grounded, _survivor_spec)
-    (_survivor_spec,) = await _attach_candidate_facet_options(state, grounded, [_survivor_spec])
-    _survivor_spec = await _attach_candidate_entity_options(state, grounded, _survivor_spec)
-    state.timing["options"] = now_ms() - _options_t0
-    _family = state.family_total_absent_departures((_survivor_spec,))
-    # Place-option tasks run only when `materialise_graph` is available.
-    _place_options_materialise_graph = state.materialise_graph
-    # Each launch reads the identity of the Spec it is given, a merged one included.
-    _relaunch_place_options_bound = functools.partial(
-        _relaunch_place_options,
-        state=state,
-        place_options_materialise_graph=cast(GraphReader, _place_options_materialise_graph),
-    )
-    _stream_place_options = (
-        state.stream_slot_options
-        and _place_options_materialise_graph is not None
-        and state.place_options_pool is not None
-    )
-    _place_options_task = (
-        _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
-    )
-    _survivor_spec = await with_related(_survivor_spec, _related_read)
-    # This is the final await. Passing a live observation task to `RegionResult` keeps it reachable
-    # if cancellation follows.
-    _survivor_spec, _obs_task, _obs_relaunch = await _resolve_spec_observations(
-        _survivor_spec,
-        _obs_svs,
-        _obs_entities,
-        graph=state.graph,
-        materialise_graph=state.materialise_graph,
-        materialise_sdmx=state.materialise_sdmx,
-        include_observations=state.include_observations,
-        stream_observations=state.stream_observations,
-        warnings=state.warnings,
-        facet_filter=(None if state.unit_request is not None else state.unit_facet_filter),
-        scope=grounded.cand_bulk_scope.get(_survivor_spec.spec_id),
-        sdmx=state.sdmx,
-        deadline=state.deadline,
-        rate_cache=rate_cache,
+    _bulk_scope = grounded.cand_bulk_scope.get(_survivor_spec.spec_id)
+    _preview = PreviewRead(
+        sv_dcids=tuple(_obs_svs),
+        obs_entities=_obs_entities,
+        plan=grounded.cand_plans.get(_survivor_spec.spec_id),
+        # A ref-form unit filters literally; a request converts.
+        facet_filter=None if state.unit_request is not None else state.unit_facet_filter,
+        bulk_places=_bulk_scope.places if _bulk_scope is not None else None,
+        member_facts=grounded.cand_candidates[_survivor_spec.spec_id].mat.member_facts,
         unit_request=state.unit_request,
         elected=grounded.cand_elected.get(_survivor_spec.spec_id),
-        coverage=state.coverage,
-        plan=grounded.cand_plans.get(_survivor_spec.spec_id),
-        member_facts=grounded.cand_candidates[_survivor_id].mat.member_facts,
     )
+    _reader = PreviewReader(
+        read=_preview,
+        graph=state.graph,
+        sdmx=state.sdmx,
+        materialise_graph=state.materialise_graph,
+        materialise_sdmx=state.materialise_sdmx,
+        rate_cache=rate_cache,
+        deadline=state.deadline,
+        coverage=state.coverage,
+    )
+    # The scope is decided from the survivor's Spec beside the reads below and before its
+    # preview launches, so an answer restated as a composite reads no preview of the one
+    # table it resolved. `pipeline._with_scope_choices` states the decision.
+    _decision_task = asyncio.create_task(
+        asyncio.to_thread(
+            guarded_scope_decision,
+            _survivor_spec.spec_id,
+            functools.partial(
+                decide_spec_scope,
+                _survivor_spec,
+                selection=state.scope_selection,
+                operations=state.operations,
+                coverage=state.coverage,
+            ),
+            operations=state.operations,
+            coverage=state.coverage,
+        )
+    )
+    try:
+        # The related reads run beside the streamed preview and the options below.
+        _survivor_id = _survivor_spec.spec_id
+        _related_read = related_read_for(
+            state,
+            stat_vars=_obs_svs,
+            measure_partition=grounded.cand_measure_partitions.get(_survivor_id),
+            places=grounded.cand_places[_survivor_id].roles.roles,
+            arcs=grounded.cand_role_axis_facts[_survivor_id][0].sv_arc_facts,
+        )
+        if state.bound_unit_outcome is not None:
+            # State the unit lexicon version. A streamed answer also states its preview's
+            # facets and warning with its immediate response. A flagged-unavailable carrier
+            # holds nothing to read and states `_UNIT_CHECK_NOT_PROBED`, and a composite
+            # reads its components' preview once restated.
+            _survivor_spec = with_unit_lexicon_version(_survivor_spec, state.bound_unit_outcome)
+            if state.stream_observations:
+                # An inline preview states its own warning, below.
+                _streamed = (
+                    _UNIT_CHECK_NOT_PROBED
+                    if _survivor_spec.resolved.available_at_place is False
+                    or (await _decision_task).composite
+                    else await asyncio.to_thread(_reader.observations)
+                )
+                _survivor_spec = _attach_observations(
+                    _survivor_spec, _streamed, state.warnings, include_points=False
+                )
+        # Keep this timing key identical to the single-shape path.
+        _options_t0 = now_ms()
+        _survivor_spec = await _attach_candidate_slot_options(state, grounded, _survivor_spec)
+        (_survivor_spec,) = await _attach_candidate_facet_options(state, grounded, [_survivor_spec])
+        _survivor_spec = await _attach_candidate_entity_options(state, grounded, _survivor_spec)
+        state.timing["options"] = now_ms() - _options_t0
+        _family = state.family_total_absent_departures((_survivor_spec,))
+        # Place-option tasks run only when `materialise_graph` is available.
+        _place_options_materialise_graph = state.materialise_graph
+        # Each launch reads the identity of the Spec it is given, a merged one included.
+        _relaunch_place_options_bound = functools.partial(
+            _relaunch_place_options,
+            state=state,
+            place_options_materialise_graph=cast(GraphReader, _place_options_materialise_graph),
+        )
+        _stream_place_options = (
+            state.stream_slot_options
+            and _place_options_materialise_graph is not None
+            and state.place_options_pool is not None
+        )
+        _place_options_task = (
+            _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
+        )
+        _survivor_spec = await with_related(_survivor_spec, _related_read)
+        # No await follows the observation task's launch. Passing it live to `RegionResult`
+        # keeps it reachable if cancellation follows.
+        _obs_task: asyncio.Task[_ObsProbeResult] | None = None
+        _obs_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
+        # A composite's preview reads each component once the answer is restated
+        # (`pipeline._with_composite_preview`).
+        state.scope_decision = await _decision_task
+        composite = state.scope_decision.composite
+        if not composite and state.stream_observations:
+            _obs_relaunch = _reader.relaunch(member_labels((_survivor_spec,)))
+            _obs_task = _obs_relaunch(_survivor_spec.spec_id)
+        elif not composite and state.include_observations:
+            _survivor_spec = _attach_observations(
+                _survivor_spec, await asyncio.to_thread(_reader.observations), state.warnings
+            )
+    finally:
+        # Cancel and await the decision so cancellation cannot detach it.
+        if not _decision_task.done():
+            _decision_task.cancel()
+            await asyncio.gather(_decision_task, return_exceptions=True)
     return RegionResult(
         variable_text=state.variable,
         status="definite",
@@ -655,6 +679,7 @@ async def _assemble_definite(
         place_options_relaunch=(_relaunch_place_options_bound if _stream_place_options else None),
         observations_task=_obs_task,
         observations_relaunch=_obs_relaunch,
+        preview_read=_preview,
         member_population=grounded.cand_populations.get(_survivor_spec.spec_id),
         answered_roles=grounded.cand_answered_roles[_survivor_spec.spec_id],
         measure_partition=grounded.cand_measure_partitions.get(_survivor_spec.spec_id),

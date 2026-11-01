@@ -105,7 +105,8 @@ def test_a_request_binding_no_place_with_no_data_anywhere_is_the_empty_result(
     assert minted.manifest.citation.sources == []
     assert {"empty_result", "un_system_unavailable"} <= set(_warning_codes(minted))
     (unavailable,) = (w for w in minted.manifest.warnings if w.code == "un_system_unavailable")
-    assert unavailable.message.endswith(f"No UN data was read for {_GRC}.")
+    assert unavailable.unserved_entities is not None
+    assert unavailable.unserved_entities.refs == [f"dcid:{_GRC}"]
 
 
 def test_a_request_binding_no_place_takes_its_un_countries_when_its_un_availability_fails(

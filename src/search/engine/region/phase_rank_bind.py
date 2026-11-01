@@ -58,7 +58,7 @@ from search.engine.binders.house_policy import (
 )
 from search.engine.clients.graph import family_ref
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads
 from search.engine.departures import qualifier_property
 from search.engine.envelope import _emit_step, _sum_usage, now_ms
 from search.engine.errors import GraphInfraError, LLMOutputRefused
@@ -5032,9 +5032,9 @@ async def _stray_requirements(
     elected answer, which drops the draft, leaves it unmet unless every member holds one.
     Its term is ``unbound`` with evidence ``"model"``, named by the values' labels joined
     by "and", each a menu shape's (`ShapeDraft.value_labels`), else the code
-    index's, else the graph's (`ResolveState.label_dcids`). When the graph's read fails,
-    the values it was to label are named by their dcid's tail in words (`_humanize_ref`)
-    and the lost read is noted (`note_degraded_read`).
+    index's, else the graph's (`ResolveState.label_dcids`), read under the fail-open budget
+    (`fail_open_reads`). When the graph's read is lost, the values it was to label are named
+    by their dcid's tail in words (`_humanize_ref`) and the lost read is noted.
 
     A set of two or more values adds one requirement per value (origin ``set_value``),
     named by its label: an answer that meets the set but whose selected members hold not
@@ -5057,12 +5057,13 @@ async def _stray_requirements(
             labels[value] = row.label
     unlabelled = list(dict.fromkeys(value for _prop, value in values if value not in labels))
     if unlabelled:
-        try:
+        read = [_humanize_ref(value, None) for value in unlabelled]
+        with fail_open_reads(
+            "stray value labels",
+            budget_s=settings().fail_open_read_budget_s,
+            about={"unlabelled": unlabelled},
+        ):
             read = await asyncio.to_thread(state.label_dcids, unlabelled)
-        except GraphInfraError as exc:
-            logger.warning("stray value labels read failed for %s: %s", unlabelled, exc)
-            note_degraded_read("stray value labels")
-            read = [_humanize_ref(value, None) for value in unlabelled]
         labels.update(zip(unlabelled, read, strict=True))
     by_prop: dict[str, list[str]] = {}
     for prop, value in values:

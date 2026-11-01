@@ -710,6 +710,44 @@ def test_a_computed_description_reads_its_inputs_records_in_one_transaction() ->
     assert labels[3] != "Input 3"
 
 
+def test_a_computed_description_credits_the_sources_its_inputs_records_hold() -> None:
+    """Each source the inputs' records credit is listed once, ahead of the inputs, and named
+    by the citation line."""
+    version = _Described("ops")
+    _store_record(version, _record(version.id, version.content_version, dimensions=None))
+    for held, refs in (
+        (NUMERATOR, ["provenance/A", "provenance/B"]),
+        (DENOMINATOR, ["provenance/B"]),
+    ):
+        stored = _record(*held, dimensions=None)
+        sources = [
+            SourceEvidence(
+                ref=ref,
+                name=f"Source {ref[-1]}",
+                licence=None,
+                downloaded=None,
+                pipeline_steps=None,
+            )
+            for ref in refs
+        ]
+        _store_record(
+            version,
+            stored.model_copy(
+                update={"evidence": stored.evidence.model_copy(update={"sources": sources})}
+            ),
+        )
+
+    body = version.body()
+
+    assert [source["ref"] for source in body["sources"]] == [
+        "provenance/A",
+        "provenance/B",
+        NUMERATOR[0],
+        DENOMINATOR[0],
+    ]
+    assert body["cite"]["text"].startswith("Source A and Source B (")
+
+
 def test_an_open_property_no_index_names_takes_its_graph_label() -> None:
     stat_var, recipient = definition_fixture._STAT_VAR, definition_fixture._RECIPIENT
     # The definition door's graph, with the property's name.

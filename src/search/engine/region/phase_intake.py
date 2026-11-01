@@ -25,9 +25,9 @@ from search.engine.interpret import Recall, recall
 from search.engine.place import expand_places
 from search.engine.region.place_roles import (
     PlaceAssignment,
-    SetChoice,
     bind_place_roles,
     held_party_words,
+    named_place,
     part_sets,
     place_key,
     set_choices,
@@ -223,7 +223,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         place_sets[name] = PlaceSet(
             name=name,
             kind="group",
-            node=None if node is None else PlaceNode(dcid=node.dcid, graph_type=node.graph_type),
+            node=None if node is None else PlaceNode.of_entity(node),
             label=None if node is None else labels.get(node.dcid),
             members=tuple(member.dcid for member in group.members),
             # The resolver states no type for a member the graph gives none.
@@ -239,7 +239,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         place_set = PlaceSet(
             name=name,
             kind="region" if region else "place",
-            node=PlaceNode(dcid=entity.dcid, graph_type=entity.graph_type),
+            node=PlaceNode.of_entity(entity),
             label=labels.get(entity.dcid) if region else None,
             members=None if expansion is None else tuple(expansion.children),
             member_type=None if expansion is None else expansion.child_type,
@@ -302,9 +302,10 @@ def _whole_total_sets(state: ResolveState) -> dict[str, PlaceSet]:
     A total of a side the part totals binds where the code index marks it on a side its
     dataset publishes (`place_roles.whole_total_candidates`), and a named one binds as a
     party on its side (`place_roles.bind_place_roles`). Its set asks role admission nothing
-    (`_prune_shapes_by_admission`): it holds no members, so it reads its node on any role
-    (`place_roles.set_choices`), and its node carries no graph type, so no graph read runs
-    for it."""
+    (`_prune_shapes_by_admission`): it holds no members, so it reads its node on the flow
+    roles that take it (`place_roles.set_choices`), as the code index lists it on its side,
+    and is otherwise unread, and its node carries no graph type, so no graph read runs for
+    it."""
     named = [dcid for dcids in state.whole_named.values() for dcid in dcids]
     axes = totalled_axes(state)
     rows = get_index().parties
@@ -480,8 +481,10 @@ async def _prune_shapes_by_admission(
     holds members (`place_roles.set_choices`) and the type of each party a word of the part
     can name (`ResolveState.party_sets`). The answers are recorded by role and type
     (`state.node_admissions`), so settling reads them in hand and a member type's class
-    walk runs beside a node type's. A set with no member needs no question of settling, and
-    is judged as before, a role and type at a time until one admits it.
+    walk runs beside a node type's. A set with no member needs no question of settling: it
+    is judged a role and type at a time until one admits it, and it reads its node only on
+    the flow roles that take the node's kind (`place_roles.set_choices`), so a shape that
+    leaves it unread is pruned.
 
     Return rejected-entity details only when all shapes fail, in query order. The fallback
     names all entities when each is admitted somewhere but no single shape admits all.
@@ -529,19 +532,24 @@ async def _prune_shapes_by_admission(
                     return True
         return False
 
-    def _readings(shape: ShapeDraft) -> Mapping[str, SetChoice | None]:
-        """The readings `shape` gives each set it assigns (`place_roles.set_choices`), from
-        the answers in hand; empty when the shape cannot assign the query's places."""
+    def _unread(shape: ShapeDraft) -> frozenset[str]:
+        """The places (`place_roles.named_place`) of the sets `shape` assigns and gives no
+        reading (`place_roles.set_choices`), from the answers in hand; empty when the shape
+        cannot assign the query's places. A place read on each end apart is unread when
+        either end is."""
         assignment = bind_place_roles(state, shape)
         if not isinstance(assignment, PlaceAssignment):
-            return {}
+            return frozenset()
         names = role_names_by_axis(shape)
 
         def admits(key: EntityRoleKey, graph_type: str) -> bool:
             role = "observationAbout" if key == "observationAbout" else names[key]
             return state.node_admissions[(role, graph_type)]
 
-        return set_choices(assignment, admits=admits)
+        choices = set_choices(assignment, admits=admits, index=get_index())
+        return frozenset(
+            named_place(s) for s in assignment.distinct_sets if choices[place_key(s)] is None
+        )
 
     survivors: list[ShapeDraft] = []
     # Every set some shape must serve, by place key, and whether one does.
@@ -549,12 +557,12 @@ async def _prune_shapes_by_admission(
     admitted_anywhere: dict[str, bool] = {}
     for shape in shapes:
         roles = shape.declared_roles or ("observationAbout",)
-        readings = _readings(shape)
+        unread = _unread(shape)
         shape_admits_all = True
         for place_set in sets_of[id(shape)]:
             key = place_key(place_set)
             judged[key] = place_set
-            served = readings.get(key, "node") is not None
+            served = key not in unread
             if served and await _admits_any(roles, place_set):
                 admitted_anywhere[key] = True
             else:

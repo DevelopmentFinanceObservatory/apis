@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import pytest
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxCapExceededError
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise import place_scope
@@ -359,6 +360,7 @@ class TestPlaceContext:
         context = UnsettledPlace(
             shape,
             PlaceAssignment(),
+            get_index(),
             stat_vars=tuple(shape.sv_arc_facts or {}),
             presence=ConsultedPresence(_PRESENCE),
         ).unread()

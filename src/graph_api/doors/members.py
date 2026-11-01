@@ -720,8 +720,9 @@ def classify_members_exception(exc: BaseException) -> ProblemSpec | None:
         # The node read that tells a held node from an unheld one refuses as the node route does.
         return classify_node_exception(exc)
     if isinstance(exc, GraphReadError):
-        logger.error("Graph members door's DCP read failed: %s", exc, exc_info=exc)
-        return graph_read_problem(exc)
+        return graph_read_problem(exc)._replace(
+            log=f"Graph members door's DCP read failed: {exc}", log_traceback=True
+        )
     return None
 
 

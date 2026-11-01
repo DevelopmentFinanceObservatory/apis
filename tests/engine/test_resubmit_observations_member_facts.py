@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from search.engine.region import promote_finalize, resolve_spec_resubmit
+from search.engine.region import resolve_spec_resubmit
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.region.state import EngineOptions
 from search.models import ResubmitIdentityPayload
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
@@ -79,7 +80,7 @@ def test_resubmit_promote_threads_member_facts_into_build_observations(monkeypat
         captured_kwargs.append(kwargs)
         return None, None
 
-    with patch.object(promote_finalize, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,

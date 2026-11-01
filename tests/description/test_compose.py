@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from code_index import CodeIndex
-from description.compose import change_step
+from description.compose import change_step, describe_card, describe_version
 from description.facts import (
     CaveatFact,
     DescriptionRecord,
@@ -24,22 +24,26 @@ from description.facts import (
     PipelineStep,
     RoleCount,
     SourceEvidence,
+    SourceUnitCount,
 )
-from description.steps import SimpleUnit, Step, StepRef, Summed
+from description.steps import SimpleUnit, Step, StepRef, Summed, VersionRef
 from description.stored import TEXT_MAX_LENGTH
-from description.vocabulary import Vocabulary, build_vocabulary
+from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from tests.description.test_accept_compose import (
     _BASIC_HEALTH,
     _EDUCATION,
     _FIXED,
+    _GNI,
     _GRANT,
     _HEALTH,
     _HEALTH_POLICY,
     _INDEX,
     _MEASURES,
+    _ODA,
     _SECTOR,
     _WORKED_DIMENSIONS,
     _checked,
+    _computed_record,
     _dataset_record,
     _describe_card,
     _describe_version,
@@ -47,6 +51,8 @@ from tests.description.test_accept_compose import (
     _evidence,
     _growth_record,
     _quotient_record,
+    _quotient_step,
+    _retrieve,
     _selection,
     _series,
     _variables,
@@ -661,7 +667,8 @@ def test_a_citation_line_credits_the_publishers_then_the_dfo(
 ) -> None:
     """The line credits the organisations that first published the data and the year, then
     names the DFO as the route: "via" where it passes their figures through, "processed by"
-    where it converted, summed or computed them. A computed version credits its inputs."""
+    where it converted, summed or computed them. A computed version given none of its inputs'
+    records credits its inputs."""
     served = _describe_version(record, _words_labelling({_WDI: "World Development Indicators"}))
 
     assert served["cite"]["text"] == text
@@ -690,6 +697,226 @@ def test_a_card_cites_its_own_steps(steps: list[Step], route: str) -> None:
     assert card["cite"]["text"] == (
         f"OECD Creditor Reporting System (CRS) (2026), {route} the Development Finance Observatory"
     )
+
+
+_WORLD_BANK = "dc/s/WorldBank"
+
+
+def _input_record(version: VersionRef, *refs: str) -> DescriptionRecord:
+    """The record of the dataset version `version` names, crediting the sources `refs` name
+    under a licence named for each."""
+    sources = [
+        SourceEvidence(
+            ref=ref, name=None, licence=f"{ref} licence", downloaded=None, pipeline_steps=None
+        )
+        for ref in refs
+    ]
+    return _dataset_record(
+        variables=_variables(_WORKED_DIMENSIONS),
+        id=version.id,
+        content_version=version.content_version,
+        evidence=_evidence(sources=sources),
+    )
+
+
+def _words_with_wdi() -> Vocabulary:
+    """Today's words, with World Development Indicators named and published by the World
+    Bank."""
+    words = _words()
+    return build_vocabulary(
+        index=_INDEX,
+        measure_index=_MEASURES,
+        labels={**words.labels, _WDI: "World Development Indicators", _WORLD_BANK: "World Bank"},
+        sources={
+            **words.sources,
+            _WDI: SourceDocumentFacts(
+                publisher=_WORLD_BANK, last_downloaded="2026-10-01", next_release=None
+            ),
+        },
+        graph_generation="gen-1",
+        catalogue_build="ocb_20260927",
+    )
+
+
+@pytest.mark.parametrize(
+    ("gni_sources", "credited", "text"),
+    [
+        pytest.param(
+            [_WDI],
+            [
+                ("provenance/OECDCreditorReportingSystem", "OECD Creditor Reporting System (CRS)"),
+                (_WDI, "World Development Indicators"),
+            ],
+            "OECD Creditor Reporting System (CRS) and World Development Indicators (2026),"
+            " processed by the Development Finance Observatory",
+            id="two-publishers",
+        ),
+        pytest.param(
+            ["provenance/OECDCreditorReportingSystem"],
+            [("provenance/OECDCreditorReportingSystem", "OECD Creditor Reporting System (CRS)")],
+            "OECD Creditor Reporting System (CRS) (2026), processed by the Development Finance"
+            " Observatory",
+            id="one-shared-source",
+        ),
+    ],
+)
+@pytest.mark.parametrize(("kind", "series"), [("version", 38), ("card", 2)])
+def test_a_computed_version_credits_the_sources_of_its_inputs(
+    kind: str,
+    series: int,
+    gni_sources: list[str],
+    credited: list[tuple[str, str]],
+    text: str,
+) -> None:
+    """A quotient of two inputs, and a card drawing two of its series, which name no source,
+    list each source its inputs credit once, with its publisher, licence, series and
+    document, ahead of the inputs and their description links, and cite those sources."""
+    inputs = [
+        _input_record(_ODA, "provenance/OECDCreditorReportingSystem"),
+        _input_record(_GNI, *gni_sources),
+    ]
+    record = _quotient_record()
+    if kind == "version":
+        served = _checked(describe_version(record, _words_with_wdi(), inputs=inputs))
+    else:
+        drawn = [
+            _drawn(name, {"recipient": name}).model_copy(update={"source": None})
+            for name in ("country/NGA", "country/SSD")
+        ]
+        served = _checked(
+            describe_card(
+                record,
+                _selection(*drawn),
+                _words_with_wdi(),
+                component_id="cmp_Ab3dE5gH7k",
+                revision=2,
+                inputs=inputs,
+            )
+        )
+
+    *sources, oda, gni = served["sources"]
+    assert [(source["ref"], source["label"]) for source in sources] == credited
+    for source in sources:
+        assert source["publisher"] is not None
+        assert source["licence"] == f"{source['ref']} licence"
+        assert source["series"] == series
+        assert source["documentation"] == f"/api/graph/documentation/{source['ref']}"
+    assert [oda["ref"], gni["ref"]] == [_ODA.id, _GNI.id]
+    assert gni["description"] == f"/api/datasets/{_GNI.id}/{_GNI.content_version}/description"
+    assert served["cite"]["text"] == text
+    assert [item["id"] for item in served["cite"]["inputs"]] == [_ODA.id, _GNI.id]
+    assert not [gap for gap in served["gaps"] if gap.startswith("sources")]
+
+
+def test_a_computed_versions_credits_past_the_schemas_bound_keep_the_most_drawn() -> None:
+    """Two inputs crediting 32 sources each would make 66 entries, past the 64 the kit's
+    schema allows. Both inputs stay, with the 62 credits most series draw on: the two the
+    version's series name besides those naming none, though listed last, are among them."""
+    oda_refs = [f"provenance/Oda{n:02d}" for n in range(32)]
+    gni_refs = [f"provenance/Gni{n:02d}" for n in range(32)]
+    drawn_most = gni_refs[-2:]
+    record = _quotient_record()
+    assert record.series.by_source_unit is not None
+    record = record.model_copy(
+        update={
+            "series": record.series.model_copy(
+                update={
+                    "by_source_unit": [
+                        *record.series.by_source_unit,
+                        *(SourceUnitCount(source=ref, unit=None, series=1) for ref in drawn_most),
+                    ]
+                }
+            )
+        }
+    )
+    inputs = [_input_record(_ODA, *oda_refs), _input_record(_GNI, *gni_refs)]
+
+    words = _words()
+    named = build_vocabulary(
+        index=_INDEX,
+        measure_index=_MEASURES,
+        labels={
+            **words.labels,
+            _WORLD_BANK: "World Bank",
+            **{ref: ref[-5:] for ref in [*oda_refs, *gni_refs]},
+        },
+        sources={
+            **words.sources,
+            **{ref: SourceDocumentFacts(publisher=_WORLD_BANK) for ref in [*oda_refs, *gni_refs]},
+        },
+        graph_generation="gen-1",
+        catalogue_build="ocb_20260927",
+    )
+
+    served = _checked(describe_version(record, named, inputs=inputs))
+
+    *credited, oda, gni = served["sources"]
+    assert [oda["ref"], gni["ref"]] == [_ODA.id, _GNI.id]
+    refs = [source["ref"] for source in credited]
+    assert len(refs) == 62
+    assert set(drawn_most) <= set(refs)
+    assert refs == [ref for ref in [*oda_refs, *gni_refs] if ref in refs], "in credit order"
+
+
+_POP = VersionRef(
+    id="spec_9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+    content_version="cv_9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+    label="Population",
+)
+
+
+def test_a_card_credits_only_the_inputs_its_drawn_variable_was_computed_from() -> None:
+    """A join of ODA per GNI and ODA per person: a card drawing only ODA per GNI credits the
+    sources of the ODA and GNI inputs, lists those two inputs, and leaves the population
+    input and its source out of its sources and citation line."""
+    per_gni = _quotient_step().model_copy(update={"stat_var": "OdaPerGni"})
+    per_person = _quotient_step().model_copy(
+        update={
+            "id": "s5",
+            "inputs": {"denominator": "s4", "numerator": "s1"},
+            "stat_var": "OdaPerPerson",
+        }
+    )
+    join = Step(id="s6", op="join", inputs={"left": "s3", "right": "s5"}, policy="join_inner")
+    record = _computed_record(
+        steps=[
+            _retrieve("s1", _ODA),
+            _retrieve("s2", _GNI),
+            per_gni,
+            _retrieve("s4", _POP),
+            per_person,
+            join,
+        ],
+        caveats=[],
+        inputs=[_ODA, _GNI, _POP],
+    )
+    inputs = [
+        _input_record(_ODA, "provenance/OECDCreditorReportingSystem"),
+        _input_record(_GNI, _WDI),
+        _input_record(_POP, "provenance/UNPopulation"),
+    ]
+    drawn = _drawn("s_nga", {"stat_var": "OdaPerGni", "recipient": "country/NGA"}).model_copy(
+        update={"source": None}
+    )
+
+    served = _checked(
+        describe_card(
+            record,
+            _selection(drawn),
+            _words_with_wdi(),
+            component_id="cmp_Ab3dE5gH7k",
+            revision=2,
+            inputs=inputs,
+        )
+    )
+
+    assert [(source["ref"], source.get("series")) for source in served["sources"]] == [
+        ("provenance/OECDCreditorReportingSystem", 1),
+        (_WDI, 1),
+        (_ODA.id, None),
+        (_GNI.id, None),
+    ]
+    assert "UNPopulation" not in served["cite"]["text"]
 
 
 def test_a_citation_line_past_its_bound_is_clipped() -> None:

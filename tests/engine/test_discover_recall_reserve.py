@@ -6,10 +6,12 @@ import time
 
 import pytest
 
+from dfo_platform.request_deadline import bounded_deadline
 from search.engine.config import settings
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import STANDARD_SHAPE_LABEL, ShapeDraft
 from tests.engine._discover_fixtures import _std_sv_arcs
+from tests.engine._fail_open_deadline import assert_fail_open_deadline
 from tests.fixtures import FakeGraph
 
 
@@ -160,7 +162,7 @@ class TestDeriveShapesConfirmsEveryCandidate:
         cap, and the rival rows past the cut all reach a shape, with the leaves of the
         `topic_expand_max_roots` best Topics; a shape holding only rivals is marked as one.
         The availability probe reads each confirmed candidate once, under the part's
-        deadline, so it reads at most `detect_k + topic_expand_max_roots *
+        deadline or the fail-open budget, so it reads at most `detect_k + topic_expand_max_roots *
         topic_expand_max_members` dcids plus the rivals."""
         config = settings()
         topics = [f"dc/topic/T{t}" for t in range(config.topic_expand_max_roots + 1)]
@@ -195,12 +197,13 @@ class TestDeriveShapesConfirmsEveryCandidate:
         probed: list[tuple[list[str], float | None]] = []
 
         def recording(stat_vars, entities, needs_dates=False, **kwargs):
-            probed.append((list(stat_vars), kwargs.get("deadline")))
+            probed.append((list(stat_vars), bounded_deadline(kwargs.get("deadline"))))
             return probe(stat_vars, entities, needs_dates, **kwargs)
 
         graph.observation_facets_batch = recording
         rival_svs = frozenset(reals[len(reals) - rivals :])
         deadline = time.monotonic() + 60
+        started = time.monotonic()
 
         shapes = derive_shapes(
             confirmed_svs=[*topics, *reals],
@@ -224,7 +227,9 @@ class TestDeriveShapesConfirmsEveryCandidate:
             + config.topic_expand_max_roots * config.topic_expand_max_members
             + rivals
         )
-        assert probe_deadline == deadline
+        # The probe fails open, so it reads under the fail-open budget or the part's deadline,
+        # whichever ends first.
+        assert_fail_open_deadline(probe_deadline, requested=deadline, started=started)
 
 
 class TestDeriveShapesSdgLabelUnchanged:

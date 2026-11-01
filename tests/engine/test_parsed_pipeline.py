@@ -1305,15 +1305,19 @@ class TestPinnedDcidC2:
         assert result.parts[1].status == "no_data", result.parts[1]
         assert result.parts[1].no_data.reason == "no_observations"
 
-    def test_one_part_posting_one_text_with_both_members_values_refuses_request_invalid(self):
-        """One text asked for as its members and as a whole in one part refuses
-        `request_invalid`."""
+    @pytest.mark.parametrize(
+        "whole",
+        [ParsedEntity(text="Africa", role_text="from"), ParsedEntity(text="Africa")],
+        ids=["same-end", "no-end"],
+    )
+    def test_one_text_with_both_members_values_on_one_end_refuses_request_invalid(
+        self, whole: ParsedEntity
+    ):
+        """One text asked for as its members and as a whole on one end of one part, or by
+        a row on no end, refuses `request_invalid`."""
         part = ParsedPart(
-            variable_text="aid from Africa to Africa",
-            entities=[
-                ParsedEntity(text="Africa", role_text="from", members=True),
-                ParsedEntity(text="Africa", role_text="to"),
-            ],
+            variable_text="aid from Africa",
+            entities=[ParsedEntity(text="Africa", role_text="from", members=True), whole],
         )
         with pytest.raises(EngineInputError) as exc_info:
             _resolve_parsed([part])

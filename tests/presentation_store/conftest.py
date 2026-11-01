@@ -241,6 +241,26 @@ class FakeTransaction:
                     row["frame_rendering"] = new[0]
             return [{"component_id": component_id} for component_id, _row in matched]
 
+        if sql.startswith("SELECT DISTINCT ON (component_id) component_id, revision, "):
+            # `presentation_store.store.described_heads`.
+            after, limit = params
+            heads = []
+            for component_id in sorted(s.component_revisions):
+                rows = s.component_revisions[component_id]
+                if component_id <= cast(str, after) or not rows:
+                    continue
+                head = max(rows, key=lambda row: row["revision"])
+                heads.append(
+                    {
+                        "component_id": component_id,
+                        "revision": head["revision"],
+                        "frame_ref": head["stored_intent"].get("frame_ref"),
+                        "created_at": head["created_at"],
+                        "described": isinstance(head["resolved_payload"].get("description"), dict),
+                    }
+                )
+            return heads[: cast(int, limit)]
+
         if sql.startswith("SELECT revision, blocks FROM presentation.composition_revision"):
             (composition_id,) = params
             revisions = s.composition_revisions.get(composition_id, [])

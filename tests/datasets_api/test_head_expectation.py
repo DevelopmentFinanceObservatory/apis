@@ -7,6 +7,7 @@ real. Graph, SDMX, artifact, and head stores are fakes.
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import itertools
 import threading
 from collections.abc import Callable, Iterator
@@ -21,6 +22,7 @@ from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import HeadFence, SubjectHead
 from dc_sdmx import SdmxClient
+from materialise.trace import UNKNOWN_FAMILY, RecordedFamily
 from origin_catalogue.context import current_source_scope
 from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
@@ -32,7 +34,11 @@ from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import FakeSnapshotReader
-from ._version_record_store import FakeVersionRecordDatasetStore, materialisation_record
+from ._version_record_store import (
+    TEST_BASIS,
+    FakeVersionRecordDatasetStore,
+    materialisation_record,
+)
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
@@ -189,6 +195,8 @@ class _FakeHeadStore:
         self,
         *,
         materialisation,
+        family,
+        basis,
         expected_materialisation_id: int | None,
         fence=None,
     ) -> SubjectHead | None:
@@ -216,34 +224,45 @@ class _FakeHeadStore:
             materialised_at=now,
             materialisation_id=next(self._runs),
             dependencies=materialisation.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=now, basis=basis),
         )
         self._heads[subject_id] = written
         return written
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+    def confirm_head(
+        self, *, subject_id: str, content_version: str, family, basis
+    ) -> SubjectHead | None:
         existing = self._heads.get(subject_id)
         if existing is None or existing.content_version != content_version:
             return None
+        confirmed_at = datetime.now(UTC)
         written = SubjectHead(
             subject_id=existing.subject_id,
             content_version=existing.content_version,
-            confirmed_at=datetime.now(UTC),
+            confirmed_at=confirmed_at,
             materialised_at=existing.materialised_at,
             materialisation_id=existing.materialisation_id,
             dependencies=existing.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=confirmed_at, basis=basis),
         )
         self._heads[subject_id] = written
         return written
 
     def age_head(self, subject_id: str, *, age: timedelta) -> None:
         existing = self._heads[subject_id]
+        confirmed_at = datetime.now(UTC) - age
         self._heads[subject_id] = SubjectHead(
             subject_id=existing.subject_id,
             content_version=existing.content_version,
-            confirmed_at=datetime.now(UTC) - age,
+            confirmed_at=confirmed_at,
             materialised_at=datetime.now(UTC) - age,
             materialisation_id=existing.materialisation_id,
             dependencies=existing.dependencies,
+            family=(
+                dataclasses.replace(existing.family, confirmed_at=confirmed_at)
+                if existing.family is not None
+                else None
+            ),
         )
 
 
@@ -299,6 +318,8 @@ def test_definition_get_expects_the_head_it_read_before_its_own_fetch() -> None:
     def _second_writer() -> None:
         current = head_store.read_head(spec_id)
         head_store.advance_head(
+            family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
             materialisation=materialisation_record(
                 subject_id=spec_id, content_version="racer-version"
             ),
@@ -349,6 +370,8 @@ def test_mint_reprime_expects_the_head_it_read_before_its_own_fetch() -> None:
     def _second_writer() -> None:
         current = head_store.read_head(spec_id)
         head_store.advance_head(
+            family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
             materialisation=materialisation_record(
                 subject_id=spec_id, content_version="racer-version"
             ),

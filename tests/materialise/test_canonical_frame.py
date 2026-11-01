@@ -8,6 +8,7 @@ import io
 import json
 
 import pyarrow.parquet as pq
+import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
 
 import materialise.formats as materialise_formats
@@ -21,7 +22,7 @@ from materialise.formats import (
     read_stored_frame,
     write_canonical_frame,
 )
-from materialise.frame_build import build_frame
+from materialise.frame_build import ParquetFrameSink, build_frame
 
 _LARGE_VALUES = (9007199254740993.0, 1.2345678901234567e19, -1.2345678901234567e17, 1e21, -0.0)
 """Whole values at and above 2**53, where a double's exact integer and the digits JCS writes
@@ -82,6 +83,36 @@ def test_the_bytes_depend_on_the_rows_and_not_on_their_chunks():
     chunked = _write(_chunks_of(frame, 7))
 
     assert whole == chunked
+
+
+_RECIPE_UNIT = {"currency": "USD", "prices": "constant", "base_year": 2020, "recipe": "recipe-1"}
+
+
+@pytest.mark.parametrize("later_unit", [_RECIPE_UNIT, "USD"], ids=["recipe", "plain"])
+def test_a_mint_sink_reads_every_chunk_back_in_the_whole_frames_unit_layout(later_unit):
+    """A chunk takes the recipe `unit` layout only when its own cells carry a recipe, so a
+    mint's first chunk can lack the layout a later chunk needs. The canonical frame of what the
+    sink reads back is the whole frame's."""
+    rows = [
+        {
+            "stat_var": stat_var,
+            "recipient": "country/KEN",
+            "time_period": "2020",
+            "value": 1.0,
+            "unit": unit,
+            "measurementMethod": None,
+            "provenance": "OECD_CRS",
+        }
+        for stat_var, unit in (("dcid:A", "USD"), ("dcid:B", later_unit))
+    ]
+    chunks = [build_frame(role_keys=("recipient",), rows=[row]) for row in rows]
+    sink = ParquetFrameSink()
+    for chunk in chunks:
+        sink.write(chunk.table)
+
+    read = sink.finish(columns=chunks[0].columns)
+
+    assert _write(read()) == _write((build_frame(role_keys=("recipient",), rows=rows),))
 
 
 def test_reading_the_bytes_back_gives_the_frame():

@@ -224,7 +224,7 @@ def _frame_chunks(
     with pq.ParquetWriter(sink, frames[0].table.schema) as writer:
         for frame in frames:
             writer.write_table(frame.table)
-    return ParquetFrameChunks(sink.getvalue(), columns=_FRAME_COLUMNS)
+    return ParquetFrameChunks(sink.getvalue(), columns=_FRAME_COLUMNS, recipe=False)
 
 
 def _csv(body: bytes) -> list[list[str]]:

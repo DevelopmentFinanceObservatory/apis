@@ -22,13 +22,14 @@ from entity_resolution.shared import shared_membership_policy
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.interpret import PinnedResolved
-from search.engine.region.decisions import PlaceSetTooLargeError
+from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
 from search.engine.region.phase_intake import oecd_reading
 from search.engine.region.place_context import PlaceContext, UnsettledPlace
 from search.engine.region.place_roles import (
     PlaceAssignment,
     PlaceLists,
     bind_place_roles,
+    bound_entity_refs,
     group_request_names,
     part_sets,
     place_key,
@@ -103,43 +104,80 @@ def _settle(
     admits: Callable[[str, str], bool] = _admits_every_type,
     bound: int | None = None,
 ) -> PlaceLists:
-    return settle_place_sets(assignment, admits=admits, has_data=has_data, bound=bound)
+    return settle_place_sets(
+        assignment, admits=admits, index=get_index(), has_data=has_data, bound=bound
+    )
 
 
 # One set on two roles.
 
 
+_EU_NODE = "EuropeanUnion"
+
+
 @pytest.mark.parametrize(
-    ("rows", "refused_role", "expected"),
+    ("place_set", "rows", "refused_role", "expected"),
     [
-        pytest.param([("africa", "africa")], None, ("africa",), id="node-holds-rows-on-both-roles"),
         pytest.param(
-            [("africa", _KEN), (_GHA, "africa")],
+            _EU, [(_EU_NODE, _EU_NODE)], None, (_EU_NODE,), id="node-holds-rows-on-both-roles"
+        ),
+        pytest.param(
+            _EU,
+            [(_EU_NODE, _FRA), (_DEU, _EU_NODE)],
             None,
-            (_GHA, _KEN, _TZA),
+            (_DEU, _FRA),
             id="node-holds-rows-on-one-role-at-a-time",
         ),
         pytest.param(
-            [("africa", "africa")],
+            _EU,
+            [(_EU_NODE, _EU_NODE)],
             "destination",
-            (_GHA, _KEN, _TZA),
+            (_DEU, _FRA),
             id="one-role-refuses-the-node",
+        ),
+        pytest.param(
+            _AFRICA,
+            [("africa", "africa")],
+            None,
+            (_GHA, _KEN, _TZA),
+            id="the-provider-role-takes-no-continent",
         ),
     ],
 )
-def test_a_set_on_two_roles_takes_one_reading(rows, refused_role, expected) -> None:
+def test_a_set_on_two_roles_takes_one_reading(place_set, rows, refused_role, expected) -> None:
     """A set named once that fills both flow roles binds its node only when both roles
-    admit the node's type and the series holds rows with the node on both. Otherwise it
-    binds its members on both."""
-    assignment = PlaceAssignment(sets={"origin": (_AFRICA,), "destination": (_AFRICA,)})
+    admit the node, by its type and by its kind (`role_kinds.role_takes`), and the series
+    holds rows with the node on both. Otherwise it binds its members on both. No release
+    lists a continent as a provider, so Africa binds its members though its node holds rows
+    on both roles."""
+    assignment = PlaceAssignment(sets={"origin": (place_set,), "destination": (place_set,)})
+    node = cast(PlaceNode, place_set.node)
 
     settled = _settle(
         assignment,
         _flow_holds(*rows),
-        admits=lambda key, graph_type: not (key == refused_role and graph_type == "Continent"),
+        admits=lambda key, graph_type: not (key == refused_role and graph_type == node.graph_type),
     )
 
     assert settled == {"origin": expected, "destination": expected}
+
+
+def test_a_set_with_no_members_reads_its_node_only_on_a_flow_role_that_takes_it() -> None:
+    """A set with no members reads its node. Kenya, a country, does so on the provider role,
+    but a continent the membership policy holds no members for has no reading there, since
+    the provider role takes no continent (`role_kinds.role_takes`), so settling refuses it
+    before any read."""
+    reads: list[PlaceLists] = []
+    africa = PlaceSet(name="Africa", kind="region", node=PlaceNode("africa", "Continent"))
+
+    def has_data(places: PlaceLists) -> bool:
+        reads.append(places)
+        return True
+
+    assert _settle(PlaceAssignment(sets={"origin": (_KENYA,)}), has_data) == {"origin": (_KEN,)}
+    with pytest.raises(PlaceSetNotAdmittedError):
+        _settle(PlaceAssignment(sets={"origin": (africa,)}), has_data)
+    assert reads == []
 
 
 def test_a_node_no_role_admits_is_not_read() -> None:
@@ -906,6 +944,44 @@ def test_a_subject_reads_a_graph_region_as_the_graph_does() -> None:
     }
 
 
+def test_a_region_split_by_end_reads_as_the_oecds_on_the_recipient_end_alone() -> None:
+    """Aid from sub-Saharan African countries to sub-Saharan Africa, summed on the CRS. The
+    recipient end reads the OECD's region and binds its members, Sudan among them, and its
+    residuals. The provider end binds the graph region's members, and the text's ref and
+    the provider's group name the graph region, after the recipient's registry group."""
+    name = "sub-Saharan Africa"
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD, reading="members")
+    state = _state([region])
+    state.entity_roles = {
+        name: [
+            DoorRole(axis="origin", span=name, members=True),
+            DoorRole(axis="destination", span=name),
+        ]
+    }
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=(_CRS,))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    places = _settle(assignment, _flow_holds((_KEN, _SDN)))
+    graph_members = (_GHA, _KEN, _TZA)
+    assert places == {
+        "origin": graph_members,
+        "destination": tuple(sorted((_GHA, _KEN, _SDN, _TZA, *_SSA_RESIDUALS))),
+    }
+    roles = settled_roles(shape, assignment, places)
+    assert [
+        (group.dcid, group.group_id, group.member_dcids)
+        for group in request_named_groups(state, roles)
+    ] == [
+        (None, "groups/OECD.DAC.Region.SouthOfSahara", {_GHA, _KEN, _SDN, _TZA}),
+        ("SubSaharanAfrica", None, set(graph_members)),
+    ]
+    state.places_bound = True
+    state.place = SimpleNamespace(roles=roles)
+    assert bound_entity_refs(state) == {name: ("SubSaharanAfrica", _GHA, _KEN, _SDN, _TZA)}
+
+
 # Settling over a Spec's own read.
 
 _SERIES = "Amount_SettleSeries"
@@ -965,6 +1041,7 @@ def _settled_read(
     unsettled = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": tuple(sets)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
     )
 
@@ -1068,11 +1145,13 @@ def test_the_context_before_the_read_holds_each_undecided_set_at_its_members(
     undecided = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": (_AFRICA,)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
     )
     refused_node = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": (_AFRICA,)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Country")}),
     )
 

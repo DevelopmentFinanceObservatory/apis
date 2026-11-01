@@ -76,7 +76,14 @@ _ARTICLES = frozenset({"the", "a", "an", "le", "la", "el"})
 _FILLER_BEFORE_SOURCE = _ARTICLES | {"from"}
 """Words that may stand between a cue and the source it introduces."""
 
-_SOURCE_CUES: tuple[tuple[str, ...], ...] = (("according", "to"), ("selon",), ("según",))
+_SOURCE_CUES: tuple[tuple[str, ...], ...] = (
+    ("according", "to"),
+    ("as", "reported", "to"),
+    ("reported", "to"),
+    ("as", "published", "by"),
+    ("selon",),
+    ("según",),
+)
 """The word runs that, just before an organisation, make it the source of the numbers."""
 
 _DATA_WORDS = frozenset(
@@ -377,18 +384,19 @@ def _stretch_attach(
 class SourceScan:
     """What `scan_sources` reads in a query: each measure's source mentions
     (`per_measure`, parallel to the measures), the entity spans a source took
-    (`source_entities`, a subset of the spans passed in), which are no entity, and the
+    (`source_entities`, a subset of the spans passed in), which are no entity, the
     stretches that leave out sources and nothing else (`source_stretches`), which their
-    mentions apply. A span is taken when it occurs in the query and a source covers every
-    occurrence of it that lies inside no longer entity span's. `stretch_targets` runs
-    parallel to the stretches: the positions of the measures each qualifies, read from the
-    clause its blank lies in (`_stretch_attach`), every measure for a stretch with no
-    blank."""
+    mentions apply, and every hit it read (`hits`), in query order. A span is taken when it
+    occurs in the query and a source covers every occurrence of it that lies inside no longer
+    entity span's. `stretch_targets` runs parallel to the stretches: the positions of the
+    measures each qualifies, read from the clause its blank lies in (`_stretch_attach`),
+    every measure for a stretch with no blank."""
 
     per_measure: list[tuple[SourceMention, ...]]
     source_entities: frozenset[str]
     source_stretches: frozenset[str] = frozenset()
     stretch_targets: tuple[tuple[int, ...], ...] = ()
+    hits: tuple[SourceHit, ...] = ()
 
 
 def left_out_sources(
@@ -492,17 +500,42 @@ def scan_sources(
         source_entities=source_entities,
         source_stretches=frozenset(source_stretches),
         stretch_targets=tuple(stretch_targets),
+        hits=tuple(read),
     )
 
 
-def source_phrases(phrases: Sequence[str], mentions: Sequence[SourceMention]) -> set[str]:
-    """The `phrases` that only name one of `mentions`: their words, less cues, articles and
-    data words, lie within its words ("selon le SNPC", "IMF"). The source mention applies
-    them, so they are no qualifier left unapplied."""
-    named = [_folded(mention.text or "") for mention in mentions]
-    covered = set()
-    for phrase in phrases:
-        rest = tuple(word for word in _folded(phrase) if word not in _SOURCE_PHRASE_WORDS)
-        if rest and any(_holds(words, rest) for words in named):
-            covered.add(phrase)
-    return covered
+def source_phrases(phrases: Sequence[str], *, query: str, hits: Sequence[SourceHit]) -> set[str]:
+    """The `phrases` a source the query asks for applies, so they are no qualifier left
+    unapplied: an occurrence of the phrase in `query` holds one of the included `hits` with
+    nothing before it but one cue that makes it the source (`_SOURCE_CUES`, `_INCLUSION_CUES`)
+    and the fillers a cue may take ("from", articles), and nothing after it but data words:
+    "IMF", "from the CRS", "selon le SNPC", "as reported to the DAC", "the DAC2a figures".
+    Any other word asks for more than the source, as "April 2025" names one edition in
+    "from the April 2025 World Economic Outlook" and "commitments" a measure in "commitments
+    from the CRS", and the source applies none of it. A hit lies in the phrase the part it
+    qualifies dropped, so a source another part names applies nothing here, and a source the
+    query leaves out applies nothing."""
+    words = _words(query)
+    included = [hit for hit in hits if hit.polarity == "include"]
+    return {
+        phrase
+        for phrase in phrases
+        for start, end in _occurrences(phrase, words)
+        for hit in included
+        if start <= hit.start
+        and hit.end <= end
+        and _introduces([w.folded for w in words if start <= w.start and w.end <= hit.start])
+        and all(w.folded in _DATA_WORDS for w in words if hit.end <= w.start and w.end <= end)
+    }
+
+
+def _introduces(before: Sequence[str]) -> bool:
+    """Whether the words `before` a source introduce it and say nothing else: at most one
+    cue (`_SOURCE_CUES`, `_INCLUSION_CUES`) at their start, then fillers alone
+    (`_FILLER_BEFORE_SOURCE`)."""
+    for cue in ((), *_SOURCE_CUES, *_INCLUSION_CUES):
+        if tuple(before[: len(cue)]) == cue and all(
+            word in _FILLER_BEFORE_SOURCE for word in before[len(cue) :]
+        ):
+            return True
+    return False

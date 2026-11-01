@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -19,6 +19,7 @@ from code_index.types import DatasetDeclaration, StatVarRow
 from dataset_store.errors import PoolTimeoutError
 from datasets_api import maintenance
 from datasets_api.warning_backfill import (
+    PAGE_ROWS,
     Readers,
     WarningRow,
     run_backfill_warnings,
@@ -173,46 +174,56 @@ def _warning(named: Sequence[str], more: int = 0) -> dict[str, object]:
 
 
 class _Store:
-    """Version rows in memory. `fetch_all` answers the task's selection and `fetch_one` its
-    update, holding the row to the column's and the body's warnings where the statement names
-    each, and writing the body's where it sets it."""
+    """Version rows in memory. `fetch_all` answers a page of the task's selection, failing a read
+    asking for more than `page_rows`, and `fetch_one` its count and its update, holding the row
+    to the column's and the body's warnings where the statement names each, and writing the
+    body's where it sets it."""
 
-    def __init__(self, rows: Sequence[Mapping[str, Any]]) -> None:
+    def __init__(self, rows: Sequence[Mapping[str, Any]], *, page_rows: int = PAGE_ROWS) -> None:
         self.rows = {(row["subject_id"], row["content_version"]): dict(row) for row in rows}
+        self.page_rows = page_rows
         self.updates = 0
 
     @contextmanager
     def transaction(self) -> Iterator[_Store]:
         yield self
 
-    def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
+    def _selected(self, sql: str, params: Sequence[object]) -> list[Mapping[str, Any]]:
         code, pattern, new_format = params
         assert "jsonb_array_elements(warnings)" in sql, sql
 
-        def matches(warning: Mapping[str, Any]) -> bool:
-            if warning["code"] != code:
+        def matches(warning: object) -> bool:
+            if not isinstance(warning, Mapping) or warning.get("code") != code:
                 return False
-            if re.search(str(pattern), warning["message"]):
+            if re.search(str(pattern), str(warning.get("message"))):
                 return True
             return bool(new_format) and (
                 "off_cadence_members" in warning or "out_of_window_members" in warning
             )
 
-        assert "ORDER BY subject_id, recorded_at, content_version" in sql, sql
+        return sorted(
+            (row for row in self.rows.values() if any(map(matches, row["warnings"]))),
+            key=_key,
+        )
+
+    def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
+        assert sql.endswith("ORDER BY subject_id, content_version LIMIT %s"), sql
+        *after, limit = params[3:]
+        assert isinstance(limit, int)
+        assert limit <= self.page_rows, f"a read asked for {limit} rows"
         return [
             {
                 **row,
                 "warnings": json.loads(json.dumps(row["warnings"])),
                 "body_warnings": json.loads(json.dumps(row["immutable_body"].get("warnings"))),
             }
-            for row in sorted(
-                self.rows.values(),
-                key=lambda row: (row["subject_id"], row["recorded_at"], row["content_version"]),
-            )
-            if any(matches(warning) for warning in row["warnings"])
-        ]
+            for row in self._selected(sql, params[:3])
+            if not after or _key(row) > tuple(after)
+        ][:limit]
 
     def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
+        if sql.startswith("SELECT count(*) AS count"):
+            return {"count": len(self._selected(sql, params))}
         assert sql.startswith("UPDATE datasets.version_record SET warnings"), sql
         written, written_body, subject_id, content_version, read, read_body = params
         row = self.rows[(subject_id, content_version)]
@@ -228,6 +239,10 @@ class _Store:
             row["immutable_body"] = {**body, "warnings": json.loads(str(written_body))}
         self.updates += 1
         return {"subject_id": subject_id}
+
+
+def _key(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (row["subject_id"], row["content_version"])
 
 
 def _row(
@@ -264,9 +279,10 @@ def _run(
     dry_run: bool = False,
     rows: Sequence[WarningRow] | None = None,
     readers: Readers | None = None,
+    now: Callable[[], datetime] = lambda: _NOW,
 ) -> int:
     return run_backfill_warnings(
-        select_rows(store, new_format=dry_run) if rows is None else rows,
+        select_rows(store, new_format=dry_run, page_rows=store.page_rows) if rows is None else rows,
         store=store,
         readers=readers
         or Readers(
@@ -277,7 +293,7 @@ def _run(
         ),
         dry_run=dry_run,
         deadline=_NOW + timedelta(minutes=45),
-        now=lambda: _NOW,
+        now=now,
         clears_on_retry=maintenance._clears_on_retry,
     )
 
@@ -560,7 +576,7 @@ def test_a_second_run_finds_no_row():
     assert _run(store) == 0
     rewritten = _stored(store)
 
-    assert select_rows(store, new_format=False) == []
+    assert list(select_rows(store, new_format=False)) == []
     assert _run(store) == 0
     assert (_stored(store), store.updates) == (rewritten, 1)
 
@@ -568,7 +584,7 @@ def test_a_second_run_finds_no_row():
 @pytest.mark.parametrize("where", ["warnings", "immutable_body"])
 def test_a_row_changed_after_it_was_read_keeps_the_change(where, capsys):
     store = _Store([_row(_warning([_IN]), zero=[_IN])])
-    rows = select_rows(store, new_format=False)
+    rows = list(select_rows(store, new_format=False))
     changed = {**_warning([_IN]), "message": "changed meanwhile"}
     row = store.rows[("spec_a", "cv_a")]
     before = json.loads(json.dumps(row, default=str))
@@ -628,14 +644,16 @@ def test_a_new_format_row_that_fails_warns_and_leaves_the_exit_code(capsys):
     assert failed["reason"] == "named_member_served"
 
 
-def test_a_dry_run_writes_nothing_and_compares_a_mint_split(capsys):
+# A count stored as a numeral string reads as `WarningModel` reads it, as a serving read does.
+@pytest.mark.parametrize("count", [1, "1"])
+def test_a_dry_run_writes_nothing_and_compares_a_mint_split(count, capsys):
     old = _warning([_IN])
     split = {
         "code": "coverage_below_scope",
         "severity": "warn",
         "message": f"{_DETAIL} 1 of 2 series hold no observations in the requested years.",
         "member_count": 2,
-        "out_of_window_members": {"count": 1, "refs": ["dcid:Var_Out"]},
+        "out_of_window_members": {"count": count, "refs": ["dcid:Var_Out"]},
     }
     store = _Store(
         [
@@ -674,12 +692,14 @@ def test_a_dry_run_after_a_real_one_counts_the_rewritten_rows_in_the_new_format(
     )
 
 
-def test_the_versions_of_one_subject_share_one_probe(capsys):
+@pytest.mark.parametrize("page_rows", [PAGE_ROWS, 1])
+def test_the_versions_of_one_subject_share_one_probe(page_rows, capsys):
     store = _Store(
         [
             _row(_warning([_IN]), zero=[_IN], content_version="cv_a"),
             _row(_warning([_IN]), zero=[_IN], content_version="cv_b"),
-        ]
+        ],
+        page_rows=page_rows,
     )
     graph = FakeGraphReader(facets=_FACETS)
 
@@ -690,11 +710,20 @@ def test_the_versions_of_one_subject_share_one_probe(capsys):
     assert (summary["rewritten"], summary["probes"]) == (2, 1)
 
 
-def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
-    monkeypatch.setenv("DATASETS_GRAPH_TOKEN", "token")
+# No environment sets a graph token: the graph serves reads anonymously.
+def test_the_task_without_a_graph_token_reads_the_store_and_with_no_row_opens_no_release(
+    monkeypatch, capsys
+):
+    monkeypatch.delenv("DATASETS_GRAPH_TOKEN", raising=False)
     monkeypatch.setattr(maintenance, "shared_pool", lambda: None)
     monkeypatch.setattr(maintenance, "close_shared_pool", lambda: None)
-    monkeypatch.setattr(maintenance, "select_rows", lambda store, *, new_format: [])
+    selected: list[bool] = []
+
+    def select_rows(store, *, new_format):
+        selected.append(new_format)
+        return []
+
+    monkeypatch.setattr(maintenance, "select_rows", select_rows)
 
     def no_release():
         raise AssertionError("the release was opened")
@@ -702,28 +731,18 @@ def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
     monkeypatch.setattr(maintenance, "get_release_service", no_release)
 
     assert maintenance.main(["backfill-warnings", "--dry-run"]) == 0
+    assert selected == [True]
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
     assert (summary["dry_run"], summary["rewritten"]) == (True, 0)
-
-
-def test_the_task_without_a_graph_token_refuses_to_start(monkeypatch, capsys):
-    monkeypatch.delenv("DATASETS_GRAPH_TOKEN", raising=False)
-
-    def no_store():
-        raise AssertionError("the store was opened")
-
-    monkeypatch.setattr(maintenance, "shared_pool", no_store)
-
-    assert maintenance.main(["backfill-warnings"]) == 1
-    (failed,) = _lines(capsys, "datasets_maintenance_failed")
-    assert (failed["task"], failed["severity"]) == ("backfill-warnings", "ERROR")
 
 
 class _OutageStore(_Store):
     """A store whose updates fail as an unreachable pool does."""
 
     def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
-        raise PoolTimeoutError("no connection came free")
+        if sql.startswith("UPDATE"):
+            raise PoolTimeoutError("no connection came free")
+        return super().fetch_one(sql, params)
 
 
 def test_a_store_outage_stops_the_run(capsys):
@@ -740,6 +759,132 @@ def test_a_store_outage_stops_the_run(capsys):
     assert graph.calls["observation_facets_batch_many"] == 1
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
     assert (summary["remaining"], summary["permanent"]) == (2, 0)
+
+
+class _PageOutageStore(_Store):
+    """A store whose page read numbered `failing` fails as an unreachable pool does."""
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]], *, page_rows: int, failing: int) -> None:
+        super().__init__(rows, page_rows=page_rows)
+        self.pages = 0
+        self.failing = failing
+
+    def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
+        self.pages += 1
+        if self.pages == self.failing:
+            raise PoolTimeoutError("no connection came free")
+        return super().fetch_all(sql, params)
+
+
+# The fourth read of three rows, one a page, is the one that would have found none.
+@pytest.mark.parametrize(("failing", "rewritten", "remaining"), [(2, 1, 2), (4, 3, 0)])
+def test_a_failed_page_read_reports_the_rows_left_and_raises(failing, rewritten, remaining, capsys):
+    store = _PageOutageStore(
+        [_row(_warning([_IN]), zero=[_IN], subject_id=f"spec_{n}") for n in "abc"],
+        page_rows=1,
+        failing=failing,
+    )
+
+    with pytest.raises(PoolTimeoutError):
+        _run(store)
+
+    assert store.updates == rewritten
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert (summary["rewritten"], summary["remaining"]) == (rewritten, remaining)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "not a warning",
+        {"code": "coverage_below_scope", "severity": "warn"},
+        {
+            "code": "coverage_below_scope",
+            "severity": "warn",
+            "message": f"{_DETAIL} 1 of 2 series hold no observations in the requested years.",
+            "member_count": 2,
+            "out_of_window_members": {"count": "one", "refs": ["dcid:Var_Out"]},
+        },
+    ],
+    ids=["not-an-object", "no-message", "non-integer-count"],
+)
+def test_a_row_whose_warnings_cannot_be_read_is_refused_and_the_run_goes_on(malformed, capsys):
+    bad = _row(_warning([_IN]), zero=[_IN], subject_id="spec_b")
+    bad["warnings"] = [malformed, *bad["warnings"]]
+    bad["immutable_body"] = {**bad["immutable_body"], "warnings": bad["warnings"]}
+    store = _Store(
+        [
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_a"),
+            bad,
+            _row(_warning([_IN]), zero=[_IN], subject_id="spec_c"),
+        ]
+    )
+    before = json.loads(json.dumps(bad, default=str))
+
+    assert _run(store) == 0
+
+    assert store.updates == 2
+    assert json.loads(json.dumps(store.rows[("spec_b", "cv_a")], default=str)) == before
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (failed,) = [line for line in lines if line["event"] == "datasets_warning_backfill_failed"]
+    assert (failed["subject_id"], failed["reason"], failed["severity"]) == (
+        "spec_b",
+        "malformed_warning",
+        "WARNING",
+    )
+    assert (failed["refused"], failed["transient"]) == (True, False)
+    (summary,) = [line for line in lines if line["event"] == "datasets_warnings_backfilled"]
+    assert (summary["rewritten"], summary["permanent"], summary["failed"]) == (2, 1, 0)
+
+
+def test_a_warning_the_run_does_not_rewrite_is_written_back_as_stored():
+    # It lacks the member fields, and its count is a numeral string a `WarningModel` reads as 1.
+    other = {
+        "code": "coverage_below_scope",
+        "severity": "warn",
+        "message": "The data covers fewer years.",
+        "requested_years": {"end": 2021},
+        "unserved_entities": {"count": "1", "refs": [f"dcid:{_KEN}"]},
+    }
+    row = _row(_warning([_IN]), zero=[_IN])
+    row["warnings"] = [*row["warnings"], other]
+    row["immutable_body"] = {**row["immutable_body"], "warnings": row["warnings"]}
+    store = _Store([row])
+
+    assert _run(store) == 0
+
+    stored = store.rows[("spec_a", "cv_a")]
+    (rewritten, kept) = stored["warnings"]
+    assert "off_cadence_members" in rewritten
+    assert json.dumps(kept) == json.dumps(other)
+    assert stored["immutable_body"]["warnings"] == stored["warnings"]
+
+
+def test_a_run_reads_one_page_at_a_time_and_reaches_every_row(capsys):
+    # `_Store` fails any read asking for more than `page_rows` rows.
+    store = _Store(
+        [_row(_warning([_IN]), zero=[_IN], subject_id=f"spec_{n}") for n in "abcde"],
+        page_rows=2,
+    )
+
+    assert _run(store) == 0
+
+    assert store.updates == 5
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert summary["rewritten"] == 5
+
+
+def test_the_deadline_leaves_the_rows_of_later_pages(capsys):
+    store = _Store(
+        [_row(_warning([_IN]), zero=[_IN], subject_id=f"spec_{n}") for n in "abc"], page_rows=1
+    )
+    clock = iter([_NOW, _NOW + timedelta(minutes=46)])
+
+    assert _run(store, now=lambda: next(clock)) == 2
+
+    assert store.updates == 1
+    (summary,) = _lines(capsys, "datasets_warnings_backfilled")
+    assert (summary["rewritten"], summary["remaining"]) == (1, 2)
 
 
 class _BrokenGraph(FakeGraphReader):

@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
+import pytest
 from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
 
-from materialise.trace import ManifestTrace, MemberFamily, ResolvedStatVar
+from materialise.trace import (
+    ManifestTrace,
+    MemberFamily,
+    RecordedFamily,
+    ResolvedStatVar,
+    StatedFamily,
+    parse_recorded_family,
+    recorded_family_json,
+)
 
 # `conversion` appears only when a recipe runs; the dedicated test covers that field set.
 _CONTRACT_TRACE_FIELDS = frozenset(
@@ -185,3 +195,40 @@ def test_to_dict_states_a_null_family_when_the_whole_of_it_is_not_known():
 
     assert result["family_member_digest"] is None
     assert result["family_member_count"] is None
+
+
+_RECORDED = RecordedFamily(
+    stated=StatedFamily(
+        members=MemberFamily(digest="ab" * 32, count=3), stub_candidates=("dcid:Stub_A",)
+    ),
+    confirmed_at=datetime(2026, 1, 1, 0, 0, 0, 250, tzinfo=UTC),
+    basis="basis",
+)
+
+
+def test_a_recorded_family_reads_back_as_written():
+    assert parse_recorded_family(recorded_family_json(_RECORDED)) == _RECORDED
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param({"confirmed_at": None}, id="no-confirmation"),
+        pytest.param({"confirmed_at": "yesterday"}, id="unparsable-confirmation"),
+        pytest.param({"confirmed_at": "2026-01-01T00:00:00"}, id="naive-confirmation"),
+        pytest.param({"family_member_count": "3"}, id="count-as-text"),
+        pytest.param({"family_member_digest": 7}, id="digest-as-number"),
+        pytest.param({"stub_candidates": "dcid:Stub_A"}, id="stubs-as-text"),
+        pytest.param({"basis": ["basis"]}, id="basis-as-list"),
+        pytest.param({"basis": None}, id="no-basis"),
+    ],
+)
+def test_a_stored_family_this_code_cannot_read_states_none(edit):
+    stored = {**recorded_family_json(_RECORDED), **edit}
+
+    assert parse_recorded_family(stored) is None
+
+
+def test_a_null_or_non_object_stored_family_states_none():
+    assert parse_recorded_family(None) is None
+    assert parse_recorded_family(["family"]) is None

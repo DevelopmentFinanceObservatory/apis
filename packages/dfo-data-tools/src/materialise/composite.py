@@ -72,7 +72,7 @@ from materialise.finish import (
     currency_unmapped_omitted_warning,
     deflator_missing_omitted_warning,
 )
-from materialise.frame_build import ParquetFrameChunks, ParquetFrameSink, build_frame
+from materialise.frame_build import ParquetFrameSink, build_frame
 from materialise.profile import OutputProfileFold
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
@@ -274,7 +274,7 @@ def compose_components(
             _composed_chunks(components, plan=plan, composite=composite, role_columns=role_columns)
         )
     )
-    frame_chunks = ParquetFrameChunks(sink.finish(), columns=columns[0])
+    frame_chunks = sink.finish(columns=columns[0])
     output_profile = profile.finish(frame_chunks)
     served_bounds = (min(fold.all_years), max(fold.all_years)) if fold.all_years else None
     applied = compute_applied_window(window, served_bounds)
@@ -296,6 +296,8 @@ def compose_components(
     summaries = tuple(_summary(component, plan=plan, fold=fold) for component in components)
     first = components[0].result
     traces = [component.result.trace for component in components]
+    all_requests = [request for component in components for request in component.requests]
+    family = pipeline.definition_family(all_requests)
     trace = ManifestTrace(
         applied_window=coverage.window,
         graph_revision=first.trace.graph_revision,
@@ -318,16 +320,13 @@ def compose_components(
         frame_grammar_version=first.trace.frame_grammar_version,
         materialiser_build=first.trace.materialiser_build,
         capability_version=first.trace.capability_version,
-        family=None,
-        stub_candidates=tuple(
-            dict.fromkeys(ref for trace in traces for ref in trace.stub_candidates)
-        ),
+        family=family.members,
+        stub_candidates=family.stub_candidates,
         coverage_gaps=_union_entries(trace.coverage_gaps for trace in traces),
         choices=_union_entries(trace.choices for trace in traces),
         continuations=_union_entries(trace.continuations for trace in traces),
         components=tuple(summary.as_trace_entry() for summary in summaries),
     )
-    all_requests = [request for component in components for request in component.requests]
     return pipeline.MaterialisationResult(
         frame_chunks=frame_chunks,
         frame_sha256=frame_digest,

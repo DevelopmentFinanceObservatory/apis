@@ -40,6 +40,7 @@ the materialise permits Datasets' own reads hold.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Mapping
@@ -73,6 +74,7 @@ from datasets_api.exports import resolve_endpoint
 from datasets_api.operation_store import OperationBacklogFull
 from dfo_platform import ProblemSpec, refused
 from dfo_platform.codes import bound_registry_endpoint
+from dfo_platform.problem import log_problem
 from dfo_platform.trace import get_trace_id
 from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME, retry_after_headers
 
@@ -85,6 +87,8 @@ __all__ = [
     "newest_not_ready_spec",
     "resolve_bare_spec",
 ]
+
+logger = logging.getLogger(__name__)
 
 FRESHNESS_WINDOW = timedelta(minutes=15)
 """How long a live slot serves a `current` or `stale` check's answer before it asks for newer
@@ -262,6 +266,8 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
             f"the newest version of {spec_id} cannot be served: {problem.code}: {problem.detail}"
         )
         if problem.retryable:
+            # Classifiers log nothing, so a read that answers for the refusal logs its line.
+            log_problem(problem, exc, logger=logger, context="datasets")
             retry_after = (problem.headers or {}).get("Retry-After")
             raise FrameUnavailable(
                 reason="busy" if isinstance(exc, _CAPACITY_REFUSALS) else "io",
@@ -273,10 +279,12 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         elif problem.code == "snapshot_revoked":
             reason = "revoked"
         elif problem.status >= 500:
-            # A server fault stays a server fault, which the surface answers `internal_error`.
+            # A server fault stays a server fault, which the surface answers `internal_error`
+            # and logs with its traceback, so the read logs no second line for it.
             raise
         else:
             reason = "unknown"
+        log_problem(problem, exc, logger=logger, context="datasets")
         raise FrameUnavailable(reason=reason, detail=detail) from exc
     if isinstance(resolved, NewestPending):
         raise NewestNotReady(

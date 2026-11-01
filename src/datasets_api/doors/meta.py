@@ -18,7 +18,11 @@ settings, the keys the synchronous definition door narrows by, so the poll lists
 that rendering's artifact plus statistics artifacts, as the synchronous mint does.
 Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
 recorded at completion, the currency pair a synchronous mint that materialised
-reports. A row an image recording no `confirmed_at` completed carries neither.
+reports, and the family fields the run served (`Operation.family`) in place of the
+stored version's, or the family stated unknown when the row recorded none at its
+`confirmed_at` under the serving basis (`adapter.family_basis`). A row an image
+recording no `confirmed_at` completed carries neither currency field and states the
+family unknown.
 When the snapshot lists no artifact under that key (a bundle the worker could not
 link, a bundle of a superseded rendition, an expired working-tier artifact), the
 poll calls `OperationStore.fail_unservable_done` and answers retryable
@@ -59,6 +63,7 @@ from __future__ import annotations
 
 import functools
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request, Response
@@ -68,6 +73,7 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index, per_index
 from dataset_store.clock import Clock
 from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, SnapshotRevoked
+from datasets_api.adapter import family_basis
 from datasets_api.backpressure import Backpressure
 from datasets_api.capabilities import Capabilities, build_capabilities
 from datasets_api.codes_snapshot import (
@@ -113,6 +119,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
+from materialise.trace import family_stated_at, with_family
 from spec_registry import IdentityQuarantined
 from spec_registry.reader import SpecReader
 
@@ -212,12 +219,17 @@ def _load_done_manifest(
     now: Clock,
     settings: DatasetsBuildSettings,
     enrichment_digest: str,
+    serving_basis: Callable[[], str],
 ) -> Manifest | None:
     """The done operation's manifest, narrowed to the rendering its request posted.
 
     Its `trace` carries the currency pair a synchronous mint that materialised reports:
-    `served_from: materialise` and the `confirmed_at` the row recorded. It carries the
-    version's `retention` (`datasets_api.retention`).
+    `served_from: materialise` and the `confirmed_at` the row recorded, with the member family
+    the row recorded in place of the stored version's while it was recorded at that
+    `confirmed_at` under the basis `serving_basis` returns (`adapter.family_basis`), read only
+    for a done row, and the family stated unknown otherwise
+    (`materialise.trace.family_stated_at`). It carries the version's `retention`
+    (`datasets_api.retention`).
 
     The rendering keys are `resolved_rendering_keys` of the row's `options` under this
     service's `settings.site` and the serving code index's `enrichment_digest`, the keys the
@@ -280,11 +292,12 @@ def _load_done_manifest(
     manifest = with_retention(
         manifest, subject_id=operation.subject_id, reader=snapshot_reader, now=now()
     )
-    if operation.confirmed_at is None:
-        return manifest
-    trace = served_trace(
-        manifest.trace, served_from="materialise", confirmed_at=operation.confirmed_at
+    stated = family_stated_at(
+        operation.family, confirmed_at=operation.confirmed_at, basis=serving_basis()
     )
+    trace = with_family(manifest.trace, stated)
+    if operation.confirmed_at is not None:
+        trace = served_trace(trace, served_from="materialise", confirmed_at=operation.confirmed_at)
     return manifest.model_copy(update={"trace": trace})
 
 
@@ -322,6 +335,7 @@ def _resolve_operation(
     now: Clock,
     settings: DatasetsBuildSettings,
     enrichment_digest: str,
+    serving_basis: Callable[[], str],
 ) -> OperationResource:
     if operation_store is None:
         # Requests before lifespan setup follow the unknown-id path.
@@ -364,6 +378,7 @@ def _resolve_operation(
         now=now,
         settings=settings,
         enrichment_digest=enrichment_digest,
+        serving_basis=serving_basis,
     )
     if manifest is not None:
         return OperationResource(
@@ -464,6 +479,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
                     now=current.now,
                     settings=current.settings,
                     enrichment_digest=current.code_index.enrichment_digest,
+                    serving_basis=functools.partial(family_basis, current),
                 ),
                 refuse=OperationBackpressure,
             )
@@ -485,12 +501,14 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
             OperationBackpressure,
             OperationBacklogFull,
         ),
-        exception_exemplars=(
-            OperationNotFound(operation_id="op_exemplar"),
-            OperationFailed(operation_id="op_exemplar", refusal_code="excel_limit"),
-            OperationBackpressure(),
-            OperationBacklogFull(in_flight=1, limit=1),
-        ),
+        endpoint_exemplars={
+            "datasets.operations": (
+                OperationNotFound(operation_id="op_exemplar"),
+                OperationFailed(operation_id="op_exemplar", refusal_code="excel_limit"),
+                OperationBackpressure(),
+                OperationBacklogFull(in_flight=1, limit=1),
+            )
+        },
         registry_endpoints=path_registry_endpoints(
             router, {"/api/datasets/operations/{operation_id}": "datasets.operations"}
         ),

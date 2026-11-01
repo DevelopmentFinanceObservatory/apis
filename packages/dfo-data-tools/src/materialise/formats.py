@@ -69,6 +69,7 @@ from openpyxl.utils import get_column_letter
 from materialise.cell_safety import spreadsheet_safe
 from materialise.codes import CodeCatalogue
 from materialise.errors import MaterialisationError, MaterialisationUsageError
+from materialise.frame_build import RECIPE_UNIT_TYPE
 from materialise.unit_cells import unit_cell_text
 
 if TYPE_CHECKING:
@@ -899,9 +900,6 @@ def _frame1_values(cells: Sequence[object]) -> pa.Array:
 _PLAIN_UNIT_TYPE = canonical_frame_schema(derive_columns(())).field(UNIT_COLUMN).type
 """The `unit` column's type when no cell carries a recipe."""
 
-_RECIPE_UNIT_TYPE = canonical_frame_schema(derive_columns(()), recipe=True).field(UNIT_COLUMN).type
-"""The `unit` column's type when some cell carries a recipe."""
-
 
 def _frame1_units(cells: Sequence[object]) -> pa.Array:
     """The `unit` cells as an Arrow column `build_frame_from_arrow` reads: text when every cell
@@ -1022,16 +1020,18 @@ _CANONICAL_FRAME_COMPRESSION = "zstd"
 def write_canonical_frame(chunks: Iterable[Frame], *, sink: Sink) -> WrittenArtifact:
     """Streams the canonical frame of the rows of `chunks`, in order, into `sink` and returns
     `CANONICAL_FRAME_MEDIA_TYPE` metadata. Requires grammar `Frame` chunks sharing one column
-    tuple, in canonical row order, which `Frame.from_table` trusts on read. The file takes the
-    first chunk's `unit` layout, the recipe layout when one of its cells carries a recipe, and
-    a later chunk without one is widened to it. The bytes, digest and size equal those of one
-    frame holding every row, for one PyArrow version. At most one row group of rows is buffered.
+    tuple, in canonical row order, which `Frame.from_table` trusts on read, each in the frame's
+    own `unit` layout: the recipe layout when a cell anywhere in the frame carries a recipe, as
+    `frame_build.ParquetFrameChunks` yields a frame's chunks. The file takes the first chunk's
+    layout. The bytes, digest and size equal those of one frame holding every row, for one
+    PyArrow version. At most one row group of rows is buffered.
 
     Raises:
-        MaterialisationUsageError: A chunk carries a recipe where the first chunk holds none.
+        MaterialisationUsageError: A chunk carries a recipe where the first chunk's layout holds
+            none.
     """
     first, stream = _prepare_stream(chunks)
-    recipe = cast(Frame, first).table.schema.field(UNIT_COLUMN).type == _RECIPE_UNIT_TYPE
+    recipe = cast(Frame, first).table.schema.field(UNIT_COLUMN).type == RECIPE_UNIT_TYPE
     schema = canonical_frame_schema(first.columns, recipe=recipe)
     hashing = _HashingWriteWrapper(sink)
     # Stubs require nominal `IO`. Runtime accepts this `RawIOBase` write/flush/tell/closed shape.

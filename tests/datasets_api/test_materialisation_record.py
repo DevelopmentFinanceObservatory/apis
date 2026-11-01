@@ -29,6 +29,7 @@ from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup, MaterialisationRequest
 from materialise.rate_tables import RateTableCache
+from materialise.trace import UNKNOWN_FAMILY
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader, StoredDefinition
@@ -36,7 +37,11 @@ from statvar_members import MemberEnumerator
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
-from ._version_record_store import FakeVersionRecordDatasetStore, materialisation_record
+from ._version_record_store import (
+    TEST_BASIS,
+    FakeVersionRecordDatasetStore,
+    materialisation_record,
+)
 from .conftest import FakeDatasetStore
 from .test_mint_statvar_set import _CSV_BODY, _FACET, _STAT_VAR, _STAT_VAR_REF, _coverage_service
 
@@ -258,6 +263,8 @@ def test_a_head_write_that_fails_leaves_no_materialisation_row(version_store):
 
     with pytest.raises(DatasetsStoreUnavailable):
         failing.advance_head(
+            family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
             materialisation=materialisation_record(subject_id=_SPEC_ID, content_version="cv1"),
             expected_materialisation_id=None,
         )

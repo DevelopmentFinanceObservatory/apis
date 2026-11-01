@@ -8,7 +8,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Literal, NotRequired
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator, with_config
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+    with_config,
+)
 from typing_extensions import TypedDict  # `extra_items` (PEP 728) reaches `typing` in 3.15
 
 from dfo_platform.roles import RoleAxis
@@ -264,7 +272,8 @@ class CountedRefsModel(BaseModel):
     `materialise.codes.CountedRefs`). A message states the count and may name none, so a
     reader labels the refs. A group's members come in request order and entities sorted;
     for `withheld_by_registry`, `unserved_entities` come in the order the request names them
-    and `withheld_provenances` in the order they first occur across those places."""
+    and `withheld_provenances` in the order they first occur across those places; for
+    `un_system_unavailable`, `unserved_entities` come in the order the UN reads recorded them."""
 
     model_config = ConfigDict(extra="forbid")
     count: int = Field(description="how many there are")
@@ -318,8 +327,8 @@ class WarningModel(BaseModel):
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
     `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
-    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`.
-    A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
+    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`, and
+    `un_system_unavailable` `unserved_entities`. A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
     withhold with none of its three. A `None` field is left out of every dump, so other codes'
     warnings, on the wire and in stored version bodies, stay exactly `{code, severity,
     message}`.
@@ -396,7 +405,9 @@ class WarningModel(BaseModel):
         description=(
             "coverage_below_scope: the entities the request binds that served no observation, "
             "sorted; withheld_by_registry: the places among them at which the registry "
-            "withholds data, in the order the request names them; absent when there are none"
+            "withholds data, in the order the request names them; un_system_unavailable: the "
+            "places the UN System Data Commons could not serve, in the order its reads "
+            "recorded them; absent when there are none"
         ),
     )
     requested_years: YearRangeModel | None = Field(
@@ -548,6 +559,15 @@ class EnrichmentOptionModel(BaseModel):
     coverage: EnrichmentCoverageCountsModel
     missing: list[MissingEntityModel] = Field(default_factory=list)
     truncated: bool = False
+    in_long_layout: bool = Field(
+        default=False,
+        description=(
+            "true when a long-layout download writes this information with no columns token, "
+            "so naming the token there adds nothing: {role}_label, and the party fields of a "
+            "role on a flow axis, which its {role}_kind column reads in words. Pivot output and "
+            "the frame layout write the column only when the token asks for it"
+        ),
+    )
 
 
 class VaryingColumnModel(BaseModel):
@@ -710,6 +730,13 @@ class TraceModel(TypedDict, extra_items=object):
     ]
 
 
+# A trace states what is unknown as null (`family_member_digest`, a `party_totals_left_out`
+# entry's `provenance`), and the doors dump responses with `exclude_none=True`, which drops
+# null keys from a typed dict. A trace serialises as the dict it validated to, so its nulls
+# reach the wire, while validation and the JSON schema stay `TraceModel`'s.
+Trace = Annotated[TraceModel, PlainSerializer(lambda trace: trace)]
+
+
 class Manifest(BaseModel):
     """`trace` is a plain dict at run time, since `materialise.trace.ManifestTrace.to_dict()`
     is already this field's wire shape. Its type (`TraceModel`) fixes the shape of
@@ -740,7 +767,7 @@ class Manifest(BaseModel):
     prepared_at: AwareDatetime
     coverage: CoverageModel
     citation: CitationModel
-    trace: TraceModel
+    trace: Trace
     warnings: list[WarningModel] = Field(default_factory=list)
     diagnostics: list[DiagnosticModel] = Field(
         default_factory=list,
@@ -792,4 +819,4 @@ class OptionsEnvelope(BaseModel):
     coverage: CoverageModel
     output_options: OutputOptionsModel | None = None
     warnings: list[WarningModel] = Field(default_factory=list)
-    trace: TraceModel
+    trace: Trace

@@ -18,6 +18,7 @@ from search.engine.entry.params import EntryParams
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.region import RegionResult, detect_set_ref
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.option_coverage import _maybe_build_facet_options
 from search.engine.region.pipeline import merged_scope_choices
 from search.engine.region.result import any_degraded
@@ -37,19 +38,26 @@ async def _stream_combined_regions(
     graph: EngineGraphClient,
     start_ms: int,
     params: EntryParams,
+    preview_reads: ComponentReads,
     scope: CacheScope | None = None,
 ) -> AsyncGenerator[Event]:
     """Combine regions and stream trailing enrichment.
 
     `timed_out` and the regions' health (`any_degraded`) are the request's cache health.
     `scope` records it, and the `DoneEvent` carries `degraded_leg` to the buffered route's
-    header. `is_storable`
-    decides cache eligibility from this report and the response.
+    header. `is_storable` decides cache eligibility from this report and the response. A
+    same-shape merge reads its preview through `preview_reads`, the request's clients, and a
+    buffered merge's read that leaves its region degraded (`RegionResult.degraded`) marks the
+    leg degraded. The merged reads run to `params.deadline`, the bound the combine and the
+    trailing stream run under, whatever deadline `preview_reads` was built with, so a door
+    that extends its deadline after building them (dataset_resubmit after a full read)
+    extends theirs too.
     """
     degraded_leg = any_degraded(regions)
     if scope is not None:
         scope.note_health(timed_out=timed_out, degraded_leg=degraded_leg)
     regions = [dataclasses.replace(region, earliest_index=i) for i, region in enumerate(regions)]
+    preview_reads = dataclasses.replace(preview_reads, deadline=params.deadline)
     streaming_regions = regions
     try:
         total_usage = initial_llm_usage
@@ -77,12 +85,20 @@ async def _stream_combined_regions(
                 deadline=params.deadline,
             ),
             scope_for=functools.partial(merged_scope_choices, coverage=params.coverage),
+            preview_reads=preview_reads,
         )
         # A timed-out fan-out still combines completed regions into its partial answer.
         if timed_out:
             response, effective = await combine_call
         else:
             response, effective = await _await_bounded(combine_call, deadline=params.deadline)
+
+        # A merged region is new, and a buffered one read its preview in the combine.
+        answered_ids = {id(region) for region in regions}
+        if any_degraded(r for r in effective if id(r) not in answered_ids):
+            degraded_leg = True
+            if scope is not None:
+                scope.note_health(degraded_leg=True)
 
         streaming_regions, stale_tasks = _reconcile_after_collapse(regions, effective)
         await asyncio.gather(

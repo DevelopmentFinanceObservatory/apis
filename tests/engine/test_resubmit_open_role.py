@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 from search.engine.departures import served_datasets
-from search.engine.region import pipeline
+from search.engine.region import scope_decision
 from search.engine.region.whole_totals import with_containing_total
 from search.models import (
     BaseIdentity,
@@ -415,7 +415,7 @@ def test_a_part_naming_no_place_answers_as_it_did_before_its_scope_was_read(
 
     read = _answer(request, "aid", members)
     with monkeypatch.context() as unread:
-        unread.setattr(pipeline, "basis_dataset", lambda *_: None)
+        unread.setattr(scope_decision, "basis_dataset", lambda *_: None)
         before = _answer(request, "aid", members)
 
     assert served_datasets(read.spec) == {dataset}

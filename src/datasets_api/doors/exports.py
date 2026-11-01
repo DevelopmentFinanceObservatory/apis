@@ -264,48 +264,50 @@ def build_exports_door(
             DatasetsStoreUnavailable,
             *SELECTOR_RENDERING_EXCEPTION_TYPES,
         ),
-        exception_exemplars=(
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
-            ProvenanceUnavailable(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
-            ExportOverCeiling(format="csv", count=1, cap=0),
-            ExportFileIncomplete(id="spec_exemplar", content_version="cv_exemplar"),
-            NewestVersionUnservable(code="service_unavailable", detail="exemplar"),
-            NewestVersionUnservable(code="internal_error", detail="exemplar"),
-            NewestVersionUnservable(code="snapshot_not_found", detail="exemplar"),
-            CallerHeaderInvalid(),
-            CallerUnresolved("exemplar"),
-            PinBudgetExhausted(limit=0, now=exemplar_day),
-            OpenPinBudgetExhausted(limit=0, now=exemplar_day),
-            AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
-            ExportPrepareRunning(wait_seconds=30),
-            CopyClaimUnsettled(),
-            PinUnitHeld(retry_after=1),
-            ExportBackpressure(),
-            DatasetsStoreUnavailable("exemplar"),
-            StoredTraceMissingResolvedStatVars(
-                subject_id="spec_exemplar", content_version="cv_exemplar"
-            ),
-            *(
-                exemplar
-                for exemplar in MINT_EXCEPTION_EXEMPLARS
-                if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
-            ),
-            # A bare `spec_id`'s rebuild raises what a mint and the registry raise, and the
-            # ones whose codes this endpoint registers pass through.
-            *(
-                exemplar
-                for exemplar in (
-                    *MINT_EXCEPTION_EXEMPLARS,
-                    IdentityCollision(subject_id="spec_exemplar"),
-                )
-                if passes_through(exemplar)
-            ),
-        ),
+        endpoint_exemplars={
+            "datasets.exports": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                ProvenanceUnavailable(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
+                ExportOverCeiling(format="csv", count=1, cap=0),
+                ExportFileIncomplete(id="spec_exemplar", content_version="cv_exemplar"),
+                NewestVersionUnservable(code="service_unavailable", detail="exemplar"),
+                NewestVersionUnservable(code="internal_error", detail="exemplar"),
+                NewestVersionUnservable(code="snapshot_not_found", detail="exemplar"),
+                CallerHeaderInvalid(),
+                CallerUnresolved("exemplar"),
+                PinBudgetExhausted(limit=0, now=exemplar_day),
+                OpenPinBudgetExhausted(limit=0, now=exemplar_day),
+                AllowanceExhausted(kind=AllowanceKind.pin, limit=0, now=exemplar_day),
+                ExportPrepareRunning(wait_seconds=30),
+                CopyClaimUnsettled(),
+                PinUnitHeld(retry_after=1),
+                ExportBackpressure(),
+                DatasetsStoreUnavailable("exemplar"),
+                StoredTraceMissingResolvedStatVars(
+                    subject_id="spec_exemplar", content_version="cv_exemplar"
+                ),
+                *(
+                    exemplar
+                    for exemplar in MINT_EXCEPTION_EXEMPLARS
+                    if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
+                ),
+                # A bare `spec_id`'s rebuild raises what a mint and the registry raise, and the
+                # ones whose codes this endpoint registers pass through.
+                *(
+                    exemplar
+                    for exemplar in (
+                        *MINT_EXCEPTION_EXEMPLARS,
+                        IdentityCollision(subject_id="spec_exemplar"),
+                    )
+                    if passes_through(exemplar)
+                ),
+            )
+        },
     )
 
 
@@ -354,32 +356,36 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
             ArtifactSigningError,
             DatasetsStoreUnavailable,
         ),
-        exception_exemplars=(
-            ExportNotFound(export_id="exp_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
-            ExportBackpressure(),
-            SnapshotSigningFailed(
-                bucket="exemplar-bucket",
-                object_name="sha256:exemplar",
-                digest="sha256:exemplar",
-                error_class_name=None,
-                status_code=None,
-            ),
-            # A permission failure an operator must clear answers 500.
-            SnapshotSigningFailed(
-                bucket="exemplar-bucket",
-                object_name="sha256:exemplar",
-                digest="sha256:exemplar",
-                error_class_name=None,
-                status_code=403,
-            ),
-            ArtifactSigningError(
-                bucket="exemplar-bucket", object_name="sha256:exemplar", digest="sha256:exemplar"
-            ),
-            DatasetsStoreUnavailable("exemplar"),
-        ),
+        endpoint_exemplars={
+            "datasets.export_link": (
+                ExportNotFound(export_id="exp_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                LicenceNotRedistributable(sources=[("dcid:exemplar", "exemplar")]),
+                ExportBackpressure(),
+                SnapshotSigningFailed(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                    error_class_name=None,
+                    status_code=None,
+                ),
+                # A permission failure an operator must clear answers 500.
+                SnapshotSigningFailed(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                    error_class_name=None,
+                    status_code=403,
+                ),
+                ArtifactSigningError(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                ),
+                DatasetsStoreUnavailable("exemplar"),
+            )
+        },
     )
 
 
