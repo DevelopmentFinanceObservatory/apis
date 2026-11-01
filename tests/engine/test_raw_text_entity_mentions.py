@@ -65,12 +65,12 @@ class _Resolver:
         return [self.answers.get(text, NotFound()) for text in texts]
 
 
-_ASIA = Entity(dcid="asia", name="Asia", kind="continent", graph_type="Continent")
+_ASIA = Entity(dcid="asia", name="Asia", kind="continent", graph_types=("Continent",))
 _DAC_ASIA = Entity(
     dcid="DACAsiaUnallocated",
     name="Asia, unallocated by country (DAC)",
     kind="aggregate",
-    graph_type="StatisticalPopulation",
+    graph_types=("StatisticalPopulation",),
 )
 
 
@@ -287,46 +287,59 @@ _COD = Entity(
     dcid="country/COD",
     name="Democratic Republic of the Congo",
     kind="country",
-    graph_type="Country",
+    graph_types=("Country",),
 )
 _COG = Entity(
-    dcid="country/COG", name="Republic of the Congo", kind="country", graph_type="Country"
+    dcid="country/COG", name="Republic of the Congo", kind="country", graph_types=("Country",)
 )
-_KOR = Entity(dcid="country/KOR", name="South Korea", kind="country", graph_type="Country")
-_PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_type="Country")
-_TTO = Entity(dcid="country/TTO", name="Trinidad and Tobago", kind="country", graph_type="Country")
-_ATG = Entity(dcid="country/ATG", name="Antigua and Barbuda", kind="country", graph_type="Country")
+_KOR = Entity(dcid="country/KOR", name="South Korea", kind="country", graph_types=("Country",))
+_PRK = Entity(dcid="country/PRK", name="North Korea", kind="country", graph_types=("Country",))
+_TTO = Entity(
+    dcid="country/TTO", name="Trinidad and Tobago", kind="country", graph_types=("Country",)
+)
+_ATG = Entity(
+    dcid="country/ATG", name="Antigua and Barbuda", kind="country", graph_types=("Country",)
+)
 _VCT = Entity(
     dcid="country/VCT",
     name="Saint Vincent and the Grenadines",
     kind="country",
-    graph_type="Country",
+    graph_types=("Country",),
 )
 _FSM = Entity(
-    dcid="country/FSM", name="Federated States of Micronesia", kind="country", graph_type="Country"
+    dcid="country/FSM",
+    name="Federated States of Micronesia",
+    kind="country",
+    graph_types=("Country",),
 )
-_MICRONESIA = Entity(dcid="Micronesia", name="Micronesia", kind="subregion", graph_type="Place")
+_MICRONESIA = Entity(dcid="Micronesia", name="Micronesia", kind="subregion", graph_types=("Place",))
 # Towns sharing the first word of a country's name, as the graph's text search finds them.
 _TRINIDAD_TOWN = Entity(
-    dcid="wikidataId/Q1001", name="Trinidad", kind="place_other", graph_type="City"
+    dcid="wikidataId/Q1001", name="Trinidad", kind="place_other", graph_types=("City",)
 )
 _ANTIGUA_TOWN = Entity(
-    dcid="wikidataId/Q1002", name="Antigua Guatemala", kind="place_other", graph_type="City"
+    dcid="wikidataId/Q1002", name="Antigua Guatemala", kind="place_other", graph_types=("City",)
 )
 _SAINT_VINCENT_TOWN = Entity(
-    dcid="wikidataId/Q1003", name="Saint-Vincent", kind="place_other", graph_type="City"
+    dcid="wikidataId/Q1003", name="Saint-Vincent", kind="place_other", graph_types=("City",)
 )
-_CAN = Entity(dcid="country/CAN", name="Canada", kind="country", graph_type="Country")
-_DEU = Entity(dcid="country/DEU", name="Germany", kind="country", graph_type="Country")
-_GBR = Entity(dcid="country/GBR", name="United Kingdom", kind="country", graph_type="Country")
-_USA = Entity(dcid="country/USA", name="United States", kind="country", graph_type="Country")
-_NAIROBI = Entity(dcid="wikidataId/Q3870", name="Nairobi", kind="place_other", graph_type="City")
+_CAN = Entity(dcid="country/CAN", name="Canada", kind="country", graph_types=("Country",))
+_DEU = Entity(dcid="country/DEU", name="Germany", kind="country", graph_types=("Country",))
+_GBR = Entity(dcid="country/GBR", name="United Kingdom", kind="country", graph_types=("Country",))
+_USA = Entity(dcid="country/USA", name="United States", kind="country", graph_types=("Country",))
+_NAIROBI = Entity(
+    dcid="wikidataId/Q3870", name="Nairobi", kind="place_other", graph_types=("City",)
+)
 _NAIROBI_COUNTY = Entity(
-    dcid="wikidataId/Q3335223", name="Nairobi County", kind="place_other", graph_type="County"
+    dcid="wikidataId/Q3335223", name="Nairobi County", kind="place_other", graph_types=("County",)
 )
 # Two towns named Canadian, in Oklahoma and Texas, which the graph pack holds.
-_CANADIAN_OK = Entity(dcid="geoId/4011450", name="Canadian", kind="place_other", graph_type="City")
-_CANADIAN_TX = Entity(dcid="geoId/4812412", name="Canadian", kind="place_other", graph_type="City")
+_CANADIAN_OK = Entity(
+    dcid="geoId/4011450", name="Canadian", kind="place_other", graph_types=("City",)
+)
+_CANADIAN_TX = Entity(
+    dcid="geoId/4812412", name="Canadian", kind="place_other", graph_types=("City",)
+)
 
 
 @pytest.mark.parametrize(
@@ -695,7 +708,7 @@ def test_adjective_and_translated_surfaces_resolve_source_first_under_canonical_
             "French": NotFound(),
             "France": Resolved(
                 entity=Entity(
-                    dcid="country/FRA", name="France", kind="country", graph_type="Country"
+                    dcid="country/FRA", name="France", kind="country", graph_types=("Country",)
                 )
             ),
             "Asie": NotFound(),
@@ -925,8 +938,8 @@ def test_raw_pipeline_keeps_a_members_reading() -> None:
     assert prep.member_entities == frozenset({"Africa"})
 
 
-_KEN = Entity(dcid="country/KEN", name="Kenya", kind="country", graph_type="Country")
-_FRA = Entity(dcid="country/FRA", name="France", kind="country", graph_type="Country")
+_KEN = Entity(dcid="country/KEN", name="Kenya", kind="country", graph_types=("Country",))
+_FRA = Entity(dcid="country/FRA", name="France", kind="country", graph_types=("Country",))
 
 
 @pytest.mark.parametrize(

@@ -87,12 +87,20 @@ class Entity:
     """A graph-confirmed entity. Resolvekit hits use the canonical name.
     Fallback hits use the graph name or input text.
 
-    Display metadata. Rendered sentences use the query's wording."""
+    Display metadata. Rendered sentences use the query's wording.
+
+    `graph_types` are the node's `typeOf` values in the graph's order, empty for a node the
+    graph has not confirmed. `kind` is classed over all of them."""
 
     dcid: str
     name: str
     kind: Kind
-    graph_type: str
+    graph_types: tuple[str, ...]
+
+    @property
+    def graph_type(self) -> str:
+        """The first of `graph_types`, empty when there is none."""
+        return self.graph_types[0] if self.graph_types else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,11 +174,11 @@ class NotHeld:
 class NotFound:
     """No resolution was found. `near_matches` lists up to 3 gate-rejected candidates, ordered
     by confidence and deduplicated by dcid. They are hints the graph has not confirmed, so their
-    `graph_type` is empty and their kind comes from the candidate's resolvekit type
+    `graph_types` are empty and their kind comes from the candidate's resolvekit type
     (`candidate_kind`). It is empty when resolvekit returns no candidates or the text is empty.
     `removed` holds the candidates a `kinds` filter left out, with their kinds, in the order
     the resolver ranked them; a caller shows them as near matches. A hit the graph does not
-    hold is among them with its resolvekit kind and an empty `graph_type`."""
+    hold is among them with its resolvekit kind and no `graph_types`."""
 
     near_matches: tuple[Entity, ...] = ()
     removed: tuple[Entity, ...] = ()
@@ -219,7 +227,7 @@ class GraphLookup(Protocol):
 @dataclass(frozen=True, slots=True)
 class CodeHit:
     """A code whose label or synonym lists the text. `entity.kind` is `code` and
-    `entity.graph_type` the code system's graph id. `text` is the label or synonym that
+    `entity.graph_types` the code system's graph id alone. `text` is the label or synonym that
     matched, as the code index writes it, so every casing of a query gives one hit."""
 
     entity: Entity

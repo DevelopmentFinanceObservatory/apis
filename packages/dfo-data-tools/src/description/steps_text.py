@@ -13,9 +13,9 @@ the label stored with the step, and an earlier step by the name of what it produ
 inputs of a comparison are told apart by the one role column of its `sides` (`{"left":
 {"donor": "dcid:country/GBR"}, ...}`) whose entity differs between them, each named by the
 vocabulary's label of its entity. A side the step itself narrows (`left_entity`,
-`numerator_entity`) is named with the labels of the entities it narrows to in brackets
-(`_Words.side`), in every sentence and name built from that side. Parties
-are named by the role wording of the roles a step's parameters group by (`numerator_by:
+`numerator_entity`) is named with the labels of the entities it narrows to that its own words
+do not state, in brackets (`_Words.side`), in every sentence and name built from that side.
+Parties are named by the role wording of the roles a step's parameters group by (`numerator_by:
 ["recipient"]` reads "recipients"), else by what a count counts ("entities"). Periods are named
 by the version's grain ("year"), else "period". Counts come from `kept`, `left_out` and the
 coverage members only: "38 of 54" is the kept count plus the entities left out. A count of a
@@ -28,6 +28,7 @@ reason the templates do not hold. Neither raises.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -320,26 +321,38 @@ class _Words:
             return None
         return first_label, second_label
 
-    def narrowed_to(self, role: str) -> str | None:
-        """The labels of the entities the step itself narrowed its input in `role` to, the
-        values of its `<role>_entity` parameter (`left_entity: {"donor": "dcid:FRA"}`) in
-        column order, joined by ", ". `None` when the parameter is absent or empty, or a value
-        has no label. An input retrieved for one entity holds it in `sides` but binds none
-        here."""
+    def narrowed_to(self, role: str, name: str) -> str | None:
+        """The labels of the entities the step itself narrowed its input in `role` to that
+        `name`, the words for that input, does not state (`_states`): the values of its
+        `<role>_entity` parameter (`left_entity: {"donor": "dcid:FRA"}`) in column order, each
+        as a bracket holds it (`_entity_words`), joined by ", ". `None` when the parameter is
+        absent or empty, a value has no label, or `name` states every value. An input
+        retrieved for one entity holds it in `sides` but binds none here.
+
+        Whether the input's version already binds an entity is not recorded with the step, so
+        the words decide: a version's label is composed from the entities it binds ("net
+        disbursements from United Kingdom to Ghana"), and the step's narrowing to one of them
+        adds nothing."""
         binding = _bindings(self.step).get(role)
         if binding is None:
             return None
         labels = [self.vocabulary.label(dcid) for dcid in binding.values()]
         if any(label is None for label in labels):
             return None
-        return ", ".join(label for label in labels if label is not None)
+        unstated = [
+            _entity_words(label)
+            for label in labels
+            if label is not None and not _states(name, label)
+        ]
+        return ", ".join(unstated) or None
 
     def side(self, role: str, name: str) -> str:
         """`name`, the words for the step's input in `role`, followed by the entities the step
-        narrowed that input to (`narrowed_to`) in brackets: "gross ODA disbursements (United
-        Kingdom)". Every sentence and name built from one side of a two-sided step reads that
-        side by this."""
-        entity = self.narrowed_to(role)
+        narrowed that input to and `name` does not state (`narrowed_to`) in brackets: "gross
+        ODA disbursements (United Kingdom)". Two sides that read alike and are narrowed apart
+        read apart by this, since neither states the entity that differs. Every sentence and
+        name built from one side of a two-sided step reads that side by this."""
+        entity = self.narrowed_to(role, name)
         return f"{name} ({entity})" if entity is not None else name
 
     def same_series(self, role: str, other: str) -> bool:
@@ -391,6 +404,23 @@ class _Words:
         "party"."""
         noun = self.role_noun(role)
         return (noun.singular, noun.plural) if noun is not None else ("party", "parties")
+
+
+def _states(words: str, label: str) -> bool:
+    """Whether `words` name the entity `label` labels: the label stands in them whole, in any
+    case, between word boundaries, so "DAC countries" stands in "from DAC countries" and not
+    in "from non-DAC countries"."""
+    return re.search(rf"(?<![\w-]){re.escape(label)}(?![\w-])", words, re.IGNORECASE) is not None
+
+
+_NESTED_BRACKETS: Final = str.maketrans("()", "[]")
+
+
+def _entity_words(label: str) -> str:
+    """An entity's label as a side's brackets name it: its own words, with any round brackets
+    it holds written square, so one round bracket never sits in another ("non-DAC countries
+    (DAC)" reads "non-DAC countries [DAC]")."""
+    return label.translate(_NESTED_BRACKETS)
 
 
 def version_label(version: VersionRef, vocabulary: Vocabulary) -> str | None:
@@ -695,10 +725,9 @@ def _compare(words: _Words) -> str:
 
 
 def _join(words: _Words) -> str:
-    head = (
-        f"Joined {words.input_words('left')} and {words.input_words('right')} "
-        f"on the {words.entities()} and {words.period(2)} both hold"
-    )
+    left = words.side("left", words.input_words("left"))
+    right = words.side("right", words.input_words("right"))
+    head = f"Joined {left} and {right} on the {words.entities()} and {words.period(2)} both hold"
     return _sentence(head, words)
 
 

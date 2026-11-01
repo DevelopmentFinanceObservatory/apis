@@ -112,7 +112,7 @@ def test_both_doors_judge_a_node_by_the_kind_of_all_its_types():
     assert entity_kind_of(dcid, types[:1], code_index=index) == "place_other"
     kind = entity_kind_of(dcid, types, code_index=index)
     assert kind == "country"
-    node = PlaceNode.of_entity(Entity(dcid=dcid, name="Zedland", kind=kind, graph_type=types[0]))
+    node = PlaceNode.of_entity(Entity(dcid=dcid, name="Zedland", kind=kind, graph_types=types))
     assignment = PlaceAssignment(
         sets={"origin": (PlaceSet(name="Zedland", kind="place", node=node),)}
     )

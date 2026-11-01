@@ -66,10 +66,12 @@ def stated_scope_members(mat_result: Materialised, plan: ReadPlan | None) -> lis
 def fetch_scope_members(
     member_dcids: list[str], *, graph: EngineGraphClient
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Fetch labels and types in two batches; empty input makes no graph calls.
+    """Fetch labels and first types in two batches; empty input makes no graph calls.
 
     Callers pass the union of all specs' member dcids once per response.
     """
     if not member_dcids:
         return {}, {}
-    return graph.node_labels_batch(member_dcids), graph.node_types_batch(member_dcids)
+    labels = graph.node_labels_batch(member_dcids)
+    types = graph.node_types_batch(member_dcids)
+    return labels, {dcid: found[0] for dcid, found in types.items()}

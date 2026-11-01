@@ -52,25 +52,25 @@ _GHA, _KEN, _TZA = "country/GHA", "country/KEN", "country/TZA"
 _DEU, _FRA = "country/DEU", "country/FRA"
 _IDN, _IND = "country/IDN", "country/IND"
 
-_KENYA = PlaceSet(name="Kenya", kind="place", node=PlaceNode(_KEN, "Country"))
+_KENYA = PlaceSet(name="Kenya", kind="place", node=PlaceNode(_KEN, ("Country",)))
 _AFRICA = PlaceSet(
     name="Africa",
     kind="region",
-    node=PlaceNode("africa", "Continent"),
+    node=PlaceNode("africa", ("Continent",)),
     members=(_GHA, _KEN, _TZA),
     member_type="Country",
 )
 _ASIA = PlaceSet(
     name="Asia",
     kind="region",
-    node=PlaceNode("asia", "Continent"),
+    node=PlaceNode("asia", ("Continent",)),
     members=(_IDN, _IND),
     member_type="Country",
 )
 _EU = PlaceSet(
     name="European Union",
     kind="group",
-    node=PlaceNode("EuropeanUnion", "ContinentalUnion"),
+    node=PlaceNode("EuropeanUnion", ("ContinentalUnion",)),
     members=(_DEU, _FRA),
     member_type="Country",
 )
@@ -168,7 +168,7 @@ def test_a_set_with_no_members_reads_its_node_only_on_a_flow_role_that_takes_it(
     the provider role takes no continent (`role_kinds.role_takes`), so settling refuses it
     before any read."""
     reads: list[PlaceLists] = []
-    africa = PlaceSet(name="Africa", kind="region", node=PlaceNode("africa", "Continent"))
+    africa = PlaceSet(name="Africa", kind="region", node=PlaceNode("africa", ("Continent",)))
 
     def has_data(places: PlaceLists) -> bool:
         reads.append(places)
@@ -250,7 +250,7 @@ def test_a_node_is_read_alone_on_its_role() -> None:
 
 # A group's published total.
 
-_FRANCE = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, "Country"))
+_FRANCE = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, ("Country",)))
 _AFRICA_TOTAL = dataclasses.replace(_AFRICA, total="DACAfrica")
 _G7_TOTAL = PlaceSet(
     name="G7",
@@ -358,7 +358,7 @@ def test_a_subject_reads_no_total() -> None:
         pytest.param(_AFRICA, True, (_GHA, _KEN, _TZA), id="a-set-asked-for-its-members"),
         pytest.param(
             PlaceSet(
-                name="Nowhere", kind="region", node=PlaceNode("nowhere", "Continent"), members=()
+                name="Nowhere", kind="region", node=PlaceNode("nowhere", ("Continent",)), members=()
             ),
             False,
             ("nowhere",),
@@ -437,12 +437,12 @@ def test_the_bound_sums_the_places_of_every_role() -> None:
 
 def _places(*dcids: str) -> tuple[PlaceSet, ...]:
     return tuple(
-        PlaceSet(name=dcid, kind="place", node=PlaceNode(dcid, "Country")) for dcid in dcids
+        PlaceSet(name=dcid, kind="place", node=PlaceNode(dcid, ("Country",))) for dcid in dcids
     )
 
 
 _EMPTY_REGION = PlaceSet(
-    name="Empty", kind="region", node=PlaceNode("empty", "Continent"), members=()
+    name="Empty", kind="region", node=PlaceNode("empty", ("Continent",)), members=()
 )
 
 
@@ -541,7 +541,7 @@ def _state(
                             dcid=cast(PlaceNode, place_set.node).dcid,
                             name=pins[place_set.name],
                             kind="place",
-                            graph_type=cast(PlaceNode, place_set.node).graph_type,
+                            graph_types=cast(PlaceNode, place_set.node).graph_types,
                         )
                     )
                     for place_set in sets
@@ -618,7 +618,7 @@ def test_a_rank_over_place_asks_the_members_of_a_parts_only_set(destinations) ->
     """France beside Africa on a flow shape, ranked over place: Africa is the only set of
     the part that expands, so the rank asks for its members. Africa named by two texts is
     still the only set."""
-    france = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, "Country"))
+    france = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, ("Country",)))
     state = _state(
         [france, *destinations],
         axes={"France": "origin"} | {named.name: "destination" for named in destinations},
@@ -696,7 +696,7 @@ def test_a_group_is_asked_in_the_request_s_words_unless_its_label_is_a_text(othe
     other = PlaceSet(
         name="Africa",
         kind="region",
-        node=PlaceNode("SubSaharanAfrica", "UNGeoRegion"),
+        node=PlaceNode("SubSaharanAfrica", ("UNGeoRegion",)),
         members=(_GHA, _KEN),
         member_type="Country",
     )
@@ -855,7 +855,7 @@ _SDN = "country/SDN"
 _SSA = PlaceSet(
     name="sub-Saharan Africa",
     kind="region",
-    node=PlaceNode("SubSaharanAfrica", "UNGeoRegion"),
+    node=PlaceNode("SubSaharanAfrica", ("UNGeoRegion",)),
     members=(_GHA, _KEN, _TZA),
     member_type="Country",
     label="Sub-Saharan Africa",
@@ -1176,7 +1176,7 @@ def test_place_resolution_gives_each_declared_region_the_oecds_reading(row) -> N
     place = PlaceSet(
         name=row.name,
         kind="region",
-        node=PlaceNode(row.region, "UNGeoRegion"),
+        node=PlaceNode(row.region, ("UNGeoRegion",)),
         members=graph_members,
         member_type="Country",
     )

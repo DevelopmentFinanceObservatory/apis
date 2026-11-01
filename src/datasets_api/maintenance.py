@@ -207,6 +207,15 @@ does not set. To run it:
 
 Run dev first and compare its lines before prod.
 
+`remint-card-descriptions --all [--apply]` selects every component whose head revision carries
+a description, reading no record. Run it after a release that raises
+`description.vocabulary.COMPOSER_VERSION`, since a stored revision keeps the words it was issued
+with until it is revised: once the new image serves the Presentation service, run steps 2 to 4
+with `--args=remint-card-descriptions,--all` and then `--args=remint-card-descriptions,--all,--apply`.
+A card the change leaves as it was writes nothing, so the second dry run reports `revised=0`
+with `selected` equal to the number of described cards. Without `--all` the task keeps the
+backfill selection above.
+
 `diff-recipes --report PATH` runs by hand against an environment to check the analysis runner
 against its stored frames. It computes every recipe in `datasets.frame_recipe` again on its own root versions through
 the analysis runner (`recipe_replay.replay_recipe`) and compares the result frame's `cv_` and
@@ -1379,12 +1388,13 @@ def run_remint_card_descriptions(
     vocabulary_source: VocabularySource,
     descriptions: DescriptionReader,
     apply: bool = False,
+    every: bool = False,
 ) -> int:
     """Revise each card whose head revision carries a description and is composed from a record
-    `run_backfill_within_sets` filled a set in, emit one line per card and the counts, and
-    return how many cards failed.
+    `run_backfill_within_sets` filled a set in, or with `every` each card whose head carries a
+    description, emit one line per card and the counts, and return how many cards failed.
 
-    A card is selected when its head revision carries a description and the record of the
+    Without `every`, a card is selected when its head revision carries a description and the record of the
     version its frame names, or of an input that record names
     (`presentation_store.frame_store.input_versions`), holds a `within_set` late field with
     basis `backfill`. These are the records the frame store composes its description from. Selection
@@ -1394,7 +1404,10 @@ def run_remint_card_descriptions(
     with an empty patch. Without `apply` the revision is minted and not appended. A card whose
     revision is unchanged in everything a reader sees is a no-op, logged as
     `presentation_card_remint_unchanged`, so a card already worded from today's records,
-    including one this task revised, stays selected and writes nothing.
+    including one this task revised, stays selected and writes nothing. `every` selects each
+    described head without reading a record, for a run after the composer's words change
+    (`description.vocabulary.COMPOSER_VERSION`), and relies on that no-op for the cards the
+    change leaves as they were. Heads are read a page at a time (`described_heads`).
     """
     # Presentation is another surface's store, so its modules load for this task alone.
     from assembler.pipeline import remint_component
@@ -1416,7 +1429,7 @@ def run_remint_card_descriptions(
     selected = revised = unchanged = failed = 0
     for head in described_heads(presentation):
         try:
-            if not frame_filled(head.spec_id, head.content_version):
+            if not every and not frame_filled(head.spec_id, head.content_version):
                 continue
             selected += 1
             old = revision_store.read_revision(
@@ -1485,7 +1498,7 @@ def _card_words(payload: Mapping[str, object]) -> dict[str, str | None]:
     }
 
 
-def _remint_card_descriptions(apply: bool) -> int:
+def _remint_card_descriptions(apply: bool, every: bool) -> int:
     # Presentation is another surface's store, so its modules load for this task alone.
     from assembler.catalogue import BakedReleaseRegistry
     from datasets_api.description_store import LiveDescriptionStore
@@ -1516,6 +1529,7 @@ def _remint_card_descriptions(apply: bool) -> int:
                     vocabulary_source=LiveVocabularySource(),
                     descriptions=LiveDescriptionStore(store=datasets),
                     apply=apply,
+                    every=every,
                 )
             finally:
                 presentation_provider.close_shared_pool()
@@ -2062,9 +2076,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     within_sets.set_defaults(run=_backfill_within_sets)
     remint = tasks.add_parser(
         "remint-card-descriptions",
-        help="list, or with --apply revise, the cards described before backfill-within-sets",
+        help=(
+            "list, or with --apply revise, the cards described before backfill-within-sets, "
+            "or with --all every described card"
+        ),
     )
     remint.add_argument("--apply", action="store_true")
+    remint.add_argument("--all", action="store_true", dest="every")
     remint.set_defaults(run=_remint_card_descriptions)
     tasks.add_parser(
         "backfill-frame-summed",

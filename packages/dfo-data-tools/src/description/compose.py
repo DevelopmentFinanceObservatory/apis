@@ -183,6 +183,8 @@ def describe_card(
         "drawn": blocks.drawn(record, selection, words),
         "unit": blocks.drawn_unit(selection, words),
     }
+    if codes := blocks.source_codes(record, selection.series, vocabulary):
+        about["source_codes"] = codes
     drawn_sources = blocks.drawn_sources(record, selection, words, inputs=inputs)
     description: dict[str, Any] = {
         "describes": {"kind": "card_revision", "component_id": component_id, "revision": revision},
@@ -294,6 +296,8 @@ def _dataset_blocks(record: DescriptionRecord, words: Words) -> tuple[Wire, list
         "period": blocks.period(record.series, words),
         "unit": blocks.series_unit(record.series, words),
     }
+    if codes := blocks.version_source_codes(record, words.vocabulary):
+        about["source_codes"] = codes
     return (
         about,
         blocks.dataset_sources(record, words),

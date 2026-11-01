@@ -8,7 +8,7 @@ the build lists as DFO or base variables until it holds ``--per-origin`` of each
 so the sample spans many queries, and any hit on a second pass.
 
 For each kept variable it records the ``->*`` arcs ``dc_graph.GraphClient.node_arcs_batch``
-returns, as the sorted distinct ``dcid`` or ``value`` of each property, and the label and type
+returns, as the sorted distinct ``dcid`` or ``value`` of each property, and the label and first type
 ``node_labels_batch`` and ``node_types_batch`` return. For every node those arcs name it records
 the label and type too, since the origin client answers those from the arc tables, and
 ``arc_names``, the sorted distinct names those arcs carry for it.
@@ -119,7 +119,12 @@ def _labels_and_types(graph: GraphClient, dcids: list[str]) -> dict[str, dict[st
     for batch in _batches(dcids):
         labels = graph.node_labels_batch(batch)
         types = graph.node_types_batch(batch)
-        found.update({dcid: {"label": labels.get(dcid), "type": types.get(dcid)} for dcid in batch})
+        found.update(
+            {
+                dcid: {"label": labels.get(dcid), "type": types[dcid][0] if dcid in types else None}
+                for dcid in batch
+            }
+        )
     return found
 
 

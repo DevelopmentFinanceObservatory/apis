@@ -908,7 +908,7 @@ def _state_naming(variable: str, party: str | None, axis: str = "destination") -
     if party in ("country", "organisation"):
         state.place_sets = place_sets({name: _KEN})
         graph_type = "Country" if party == "country" else "Organization"
-        entity = Entity(dcid=_KEN, name=name, kind=party, graph_type=graph_type)
+        entity = Entity(dcid=_KEN, name=name, kind=party, graph_types=(graph_type,))
         state.rcl = Recall(candidates=[], resolutions={name: Resolved(entity=entity)})
     elif party == "region":
         state.place_sets = place_sets(regions={name: ("africa", [_KEN, _GHA])})
@@ -919,7 +919,7 @@ def _state_naming(variable: str, party: str | None, axis: str = "destination") -
             name: PlaceSet(
                 name=name,
                 kind="group",
-                node=PlaceNode(dcid="EuropeanUnionInstitutions", graph_type="Organization"),
+                node=PlaceNode(dcid="EuropeanUnionInstitutions", graph_types=("Organization",)),
                 members=("country/DEU", "country/FRA"),
                 member_type="Country",
             )
@@ -1083,7 +1083,7 @@ def _with_multilaterals(state: ResolveState) -> ResolveState:
         _MULTILATERALS: PlaceSet(
             name="multilaterals (DAC)",
             kind="place",
-            node=PlaceNode(dcid=_MULTILATERALS, graph_type="DACGroup"),
+            node=PlaceNode(dcid=_MULTILATERALS, graph_types=("DACGroup",)),
         )
     }
     return state
@@ -1307,7 +1307,7 @@ def test_intake_reads_the_party_of_a_word_stated_on_an_unnamed_axis(
     with recording_degraded_reads() as lost, caplog.at_level(logging.WARNING):
         sets = asyncio.run(_party_word_sets(state))
     assert {dcid: (s.name, s.node) for dcid, s in sets.items()} == (
-        {_MULTILATERALS: ("multilaterals (DAC)", PlaceNode(_MULTILATERALS, "DACGroup"))}
+        {_MULTILATERALS: ("multilaterals (DAC)", PlaceNode(_MULTILATERALS, ("DACGroup",)))}
         if words and typed
         else {}
     )

@@ -208,13 +208,13 @@ def place_sets(
         sets[name] = PlaceSet(
             name=name,
             kind="region",
-            node=PlaceNode(dcid=dcid, graph_type="Continent"),
+            node=PlaceNode(dcid=dcid, graph_types=("Continent",)),
             members=tuple(members),
             member_type="Country",
         )
     for name, dcid in (places or {}).items():
         sets[name] = PlaceSet(
-            name=name, kind="place", node=PlaceNode(dcid=dcid, graph_type="Country")
+            name=name, kind="place", node=PlaceNode(dcid=dcid, graph_types=("Country",))
         )
     return sets
 

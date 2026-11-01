@@ -32,7 +32,9 @@ class PlaceNode:
     """A place set's own graph node."""
 
     dcid: str
-    graph_type: str
+    # The node's graph types in the graph's order (`Entity.graph_types`). Role admission
+    # admits the node on a role when it admits any of them.
+    graph_types: tuple[str, ...]
     # The node's kind as the resolver classes it over all its graph types (`Entity.kind`),
     # the kind a resubmit of it judges (`role_kinds.check_role_kinds`). `None` for the node
     # of a party the code index declares (a party word's, a whole total's), which a flow role
@@ -42,7 +44,12 @@ class PlaceNode:
     @classmethod
     def of_entity(cls, entity: Entity) -> Self:
         """The node of the resolved `entity`, with the kind the resolver classed it by."""
-        return cls(dcid=entity.dcid, graph_type=entity.graph_type, kind=entity.kind)
+        return cls(dcid=entity.dcid, graph_types=entity.graph_types, kind=entity.kind)
+
+    @property
+    def graph_type(self) -> str:
+        """The first of `graph_types`, empty when there is none."""
+        return self.graph_types[0] if self.graph_types else ""
 
 
 @dataclass(frozen=True, slots=True)

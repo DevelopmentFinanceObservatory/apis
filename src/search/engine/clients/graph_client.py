@@ -313,7 +313,7 @@ class LiveGraphClient:
     def node_type(self, dcid: str) -> str | None:
         return self._client.node_type(dcid)
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         return self._client.node_types_batch(dcids)
 
     def node_arcs(self, dcid: str) -> dict | None:

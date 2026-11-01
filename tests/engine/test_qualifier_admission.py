@@ -374,7 +374,7 @@ def _part_state(
         admitted_ties=(),
     )
     if recipient is not None:
-        entity = Entity(dcid="country/KEN", name="Kenya", kind=recipient, graph_type="Country")
+        entity = Entity(dcid="country/KEN", name="Kenya", kind=recipient, graph_types=("Country",))
         state.entities = ["Kenya"]
         state.place_sets = place_sets({"Kenya": "country/KEN"})
         state.entity_roles = door_roles_for_test_query("aid to Kenya", ["Kenya"])

@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import pytest
 from pydantic import BaseModel
@@ -447,7 +447,7 @@ class _RaiseOnAny:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         raise GraphInfraError("FakeGraph(raise=True): simulated transport error")
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         raise GraphInfraError("FakeGraph(raise=True): simulated transport error")
 
     def node_arcs_batch(
@@ -509,6 +509,17 @@ class _RaiseOnAny:
 
 
 _PLACE_NODE: dict = {"type": "Place"}
+
+
+def _node_types(node: Mapping[str, Any]) -> tuple[str, ...]:
+    """A fixture node's types: the targets of its `typeOf` arc where it has one, as a node of
+    several types is written, else its `type`."""
+    nodes = ((node.get("arcs") or {}).get("typeOf") or {}).get("nodes")
+    if nodes:
+        return tuple(dict.fromkeys(n["dcid"] for n in nodes if n.get("dcid")))
+    type_of = node.get("type")
+    return (type_of,) if type_of else ()
+
 
 # Each fake graph has a generation token of its own, so no fake shares another's memoised
 # default scopes (`materialise.place_scope`).
@@ -663,7 +674,7 @@ class FakeGraph:
         properties: Sequence[str],
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-        """Read typeOf from type, name from label, and other properties from arcs.
+        """Read typeOf by `_node_types`, name from label, and other properties from arcs.
 
         Missing nodes map to None. Absent properties map to ().
         """
@@ -675,12 +686,11 @@ class FakeGraph:
             if node is None:
                 result[dcid] = None
                 continue
-            arcs = node.get("arcs", {})
+            arcs = node.get("arcs") or {}
             entry: dict[str, tuple[str, ...]] = {}
             for prop in properties:
                 if prop == "typeOf":
-                    type_of = node.get("type")
-                    entry[prop] = (type_of,) if type_of else ()
+                    entry[prop] = _node_types(node)
                 elif prop == "name":
                     label = node.get("label")
                     entry[prop] = (label,) if label else ()
@@ -839,18 +849,15 @@ class FakeGraph:
             result[dcid] = row.label if row is not None else label
         return result
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
-        """Return types for typed fixture nodes."""
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Return the types of typed fixture nodes, as `node_arcs_many` reads them."""
         if self._impl is not None:
             return self._impl.node_types_batch(dcids)
-        result: dict[str, str] = {}
+        result: dict[str, tuple[str, ...]] = {}
         for dcid in dcids:
             node = self._nodes.get(dcid)
-            if node is None:
-                continue
-            type_of = node.get("type")
-            if type_of:
-                result[dcid] = type_of
+            if node is not None and (types := _node_types(node)):
+                result[dcid] = types
         return result
 
     def node_arcs_batch(
