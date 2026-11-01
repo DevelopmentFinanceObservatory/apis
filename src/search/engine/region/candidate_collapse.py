@@ -10,7 +10,7 @@ import functools
 from typing import cast
 
 from materialise import GraphReader
-from materialise.facets import nominal_currency
+from materialise.facets import unit_currency_code
 from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.envelope import _emit_step, now_ms
@@ -323,11 +323,13 @@ def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, sp
 def _in_currency(facets: list[Facet], currency: str | None) -> bool:
     """Whether no facet reports a unit other than `currency`, the one a twin cluster's
     members are equivalent in (`EquivalentCluster.currency`). Always true for a cluster
-    naming none. A facet stating no unit passes, as nothing shows it reads another.
+    naming none. A unit's currency is read at any prices (`unit_currency_code`), since the
+    series states its own price basis. A facet stating no unit passes, as nothing shows it
+    reads another.
     Grounding keeps a twin's facets in that currency where it reports others too
     (`candidate_grounding._twin_unit_filters`)."""
     return currency is None or all(
-        f.unit is None or nominal_currency(f.unit) == currency for f in facets
+        f.unit is None or unit_currency_code(f.unit) == currency for f in facets
     )
 
 

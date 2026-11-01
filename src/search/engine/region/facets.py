@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Protocol, assert_never, get_args
 
 from code_index.composites import provenance_account
 from code_index.shared import get_index
-from materialise.facets import nominal_currency
+from materialise.facets import unit_currency_code
 from search.engine.clients.graph import Facet
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
 from search.engine.region.result import FacetAxisFilter
@@ -307,7 +307,9 @@ def cluster_currency_filter(mat: Materialised) -> dict[str, FacetAxisFilter] | N
     currency (`equivalent_series.CLUSTER_BY_MEMBER`), when its facets report that currency
     beside others: it keeps the facets in that currency alone. IMF WEO GDP reports national
     currency beside US dollars and is World Bank GDP's twin in US dollars alone, so either
-    serves US dollars whatever else is on the menu. A facet stating no unit is left out, as
+    serves US dollars whatever else is on the menu. A facet's currency is its unit's at any
+    prices (`unit_currency_code`), since the series states its own price basis. A facet
+    stating no unit is left out, as
     the identity binds the currency (`cluster_currency_binding`) and a resubmit of it admits
     only facets reporting that currency, so the answer serves what its resubmit serves.
     None for every other answer. A request that binds a unit decides the facets instead, so
@@ -318,13 +320,13 @@ def cluster_currency_filter(mat: Materialised) -> dict[str, FacetAxisFilter] | N
         return None
     currency = cluster.currency
     units = {f.unit for facets in (mat.facets_by_sv or {}).values() for f in facets if f.unit}
-    if not any(nominal_currency(unit) == currency for unit in units) or all(
-        nominal_currency(unit) == currency for unit in units
+    if not any(unit_currency_code(unit) == currency for unit in units) or all(
+        unit_currency_code(unit) == currency for unit in units
     ):
         return None
     return {
         "unit": FacetAxisFilter(
-            predicate=lambda f: f.unit is not None and nominal_currency(f.unit) == currency
+            predicate=lambda f: f.unit is not None and unit_currency_code(f.unit) == currency
         )
     }
 

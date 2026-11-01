@@ -10,6 +10,7 @@ dropped.
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Mapping, Sequence
 
 import httpx
@@ -68,9 +69,9 @@ _NATIONAL = {"country/KEN": "KES", "country/SOM": "SOS", "country/IND": "INR"}
 _INDIA = {"India": "country/IND"}
 
 
-def _imf(place: str, *, usd: bool) -> list[dict]:
+def _imf(place: str, *, usd: bool, dollars: str = "CurrencyUSD") -> list[dict]:
     """The IMF facets at `place`, as dev serves them: one national-currency facet per
-    country, and one US dollar facet shared by every country."""
+    country, and one US dollar facet shared by every country, in the unit `dollars`."""
     national = _NATIONAL[place]
     facets = [
         {
@@ -85,7 +86,7 @@ def _imf(place: str, *, usd: bool) -> list[dict]:
             {
                 **_SPAN,
                 "provenanceId": _IMF_PROVENANCE,
-                "unit": "CurrencyUSD",
+                "unit": dollars,
                 "facetId": "imf-usd",
             }
         )
@@ -244,11 +245,20 @@ def _reading(spec) -> tuple[str, str | None, object]:
 
 
 _IMF_IN_USD = (_IMF_GDP_SV, "CurrencyUSD", IdentityBindingValue(ref="CurrencyUSD"))
+# A US dollar unit the unit registry reads at constant prices. The series states its own
+# price basis, so the unit counts as US dollars in the GDP cluster.
+_CONSTANT_DOLLARS = "undata/UNIT_MEASURE-CR_USD_K"
+_IMF_IN_CONSTANT_USD = (
+    _IMF_GDP_SV,
+    _CONSTANT_DOLLARS,
+    IdentityBindingValue(ref=_CONSTANT_DOLLARS),
+)
+_IMF_CONSTANT_DOLLARS = functools.partial(_imf, dollars=_CONSTANT_DOLLARS)
 _WB_IN_USD = (_NOMINAL_GDP_SV, "USDollar", None)
 
 
 @pytest.mark.parametrize(
-    ("svs", "bindings", "places", "wb_absent", "served", "listed", "binder"),
+    ("svs", "bindings", "places", "wb_absent", "served", "listed", "binder", "imf_facets"),
     [
         pytest.param(
             {**_WB_NOMINAL_GDP_NODES, _IMF_GDP_SV: _IMF_GDP_NODE},
@@ -258,7 +268,19 @@ _WB_IN_USD = (_NOMINAL_GDP_SV, "USDollar", None)
             _WB_IN_USD,
             _IMF_IN_USD,
             None,
+            None,
             id="imf-listed",
+        ),
+        pytest.param(
+            {**_WB_NOMINAL_GDP_NODES, _IMF_GDP_SV: _IMF_GDP_NODE},
+            _GDP_SOLE_OPTION,
+            _KENYA,
+            frozenset(),
+            _WB_IN_USD,
+            _IMF_IN_CONSTANT_USD,
+            None,
+            _IMF_CONSTANT_DOLLARS,
+            id="imf-listed-in-constant-dollars",
         ),
         pytest.param(
             {_IMF_GDP_SV: _IMF_GDP_NODE, **_WB_NOMINAL_GDP_NODES},
@@ -268,12 +290,17 @@ _WB_IN_USD = (_NOMINAL_GDP_SV, "USDollar", None)
             _IMF_IN_USD,
             _WB_IN_USD,
             ReplyBinder(),
+            None,
             id="imf-served-first",
         ),
     ],
 )
-def test_the_imf_twin_reads_us_dollars(svs, bindings, places, wb_absent, served, listed, binder):
-    result = _resolve(svs, bindings, places, wb_absent=wb_absent, binder=binder)
+def test_the_imf_twin_reads_us_dollars(
+    svs, bindings, places, wb_absent, served, listed, binder, imf_facets
+):
+    result = _resolve(
+        svs, bindings, places, wb_absent=wb_absent, binder=binder, imf_facets=imf_facets
+    )
 
     assert result.status == "definite", result
     (spec,) = result.specs
@@ -282,13 +309,14 @@ def test_the_imf_twin_reads_us_dollars(svs, bindings, places, wb_absent, served,
 
 
 @pytest.mark.parametrize(
-    ("svs", "places", "imf_absent", "served"),
+    ("svs", "places", "imf_absent", "served", "imf_facets"),
     [
         pytest.param(
             {_IMF_GDP_SV: _IMF_GDP_NODE, **_WB_NOMINAL_GDP_NODES},
             _INDIA,
             frozenset({"country/IND"}),
             (_NOMINAL_GDP_SV, "USDollar", IdentityBindingValue(ref="USDollar")),
+            None,
             id="no-data-election-answered-in-usd",
         ),
         pytest.param(
@@ -296,18 +324,34 @@ def test_the_imf_twin_reads_us_dollars(svs, bindings, places, wb_absent, served,
             _KENYA,
             frozenset(),
             _IMF_IN_USD,
+            None,
             id="lone-imf-in-usd",
+        ),
+        pytest.param(
+            {_IMF_GDP_SV: _IMF_GDP_NODE},
+            _KENYA,
+            frozenset(),
+            _IMF_IN_CONSTANT_USD,
+            _IMF_CONSTANT_DOLLARS,
+            id="lone-imf-in-constant-usd",
         ),
     ],
 )
 def test_a_cluster_member_serves_the_cluster_currency_with_no_twin_beside_it(
-    svs, places, imf_absent, served
+    svs, places, imf_absent, served, imf_facets
 ):
     """A member of the GDP cluster serves US dollars whatever else is on the menu. World
     Bank GDP answering for an IMF election with no data at India serves its US dollar facet
     beside the rupee one, and a lone IMF candidate serves its US dollar facet beside the
-    shilling one."""
-    result = _resolve(svs, _IMF_BINDINGS, places, imf_absent=imf_absent, wb_national=True)
+    shilling one, in whatever prices its unit states."""
+    result = _resolve(
+        svs,
+        _IMF_BINDINGS,
+        places,
+        imf_absent=imf_absent,
+        wb_national=True,
+        imf_facets=imf_facets,
+    )
 
     assert result.status == "definite", result
     (spec,) = result.specs
