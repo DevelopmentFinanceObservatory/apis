@@ -262,12 +262,16 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     holds no words for the years (a resubmit, `asked` is `None`) states only what the data
     holds and shows. An answer a unit request converts over fewer years than the data holds
     names the table that leaves the rest out (`_conversion_years`). One whose deflators
-    leave out some entities' rows names them (`_omitted_years`)."""
+    leave out some entities' rows names them (`_omitted_years`). One that lists a side's
+    members because the side's total holds none of the years names where the total's years
+    stop (`_whole_total_years`)."""
     if fact.omitted_years or fact.omitted_unnamed or fact.omission_undecided:
         return _omitted_years(fact)
     lead = f"You asked for {_asked(fact)}. " if fact.asked is not None else ""
     if fact.covered_years:
         return lead + _scope_years(fact)
+    if fact.limited_by == "whole_total":
+        return lead + _whole_total_years(fact, shows_data=shows_data)
     if fact.limited_by is not None:
         return lead + _conversion_years(fact)
     if fact.requested_years is None:
@@ -318,6 +322,25 @@ def _conversion_years(fact: DepartureFact) -> str:
     else:
         bound = f"end in {last}"
     return f"{table} {bound}, so this shows {fact.shown}."
+
+
+def _whole_total_years(fact: DepartureFact, *, shows_data: bool) -> str:
+    """The sentence saying where the years of the total the side would read stop, on the
+    side of the years asked, and that the answer reads the side's members in its place:
+    "The source's total for every official donor ends in 2024, so this covers each donor
+    with data." The years asked hold none of the total's, so they fall after its span or
+    before it. Where the members' data misses some of the years asked too
+    (`departures.merged_year_facts`), it adds the years the answer shows: "..., so this
+    covers each donor with data and shows 2025"."""
+    if fact.over is None or fact.data_years is None or fact.requested_years is None:
+        raise ValueError("year_unavailable on a side's total needs the side and both spans")
+    first, last = fact.data_years
+    after = any(year > last for year in fact.requested_years if year is not None)
+    bound = f"ends in {last}" if after else f"starts in {first}"
+    every = whole_population_text(fact.over, fact.whole_of)
+    noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
+    shown = f" and shows {fact.shown}" if shows_data and fact.shown is not None else ""
+    return f"The source's total for {every} {bound}, so this covers each {noun} with data{shown}."
 
 
 _SCOPE_LIMITS: Final[Mapping[str, str]] = MappingProxyType(

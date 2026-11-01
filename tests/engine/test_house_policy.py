@@ -555,6 +555,49 @@ def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     assert (context.basis is not None) == (wanted in _CONVENTION_DATASETS.values())
 
 
+# A recipient's grant equivalents are the CRS's, and its amounts DAC2a's.
+_ODA_SHAPES = (
+    _facts(0, measured_property="grantEquivalent", datasets=(_CONVENTION_DATASETS["sector"],)),
+    _facts(1, netting=("Gross", "Net"), datasets=(_CONVENTION_DATASETS["recipient"],)),
+)
+
+
+# A donor's grant equivalents and amounts, both DAC1's.
+_DONOR_SHAPES = tuple(replace(s, datasets=(_CONVENTION_DATASETS["donor"],)) for s in _ODA_SHAPES)
+
+
+@pytest.mark.parametrize(
+    ("places", "shapes", "expected"),
+    [
+        pytest.param({"Ethiopia": ()}, _ODA_SHAPES, 1, id="in-place-house-default-dataset"),
+        pytest.param({"Ethiopia": ("destination",)}, _ODA_SHAPES, 1, id="to-place-recipient-basis"),
+        pytest.param({"France": ("origin",)}, _ODA_SHAPES, 0, id="from-place-donor-basis"),
+        pytest.param({}, _ODA_SHAPES, 0, id="no-place-window"),
+        pytest.param({"Germany": ()}, _DONOR_SHAPES, 0, id="in-place-default-publishes-neither"),
+    ],
+)
+def test_a_place_without_a_direction_leaves_the_measure_to_the_house_default_dataset(
+    places: Mapping[str, tuple[str, ...]], shapes: tuple[ShapeFacts, ...], expected: int
+):
+    """ "ODA in Ethiopia in 2020" names its place without a direction, so the conventions
+    elect no basis until the shape settles, and the 2020 window alone would pick grant
+    equivalents. `amount_vs_ge` keeps both, and the recipient default (DAC2a) picks the
+    amount "ODA to Ethiopia in 2020" is counted on. Where the house default publishes
+    neither shape, the window decides."""
+    index = get_index()
+    context = context_of(
+        _frame(window=TimeWindow(start_year=2020, end_year=2020), places=places),
+        [],
+        [0, 1],
+        wanted_datasets=index.house_defaults(),
+        case_systems=index.house_case_systems(),
+        pool_datasets=tuple(_CONVENTION_DATASETS.values()),
+    )
+    pool = PolicyPool(measuring=(0, 1))
+
+    assert apply_house_policies(shapes, pool, context, chosen=1).survivor == expected
+
+
 @pytest.mark.parametrize(
     ("datasets", "basis"),
     [

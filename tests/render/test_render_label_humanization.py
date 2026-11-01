@@ -196,6 +196,33 @@ def test_promotion_gate_a_content_words_ignore_punctuation():
     assert _rendered(spec) == "Fertility rate, total (births per woman)."
 
 
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        pytest.param(
+            "Infant mortality rate [Age=Under 1 year old]",
+            "Infant mortality rate (under 1 year old)",
+            id="one-slice",
+        ),
+        pytest.param(
+            "Infant mortality rate [Age=Under 1 year old, Sex=Male]",
+            "Infant mortality rate (under 1 year old, male)",
+            id="two-slices",
+        ),
+        pytest.param(
+            "Current health expenditure per capita "
+            "[Health expenditure category=Current health expenditure]",
+            "Current health expenditure per capita",
+            id="slice-named-by-the-head",
+        ),
+    ],
+)
+def test_slice_list_bracket_renders_its_values(label: str, expected: str):
+    """A graph label's ``Key=Value`` slice list renders its values without keys, and only
+    the values the label's head does not already name."""
+    assert _normalize_what_label(label) == expected
+
+
 def test_single_token_title_case_label_untouched():
     """Keep a single-token label unchanged."""
     assert _normalize_what_label("Livestock") == "Livestock"

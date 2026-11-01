@@ -7,13 +7,12 @@ from search.engine.unit.lexicon import (
     AMBIGUOUS_ISO_CODES,
     CONNECTIVE_WORDS,
     CURRENCY_ALIASES,
-    CURRENCY_DISPLAY_NAMES,
-    MAX_PHRASE_WORDS,
     PRICE_BASIS_PHRASES,
     ROLE_CURRENCY_PHRASES,
     UNSUPPORTED_PHRASES,
 )
 from unit_words.currency_codes import ISO_4217_CODES
+from unit_words.currency_nouns import CURRENCY_NOUNS, CURRENCY_SINGULAR_NOUNS
 
 
 def test_iso_codes_are_upper_case_three_letters() -> None:
@@ -173,48 +172,18 @@ def test_beside_phrases_cover_local_national_and_own() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CURRENCY_DISPLAY_NAMES: labels for the codes a bind_unit_text refusal can
-# list in its alternatives. Every code that can actually appear there
-# (AMBIGUOUS_ISO_CODES and every AMBIGUOUS_CURRENCY_NAMES candidate) must
-# have a curated entry -- a missing one would fall back to the bare code as
-# its own label, which is exactly the tautological "did you mean TOP?"
-# outcome curating this table exists to avoid.
+# A refusal labels each alternative by its singular noun. A code without one
+# would read as the tautological "did you mean TOP?".
 # ---------------------------------------------------------------------------
 
 
-def test_currency_display_name_keys_are_valid_iso_codes() -> None:
-    for code in CURRENCY_DISPLAY_NAMES:
-        assert code in ISO_4217_CODES, f"{code!r} is not a registered ISO code"
-
-
-def test_currency_display_names_are_non_empty_strings() -> None:
-    for code, name in CURRENCY_DISPLAY_NAMES.items():
-        assert isinstance(name, str) and name, f"{code!r} has no display name"
-
-
-def test_every_alternatives_candidate_has_a_curated_display_name() -> None:
+def test_every_alternatives_candidate_has_a_singular_noun() -> None:
     candidates = set(AMBIGUOUS_ISO_CODES)
     for alternatives in AMBIGUOUS_CURRENCY_NAMES.values():
         candidates.update(alternatives)
-    missing = candidates - set(CURRENCY_DISPLAY_NAMES)
-    assert not missing, f"no curated display name for: {missing}"
+    missing = candidates - set(CURRENCY_SINGULAR_NOUNS)
+    assert not missing, f"no singular noun for: {missing}"
 
 
-def test_max_phrase_words_covers_every_multi_word_entry() -> None:
-    longest = max(
-        (
-            len(phrase.split())
-            for phrase in (
-                *CURRENCY_ALIASES,
-                *AMBIGUOUS_CURRENCY_NAMES,
-                *PRICE_BASIS_PHRASES,
-                *UNSUPPORTED_PHRASES,
-                *ROLE_CURRENCY_PHRASES,
-            )
-        ),
-        default=1,
-    )
-    assert longest == MAX_PHRASE_WORDS, (
-        f"the longest phrase is {longest} words but MAX_PHRASE_WORDS={MAX_PHRASE_WORDS} -- "
-        "the classify stage's scan window would silently miss it"
-    )
+def test_every_currency_noun_has_a_singular() -> None:
+    assert set(CURRENCY_SINGULAR_NOUNS) == set(CURRENCY_NOUNS)

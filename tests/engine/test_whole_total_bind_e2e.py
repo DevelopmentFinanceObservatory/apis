@@ -129,17 +129,20 @@ def _coverage(
     *,
     official: bool = True,
     years: tuple[int, ...] = (2019, 2020, 2021),
+    total_years: tuple[int, ...] | None = None,
 ) -> None:
     """DAC2a holds series to Ethiopia from France, from the private donors' total and,
     unless told otherwise, from the official donors' total, and from France to every
-    recipient; the CRS holds France's series to Ethiopia."""
+    recipient; the CRS holds France's series to Ethiopia. The totals' series run over
+    `total_years` where given, the others' over `years`."""
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     span = list(years)
+    totals = span if total_years is None else list(total_years)
     patch_coverage(
         monkeypatch,
         [
-            *([(_DAC2A_MEMBER, "dac2a", _OFFICIAL, _ETH, span)] if official else []),
-            (_DAC2A_MEMBER, "dac2a", _PRIVATE, _ETH, span),
+            *([(_DAC2A_MEMBER, "dac2a", _OFFICIAL, _ETH, totals)] if official else []),
+            (_DAC2A_MEMBER, "dac2a", _PRIVATE, _ETH, totals),
             (_DAC2A_MEMBER, "dac2a", _FRA, _ETH, span),
             (_DAC2A_MEMBER, "dac2a", _FRA, _ALL_RECIPIENTS, span),
             (_CRS_MEMBER, "crs", _FRA, _ETH, span),
@@ -837,6 +840,59 @@ def test_a_total_holding_no_series_leaves_the_side_to_its_parties(
     assert _available(answer) == []
 
 
+@pytest.mark.parametrize(
+    ("time", "listed", "text"),
+    [
+        pytest.param(
+            "2021",
+            True,
+            "You asked for 2021. The source's total for every official donor ends in 2020,"
+            " so this covers each donor with data.",
+            id="after-the-total-where-donors-hold-it",
+        ),
+        pytest.param(
+            "2030",
+            False,
+            "You asked for 2030. The data covers only 2019 to 2020.",
+            id="after-every-series",
+        ),
+        pytest.param(
+            "2010",
+            False,
+            "You asked for 2010. The data covers only 2019 to 2020.",
+            id="before-every-series",
+        ),
+        pytest.param(
+            "2021 to 2022",
+            True,
+            "You asked for 2021 to 2022. The source's total for every official donor ends in"
+            " 2020, so this covers each donor with data and shows 2021.",
+            id="after-the-total-and-past-the-donors",
+        ),
+    ],
+)
+def test_a_total_ending_before_the_years_asked_states_its_years(
+    monkeypatch: pytest.MonkeyPatch, time: str, listed: bool, text: str
+):
+    """The official donors' total to Ethiopia runs 2019 to 2020 and France's series 2019 to
+    2021. Asked for 2021, the part lists the donors, which hold it, and says the total ends
+    in 2020. Asked for 2021 to 2022, past the donors' years too, it says so once, with the
+    year it shows. Asked for a year no series holds, the part reads the total, and its
+    no-data text states the total's years, the span the answer would have read."""
+    _coverage(monkeypatch, total_years=(2019, 2020))
+
+    (answer,) = _resolve({"entities": [_TO_ETHIOPIA], "time": time, "variable": _VARIABLE}).parts
+
+    (year,) = [d for d in answer.departures if d.code == "year_unavailable"]
+    assert year.asked == time
+    assert year.text == text
+    if listed:
+        assert isinstance(answer, DefinitePart), answer
+        assert _origin(answer.spec) is None
+    else:
+        assert isinstance(answer, NoDataPart), answer
+
+
 def test_a_named_whole_population_holding_no_series_refuses_as_a_named_party(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1140,6 +1196,13 @@ def _holds_only_open(_state: Any, _shape: Any, whole: Any, bindings: Any) -> boo
     return not any(b.sampled for b in bindings)
 
 
+def _reaches_only_open(
+    _state: Any, _shape: Any, sets: Any, *, bindings: Any, window: Any
+) -> tuple[bool, None]:
+    assert sets is _WHOLE.sets
+    return not any(b.sampled for b in bindings), None
+
+
 def test_binding_repair_judges_a_whole_total_on_the_bindings_without_their_sampled_claims(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1149,10 +1212,10 @@ def test_binding_repair_judges_a_whole_total_on_the_bindings_without_their_sampl
     monkeypatch.setattr(phase_election, "bind_place_roles", lambda *_args: _NAMED)
     monkeypatch.setattr(phase_election, "whole_total_candidates", lambda *_args: [_WHOLE])
     monkeypatch.setattr(phase_election, "_settle_role_bindings", lambda *_a, **_k: settled)
-    monkeypatch.setattr(phase_election, "holds_whole_total", _holds_only_open)
+    monkeypatch.setattr(phase_election, "series_reach", _reaches_only_open)
     monkeypatch.setattr(phase_election, "_install_settled", lambda *_a, **_k: None)
     monkeypatch.setattr(phase_election, "_part_basis", lambda *_args: None)
-    state = SimpleNamespace(shape_draft=None, query_place_roles=None)
+    state = SimpleNamespace(shape_draft=None, query_place_roles=None, date_request=None)
     open_slot = SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound")
 
     phase_election._bind_query_places(

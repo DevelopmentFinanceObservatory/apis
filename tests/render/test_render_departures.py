@@ -312,6 +312,37 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "Exchange rates end in 2020, so this shows 1976 to 2020.",
     ),
+    # A side listed member by member because its total holds none of the years asked.
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2025",
+            requested_years=(2025, 2025),
+            data_years=(1960, 2024),
+            over="origin",
+            whole_of=("official",),
+            limited_by="whole_total",
+        ),
+        "aid",
+        "You asked for 2025. The source's total for every official donor ends in 2024, so this "
+        "covers each donor with data.",
+    ),
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="1983",
+            requested_years=(1983, 1983),
+            data_years=(1984, 2024),
+            over="destination",
+            whole_of=("official", "residual"),
+            limited_by="whole_total",
+        ),
+        "aid",
+        "You asked for 1983. The source's total for every recipient starts in 1984, so this "
+        "covers each recipient with data.",
+    ),
     # Deflators that leave out some donors' rows: before, after and inside the years kept,
     # every year, and a count past the third.
     (

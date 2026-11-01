@@ -14,6 +14,7 @@ from search.engine.departures import (
     NO_ENTITY_WORDS,
     member_unavailable_fact,
     merged_entity_facts,
+    merged_year_facts,
     scope_limited_fact,
     spec_departure_facts,
     stated_facts,
@@ -290,18 +291,21 @@ def part_departure_facts(
     `members_in_words` says). A part answering with no Spec reads only its
     operations. The `entity_unavailable` facts of one role merge into one
     (`departures.merged_entity_facts`), the Spec's first, so its entities lead in the
-    answer's entity order."""
+    answer's entity order, and the years a side's total and its members miss merge into
+    one `year_unavailable` (`departures.merged_year_facts`)."""
     return ordered_facts(
-        merged_entity_facts(
-            [
-                *spec_departure_facts(
-                    spec,
-                    operations=operations,
-                    entity_words=entity_words,
-                    members_in_words=members_in_words,
-                ),
-                *raised,
-            ]
+        merged_year_facts(
+            merged_entity_facts(
+                [
+                    *spec_departure_facts(
+                        spec,
+                        operations=operations,
+                        entity_words=entity_words,
+                        members_in_words=members_in_words,
+                    ),
+                    *raised,
+                ]
+            )
         )
     )
 

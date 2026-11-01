@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal, cast
@@ -71,13 +70,13 @@ from search.models import (
     Spec,
 )
 from unit_words.currency_codes import ISO_4217_CODES
+from unit_words.currency_nouns import CURRENCY_SINGULAR_NOUNS
 
 from .lexicon import (
     AMBIGUOUS_CURRENCY_NAMES,
     AMBIGUOUS_ISO_CODES,
     CONNECTIVE_WORDS,
     CURRENCY_ALIASES,
-    CURRENCY_DISPLAY_NAMES,
     LEXICON_VERSION,
     MAX_PHRASE_WORDS,
     MAX_YEAR,
@@ -85,6 +84,7 @@ from .lexicon import (
     PRICE_BASIS_PHRASES,
     ROLE_CURRENCY_PHRASES,
     UNSUPPORTED_PHRASES,
+    fold_marks,
 )
 
 __all__ = [
@@ -173,7 +173,7 @@ class CurrencyAlternative:
     """A refusal candidate with a display label.
 
     ``currency`` is the value a caller resubmits as the request's currency. An ISO
-    code carries its curated display name, and a role shape carries the role's
+    code carries its singular noun, and a role shape carries the role's
     reader-facing axis noun.
     """
 
@@ -217,8 +217,8 @@ _DASH_TRANSLATION = str.maketrans(dict.fromkeys("‐‑‒–—−", "-"))
 
 
 def _normalise(text: str, *, casefold: bool = True) -> str:
-    normalised = unicodedata.normalize("NFKC", text)
-    normalised = normalised.translate(_DASH_TRANSLATION)
+    # Folding marks makes "córdobas" match the lexicon's names, which carry none.
+    normalised = fold_marks(text).translate(_DASH_TRANSLATION)
     if casefold:
         normalised = normalised.casefold()
     normalised = normalised.replace(".", "")
@@ -242,12 +242,6 @@ _SEPARATOR_RE = re.compile(f"[{re.escape(_SEPARATOR_CHARACTERS)}]+")
 
 def _tokenise(normalised: str) -> list[str]:
     return _TOKEN_RE.findall(normalised)
-
-
-# Each refusal alternative's display name, as the binder reads it, names that currency.
-_DISPLAY_NAME_CURRENCIES: dict[str, str] = {
-    " ".join(_tokenise(_normalise(name))): code for code, name in CURRENCY_DISPLAY_NAMES.items()
-}
 
 
 def _split_erasure(text: str) -> list[str]:
@@ -301,8 +295,6 @@ def _phrase_lookup(phrase: str) -> _LookupHit | None:
         return _LookupHit("unsupported", UNSUPPORTED_PHRASES[phrase])
     if phrase in CURRENCY_ALIASES:
         return _LookupHit("currency", CURRENCY_ALIASES[phrase])
-    if phrase in _DISPLAY_NAME_CURRENCIES:
-        return _LookupHit("currency", _DISPLAY_NAME_CURRENCIES[phrase])
     if phrase in AMBIGUOUS_CURRENCY_NAMES:
         return _LookupHit("ambiguous_currency", alternatives=AMBIGUOUS_CURRENCY_NAMES[phrase])
     if phrase in PRICE_BASIS_PHRASES:
@@ -319,8 +311,8 @@ def _phrase_lookup(phrase: str) -> _LookupHit | None:
 
 
 def _currency_alternative(code: str) -> CurrencyAlternative:
-    """Return an ISO code with its curated label, or the code itself as fallback."""
-    return CurrencyAlternative(currency=code, label=CURRENCY_DISPLAY_NAMES.get(code, code))
+    """Return an ISO code with its singular noun as label, or the code itself as fallback."""
+    return CurrencyAlternative(currency=code, label=CURRENCY_SINGULAR_NOUNS.get(code, code))
 
 
 def _role_alternative(role: EntityRoleKey) -> CurrencyAlternative:
@@ -661,13 +653,12 @@ def bind_unit_text(
 
 def _phrases_naming(currency: IdentityCurrency) -> list[str]:
     """The lexicon's words that name `currency` alone: an ISO code that collides with no
-    English word, then the code's curated aliases, then its display name; for a role
-    shape, its fixed-role phrases."""
+    English word, then the code's names (`CURRENCY_ALIASES`); for a role shape, its
+    fixed-role phrases."""
     if isinstance(currency, str):
         code = [] if currency in AMBIGUOUS_ISO_CODES else [currency]
         aliases = [alias for alias, named in CURRENCY_ALIASES.items() if named == currency]
-        names = [name for name, named in _DISPLAY_NAME_CURRENCIES.items() if named == currency]
-        return [*code, *aliases, *names]
+        return [*code, *aliases]
     return [phrase for phrase, role in ROLE_CURRENCY_PHRASES.items() if role == currency.role]
 
 
