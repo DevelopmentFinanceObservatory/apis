@@ -24,8 +24,8 @@ places with no roles. It ends at `SEARCH_RELATED_MEASURES_TIMEOUT_S` or the requ
 deadline, whichever comes first. Past it, or on a failed read, the Spec states none, the
 reason is logged (`_log_unavailable`), and the answer that joins the read notes it lost
 (`degraded_reads.note_lost_read`), so no cache stores the answer. A read that ran past
-`SEARCH_RELATED_MEASURES_TIMEOUT_S` while the request had time left is not noted. It was
-healthy but slow, so the answer can be cached.
+`SEARCH_RELATED_MEASURES_TIMEOUT_S` while the request had time left is noted as cut. It was
+healthy but slow, so the answer carries no warning, and no cache stores it.
 """
 
 from __future__ import annotations

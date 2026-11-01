@@ -763,9 +763,10 @@ class ComputedOptions:
     probe that did not answer, a UN System Data Commons read that failed
     (`UnBlockedPlaces.failures`), or a UN front door refusal of a place outside the bound
     origin catalogue build's refused set. Places in that set are a fact of the build and
-    leave a result settled, though its warning names them. `degraded`
-    marks a compute that noted a read it stands without (`degraded_reads`); the caller that
-    records those reads sets it. `options_response_cache.is_cacheable` reads both."""
+    leave a result settled, though its warning names them. `degraded` marks a compute that
+    noted a read it stands without, lost or cut by its budget
+    (`degraded_reads.DegradedReads.storable`); the caller that records those reads sets it.
+    `options_response_cache.is_cacheable` reads both."""
 
     options: OptionsSet
     warnings: tuple[Warning, ...]

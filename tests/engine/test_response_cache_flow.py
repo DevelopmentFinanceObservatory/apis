@@ -12,6 +12,7 @@ from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvi
 from origin_catalogue import bound_catalogue
 from search.engine import config
 from search.engine.binders import Binder, Fallbacks, configured_binder
+from search.engine.degraded_reads import DegradedReads
 from search.engine.envelope import now_ms
 from search.engine.events import DoneEvent
 from search.engine.extract import ExtractedEntity
@@ -73,6 +74,7 @@ def _make_scope(
     trailing: bool = False,
     binder: Binder | None = None,
     fallbacks: Fallbacks | None = None,
+    request_reads: DegradedReads | None = None,
 ) -> CacheScope:
     return CacheScope(
         cache,
@@ -82,6 +84,7 @@ def _make_scope(
         build_commit=_BUILD_COMMIT,
         binder=binder if binder is not None else KeyedBinder(model=_MODEL),
         fallbacks=fallbacks if fallbacks is not None else Fallbacks(),
+        request_reads=request_reads if request_reads is not None else DegradedReads(),
         seed=_SEED,
         today=_TODAY,
         max_candidates=_MAX_CANDIDATES,

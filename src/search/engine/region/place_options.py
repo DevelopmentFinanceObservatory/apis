@@ -267,7 +267,7 @@ async def build_place_options_events(
             return _REFUSED
         except EngineInfraError:
             return None
-        return replace(computed, degraded=lost.degraded or target_lost.degraded)
+        return replace(computed, degraded=not (lost.storable and target_lost.storable))
 
     cache = pool.options_cache
     if cache is None:

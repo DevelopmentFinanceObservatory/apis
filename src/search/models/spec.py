@@ -651,7 +651,8 @@ class ResolvedSpec(StrictModel):
         description=(
             "the rows, series, years and licence of the file a mint of this Spec writes "
             "(see DownloadFacts). None when the Spec has no read plan: a no-data answer, "
-            "or same-shape parts merged into one Spec"
+            "or same-shape parts merged into one Spec whose parts' read plans do not combine "
+            "without a further read"
         ),
     )
     coverage_stamp: str | None = Field(

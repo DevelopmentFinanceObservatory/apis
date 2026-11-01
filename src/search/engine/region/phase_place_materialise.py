@@ -2487,7 +2487,7 @@ async def _read_preview(
     (`fail_open_reads`, `fail_open_read_budget_s`), or `None` when the read is lost: the
     suggestion stands without its preview. A preview `_build_observations` omits as
     `observations_timed_out` is lost the same way, with its warning. Its read crossed a
-    deadline, so it is noted as a lost read unless the budget ran out first
+    deadline, so it is noted as a lost read, or as cut when the budget ran out first
     (`degraded_reads.scope_budget_ran_out`)."""
     preview: tuple[SpecObservations, Warning | None] | None = None
     with fail_open_reads(

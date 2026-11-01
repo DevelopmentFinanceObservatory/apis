@@ -434,51 +434,46 @@ def test_a_streamed_merged_read_that_swallowed_a_read_leaves_the_stream_incomple
     assert incomplete == (["observations"] if degraded else [])
 
 
-def test_a_buffered_merged_read_past_its_budget_answers_with_its_preview_omitted(monkeypatch):
-    """Two resubmitted identities fold on the dataset_resubmit door, buffered, and their
-    merged read runs past its fail-open budget. The answer stands with the preview omitted
-    `observations_timed_out`, and the read the budget cut marks no leg degraded."""
-    monkeypatch.setattr(settings(), "fail_open_read_budget_s", 0.2)
-    released = threading.Event()
-    real = composite_answer.resolve_spec_resubmit
+@pytest.mark.parametrize(
+    ("deadline_s", "cut"),
+    [pytest.param(5.0, False, id="within"), pytest.param(0.4, True, id="past")],
+)
+def test_a_buffered_merged_read_runs_to_its_deadline_past_the_fail_open_budget(
+    monkeypatch, resubmits, deadline_s, cut
+):
+    """The merged preview is the answer's own preview, so a buffered one reads to the reads'
+    deadline less the combine's tail, as a single answer's does, however short the fail-open
+    budget of label and type reads. A read slower than that budget embeds its preview whole.
+    One still running at the deadline is cut: the preview is omitted
+    `observations_timed_out`, and the region is degraded, so no cache stores it. The read
+    takes 0.3 s on the real clock."""
+    monkeypatch.setattr(settings(), "fail_open_read_budget_s", 0.05)
 
     def slow(**kwargs: Any) -> RegionResult:
-        released.wait(timeout=2)
-        return real(**kwargs)
+        time.sleep(0.3)
+        return resubmits(**kwargs)
 
     monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", slow)
-    request = ResolveRequest(
-        input=DatasetResubmitInput(
-            entries=[
-                resubmit._gender_entry("Female", resubmit._FEMALE_SV, window=None),
-                resubmit._gender_entry("Male", resubmit._MALE_SV, window=None),
-            ]
-        ),
-        response_options=ResolveOptions(include_observations=True),
-    )
-
-    try:
-        events = offline_events(
-            request,
-            graph=resubmit._gender_fold_graph(),
-            sdmx=FakeSdmxClient(observations={}, availability={}),
-        )
-    finally:
-        released.set()
-
-    (response,) = [e.response for e in events if isinstance(e, ResponseEvent)]
-    assert isinstance(response, Resolution)
-    first, second = response.parts
-    assert isinstance(first, DefinitePart) and isinstance(second, DefinitePart)
-    observations = first.spec.resolved.observations
-    assert observations is not None
-    assert observations.omitted is not None
-    assert observations.omitted.reason == OBSERVATIONS_TIMED_OUT
-    assert [(w.code, w.spec_id) for w in first.warnings if w.code == OBSERVATIONS_TIMED_OUT] == [
-        (OBSERVATIONS_TIMED_OUT, first.spec.spec_id)
+    reads = dataclasses.replace(_reads(), deadline=time.monotonic() + deadline_s)
+    members = [
+        _member("kenya", 0, _KEN_OWN, streamed=False),
+        _member("uganda", 1, _UGA_OWN, streamed=False),
     ]
-    (done,) = [e for e in events if isinstance(e, DoneEvent)]
-    assert done.degraded_leg is False
+
+    (merged,) = same_shape._read_merged_previews([_merged(*members, reads=reads)])
+
+    observations = merged.spec.resolved.observations
+    assert observations is not None
+    assert merged.degraded is cut
+    if cut:
+        assert observations.series == []
+        assert observations.omitted is not None
+        assert observations.omitted.reason == OBSERVATIONS_TIMED_OUT
+        assert [(w.code, w.spec_id) for w in merged.warnings] == [
+            (OBSERVATIONS_TIMED_OUT, "merged")
+        ]
+    else:
+        assert observations == _MERGED_READ
 
 
 def test_a_buffered_merged_read_after_a_full_read_runs_to_the_extended_deadline(

@@ -3131,7 +3131,7 @@ class RoleClassWalks:
     notes the lost read (`degraded_reads.note_lost_read`), as does a failed read of the
     arcs of members it adds (`elected_role_class_shape`): the answer then stands on less
     than the walk would have read, so no cache stores it. A walk cut by the budget of an
-    enclosing fail-open scope (`degraded_reads.scope_budget_ran_out`) notes nothing. A
+    enclosing fail-open scope (`degraded_reads.scope_budget_ran_out`) is noted as cut. A
     resubmit's walk (`resubmit`) takes no seed and raises those errors, since no recalled
     member can answer for it.
     """

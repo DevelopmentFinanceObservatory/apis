@@ -276,7 +276,7 @@ async def _resubmit_preview(
     `PREVIEW_WARNING_CODES`. A part memo hit reads nothing, and a miss stores the answer.
 
     A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
-    by its enclosing budget notes nothing), logged under `about`, and is lost
+    by its enclosing budget is noted as cut and leaves the request unstorable), logged under `about`, and is lost
     `observations_timed_out` when it crossed the deadline (`TimeoutError`,
     `GraphDeadlineExceededError`), else `observations_probe_failed`. A resolve that refuses
     `identity` (`EngineInputError`) or answers no definite Spec with a preview is lost
@@ -433,10 +433,10 @@ class IdentityPreview:
 
 
 def cut_merged_preview() -> tuple[SpecObservations, tuple[Warning, ...]]:
-    """The preview of a merged answer whose read was cut before it ended
+    """The preview of a merged answer whose read was cut at its deadline
     (`same_shape._read_merged_previews`): omitted `observations_timed_out`, with its warning."""
-    return _LostRead(timed_out=True, cause="ran past its budget").omission(
-        "the merged answer's preview ran past its budget."
+    return _LostRead(timed_out=True, cause="ran past its deadline").omission(
+        "the merged answer's preview ran past its deadline."
     )
 
 

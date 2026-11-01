@@ -15,7 +15,6 @@ import dc_graph
 from origin_catalogue import current_catalogue, scoped_reads
 from search.engine import response_cache_flow, same_shape
 from search.engine.concurrency import scoped_concurrency
-from search.engine.config import settings
 from search.engine.entry import dataset_resubmit
 from search.engine.errors import (
     EngineInfraError,
@@ -837,10 +836,6 @@ def test_a_composite_entry_whose_walk_ran_the_full_read_previews_to_its_deadline
     reads its components to the full read's deadline, so its preview holds both and warns
     no timeout. A component read bound by the request deadline finds it passed. A merge
     whose second member alone ran the full read reads to that member's deadline."""
-    # A buffered merge reads its preview under the fail-open budget as well
-    # (`same_shape._read_merged_previews`); a budget past the full read leaves the deadline
-    # under test the one that binds.
-    monkeypatch.setattr(settings(), "fail_open_read_budget_s", 600.0)
     first, components = _components(monkeypatch)
     identity = first.definition.identity
     real = dataset_resubmit.resolve_spec_resubmit

@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from search.engine.region.observations.dispatch import PreviewRead
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.region.promote_relaunch import PromoteRelaunch
+    from search.engine.retrieval.coverage import CoverageForm
     from search.engine.retrieval.read_plan import ReadPlan
 
 FacetPredicate = Callable[[Facet], bool]
@@ -403,6 +404,15 @@ class RegionResult:
     served_filter: RoleServedFilter | None = None
     served_members: tuple[MemberFacts, ...] = ()
     served_plans: tuple[ReadPlan, ...] = ()
+    # The form the Spec states its plan's coverage in (`retrieval.coverage.CoverageForm`),
+    # which a same-shape merge states the merged plan's coverage in
+    # (`same_shape._merged_counts`). None off the definite path and for a carrier that
+    # keeps its own coverage.
+    coverage_form: CoverageForm | None = None
+    # Whether `served_plans` were narrowed to the units a unit request elected over this
+    # answer's own group (`facets.FacetAdmission.elected_units`). A same-shape merge then
+    # rebuilds no plan, since a resolve of the merged identity elects over the merged group.
+    units_elected: bool = False
     # Each open directional role's member population behind this region's Spec, the
     # input its `ResolvedSpec.role_axis_facts` were counted from. A same-shape merge
     # counts the merged answer's members from the union of these, since the wire
