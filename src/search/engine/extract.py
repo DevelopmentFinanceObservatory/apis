@@ -885,9 +885,12 @@ def _heads_own_phrase(
     own_ranges: list[tuple[int, int]], normalized_query: str, variables: list[str]
 ) -> bool:
     """Whether a span occurrence is followed by a possessive ("Uganda's GDP") or straight
-    by a measure word ("Uganda GDP"), so the place heads a noun phrase of its own."""
+    by the first word of a measure ("Uganda GDP"), so the place heads a noun phrase of its
+    own. Only a measure's first word counts, since a measure folds in its qualifiers
+    ("aid for health"), and "Uganda for health" heads no phrase."""
     possessed = any(normalized_query.startswith(("'", "\u2019"), end) for _start, end in own_ranges)
-    return possessed or _modifies_measure_word(own_ranges, normalized_query, variables)
+    heads = [words[0] for words in (variable.split() for variable in variables) if words]
+    return possessed or _modifies_measure_word(own_ranges, normalized_query, heads)
 
 
 def _lends_the_measure(

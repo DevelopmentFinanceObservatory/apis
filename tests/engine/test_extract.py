@@ -480,12 +480,18 @@ _KENYA_TO = _entity("Kenya", span="Kenya", flow_role="destination", role_span="t
             [("destination", "to"), ("unspecified", None)],
             id="no-span",
         ),
+        pytest.param(
+            "aid to Kenya and Uganda for health",
+            [_KENYA_TO, _entity("Uganda", span="Uganda")],
+            [("destination", "to"), ("destination", "to")],
+            id="qualifier-after-the-list",
+        ),
     ],
 )
 def test_validate_role_spans_carries_a_cue_to_every_place_of_its_list(query, entities, expected):
     """A cue before a coordinated list governs every place in it, so an entity the model
     left unspecified takes the role of the conjunct before it."""
-    validated = _validate_role_spans(query, entities, ["aid", "oda", "GDP"])
+    validated = _validate_role_spans(query, entities, ["aid for health", "oda", "GDP"])
     assert [(e.flow_role, e.role_span) for e in validated] == expected
 
 
