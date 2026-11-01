@@ -279,7 +279,8 @@ def resolve_bare_spec(spec_id: str, *, newest: NewestFrames | None) -> FrameRef:
         elif problem.code == "snapshot_revoked":
             reason = "revoked"
         elif problem.status >= 500:
-            # A server fault stays a server fault, which the surface answers `internal_error`.
+            # A server fault stays a server fault, which the surface answers `internal_error`
+            # and logs with its traceback, so the read logs no second line for it.
             raise
         else:
             reason = "unknown"

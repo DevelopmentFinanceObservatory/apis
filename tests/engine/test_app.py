@@ -1105,7 +1105,7 @@ def test_sse_pipeline_failure_logs_its_traceback_once(monkeypatch):
     monkeypatch.setattr("search.engine.app.resolve_events", _failing_events)
     # Handlers on the emitting loggers, since the `search` logger may stop propagation.
     handler = BufferingHandler(capacity=1000)
-    loggers = [logging.getLogger("search.engine.app"), logging.getLogger("dfo_platform.refusal")]
+    loggers = [logging.getLogger("search.engine.app"), logging.getLogger("dfo_platform.app")]
     for each in loggers:
         each.addHandler(handler)
     try:
