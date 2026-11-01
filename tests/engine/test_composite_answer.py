@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -577,6 +578,38 @@ def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monke
         )
         for item in relaunch.served
     } == stated
+
+
+class _RecordingTask:
+    """Stands in for a trailing task, recording the thread each `cancel` runs on."""
+
+    def __init__(self) -> None:
+        self.cancelled_on: list[int] = []
+
+    def cancel(self) -> bool:
+        self.cancelled_on.append(threading.get_ident())
+        return True
+
+
+def test_a_fresh_composite_answer_cancels_the_tasks_it_drops_on_the_event_loop(monkeypatch):
+    """The restatement as the composite runs in a worker thread (`_with_scope_choices`) and
+    drops the trailing tasks the table answer held, which `Task.cancel` may only cancel on
+    the event loop they belong to, so the loop cancels them once the thread returns."""
+    _components(monkeypatch)
+    held = _RecordingTask()
+    loop_threads: list[int] = []
+    stating = pipeline._stating_unpublished_wholes
+
+    def holding(result: RegionResult, state: ResolveState) -> RegionResult:
+        loop_threads.append(threading.get_ident())
+        return dataclasses.replace(stating(result, state), slot_options_task=cast(Any, held))
+
+    monkeypatch.setattr(pipeline, "_stating_unpublished_wholes", holding)
+
+    _observed(_stream(_fresh()))
+
+    assert loop_threads
+    assert held.cancelled_on == loop_threads[:1]
 
 
 def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):

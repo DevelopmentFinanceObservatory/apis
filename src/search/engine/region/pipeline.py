@@ -92,6 +92,7 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import (
     RegionResult,
+    cancel_dropped_tasks,
     every_member_phrases,
     with_composite_answer,
 )
@@ -1079,10 +1080,11 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         state,
                     )
                     # The scope build reads coverage and scans families, so it runs off
-                    # the event loop.
-                    answered = await asyncio.to_thread(
-                        _with_scope_choices, _stating_unpublished_wholes(result, state), state
-                    )
+                    # the event loop, and the tasks a composite restatement drops are
+                    # cancelled back on it.
+                    stated = _stating_unpublished_wholes(result, state)
+                    answered = await asyncio.to_thread(_with_scope_choices, stated, state)
+                    cancel_dropped_tasks(stated, answered)
                     return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
