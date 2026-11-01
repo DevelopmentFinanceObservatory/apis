@@ -21,9 +21,10 @@ buffered request reads it inline (`with_composite_observations`).
 A same-shape merged answer previews the read of its merged identity
 (`same_shape._with_merged_preview`). A merge of composite answers is restated as the
 composite over that identity (`as_merged_composite`) and reads its components
-(`CompositeRelaunch`), and any other merge takes one resubmit of it (`IdentityPreview`). A
-component read and a merged read are both `_resubmit_preview`, so they elect, cap and fail
-alike.
+(`CompositeRelaunch`). Any other merge whose read plan the merge rebuilds in memory reads that
+plan (`PlanPreview`), so its preview and its download come from one plan, and the rest take
+one resubmit of the merged identity (`IdentityPreview`). A component read and a resubmitted
+merged read are both `_resubmit_preview`, so they elect, cap and fail alike.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
-from origin_catalogue import Catalogue, bound_catalogue
+from origin_catalogue import Catalogue, bound_catalogue, recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import bounded_semaphore, create_owned_task
@@ -69,12 +70,15 @@ from search.engine.region.codes import (
     _ObsProbeResult,
 )
 from search.engine.region.observations.dispatch import (
+    PreviewRead,
+    PreviewReader,
     _attach_observations,
     _deflator_projected_warning,
 )
 from search.engine.region.resubmit import resolve_spec_resubmit
 from search.engine.region.result import RegionResult, with_composite_answer
 from search.engine.region.state import EngineOptions
+from search.engine.region.un_system import un_unavailable_warning
 from search.engine.response_cache_keys import is_region_storable
 from search.engine.spec_id import identity_spec_id
 from search.models import (
@@ -432,6 +436,68 @@ class IdentityPreview:
         return read.omission(f"the merged answer's preview {read.cause}.")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PlanPreview:
+    """The relaunch closure of a single-table merged answer's preview
+    (`RegionResult.observations_relaunch`): `preview`, what a read of the merged answer's own
+    read plan reads (`same_shape._merged_preview_read`), read as one answer's preview is
+    (`dispatch.PreviewReader`) over `reads`, the request's clients, with no resolve. Called
+    with a spec_id, it launches the read as a request-owned task on the event loop, under the
+    request semaphore, with the result `IdentityPreview` returns. The read's warnings are its
+    own (`fetch._build_observations`) and `un_system_unavailable` for the UN places it was
+    refused, naming the variables from `variable_labels`. A read lost to
+    `degraded_reads.LOST_READ_ERRORS` is noted and previews its omission under the lost read's
+    code, as `IdentityPreview`'s does."""
+
+    preview: PreviewRead
+    reads: ComponentReads
+    variable_labels: Mapping[str, str]
+
+    def __call__(self, spec_id: str) -> asyncio.Task[_ObsProbeResult]:
+        return create_owned_task(_preview_events(self, spec_id))
+
+    async def read(
+        self, *, semaphore: asyncio.Semaphore | None
+    ) -> tuple[SpecObservations, tuple[Warning, ...]]:
+        """The preview the plan reads and its warnings, read in a worker thread holding a
+        permit of `semaphore` when one is given."""
+        reads = self.reads
+        reader = PreviewReader(
+            read=self.preview,
+            graph=reads.graph,
+            sdmx=reads.sdmx,
+            materialise_graph=reads.materialise_graph,
+            materialise_sdmx=reads.materialise_sdmx,
+            rate_cache=reads.rate_cache,
+            deadline=reads.deadline,
+            coverage=reads.coverage,
+        )
+        async with semaphore if semaphore is not None else nullcontext():
+            try:
+                # The worker thread copies this context, so the read goes through the
+                # request's catalogue and records the UN places it is refused.
+                with (
+                    bound_catalogue(reads.catalogue),
+                    recording_un_blocked_places() as un_blocked,
+                ):
+                    observations, warning = await asyncio.to_thread(reader.observations)
+            except LOST_READ_ERRORS as exc:
+                note_lost_read("merged preview", exc)
+                timed_out = isinstance(exc, TimeoutError | dc_graph.GraphDeadlineExceededError)
+                logger.warning(
+                    "merged preview: plan read %s",
+                    "crossed the request deadline" if timed_out else "failed",
+                    exc_info=True,
+                )
+                lost = _LostRead(
+                    timed_out=timed_out,
+                    cause="read crossed its deadline" if timed_out else "read failed",
+                )
+                return lost.omission(f"the merged answer's preview {lost.cause}.")
+        refused = un_unavailable_warning(un_blocked, labels=self.variable_labels)
+        return observations, tuple(w for w in (warning, refused) if w is not None)
+
+
 def cut_merged_preview() -> tuple[SpecObservations, tuple[Warning, ...]]:
     """The preview of a merged answer whose read was cut at its deadline
     (`same_shape._read_merged_previews`): omitted `observations_timed_out`, with its warning."""
@@ -441,7 +507,7 @@ def cut_merged_preview() -> tuple[SpecObservations, tuple[Warning, ...]]:
 
 
 async def _preview_events(
-    relaunch: CompositeRelaunch | IdentityPreview, spec_id: str
+    relaunch: CompositeRelaunch | IdentityPreview | PlanPreview, spec_id: str
 ) -> _ObsProbeResult:
     """The trailing preview `relaunch` reads, as one event under `spec_id` with its warnings
     keyed to it and `deflator_projected` for the preview. The event states whether the read

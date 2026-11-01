@@ -4,7 +4,9 @@ The merged answer elects as one answer: one facet group across every StatVar it 
 under `latest` one year for each StatVar across every place it names. So its rows are not
 its members' rows summed. The merge rebuilds its read plan from the members' plans
 (`merged_plan.merged_read_plan`) and states the download, coverage and headline from it, in
-the response a buffered request answers and the one a streamed request sends first.
+the response a buffered request answers and the one a streamed request sends first. It
+previews by reading that plan (`composite_answer.PlanPreview`), with no resolve, and the
+preview is the one a resubmit of its merged identity reads (`composite_answer.IdentityPreview`).
 """
 
 from __future__ import annotations
@@ -14,22 +16,32 @@ from typing import Literal
 
 import pytest
 
-from search.engine.events import ResponseEvent
+from search.engine import same_shape
+from search.engine.events import DoneEvent, ObservationsEvent, ResponseEvent
+from search.engine.region import composite_answer
+from search.engine.region.codes import DEFLATOR_PROJECTED
 from search.models import (
     BaseIdentity,
     DatasetResubmitInput,
     DefinitePart,
     Resolution,
+    ResolveOptions,
     ResolveRequest,
     ResubmitIdentityEntry,
     Spec,
+    SpecObservations,
 )
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_dataset_election_grid as grid
 from tests.engine import test_dataset_resubmit as resubmit
-from tests.engine._fake_coverage import patch_coverage
+from tests.engine._fake_coverage import CoverageRow, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_events, offline_resolve
+from tests.engine._harness import (
+    ObsFacetFixture,
+    build_materialise_double,
+    offline_events,
+    offline_resolve,
+)
 from tests.engine.test_dataset_election_grid import index  # noqa: F401  (fixture)
 from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
@@ -265,3 +277,162 @@ def test_a_standard_merge_at_one_place_counts_both_variables(mode):
     assert merged.resolved.download == alone.resolved.download
     assert merged.resolved.download is not None and merged.resolved.download.series == 2
     assert merged.resolved.coverage == alone.resolved.coverage
+
+
+_USD = FacetMetadata(provenance_id=grid._BROAD, unit="USD", observation_period="P1Y")
+_EUR = FacetMetadata(provenance_id=grid._BROAD, unit="EUR", observation_period="P1Y")
+
+
+def _flow_sdmx(rows: Sequence[CoverageRow], metadata: dict[str, FacetMetadata]):
+    """The materialise SDMX client serving each coverage row's points, one per year valued
+    at the year, under its facet's provenance and unit."""
+    pairs: dict = {}
+    for sv, facet_id, donor, recipient, years in rows:
+        key = (sv, (("financingProvider", donor), ("financingRecipient", recipient)))
+        pairs.setdefault(key, []).append(
+            ObsFacetFixture(
+                facet_id=facet_id,
+                points=tuple((str(year), float(year)) for year in years),
+                provenance_id=metadata[facet_id].provenance_id,
+                unit=metadata[facet_id].unit,
+                observation_period="P1Y",
+            )
+        )
+    _reader, sdmx, _requests = build_materialise_double(pairs)
+    return sdmx
+
+
+_PREVIEW_CODES = composite_answer.PREVIEW_WARNING_CODES | {DEFLATOR_PROJECTED}
+
+
+def _merged_preview(
+    identities: Sequence[BaseIdentity], *, mode: Mode, **clients
+) -> tuple[SpecObservations, list[str]]:
+    """The preview of the merged answer of `identities` and the codes of its preview
+    warnings: buffered, the embedded preview and the response's warnings; streamed, the
+    trailing observations event and the `done` event's warnings."""
+    request = ResolveRequest(
+        input=DatasetResubmitInput(
+            entries=[ResubmitIdentityEntry(variable_text="aid", identity=i) for i in identities]
+        ),
+        response_options=ResolveOptions(include_observations=True),
+    )
+    if mode == "buffered":
+        response = offline_resolve(request, **clients)
+        assert isinstance(response, Resolution)
+        warnings = response.diagnostics.warnings
+    else:
+        events = offline_events(request, stream_slot_options=True, **clients)
+        (response,) = [e.response for e in events if isinstance(e, ResponseEvent)]
+        assert isinstance(response, Resolution)
+        (done,) = [e for e in events if isinstance(e, DoneEvent)]
+        warnings = done.warnings
+    first, *rest = response.parts
+    assert isinstance(first, DefinitePart)
+    spec_id = first.spec.spec_id
+    assert all(isinstance(p, DefinitePart) and p.spec.spec_id == spec_id for p in rest)
+    if mode == "buffered":
+        observations = first.spec.resolved.observations
+    else:
+        (observations,) = [
+            e.observations
+            for e in events
+            if isinstance(e, ObservationsEvent) and e.spec_id == spec_id
+        ]
+    assert observations is not None
+    codes = [w.code for w in warnings if w.spec_id == spec_id and w.code in _PREVIEW_CODES]
+    return observations, codes
+
+
+def _flow_case(monkeypatch, case: str):
+    """The identities, rows and graph clients of one of the flow merges above."""
+    if case == "different-facets":
+        rows: list[CoverageRow] = [
+            ("sole_a", "usd", _DEU, _KEN, [2019, 2020, 2021]),
+            ("sole_b", "eur", _DEU, _KEN, [2020, 2021]),
+        ]
+        metadata = {"usd": _USD, "eur": _EUR}
+        identities = [_flow_identity("A", _KEN), _flow_identity("B", _KEN)]
+    elif case == "shared-facet":
+        rows = [
+            ("sole_a", "usd", _DEU, _KEN, [2019, 2020, 2021]),
+            ("sole_b", "usd", _DEU, _KEN, [2020, 2021]),
+        ]
+        metadata = {"usd": _USD}
+        identities = [_flow_identity("A", _KEN), _flow_identity("B", _KEN)]
+    else:
+        rows = [
+            ("sole_a", "usd", _DEU, _KEN, [2020, 2021]),
+            ("sole_a", "usd", _DEU, _UGA, [2019, 2020]),
+        ]
+        metadata = {"usd": _USD}
+        identities = [
+            _flow_identity("A", _KEN, latest=True),
+            _flow_identity("A", _UGA, latest=True),
+        ]
+    patch_coverage(
+        monkeypatch,
+        rows,
+        role_names={sv: _FLOW for sv, *_ in rows},
+        facet_metadata=metadata,
+    )
+    clients = {
+        "graph": _flow_graph(),
+        "materialise_graph": _flow_reader(),
+        "materialise_sdmx": _flow_sdmx(rows, metadata),
+    }
+    return identities, clients
+
+
+def _refuse_resubmits(monkeypatch) -> None:
+    """Make any resubmit a merged preview starts raise."""
+
+    def refuse(**_kwargs):
+        raise AssertionError("the merged preview resolved its identity")
+
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", refuse)
+
+
+@pytest.mark.usefixtures("index")
+@pytest.mark.parametrize("mode", ["buffered", "streamed"])
+@pytest.mark.parametrize("case", ["different-facets", "shared-facet", "latest-across-places"])
+def test_a_merged_answer_previews_its_plan_as_a_resubmit_of_its_identity_does(
+    monkeypatch, mode, case
+):
+    """The merged answer's preview, read from the plan the merge rebuilt with no resolve,
+    shows the series and preview warnings a resubmit of its merged identity reads: sector A's
+    USD grants alone where the parts elect different facets, both sectors' where they share
+    one, and Kenya's 2021 grant alone where the latest year is elected over both places."""
+    identities, clients = _flow_case(monkeypatch, case)
+    with monkeypatch.context() as patched:
+        patched.setattr(same_shape, "_merged_preview_read", lambda _group, _plan: None)
+        resubmitted = _merged_preview(identities, mode=mode, **clients)
+
+    _refuse_resubmits(monkeypatch)
+    observations, codes = _merged_preview(identities, mode=mode, **clients)
+
+    assert observations.series, "the preview read no series"
+    assert (observations, codes) == resubmitted
+
+
+@pytest.mark.parametrize("mode", ["buffered", "streamed"])
+def test_a_standard_merged_answer_previews_its_plan_as_a_resubmit_of_its_identity_does(
+    monkeypatch, mode
+):
+    """India's female and male population merge, and the merged answer previews its plan with
+    no resolve, as a resubmit of its identity previews it."""
+    identities = [
+        resubmit._gender_entry("Female", resubmit._FEMALE_SV, window=None).identity,
+        resubmit._gender_entry("Male", resubmit._MALE_SV, window=None).identity,
+    ]
+    clients = {
+        "graph": resubmit._gender_fold_graph(),
+        "sdmx": FakeSdmxClient(observations={}, availability={}),
+    }
+    with monkeypatch.context() as patched:
+        patched.setattr(same_shape, "_merged_preview_read", lambda _group, _plan: None)
+        resubmitted = _merged_preview(identities, mode=mode, **clients)
+
+    _refuse_resubmits(monkeypatch)
+
+    assert _merged_preview(identities, mode=mode, **clients) == resubmitted

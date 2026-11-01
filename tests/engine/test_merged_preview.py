@@ -1,6 +1,8 @@
 """A same-shape merged answer previews as a resubmit of its identity previews it: one read of
 the merged identity, streamed in one event under the merged spec_id or embedded when
-buffered, in place of the previews its members read for themselves."""
+buffered, in place of the previews its members read for themselves. Where the merge rebuilds
+its read plan, the read is of that plan (`composite_answer.PlanPreview`); elsewhere it is a
+resubmit (`composite_answer.IdentityPreview`)."""
 
 from __future__ import annotations
 
@@ -8,6 +10,7 @@ import asyncio
 import dataclasses
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -17,6 +20,7 @@ from search.engine import same_shape
 from search.engine.concurrency import create_owned_task, scoped_concurrency
 from search.engine.config import settings
 from search.engine.deadline import _cancel_and_await
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
 from search.engine.entry import dataset_resubmit
 from search.engine.errors import EngineInputError, GraphDeadlineFailure, GraphInfraError
@@ -31,6 +35,7 @@ from search.engine.region.codes import (
     _ObsProbeResult,
 )
 from search.engine.region.composite_answer import ComponentReads
+from search.engine.region.observations import dispatch
 from search.engine.region.result import RegionResult
 from search.models import (
     DatasetResubmitInput,
@@ -195,6 +200,7 @@ def _merged(*members: RegionResult, reads: ComponentReads | None) -> RegionResul
         list(members),
         _spec("merged"),
         preview_reads=reads,
+        preview_read=None,
         facet_probe=None,
         facet_warning=None,
         measure_partition=None,
@@ -324,14 +330,41 @@ def test_members_previewing_nothing_merge_into_an_answer_that_reads_nothing(resu
     assert resubmits.calls == []
 
 
+class _PlanReads:
+    """`composite_answer.PreviewReader` for the merged answer's plan read: reads as the real
+    reader does and records each read, noting a swallowed read when `outcome` is
+    `degraded`, or raises `GraphInfraError` when it is `lost`."""
+
+    def __init__(self, outcome: str) -> None:
+        self.outcome = outcome
+        self.calls = 0
+
+    def __call__(self, **fields: Any) -> Any:
+        reader = dispatch.PreviewReader(**fields)
+
+        def observations() -> tuple[SpecObservations, Warning | None]:
+            self.calls += 1
+            if self.outcome == "lost":
+                raise GraphInfraError("down")
+            if self.outcome == "degraded":
+                note_degraded_read("plan read")
+            return reader.observations()
+
+        return SimpleNamespace(observations=observations)
+
+
+@pytest.mark.parametrize("path", ["plan", "resubmit"])
 @pytest.mark.parametrize(
     ("outcome", "degraded_leg"), [("whole", False), ("degraded", True), ("lost", True)]
 )
-def test_a_degraded_buffered_merged_read_marks_the_leg_degraded(monkeypatch, outcome, degraded_leg):
+def test_a_degraded_buffered_merged_read_marks_the_leg_degraded(
+    monkeypatch, path, outcome, degraded_leg
+):
     """Two resubmitted identities fold on the dataset_resubmit door, buffered. Their merged
-    read is a resubmit of the merged identity, through the door's clients. When that read
-    stands on a read it swallowed, or is itself lost, `done` reports a degraded leg, so no
-    cache stores the answer; with a whole read the leg is whole."""
+    read, through the door's clients, reads the plan the merge rebuilt, or is a resubmit of
+    the merged identity where the merge rebuilds none. When that read stands on a read it
+    swallowed, or is itself lost, `done` reports a degraded leg, so no cache stores the
+    answer; with a whole read the leg is whole."""
     real = composite_answer.resolve_spec_resubmit
     merged_reads: list[ResubmitIdentityPayload] = []
 
@@ -342,6 +375,10 @@ def test_a_degraded_buffered_merged_read_marks_the_leg_degraded(monkeypatch, out
         return dataclasses.replace(real(**kwargs), degraded=outcome == "degraded")
 
     monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", merged_read)
+    plan_reads = _PlanReads(outcome)
+    monkeypatch.setattr(composite_answer, "PreviewReader", plan_reads)
+    if path == "resubmit":
+        monkeypatch.setattr(same_shape, "_merged_preview_read", lambda _group, _plan: None)
     request = ResolveRequest(
         input=DatasetResubmitInput(
             entries=[
@@ -364,7 +401,7 @@ def test_a_degraded_buffered_merged_read_marks_the_leg_degraded(monkeypatch, out
     assert isinstance(first, DefinitePart) and isinstance(second, DefinitePart)
     assert first.spec.spec_id == second.spec.spec_id
     assert first.spec.resolved.observations is not None
-    assert len(merged_reads) == 1
+    assert (plan_reads.calls, len(merged_reads)) == ((1, 0) if path == "plan" else (0, 1))
     (done,) = [e for e in events if isinstance(e, DoneEvent)]
     assert done.degraded_leg is degraded_leg
 
@@ -523,3 +560,59 @@ def test_a_buffered_merged_read_after_a_full_read_runs_to_the_extended_deadline(
     assert observations.omitted is not None
     assert observations.omitted.reason == OBSERVATIONS_CLIENTS_UNAVAILABLE
     assert OBSERVATIONS_TIMED_OUT not in {w.code for w in first.warnings}
+
+
+def _previewing(name: str, read: dispatch.PreviewRead | None) -> RegionResult:
+    return dataclasses.replace(_member(name, 0, _KEN_OWN, streamed=False), preview_read=read)
+
+
+_KENYA_READ = dispatch.PreviewRead(
+    sv_dcids=("oda_a",),
+    obs_entities={"observationAbout": ["country/KEN"]},
+    plan=None,
+    facet_filter=None,
+    bulk_places=None,
+    member_facts=None,
+    unit_request=None,
+    elected=None,
+)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        pytest.param(None, id="no-read"),
+        pytest.param(
+            dataclasses.replace(_KENYA_READ, obs_entities={"financingRecipient": ["x"]}),
+            id="other-roles",
+        ),
+        pytest.param(dataclasses.replace(_KENYA_READ, bulk_places=("country/UGA",)), id="bulk"),
+        pytest.param(dataclasses.replace(_KENYA_READ, facet_filter={}), id="facet-filter"),
+    ],
+)
+def test_members_whose_reads_disagree_preview_no_plan(other):
+    """A member without a preview read, or one naming other roles, another facet filter or
+    another bulk scope, leaves the merge no plan read, so it previews by a resubmit."""
+    group = [_previewing("kenya", _KENYA_READ), _previewing("uganda", other)]
+
+    assert same_shape._merged_preview_read(group, cast(Any, "plan")) is None
+
+
+def test_members_reads_union_into_the_plan_read():
+    """The merged plan read unions the members' StatVars and their entities by role, each in
+    group order, over the merged plan."""
+    uganda = dataclasses.replace(
+        _KENYA_READ,
+        sv_dcids=("oda_b", "oda_a"),
+        obs_entities={"observationAbout": ["country/UGA", "country/KEN"]},
+    )
+    group = [_previewing("kenya", _KENYA_READ), _previewing("uganda", uganda)]
+
+    read = same_shape._merged_preview_read(group, cast(Any, "plan"))
+
+    assert read is not None
+    assert (read.sv_dcids, read.obs_entities, read.plan) == (
+        ("oda_a", "oda_b"),
+        {"observationAbout": ["country/KEN", "country/UGA"]},
+        "plan",
+    )

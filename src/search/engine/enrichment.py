@@ -411,9 +411,9 @@ def _reconcile_after_collapse(
     Untouched regions retain identity. Merges create a new `RegionResult`. The
     combiner clears slot- and place-options tasks on merged regions, so their
     surviving relaunch closures signal a merge. Object identity signals when to
-    relaunch observation tasks: a merged region previews by a resubmit of its identity
-    (`same_shape._with_merged_preview`), launched here, and its members' preview tasks are
-    stale. Return effective regions with fresh tasks and old tasks the caller must cancel.
+    relaunch observation tasks: a merged region's preview, a read of its merged plan or of
+    its identity (`same_shape._with_merged_preview`), is launched here, and its members'
+    preview tasks are stale. Return effective regions with fresh tasks and old tasks the caller must cancel.
     """
     original_ids = {id(r) for r in original}
     kept = {id(r) for r in effective}
