@@ -722,8 +722,10 @@ def test_max_bytes_cap_reports_identical_numbers_regardless_of_concurrency(
 
 
 def test_cap_trip_bounds_requests_by_concurrency_not_chunk_count(keyed_concurrent_transport):
-    # Chunks 0-5 finish before chunk 5's cap trip. Concurrency 4 permits at
-    # most 3 later requests, so 6-9 of 20 reach the transport.
+    # Chunk 5's bulk body is held until chunks 0-4 have been answered, so all six requests
+    # reach the transport before the trip. Each of chunks 0-4 that lands frees a slot for one
+    # more chunk (6-8), and chunk 5's landing raises before it submits another, so 6-9 of 20
+    # reach the transport.
     n_chunks = 20
     concurrency = 4
     trip_index = 5
@@ -739,7 +741,8 @@ def test_cap_trip_bounds_requests_by_concurrency_not_chunk_count(keyed_concurren
     bodies = {
         var: (big_body if i == trip_index else _small_body(i)) for i, var in enumerate(variables)
     }
-    transport = keyed_concurrent_transport(bodies)
+    trip_released = threading.Event()
+    transport = keyed_concurrent_transport(bodies, release={variables[trip_index]: trip_released})
     client = SdmxClient(
         base_url=_BASE_URL,
         transport=transport,
@@ -749,11 +752,21 @@ def test_cap_trip_bounds_requests_by_concurrency_not_chunk_count(keyed_concurren
     # Fits chunks 0-4 (5 small chunks) exactly; chunk 5's bulk body blows it.
     cap = trip_index * small_len + 5
 
-    with pytest.raises(SdmxCapExceededError) as excinfo:
-        client.data(variables=variables, entities=_ENTITIES, max_bytes=cap)
+    def release_trip_after_earlier_chunks() -> None:
+        if transport.wait_completed(trip_index):
+            trip_released.set()
+
+    releaser = threading.Thread(target=release_trip_after_earlier_chunks)
+    releaser.start()
+    try:
+        with pytest.raises(SdmxCapExceededError) as excinfo:
+            client.data(variables=variables, entities=_ENTITIES, max_bytes=cap)
+    finally:
+        trip_released.set()
+        releaser.join()
 
     assert excinfo.value.cap_kind == "bytes"
-    minimum_requests = trip_index + 1  # chunks 0..5 each completed before the trip fired
+    minimum_requests = trip_index + 1  # chunks 0..5 each reached the transport before the trip
     maximum_requests = concurrency + trip_index  # + the initial batch's own overread bound
     assert minimum_requests <= len(transport.requests) <= maximum_requests
     assert len(transport.requests) < n_chunks
