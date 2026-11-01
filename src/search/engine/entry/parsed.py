@@ -415,7 +415,9 @@ async def confirm_part_pins(
     members come from resolving its name, which a pin skips. Refusals point to the posted
     field.
 
-    Type confirmation decides validity. Labels load concurrently. `Entity.name` uses
+    Type confirmation decides validity: one cached read of every type of each pin
+    (`node_types_batch`), and a node with none is not confirmed. A pin carries all its types
+    and the kind they give. Labels load concurrently. `Entity.name` uses
     the graph label or dcid fallback. Label warnings name the exception and pinned
     dcids. Type confirmation remains authoritative. Graph data supplies the pin's label.
     """
@@ -455,14 +457,16 @@ async def confirm_part_pins(
             if entity.dcid in absent_set
         )
 
-    type_result, label_result = await asyncio.gather(
-        asyncio.to_thread(
-            confirm_dcids_present,
+    def confirm() -> dict[str, tuple[str, ...]]:
+        return confirm_dcids_present(
             {"pins": all_dcids},
             read=graph.node_types_batch,
             pointer_for=_pointer_for,
             noun="dcid",
-        ),
+        )
+
+    type_result, label_result = await asyncio.gather(
+        asyncio.to_thread(confirm),
         asyncio.to_thread(graph.node_labels_batch, all_dcids),
         return_exceptions=True,
     )
@@ -484,8 +488,8 @@ async def confirm_part_pins(
                 entity=Entity(
                     dcid=dcid,
                     name=label_by_dcid.get(dcid, dcid),
-                    kind=entity_kind((type_by_dcid[dcid],)),
-                    graph_type=type_by_dcid[dcid],
+                    kind=entity_kind(type_by_dcid[dcid]),
+                    graph_types=type_by_dcid[dcid],
                 )
             )
             for identity, dcid in part_pins.items()

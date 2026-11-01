@@ -40,12 +40,14 @@ from tests.engine._harness import EMPTY_SDMX, make_request, parse_sse
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph
 
-_KENYA = Entity(dcid="country/KEN", name="Kenya", kind="country", graph_type="Country")
-_UGANDA = Entity(dcid="country/UGA", name="Uganda", kind="country", graph_type="Country")
-_NAIROBI = Entity(dcid="wikidataId/Q3870", name="Nairobi", kind="place_other", graph_type="City")
-_SAHEL = Entity(dcid="undata-geo/G00134000", name="Sahel", kind="subregion", graph_type="Place")
+_KENYA = Entity(dcid="country/KEN", name="Kenya", kind="country", graph_types=("Country",))
+_UGANDA = Entity(dcid="country/UGA", name="Uganda", kind="country", graph_types=("Country",))
+_NAIROBI = Entity(
+    dcid="wikidataId/Q3870", name="Nairobi", kind="place_other", graph_types=("City",)
+)
+_SAHEL = Entity(dcid="undata-geo/G00134000", name="Sahel", kind="subregion", graph_types=("Place",))
 _WORLD_BANK = Entity(
-    dcid="dfo/org/WorldBank", name="World Bank", kind="organisation", graph_type="Organization"
+    dcid="dfo/org/WorldBank", name="World Bank", kind="organisation", graph_types=("Organization",)
 )
 
 _RESOLUTIONS: dict[str, EntityResolution] = {

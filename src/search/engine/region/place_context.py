@@ -376,14 +376,14 @@ class UnsettledPlace:
     @property
     def admission_questions(self) -> set[tuple[str, str]]:
         """The role name and graph type pairs settling asks role admission about: each role
-        a set that holds members fills, with the node's type and the members' type
+        a set that holds members fills, with each of the node's types and the members' type
         (`place_roles.set_choices`)."""
         return {
             (role, graph_type)
             for place_set in self.assignment.distinct_sets
             if place_set.members
             for graph_type in (
-                *(() if place_set.node is None else (place_set.node.graph_type,)),
+                *(() if place_set.node is None else place_set.node.graph_types),
                 *(() if place_set.member_type is None else (place_set.member_type,)),
             )
             for key in self.assignment.roles_of(place_set)

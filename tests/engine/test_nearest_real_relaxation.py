@@ -284,7 +284,7 @@ _OTHER_MEMBER = "country/XYA"
 _REGION_SET = PlaceSet(
     name="Test region",
     kind="region",
-    node=PlaceNode(dcid=_REGION, graph_type="Continent"),
+    node=PlaceNode(dcid=_REGION, graph_types=("Continent",)),
     members=(_RECIPIENT, _OTHER_MEMBER),
     member_type="Country",
 )

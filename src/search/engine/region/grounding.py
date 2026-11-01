@@ -846,7 +846,10 @@ def _ground_entities_and_sources(
     sv_refs = [GraphRef(ref=dcid, label=labels.get(dcid, dcid)) for dcid in sv_dcids]
 
     entity_dcids = list(dict.fromkeys(dcid for dcid, _role in lookup.resolved_role_bindings))
-    node_types = graph.node_types_batch(entity_dcids) if entity_dcids else {}
+    node_types = {
+        dcid: types[0]
+        for dcid, types in (graph.node_types_batch(entity_dcids) if entity_dcids else {}).items()
+    }
     type_dcids = list(dict.fromkeys(node_types.values()))
     type_labels = graph.node_labels_batch(type_dcids) if type_dcids else {}
 

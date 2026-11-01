@@ -565,7 +565,7 @@ def resubmit_named_groups(
         labels_read = submit_with_context(pool, read_labels)
         types: dict[str, str] | None = None
         with fail_open_reads("named group types", budget_s=budget, about={"dcids": dcids}):
-            types = graph.node_types_batch(dcids)
+            types = {dcid: found[0] for dcid, found in graph.node_types_batch(dcids).items()}
         if types is not None and member_dcids:
             # The members read keeps the request's deadline: a large node's members took 1 to
             # 9 s to read against dfo-dev when healthy, so the fail-open budget would drop

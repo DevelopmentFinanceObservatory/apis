@@ -547,11 +547,14 @@ class _RecordingGraph:
             self._merge_node(dcid, label=label)
         return result
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Record each node's first type as its `type`, and a node of several types with all
+        of them as its `typeOf` arc, which the fake graph reads before `type`."""
         time.sleep(_RECORD_THROTTLE_S)
         result = self._graph.node_types_batch(dcids)
-        for dcid, type_of in result.items():
-            self._merge_node(dcid, type_of=type_of)
+        for dcid, types in result.items():
+            arcs = {"typeOf": {"nodes": [{"dcid": t} for t in types]}} if len(types) > 1 else None
+            self._merge_node(dcid, type_of=types[0], arcs=arcs)
         return result
 
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:

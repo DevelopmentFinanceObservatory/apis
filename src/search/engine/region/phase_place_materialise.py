@@ -903,7 +903,7 @@ async def _unsettled_places(
     the scopes of the StatVars a Datasets mint serves for it (`served_stat_vars`).
 
     Settling uses a set's reading only on roles that admit its type, so role admission is
-    asked here, once per pass for each role and the type of each set's node and members
+    asked here, once per pass for each role and the types of each set's node and members
     (`UnsettledPlace.admission_questions`, `state.node_admissions`), and every question it
     has not answered is asked at once.
     """

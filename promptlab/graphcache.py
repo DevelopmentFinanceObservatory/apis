@@ -219,17 +219,18 @@ class GraphCache:
                     result[dcid] = label
         return result
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         if not dcids:
             return {}
         unique = list(dict.fromkeys(dcids))
-        result: dict[str, str] = {}
+        result: dict[str, tuple[str, ...]] = {}
         misses: list[str] = []
         for dcid in unique:
-            hit, type_of = self._store.get(_key("node_type", dcid))
+            # JSON returns the types as a list.
+            hit, types = self._store.get(_key("node_types", dcid))
             if hit:
-                if type_of is not None:
-                    result[dcid] = type_of
+                if types is not None:
+                    result[dcid] = tuple(types)
             else:
                 misses.append(dcid)
         if misses:
@@ -238,10 +239,10 @@ class GraphCache:
             with self._semaphore:
                 fetched = self._inner.node_types_batch(misses)
             for dcid in misses:
-                type_of = fetched.get(dcid)
-                self._store.put(_key("node_type", dcid), "node_type", type_of)
-                if type_of is not None:
-                    result[dcid] = type_of
+                types = fetched.get(dcid)
+                self._store.put(_key("node_types", dcid), "node_types", types)
+                if types is not None:
+                    result[dcid] = types
         return result
 
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:

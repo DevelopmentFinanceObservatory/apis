@@ -1937,7 +1937,7 @@ class _Labels:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         return {}
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         return {}
 
 
