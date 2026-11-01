@@ -41,7 +41,7 @@ import dataclasses
 import logging
 import threading
 
-from datasets_api.adapter import identity_composite
+from datasets_api.adapter import family_basis, identity_composite
 from datasets_api.admission import (
     refuse_async_over_ceiling,
     sync_estimate,
@@ -66,6 +66,7 @@ from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.problem import log_problem
 from materialise import MaterialisationCancelled, RowProgress
 from materialise.errors import UpstreamVersionChangedError
+from materialise.trace import trace_family
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,9 @@ def run_operation(
                 f"{manifest.content_version!r} has no servable artifact under rendering "
                 f"keys {keys!r}"
             )
+        # The member-resolution inputs the run's family was resolved under, the ones its head
+        # advance recorded, read here so the completion below has nothing left to raise.
+        basis = family_basis(deps)
     except (MaterialisationCancelled, HeadFenceLost) as exc:
         logger.warning(
             "Datasets operation %r: attempt %d stopped writing; the row "
@@ -324,6 +328,8 @@ def run_operation(
         subject_id=completed_subject_id,
         content_version=manifest.content_version,
         confirmed_at=trace_confirmed_at(manifest.trace),
+        family=trace_family(manifest.trace),
+        basis=basis,
     )
     if completed is None:
         # The operation row has moved on. Its durable artifact has no operation reference.

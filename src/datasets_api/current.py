@@ -27,11 +27,19 @@ elects one for a member, and holds when it elects none, as for a member outside 
 current head whose version is a frame of one year stored before versions held year coverage
 (`manifest_models.year_coverage_counted`) rebuilds once too, inside the recheck window or past
 it, and the rebuild stores that coverage on the version when it makes the same one
-(`version_store.LiveVersionRecordWriter`). The
-graph serving revision is never compared, since it moves on every graph restart. A rebuild
-materialises the definition (`serve.serve_definition`), sharing one rebuild per subject in this
-process (`admission.RebuildFlights`), and breaks a single-place facet tie on the process's
-whole-variable breadth (`DefinitionDeps.variable_breadth`).
+(`version_store.LiveVersionRecordWriter`). The graph serving revision is never compared, since it
+moves on every graph restart, and neither is the member family the definition admits, since the
+run's bytes depend only on the members it serves. A confirmation stores the family the check
+resolved on the head, and a run stores its own, each with the confirmation it was stated at and the
+basis it was resolved under (`adapter.family_basis`). The family decides no freshness. A head
+serve states the head's family only while it was stated at the head's own `confirmed_at` under the
+serving basis, and states it unknown otherwise, as on a head written before families were
+recorded, one an image recording no family moved, or one whose family another basis resolved. The
+head's next recheck or run states it afresh. A rebuild states its run's family
+(`ServedDefinition.family`), derived renderings included. Both replace the version record's, which
+keeps the first mint's. A rebuild materialises the definition (`serve.serve_definition`), sharing
+one rebuild per subject in this process (`admission.RebuildFlights`), and breaks a single-place
+facet tie on the process's whole-variable breadth (`DefinitionDeps.variable_breadth`).
 
 A call with no rendering (`options` `None`, the `/options` route) loads the head's version
 without its artifacts, and a rebuild records the version, its canonical frame and statistics, and
@@ -66,7 +74,7 @@ from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
 from code_index.query import CodeIndex
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import SnapshotReader, StoredArtifactLocation, StoredVersion
-from datasets_api.adapter import definition_read_scope, identity_composite
+from datasets_api.adapter import definition_read_scope, family_basis, identity_composite
 from datasets_api.admission import (
     MaterialisePermits,
     RebuildFlights,
@@ -174,9 +182,11 @@ from materialise.formats import (
     frame_entity_columns,
 )
 from materialise.graph import GraphReader
+from materialise.pipeline import definition_family
 from materialise.profile import OutputProfile
 from materialise.projection import totals_axes
 from materialise.rate_tables import RateTableCache
+from materialise.trace import StatedFamily, family_stated_at, with_family
 from series_coverage.index import CoverageIndex, Estimate
 from series_coverage.shared import CoverageSnapshot, ServedCoverage
 from spec_registry import SpecRegistry
@@ -318,16 +328,25 @@ _BODY_POINTING_REFUSALS = (DefaultFacetUndefinedError, FacetNotAvailableError, E
 
 
 def stamp_trace(
-    manifest: Manifest, *, served_from: str, confirmed_at: datetime, coverage_stamp: str | None
+    manifest: Manifest,
+    *,
+    served_from: str,
+    confirmed_at: datetime,
+    family: StatedFamily,
+    coverage_stamp: str | None,
 ) -> Manifest:
-    """Stamp the serving outcome, confirmation time, and current coverage snapshot onto a fresh
-    copy.
+    """Stamp the serving outcome, confirmation time, member family, and current coverage
+    snapshot onto a fresh copy. `family` replaces the stored version's family fields. A head
+    serve passes the head's latest admission (`_head_family`) and a rebuild the run's own
+    (`ServedDefinition.family`). `UNKNOWN_FAMILY` states the family unknown.
 
     Head responses need this step because their stored manifest carries a prior coverage stamp.
     Materialised responses already carry the same snapshot's stamp. This stamp records the request's
     admission estimate. Artifact records retain their write-time metadata.
     """
-    trace = served_trace(manifest.trace, served_from=served_from, confirmed_at=confirmed_at)
+    trace = with_family(
+        served_trace(manifest.trace, served_from=served_from, confirmed_at=confirmed_at), family
+    )
     return manifest.model_copy(update={"trace": trace, "series_coverage_stamp": coverage_stamp})
 
 
@@ -337,6 +356,15 @@ def served_trace(
     """`trace` with the currency pair a mint, a definition retrieval and a `done` operation poll
     report: `served_from` and `confirmed_at` as RFC 3339 text."""
     return {**trace, "served_from": served_from, "confirmed_at": confirmed_at.isoformat()}
+
+
+def _head_family(head: SubjectHead, *, basis: str) -> StatedFamily:
+    """The family a serve of `head` states: its latest admission's when that was stated at the
+    head's own `confirmed_at` under `basis`, the serving one (`adapter.family_basis`), and
+    `UNKNOWN_FAMILY` otherwise, as on a head written before families were recorded, one an
+    image recording no family moved, or one whose family another basis resolved. Freshness does
+    not read it, so such a head states unknown until its next recheck or run."""
+    return family_stated_at(head.family, confirmed_at=head.confirmed_at, basis=basis)
 
 
 def trace_confirmed_at(trace: Mapping[str, object]) -> datetime:
@@ -1173,7 +1201,8 @@ def _judge_head(
     does one the bound catalogue would key on none now (`_catalogue_unkeys`). A head past the
     recheck window and younger than its maximum age (`_max_age`) whose fingerprint matches is
     confirmed, and the verdict serves the head the confirmation wrote,
-    or the head a concurrent update left. The fingerprint read and its election from
+    or the head a concurrent update left. The confirmation writes the family the check resolved
+    under the serving basis. The fingerprint read and its election from
     `coverage` run under the definition's pinned provenances
     (`adapter.definition_read_scope`), as its materialisation does."""
     subject_id = stored.spec_id
@@ -1196,7 +1225,10 @@ def _judge_head(
     if changes:
         return _Freshness(head=None, rebuild_reason=",".join(changes))
     written = deps.head_store.confirm_head(
-        subject_id=subject_id, content_version=head.content_version
+        subject_id=subject_id,
+        content_version=head.content_version,
+        family=definition_family(resolved),
+        basis=family_basis(deps),
     )
     # A concurrent update won. Serve its head.
     winner = written if written is not None else deps.head_store.read_head(subject_id)
@@ -1249,6 +1281,10 @@ def _serve_head(
         manifest,
         served_from="head",
         confirmed_at=served_head.confirmed_at,
+        family=_head_family(
+            served_head,
+            basis=family_basis(deps),
+        ),
         coverage_stamp=coverage_snapshot.stamp,
     )
 
@@ -1566,6 +1602,7 @@ def _check_currency(
         served.manifest,
         served_from="materialise",
         confirmed_at=written.confirmed_at if written is not None else now,
+        family=served.family,
         coverage_stamp=snapshot.stamp,
     )
 

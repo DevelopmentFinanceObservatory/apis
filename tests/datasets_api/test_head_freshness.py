@@ -19,12 +19,14 @@ The materialiser, `serve_current` and the head store are real. The graph is
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 from collections.abc import Callable, Generator, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import override
+from typing import cast, override
 
 import httpx
 import pytest
@@ -33,6 +35,8 @@ from artifact_store import LiveArtifactInventory
 from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.current import DefinitionDeps, serve_current
+from datasets_api.doors.definition import _resolve_spec_requests
+from datasets_api.doors.snapshot import read_snapshot_manifest
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
@@ -48,15 +52,18 @@ from materialise import EnrichmentLookup, MaterialisationRequest
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
+from materialise.trace import MemberFamily
 from materialise.window import RequestedWindow
-from origin_catalogue import Catalogue
+from origin_catalogue import Catalogue, bound_catalogue, current_catalogue
 from origin_catalogue.origins import BASE, DFO, DataCommons
 from spec_registry import LiveSpecRegistry
+from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
 from tests.graph_release.support import release_with
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
+from . import test_serve_party_totals as party_totals
 from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
@@ -98,14 +105,14 @@ class _Clock:
 
 
 class _CountingSdmx(httpx.MockTransport):
-    def __init__(self) -> None:
+    def __init__(self, body: str = _CSV_BODY) -> None:
         self.requests = 0
 
         def _respond(_request: httpx.Request) -> httpx.Response:
             self.requests += 1
             return httpx.Response(
                 200,
-                text=_CSV_BODY,
+                text=body,
                 headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
             )
 
@@ -161,6 +168,7 @@ class _Rig:
         )
         self.stored: StoredDefinition
         self.stored, self.request = _registered(self.deps)
+        self.options = MintOptions(bundle=False)
 
     def serve(
         self, request: MaterialisationRequest | None = None
@@ -173,7 +181,7 @@ class _Rig:
             manifest = serve_current(
                 self.stored,
                 resolve_requests=lambda: [resolved],
-                options=MintOptions(bundle=False),
+                options=self.options,
                 trigger="get",
                 deps=self.deps,
                 trace_id=None,
@@ -196,10 +204,48 @@ class _Rig:
                 (dependencies, self.stored.spec_id),
             )
 
+    def materialisation_runs(self) -> int:
+        """The `datasets.materialisation` rows recorded for the definition."""
+        with self.version_store.transaction() as tx:
+            row = tx.fetch_one(
+                "SELECT count(*) AS runs FROM datasets.materialisation WHERE subject_id = %s",
+                (self.stored.spec_id,),
+            )
+        assert row is not None
+        return int(cast(int, row["runs"]))
+
     def head_dependencies(self) -> dict[str, object]:
         head = self.deps.head_store.read_head(self.stored.spec_id)
         assert head is not None and head.dependencies is not None
         return dict(head.dependencies)
+
+
+def _cut_rig(version_store: FakeVersionRecordDatasetStore) -> _Rig:
+    """`_Rig` over `test_serve_party_totals`'s flow, whose open provider side holds France and
+    the DAC total, served with the totals cut, which makes a derived version over the head's base
+    version."""
+    rig = _Rig(version_store, dated=True)
+    rig.transport = _CountingSdmx(party_totals._CSV_BODY)
+    rig.graph = party_totals._graph()
+    index = party_totals._code_index()
+    rig.deps = replace(
+        rig.deps,
+        graph=rig.graph,
+        sdmx=SdmxClient(base_url="https://datacommons.one.org/core/api", transport=rig.transport),
+        coverage=party_totals._coverage_service(),
+        code_index=index,
+        enrichment=EnrichmentLookup(rig.graph, parties=lambda: index.parties),
+    )
+    recomputed = recompute_identity(party_totals._IDENTITY)
+    rig.deps.registry.register_definition(
+        identity_definition=recomputed.identity,
+        schema_version=1,
+        supplied_spec_id=recomputed.spec_id,
+    )
+    rig.stored, requests = _resolve_spec_requests(spec_id=recomputed.spec_id, deps=rig.deps)
+    (rig.request,) = requests
+    rig.options = MintOptions(format="csv", bundle=False, without_party_totals=True)
+    return rig
 
 
 @pytest.fixture
@@ -254,6 +300,166 @@ def test_past_the_recheck_window_an_unchanged_fingerprint_costs_one_graph_read(v
     assert fields["sdmx_requests"] == "0"
     head = rig.deps.head_store.read_head(rig.stored.spec_id)
     assert head is not None and head.confirmed_at == rig.clock.at
+
+
+_FIRST_FAMILY = MemberFamily(digest="a" * 64, count=3)
+_FIRST_STUBS = ("dcid:Stub_A",)
+_RECHECK_PAST = _RECHECK + timedelta(seconds=1)
+_MAX_AGE_PAST = _MAX_AGE + timedelta(seconds=1)
+
+
+def _plain_rig(version_store: FakeVersionRecordDatasetStore) -> _Rig:
+    return _Rig(version_store, dated=True)
+
+
+_MOVED_FAMILY = MemberFamily(digest="b" * 64, count=4)
+
+
+def _family_of(trace: Mapping[str, object]) -> tuple[object, object]:
+    return trace["family_member_digest"], trace["family_member_count"]
+
+
+@pytest.mark.parametrize(
+    ("make_rig", "elapsed", "served_from", "rebuild_reason", "new_runs"),
+    [
+        pytest.param(_plain_rig, _RECHECK_PAST, "head", None, 0, id="recheck-confirms"),
+        pytest.param(_plain_rig, _MAX_AGE_PAST, "materialise", "max_age", 1, id="max-age-rebuild"),
+        pytest.param(_cut_rig, _RECHECK_PAST, "head", None, 0, id="cut-recheck-confirms"),
+        pytest.param(
+            _cut_rig, _MAX_AGE_PAST, "materialise", "max_age", 1, id="cut-max-age-rebuild"
+        ),
+    ],
+)
+def test_a_family_that_moves_under_the_same_bytes_is_served_while_the_record_keeps_the_first(
+    version_store,
+    make_rig: Callable[[FakeVersionRecordDatasetStore], _Rig],
+    elapsed: timedelta,
+    served_from: str,
+    rebuild_reason: str | None,
+    new_runs: int,
+):
+    """The family stays out of the fingerprint and the bytes, so a recheck confirms the head
+    with no materialisation and a max-age rebuild makes the same version. Either way the head
+    stores the family resolved now, every serve through it states that family, and the stored
+    version keeps the first mint's, stub candidates included. A rendering that cuts party
+    totals serves a derived version while the head stays on the base, and states the same
+    family."""
+    rig = make_rig(version_store)
+    minted, _ = rig.serve(replace(rig.request, family=_FIRST_FAMILY, stub_candidates=_FIRST_STUBS))
+    assert _family_of(minted.trace) == (_FIRST_FAMILY.digest, _FIRST_FAMILY.count)
+    runs = rig.materialisation_runs()
+    rig.clock.at += elapsed
+    rig.reset_counts()
+
+    moved = replace(rig.request, family=_MOVED_FAMILY)
+    manifest, fields = rig.serve(moved)
+
+    assert manifest.trace["served_from"] == served_from
+    assert fields.get("rebuild_reason") == rebuild_reason
+    assert manifest.content_version == minted.content_version
+    assert rig.materialisation_runs() == runs + new_runs
+    assert (rig.transport.requests > 0) == bool(new_runs)
+    assert _family_of(manifest.trace) == (_MOVED_FAMILY.digest, _MOVED_FAMILY.count)
+    head = rig.deps.head_store.read_head(rig.stored.spec_id)
+    assert head is not None and head.family is not None
+    assert head.family.stated.members == _MOVED_FAMILY
+    # The cut serves a version of its own while the head stays on the base.
+    assert (head.content_version != minted.content_version) == (make_rig is _cut_rig)
+
+    rig.clock.at += timedelta(seconds=1)
+    hit, _ = rig.serve(moved)
+    assert hit.trace["served_from"] == "head"
+    assert _family_of(hit.trace) == (_MOVED_FAMILY.digest, _MOVED_FAMILY.count)
+    assert "stub_candidates" not in manifest.trace and "stub_candidates" not in hit.trace
+
+    stored = read_snapshot_manifest(
+        id=rig.stored.spec_id,
+        content_version=minted.content_version,
+        spec_reader=rig.deps.spec_reader,
+        snapshot_reader=rig.deps.snapshot_reader,
+        now=rig.clock,
+        settings=rig.deps.settings,
+        enrichment_digest=None,
+    )
+    assert _family_of(stored.trace) == (_FIRST_FAMILY.digest, _FIRST_FAMILY.count)
+    assert stored.trace["stub_candidates"] == list(_FIRST_STUBS)
+
+
+def _graph_release_moved(_rig: _Rig) -> AbstractContextManager[object]:
+    return bound_release(_redeployed())
+
+
+def _catalogue_build_moved(_rig: _Rig) -> AbstractContextManager[object]:
+    catalogue = current_catalogue()
+    assert isinstance(catalogue, FakeCatalogue) and catalogue.build_id != "catalogue-next"
+    return bound_catalogue(dataclasses.replace(catalogue, build_id="catalogue-next"))
+
+
+def _code_index_moved(rig: _Rig) -> AbstractContextManager[object]:
+    index = copy.copy(rig.deps.code_index)
+    index.stamp = dataclasses.replace(index.stamp, content_hash="code-index-next")
+    rig.deps = replace(rig.deps, code_index=index)
+    return nullcontext()
+
+
+def _image_build_moved(rig: _Rig) -> AbstractContextManager[object]:
+    rig.deps = replace(rig.deps, materialiser_build="test-build-next")
+    return nullcontext()
+
+
+def _confirmed_by_an_image_recording_no_family(rig: _Rig) -> AbstractContextManager[object]:
+    head = rig.deps.head_store.read_head(rig.stored.spec_id)
+    assert head is not None
+    with rig.version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET confirmed_at = %s WHERE subject_id = %s",
+            (head.confirmed_at + timedelta(seconds=1), rig.stored.spec_id),
+        )
+    return nullcontext()
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        pytest.param(_code_index_moved, id="code-index-moved"),
+        pytest.param(_graph_release_moved, id="release-moved"),
+        pytest.param(_catalogue_build_moved, id="catalogue-build-moved"),
+        pytest.param(_image_build_moved, id="build-moved"),
+        pytest.param(_confirmed_by_an_image_recording_no_family, id="confirmed-without-family"),
+    ],
+)
+def test_a_head_whose_family_does_not_describe_it_states_it_unknown_until_its_recheck(
+    version_store, stale: Callable[[_Rig], AbstractContextManager[object]]
+):
+    """A head states its family only while it was stated at the head's own confirmation under
+    the serving basis. A moved code index, graph release, catalogue build or image build, or a
+    confirmation an image recording no family wrote, leaves freshness alone. Inside the window
+    the head serves with no read and no materialisation and states the family unknown. Past
+    the window the recheck states the family resolved now."""
+    rig = _Rig(version_store, dated=True)
+    rig.serve(replace(rig.request, family=_FIRST_FAMILY))
+    runs = rig.materialisation_runs()
+    serving = stale(rig)
+    moved = replace(rig.request, family=_MOVED_FAMILY)
+    rig.clock.at += timedelta(seconds=2)
+    rig.reset_counts()
+
+    with serving:
+        inside, fields = rig.serve(moved)
+
+        assert inside.trace["served_from"] == "head"
+        assert "rebuild_reason" not in fields
+        assert rig.materialisation_runs() == runs
+        assert (rig.graph_reads(), rig.transport.requests) == (0, 0)
+        assert _family_of(inside.trace) == (None, None)
+
+        rig.clock.at += _RECHECK
+        rechecked, fields = rig.serve(moved)
+
+    assert rechecked.trace["served_from"] == "head"
+    assert "rebuild_reason" not in fields
+    assert rig.materialisation_runs() == runs
+    assert _family_of(rechecked.trace) == (_MOVED_FAMILY.digest, _MOVED_FAMILY.count)
 
 
 def _source_token_moved(rig: _Rig) -> MaterialisationRequest | None:
