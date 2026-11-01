@@ -355,7 +355,7 @@ def test_every_problem_spec_field_survives_the_round_trip():
     # fields are the one exception: they stay out of the wire body and the canonical form.
     data = _EVERY_FIELD_SPEC.to_canonical_data()
 
-    wire_fields = set(ProblemSpec._fields) - {"log", "log_level", "log_traceback"}
+    wire_fields = set(ProblemSpec._fields) - {"log", "log_level", "log_traceback", "log_event"}
     assert set(data) == wire_fields
     assert all(
         getattr(_EVERY_FIELD_SPEC, field) != ProblemSpec._field_defaults[field]
