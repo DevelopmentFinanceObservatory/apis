@@ -1367,7 +1367,7 @@ def _naming_kenya_as_recipient(
     """`state` with Kenya named as the destination, resolved to an entity of `kind`."""
     state.place_sets = place_sets({"Kenya": "country/KEN"})
     state.entity_roles = {"Kenya": [DoorRole(axis="destination", span="Kenya")]}
-    entity = Entity(dcid="country/KEN", name="Kenya", kind=kind, graph_type="Country")
+    entity = Entity(dcid="country/KEN", name="Kenya", kind=kind, graph_types=("Country",))
     state.rcl = Recall(candidates=[], resolutions={"Kenya": Resolved(entity=entity)})
     return state
 

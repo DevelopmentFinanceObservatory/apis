@@ -232,7 +232,7 @@ class _GroupGraph:
         self.bounds["types"] = bounded_deadline(None)
         if self.fail == "types":
             raise self.error
-        return dict.fromkeys(dcids, self.node_type)
+        return dict.fromkeys(dcids, (self.node_type,))
 
     def node_subjects_many(self, dcids, *, property, max_results, deadline=None):
         self.bounds["members"] = bounded_deadline(deadline)

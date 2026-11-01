@@ -6,7 +6,7 @@ import pytest
 
 from search.engine.region.place_set import PlaceNode, PlaceSet
 
-_NODE = PlaceNode(dcid="africa", graph_type="Continent")
+_NODE = PlaceNode(dcid="africa", graph_types=("Continent",))
 _MEMBERS = ("country/GHA", "country/KEN")
 
 

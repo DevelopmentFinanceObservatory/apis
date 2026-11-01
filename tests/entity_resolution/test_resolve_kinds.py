@@ -172,6 +172,7 @@ def test_a_confirmed_node_takes_the_most_specific_kind_of_all_its_types(shared_r
 
     assert isinstance(result, Resolved), result
     assert result.entity.kind == "country"
+    assert result.entity.graph_types == ("Place", "Country")
 
 
 @pytest.mark.parametrize("graph_type", ["EurostatNUTS2", "GeoRegion", "SeaIce"])
@@ -196,7 +197,7 @@ def test_a_last_rung_node_of_any_place_type_is_a_place_the_default_kinds_keep(
     [
         pytest.param(
             ["country"],
-            NotFound(removed=(Entity("UnitedNationsChildrensFund", _UNICEF, "organisation", ""),)),
+            NotFound(removed=(Entity("UnitedNationsChildrensFund", _UNICEF, "organisation", ()),)),
             id="excluded-kind-not-found",
         ),
         pytest.param(
@@ -222,7 +223,7 @@ def test_a_hit_the_graph_does_not_hold_is_filtered_by_its_resolvekit_kind(
         pytest.param(None, NotHeld(dcid="groups/OPEC", name=_OPEC), id="default-kinds-not-held"),
         pytest.param(
             ["country"],
-            NotFound(removed=(Entity("groups/OPEC", _OPEC, "organisation", ""),)),
+            NotFound(removed=(Entity("groups/OPEC", _OPEC, "organisation", ()),)),
             id="excluded-kind-not-found",
         ),
     ],
@@ -268,7 +269,7 @@ def test_a_registry_group_with_no_node_that_is_not_the_top_survivor_is_a_group(
     with the policy's label, as on every other path."""
     monkeypatch.setattr(resolver_module, "_group_hit", lambda _shared, _candidate: None)
     resolver = EntityResolver(graph=FakeGraphLookup(), shared=shared_resolver)
-    group = Entity("groups/OPEC", shared_resolver.policy.get("groups/OPEC").label, "group", "")
+    group = Entity("groups/OPEC", shared_resolver.policy.get("groups/OPEC").label, "group", ())
 
     (result,) = _run(resolver.resolve(["OPEC"], kinds=DEFAULT_KINDS if kinds is None else kinds))
 
@@ -395,7 +396,7 @@ _CODE = Entity(
     dcid="CRSPurposeCode12220",
     name="Basic health care",
     kind="code",
-    graph_type="CRSPurposeCodeEnum",
+    graph_types=("CRSPurposeCodeEnum",),
 )
 
 
@@ -452,7 +453,7 @@ def test_a_code_the_graph_does_not_hold_is_not_a_candidate(shared_resolver):
 
 
 def test_a_code_and_an_entity_listing_one_text_are_ambiguous_after_one_read(shared_resolver):
-    code = Entity(dcid="SomeCode", name="Kenya", kind="code", graph_type="SomeEnum")
+    code = Entity(dcid="SomeCode", name="Kenya", kind="code", graph_types=("SomeEnum",))
     codes = _FakeCodes({"kenya": [CodeHit(entity=code, text="Kenya", matched_as="alias")]})
     graph = FakeGraphLookup(nodes={**_NODES, "SomeCode": _node("SomeEnum")})
     resolver = EntityResolver(graph=graph, shared=shared_resolver, codes=codes)

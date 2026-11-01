@@ -632,7 +632,9 @@ def test_an_absence_read_at_the_named_country_alone_is_unknown_for_a_set_and_not
     state = _pruning_state(
         {
             "Kenya": PlaceSet(
-                name="Kenya", kind="place", node=PlaceNode(dcid="country/KEN", graph_type="Country")
+                name="Kenya",
+                kind="place",
+                node=PlaceNode(dcid="country/KEN", graph_types=("Country",)),
             ),
             "Africa": _set("Africa", ("africa", "Continent"), "Country"),
         }

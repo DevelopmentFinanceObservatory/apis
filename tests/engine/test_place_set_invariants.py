@@ -10,7 +10,7 @@ compares the answer with what the world's tables imply.
    and its resubmit and its mint read the same list and state the same observations.
 2. A posted identity is read at its own dcids. The resubmit door and the mint keep a
    region's dcid as its node.
-3. A set binds its node only on a role whose range admits the node's type, and only when
+3. A set binds its node only on a role whose range admits one of the node's types, and only when
    the series holds an observation there in the years asked for. Otherwise it binds its
    members. A rank over the axis a set fills binds its members, and so does a request
    that asks for the set's members.
@@ -31,6 +31,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 import pytest
 
+from code_index.shared import get_index
 from entity_resolution import acquire_shared, release_shared
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.models import EntityGroup, Operation, ParsedEntity, ResolveResponse, Spec
@@ -443,6 +444,40 @@ def test_a_subregion_named_as_the_provider_binds_its_members(
     spec = the_spec(doors.first_answer(AID, origin(LABEL[SUB_SAHARAN]), destination("Kenya")))
 
     assert bound(spec) == {"origin": sorted(EXPANSION[SUB_SAHARAN]), "destination": [KEN]}
+    check_three_doors(doors, AID, spec)
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        origin("San Marino"),
+        ParsedEntity(text="San Marino", role_text="from", dcid="country/SMR"),
+    ],
+    ids=["named", "pinned"],
+)
+def test_a_country_whose_first_graph_type_is_generic_binds_as_the_provider(
+    monkeypatch: pytest.MonkeyPatch, provider: ParsedEntity
+) -> None:
+    """San Marino, a country the code index lists on no axis and the graph types
+    `("Place", "Country")`, named or pinned as the provider of aid to Kenya. The provider
+    role's range admits `Country` and not `Place`, so role admission admits the node by its
+    second type, the first answer binds it, and every door reads that binding."""
+    san_marino = "country/SMR"
+    assert san_marino not in get_index().parties
+    assert "Place" not in ROLE_RANGE[PROVIDER]
+    node = {
+        "label": "San Marino",
+        "type": "Place",
+        "arcs": {"typeOf": {"nodes": [{"dcid": "Place"}, {"dcid": "Country"}]}},
+    }
+    monkeypatch.setattr(world, "_NODES", {**world._NODES, san_marino: node})
+    rows = (*world.FLOW_DATA[AID], (san_marino, KEN))
+    monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: rows})
+    doors = Doors(monkeypatch)
+
+    spec = the_spec(doors.first_answer(AID, provider, destination("Kenya")))
+
+    assert bound(spec) == {"origin": [san_marino], "destination": [KEN]}
     check_three_doors(doors, AID, spec)
 
 

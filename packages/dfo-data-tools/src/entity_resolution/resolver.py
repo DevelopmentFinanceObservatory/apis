@@ -81,7 +81,6 @@ from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from graph_generation.stamp import ttu_from_stamp_key
 
 _CONFIRM_PROPERTIES = ("typeOf", "name")
-_UNTYPED_GRAPH_TYPE = ""
 _MAX_NEAR_MATCHES = 3
 _ORG_ENTITY_TYPE = "org.organisation"
 _CODE_KIND: EntityKind = "code"
@@ -216,7 +215,7 @@ def _near_matches(
 ) -> tuple[Entity, ...]:
     """Return up to `_MAX_NEAR_MATCHES` rejected candidates, ordered by confidence then ID and
     deduplicated by dcid. Attach these suggestions to `NotFound`. The graph confirms none of
-    them, so `graph_type` is empty; a candidate with no dcid is left out. Each takes its kind
+    them, so `graph_types` is empty; a candidate with no dcid is left out. Each takes its kind
     by `_unconfirmed_kind`."""
     survivor_ids = {candidate.entity_id for candidate in survivors}
     rejected = sorted(
@@ -232,7 +231,7 @@ def _near_matches(
             dcid=dcid,
             name=_candidate_name(candidate),
             kind=_unconfirmed_kind(policy, code_index, dcid=dcid, candidate=candidate),
-            graph_type=_UNTYPED_GRAPH_TYPE,
+            graph_types=(),
         )
         if len(matches) == _MAX_NEAR_MATCHES:
             break
@@ -323,7 +322,7 @@ def _group_hit(shared: SharedResolver, candidate: CandidateSummary) -> _GroupHit
                 dcid=dcid,
                 name=membership.member_labels.get(dcid, dcid),
                 kind=_MEMBER_KIND,
-                graph_type=_MEMBER_GRAPH_TYPE,
+                graph_types=(_MEMBER_GRAPH_TYPE,),
             )
             for dcid in member_dcids
         ),
@@ -422,11 +421,10 @@ def _entity_from_confirmation(
     """The confirmed node `dcid`, classed by the kind rule over all its types
     (`kinds.classify`). A group takes the policy's label."""
     type_values = arcs.get("typeOf", ())
-    graph_type = type_values[0] if type_values else _UNTYPED_GRAPH_TYPE
     kind = classify(dcid=dcid, types=type_values, code_index=code_index, membership=policy)
     if kind == _GROUP_KIND:
         name = policy.get(dcid).label
-    return Entity(dcid=dcid, name=name, kind=kind, graph_type=graph_type)
+    return Entity(dcid=dcid, name=name, kind=kind, graph_types=tuple(type_values))
 
 
 def _fallback_name(*, dcid: str, arcs: dict[str, tuple[str, ...]], text: str) -> str:
@@ -882,7 +880,7 @@ class EntityResolver:
                     kind=_unconfirmed_kind(
                         self._shared.policy, code_index, dcid=dcid, candidate=candidate
                     ),
-                    graph_type=_UNTYPED_GRAPH_TYPE,
+                    graph_types=(),
                 )
                 unheld.append(entity)
                 ranked.append(entity)
@@ -947,7 +945,7 @@ class EntityResolver:
                 dcid=group.ref,
                 name=group.label,
                 kind=_GROUP_KIND,
-                graph_type=_UNTYPED_GRAPH_TYPE if entity is None else entity.graph_type,
+                graph_types=() if entity is None else entity.graph_types,
             )
             return _choose(
                 [(node, matched), *codes],

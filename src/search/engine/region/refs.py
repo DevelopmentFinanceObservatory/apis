@@ -75,13 +75,13 @@ def provenance_labels(
     return names
 
 
-def confirm_dcids_present(
+def confirm_dcids_present[V](
     dcid_groups: Mapping[str, Sequence[str]],
     *,
-    read: Callable[[list[str]], Mapping[str, str]],
+    read: Callable[[list[str]], Mapping[str, V]],
     pointer_for: Callable[[str, list[str]], str],
     noun: str = "reference",
-) -> dict[str, str]:
+) -> dict[str, V]:
     """Batch-read distinct DCIDs once and return the confirmed values.
 
     The first group with absent or unlabelled DCIDs raises `invalid_role_ref`

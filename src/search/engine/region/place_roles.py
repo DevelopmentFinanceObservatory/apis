@@ -614,7 +614,7 @@ def _members_asked(
 def _node_kind(state: ResolveState, place_set: PlaceSet) -> Kind | None:
     """The kind of the entity resolved to `place_set`'s node, found by dcid since a pinned
     place's set is named by its graph label and its resolution by the caller's text
-    (`part_sets`), else the kind of the node's own graph type (`entity_kind`)."""
+    (`part_sets`), else the kind of the node's own graph types (`entity_kind`)."""
     node = place_set.node
     if node is None:
         return None
@@ -625,7 +625,7 @@ def _node_kind(state: ResolveState, place_set: PlaceSet) -> Kind | None:
             for resolution in resolutions
             if isinstance(resolution, Resolved) and resolution.entity.dcid == node.dcid
         ),
-        entity_kind((node.graph_type,)) if node.graph_type else None,
+        entity_kind(node.graph_types) if node.graph_types else None,
     )
 
 
@@ -1330,11 +1330,10 @@ def _roles_take(node: PlaceNode, roles: Sequence[EntityRoleKey], *, index: CodeI
     `index` (`role_kinds.role_takes`), the rule a resubmit and the Datasets mint refuse a
     bound entity by, so no answer binds a node its own resubmit refuses: no DAC or CRS series
     lists a continent or subregion as a provider. The kind is the resolver's
-    (`PlaceNode.kind`), else the one its graph type gives. The subject role takes any node."""
+    (`PlaceNode.kind`), else the one its graph types give. The subject role takes any node."""
     kind = node.kind
     if kind is None:
-        types = (node.graph_type,) if node.graph_type else ()
-        kind = entity_kind_of(node.dcid, types, code_index=index)
+        kind = entity_kind_of(node.dcid, node.graph_types, code_index=index)
     return all(
         role_takes(node.dcid, kind, role, code_index=index)
         for role in roles
@@ -1349,11 +1348,11 @@ def _node_admitted(
     admits: Callable[[EntityRoleKey, str], bool],
     index: CodeIndex,
 ) -> bool:
-    """Whether every role of `roles` admits `node`: its range admits the node's type
-    (`admits`), and a flow role takes the node's kind (`_roles_take`)."""
-    return all(admits(role, node.graph_type) for role in roles) and _roles_take(
-        node, roles, index=index
-    )
+    """Whether every role of `roles` admits `node`: its range admits one of the node's
+    types (`admits`), and a flow role takes the node's kind (`_roles_take`)."""
+    return all(
+        any(admits(role, graph_type) for graph_type in node.graph_types) for role in roles
+    ) and _roles_take(node, roles, index=index)
 
 
 def set_choices(
@@ -1369,13 +1368,14 @@ def set_choices(
     A reading is used only on roles that admit its type. A set the request asks the members
     of reads its members when every role it fills admits their type, and has no reading
     otherwise. Any other set with members can read them when every role it fills admits their
-    type, and can read itself whole (`_wholes`) at its node when every role admits the node's
-    type or at its total on flow roles: `either` when it can read both ways, its node when only
-    the node is admitted, its members when it cannot read whole, and no reading when neither
-    holds. A set with no member reads its node, and a set with no node its members, when
-    admitted. Members that share no stated type are admitted on no role, as role admission
-    judges them (`phase_intake._admission_types`). A node is read only on flow roles that take
-    its kind (`_roles_take`), so a set with no member whose node no role takes has no reading.
+    type, and can read itself whole (`_wholes`) at its node when every role admits one of the
+    node's types or at its total on flow roles: `either` when it can read both ways, its node
+    when only the node is admitted, its members when it cannot read whole, and no reading
+    when neither holds. A set with no member reads its node, and a set with no node its
+    members, when admitted. Members that share no stated type are admitted on no role, as role
+    admission judges them (`phase_intake._admission_types`). A node is read only on flow roles
+    that take its kind (`_roles_take`), so a set with no member whose node no role takes has no
+    reading.
     """
     choices: dict[str, SetChoice | None] = {}
     for place_set in assignment.distinct_sets:

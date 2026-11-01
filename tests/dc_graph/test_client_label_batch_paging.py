@@ -169,7 +169,7 @@ def test_node_types_batch_miss_list_larger_than_one_chunk_issues_multiple_reques
 
     assert len(posted) == 3
     assert sorted(posted) == [["a/1", "a/2"], ["a/3", "a/4"], ["a/5"]]
-    assert result == {dcid: f"Type-{dcid}" for dcid in dcids}
+    assert result == {dcid: (f"Type-{dcid}",) for dcid in dcids}
 
 
 def test_node_types_batch_chunk_reporting_continuation_raises(monkeypatch) -> None:
@@ -205,7 +205,7 @@ def test_node_types_batch_chunk_continuation_recovers_by_halving(monkeypatch) ->
     dcids = ["a/1", "a/2", "a/3", "a/4"]
     result = client.node_types_batch(dcids)
 
-    assert result == {dcid: f"Type-{dcid}" for dcid in dcids}
+    assert result == {dcid: (f"Type-{dcid}",) for dcid in dcids}
     assert posted == [dcids, ["a/1", "a/2"], ["a/3", "a/4"]]
 
 
@@ -243,6 +243,26 @@ def test_node_types_batch_preserves_input_order_across_chunks_and_cache_warm_sta
     assert list(cold.keys()) == dcids
     assert list(warm.keys()) == dcids
     assert cold == warm
+
+
+def test_node_types_batch_reads_every_type_and_node_type_the_first_from_its_cache(
+    monkeypatch,
+) -> None:
+    """A node of several types keeps them all, distinct and in the graph's order, though
+    provenance rows repeat one; `node_type` then answers the first from the shared cache."""
+    posted: list[list[str]] = []
+
+    def fake_post(self, path, payload, *, deadline=None):
+        posted.append(list(payload["nodes"]))
+        types = [{"dcid": "Place"}, {"dcid": "Country"}, {"dcid": "Place"}]
+        return {"data": {"a/1": {"arcs": {"typeOf": {"nodes": types}}}}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api", type_cache_size=100)
+
+    assert client.node_types_batch(["a/1"]) == {"a/1": ("Place", "Country")}
+    assert client.node_type("a/1") == "Place"
+    assert posted == [["a/1"]]
 
 
 def test_node_types_batch_second_call_same_dcids_issues_no_request(monkeypatch) -> None:

@@ -234,7 +234,7 @@ def test_labels_and_types_batch_take_no_node_arc_slot(monkeypatch) -> None:
         assert not thread.is_alive(), f"worker thread {i} hung waiting for the held node-arc slot"
 
     assert results["labels"] == {"dcid/0": "label/dcid/0", "dcid/1": "label/dcid/1"}
-    assert results["types"] == {"dcid/2": "type/dcid/2", "dcid/3": "type/dcid/3"}
+    assert results["types"] == {"dcid/2": ("type/dcid/2",), "dcid/3": ("type/dcid/3",)}
 
 
 @pytest.mark.parametrize("arc", ["name", "typeOf"])
@@ -261,8 +261,10 @@ def test_label_and_type_chunks_post_concurrently(monkeypatch, arc) -> None:
     )
     dcids = [f"dcid/{i}" for i in range(2 * cap)]
 
-    read = client.node_labels_batch if arc == "name" else client.node_types_batch
-    assert read(dcids) == {d: f"{arc}/{d}" for d in dcids}
+    if arc == "name":
+        assert client.node_labels_batch(dcids) == {d: f"{arc}/{d}" for d in dcids}
+    else:
+        assert client.node_types_batch(dcids) == {d: (f"{arc}/{d}",) for d in dcids}
 
 
 def test_multi_chunk_call_completes_at_total_concurrency_1(monkeypatch) -> None:
