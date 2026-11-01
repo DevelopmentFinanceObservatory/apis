@@ -27,6 +27,7 @@ from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from dfo_platform.single_flight_cache import WaitTimeout
 from origin_catalogue.catalogue import Catalogue
 from origin_catalogue.families import FamilyKey
+from search.engine import degraded_reads
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
@@ -50,12 +51,12 @@ from search.engine.region import state as region_state
 from search.engine.region.availability import read_coverage
 from search.engine.region.codes import OBSERVATIONS_TIMED_OUT
 from search.engine.region.phase_rank_bind import _stray_requirements
-from search.engine.region.related_read import PendingRelated, RelatedRead
+from search.engine.region.related_read import PendingRelated
 from search.engine.region.state import ResolveState
 from search.engine.retrieval import bound_values, derive
 from search.engine.retrieval.read_plan import PairPlan
 from search.engine.unit import refs
-from search.models import Spec, Warning, omitted_observations
+from search.models import EntityRoleKey, Spec, Warning, omitted_observations
 from series_coverage.index import CoverageIndex
 from tests.engine import _fail_open_deadline
 from tests.engine._fail_open_deadline import FAIL_OPEN_REQUESTS, assert_fail_open_deadline
@@ -532,18 +533,9 @@ def _dated_plan(monkeypatch: pytest.MonkeyPatch, *, deadline: float | None) -> N
     assert plan is None
 
 
-def _related_task(budget: ReadBudget) -> None:
-    async def joined() -> object:
-        async def timed_out() -> Exception:
-            return TimeoutError("the related read ran past its budget")
-
-        read = RelatedRead(stat_var="X", task=asyncio.create_task(timed_out()), budget=budget)
-        return await related_read.with_related(cast(Spec, "the spec"), read)
-
-    assert asyncio.run(joined()) == "the spec"
-
-
-def _related_thread(budget: ReadBudget) -> None:
+def _related_join_timed_out(budget: ReadBudget) -> None:
+    """A resubmit door's related read still running when its budget's deadline passes, so
+    the join itself times out (`related_read.joined_related`)."""
     pending = PendingRelated(stat_var="X", future=Future(), budget=budget)
     assert related_read.joined_related(pending) is None
 
@@ -561,8 +553,10 @@ _BUDGETED_SITES: dict[str, tuple[Callable[[pytest.MonkeyPatch, ReadBudget], None
         lambda mp, _budget: _dated_plan(mp, deadline=None),
         "unit coverage dates",
     ),
-    "related-task": (lambda _mp, budget: _related_task(budget), "related measures"),
-    "related-thread": (lambda _mp, budget: _related_thread(budget), "related measures"),
+    "related-join-timeout": (
+        lambda _mp, budget: _related_join_timed_out(budget),
+        "related measures",
+    ),
 }
 
 
@@ -582,6 +576,87 @@ def test_a_site_whose_budget_ran_out_notes_the_read_cut(site: str, monkeypatch) 
     ):
         swallow(monkeypatch, spent)
     assert (lost.reads, lost.cut) == ([], [read])
+
+
+class _RelatedClock:
+    """The clock `degraded_reads` weighs a related read's budget by. It starts at the real
+    time and passes the budget's deadline as the read raises when the budget cut the read,
+    else only once the answer joins the read."""
+
+    def __init__(self, *, cut_by_budget: bool) -> None:
+        self.now = time.monotonic()
+        self.cut_by_budget = cut_by_budget
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def read(self, **_kwargs: object) -> object:
+        if self.cut_by_budget:
+            self._pass_the_budget()
+        raise TimeoutError("the related read timed out")
+
+    def joined(self) -> None:
+        if not self.cut_by_budget:
+            self._pass_the_budget()
+
+    def _pass_the_budget(self) -> None:
+        self.now += settings().related_measures_timeout_s + 1
+
+
+_SPEC = cast(Spec, "the spec")
+_PLACES: list[tuple[str, EntityRoleKey]] = [("country/KEN", "observationAbout")]
+
+
+def _related_task(clock: _RelatedClock) -> None:
+    async def joined() -> Spec:
+        state = SimpleNamespace(deadline=None, date_request=None, graph=None, related_reads=[])
+        read = related_read.start_related_read(
+            cast(ResolveState, state),
+            stat_vars=["X"],
+            measure_partition=None,
+            places=_PLACES,
+            arcs=None,
+        )
+        assert read is not None
+        await asyncio.wait([read.task])
+        clock.joined()
+        return await related_read.with_related(_SPEC, read)
+
+    assert asyncio.run(joined()) is _SPEC
+
+
+def _related_thread(clock: _RelatedClock) -> None:
+    pending = related_read.submit_related_read(
+        stat_vars=["X"],
+        measure_partition=None,
+        places=_PLACES,
+        arcs=None,
+        window=None,
+        graph=cast(EngineGraphClient, None),
+        request_deadline=None,
+    )
+    clock.joined()
+    assert related_read.joined_related(pending) is None
+
+
+@pytest.mark.parametrize("door", [_related_task, _related_thread], ids=["task", "thread"])
+@pytest.mark.parametrize("cut_by_budget", [False, True], ids=["early", "cut"])
+def test_a_related_read_is_classed_by_when_it_ended_not_when_it_was_joined(
+    door: Callable[[_RelatedClock], None], cut_by_budget: bool, monkeypatch
+) -> None:
+    """A related read that failed on its own deadline error before its budget ran out is a
+    lost read, however late the answer joins it, and one that ended once its budget ran out,
+    with no request deadline, is cut: the budget is weighed as the read ends
+    (`related_read.LostRelated`)."""
+    clock = _RelatedClock(cut_by_budget=cut_by_budget)
+    monkeypatch.setattr(degraded_reads, "time", clock)
+    monkeypatch.setattr(related_read, "read_related", clock.read)
+
+    with recording_degraded_reads() as lost:
+        door(clock)
+
+    noted = ["related measures"]
+    assert (lost.reads, lost.cut) == (([], noted) if cut_by_budget else (noted, []))
 
 
 # ---------------------------------------------------------------------------

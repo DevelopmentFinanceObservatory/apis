@@ -197,8 +197,9 @@ class ReadBudget:
         """Whether `exc` is a deadline error (`TimeoutError`, `GraphDeadlineExceededError`)
         raised once this budget's deadline passed and before the request's own did, so the
         deadline that fired is the budget, earlier than the request's. The clock tells which
-        deadline fired, and no message is read. A deadline error after the request's own
-        deadline passed is no budget running out."""
+        deadline fired, and no message is read, so the caller asks as the read ends. Asked
+        later, a read that failed early on its own would read as cut. A deadline error after
+        the request's own deadline passed is no budget running out."""
         if not isinstance(exc, TimeoutError | GraphDeadlineExceededError):
             return False
         now = time.monotonic()
@@ -219,15 +220,18 @@ def scope_budget_ran_out(exc: BaseException) -> bool:
     return scope is not None and scope.ran_out(exc)
 
 
-def note_lost_read(read: str, exc: BaseException, *, budget: ReadBudget | None = None) -> None:
-    """Note `read`, lost to `exc`, or cut when `exc` is `budget` running out, or with no
-    `budget` the innermost `fail_open_reads` block's (`ReadBudget.ran_out`). A read that is
-    healthy but slower than its budget leaves an answer served as if whole and stored by no
-    cache, while a failed read, or one past the request's own deadline, leaves a degraded one.
-    Every site that notes a read lost to an exception notes it here, so the rule holds
-    wherever the read ran."""
-    budget = budget if budget is not None else _SCOPE.get()
-    if budget is not None and budget.ran_out(exc):
+def note_lost_read(read: str, exc: BaseException, *, cut: bool | None = None) -> None:
+    """Note `read`, lost to `exc`, or cut when its own budget cut it. `cut` is that
+    decision, made by the read's own budget where the read ended (`ReadBudget.ran_out`),
+    for a read joined later than it ended. With no `cut`, `exc` is weighed now against the
+    innermost `fail_open_reads` block's budget, which holds for a site noting the read as
+    it ends. A read that is healthy but slower than its budget leaves an answer served as
+    if whole and stored by no cache, while a failed read, or one past the request's own
+    deadline, leaves a degraded one. Every site that notes a read lost to an exception
+    notes it here, so the rule holds wherever the read ran."""
+    if cut is None:
+        cut = scope_budget_ran_out(exc)
+    if cut:
         _note_cut_read(read)
     else:
         note_degraded_read(read)

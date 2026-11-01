@@ -22,12 +22,13 @@ import dc_graph
 import search.engine.app as app_module
 from code_index.shared import get_index
 from dfo_platform import Cause, ProblemSpec, refusal
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from entity_resolution import NotFound
 from search.engine.app import _ENVELOPE, classify_search_exception
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.core import resolve_async, resolve_events
-from search.engine.errors import EngineInputError, GraphInfraError
+from search.engine.errors import ENGINE_INFRA_ERROR_EVENT, EngineInputError, GraphInfraError
 from search.engine.events import (
     DoneEvent,
     InterpretationEvent,
@@ -803,6 +804,39 @@ def test_sse_terminal_error_matches_the_json_paths_envelope_render(monkeypatch, 
         assert sse_payload.get(field) == expected.get(field), field
     if getattr(exc, "cause", None) is not None:
         assert sse_payload["cause"]["code"] == exc.cause.code
+
+
+@pytest.mark.parametrize(
+    "headers", [{}, {"Accept": "text/event-stream"}], ids=["json", "event_stream"]
+)
+def test_engine_infra_error_line_carries_its_event_on_both_paths(monkeypatch, caplog, headers):
+    """The JSON route and the stream log an `EngineInfraError` on different loggers, the
+    JSON one prefixed with the surface name, and both lines carry the `event` field the apis
+    stack's `search_engine_infra_error` log metric matches."""
+
+    async def _raising_stream(request, *, graph=None, llm=None, **_kwargs):
+        raise GraphInfraError("simulated transient failure")
+        yield  # pragma: no cover — makes this a generator function
+
+    async def _raising_resolve(*_args, **_kwargs):
+        raise GraphInfraError("simulated transient failure")
+
+    monkeypatch.setattr("search.engine.app.resolve_events", _raising_stream)
+    monkeypatch.setattr("search.engine.app.resolve_async", _raising_resolve)
+
+    client = TestClient(_fake_app(), raise_server_exceptions=False)
+    with caplog.at_level(logging.ERROR):
+        client.post(
+            "/api/search/resolve",
+            json={"input": {"kind": "raw_text", "query": "test"}},
+            headers=headers,
+        )
+    events = [
+        getattr(r, JSON_FIELDS_ATTR, {}).get("event")
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+    ]
+    assert events.count(ENGINE_INFRA_ERROR_EVENT) == 1, events
 
 
 def test_sse_exactly_one_terminal_event_on_success():

@@ -982,6 +982,36 @@ def test_a_region_split_by_end_reads_as_the_oecds_on_the_recipient_end_alone() -
     assert bound_entity_refs(state) == {name: ("SubSaharanAfrica", _GHA, _KEN, _SDN, _TZA)}
 
 
+@pytest.mark.parametrize(
+    ("recipients", "expected"),
+    [
+        pytest.param((_DEU,), ("africa",), id="no-member-on-the-other-end"),
+        pytest.param((_DEU, _KEN), ("africa", _KEN), id="a-member-on-the-other-end"),
+    ],
+)
+def test_a_text_bound_whole_on_one_end_keeps_that_ref(
+    recipients: tuple[str, ...], expected: tuple[str, ...]
+) -> None:
+    """Aid within Africa, bound to the continent's node as provider and to `recipients` as
+    recipient. The text keeps the node its provider end binds, and the members its
+    recipient end holds."""
+    state = _state([_AFRICA])
+    state.entity_roles = {
+        "Africa": [
+            DoorRole(axis="origin", span="Africa", stated=True),
+            DoorRole(axis="destination", span="Africa", stated=True),
+        ]
+    }
+    state.places_bound = True
+    state.place = SimpleNamespace(
+        roles=SimpleNamespace(
+            roles=[("africa", "origin"), *((dcid, "destination") for dcid in recipients)],
+            readings={},
+        )
+    )
+    assert bound_entity_refs(state) == {"Africa": expected}
+
+
 # Settling over a Spec's own read.
 
 _SERIES = "Amount_SettleSeries"
