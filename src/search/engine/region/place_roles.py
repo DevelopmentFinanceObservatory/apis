@@ -195,10 +195,11 @@ class PlaceRoles:
     # The sides a named whole population reads as left unnamed
     # (`PlaceAssignment.unnamed_wholes`).
     unnamed_wholes: frozenset[RoleAxis] = frozenset()
-    # The OECD reading each request set the binding read as the OECD's region
-    # (`PlaceSet.oecd`, `_with_region_residuals`), by the place it names (`named_place`), so
-    # the groups and refs the answer names read the set as the binding did
-    # (`request_named_groups`).
+    # Each set the binding read otherwise than the request's own set, by place key: the
+    # OECD's reading of a set read as the OECD's region (`PlaceSet.oecd`,
+    # `_with_region_residuals`), and the set of each end of a place read on each end alone
+    # (`PlaceSet.end`). The groups and refs the answer names read each set as the binding
+    # did (`request_named_groups`, `bound_entity_refs`).
     readings: Mapping[str, PlaceSet] = field(default_factory=dict)
 
 
@@ -1474,7 +1475,9 @@ def settled_roles(shape: ShapeDraft, assignment: PlaceAssignment, places: PlaceL
         for place_set in placed
         if place_set.node is not None and not place_set.expands
     )
-    readings = {named_place(s): s for s in assignment.distinct_sets if s.oecd_read}
+    readings = {
+        place_key(s): s for s in assignment.distinct_sets if s.oecd_read or s.end is not None
+    }
     if is_role_bearing(shape):
         destination_dcids = list(places.get("destination", ()))
         origin_dcids = list(places.get("origin", ()))
@@ -1686,28 +1689,59 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     graph's label for it. One without, or one the graph gives no label, keeps the query's
     name, and one without names its registry id (`PlaceSet.group_id`). Each states the
     members the query also named as places of their own, on the role `roles`, one Spec's
-    binding, puts each of those places on (`PlaceRoles.named_alone`).
+    binding, puts each of those places on (`PlaceRoles.named_alone`). A place read on each
+    end alone names the group of each end's reading once, so "aid from sub-Saharan African
+    countries to sub-Saharan Africa" read as the OECD's region on the recipient end names
+    the graph region and the OECD's.
     """
-    named = [roles.readings.get(key, place_set) for key, place_set in part_sets(state).items()]
-    return tuple(
-        NamedGroup(
+
+    def group(place_set: PlaceSet) -> NamedGroup:
+        members = place_set.members or ()
+        return NamedGroup(
             label=place_set.label or _pin_label(state, place_set.name) or place_set.name,
             dcid=None if place_set.node is None or place_set.oecd_read else place_set.node.dcid,
             entity_type=(
                 None if place_set.node is None or place_set.oecd_read else place_set.node.graph_type
             ),
-            member_dcids=frozenset(place_set.members),
+            member_dcids=frozenset(members),
             named_alone=frozenset(
-                (role, dcid) for role, dcid in roles.named_alone if dcid in place_set.members
+                (role, dcid) for role, dcid in roles.named_alone if dcid in members
             ),
             total=place_set.total,
             group_id=(
                 place_set.group_id if place_set.node is None or place_set.oecd_read else None
             ),
         )
-        for place_set in named
-        if place_set.members
+
+    return tuple(
+        named
+        for place_set in part_sets(state).values()
+        for named in dict.fromkeys(
+            group(s) for s in _bound_readings(roles.readings, place_set) if s.members
+        )
     ) + (() if roles.whole is None else (roles.whole.named_group(),))
+
+
+def _bound_readings(readings: Mapping[str, PlaceSet], place_set: PlaceSet) -> tuple[PlaceSet, ...]:
+    """The sets the binding read the request's `place_set` as (`PlaceRoles.readings`): the
+    set of each end for a place read on each end alone, else its one reading, else
+    `place_set` itself."""
+    place = named_place(place_set)
+    by_end = tuple(s for s in readings.values() if s.end is not None and named_place(s) == place)
+    return by_end or (readings.get(place, place_set),)
+
+
+def _whole_bound(place_set: PlaceSet, bound: Collection[str]) -> str | None:
+    """The whole of `place_set` that `bound` holds: its node, else its total, else `None`."""
+    node = None if place_set.node is None else place_set.node.dcid
+    return next((d for d in (node, place_set.total) if d is not None and d in bound), None)
+
+
+def _end_reading(readings: Mapping[str, PlaceSet], place_set: PlaceSet, axis: RoleAxis) -> PlaceSet:
+    """The set the binding read the request's `place_set` as on the `axis` end: the set of
+    that end for a place read on each end alone, else its one reading, else `place_set`."""
+    by_end = readings.get(place_key(dataclasses.replace(place_set, end=axis)))
+    return by_end or readings.get(named_place(place_set), place_set)
 
 
 def group_request_names(state: ResolveState) -> dict[str, str]:
@@ -1753,14 +1787,15 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     text, in `place_order` (`RegionResult.entity_refs`).
 
     A text is read on the flow ends it is directed to where the binding has them, and on
-    every role otherwise. Its set binds one reading on each (`settle_place_sets`): its node
-    when the binding holds it there, else its total (`PlaceSet.total`), else the members the
-    binding holds there. A text read whole on each of its ends states those wholes. A set
-    bound as its members on any end states its own ref first, so a client matches the set
-    it named: its node, else its total, else its registry id (`PlaceSet.group_id`). A text
-    naming a whole population ("all donors", `ResolveState.whole_named`) binds the parties
-    it names that the binding holds. A text with neither, ambiguous or unresolved, is left
-    out.
+    every role otherwise. On each, its set as the binding read that end
+    (`PlaceRoles.readings`) binds one reading (`settle_place_sets`): its node when the
+    binding holds it there, else its total (`PlaceSet.total`), else the members the binding
+    holds there. A text read whole on each of its ends states those wholes. A set bound as
+    its members on any end states its own ref first, so a client matches the set it named:
+    its node, else its total, else its registry id (`PlaceSet.group_id`), as read on the
+    first such end. A text naming a whole population ("all donors",
+    `ResolveState.whole_named`) binds the parties it names that the binding holds. A text
+    with neither, ambiguous or unresolved, is left out.
 
     A part refused before a shape's places are installed (`ResolveState.places_bound`),
     whether before election or after it, states the node each text names alone
@@ -1775,22 +1810,25 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     readings = state.place.roles.readings
     refs: dict[str, tuple[str, ...]] = {}
     for text, request_set in state.place_sets.items():
-        place_set = readings.get(named_place(request_set), request_set)
-        node = None if place_set.node is None else place_set.node.dcid
+        axes = dict.fromkeys(role.axis for role in state.entity_roles.get(text) or ())
         ends = [
-            on_role[axis]
-            for axis in dict.fromkeys(role.axis for role in state.entity_roles.get(text) or ())
+            (on_role[axis], _end_reading(readings, request_set, axis))
+            for axis in axes
             if axis in on_role
-        ] or [bound]
-        wholes = [
-            next((d for d in (node, place_set.total) if d is not None and d in end), None)
-            for end in ends
-        ]
+        ] or [(bound, readings.get(named_place(request_set), request_set))]
+        wholes = [_whole_bound(place_set, end) for end, place_set in ends]
         if None not in wholes:
             refs[text] = tuple(dict.fromkeys(d for d in wholes if d is not None))
         elif held := place_order(
-            d for d in place_set.members or () if any(d in end for end in ends)
+            d
+            for _end, place_set in ends
+            for d in place_set.members or ()
+            if any(d in end for end, _set in ends)
         ):
+            place_set = next(
+                s for (_end, s), whole in zip(ends, wholes, strict=True) if whole is None
+            )
+            node = None if place_set.node is None else place_set.node.dcid
             owns = (place_set.total, place_set.group_id) if place_set.oecd_read else (node,)
             own = next((d for d in (*owns, place_set.total, place_set.group_id) if d), None)
             refs[text] = tuple(held) if own is None else (own, *held)
