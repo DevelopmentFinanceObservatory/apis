@@ -245,6 +245,9 @@ def run_operation(
                 f"{manifest.content_version!r} has no servable artifact under rendering "
                 f"keys {keys!r}"
             )
+        # The member-resolution inputs the run's family was resolved under, the ones its head
+        # advance recorded, read here so the completion below has nothing left to raise.
+        basis = family_basis(deps)
     except (MaterialisationCancelled, HeadFenceLost) as exc:
         logger.warning(
             "Datasets operation %r: attempt %d stopped writing; the row "
@@ -322,7 +325,7 @@ def run_operation(
         content_version=manifest.content_version,
         confirmed_at=trace_confirmed_at(manifest.trace),
         family=trace_family(manifest.trace),
-        basis=family_basis(deps),
+        basis=basis,
     )
     if completed is None:
         # The operation row has moved on. Its durable artifact has no operation reference.

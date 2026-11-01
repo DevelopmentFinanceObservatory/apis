@@ -622,7 +622,7 @@ class TestFinalAttempt:
                 now=lambda: now_box["t"],
                 settings=DatasetsBuildSettings(),
                 enrichment_digest="digest",
-                serving_basis=TEST_BASIS,
+                serving_basis=lambda: TEST_BASIS,
             )
             polled.append(resource.operation.status)
             _complete_run(operation=operation, deps=deps, operation_store=operation_store)

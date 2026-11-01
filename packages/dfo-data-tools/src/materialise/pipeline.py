@@ -131,9 +131,9 @@ class MaterialisationRequest:
 def definition_family(requests: Sequence[MaterialisationRequest]) -> StatedFamily:
     """The family a run over every request of one definition states in its trace. A plain
     definition states the family its requests share (`MaterialisationRequest.family` and
-    `stub_candidates`). A composite's requests
-    each read a component (`MaterialisationRequest.component`), so it states no one family, and
-    the stub candidates of every component in their order (`materialise.composite`)."""
+    `stub_candidates`). A composite's requests each read a component
+    (`MaterialisationRequest.component`), so it states no one family, and the stub candidates
+    of every component in their order (`materialise.composite`)."""
     if not requests:
         return UNKNOWN_FAMILY
     if requests[0].component is None:

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import functools
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request, Response
@@ -118,7 +119,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
-from materialise.trace import UNKNOWN_FAMILY, with_family
+from materialise.trace import family_stated_at, with_family
 from spec_registry import IdentityQuarantined
 from spec_registry.reader import SpecReader
 
@@ -218,16 +219,17 @@ def _load_done_manifest(
     now: Clock,
     settings: DatasetsBuildSettings,
     enrichment_digest: str,
-    serving_basis: str,
+    serving_basis: Callable[[], str],
 ) -> Manifest | None:
     """The done operation's manifest, narrowed to the rendering its request posted.
 
     Its `trace` carries the currency pair a synchronous mint that materialised reports:
     `served_from: materialise` and the `confirmed_at` the row recorded, with the member family
     the row recorded in place of the stored version's while it was recorded at that
-    `confirmed_at` under `serving_basis` (`adapter.family_basis`), and the
-    family stated unknown otherwise (`RecordedFamily.stated_at`). It carries the version's
-    `retention` (`datasets_api.retention`).
+    `confirmed_at` under the basis `serving_basis` returns (`adapter.family_basis`), read only
+    for a done row, and the family stated unknown otherwise
+    (`materialise.trace.family_stated_at`). It carries the version's `retention`
+    (`datasets_api.retention`).
 
     The rendering keys are `resolved_rendering_keys` of the row's `options` under this
     service's `settings.site` and the serving code index's `enrichment_digest`, the keys the
@@ -290,11 +292,8 @@ def _load_done_manifest(
     manifest = with_retention(
         manifest, subject_id=operation.subject_id, reader=snapshot_reader, now=now()
     )
-    family = operation.family
-    stated = (
-        UNKNOWN_FAMILY
-        if family is None
-        else family.stated_at(operation.confirmed_at, serving_basis)
+    stated = family_stated_at(
+        operation.family, confirmed_at=operation.confirmed_at, basis=serving_basis()
     )
     trace = with_family(manifest.trace, stated)
     if operation.confirmed_at is not None:
@@ -336,7 +335,7 @@ def _resolve_operation(
     now: Clock,
     settings: DatasetsBuildSettings,
     enrichment_digest: str,
-    serving_basis: str,
+    serving_basis: Callable[[], str],
 ) -> OperationResource:
     if operation_store is None:
         # Requests before lifespan setup follow the unknown-id path.
@@ -480,7 +479,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
                     now=current.now,
                     settings=current.settings,
                     enrichment_digest=current.code_index.enrichment_digest,
-                    serving_basis=family_basis(current),
+                    serving_basis=functools.partial(family_basis, current),
                 ),
                 refuse=OperationBackpressure,
             )

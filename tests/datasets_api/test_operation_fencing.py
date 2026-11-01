@@ -157,7 +157,7 @@ def _poll(store: LiveOperationStore, operation_id: str, task_client, clock: _Clo
         now=clock,
         settings=_SETTINGS,
         enrichment_digest="digest",
-        serving_basis=TEST_BASIS,
+        serving_basis=lambda: TEST_BASIS,
     )
 
 

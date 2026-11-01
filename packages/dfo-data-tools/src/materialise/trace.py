@@ -107,14 +107,17 @@ class RecordedFamily:
     confirmed_at: datetime
     basis: str
 
-    def stated_at(self, confirmed_at: datetime | None, basis: str) -> StatedFamily:
-        """The family a response confirmed at `confirmed_at` under the serving `basis` states:
-        `stated` when it was recorded at that confirmation under that basis, and
-        `UNKNOWN_FAMILY` otherwise, since a later confirmation or another basis may admit
-        another family."""
-        if self.confirmed_at != confirmed_at or self.basis != basis:
-            return UNKNOWN_FAMILY
-        return self.stated
+
+def family_stated_at(
+    recorded: RecordedFamily | None, *, confirmed_at: datetime | None, basis: str
+) -> StatedFamily:
+    """The family a response confirmed at `confirmed_at` under the serving `basis` states: the
+    `recorded` family when it was recorded at that confirmation under that basis, and
+    `UNKNOWN_FAMILY` otherwise, including when none was recorded, since a later confirmation
+    or another basis may admit another family."""
+    if recorded is None or recorded.confirmed_at != confirmed_at or recorded.basis != basis:
+        return UNKNOWN_FAMILY
+    return recorded.stated
 
 
 def recorded_family_json(recorded: RecordedFamily) -> dict[str, object]:

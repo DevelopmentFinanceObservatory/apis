@@ -55,9 +55,11 @@ from dfo_platform.build import build_commit
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
 from graph_release.context import bound_release
-from materialise.trace import UNKNOWN_FAMILY, parse_recorded_family
+from materialise.trace import UNKNOWN_FAMILY, MemberFamily, StatedFamily, parse_recorded_family
+from origin_catalogue import current_catalogue
 from series_coverage.index import Estimate
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
@@ -75,6 +77,8 @@ from ._version_record_store import TEST_BASIS
 from .conftest import FakeDatasetStore
 from .test_head_freshness import _redeployed
 from .test_pin_door import FakeArtifactReferenceWriter
+from .test_worker_app import _client as _worker_client
+from .test_worker_app import _run_path, _task_body
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _OP_NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -346,7 +350,7 @@ def test_an_unfinished_poll_paces_by_the_age_of_the_operation(state: str) -> Non
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
-        serving_basis=TEST_BASIS,
+        serving_basis=lambda: TEST_BASIS,
     )
 
     assert resource.operation.retry_after_ms == 5_000
@@ -801,6 +805,74 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert "error" not in body
 
 
+_WORKER_BUILD = "catalogue-the-worker-binds"
+
+
+def test_a_worker_run_records_its_family_under_the_basis_the_poll_serves():
+    """The worker binds the operation's catalogue and the served release around its run
+    (`operations.worker_app`), and the API binds its own around the poll (`request_scope`).
+    A family the run recorded under its bindings is the one the poll states, so neither side
+    reads its basis outside its bindings. The test's ambient catalogue is another build."""
+    assert current_catalogue().build_id != _WORKER_BUILD
+    catalogue = FakeCatalogue(build_id=_WORKER_BUILD)
+    operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    operation = operation_store.create_or_get(
+        request_identity={"input": {"spec_id": "spec_a"}},
+        options=_PARQUET_BUNDLE.model_dump(mode="json"),
+        coverage_stamp="cov_1",
+        origin_catalogue_build_id=_WORKER_BUILD,
+        estimate=_DEFAULT_ESTIMATE,
+    )
+    served = StatedFamily(members=MemberFamily(digest="b" * 64, count=4))
+
+    def run(*, operation, operation_store, **_) -> None:
+        # The basis `run_operation` records: `family_basis` of the run's deps, in the run.
+        basis = family_basis(
+            SimpleNamespace(code_index=get_index(), materialiser_build=build_commit())
+        )
+        operation_store.complete(
+            operation.id,
+            attempt=operation.attempt_count,
+            subject_id="spec_a",
+            content_version="cv1",
+            confirmed_at=_CONFIRMED_AT,
+            family=served,
+            basis=basis,
+        )
+
+    worker = _worker_client(
+        operation_store=operation_store,
+        run_in_thread=run,
+        catalogue=fake_catalogue_service(catalogue),
+    )
+    ran = worker.post(
+        _run_path(operation.id), json=_task_body(), headers={"Authorization": "Bearer t"}
+    )
+    assert ran.status_code == 200, ran.text
+    artifact_store = FakeArtifactStore()
+    location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
+            locations={("spec_a", "cv1"): [location]},
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=operation_store,
+        catalogue=fake_catalogue_service(catalogue),
+    )
+
+    polled = client.get(f"/api/datasets/operations/{operation.id}")
+
+    assert polled.status_code == 200, polled.text
+    trace = polled.json()["manifest"]["trace"]
+    assert (trace["family_member_digest"], trace["family_member_count"]) == ("b" * 64, 4)
+
+
 class _QuarantinedSpecReader(FakeSpecReader):
     def read_definition(self, spec_id: str, *, schema_version: int | None = None):
         raise IdentityQuarantined(subject_id=spec_id, id_kind="spec")
@@ -1113,7 +1185,7 @@ def test_a_poll_that_loses_the_demotion_race_answers_from_the_rows_current_state
             now=lambda: _OP_NOW,
             settings=_SITE_SETTINGS,
             enrichment_digest=get_index().enrichment_digest,
-            serving_basis=TEST_BASIS,
+            serving_basis=lambda: TEST_BASIS,
         )
 
     if current is None:
@@ -1151,7 +1223,7 @@ def _poll_at(operation_store: LiveOperationStore, operation_id: str, at: datetim
         now=lambda: at,
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
-        serving_basis=TEST_BASIS,
+        serving_basis=lambda: TEST_BASIS,
     )
 
 
@@ -1429,7 +1501,7 @@ def _poll(
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
-        serving_basis=TEST_BASIS,
+        serving_basis=lambda: TEST_BASIS,
     )
 
 
