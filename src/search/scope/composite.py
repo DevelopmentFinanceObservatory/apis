@@ -572,8 +572,9 @@ def composite_download(
     The count reads no facet: it keeps a member's rows under a source, unit or method the
     mint's facet election leaves out, and counts the zero rows of such a member, and under a
     unit request it keeps rows a conversion would drop (`unit.conversion.counted_conversion`).
-    So `rows` can overstate the file, and `rows_exact` is always false. `rows`, `series` and
-    `window` are None where some component's members are not settled in memory
+    So `rows` can overstate the file, and `rows_exact` is always false. A component serving
+    no year writes no row, so it counts nothing whatever its members. `rows`, `series` and
+    `window` are None where some component serving a year has members not settled in memory
     (`ServedComponent.members`), as for a family of `observationAbout` members, whose rows
     only facet metadata counts, and where the coverage snapshot holds no row of some member
     (`CoverageIndex.covers`) of a component that writes its members' own rows, as
@@ -585,18 +586,19 @@ def composite_download(
         return None
     licence = _shared_licence(served)
     coverage = facts.coverage.index
+    writing = [item for item in served if item.served]
     if any(
         item.members is None
         or not (
             item.component.recipe.zero_absent or all(coverage.covers(sv) for sv in item.members)
         )
-        for item in served
+        for item in writing
     ):
         return DownloadFacts(rows=None, rows_exact=False, series=None, window=None, licence=licence)
     rows = series = 0
     years: set[int] = set()
     cells: set[tuple[str, str, int]] = set()
-    for item in served:
+    for item in writing:
         for (_variable, recipient, donor), held in _served_series(item, coverage):
             cells.update((recipient, donor, year) for year in held)
             if not item.component.recipe.zero_absent:
@@ -604,7 +606,7 @@ def composite_download(
                 series += 1
                 years.update(held)
     places = {(recipient, donor) for recipient, donor, _year in cells}
-    for item in served:
+    for item in writing:
         if item.component.recipe.zero_absent and cells:
             members = len(cast("frozenset[str]", item.members))
             rows += members * len(cells)

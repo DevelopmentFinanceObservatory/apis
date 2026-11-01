@@ -142,11 +142,11 @@ _USA, _KEN, _UGA = "country/USA", "country/KEN", "country/UGA"
 def _download(
     members: tuple[frozenset[str] | None, frozenset[str] | None],
     series: list[tuple[str, str, list[int]]],
-    served: range,
+    served: range | tuple[range, range],
 ) -> DownloadFacts | None:
     """`composite_download` of the provider-inclusive composite whose bilateral and imputed
-    components serve `members`, each in `served`, over a snapshot holding each of `series`,
-    a (StatVar, recipient, years) from the United States."""
+    components serve `members` in `served`, one range for both or one each, over a snapshot
+    holding each of `series`, a (StatVar, recipient, years) from the United States."""
     coverage = build_coverage_index(
         [(dcid, "facet", _USA, recipient, years) for dcid, recipient, years in series],
         role_names=dict.fromkeys(
@@ -159,10 +159,15 @@ def _download(
         ServedComponent(
             component=ComponentIdentity(role=recipe.role, recipe=recipe, identity=identity),
             years=YearCounts(counts={}),
-            served=frozenset(served),
+            served=frozenset(years),
             members=held,
         )
-        for recipe, held in zip(_CRS_INCLUSIVE.components, members, strict=True)
+        for recipe, held, years in zip(
+            _CRS_INCLUSIVE.components,
+            members,
+            served if isinstance(served, tuple) else (served, served),
+            strict=True,
+        )
     ]
     return composite_download(
         components,
@@ -203,3 +208,15 @@ def test_a_component_whose_members_are_not_settled_states_no_rows() -> None:
         None,
         None,
     )
+
+
+def test_a_component_serving_no_year_writes_nothing_whatever_its_members() -> None:
+    # The bilateral component serves no year, so its unsettled members write no row. The
+    # imputed member fills its own Kenya 2020 cell.
+    download = _download(
+        (None, frozenset({"c"})), [("c", _KEN, [2020])], (range(0), range(2020, 2021))
+    )
+    assert download is not None
+    assert (download.rows, download.series) == (1, 1)
+    assert download.window is not None
+    assert (download.window.start_year, download.window.end_year) == (2020, 2020)
