@@ -16,6 +16,7 @@ from search.engine.role_text import (
     every_member_breakdown_axis,
     receipt_axes,
     role_axis_for_text,
+    transfer_axes,
 )
 from search.models import ParsedEntity, ParsedPart, RoleAxis
 
@@ -396,6 +397,33 @@ class TestDebtAxes:
                 ("Kenya", "China"),
                 ("destination", "origin"),
             ),
+            # A bare place before a debt phrase of the measure's words is the debtor.
+            (
+                "Zambia external debt to China",
+                "external debt",
+                ("Zambia", "China"),
+                ("destination", "origin"),
+            ),
+            (
+                "Kenya external debt owed to China",
+                "external debt",
+                ("Kenya", "China"),
+                ("destination", "origin"),
+            ),
+            ("Kenya debt owed to China", "debt", ("Kenya", "China"), ("destination", "origin")),
+            ("Kenya debt to China", "debt", ("Kenya", "China"), ("destination", "origin")),
+            (
+                "Ghana debt service to the Paris Club",
+                "debt service",
+                ("Ghana", "Paris Club"),
+                ("destination", "origin"),
+            ),
+            (
+                "the Gambia debt service to IDA",
+                "debt service",
+                ("Gambia", "IDA"),
+                ("destination", "origin"),
+            ),
         ],
     )
     def test_cues_on_both_places_set_both_parties(
@@ -412,15 +440,38 @@ class TestDebtAxes:
         ("query", "measure", "cued", "uncued", "expected"),
         [
             (
-                "Kenya debt owed to China",
+                "debt owed to China for Kenya",
                 "debt",
                 "China",
                 "Kenya",
                 {"China": "origin", "Kenya": "destination"},
             ),
             (
-                "Kenya debt to China",
+                "Kenyan debt held by China",
                 "debt",
+                "Kenyan",
+                "China",
+                {"Kenyan": "destination", "China": "origin"},
+            ),
+            # A place a preposition opens, or one before words outside the measure or a debt
+            # party's noun, modifies no debt phrase.
+            (
+                "share of Kenya external debt owed to China",
+                "external debt",
+                "China",
+                "Kenya",
+                {"China": "origin", "Kenya": "destination"},
+            ),
+            (
+                "Kenya external debt to China",
+                "debt",
+                "China",
+                "Kenya",
+                {"China": "origin", "Kenya": "destination"},
+            ),
+            (
+                "Kenya creditor debt to China",
+                "creditor debt",
                 "China",
                 "Kenya",
                 {"China": "origin", "Kenya": "destination"},
@@ -486,8 +537,6 @@ class TestDebtAxes:
             ("China's share of Zambia debt", ["debt"], ("China", "Zambia")),
             ("China's debt claims on Africa", ["debt claims"], ("China", "Africa")),
             ("China's debt claims on Africa", ["debt"], ("China", "Africa")),
-            # "held by" names the holder, not the debtor.
-            ("Kenyan debt held by China", ["debt"], ("Kenyan", "China")),
             # More or fewer than one measure.
             ("Japan's ODA and external debt", ["ODA", "external debt"], ("Japan",)),
             (
@@ -521,6 +570,7 @@ class TestDebtAxes:
             ("indebted to China, Kenya", ["debt"], ("China", "Kenya")),
             ("debt to Chinatown in Kenya", ["debt"], ("China", "Kenya")),
             ("debt service paid by Zambia to the IMF", ["debt service"], ("Zambia", "the IMF")),
+            ("Kenya debt relief to China", ["debt relief"], ("Kenya", "China")),
             # Cues that clash: both places are debtors, or both creditors.
             ("Kenya's debt and Uganda's debt", ["debt"], ("Kenya", "Uganda")),
             ("debt owed to China and debt owed to Japan", ["debt"], ("China", "Japan")),
@@ -843,3 +893,96 @@ class TestReceiptAxes:
         self, query: str, places: tuple[str, ...], expected: dict[str, RoleAxis]
     ) -> None:
         assert receipt_axes(query, places=_places(*places)) == expected
+
+
+class TestTransferAxes:
+    """Giving wording puts the giver on origin and the receiver on destination."""
+
+    @pytest.mark.parametrize(
+        ("query", "measures", "places", "expected"),
+        [
+            (
+                "How much does Norway give to the UN?",
+                ["official development assistance"],
+                ("Norway", "UN"),
+                {"Norway": "origin", "UN": "destination"},
+            ),
+            (
+                "Should Germany give more aid to Kenya?",
+                ["aid"],
+                ("Germany", "Kenya"),
+                {"Germany": "origin", "Kenya": "destination"},
+            ),
+            (
+                "Which donors give the most imputed multilateral ODA to Ethiopia?",
+                ["imputed multilateral ODA"],
+                ("Ethiopia",),
+                {"Ethiopia": "destination"},
+            ),
+            (
+                "Norway gave to the Gambia",
+                [],
+                ("Norway", "Gambia"),
+                {"Norway": "origin", "Gambia": "destination"},
+            ),
+            ("how much has Japan donated", ["aid"], ("Japan",), {"Japan": "origin"}),
+            (
+                "France contributes to IDA",
+                ["ODA"],
+                ("France", "IDA"),
+                {"France": "origin", "IDA": "destination"},
+            ),
+            (
+                "Imputed multilateral ODA from DAC donors",
+                ["imputed multilateral ODA"],
+                ("DAC",),
+                {"DAC": "origin"},
+            ),
+            ("aid from the UK", ["aid"], ("UK",), {"UK": "origin"}),
+            # A list after "from" shares it.
+            (
+                "Compare imputed multilateral ODA from France and Germany",
+                ["imputed multilateral ODA"],
+                ("France", "Germany"),
+                {"France": "origin", "Germany": "origin"},
+            ),
+            (
+                "aid to Ethiopia from Norway, Sweden and the UK",
+                ["aid"],
+                ("Ethiopia", "Norway", "Sweden", "UK"),
+                {"Norway": "origin", "Sweden": "origin", "UK": "origin"},
+            ),
+            # A passive verb names the giver after its "by", and reads no subject.
+            ("aid to Kenya provided by Norway", ["aid"], ("Kenya", "Norway"), {}),
+            # A place a preposition opens is no subject of the verb after it.
+            ("aid to Kenya provided through UNICEF", ["aid"], ("Kenya",), {}),
+            # A bare "to" governs no destination.
+            ("aid to Kenya", ["aid"], ("Kenya",), {}),
+            ("ODA to Kenya compared to France", ["ODA"], ("Kenya", "France"), {}),
+            ("debt to GDP ratio of Kenya", ["debt to GDP ratio"], ("Kenya",), {}),
+            (
+                "Kenya's debt relative to Sub-Saharan Africa",
+                ["debt"],
+                ("Kenya", "Sub-Saharan Africa"),
+                {},
+            ),
+            # Words outside the measure part the verb from its "to".
+            (
+                "Norway gives aid compared to Ghana",
+                ["ODA"],
+                ("Norway", "Ghana"),
+                {"Norway": "origin"},
+            ),
+            # A place named twice may hold two parts, so the wording sets neither mention.
+            ("aid from Kenya to Kenya", ["aid"], ("Kenya",), {}),
+            ("aid to South Sudan from Sudan", ["aid"], ("South Sudan", "Sudan"), {}),
+        ],
+    )
+    def test_giving_wording_names_the_giver_and_the_receiver(
+        self,
+        query: str,
+        measures: list[str],
+        places: tuple[str, ...],
+        expected: dict[str, RoleAxis],
+    ) -> None:
+        assert transfer_axes(query, measures=measures, places=_places(*places)) == expected

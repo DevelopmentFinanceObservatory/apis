@@ -122,6 +122,7 @@ from search.engine.role_text import (
     debtor_possessive,
     every_member_breakdown_axis,
     receipt_axes,
+    transfer_axes,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import left_out_sources, scan_sources, source_phrases
@@ -517,17 +518,18 @@ def _entity_roles(
     """Map stripped entity names to their flow axes and spans.
 
     The query's debt wording sets the axes of a two-party debt relation
-    (`role_text.debt_axes`), and its receipt wording sets each recipient's
-    (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
-    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
-    its extracted axis. Preserve distinct mentions in order, including self-flows on
-    opposite axes. Collapse duplicate mentions with the same axis, span and reading. Store
+    (`role_text.debt_axes`), its receipt wording sets each recipient's
+    (`role_text.receipt_axes`), and its giving wording sets each giver's and receiver's
+    (`role_text.transfer_axes`). Where they disagree, debt wording outranks receipt wording,
+    which outranks giving wording. A query that is one place's possessive and its debt alone
+    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps its
+    extracted axis. Preserve distinct mentions in order, including self-flows on opposite
+    axes. Collapse duplicate mentions with the same axis, span and reading. Store
     directional roles only, each recording whether the query's words give its direction and
-    whether the mention asks for the place's members (`DoorRole.members`). A
-    debt or receipt axis does by construction, a possessive debtor does not, since it
-    reads the measure, and an extracted axis does when its cue does
-    (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
-    translation leaves no span.
+    whether the mention asks for the place's members (`DoorRole.members`). A debt, receipt
+    or giving axis does by construction, a possessive debtor does not, since it reads the
+    measure, and an extracted axis does when its cue does (`_cue_states_direction`). Fall
+    back to entity text for the overlap anchor when translation leaves no span.
     """
     places: dict[str, list[str]] = {}
     for entity in entities:
@@ -539,7 +541,11 @@ def _entity_roles(
             axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
     directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
-    worded = receipt_axes(query, places=places) | debt
+    worded = (
+        transfer_axes(query, measures=measures, places=places)
+        | receipt_axes(query, places=places)
+        | debt
+    )
     read = debtor_possessive(query, measures=measures, places=places, directed=directed)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
