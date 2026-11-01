@@ -25,6 +25,7 @@ from search.engine.bind_repair import (
 )
 from search.engine.binders import Binder, Fallbacks
 from search.engine.deadline import _await_bounded
+from search.engine.degraded_reads import DegradedReads
 from search.engine.enrichment import stream_place_options
 from search.engine.envelope import _terminal_events, now_ms
 from search.engine.events import DoneEvent, Event, PlaceOptionsEvent, ResponseEvent
@@ -223,7 +224,10 @@ class CacheScope:
     lookup (`lookup_parsed`), and layer 1, which keys on the query, serves its repeats.
     `fallbacks` is the request's record of calls its binder served from a fallback
     (`binders.recording_fallbacks`). A request that holds any stores nothing, since its
-    answer is not the one its key names. The caller's
+    answer is not the one its key names. `request_reads` is the request's record of the reads
+    it lost or cut (`degraded_reads`). A request whose record holds a read its own fail-open
+    budget cut stores nothing either: the answer stands on less than a later request may
+    read, though nothing it sends says so. The caller's
     coverage snapshot contributes its stamp to the same scope; this class does
     not read the coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
@@ -241,6 +245,7 @@ class CacheScope:
         build_commit: str,
         binder: Binder,
         fallbacks: Fallbacks,
+        request_reads: DegradedReads,
         seed: int | None,
         today: str,
         max_candidates: int,
@@ -251,6 +256,7 @@ class CacheScope:
     ) -> None:
         self._cache = cache
         self._fallbacks = fallbacks
+        self._request_reads = request_reads
         self._reads_query_text = binder.reads_query_text
         self._start_ms = start_ms
         self._deadline = deadline
@@ -589,7 +595,12 @@ class CacheScope:
             # No lease means this request cannot publish a cache entry.
             return
         try:
-            verdict = not self._fallbacks.reasons and self._served_storable and storable()
+            verdict = (
+                not self._fallbacks.reasons
+                and not self._request_reads.cut
+                and self._served_storable
+                and storable()
+            )
             timed_out = self._timed_out or self._served_timed_out
             degraded_leg = self._degraded_leg or self._served_degraded_leg
             entry, size = encode()
@@ -709,13 +720,17 @@ class PartMemoScope:
     are read once, at construction, beside the build commit, coverage stamp and UTC day the
     caller passes, and key every identity entry the request looks up
     (`response_cache_keys.part_memo_key`). The stamp also sets each stored entry's
-    lifetime. `hits` and `misses` count this request's lookups.
+    lifetime. `hits` and `misses` count this request's lookups. `request_reads` is the
+    request's record of the reads it lost or cut (`degraded_reads`). Once it holds a read its
+    own fail-open budget cut, the scope stores no region, since a cut read leaves its region
+    unmarked.
     """
 
     def __init__(
         self,
         memo: PartMemo | None,
         *,
+        request_reads: DegradedReads,
         build_commit: str,
         today: str,
         coverage: CoverageSnapshot,
@@ -736,6 +751,7 @@ class PartMemoScope:
         self._origin_catalogue = origin.build_id
         self._un_system_enabled = origin.un_system_enabled
         self._refused_at_build = origin.un_blocked_places
+        self._request_reads = request_reads
         self.hits = 0
         self.misses = 0
 
@@ -774,9 +790,12 @@ class PartMemoScope:
         return region
 
     def store(self, key: str, region: RegionResult) -> None:
-        """Store `region` without its closures when `is_region_storable` accepts it."""
-        if self._memo is None or not is_region_storable(
-            region, refused_at_build=self._refused_at_build
+        """Store `region` without its closures when `is_region_storable` accepts it and the
+        request has cut no read."""
+        if (
+            self._memo is None
+            or self._request_reads.cut
+            or not is_region_storable(region, refused_at_build=self._refused_at_build)
         ):
             return
         self._memo.put(self._stamp.key, key, without_relaunches(region))

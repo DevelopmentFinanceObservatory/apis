@@ -31,7 +31,7 @@ from materialise.rate_tables import RateTableCache
 from origin_catalogue import note_un_blocked_places
 from search.engine import enrichment
 from search.engine.app import create_app
-from search.engine.degraded_reads import DegradedReads, note_degraded_read
+from search.engine.degraded_reads import DegradedReads, fail_open_reads, note_degraded_read
 from search.engine.deps import SEARCH_DEPS_SLOT
 from search.engine.errors import EngineInfraError, EngineInputError, GraphInfraError
 from search.engine.events import DoneEvent, Event, ResponseEvent
@@ -610,6 +610,78 @@ def test_a_stream_that_lost_a_trailing_event_stores_no_bundle(
     _kenya_events(cache, _SUBMIT_OPTIONS, stream=True)
     stats = cache.stats()
     assert (stats.hits, stats.entries > 0) == (int(stored), True)
+
+
+def _cut_read(read: str, fired: list[str]) -> None:
+    """A read its own fail-open budget cuts, noted in `fired`."""
+    with fail_open_reads(read, budget_s=0.0):
+        fired.append(read)
+        raise TimeoutError(f"{read} ran past its budget")
+
+
+def _answer_read_cut(mp: pytest.MonkeyPatch, fired: list[str]) -> None:
+    """The withheld re-read, inside the region's resolution, is cut."""
+
+    async def cut(result: RegionResult, graph: object, *, deadline: float | None):
+        _cut_read("withheld re-read", fired)
+        return result
+
+    mp.setattr(pipeline, "with_withheld_warning", cut)
+
+
+def _preview_read_cut(mp: pytest.MonkeyPatch, fired: list[str]) -> None:
+    """A read inside the trailing preview, which starts in the region's resolution, is cut
+    once the resolution ended and closed the record the preview started in."""
+    events = obs_dispatch._observations_events
+    build = obs_dispatch._build_observations
+    record = pipeline.recording_degraded_reads
+    closed = threading.Event()
+    trailing = threading.local()
+
+    @contextmanager
+    def flagged_on_close(**kwargs: Any) -> Iterator[DegradedReads]:
+        with record(**kwargs) as lost:
+            yield lost
+        closed.set()
+
+    def trailing_events(*args: Any, **kwargs: Any) -> Any:
+        assert closed.wait(timeout=5), "the region's record never closed"
+        trailing.read = True
+        try:
+            return events(*args, **kwargs)
+        finally:
+            trailing.read = False
+
+    def cut_then_build(*args: Any, **kwargs: Any) -> Any:
+        if getattr(trailing, "read", False):
+            _cut_read("preview read", fired)
+        return build(*args, **kwargs)
+
+    mp.setattr(pipeline, "recording_degraded_reads", flagged_on_close)
+    mp.setattr(obs_dispatch, "_observations_events", trailing_events)
+    mp.setattr(obs_dispatch, "_build_observations", cut_then_build)
+
+
+@pytest.mark.parametrize("fault", [_answer_read_cut, _preview_read_cut], ids=["answer", "preview"])
+def test_a_stream_whose_read_its_budget_cut_sends_the_same_events_and_stores_no_bundle(
+    monkeypatch: pytest.MonkeyPatch, fault: _Fault
+) -> None:
+    """A read cut by its own fail-open budget changes no event the stream sends, the `done`
+    event's warnings and flags included, and the stream stores no bundle, so the next
+    request computes afresh."""
+    clean = _from_response(_kenya_events(ResponseCache(), _SUBMIT_OPTIONS, stream=True))
+    cache = ResponseCache()
+    fired: list[str] = []
+    with monkeypatch.context() as mp:
+        fault(mp, fired)
+        cut = _from_response(_kenya_events(cache, _SUBMIT_OPTIONS, stream=True))
+
+    assert fired
+    # Two fresh runs differ in their parts' timing too, which a replay keeps.
+    changed = _differences(_without_place_options(clean), _without_place_options(cut))
+    assert not {p for p in changed if not p.startswith((*_FRESH, "response.parts.timing_ms"))}
+    assert _place_options(clean) == _place_options(cut)
+    assert cache.stats().entries == 0
 
 
 class _CountingCompute:

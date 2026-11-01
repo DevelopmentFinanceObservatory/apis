@@ -1330,6 +1330,8 @@ async def _finalize_definite_result(
         served_filter=setup.served_filter,
         served_members=tuple((mat_result.member_facts or {})[dcid] for dcid in mat_result.sv_dcids),
         served_plans=(state.elected_plan,) if state.elected_plan is not None else (),
+        coverage_form=mat_result.coverage_form,
+        units_elected=state.unit_request is not None,
         role_axis_facts=tuple(setup.role_axis_facts),
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),

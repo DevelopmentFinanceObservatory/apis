@@ -358,6 +358,8 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         served_filter=state.served_filter,
         served_members=state.served_members,
         served_plans=(state.narrowed_plan,) if state.narrowed_plan is not None else (),
+        coverage_form=mat_result.coverage_form,
+        units_elected=state.elected_units is not None,
         role_axis_facts=state.role_axis_facts,
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),

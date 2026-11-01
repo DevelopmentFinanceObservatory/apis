@@ -15,18 +15,15 @@ import dataclasses
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.composites import composite_ref
 from code_index.shared import get_index
 from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from search.engine.config import settings
-from search.engine.degraded_reads import (
-    fail_open_reads,
-    recording_degraded_reads,
-    scope_budget_ran_out,
-)
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.envelope import now_ms
+from search.engine.extract import DateRequest
 from search.engine.region.codes import (
     DEFLATOR_PROJECTED,
     ELECTED_SHAPE_NO_DATA,
@@ -50,6 +47,8 @@ from search.engine.retrieval.bound_values import (
     union_served,
     walk_key,
 )
+from search.engine.retrieval.coverage import answer_coverage, answer_headline
+from search.engine.retrieval.merged_plan import merged_read_plan
 from search.engine.spec_build import (
     RoleAxisFactInput,
     build_spec,
@@ -79,9 +78,11 @@ if TYPE_CHECKING:
     from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
     from search.models import (
+        Coverage,
         Entity,
         FacetOptions,
         GraphRef,
+        Headline,
         PartScope,
         ResolvedFacet,
         ResolvedQualifier,
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
         SpecObservations,
         Warning,
     )
+    from series_coverage.index import CoverageIndex
 
 ScopeReader = Callable[["RegionResult", "Sequence[RegionResult]"], "PartScope | None"]
 """Build the scope of a merged region from it and the group it folds
@@ -1003,8 +1005,86 @@ def _merge_slot_flags(
     return sorted(merged_inapplicable), sorted(merged_unresolved)
 
 
+class _MergedCounts(NamedTuple):
+    """The merged answer's read plan (`merged_plan.merged_read_plan`), and the coverage and
+    headline stated from it, read from the request's coverage index."""
+
+    plan: ReadPlan
+    coverage: Coverage
+    headline: Headline | None
+    coverage_index: CoverageIndex
+
+
+def _merged_counts(
+    group: list[RegionResult],
+    base_spec: Spec,
+    *,
+    diff_key: tuple[str, str | None] | None,
+    reads: ComponentReads | None,
+) -> _MergedCounts | None:
+    """The read plan a resolve of the merged identity builds, rebuilt in memory from the
+    members' plans, and the coverage and headline a single answer states from its plan
+    (`coverage.answer_coverage` in the members' `RegionResult.coverage_form`,
+    `coverage.answer_headline`), so `build_spec` states the merged answer's download from it
+    too. A merge that differs in no slot reads one identity, whose plan every member holds,
+    so it reads the base's plan alone.
+
+    A member's plan narrowed to its twin cluster's currency (`facets.cluster_currency_filter`)
+    is narrowed as the merged one is: that narrowing binds the identity's unit to the units it
+    keeps (`facets.cluster_currency_binding`), the merge gate holds every member to one
+    identity facet binding, and a resolve of the merged identity keeps a facet by that
+    binding, which keeps exactly the facets each member's narrowing kept.
+
+    The result is None, and the merged spec states the coverage, unserved entities and
+    members, data years and continuation the members state (`_merge_coverage`,
+    `_merged_unserved`) and no download, where
+
+    - `reads`, the request's clients, is absent;
+    - the merge is a composite, which states its components' download
+      (`composite_answer.as_merged_composite`);
+    - a member's plan was narrowed to the units a unit request elected over that member's own
+      group (`RegionResult.units_elected`), which a resolve of the merged identity elects over
+      the merged group;
+    - a member holds no single plan, or the members state coverage in different forms;
+    - `merged_read_plan` cannot rebuild the plan without a read."""
+    if (
+        reads is None
+        or _binds_composite(base_spec)
+        or any(region.units_elected for region in group)
+    ):
+        return None
+    forms = {region.coverage_form for region in group}
+    if len(forms) != 1 or any(len(region.served_plans) != 1 for region in group):
+        return None
+    (form,) = forms
+    if form is None:
+        return None
+    read = group if diff_key is not None else group[:1]
+    coverage_index = reads.coverage.index
+    plan = merged_read_plan(
+        [region.served_plans[0] for region in read], coverage_index=coverage_index
+    )
+    if plan is None:
+        return None
+    window = base_spec.resolved.trace.requested_window
+    date_request = (
+        None
+        if window is None
+        else DateRequest(window=None, latest=True)
+        if window == "latest"
+        else DateRequest(window=window, latest=False)
+    )
+    return _MergedCounts(
+        plan=plan,
+        coverage=answer_coverage(plan, form),
+        headline=answer_headline(plan, coverage_index, date_request=date_request),
+        coverage_index=coverage_index,
+    )
+
+
 def _merge_coverage(group: list[RegionResult], base_spec: Spec):
-    """Downgrade exact coverage because its count covers only the base member.
+    """Downgrade exact coverage because its count covers only the base member, for a merge
+    whose plan `_merged_counts` does not rebuild.
 
     Preserve positive ``has_data`` from any member; this pure merge cannot
     recount observations over the union.
@@ -1256,15 +1336,15 @@ def _read_merged_previews(pending: Sequence[RegionResult]) -> list[RegionResult]
     The reads run together on an event loop of their own in the calling thread, a worker
     thread off the request's loop (`combine_regions`), which takes no permit of the request
     semaphore, since that belongs to the request's loop. The loop's tasks copy the thread's
-    context, so the request deadline, the catalogue and the bounds below reach every read.
-    They read inside one fail-open scope (`fail_open_reads`) of `fail_open_read_budget_s`,
-    under the latest of the reads' own deadlines less `_COMBINE_TAIL_S`, so they end before
-    the door's bound on the combine. The scope's deadline is each read's own
-    (`ComponentReads.deadline`), and a read still running at it is cut: it previews its omission (`cut_merged_preview`) and
-    notes nothing when the budget cut it, and notes a degraded read when the reads' deadline
-    did. Abandoned worker threads run on, and the loop does not wait for them. A read that
-    swallowed a read marks its region `degraded`, so no cache stores it. The reads are timed
-    as the `merged_preview` step. A code fault in a read propagates."""
+    context, so the request deadline, the catalogue and the bound below reach every read.
+    A merged preview is its answer's own preview, a full observation read, so like a single
+    answer's buffered preview it reads to the deadline and takes no fail-open budget: the
+    latest of the reads' own deadlines (`ComponentReads.deadline`) less `_COMBINE_TAIL_S`,
+    so the reads end before the door's bound on the combine. A read still running at that
+    bound is cut: it previews its omission (`cut_merged_preview`) and notes a degraded
+    read, as does a read that swallowed one, so no cache stores its region. Abandoned
+    worker threads run on, and the loop does not wait for them. The reads are timed as the
+    `merged_preview` step. A code fault in a read propagates."""
     from search.engine.region.composite_answer import (
         CompositeRelaunch,
         IdentityPreview,
@@ -1280,25 +1360,19 @@ def _read_merged_previews(pending: Sequence[RegionResult]) -> list[RegionResult]
     # A composite's reads run to its latest member's (`as_merged_composite`), which may pass
     # the request clients' own.
     deadlines = [r.reads.deadline for r in relaunches if r.reads.deadline is not None]
-    bound = bounded_deadline(max(deadlines) - _COMBINE_TAIL_S) if deadlines else None
-    with (
-        request_deadline(bound) if bound is not None else nullcontext(),
-        fail_open_reads("merged preview", budget_s=settings().fail_open_read_budget_s) as deadline,
-    ):
+    bound = bounded_deadline(max(deadlines) - _COMBINE_TAIL_S if deadlines else None)
+    with request_deadline(bound) if bound is not None else nullcontext():
         bounded = [
-            dataclasses.replace(
-                relaunch, reads=dataclasses.replace(relaunch.reads, deadline=deadline)
-            )
+            dataclasses.replace(relaunch, reads=dataclasses.replace(relaunch.reads, deadline=bound))
             for relaunch in relaunches
         ]
-        outcomes = _run_together(bounded, deadline=deadline)
-        cut_degraded = not scope_budget_ran_out(TimeoutError())
+        outcomes = _run_together(bounded, deadline=bound)
     elapsed = now_ms() - started
     read: list[RegionResult] = []
     for region, outcome in zip(pending, outcomes, strict=True):
         if outcome is None:
             observations, raised = cut_merged_preview()
-            degraded = cut_degraded
+            degraded = True
         else:
             observations, raised, degraded = outcome
         spec = region.spec
@@ -1323,12 +1397,13 @@ type _MergedRead = tuple[SpecObservations, tuple[Warning, ...], bool]
 
 
 def _run_together(
-    relaunches: Sequence[CompositeRelaunch | IdentityPreview], *, deadline: float
+    relaunches: Sequence[CompositeRelaunch | IdentityPreview], *, deadline: float | None
 ) -> list[_MergedRead | None]:
     """Each of `relaunches` read (`read`), with whether it swallowed a read, all together on
-    a new event loop run in the calling thread until `deadline`, and None for a read still
-    running then, which is cancelled. The loop is closed without waiting for the worker
-    threads its reads started, so a stalled thread holds nothing past `deadline`."""
+    a new event loop run in the calling thread until `deadline` (to the end with none), and
+    None for a read still running then, which is cancelled. The loop is closed without
+    waiting for the worker threads its reads started, so a stalled thread holds nothing past
+    `deadline`."""
 
     async def one(relaunch: CompositeRelaunch | IdentityPreview) -> _MergedRead:
         with recording_degraded_reads() as lost:
@@ -1337,7 +1412,8 @@ def _run_together(
 
     async def every() -> list[_MergedRead | None]:
         tasks = [asyncio.ensure_future(one(relaunch)) for relaunch in relaunches]
-        _done, running = await asyncio.wait(tasks, timeout=max(0.0, deadline - time.monotonic()))
+        timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        _done, running = await asyncio.wait(tasks, timeout=timeout)
         for task in running:
             task.cancel()
         await asyncio.gather(*running, return_exceptions=True)
@@ -1425,7 +1501,7 @@ def _merge_group(
     )
     merged_shape = _merge_shape(group, base_spec, is_where)
     inapplicable_slots, unresolved_slots = _merge_slot_flags(group, merged_slots)
-    merged_coverage = _merge_coverage(group, base_spec)
+    counted = _merged_counts(group, base_spec, diff_key=diff_key, reads=preview_reads)
     text_recognized, grouped, measure_elected, defaulted = _merge_slot_filter_properties(group)
     measure_partition, measure_siblings = _merge_measure_partition(group)
     open_axis_facts = _union_open_axis_facts(group)
@@ -1450,7 +1526,10 @@ def _merge_group(
         open_roles=base_spec.definition.identity.open_roles or (),
         # All members share this request window; use the base's hashed value.
         requested_window=base_spec.resolved.trace.requested_window,
-        coverage=merged_coverage,
+        coverage=counted.coverage if counted is not None else _merge_coverage(group, base_spec),
+        headline=counted.headline if counted is not None else None,
+        plan=counted.plan if counted is not None else None,
+        coverage_index=counted.coverage_index if counted is not None else None,
         resolved_sources=_union_sources(group),
         slot_options=merged_slot_options,
         entity_options=entity_options,
@@ -1479,14 +1558,19 @@ def _merge_group(
         measure_served_rows=measure_served_counter(served_filter),
     )
     merged_spec = with_unit_conversion(merged_spec, members=served_members, plans=served_plans)
-    merged_spec = merged_spec.model_copy(
-        update={
-            "resolved": merged_spec.resolved.stating_unserved(_merged_unserved(group, merged_spec))
-            .stating_unserved_members(_merged_unserved_members(group))
-            .stating_data_years(_merged_data_years(group))
-            .stating_continued(any(region.spec.resolved.continued for region in group))
-        }
-    )
+    if counted is None:
+        # With no merged plan, `build_spec` states none of these, so they come from the
+        # members. A rebuilt plan states them as its download counts them.
+        merged_spec = merged_spec.model_copy(
+            update={
+                "resolved": merged_spec.resolved.stating_unserved(
+                    _merged_unserved(group, merged_spec)
+                )
+                .stating_unserved_members(_merged_unserved_members(group))
+                .stating_data_years(_merged_data_years(group))
+                .stating_continued(any(region.spec.resolved.continued for region in group))
+            }
+        )
 
     merged_spec, merged_probe, facet_warning = _merge_facet_options(
         group, merged_spec, facet_options_for

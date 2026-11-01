@@ -245,9 +245,9 @@ class SearchSettings(BaseSettings):
 
     # Seconds the graph reads of one site on the request's critical path may take when their
     # failure is swallowed, so the answer stands without them and notes the lost read
-    # (`degraded_reads.fail_open_reads`), unless this budget itself ran out first, which
-    # leaves an answer the cache stores. It bounds the place-availability probe, menu and
-    # breakdown availability, the withheld re-read and its label read, a resubmit's named
+    # (`degraded_reads.fail_open_reads`). When this budget itself ran out first the answer
+    # stands unwarned, and no cache stores it. It bounds the place-availability probe, menu
+    # and breakdown availability, the withheld re-read and its label read, a resubmit's named
     # groups' label and type reads, and the label read of a value the bind drafted off the
     # elected shape. The place probe's reads took 15 to 253 ms against dfo-dev, and the
     # resubmit's label and type reads under 250 ms, so this leaves about eight times that. A
@@ -263,7 +263,7 @@ class SearchSettings(BaseSettings):
     # dfo-dev took 0.6 s at the median and 4.2 s at the 95th percentile. This budget would
     # have cut 5 of 47, slow walks over gendered or age-banded population shapes, which then
     # answer with no suggestion. A read cut by this budget notes no lost read, so those
-    # answers are cached.
+    # answers carry no warning, and no cache stores them.
     nearest_real_budget_s: float = 3.0
 
     # Gemini HTTP timeout in seconds. genai expects milliseconds. This bounds each call so

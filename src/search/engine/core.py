@@ -52,6 +52,7 @@ from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.concurrency import scoped_concurrency
+from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
 from search.engine.entry import dataset_resubmit, parsed, raw_text
 from search.engine.entry.params import EntryParams
 from search.engine.envelope import (
@@ -429,7 +430,11 @@ async def resolve_events(
         coverage_ms = now_ms() - coverage_t0
         checks = CatalogueSettings()
         async with scoped_concurrency():
-            with held_family_memo(), recording_fallbacks() as fallbacks:
+            with (
+                held_family_memo(),
+                recording_fallbacks() as fallbacks,
+                recording_degraded_reads() as request_reads,
+            ):
                 pipeline = _resolve_pipeline_events(
                     request,
                     graph=_graph,
@@ -454,6 +459,7 @@ async def resolve_events(
                     warn_index_drift=checks.warn_index_drift,
                     record=record,
                     fallbacks=fallbacks,
+                    request_reads=request_reads,
                 )
                 async with aclosing(pipeline):
                     async for event in pipeline:
@@ -587,6 +593,7 @@ async def _resolve_pipeline_events(
     warn_index_drift: bool,
     record: ResolveRecord,
     fallbacks: Fallbacks,
+    request_reads: DegradedReads,
 ) -> AsyncGenerator[Event]:
     """Compute shared request settings, then dispatch by input kind.
 
@@ -610,7 +617,9 @@ async def _resolve_pipeline_events(
     it routes to on what resolution reads of it (`_routing_text`, `binders.configured_binder`).
     Every door's parts read their quantity and bind through it. The response cache keys on
     it, and ``fallbacks`` records each call it served from its fallback, which keeps the
-    response out of the cache.
+    response out of the cache. ``request_reads`` is the request's record of the reads it lost
+    or cut (`degraded_reads`), which every record not detached passes its notes to. A cut
+    read in it keeps the response, its bundle and its parts out of every cache.
     """
     inp = request.input
 
@@ -661,6 +670,7 @@ async def _resolve_pipeline_events(
         build_commit=build_commit(),
         binder=binder,
         fallbacks=fallbacks,
+        request_reads=request_reads,
         seed=config.settings().llm_seed,
         today=today,
         max_candidates=_max_cand,
@@ -688,6 +698,7 @@ async def _resolve_pipeline_events(
         assert isinstance(inp, DatasetResubmitInput)
         memo = PartMemoScope(
             part_memo,
+            request_reads=request_reads,
             build_commit=build_commit(),
             today=today,
             coverage=coverage_snapshot,

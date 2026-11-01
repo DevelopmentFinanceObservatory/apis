@@ -7,6 +7,7 @@ budget as the request deadline."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -29,7 +30,13 @@ from origin_catalogue.families import FamilyKey
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
-from search.engine.degraded_reads import ReadBudget, fail_open_reads, recording_degraded_reads
+from search.engine.degraded_reads import (
+    DegradedReads,
+    ReadBudget,
+    carry,
+    fail_open_reads,
+    recording_degraded_reads,
+)
 from search.engine.errors import (
     EngineInfraError,
     GraphDeadlineFailure,
@@ -383,16 +390,19 @@ def test_a_scope_lets_a_fault_in_the_code_through_unnoted(error: Exception) -> N
     [_LOST_READS["deadline"], _LOST_READS["timeout"], _LOST_READS["wait"]],
     ids=["deadline", "timeout", "wait"],
 )
-def test_a_scope_whose_own_budget_ran_out_drops_the_read_unnoted(error: Exception) -> None:
-    """A read that is healthy but slower than the budget leaves an answer the cache stores.
-    The scope's deadline, a budget earlier than the request's, has passed when it raises."""
+def test_a_scope_whose_own_budget_ran_out_notes_the_read_cut(error: Exception) -> None:
+    """A read that is healthy but slower than the budget leaves an answer that is not
+    degraded, so the user is told nothing, and that no cache stores. The scope's deadline, a
+    budget earlier than the request's, has passed when it raises."""
     with (
         request_deadline(time.monotonic() + 60),
         recording_degraded_reads() as lost,
         fail_open_reads("the read", budget_s=0.0),
     ):
         raise error
-    assert lost.reads == []
+    assert (lost.reads, lost.cut) == ([], ["the read"])
+    assert not lost.degraded
+    assert not lost.storable
 
 
 def test_a_scope_inside_a_spent_scope_is_cut_by_a_budget_too() -> None:
@@ -404,7 +414,37 @@ def test_a_scope_inside_a_spent_scope_is_cut_by_a_budget_too() -> None:
         fail_open_reads("inner read", budget_s=2.0),
     ):
         raise TimeoutError("the read ran past the outer budget")
-    assert lost.reads == []
+    assert (lost.reads, lost.cut) == ([], ["inner read"])
+
+
+def _cut(read: str) -> None:
+    with fail_open_reads(read, budget_s=0.0):
+        raise TimeoutError(f"{read} ran past its budget")
+
+
+def test_a_note_made_after_its_record_closed_reaches_the_record_around_it() -> None:
+    """A trailing preview starts inside its region's record and reads after the region's
+    resolution closed it, so its notes pass on as they are made."""
+    with recording_degraded_reads() as request:
+        with recording_degraded_reads() as region:
+            started = contextvars.copy_context()
+        started.run(_cut, "the trailing read")
+    assert region.cut == request.cut == ["the trailing read"]
+
+
+def test_a_detached_record_keeps_its_cut_reads_and_carry_hands_them_on() -> None:
+    """A cut read follows a lost read's rule: a detached record keeps it, and its owner
+    hands it on whether or not the outcome compared the reading."""
+    passed_over = DegradedReads()
+    with recording_degraded_reads() as request:
+        with recording_degraded_reads(detached=True):
+            _cut("an off-answer read")
+        with recording_degraded_reads(into=passed_over):
+            _cut("a reading's read")
+        assert request.cut == []
+        with recording_degraded_reads() as region:
+            carry(passed_over, consulted=False)
+    assert region.cut == request.cut == ["a reading's read"]
 
 
 @pytest.mark.parametrize(
@@ -427,7 +467,7 @@ def test_a_scope_notes_a_read_lost_any_other_way(
         fail_open_reads("the read", budget_s=budget_s),
     ):
         raise error
-    assert lost.reads == ["the read"]
+    assert (lost.reads, lost.cut) == (["the read"], [])
 
 
 def test_a_wait_on_another_request_s_held_family_decode_ends_at_the_scope_s_bound(
@@ -508,21 +548,31 @@ def _related_thread(budget: ReadBudget) -> None:
     assert related_read.joined_related(pending) is None
 
 
-_BUDGETED_SITES: dict[str, Callable[[pytest.MonkeyPatch, ReadBudget], None]] = {
-    "availability-past-deadline": lambda _mp, _budget: _availability_probe_past_its_deadline(),
-    "dated-read-past-deadline": lambda mp, _budget: _dated_plan(mp, deadline=time.monotonic() - 1),
-    "dated-read-timed-out": lambda mp, _budget: _dated_plan(mp, deadline=None),
-    "related-task": lambda _mp, budget: _related_task(budget),
-    "related-thread": lambda _mp, budget: _related_thread(budget),
+_BUDGETED_SITES: dict[str, tuple[Callable[[pytest.MonkeyPatch, ReadBudget], None], str]] = {
+    "availability-past-deadline": (
+        lambda _mp, _budget: _availability_probe_past_its_deadline(),
+        "place-availability probe",
+    ),
+    "dated-read-past-deadline": (
+        lambda mp, _budget: _dated_plan(mp, deadline=time.monotonic() - 1),
+        "unit coverage dates",
+    ),
+    "dated-read-timed-out": (
+        lambda mp, _budget: _dated_plan(mp, deadline=None),
+        "unit coverage dates",
+    ),
+    "related-task": (lambda _mp, budget: _related_task(budget), "related measures"),
+    "related-thread": (lambda _mp, budget: _related_thread(budget), "related measures"),
 }
 
 
 @pytest.mark.parametrize("site", list(_BUDGETED_SITES))
-def test_a_site_whose_budget_ran_out_notes_nothing(site: str, monkeypatch) -> None:
+def test_a_site_whose_budget_ran_out_notes_the_read_cut(site: str, monkeypatch) -> None:
     """Each site that notes a read lost to a deadline notes it through
     `degraded_reads.note_lost_read`, so a read cut by its budget, a fail-open scope's or the
-    related read's own, with the request's deadline still ahead, leaves an answer the cache
-    stores."""
+    related read's own, with the request's deadline still ahead, leaves an answer that is
+    not degraded and that no cache stores."""
+    swallow, read = _BUDGETED_SITES[site]
     now = time.monotonic()
     spent = ReadBudget(deadline=now, request_deadline=now + 60)
     with (
@@ -530,8 +580,8 @@ def test_a_site_whose_budget_ran_out_notes_nothing(site: str, monkeypatch) -> No
         recording_degraded_reads() as lost,
         fail_open_reads("the enclosing read", budget_s=0.0),
     ):
-        _BUDGETED_SITES[site](monkeypatch, spent)
-    assert lost.reads == []
+        swallow(monkeypatch, spent)
+    assert (lost.reads, lost.cut) == ([], [read])
 
 
 # ---------------------------------------------------------------------------
@@ -671,19 +721,20 @@ def _timed_out_preview() -> tuple[object, Warning]:
 
 
 @pytest.mark.parametrize(
-    ("budget_s", "noted"),
+    ("budget_s", "noted", "cut"),
     [
-        pytest.param(2.0, ["nearest-real preview"], id="within-budget"),
-        pytest.param(0.0, [], id="budget-ran-out"),
+        pytest.param(2.0, ["nearest-real preview"], [], id="within-budget"),
+        pytest.param(0.0, [], ["nearest-real preview"], id="budget-ran-out"),
     ],
 )
 @pytest.mark.parametrize("lost", ["raised", "omitted"])
 def test_a_timed_out_preview_is_dropped_with_its_warning(
-    lost: str, budget_s: float, noted: list[str], monkeypatch
+    lost: str, budget_s: float, noted: list[str], cut: list[str], monkeypatch
 ) -> None:
     """A preview read that raises past a deadline, or that `_build_observations` omits as
     `observations_timed_out`, leaves its suggestion without a preview or warning. It is noted
-    unless the preview's own budget ran out first, which leaves an answer the cache stores."""
+    lost, or cut when the preview's own budget ran out first, which leaves an answer that is
+    not degraded and that no cache stores."""
     monkeypatch.setattr(settings(), "fail_open_read_budget_s", budget_s)
     recorder = (
         _NearestRealRecorder(preview_error=TimeoutError("the preview ran out"))
@@ -696,4 +747,4 @@ def test_a_timed_out_preview_is_dropped_with_its_warning(
 
     assert near is not None and [spec.spec_id for spec in near] == ["near"]
     assert recorder.attached == []
-    assert record.reads == noted
+    assert (record.reads, record.cut) == (noted, cut)
