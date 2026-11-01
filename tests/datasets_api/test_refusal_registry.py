@@ -11,6 +11,8 @@ status the wire sends, so any gap fails here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 from dfo_spec_kit.registry import REGISTRY
 
@@ -291,17 +293,29 @@ def test_every_exemplar_a_route_raises_maps_on_its_endpoint_under_the_surface_cl
     assert sorted(unmapped) == []
 
 
+@pytest.mark.parametrize(
+    ("code", "endpoint"),
+    [
+        ("observations_unavailable", "datasets.observations"),
+        # Mapped on eight more endpoints, so only a check bound per endpoint sees the gap.
+        ("snapshot_not_found", "datasets.observations"),
+    ],
+)
 def test_a_registry_that_drops_a_raised_code_fails_the_surface_build(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, code: str, endpoint: str
 ):
     """The surface build classifies every door's exemplars with its endpoint bound, so a code
-    the registry stops mapping fails at startup, before a request meets it."""
+    the registry stops mapping on an endpoint that raises it fails at startup, before a request
+    meets it, whatever other endpoints still map it."""
     real = codes._problem_statuses
-    monkeypatch.setattr(
-        codes,
-        "_problem_statuses",
-        lambda code: {} if code == "observations_unavailable" else real(code),
-    )
 
-    with pytest.raises(LookupError, match="observations_unavailable"):
+    def dropped(asked: str) -> Mapping[str, frozenset[int]]:
+        statuses = real(asked)
+        if asked != code:
+            return statuses
+        return {name: found for name, found in statuses.items() if name != endpoint}
+
+    monkeypatch.setattr(codes, "_problem_statuses", dropped)
+
+    with pytest.raises(LookupError, match=code):
         datasets_surface()
