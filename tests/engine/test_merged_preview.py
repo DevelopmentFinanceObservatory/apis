@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import pytest
 
-from origin_catalogue import current_catalogue
+from origin_catalogue import current_catalogue, note_un_blocked_places
 from search.engine import same_shape
 from search.engine.concurrency import create_owned_task, scoped_concurrency
 from search.engine.config import settings
@@ -32,6 +32,7 @@ from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
     OBSERVATIONS_SCOPE_PARTIAL,
     OBSERVATIONS_TIMED_OUT,
+    UN_SYSTEM_UNAVAILABLE,
     _ObsProbeResult,
 )
 from search.engine.region.composite_answer import ComponentReads
@@ -588,11 +589,16 @@ _KENYA_READ = dispatch.PreviewRead(
         ),
         pytest.param(dataclasses.replace(_KENYA_READ, bulk_places=("country/UGA",)), id="bulk"),
         pytest.param(dataclasses.replace(_KENYA_READ, facet_filter={}), id="facet-filter"),
+        pytest.param(
+            dataclasses.replace(_KENYA_READ, unit_request=cast(Any, "unit")), id="unit-request"
+        ),
+        pytest.param(dataclasses.replace(_KENYA_READ, elected=cast(Any, "elected")), id="elected"),
     ],
 )
 def test_members_whose_reads_disagree_preview_no_plan(other):
-    """A member without a preview read, or one naming other roles, another facet filter or
-    another bulk scope, leaves the merge no plan read, so it previews by a resubmit."""
+    """A member without a preview read, or one naming other roles, another facet filter,
+    another bulk scope, another unit request or another election, leaves the merge no plan
+    read, so it previews by a resubmit."""
     group = [_previewing("kenya", _KENYA_READ), _previewing("uganda", other)]
 
     assert same_shape._merged_preview_read(group, cast(Any, "plan")) is None
@@ -616,3 +622,27 @@ def test_members_reads_union_into_the_plan_read():
         {"observationAbout": ["country/KEN", "country/UGA"]},
         "plan",
     )
+
+
+@pytest.mark.parametrize("refused", [(), ("country/KEN",)], ids=["served", "un-refused"])
+def test_a_plan_read_refused_un_places_warns_un_system_unavailable(monkeypatch, refused):
+    """A plan read the UN System Data Commons refuses places to, in its worker thread, warns
+    `un_system_unavailable` beside the read's own warnings, so the merged answer states it
+    and no cache stores it; a read refused nothing adds no warning."""
+
+    def reader(**_fields: Any) -> Any:
+        def observations() -> tuple[SpecObservations, Warning | None]:
+            note_un_blocked_places(refused)
+            return _KEN_OWN, None
+
+        return SimpleNamespace(observations=observations)
+
+    monkeypatch.setattr(composite_answer, "PreviewReader", reader)
+    preview = composite_answer.PlanPreview(
+        preview=_KENYA_READ, reads=_reads(), variable_labels={"oda_a": "ODA"}
+    )
+
+    observations, warnings = asyncio.run(preview.read(semaphore=None))
+
+    assert observations == _KEN_OWN
+    assert [w.code for w in warnings] == ([UN_SYSTEM_UNAVAILABLE] if refused else [])
