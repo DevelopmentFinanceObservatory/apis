@@ -15,6 +15,7 @@ import threading
 import weakref
 from collections import Counter
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -34,6 +35,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
 from datasets_api.version_store import LiveHeadStore
 from materialise.reshape import RollupNotSummableError, Table
+from materialise.trace import MemberFamily, RecordedFamily, StatedFamily, recorded_family_json
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import recompute_identity
 from spec_registry.reader import StoredDefinition
@@ -396,6 +398,38 @@ def test_the_stored_version_re_renders_the_composite_frame_and_its_citations():
     assert manifest["content_version"] == minted.json()["content_version"]
     assert manifest["trace"]["components"] == minted.json()["trace"]["components"]
     assert manifest["citation"] == minted.json()["citation"]
+
+
+def test_a_recheck_of_a_composite_head_states_no_one_family():
+    """A composite's components each read their own family, so the freshness check that
+    confirms its head writes no members (`pipeline.definition_family`), whatever the head
+    stated before."""
+    version_store = FakeVersionRecordDatasetStore()
+    _artifacts, client = _composite_client(version_store)
+    minted = _mint(client)
+    assert minted.status_code == 200, minted.text
+    spec_id = minted.json()["definition"]["spec_id"]
+    # A head confirmed past the recheck window, inside the maximum age, stating members.
+    confirmed_at = datetime.now(UTC) - timedelta(hours=1)
+    stated = RecordedFamily(
+        stated=StatedFamily(members=MemberFamily(digest="a" * 64, count=3)),
+        confirmed_at=confirmed_at,
+        basis="earlier-basis",
+    )
+    with version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET confirmed_at = %s, family = %s WHERE subject_id = %s",
+            (confirmed_at, recorded_family_json(stated), spec_id),
+        )
+
+    served = client.get(f"/api/datasets/{spec_id}?bundle=false&format=parquet")
+
+    assert served.status_code == 200, served.text
+    assert served.json()["trace"]["served_from"] == "head"
+    head = LiveHeadStore(store=version_store).read_head(spec_id)
+    assert head is not None and head.family is not None
+    assert head.family.confirmed_at == head.confirmed_at > confirmed_at
+    assert head.family.stated.members is None
 
 
 def test_a_rebuild_of_a_composite_version_on_record_reads_no_origin_findings(monkeypatch):

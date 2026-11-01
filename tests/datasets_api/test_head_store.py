@@ -12,9 +12,14 @@ import pytest
 
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveHeadStore
+from materialise.trace import UNKNOWN_FAMILY
 
 from ._store_fault_doubles import PoolTimeoutFakeDatasetStore
-from ._version_record_store import FakeVersionRecordDatasetStore, materialisation_record
+from ._version_record_store import (
+    TEST_BASIS,
+    FakeVersionRecordDatasetStore,
+    materialisation_record,
+)
 
 
 @pytest.fixture
@@ -60,6 +65,8 @@ def test_advance_head_writes_content_version_confirmed_at_and_dependencies(versi
     store = LiveHeadStore(store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
 
     written = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
@@ -87,12 +94,16 @@ def test_advance_head_moves_both_timestamps_on_a_real_advance(version_store):
     first_write = datetime(2026, 1, 1, tzinfo=UTC)
     second_write = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
     first = LiveHeadStore(store=version_store, now=lambda: first_write).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
     assert first is not None
 
     written = LiveHeadStore(store=version_store, now=lambda: second_write).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv2"),
         expected_materialisation_id=first.materialisation_id,
     )
@@ -113,6 +124,8 @@ def test_advance_head_the_slower_older_decision_loses_the_race_and_returns_none(
     _insert_version_record(version_store, subject_id="spec_a", content_version="cv2")
     store = LiveHeadStore(store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     observed = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv0"),
         expected_materialisation_id=None,
     )
@@ -120,6 +133,8 @@ def test_advance_head_the_slower_older_decision_loses_the_race_and_returns_none(
 
     # The later-started decision materialises fast and writes first.
     new_result = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv2"),
         expected_materialisation_id=observed.materialisation_id,
     )
@@ -128,6 +143,8 @@ def test_advance_head_the_slower_older_decision_loses_the_race_and_returns_none(
 
     # The earlier decision also read the cv0 head and reaches the store after the later write.
     old_result = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=observed.materialisation_id,
     )
@@ -142,11 +159,15 @@ def test_advance_head_expected_none_against_an_existing_row_returns_none(version
     _insert_version_record(version_store, subject_id="spec_a", content_version="cv1")
     store = LiveHeadStore(store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
 
     result = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
@@ -159,6 +180,8 @@ def test_advance_head_conflict_leaves_the_stored_row_unchanged(version_store):
     _insert_version_record(version_store, subject_id="spec_a", content_version="cv2")
     store = LiveHeadStore(store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
@@ -166,6 +189,8 @@ def test_advance_head_conflict_leaves_the_stored_row_unchanged(version_store):
     assert before is not None and before.materialisation_id is not None
 
     result = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv2"),
         expected_materialisation_id=before.materialisation_id + 1000,
     )
@@ -183,11 +208,15 @@ def test_advance_head_on_the_same_content_version_is_a_rematerialisation(version
     second_check = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
 
     first = LiveHeadStore(store=version_store, now=lambda: first_check).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
     assert first is not None
     written = LiveHeadStore(store=version_store, now=lambda: second_check).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=first.materialisation_id,
     )
@@ -212,16 +241,22 @@ def test_two_rebuilds_of_the_heads_own_version_from_one_observed_run_have_one_wi
     _insert_version_record(version_store, subject_id="spec_a", content_version="cv1")
     store = LiveHeadStore(store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     first = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
     assert first is not None
 
     winner = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=first.materialisation_id,
     )
     loser = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=first.materialisation_id,
     )
@@ -241,6 +276,8 @@ def test_read_head_drops_the_fingerprint_of_a_head_whose_run_made_another_versio
     _insert_version_record(version_store, subject_id="spec_a", content_version="cv2")
     store = LiveHeadStore(store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
@@ -265,12 +302,14 @@ def test_confirm_head_on_the_stored_content_version_moves_confirmed_at_only(vers
     materialised_at = datetime(2026, 1, 1, tzinfo=UTC)
     confirmed_at = datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
     LiveHeadStore(store=version_store, now=lambda: materialised_at).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
 
     confirmed = LiveHeadStore(store=version_store, now=lambda: confirmed_at).confirm_head(
-        subject_id="spec_a", content_version="cv1"
+        family=UNKNOWN_FAMILY, basis=TEST_BASIS, subject_id="spec_a", content_version="cv1"
     )
 
     assert confirmed is not None
@@ -295,6 +334,8 @@ def test_confirm_head_against_a_different_content_version_returns_none_and_leave
     materialised_at = datetime(2026, 1, 1, tzinfo=UTC)
     store = LiveHeadStore(store=version_store, now=lambda: materialised_at)
     store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id="spec_a", content_version="cv1"),
         expected_materialisation_id=None,
     )
@@ -302,7 +343,9 @@ def test_confirm_head_against_a_different_content_version_returns_none_and_leave
 
     result = LiveHeadStore(
         store=version_store, now=lambda: datetime(2026, 1, 1, 0, 15, tzinfo=UTC)
-    ).confirm_head(subject_id="spec_a", content_version="cv2")
+    ).confirm_head(
+        subject_id="spec_a", content_version="cv2", family=UNKNOWN_FAMILY, basis=TEST_BASIS
+    )
 
     assert result is None
     after = store.read_head("spec_a")
@@ -312,7 +355,9 @@ def test_confirm_head_against_a_different_content_version_returns_none_and_leave
 def test_confirm_head_on_an_unknown_subject_returns_none(version_store):
     store = LiveHeadStore(store=version_store)
 
-    result = store.confirm_head(subject_id="spec_missing", content_version="cv1")
+    result = store.confirm_head(
+        subject_id="spec_missing", content_version="cv1", family=UNKNOWN_FAMILY, basis=TEST_BASIS
+    )
 
     assert result is None
 
