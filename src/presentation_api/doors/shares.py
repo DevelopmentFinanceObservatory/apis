@@ -1189,15 +1189,6 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=True,
             headers=exc.headers,
         )
-    if isinstance(exc, CallerUnresolved):
-        # A deployment fault a retry does not clear. This surface's `service_unavailable` is
-        # retryable, so it answers `internal_error`.
-        return refused(
-            "internal_error",
-            log=f"Shares door cannot name a caller: {exc}",
-            detail=str(exc),
-            retryable=False,
-        )
     if isinstance(exc, SharePayloadTooLarge):
         return refused(
             "payload_too_large",

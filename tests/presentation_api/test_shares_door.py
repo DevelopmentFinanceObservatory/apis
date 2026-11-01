@@ -170,6 +170,27 @@ class _Door:
         }
 
 
+def _client(
+    release_registry: FakeReleaseRegistry,
+    frame_store: FakeFrameStore,
+    *,
+    share_store: LiveShareStore,
+    allowances: _Allowances,
+    principals: Principals | None,
+    caller_settings: CallerSettings,
+) -> TestClient:
+    surface = presentation_surface(
+        frame_store=frame_store,
+        revision_store=FakeRevisionStore(),
+        release_registry=release_registry,
+        share_store=share_store,
+        allowances=allowances,
+        caller_settings=caller_settings,
+        principals=principals,
+    )
+    return TestClient(create_app([surface]), raise_server_exceptions=False)
+
+
 @contextmanager
 def _serving(
     release_registry: FakeReleaseRegistry,
@@ -179,16 +200,14 @@ def _serving(
 ) -> Iterator[_Door]:
     share_store = LiveShareStore(store=FakePresentationStore())
     allowances = _Allowances(limit=50)
-    surface = presentation_surface(
-        frame_store=frame_store,
-        revision_store=FakeRevisionStore(),
-        release_registry=release_registry,
+    with _client(
+        release_registry,
+        frame_store,
         share_store=share_store,
         allowances=allowances,
-        caller_settings=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
         principals=principals,
-    )
-    with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
+        caller_settings=CallerSettings(caller_hmac_key=SecretStr(_HMAC_KEY)),
+    ) as client:
         yield _Door(client, share_store=share_store, allowances=allowances, frame_store=frame_store)
 
 
@@ -630,6 +649,38 @@ def test_a_spent_allowance_refuses_429_with_retry_after_and_stores_nothing(door:
     assert body["retryable"] is False
     assert int(resp.headers["retry-after"]) >= 1
     assert door.frame_store.pins == ()
+
+
+@pytest.mark.parametrize("route", ["share-create", "card-create"])
+def test_a_write_whose_caller_cannot_be_named_refuses_500_internal_error(
+    release_registry: FakeReleaseRegistry,
+    frame_store: FakeFrameStore,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+):
+    """Without `DFO_CALLER_HMAC_KEY` no caller can be named, a deployment fault a retry does not
+    clear, so a share or card create answers non-retryable `internal_error`, as Datasets does."""
+    monkeypatch.delenv("DFO_CALLER_HMAC_KEY", raising=False)
+    allowances = _Allowances(limit=50)
+    with _client(
+        release_registry,
+        frame_store,
+        share_store=LiveShareStore(store=FakePresentationStore()),
+        allowances=allowances,
+        principals=_PRINCIPALS,
+        caller_settings=CallerSettings(),
+    ) as client:
+        if route == "share-create":
+            body = {"cards": [{"component_id": "cmp_unnamed", "revision": 1}], "latest": True}
+            resp = client.post("/api/presentation/shares", json=body, headers=_HEADERS)
+        else:
+            resp = client.post(
+                "/api/presentation/components", json=_card_body("Card"), headers=_HEADERS
+            )
+
+    body = _assert_refused(resp, status=500, code="internal_error")
+    assert body["retryable"] is False
+    assert allowances.held == []
 
 
 def test_replace_and_delete_spend_no_allowance(door: _Door):

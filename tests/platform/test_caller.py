@@ -151,7 +151,7 @@ def test_the_principal_without_one_well_formed_caller_refuses_400(callers: list[
     ],
     ids=["wrong-secret", "repeated-secret", "empty-none-configured", "none-configured"],
 )
-def test_a_principal_that_does_not_match_refuses_503_and_logs_neither_value(
+def test_a_principal_that_does_not_match_refuses_500_and_logs_neither_value(
     configured: str, presented: list[str], caplog: pytest.LogCaptureFixture
 ):
     """Falling back to the address would count every website client as the website."""
@@ -167,7 +167,7 @@ def test_a_principal_that_does_not_match_refuses_503_and_logs_neither_value(
     ):
         resolve_caller(request, _settings(principal=configured))
 
-    assert refused.value.code == "service_unavailable"
+    assert refused.value.code == "internal_error"
     (record,) = caplog.records
     assert record.levelno == logging.ERROR
     assert "DFO_CALLER_PRINCIPAL" in record.getMessage()
