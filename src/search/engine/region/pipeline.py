@@ -458,8 +458,8 @@ async def resolve_variable(
                 lost.reads.append("party reading")
             raise PartyReadingWithdrawn(lost=lost) from exc
         if result.specs and state.scope is not None and state.scope.named:
-            # An included source none of whose provenances the answer binds served nothing of
-            # it, and only the read knows which provenances served.
+            # An included source none of whose provenances serves the answer served nothing of
+            # it, and only the read knows which provenances served (`answer_provenances`).
             served = answer_provenances(result.specs)
             if served is not None:
                 marked = with_idle_inclusions(state.scope, served)
