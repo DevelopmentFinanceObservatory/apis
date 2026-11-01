@@ -398,10 +398,12 @@ def test_deterministic_failure_fails_regardless_of_final_attempt(failure, code):
     assert stored.refusal_code == code
     # Resubmitting the identical request repeats this deterministic failure.
     assert stored.retryable is False
-    # The row stores the refusal the synchronous door classifies for the same exception.
+    # The row stores the refusal the synchronous door classifies for the same exception, its
+    # wire fields alone: the line a classification names is logged, not stored.
     classified = classify_definition_exception(failure())
     assert classified is not None
-    assert stored.refusal == classified
+    assert stored.refusal is not None
+    assert stored.refusal.to_canonical_data() == classified.to_canonical_data()
 
 
 @pytest.mark.parametrize("is_final_attempt", [False, True], ids=["early", "final"])

@@ -55,6 +55,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.doors import path_registry_endpoints
 from dfo_platform.named import cut
+from dfo_platform.problem import log_problem
 from dfo_platform.request_deadline import request_deadline
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from dfo_platform.trace import get_trace_id
@@ -192,25 +193,19 @@ def _accepts_sse(request: Request) -> bool:
 
 
 def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
-    """Return a Search `ProblemSpec`, logged, or defer to platform classification. JSON and SSE
-    use this function. Platform classification handles routing 404/405 errors.
+    """Return a Search `ProblemSpec`, naming the line it logs, or defer to platform
+    classification. It logs nothing: the platform logs the line on the JSON route and
+    `_logged_classification` on the stream. Platform classification handles routing 404/405
+    errors.
     """
-    classified = classify_refusal(exc)
-    if classified is None:
-        return None
-    if classified.log_line:
-        logger.log(
-            classified.log_level,
-            classified.log_line,
-            exc_info=exc if classified.log_traceback else None,
-        )
-    return classified.problem
+    return classify_refusal(exc)
 
 
 def _logged_classification(exc: BaseException) -> ProblemSpec:
-    """`exc`'s refusal, logged as on the JSON route, so an unhandled error's traceback appears
-    once."""
-    return classify_search_exception(exc) or refusal.classify_default(exc)
+    """`exc`'s refusal, its line logged once as the JSON route logs it."""
+    spec = classify_search_exception(exc) or refusal.classify_default(exc)
+    log_problem(spec, exc, logger=logger, context=None)
+    return spec
 
 
 def _catch_all_problem() -> dict[str, object]:

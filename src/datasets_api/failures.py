@@ -4,6 +4,8 @@ refusals. A retry may clear them, or they are faults on this side.
 Each `_Failure` row names its classes, the code and detail the problem carries, whether a retry
 can clear it, and the line it logs, if any. A failure maps by its most specific class, so a row
 for a subclass outranks its base's whatever the order. The rows read as the mint words them.
+Classifying logs nothing: each problem names its line (`ProblemSpec.log`), which the request
+path logs (`dfo_platform.problem.log_problem`).
 """
 
 from __future__ import annotations
@@ -39,8 +41,6 @@ from materialise.errors import MixedGrainError, UpstreamResponseError, VariableB
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from statvar_members import MemberReadDeadline
 
-logger = logging.getLogger(__name__)
-
 _WRITE_FAILED = "writing an artifact to storage failed; retry"
 _LOOKUP_FAILED = "reading the artifact inventory failed; retry"
 
@@ -59,10 +59,11 @@ class _Failure(NamedTuple):
     log: str | None = None
 
     def classify(self, exc: BaseException) -> ProblemSpec:
-        if self.log is not None:
-            logger.error("Datasets door %s: %s", self.log, exc, exc_info=exc)
         detail = self.detail.format(exc=exc)
-        return ProblemSpec(registered_status(self.code), self.code, self.retryable, detail)
+        spec = ProblemSpec(registered_status(self.code), self.code, self.retryable, detail)
+        if self.log is None:
+            return spec
+        return spec._replace(log=f"Datasets door {self.log}: {exc}", log_traceback=True)
 
 
 _FAILURES = (
@@ -153,23 +154,26 @@ def _sdmx_cap_exceeded(exc: SdmxCapExceededError) -> ProblemSpec:
 
 def _record_conflict(exc: ArtifactRecordConflictError) -> ProblemSpec:
     # Render attaches the subject and version. Other raise sites leave them unset.
-    logger.warning(
-        "Datasets artifact write hit a record conflict for subject %s, content_version %s, "
-        "digest %s, tier %s: the uploaded object has no inventory row pointing at it and "
-        "needs manual reconciliation",
-        getattr(exc, "subject_id", None),
-        getattr(exc, "content_version", None),
-        exc.digest,
-        exc.tier.value,
+    log = (
+        f"Datasets artifact write hit a record conflict for subject "
+        f"{getattr(exc, 'subject_id', None)}, content_version "
+        f"{getattr(exc, 'content_version', None)}, digest {exc.digest}, tier {exc.tier.value}: "
+        "the uploaded object has no inventory row pointing at it and needs manual reconciliation"
     )
-    return _Failure((), "internal_error", "{exc}", retryable=False).classify(exc)
+    spec = _Failure((), "internal_error", "{exc}", retryable=False).classify(exc)
+    return spec._replace(log=log, log_level=logging.WARNING)
 
 
 def _mixed_grain(exc: MixedGrainError) -> ProblemSpec:
     # A facet stating no observation period dated its rows at two grains. The problem carries
     # the catch-all's code and no detail.
-    logger.error("Datasets door served rows of two grains: %s", exc, exc_info=exc)
-    return ProblemSpec(registered_status("internal_error"), "internal_error", False)
+    return ProblemSpec(
+        registered_status("internal_error"),
+        "internal_error",
+        False,
+        log=f"Datasets door served rows of two grains: {exc}",
+        log_traceback=True,
+    )
 
 
 def _inventory_failed(exc: ArtifactInventoryError) -> ProblemSpec:
@@ -178,25 +182,29 @@ def _inventory_failed(exc: ArtifactInventoryError) -> ProblemSpec:
     if exc.bucket is None or exc.object_name is None:
         log = "artifact inventory lookup failed"
         return _Failure((), "service_unavailable", _LOOKUP_FAILED, True, log).classify(exc)
-    logger.error(
-        "%s digest=%s tier=%s bucket=%s object_name=%s",
-        ARTIFACT_INVENTORY_WRITE_FAILED_MARKER,
-        exc.digest,
-        exc.tier.value if exc.tier is not None else None,
-        exc.bucket,
-        exc.object_name,
+    tier = exc.tier.value if exc.tier is not None else None
+    spec = _Failure((), "service_unavailable", _WRITE_FAILED, retryable=True).classify(exc)
+    return spec._replace(
+        log=(
+            f"{ARTIFACT_INVENTORY_WRITE_FAILED_MARKER} digest={exc.digest} tier={tier} "
+            f"bucket={exc.bucket} object_name={exc.object_name}"
+        )
     )
-    return _Failure((), "service_unavailable", _WRITE_FAILED, retryable=True).classify(exc)
 
 
 def _variable_breadth_unread(exc: VariableBreadthUnreadError) -> ProblemSpec:
     # A mint stores its election, so it refuses rather than record the facet the unit's name
     # would pick. A retry reads a transient failure again; a defect would fail alike.
     if not exc.transient:
-        logger.error("Datasets mint refused a single-place tie on a defective breadth: %s", exc)
-        return _Failure((), "internal_error", "{exc}", retryable=False).classify(exc)
-    logger.warning("Datasets mint refused a single-place tie it could not break: %s", exc)
-    return _Failure((), "service_unavailable", "{exc}", retryable=True).classify(exc)
+        spec = _Failure((), "internal_error", "{exc}", retryable=False).classify(exc)
+        return spec._replace(
+            log=f"Datasets mint refused a single-place tie on a defective breadth: {exc}"
+        )
+    spec = _Failure((), "service_unavailable", "{exc}", retryable=True).classify(exc)
+    return spec._replace(
+        log=f"Datasets mint refused a single-place tie it could not break: {exc}",
+        log_level=logging.WARNING,
+    )
 
 
 # Each function takes the one class it is keyed by. `Any` fits the contravariant slot.
