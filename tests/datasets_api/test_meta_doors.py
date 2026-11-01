@@ -466,7 +466,11 @@ def test_failed_operation_poll_names_its_stored_refusal_code_and_retryable_flag(
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
         operation_store=_FixedOperationStore(
-            {"op_1": _operation(state="failed", refusal_code="entities_unbound", retryable=True)}
+            {
+                "op_1": _operation(
+                    state="failed", refusal_code="default_facet_undefined", retryable=True
+                )
+            }
         ),
     )
 
@@ -476,7 +480,7 @@ def test_failed_operation_poll_names_its_stored_refusal_code_and_retryable_flag(
     body = resp.json()
     assert body["code"] == "operation_failed"
     assert body["retryable"] is True
-    assert body["cause"] == {"code": "entities_unbound", "entities": [], "truncated": False}
+    assert body["cause"] == {"code": "default_facet_undefined", "entities": [], "truncated": False}
 
 
 _STORED_REFUSALS = {

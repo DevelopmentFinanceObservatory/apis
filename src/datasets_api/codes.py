@@ -31,7 +31,7 @@ CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
 )
 
 # Platform codes this surface returns for request, upstream, capacity, timeout, store, lookup,
-# facet, role, capability, and upstream-version refusals. Four entries are contract-reserved.
+# facet, role, capability, and upstream-version refusals.
 # `recipe_not_declared` and `rate_coverage_gap` are raised by `materialise.recipes` during
 # currency conversion and classified by the mint doors (`doors/conversion_errors.py`).
 # `refresh_not_permitted` is the frame refresh door's caller refusal, which the Presentation
@@ -48,7 +48,6 @@ SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
         "internal_error",
         "facet_not_available",
         "facet_binding_unsupported",
-        "resolution_ambiguous",
         "invalid_role_ref",
         "role_incompatible",
         "role_signature_incompatible",
