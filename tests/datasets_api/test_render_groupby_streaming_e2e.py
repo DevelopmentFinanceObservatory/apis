@@ -182,7 +182,7 @@ def _parquet_frame() -> ParquetFrameChunks:
     )
     sink = ParquetFrameSink()
     sink.write(frame.table)
-    return ParquetFrameChunks(sink.finish(), columns=frame.columns)
+    return sink.finish(columns=frame.columns)
 
 
 @pytest.mark.parametrize(
