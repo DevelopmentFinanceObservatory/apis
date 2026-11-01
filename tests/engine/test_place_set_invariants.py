@@ -426,6 +426,26 @@ def test_a_set_on_two_roles_takes_one_reading(doors: Doors) -> None:
     check_three_doors(doors, AID, spec)
 
 
+def test_a_subregion_named_as_the_provider_binds_its_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sub-Saharan Africa named as the provider of aid to Kenya, where the world's provider
+    range admits a subregion and the series holds a row from the subregion's node to Kenya.
+    No release lists a subregion as a provider (`role_kinds.role_takes`), and a resubmit
+    refuses one there, so the first answer binds the members, whose row from Ghana holds
+    data, and every door reads that binding."""
+    rows = (*world.FLOW_DATA[AID], (SUB_SAHARAN, KEN))
+    monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: rows})
+    doors = Doors(monkeypatch)
+    assert NODE_TYPE[SUB_SAHARAN] in ROLE_RANGE[PROVIDER]
+    assert flow_reading(AID, SUB_SAHARAN, PROVIDER, [KEN]) == [SUB_SAHARAN]
+
+    spec = the_spec(doors.first_answer(AID, origin(LABEL[SUB_SAHARAN]), destination("Kenya")))
+
+    assert bound(spec) == {"origin": sorted(EXPANSION[SUB_SAHARAN]), "destination": [KEN]}
+    check_three_doors(doors, AID, spec)
+
+
 def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -459,13 +479,15 @@ def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
 @pytest.mark.parametrize(
     "whole_text", [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS], ids=["one-text", "two-texts"]
 )
-def test_a_set_asked_for_its_members_on_one_end_reads_whole_on_the_other(
+def test_a_set_asked_for_its_members_on_one_end_reads_whole_where_the_other_role_takes_it(
     doors: Doors, members_end: str, whole_text: str
 ) -> None:
     """Sub-Saharan Africa asked for as its members on one end and named whole on the other,
-    under one text or two, binds its members on the first end and its node on the second,
-    since the node holds rows with a member on either role. The restatement asks for the
-    members on the first end alone, and posted back answers with the same Spec."""
+    under one text or two, binds its members on the first end. Named whole as the recipient
+    it binds its node, which holds rows with a member. Named whole as the provider it binds
+    its members too, though its node holds rows there, since the provider role takes no
+    subregion (`role_kinds.role_takes`). The restatement asks for the members on the first
+    end alone, and posted back answers with the same Spec."""
     members = sorted(EXPANSION[SUB_SAHARAN])
     assert flow_reading(AID, SUB_SAHARAN, PROVIDER, members) == [SUB_SAHARAN]
     assert flow_reading(AID, SUB_SAHARAN, RECIPIENT, members) == [SUB_SAHARAN]
@@ -480,7 +502,8 @@ def test_a_set_asked_for_its_members_on_one_end_reads_whole_on_the_other(
     )
 
     spec = the_spec(response)
-    assert bound(spec) == {members_end: members, whole_end: [SUB_SAHARAN]}
+    whole = [SUB_SAHARAN] if whole_end == "destination" else members
+    assert bound(spec) == {members_end: members, whole_end: whole}
     (part,) = response.parts
     assert part.restatement is not None
     assert [
@@ -491,10 +514,7 @@ def test_a_set_asked_for_its_members_on_one_end_reads_whole_on_the_other(
         {"text": whole_text, "role_text": words[whole_end]},
     ]
     assert the_spec(doors.post(part.restatement)).spec_id == spec.spec_id
-    # The resubmit door refuses a subregion's node as the provider, which a first answer
-    # binds, so only a whole recipient is checked across the doors.
-    if whole_end == "destination":
-        check_three_doors(doors, AID, spec)
+    check_three_doors(doors, AID, spec)
 
 
 @pytest.mark.parametrize("directed_first", [True, False], ids=["directed-first", "directed-last"])

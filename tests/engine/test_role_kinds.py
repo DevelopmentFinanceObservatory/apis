@@ -8,7 +8,10 @@ import pytest
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, PartyRow
-from search.role_kinds import RoleKindRefused, check_role_kinds, role_kinds
+from entity_resolution import Entity
+from search.engine.region.place_roles import PlaceAssignment, set_choices
+from search.engine.region.place_set import PlaceNode, PlaceSet
+from search.role_kinds import RoleKindRefused, check_role_kinds, entity_kind_of, role_kinds
 
 
 def test_each_axis_takes_the_kinds_of_the_parties_listed_on_it():
@@ -95,3 +98,29 @@ def test_an_axis_the_index_lists_no_party_on_is_not_judged():
         check_role_kinds(
             {"origin": ["country/GHA"]}, read_types=read_types, code_index=index, family=None
         )
+
+
+def test_both_doors_judge_a_node_by_the_kind_of_all_its_types():
+    """A node typed `("Place", "Country")` that the index lists on no axis is a place other
+    than a country by its first type alone and a country by all its types, the kind the
+    resolver gives it (`Entity.kind`). The resubmit judges all its types, and a first answer
+    the kind its place node carries from resolution (`PlaceNode.of_entity`), so both take it
+    as a provider."""
+    index = get_index()
+    dcid, types = "country/ZZZ", ("Place", "Country")
+    assert dcid not in index.parties
+    assert entity_kind_of(dcid, types[:1], code_index=index) == "place_other"
+    kind = entity_kind_of(dcid, types, code_index=index)
+    assert kind == "country"
+    node = PlaceNode.of_entity(Entity(dcid=dcid, name="Zedland", kind=kind, graph_type=types[0]))
+    assignment = PlaceAssignment(
+        sets={"origin": (PlaceSet(name="Zedland", kind="place", node=node),)}
+    )
+
+    check_role_kinds(
+        {"origin": [dcid]},
+        read_types=lambda dcids: dict.fromkeys(dcids, types),
+        code_index=index,
+        family=None,
+    )
+    assert set_choices(assignment, admits=lambda _key, _type: True, index=index) == {dcid: "node"}

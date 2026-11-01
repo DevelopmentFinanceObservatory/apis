@@ -354,12 +354,12 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
         )
     if isinstance(exc, CallerUnresolved):
-        # A deployment fault a retry does not clear, so not the retryable service_unavailable.
+        # The one Presentation mapping; the shares classifier falls through to this one.
         return refused(
-            "internal_error",
-            log=f"Components door cannot name a caller: {exc}",
+            exc.code,
+            log=f"Presentation cannot name a caller: {exc}",
             detail=str(exc),
-            retryable=False,
+            retryable=exc.retryable,
         )
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):

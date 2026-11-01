@@ -10,6 +10,7 @@ import functools
 
 import pytest
 
+from code_index.shared import get_index
 from materialise import place_scope
 from materialise.graph import GraphReadError, SubjectPage
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence, scope_of_places
@@ -316,6 +317,7 @@ def _region_suggestions(held_at: str):
     unsettled = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": (_REGION_SET,)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
     )
     suggestions, _warnings, _reads, _presence = _suggest_nearest_real(
