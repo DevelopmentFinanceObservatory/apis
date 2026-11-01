@@ -92,7 +92,7 @@ from dfo_platform import ProblemSpec
 from dfo_platform.caller import CallerHeaderInvalid, CallerUnresolved, resolve_caller
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.doors import DoorContribution, route_registry_endpoints
-from dfo_platform.problem import Envelope, Refusal
+from dfo_platform.problem import Envelope, Refusal, log_problem
 from dfo_platform.trace import get_trace_id
 
 logger = logging.getLogger(__name__)
@@ -164,9 +164,13 @@ class AnchorAnswer(BaseModel):
 
 def _refused(exc: Exception) -> JSONResponse:
     """The problem document of an analysis refusal (`classify_analysis_exception`), with its
-    retry mode and fix."""
+    retry mode and fix when the route names them (`_REFUSED`). The route renders it outside
+    the platform's exception handler, so it logs the line the problem names."""
     spec = classify_analysis_exception(exc)
     assert spec is not None
+    log_problem(spec, exc, logger=logger, context="datasets")
+    if not isinstance(exc, _REFUSED):
+        return _ENVELOPE.render(spec)
     fix: object
     if isinstance(exc, AnalysisRefused):
         retry_mode, fix = exc.refusal.retry_mode.value, exc.refusal.fix
@@ -365,12 +369,8 @@ class _AnalysisRoutes:
                 )
             except AnalysisPending as pending:
                 outcome: JSONResponse = _pending(pending)
-            except _REFUSED as refused:
+            except (AnalysisRefused, Refusal) as refused:
                 outcome = _refused(refused)
-            except Refusal as refused:
-                spec = classify_analysis_exception(refused)
-                assert spec is not None
-                outcome = _ENVELOPE.render(spec)
             else:
                 outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
         outcome.headers["Server-Timing"] = call.server_timing
