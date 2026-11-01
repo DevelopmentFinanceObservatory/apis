@@ -3,9 +3,10 @@
 The merge itself makes no LLM read. The caller injects the two graph readers a merge can
 need: `set_ref_for` names a merged value set, and `facet_options_for` judges the merged spec's
 facet options over its merged `FacetProbe`. A merged answer's preview reads its merged
-identity, a composite's components or else one resubmit, through the request clients the
-caller passes (`preview_reads`): a streamed merge launches it as a trailing task, and a
-buffered one reads it in the calling thread (`_with_merged_preview`).
+identity, a composite's components, the merged read plan where the merge rebuilds it, or else
+one resubmit, through the request clients the caller passes (`preview_reads`): a streamed
+merge launches it as a trailing task, and a buffered one reads it in the calling thread
+(`_with_merged_preview`).
 """
 
 from __future__ import annotations
@@ -30,12 +31,13 @@ from search.engine.region.codes import (
     UN_SYSTEM_UNAVAILABLE,
 )
 from search.engine.region.facet_probe import FacetProbe, merge_facet_probes
-from search.engine.region.observations.dispatch import _attach_observations
+from search.engine.region.observations.dispatch import PreviewRead, _attach_observations
 from search.engine.region.option_coverage import (
     count_slot_options,
     measure_served_counter,
     merged_served_filter,
 )
+from search.engine.region.un_system import member_labels
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     OpenAxisFact,
@@ -73,6 +75,7 @@ if TYPE_CHECKING:
         ComponentReads,
         CompositeRelaunch,
         IdentityPreview,
+        PlanPreview,
     )
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.retrieval.member_facts import MemberFacts
@@ -1119,6 +1122,47 @@ def _merged_counts(
     )
 
 
+def _merged_preview_read(group: list[RegionResult], plan: ReadPlan) -> PreviewRead | None:
+    """What a read of the merged answer's read plan `plan` (`_merged_counts`) previews, built
+    from what each member of `group` previews (`RegionResult.preview_read`): the members'
+    StatVars and member facts unioned, and their entities unioned by role, each in group
+    order. The preview reads the members `plan` holds among those StatVars
+    (`fetch._build_observations`). The facet filter, the places a scope-defaulted bulk read
+    names, the request-form unit and the elected unit selections hold for the whole merged
+    identity, so the members must agree on each. The result is None where a member holds no
+    preview read, the members name different roles, or they disagree on any of those four."""
+    reads = [region.preview_read for region in group]
+    if any(read is None for read in reads):
+        return None
+    first, *rest = (read for read in reads if read is not None)
+    if any(
+        set(read.obs_entities) != set(first.obs_entities)
+        or read.facet_filter != first.facet_filter
+        or read.bulk_places != first.bulk_places
+        or read.unit_request != first.unit_request
+        or read.elected != first.elected
+        for read in rest
+    ):
+        return None
+    every = (first, *rest)
+    member_facts = {
+        dcid: facts for read in every for dcid, facts in (read.member_facts or {}).items()
+    }
+    return PreviewRead(
+        sv_dcids=tuple(dict.fromkeys(sv for read in every for sv in read.sv_dcids)),
+        obs_entities={
+            role: list(dict.fromkeys(dcid for read in every for dcid in read.obs_entities[role]))
+            for role in first.obs_entities
+        },
+        plan=plan,
+        facet_filter=first.facet_filter,
+        bulk_places=first.bulk_places,
+        member_facts=member_facts or None,
+        unit_request=first.unit_request,
+        elected=first.elected,
+    )
+
+
 def _merge_coverage(group: list[RegionResult], base_spec: Spec):
     """Downgrade exact coverage because its count covers only the base member, for a merge
     whose plan `_merged_counts` does not rebuild.
@@ -1239,6 +1283,7 @@ def _finalize_merged_region(
     merged_spec: Spec,
     *,
     preview_reads: ComponentReads | None,
+    preview_read: PreviewRead | None,
     facet_probe: FacetProbe | None,
     facet_warning: Warning | None,
     measure_partition: MeasurePartition | None,
@@ -1257,7 +1302,8 @@ def _finalize_merged_region(
     spec id, and retain place-option relaunch state. Remap group warnings to the merged spec
     id so they remain attached to their result, and add the facet-options read's warning.
     The merged region is one answer, so a warning several members raise appears once. Its
-    preview is a read of the merged identity (`_with_merged_preview`).
+    preview is a read of the merged identity, of `preview_read` where the merge rebuilt its
+    read plan (`_with_merged_preview`).
     """
     base_resolved = group[0].spec.resolved
     merged_spec = merged_spec.model_copy(
@@ -1301,21 +1347,28 @@ def _finalize_merged_region(
         served_members=served_members,
         served_plans=served_plans,
     )
-    return _with_merged_preview(merged, group, reads=preview_reads)
+    return _with_merged_preview(merged, group, reads=preview_reads, preview_read=preview_read)
 
 
 def _with_merged_preview(
-    merged: RegionResult, group: list[RegionResult], *, reads: ComponentReads | None
+    merged: RegionResult,
+    group: list[RegionResult],
+    *,
+    reads: ComponentReads | None,
+    preview_read: PreviewRead | None,
 ) -> RegionResult:
     """`merged`, the region `group` merged into, restated as the merged identity answers and
     with the relaunch that previews it when the members preview. The merged identity's
     composite binding (`_binds_composite`, which the merge gate holds every member to)
     chooses between them. A group of composite answers is restated as the composite over
     the merged identity (`composite_answer.as_merged_composite`), whose `CompositeRelaunch`
-    reads the components it serves. Any other merge keeps its Spec and previews by one
-    resubmit of its identity (`composite_answer.IdentityPreview`). Either reads through
-    `reads`, the request's clients. The members' own preview warnings leave the merged
-    answer, which states its own read's. Where the members do not preview, the merged region
+    reads the components it serves. Any other merge keeps its Spec. With `preview_read`, what
+    a read of the merged read plan the merge rebuilt previews (`_merged_preview_read`), it
+    reads that, as one answer reads its preview, and states it as its `preview_read`
+    (`composite_answer.PlanPreview`), so its preview and its download come from one plan.
+    Without it, it previews by one resubmit of its identity
+    (`composite_answer.IdentityPreview`). Each reads through `reads`, the request's clients.
+    The members' own preview warnings leave the merged answer, which states its own read's. Where the members do not preview, the merged region
     reads no preview.
 
     Where the members stream their previews, `enrichment._reconcile_after_collapse` launches
@@ -1342,6 +1395,7 @@ def _with_merged_preview(
     from search.engine.region.composite_answer import (
         PREVIEW_WARNING_CODES,
         IdentityPreview,
+        PlanPreview,
         as_merged_composite,
     )
 
@@ -1351,6 +1405,16 @@ def _with_merged_preview(
     unread = dataclasses.replace(
         unread, warnings=tuple(w for w in merged.warnings if w.code not in member_codes)
     )
+    if not composite and preview_read is not None:
+        return dataclasses.replace(
+            unread,
+            preview_read=preview_read,
+            observations_relaunch=PlanPreview(
+                preview=preview_read,
+                reads=reads,
+                variable_labels=member_labels((merged.spec,)),
+            ),
+        )
     if not composite:
         return dataclasses.replace(
             unread, observations_relaunch=IdentityPreview(spec=merged.spec, reads=reads)
@@ -1385,14 +1449,15 @@ def _read_merged_previews(pending: Sequence[RegionResult]) -> list[RegionResult]
     from search.engine.region.composite_answer import (
         CompositeRelaunch,
         IdentityPreview,
+        PlanPreview,
         cut_merged_preview,
     )
 
     started = now_ms()
-    relaunches: list[CompositeRelaunch | IdentityPreview] = []
+    relaunches: list[CompositeRelaunch | IdentityPreview | PlanPreview] = []
     for region in pending:
         relaunch = region.observations_relaunch
-        assert isinstance(relaunch, CompositeRelaunch | IdentityPreview)
+        assert isinstance(relaunch, CompositeRelaunch | IdentityPreview | PlanPreview)
         relaunches.append(relaunch)
     # A composite's reads run to its latest member's (`as_merged_composite`), which may pass
     # the request clients' own.
@@ -1434,7 +1499,9 @@ type _MergedRead = tuple[SpecObservations, tuple[Warning, ...], bool]
 
 
 def _run_together(
-    relaunches: Sequence[CompositeRelaunch | IdentityPreview], *, deadline: float | None
+    relaunches: Sequence[CompositeRelaunch | IdentityPreview | PlanPreview],
+    *,
+    deadline: float | None,
 ) -> list[_MergedRead | None]:
     """Each of `relaunches` read (`read`), with whether it swallowed a read, all together on
     a new event loop run in the calling thread until `deadline` (to the end with none), and
@@ -1442,7 +1509,7 @@ def _run_together(
     waiting for the worker threads its reads started, so a stalled thread holds nothing past
     `deadline`."""
 
-    async def one(relaunch: CompositeRelaunch | IdentityPreview) -> _MergedRead:
+    async def one(relaunch: CompositeRelaunch | IdentityPreview | PlanPreview) -> _MergedRead:
         with recording_degraded_reads() as lost:
             observations, raised = await relaunch.read(semaphore=None)
         return observations, raised, lost.degraded
@@ -1621,6 +1688,7 @@ def _merge_group(
         group,
         merged_spec,
         preview_reads=preview_reads,
+        preview_read=None if counted is None else _merged_preview_read(group, counted.plan),
         facet_probe=merged_probe,
         facet_warning=facet_warning,
         measure_partition=measure_partition,

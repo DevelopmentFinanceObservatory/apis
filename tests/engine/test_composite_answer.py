@@ -948,6 +948,7 @@ def test_two_merged_composites_preview_both_members_places(monkeypatch, streamed
         [member(provider._KEN, 0), member(_UGA, 1)],
         with_destinations(spec, "merged", provider._KEN, _UGA),
         preview_reads=reads,
+        preview_read=None,
         facet_probe=None,
         facet_warning=None,
         measure_partition=None,

@@ -347,9 +347,9 @@ class RegionResult:
     promote_relaunch: PromoteRelaunch | None = None
     # What the definite answer's observation preview reads, apart from the request's
     # clients (`dispatch.PreviewRead`): the buffered read, the streamed task and the part
-    # memo's rebound relaunch all read it. Set on a fresh or resubmitted definite answer and
-    # a lone candidate survivor; None elsewhere, a same-shape merge included, whose preview
-    # is a read of its merged identity (`same_shape._with_merged_preview`).
+    # memo's rebound relaunch all read it. Set on a fresh or resubmitted definite answer, a
+    # lone candidate survivor and a same-shape merge whose read plan the merge rebuilds,
+    # which reads that plan (`same_shape._with_merged_preview`); None elsewhere.
     preview_read: PreviewRead | None = None
     # Role-to-entity lists probed by resubmit resolution: the identity's own dcids on
     # each role. Populated on definite resubmit results.
