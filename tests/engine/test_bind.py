@@ -1324,7 +1324,7 @@ _AFRICAN_COUNTRIES = PlaceSet(
     members=tuple(f"country/A{i:02d}" for i in range(54)),
     reading="members",
 )
-_GHANA = PlaceSet(name="Ghana", kind="place", node=PlaceNode("country/GHA", "Country"))
+_GHANA = PlaceSet(name="Ghana", kind="place", node=PlaceNode("country/GHA", ("Country",)))
 
 
 @pytest.mark.parametrize(

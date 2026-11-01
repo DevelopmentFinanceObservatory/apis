@@ -224,7 +224,7 @@ def _frame_chunks(
     with pq.ParquetWriter(sink, frames[0].table.schema) as writer:
         for frame in frames:
             writer.write_table(frame.table)
-    return ParquetFrameChunks(sink.getvalue(), columns=_FRAME_COLUMNS)
+    return ParquetFrameChunks(sink.getvalue(), columns=_FRAME_COLUMNS, recipe=False)
 
 
 def _csv(body: bytes) -> list[list[str]]:
@@ -339,14 +339,14 @@ not hold."""
             "undata/UNIT_MEASURE-CR_USD_K",
             None,
             None,
-            ("undata/UNIT_MEASURE-CR_USD_K", "Current US dollars", "USD", "current", ""),
+            ("undata/UNIT_MEASURE-CR_USD_K", "Constant US dollars", "USD", "constant", ""),
             id="declared-un-thousand-dollars",
         ),
         pytest.param(
             "ChainedUSDollarBaseYr2017",
             None,
             None,
-            ("ChainedUSDollarBaseYr2017", "Constant 2017 US dollars", "USD", "constant", "2017"),
+            ("ChainedUSDollarBaseYr2017", "Chained 2017 US dollars", "USD", "constant", "2017"),
             id="declared-chained-2017",
         ),
         pytest.param(

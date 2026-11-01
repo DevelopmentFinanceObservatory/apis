@@ -38,11 +38,11 @@ class ResolvedFacet(StrictModel):
 
     basis is always present. ref/label are present when one distinct value
     served every carried series; selection carries "per_series" in their
-    place when the carried series select different values on this axis --
-    never alongside ref/label. request_basis joins either shape, present
-    only on the unit axis, only when unit was bound through the request form
-    (currency/prices/base_year), one basis value per member the request
-    named.
+    place when the carried series select different values on this axis, and
+    the two never appear together. On the unit axis, refs lists those units.
+    request_basis joins either shape, present only on the unit axis, only
+    when unit was bound through the request form (currency/prices/base_year),
+    one basis value per member the request named.
 
     Fields are flat and optional, validated by a model validator, rather
     than a discriminated ref/selection union. basis and request_basis are
@@ -126,6 +126,13 @@ class ResolvedFacet(StrictModel):
             "this axis; present in place of ref/label, never alongside them"
         ),
     )
+    refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "unit axis only, alongside selection 'per_series': the distinct unit dcids the "
+            "carried series select, in series order; a series selecting no unit adds none"
+        ),
+    )
     request_basis: dict[str, FacetBasis] | None = Field(
         default=None,
         description=(
@@ -152,6 +159,8 @@ class ResolvedFacet(StrictModel):
             )
         if (self.ref is not None) == (self.selection is not None):
             raise ValueError("exactly one of ref or selection must be present")
+        if self.refs is not None and self.selection is None:
+            raise ValueError("refs is only meaningful alongside selection")
         return self
 
 
@@ -642,7 +651,8 @@ class ResolvedSpec(StrictModel):
         description=(
             "the rows, series, years and licence of the file a mint of this Spec writes "
             "(see DownloadFacts). None when the Spec has no read plan: a no-data answer, "
-            "or same-shape parts merged into one Spec"
+            "or same-shape parts merged into one Spec whose parts' read plans do not combine "
+            "without a further read"
         ),
     )
     coverage_stamp: str | None = Field(

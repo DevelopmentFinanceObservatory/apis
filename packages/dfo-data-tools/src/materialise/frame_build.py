@@ -14,7 +14,15 @@ from dataclasses import dataclass
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame, parse_time_period
+from dfo_frame_grammar import (
+    TIME_PERIOD_COLUMN,
+    UNIT_COLUMN,
+    Frame,
+    canonical_frame_schema,
+    derive_columns,
+    parse_time_period,
+    widen_frame_table,
+)
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest, unit_cell_to_json
 
@@ -22,6 +30,9 @@ from dc_sdmx import SdmxDataResult
 from dc_sdmx.results import VALUE_COLUMN, VARIABLE_COLUMN
 from materialise.columnar import _as_boolean_array, _as_dictionary_array, observed_values
 from materialise.errors import MaterialisationUsageError, UpstreamResponseError
+
+RECIPE_UNIT_TYPE = canonical_frame_schema(derive_columns(()), recipe=True).field(UNIT_COLUMN).type
+"""The `unit` column's type when some cell carries a recipe."""
 
 # Mirrors the grammar's internal StatVar prefix. `test_frame_build.py` checks it.
 _STAT_VAR_REF_PREFIX = "dcid:"
@@ -44,16 +55,20 @@ def build_frame(*, role_keys: Iterable[str], rows: Iterable[Mapping[str, object]
 class ParquetFrameChunks:
     """A fresh pass over a canonical frame held as Parquet bytes, one `Frame` per row group, on
     each call. Each pass opens a new `ParquetFile` over a zero-copy `BufferReader`, so repeated
-    passes copy nothing and hold at most one row group's rows. `column_chunks` reads one column
-    without decoding the others."""
+    passes copy nothing and hold at most one row group's rows. Every `Frame` takes the frame's
+    own `unit` layout, the recipe layout when `recipe`, a cell of the frame carrying a recipe,
+    whatever layout the bytes hold (`widen_frame_table`). `column_chunks` reads one column other
+    than `unit` without decoding the others."""
 
     parquet_bytes: bytes | memoryview
     columns: tuple[str, ...]
+    recipe: bool
 
     def __call__(self) -> Iterator[Frame]:
         reader = pq.ParquetFile(pa.BufferReader(self.parquet_bytes))
         for row_group_index in range(reader.num_row_groups):
-            yield Frame(columns=self.columns, table=reader.read_row_group(row_group_index))
+            table = widen_frame_table(reader.read_row_group(row_group_index), recipe=self.recipe)
+            yield Frame(columns=self.columns, table=table)
 
     def column_chunks(self, column: str) -> Iterator[pa.ChunkedArray]:
         """`column` of each row group in order."""
@@ -68,28 +83,36 @@ class ParquetFrameChunks:
 
 
 class ParquetFrameSink:
-    """Writes each frame chunk as one row group of an in-memory Parquet file, which
-    `ParquetFrameChunks` reads back chunk for chunk.
+    """Writes each frame chunk as one row group of an in-memory Parquet file, which `finish`
+    returns as the `ParquetFrameChunks` that reads it back chunk for chunk.
 
-    The first chunk sets the shared schema. `finish()` returns a zero-copy view; durable
-    storage happens only after a successful materialisation.
+    A chunk carries the recipe `unit` layout when one of its own cells carries a recipe, so a
+    later chunk can need the layout an earlier one lacks. Every row group is written in the
+    recipe layout, which keeps every cell, and the frame's own layout is applied as it is read
+    back. The first chunk sets the shared columns. Durable storage happens only after a
+    successful materialisation.
     """
 
     def __init__(self) -> None:
         self._sink = io.BytesIO()
         self._writer: pq.ParquetWriter | None = None
+        self._recipe = False
 
     def write(self, table: pa.Table) -> None:
+        own = widen_frame_table(table)
+        self._recipe = self._recipe or own.schema.field(UNIT_COLUMN).type == RECIPE_UNIT_TYPE
+        widened = widen_frame_table(own, recipe=True)
         if self._writer is None:
-            self._writer = pq.ParquetWriter(self._sink, table.schema)
-        self._writer.write_table(table)
+            self._writer = pq.ParquetWriter(self._sink, widened.schema)
+        self._writer.write_table(widened)
 
-    def finish(self) -> memoryview:
+    def finish(self, *, columns: tuple[str, ...]) -> ParquetFrameChunks:
+        """The frame written, whose columns are `columns`, read back from a zero-copy view of
+        the bytes. The view keeps the sink alive and blocks later writes, so this is the last
+        call."""
         assert self._writer is not None, "ParquetFrameSink.finish() called before any chunk"
         self._writer.close()
-        # `getbuffer()` returns a zero-copy view and keeps the sink alive.
-        # The view blocks later writes, and `finish()` is the final call.
-        return self._sink.getbuffer()
+        return ParquetFrameChunks(self._sink.getbuffer(), columns=columns, recipe=self._recipe)
 
 
 def unit_cell_for_rebuild(value: object) -> object:

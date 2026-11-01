@@ -386,11 +386,19 @@ def test_classify_default_maps_starlette_http_exception(status, code):
         assert spec.headers == {"Allow": "GET"}
 
 
-def test_classify_default_maps_a_bare_exception_to_the_unhandled_default():
-    spec = refusal.classify_default(RuntimeError("anything else"))
+def test_classify_default_maps_a_bare_exception_to_the_unhandled_default(caplog):
+    """It names the line, with its traceback, that the request path logs, and logs nothing."""
+    with caplog.at_level(logging.DEBUG):
+        spec = refusal.classify_default(RuntimeError("anything else"))
     assert spec.status == 500
     assert spec.code == "internal_error"
     assert spec.retryable is False
+    assert (spec.log, spec.log_level, spec.log_traceback) == (
+        "Unhandled platform error: anything else",
+        logging.ERROR,
+        True,
+    )
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize("cors_origins", [(), ("https://app.example.com",)], ids=["off", "on"])

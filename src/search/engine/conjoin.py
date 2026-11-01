@@ -66,6 +66,7 @@ from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
+    from search.engine.region.composite_answer import ComponentReads
     from search.engine.region.result import AmbiguousEntityCandidate as EngineCandidate
     from search.engine.region.result import AmbiguousSource
     from search.models import GraphRef, Part, QueryEcho
@@ -408,15 +409,15 @@ def _option(
 def _entity_options(
     region: RegionResult, part: ParsedPart, *, asked: Mapping[str, str]
 ) -> list[NoDataOption | None]:
-    """One option per ambiguous wording and candidate: the part with every entity that
-    resolved to one node pinned, and every row with the wording pinned to the candidate.
-    A pinned row posts its words and the dcid, which is its identity, with no name. A row
+    """One option per ambiguous group and candidate: the part with every entity that
+    resolved to one node pinned, and every row of the group's wording on the group's flow
+    end pinned to the candidate. A pinned row posts its words and the dcid, which is its identity, with no name. A row
     asked for its members takes a group's own node by the group's registered name, with no
     dcid, since a pin cannot ask for a group's members; a group node with no registered
     name that resolves to it alone has no option. Every other ambiguous row posts as the
     parsed door reads it back to the same outcome (`_asked_row`, from `asked`, the region's
     `_asked_words`), so it asks its choice again and "aid from Congo to Congo" settles one
-    end per option. The option's mentions quote the asked words. Each option names its
+    end per option, whether its ends carry one name or two. The option's mentions quote the asked words. Each option names its
     group's index in `region.ambiguous_entities` (`NoDataOption.entity_choice`), since two
     groups can share one wording."""
 
@@ -440,7 +441,10 @@ def _entity_options(
     for i, group in enumerate(region.ambiguous_entities):
         for candidate in group.candidates:
             entities = [
-                chosen(entity, candidate) if entity.identity == group.text else entity
+                chosen(entity, candidate)
+                if entity.identity == group.text
+                and group.role in (None, role_axis_for_text(entity.role_text))
+                else entity
                 for entity in base
             ]
             if None in entities:
@@ -883,6 +887,7 @@ def combine_regions(
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
     scope_for: ScopeReader | None = None,
+    preview_reads: ComponentReads | None = None,
 ) -> tuple[Resolution, list[RegionResult]]:
     """Combine regions into one response, with one part per input in query order.
 
@@ -893,23 +898,64 @@ def combine_regions(
     Returns the response and post-collapse regions. Untouched entries retain
     object identity. Merged entries are new with ``slot_options_task`` and
     ``place_options_task`` cleared. Identity lets the caller cancel and relaunch enrichment.
-    Its only graph reads are the injected ``set_ref_for`` and ``facet_options_for``
-    readers a same-shape merge calls, and ``scope_for`` builds a merged region's scope,
-    which every part it folds states. It performs no task operations.
+    Its graph reads go through the injected ``set_ref_for``, ``facet_options_for`` and
+    ``preview_reads``. A same-shape merge calls the first two, and ``scope_for`` builds a
+    merged region's scope, which every part it folds states. A merge of composite answers
+    answers the composite over its merged identity, and composite answers stay apart without
+    ``preview_reads``. A merged region whose members embed their previews reads its own
+    through ``preview_reads``, the request's clients, in the calling thread
+    (`same_shape._read_merged_previews`), so the caller runs this function off the event
+    loop. It performs no task operations.
 
     ``llm_usage`` is summed by the caller. A supplied ``echo`` is used
     verbatim. Otherwise a raw-text echo is built from ``query``. Skills-index
     warnings are added once on the envelope.
     """
-    definite = [r for r in regions if r.status == "definite"]
-    others = [r for r in regions if r.status != "definite"]
-
     collapsed, residual_texts = collapse_same_shape(
-        definite,
+        [r for r in regions if r.status == "definite"],
         set_ref_for=set_ref_for,
         facet_options_for=facet_options_for,
         scope_for=scope_for,
+        preview_reads=preview_reads,
     )
+    return combine_collapsed(
+        regions,
+        collapsed,
+        residual_texts,
+        extra_warnings=extra_warnings,
+        start_ms=start_ms,
+        engine_build=engine_build,
+        max_candidates=max_candidates,
+        include_observations=include_observations,
+        include_skills=include_skills,
+        skills_index=skills_index,
+        llm_usage=llm_usage,
+        echo=echo,
+        query=query,
+    )
+
+
+def combine_collapsed(
+    regions: list[RegionResult],
+    collapsed: list[RegionResult],
+    residual_texts: list[tuple[str | None, int]],
+    *,
+    extra_warnings: list[Warning],
+    start_ms: int,
+    engine_build: str,
+    max_candidates: int,
+    include_observations: bool = False,
+    include_skills: bool = False,
+    skills_index: SkillsIndex | None = None,
+    llm_usage: dict | None = None,
+    echo: QueryEcho | None = None,
+    query: str = "",
+) -> tuple[Resolution, list[RegionResult]]:
+    """Combine `regions` into one response as `combine_regions` does, over `collapsed` and
+    `residual_texts`, what `collapse_same_shape` returned for their definite regions."""
+    definite = [r for r in regions if r.status == "definite"]
+    others = [r for r in regions if r.status != "definite"]
+
     residual_indices = {earliest_index for _variable_text, earliest_index in residual_texts}
     refused = [r for r in definite if r.earliest_index in residual_indices]
     effective = sorted(collapsed + refused + others, key=lambda r: r.earliest_index)

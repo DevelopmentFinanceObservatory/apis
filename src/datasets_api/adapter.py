@@ -20,7 +20,7 @@ import time
 from collections.abc import Collection, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 
 from dfo_spec_kit.identity import IdentityError, validate_identity_core
 
@@ -68,6 +68,7 @@ from datasets_api.models import CanonicalDefinition
 from datasets_api.shape import StatVarShape, resolve_shape
 from dc_sdmx import EntityFilter
 from dfo_platform.named import cut
+from graph_release.context import bound_release_or_none
 from materialise import MaterialisationRequest
 from materialise.errors import (
     FacetNotAvailableError,
@@ -85,6 +86,7 @@ from materialise.roles import axis_ambiguous_for, axis_for_role, declared_role_f
 from materialise.trace import MemberFamily
 from materialise.window import RequestedWindow, election_window
 from origin_catalogue import scoped_reads
+from origin_catalogue.context import current_build_id
 from spec_registry import SpecIdMismatch, recompute_identity
 from spec_registry.reader import StoredDefinition
 from statvar_members import (
@@ -533,6 +535,38 @@ def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> Memb
     if cast("Mapping[str, object]", identity.get("shape", {})).get("kind") == "stat_var":
         return _member_family(frozenset((shape.stat_var.removeprefix(_STAT_VAR_PREFIX),)))
     return shape.family
+
+
+class BasisDeps(Protocol):
+    """The serving dependencies `family_basis` reads (`serve.ServeDeps`,
+    `current.DefinitionDeps`)."""
+
+    @property
+    def code_index(self) -> CodeIndex: ...
+
+    @property
+    def materialiser_build(self) -> str: ...
+
+
+def family_basis(deps: BasisDeps) -> str:
+    """The inputs a definition's member family is resolved from, as one comparable text: the
+    code index's content hash (`IndexStamp.content_hash`), which decides an index-sourced family
+    (`code_index.members.identity_family_query`); the bound graph release's id, which a member
+    walk keys its cached group on (`statvar_members.cache`); the bound origin catalogue's build
+    id, which decides whether the walk reads the release's own graph
+    (`ReleaseOrigin.holds_family`); and `deps.materialiser_build`, the image that resolves it. `-`
+    stands for a release or catalogue that is not bound. All four are fixed for a request's
+    lifetime. A family resolved under one basis describes a head while the serving basis
+    equals it."""
+    release = bound_release_or_none()
+    return " ".join(
+        (
+            deps.code_index.stamp.content_hash,
+            release.release_id if release is not None else "-",
+            current_build_id(default=lambda: "-"),
+            deps.materialiser_build,
+        )
+    )
 
 
 def _identity_is_index_sourced(identity: Mapping[str, object], *, code_index: CodeIndex) -> bool:

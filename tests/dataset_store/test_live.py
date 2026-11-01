@@ -7,7 +7,6 @@ Skipped by default. Set DFO_DATASET_STORE_LIVE_DSN
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 import threading
@@ -27,7 +26,7 @@ from artifact_store import ArtifactLocation, ArtifactNotFoundError, CopyBounds
 from artifact_store.errors import ArtifactWriteError
 from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import StoredArtifact, Tier
-from dataset_store import ConnectionPool, LiveDatasetStore, connect
+from dataset_store import ConnectionPool, LiveDatasetStore
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
 from dataset_store.snapshot import (
     VERSION_FACT_COLUMNS,
@@ -77,6 +76,7 @@ from datasets_api.versions import (
     VersionRecord,
 )
 from dfo_platform.caller import Caller
+from materialise.trace import UNKNOWN_FAMILY, MemberFamily, RecordedFamily, StatedFamily
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -84,6 +84,13 @@ from spec_registry import (
     LiveSpecRegistry,
     SpecRegistryStoreError,
     recompute_identity,
+)
+from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
+    SERVER_DSN,
+    cluster_lock,
+    connect_live,
+    connect_to,
+    live_database,
 )
 from tests.datasets_api._app_factories import offline_allowances
 from tests.datasets_api._legacy_conversion_trace import (
@@ -93,11 +100,13 @@ from tests.datasets_api._legacy_conversion_trace import (
     MIGRATED_DEFLATED_CONVERSION,
 )
 from tests.datasets_api._snapshot_doubles import FakeSpecReader
-from tests.datasets_api._version_record_store import materialisation_record
+from tests.datasets_api._version_record_store import TEST_BASIS, materialisation_record
 from tests.spec_registry.conftest import minimal_identity, shape_for
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
-_DSN = os.environ.get("DFO_DATASET_STORE_LIVE_DSN")
+# The server DSN gates the live tests. Each runs against `live_database`, a copy of the
+# database it names.
+_DSN = SERVER_DSN
 
 # The safe-default settings every `LiveOperationStore` below resolves for
 # itself when built with no explicit `settings=`.
@@ -112,6 +121,7 @@ def _live_params(now: datetime) -> tuple[datetime, datetime, datetime, datetime]
 
 pytestmark = [
     pytest.mark.live,
+    pytest.mark.usefixtures("live_database"),
     pytest.mark.skipif(
         not _DSN, reason="set DFO_DATASET_STORE_LIVE_DSN to run live dataset_store tests"
     ),
@@ -119,19 +129,7 @@ pytestmark = [
 
 
 def _pool(*, size: int = 2) -> ConnectionPool:
-    parts = urlsplit(_DSN)
-    return ConnectionPool(
-        connect=lambda: connect(
-            connector=None,
-            instance_connection_name=None,
-            host=parts.hostname,
-            port=parts.port or 5432,
-            database=parts.path.lstrip("/"),
-            user=parts.username,
-            password=parts.password,
-        ),
-        size=size,
-    )
+    return ConnectionPool(connect=connect_live, size=size)
 
 
 @pytest.fixture
@@ -613,7 +611,8 @@ def _an_advisory_lock_is_blocked(live_store) -> bool:
     with live_store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT count(*) AS n FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND wait_event = 'advisory' "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND wait_event = 'advisory' "
             "AND query LIKE 'SELECT pg_advisory_xact_lock%'"
         )
     return row is not None and row["n"] > 0
@@ -943,16 +942,22 @@ def test_live_head_store_a_write_whose_expected_version_has_moved_on_is_a_no_op(
 
     store = LiveHeadStore(store=live_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
     observed = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv0"),
         expected_materialisation_id=None,
     )
     assert observed is not None
 
     won = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv2"),
         expected_materialisation_id=observed.materialisation_id,
     )
     lost = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv1"),
         expected_materialisation_id=observed.materialisation_id,
     )
@@ -973,6 +978,8 @@ def test_live_head_store_advance_inserts_the_run_the_head_names(live_store):
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
 
     head = LiveHeadStore(store=live_store).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(
             subject_id=subject_id, content_version="cv1", trigger="worker"
         ),
@@ -1026,6 +1033,8 @@ def test_a_head_whose_run_made_another_version_reads_with_no_dependencies(live_s
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv2")
     store = LiveHeadStore(store=live_store)
     written = store.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv1"),
         expected_materialisation_id=None,
     )
@@ -1041,6 +1050,43 @@ def test_a_head_whose_run_made_another_version_reads_with_no_dependencies(live_s
     assert head is not None
     assert (head.content_version, head.materialisation_id) == ("cv2", written.materialisation_id)
     assert head.dependencies is None
+
+
+_STATED = StatedFamily(
+    members=MemberFamily(digest="a" * 64, count=3), stub_candidates=("dcid:Stub_A",)
+)
+
+
+def test_live_head_store_states_each_family_at_the_confirmation_it_writes(live_store):
+    """The stored family's `confirmed_at` and the head's column hold one instant, read back
+    equal to the microsecond, so a serve states the family the write recorded."""
+    subject_id = f"spec:test-live-head-family-{uuid4().hex}"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    store = LiveHeadStore(store=live_store)
+
+    store.advance_head(
+        family=_STATED,
+        basis=TEST_BASIS,
+        materialisation=materialisation_record(
+            subject_id=subject_id, content_version="cv1", trigger="worker"
+        ),
+        expected_materialisation_id=None,
+    )
+    advanced = store.read_head(subject_id)
+    moved = StatedFamily(members=MemberFamily(digest="b" * 64, count=4))
+    store.confirm_head(
+        subject_id=subject_id, content_version="cv1", family=moved, basis="other-basis"
+    )
+    confirmed = store.read_head(subject_id)
+
+    assert advanced is not None and confirmed is not None
+    assert advanced.family == RecordedFamily(
+        stated=_STATED, confirmed_at=advanced.confirmed_at, basis=TEST_BASIS
+    )
+    assert confirmed.family == RecordedFamily(
+        stated=moved, confirmed_at=confirmed.confirmed_at, basis="other-basis"
+    )
+    assert confirmed.confirmed_at > advanced.confirmed_at
 
 
 def test_live_head_store_read_head_returns_none_for_an_unknown_subject(live_store):
@@ -1061,6 +1107,8 @@ def test_live_head_store_two_racing_writers_agree_on_exactly_one_winner(live_sto
     seed = LiveHeadStore(
         store=live_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
     ).advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv-seed"),
         expected_materialisation_id=None,
     )
@@ -1076,6 +1124,8 @@ def test_live_head_store_two_racing_writers_agree_on_exactly_one_winner(live_sto
             results[content_version] = LiveHeadStore(
                 store=live_store, now=lambda: datetime(2026, 6, 1, tzinfo=UTC)
             ).advance_head(
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
                 materialisation=materialisation_record(
                     subject_id=subject_id, content_version=content_version
                 ),
@@ -1340,6 +1390,8 @@ def test_operation_store_create_or_get_decides_again_when_its_reset_matches_noth
                 subject_id=subject_id,
                 content_version="cv1",
                 confirmed_at=now_box["t"],
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         interleaving.pending_hooks = (_redelivery_claims, _redelivery_completes)
@@ -1474,7 +1526,8 @@ def _wait_until_an_operation_update_is_blocked(
         with live_store.transaction() as tx:
             row = tx.fetch_one(
                 "SELECT count(*) AS n FROM pg_stat_activity "
-                "WHERE wait_event_type = 'Lock' AND starts_with(query, %s)",
+                "WHERE datname = current_database() "
+                "AND wait_event_type = 'Lock' AND starts_with(query, %s)",
                 (statement,),
             )
         if row is not None and row["n"] > 0:
@@ -1533,6 +1586,8 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
                 subject_id="spec-test-live-fence",
                 content_version="cv-never-written",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
         )
         _wait_until_an_operation_update_is_blocked(live_store)
@@ -1555,7 +1610,8 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
 
 def test_operation_store_complete_keeps_the_runs_confirmed_instant(live_store):
     """`complete` stores the instant the run confirmed the subject head, apart from the
-    completion's own `updated_at`, and `get` reads it back as that instant."""
+    completion's own `updated_at`, and `get` reads it back as that instant, equal to the
+    microsecond to the one the stored family was recorded at."""
     run_id = uuid4().hex
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     operations = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
@@ -1572,12 +1628,17 @@ def test_operation_store_complete_keeps_the_runs_confirmed_instant(live_store):
         subject_id=subject_id,
         content_version="cv1",
         confirmed_at=confirmed_at,
+        family=_STATED,
+        basis=TEST_BASIS,
     )
 
     assert done is not None
     assert (done.confirmed_at, done.updated_at) == (confirmed_at, t0)
     stored = operations.get(op.id)
     assert stored is not None and stored.confirmed_at == confirmed_at
+    assert stored.family == RecordedFamily(
+        stated=_STATED, confirmed_at=stored.confirmed_at, basis=TEST_BASIS
+    )
 
 
 def test_operation_store_create_or_get_resets_a_done_row(live_store):
@@ -1597,6 +1658,8 @@ def test_operation_store_create_or_get_resets_a_done_row(live_store):
         subject_id=subject_id,
         content_version="cv1",
         confirmed_at=t0,
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     resubmitted = operations.create_or_get(
@@ -1643,6 +1706,8 @@ def test_live_head_store_a_superseded_attempts_fenced_advance_writes_nothing(liv
     first_fence = HeadFence(operation_id=op.id, attempt=first.attempt_count)
     heads = LiveHeadStore(store=live_store)
     seeded = heads.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv0"),
         expected_materialisation_id=None,
         fence=first_fence,
@@ -1655,6 +1720,8 @@ def test_live_head_store_a_superseded_attempts_fenced_advance_writes_nothing(liv
 
     with pytest.raises(HeadFenceLost):
         heads.advance_head(
+            family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
             materialisation=materialisation_record(
                 subject_id=subject_id, content_version="cv-stale"
             ),
@@ -1665,6 +1732,8 @@ def test_live_head_store_a_superseded_attempts_fenced_advance_writes_nothing(liv
     assert heads.read_head(subject_id) == seeded
     assert _materialisation_count(live_store, subject_id) == 1
     advanced = heads.advance_head(
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
         materialisation=materialisation_record(subject_id=subject_id, content_version="cv-new"),
         expected_materialisation_id=seeded.materialisation_id,
         fence=HeadFence(operation_id=op.id, attempt=reclaimed.attempt_count),
@@ -1705,6 +1774,8 @@ def test_live_head_store_a_fenced_advance_waits_on_an_uncommitted_reclaim_and_re
         assert holder.held.wait(timeout=5), "the reclaim never reached its commit"
         advance = _Call(
             lambda: heads.advance_head(
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
                 materialisation=materialisation_record(
                     subject_id=subject_id, content_version="cv-stale"
                 ),
@@ -1758,6 +1829,8 @@ def test_live_head_store_a_reclaim_waits_on_an_uncommitted_fenced_advance(live_s
 
         advance = _Call(
             lambda: heads.advance_head(
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
                 materialisation=materialisation_record(
                     subject_id=subject_id, content_version="cv1"
                 ),
@@ -2713,7 +2786,8 @@ def _waits_on_a_lock(store, *, table: str) -> bool:
     with store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT count(*) AS n FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND strpos(query, %s) > 0 "
             "AND pid <> pg_backend_pid()",
             (table,),
         )
@@ -2874,22 +2948,10 @@ def test_record_reference_unless_revoked_reactivates_a_soft_deleted_row(live_sto
 
 def test_0002_spec_registry_migration_creates_tables_and_constraints():
     # The schema-qualified PostgreSQL DDL uses types and foreign keys that SQLite cannot exercise.
-    parts = urlsplit(_DSN)
-    runtime_user = parts.username
-
-    def _connect():
-        return connect(
-            connector=None,
-            instance_connection_name=None,
-            host=parts.hostname,
-            port=parts.port or 5432,
-            database=parts.path.lstrip("/"),
-            user=parts.username,
-            password=parts.password,
-        )
+    runtime_user = urlsplit(_DSN).username
 
     apply_pending(
-        connect=_connect,
+        connect=connect_live,
         migrations_dir=MIGRATIONS_DIR,
         substitutions={"RUNTIME_DB_USER": runtime_user},
     )
@@ -2929,39 +2991,24 @@ def test_0002_spec_registry_migration_creates_tables_and_constraints():
         pool.close_all()
 
 
-def _scratch_connect(database: str):
-    parts = urlsplit(_DSN)
-    return lambda: connect(
-        connector=None,
-        instance_connection_name=None,
-        host=parts.hostname,
-        port=parts.port or 5432,
-        database=database,
-        user=parts.username,
-        password=parts.password,
-    )
-
-
 @contextmanager
 def _scratch_database():
     """A database of its own, dropped on exit, for a migration test that must start from a
-    schema older than the shared database's. Yields its connect callable."""
+    schema older than the shared database's. Yields its connect callable. Creating it and its
+    roles holds the cluster lock, since roles are shared by every worker's scratch database."""
     name = f"dataset_store_scratch_{uuid4().hex[:12]}"
-    admin = _scratch_connect(urlsplit(_DSN).path.lstrip("/"))()
-    admin.autocommit = True
-    try:
+    with cluster_lock() as admin:
         admin.run(f"CREATE DATABASE {name}")
         for role in ("dataset-store-scratch-runtime", "dataset-store-scratch-worker"):
             admin.run(
                 f'DO $$ BEGIN CREATE ROLE "{role}" NOLOGIN; '
                 "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
             )
-        try:
-            yield _scratch_connect(name)
-        finally:
-            admin.run(f"DROP DATABASE {name} WITH (FORCE)")
+    try:
+        yield connect_to(name)
     finally:
-        admin.close()
+        with cluster_lock() as admin:
+            admin.run(f"DROP DATABASE {name} WITH (FORCE)")
 
 
 def test_0024_leaves_an_in_flight_old_worker_run_to_its_heartbeat():
@@ -3060,17 +3107,8 @@ def _rerun_migration(live_store, version: str) -> list[str]:
             "DELETE FROM datasets.dataset_store_schema_migrations WHERE version = %s",
             (version,),
         )
-    parts = urlsplit(_DSN)
     return apply_pending(
-        connect=lambda: connect(
-            connector=None,
-            instance_connection_name=None,
-            host=parts.hostname,
-            port=parts.port or 5432,
-            database=parts.path.lstrip("/"),
-            user=parts.username,
-            password=parts.password,
-        ),
+        connect=connect_live,
         migrations_dir=MIGRATIONS_DIR,
         substitutions={},
     )
@@ -4425,7 +4463,8 @@ def _settle_is_waiting_on_a_lock(store) -> bool:
     with store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT count(*) AS n FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND query LIKE '%datasets.artifact_reference%' "
             "AND pid <> pg_backend_pid()"
         )
     return row is not None and row["n"] > 0

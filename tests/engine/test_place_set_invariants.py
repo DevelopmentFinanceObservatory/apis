@@ -10,7 +10,7 @@ compares the answer with what the world's tables imply.
    and its resubmit and its mint read the same list and state the same observations.
 2. A posted identity is read at its own dcids. The resubmit door and the mint keep a
    region's dcid as its node.
-3. A set binds its node only on a role whose range admits the node's type, and only when
+3. A set binds its node only on a role whose range admits one of the node's types, and only when
    the series holds an observation there in the years asked for. Otherwise it binds its
    members. A rank over the axis a set fills binds its members, and so does a request
    that asks for the set's members.
@@ -31,6 +31,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 import pytest
 
+from code_index.shared import get_index
 from entity_resolution import acquire_shared, release_shared
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.models import EntityGroup, Operation, ParsedEntity, ResolveResponse, Spec
@@ -426,6 +427,60 @@ def test_a_set_on_two_roles_takes_one_reading(doors: Doors) -> None:
     check_three_doors(doors, AID, spec)
 
 
+def test_a_subregion_named_as_the_provider_binds_its_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sub-Saharan Africa named as the provider of aid to Kenya, where the world's provider
+    range admits a subregion and the series holds a row from the subregion's node to Kenya.
+    No release lists a subregion as a provider (`role_kinds.role_takes`), and a resubmit
+    refuses one there, so the first answer binds the members, whose row from Ghana holds
+    data, and every door reads that binding."""
+    rows = (*world.FLOW_DATA[AID], (SUB_SAHARAN, KEN))
+    monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: rows})
+    doors = Doors(monkeypatch)
+    assert NODE_TYPE[SUB_SAHARAN] in ROLE_RANGE[PROVIDER]
+    assert flow_reading(AID, SUB_SAHARAN, PROVIDER, [KEN]) == [SUB_SAHARAN]
+
+    spec = the_spec(doors.first_answer(AID, origin(LABEL[SUB_SAHARAN]), destination("Kenya")))
+
+    assert bound(spec) == {"origin": sorted(EXPANSION[SUB_SAHARAN]), "destination": [KEN]}
+    check_three_doors(doors, AID, spec)
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        origin("San Marino"),
+        ParsedEntity(text="San Marino", role_text="from", dcid="country/SMR"),
+    ],
+    ids=["named", "pinned"],
+)
+def test_a_country_whose_first_graph_type_is_generic_binds_as_the_provider(
+    monkeypatch: pytest.MonkeyPatch, provider: ParsedEntity
+) -> None:
+    """San Marino, a country the code index lists on no axis and the graph types
+    `("Place", "Country")`, named or pinned as the provider of aid to Kenya. The provider
+    role's range admits `Country` and not `Place`, so role admission admits the node by its
+    second type, the first answer binds it, and every door reads that binding."""
+    san_marino = "country/SMR"
+    assert san_marino not in get_index().parties
+    assert "Place" not in ROLE_RANGE[PROVIDER]
+    node = {
+        "label": "San Marino",
+        "type": "Place",
+        "arcs": {"typeOf": {"nodes": [{"dcid": "Place"}, {"dcid": "Country"}]}},
+    }
+    monkeypatch.setattr(world, "_NODES", {**world._NODES, san_marino: node})
+    rows = (*world.FLOW_DATA[AID], (san_marino, KEN))
+    monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: rows})
+    doors = Doors(monkeypatch)
+
+    spec = the_spec(doors.first_answer(AID, provider, destination("Kenya")))
+
+    assert bound(spec) == {"origin": [san_marino], "destination": [KEN]}
+    check_three_doors(doors, AID, spec)
+
+
 def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -453,6 +508,48 @@ def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
     assert twice.spec_id == once.spec_id
     assert twice.resolved.entity_groups == once.resolved.entity_groups
     check_three_doors(doors, AID, twice)
+
+
+@pytest.mark.parametrize("members_end", ["origin", "destination"])
+@pytest.mark.parametrize(
+    "whole_text", [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS], ids=["one-text", "two-texts"]
+)
+def test_a_set_asked_for_its_members_on_one_end_reads_whole_where_the_other_role_takes_it(
+    doors: Doors, members_end: str, whole_text: str
+) -> None:
+    """Sub-Saharan Africa asked for as its members on one end and named whole on the other,
+    under one text or two, binds its members on the first end. Named whole as the recipient
+    it binds its node, which holds rows with a member. Named whole as the provider it binds
+    its members too, though its node holds rows there, since the provider role takes no
+    subregion (`role_kinds.role_takes`). The restatement asks for the members on the first
+    end alone, and posted back answers with the same Spec."""
+    members = sorted(EXPANSION[SUB_SAHARAN])
+    assert flow_reading(AID, SUB_SAHARAN, PROVIDER, members) == [SUB_SAHARAN]
+    assert flow_reading(AID, SUB_SAHARAN, RECIPIENT, members) == [SUB_SAHARAN]
+    whole_end = "destination" if members_end == "origin" else "origin"
+    named = {"origin": origin, "destination": destination}
+    words = {"origin": "from", "destination": "to"}
+
+    response = doors.first_answer(
+        AID,
+        named[members_end](LABEL[SUB_SAHARAN], members=True),
+        named[whole_end](whole_text),
+    )
+
+    spec = the_spec(response)
+    whole = [SUB_SAHARAN] if whole_end == "destination" else members
+    assert bound(spec) == {members_end: members, whole_end: whole}
+    (part,) = response.parts
+    assert part.restatement is not None
+    assert [
+        entity.model_dump(mode="json", exclude_none=True)
+        for entity in part.restatement.entities or []
+    ] == [
+        {"text": LABEL[SUB_SAHARAN], "role_text": words[members_end], "members": True},
+        {"text": whole_text, "role_text": words[whole_end]},
+    ]
+    assert the_spec(doors.post(part.restatement)).spec_id == spec.spec_id
+    check_three_doors(doors, AID, spec)
 
 
 @pytest.mark.parametrize("directed_first", [True, False], ids=["directed-first", "directed-last"])

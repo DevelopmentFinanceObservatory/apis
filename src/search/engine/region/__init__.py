@@ -47,10 +47,6 @@ from search.engine.region.grounding import (
     _shape_with_taxonomy,
     _suggest_nearest_real,
 )
-from search.engine.region.observations.dispatch import (
-    _observations_relaunch_closure,
-    _resolve_spec_observations,
-)
 from search.engine.region.observations.entities import _observation_entities
 from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.option_coverage import (
@@ -102,12 +98,10 @@ __all__ = [
     "_materialise_alt_shapes",
     "_maybe_enrich_slot_options",
     "_observation_entities",
-    "_observations_relaunch_closure",
     "_place_confidence",
     "_ref_or_miss",
     "_refs_present",
     "_representative_score_is_weak",
-    "_resolve_spec_observations",
     "_shape_with_taxonomy",
     "_suggest_nearest_real",
     "detect_set_ref",

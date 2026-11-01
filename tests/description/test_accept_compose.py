@@ -27,11 +27,19 @@ from dfo_descriptions import check_description, operations
 from dfo_frame_grammar import STAT_VAR_COLUMN
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
-from code_index.types import MeasureAxis, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
+from code_index.types import (
+    MeasureAxis,
+    MeasureIndex,
+    MeasurePartitionLabel,
+    MeasureValueRow,
+    SourceCodeRow,
+    StatVarRow,
+)
 from description.facts import (
     Builds,
     CaveatFact,
     CodeIndexStamp,
+    ComposedVariable,
     ComputedFacts,
     Coordinate,
     DescriptionRecord,
@@ -261,7 +269,6 @@ def _words() -> Vocabulary:
                 publisher=_OECD, last_downloaded="2026-10-08", next_release="2026-09"
             )
         },
-        currency_units={"CurrencyUSD": "USD", "USDollar": "USD"},
         graph_generation="gen-1",
         catalogue_build="ocb_20260927",
     )
@@ -1514,6 +1521,204 @@ def test_a_card_drawing_many_unlabelled_codes_keeps_its_gaps_within_the_schema()
     dimensions = served["about"]["drawn"]["dimensions"]
     assert [(dim["count"], "values" in dim) for dim in dimensions] == [(24, False)] * 5
     assert len(served["gaps"]) <= 100
+
+
+# Publisher series codes
+
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+_CREDITOR = "idsCreditorType"
+_BLAT = "Amount_FinancialFlow_Disbursement_IDSCreditorTypeBLAT_IDSDebtorTypeCB_Nominal"
+_MLAT = "Amount_FinancialFlow_Disbursement_IDSCreditorTypeMLAT_IDSDebtorTypeCB_Nominal"
+_NET = "Amount_FinancialFlow_NetFlow_IDSCreditorTypeIMFC_IDSDebtorTypeCB_Nominal"
+_RATIO = "dfo/DisbursementPerPerson"
+_IDS_CODES = {
+    _BLAT: ["DT.DIS.BLAT.CB.CD"],
+    _MLAT: ["DT.DIS.MLAT.CB.CD"],
+    _NET: ["DT.NFL.IMFC.CD", "DT.NFL.MIDA.CD"],
+    **{f"dc/ids/sv{n:02d}": [f"DT.X{n:02d}.CD"] for n in range(51)},
+}
+_CREDITOR_OF = {
+    _BLAT: "IDSCreditorTypeBLAT",
+    _MLAT: "IDSCreditorTypeMLAT",
+    _NET: "IDSCreditorTypeIMFC",
+}
+
+
+def _ids_words() -> Vocabulary:
+    """Today's words over a code index listing World Bank IDS variables, each with its
+    series codes, and the creditor type it declares."""
+    rows = [
+        StatVarRow(
+            dcid=dcid,
+            population_type="FinancialFlow",
+            measured_property="amount",
+            stat_type="measuredValue",
+            measurement_qualifier="Nominal",
+            measurement_denominator=None,
+            observation_properties=(),
+            constraint_properties={
+                _CREDITOR: _CREDITOR_OF.get(dcid, f"IDSCreditorType{dcid[-2:]}")
+            },
+            provenances=(_IDS,),
+        )
+        for dcid in _IDS_CODES
+    ]
+    index = CodeIndex(
+        stamp=_INDEX.stamp,
+        declarations=_INDEX.declarations.values(),
+        codes=_INDEX.codes,
+        statvars=(),
+        listed_statvars=rows,
+        source_codes=[
+            SourceCodeRow(provenance=_IDS, code=code, dcids=(dcid,))
+            for dcid, codes in _IDS_CODES.items()
+            for code in codes
+        ],
+    )
+    return replace(
+        _words(),
+        index=index,
+        labels=MappingProxyType(
+            {
+                **_words().labels,
+                _CREDITOR: "creditor type",
+                **{row.constraint_properties[_CREDITOR]: "creditor" for row in rows},
+            }
+        ),
+    )
+
+
+def _ids_record(variables: Sequence[str]) -> DescriptionRecord:
+    """A `spec_` record holding `variables` of IDS, open on the creditor type."""
+    return _dataset_record(
+        variables=_variables(
+            [
+                _open(
+                    _CREDITOR,
+                    [(_CREDITOR_OF.get(v, f"IDSCreditorType{v[-2:]}"), 1) for v in variables],
+                )
+            ],
+            fixed=[],
+            variable=variables[0] if len(variables) == 1 else None,
+        ),
+        series=_series(
+            by_source_unit=[SourceUnitCount(source=_IDS, unit=_USD, series=len(variables))]
+        ),
+    )
+
+
+def _ids_selection(variables: Sequence[str]) -> SelectionFacts:
+    return _selection(
+        *[
+            _drawn(variable, {STAT_VAR_COLUMN: variable}).model_copy(update={"source": _IDS})
+            for variable in variables
+        ]
+    )
+
+
+def _code(code: str, *, exact: bool = False) -> dict[str, Any]:
+    return {"provenance": _IDS, "code": code} | ({"exact": True} if exact else {})
+
+
+def _per_person_record() -> DescriptionRecord:
+    """A computed version that divides IDS bilateral disbursements by population, with the
+    composed variable it wrote."""
+    record = _quotient_record()
+    assert record.computed is not None
+    composed = ComposedVariable(
+        variable=_RATIO, relation="quotient", first=[_BLAT], second=["Count_Person"]
+    )
+    return record.model_copy(
+        update={"computed": record.computed.model_copy(update={"composed": [composed]})}
+    )
+
+
+_FIFTY = [f"dc/ids/sv{n:02d}" for n in range(50)]
+
+
+@pytest.mark.parametrize(
+    ("described", "about", "values"),
+    [
+        pytest.param(
+            lambda: _describe_card(
+                _ids_record([_BLAT, _MLAT]), _ids_selection([_BLAT, _MLAT]), _ids_words()
+            ),
+            [_code("DT.DIS.BLAT.CB.CD"), _code("DT.DIS.MLAT.CB.CD")],
+            [
+                [_code("DT.DIS.BLAT.CB.CD", exact=True)],
+                [_code("DT.DIS.MLAT.CB.CD", exact=True)],
+            ],
+            id="each-value-its-own-code-the-card-built-from-both",
+        ),
+        pytest.param(
+            lambda: _describe_card(_ids_record([_BLAT]), _ids_selection([_BLAT]), _ids_words()),
+            [_code("DT.DIS.BLAT.CB.CD", exact=True)],
+            [[_code("DT.DIS.BLAT.CB.CD", exact=True)]],
+            id="one-variable-card-is-its-code",
+        ),
+        pytest.param(
+            lambda: _describe_card(_ids_record([_NET]), _ids_selection([_NET]), _ids_words()),
+            [_code("DT.NFL.IMFC.CD"), _code("DT.NFL.MIDA.CD")],
+            [[_code("DT.NFL.IMFC.CD"), _code("DT.NFL.MIDA.CD")]],
+            id="a-variable-with-two-codes-stands-for-neither",
+        ),
+        pytest.param(
+            lambda: _describe_version(_ids_record([_BLAT]), _ids_words()),
+            [_code("DT.DIS.BLAT.CB.CD", exact=True)],
+            [],
+            id="one-variable-dataset-version-is-its-code",
+        ),
+        pytest.param(
+            lambda: _describe_card(
+                _per_person_record(),
+                _selection(_drawn("ratio", {STAT_VAR_COLUMN: _RATIO})),
+                _ids_words(),
+            ),
+            [_code("DT.DIS.BLAT.CB.CD")],
+            [],
+            id="computed-series-is-built-from-its-inputs-codes",
+        ),
+        pytest.param(
+            lambda: _describe_card(
+                _worked_example(), _selection(_drawn("policy", {_SECTOR: _HEALTH_POLICY[0]}))
+            ),
+            None,
+            [None],
+            id="crs-card-has-no-codes",
+        ),
+        pytest.param(
+            lambda: _describe_card(_ids_record(_FIFTY), _ids_selection(_FIFTY), _ids_words()),
+            [_code(f"DT.X{n:02d}.CD") for n in range(50)],
+            [[_code(f"DT.X{n:02d}.CD", exact=True)] for n in range(50)],
+            id="control-fifty-codes-are-listed",
+        ),
+        pytest.param(
+            lambda: _describe_card(
+                _ids_record([*_FIFTY, "dc/ids/sv50"]),
+                _ids_selection([*_FIFTY, "dc/ids/sv50"]),
+                _ids_words(),
+            ),
+            None,
+            [],
+            id="over-fifty-codes-lists-none",
+        ),
+    ],
+)
+def test_a_description_lists_the_publisher_codes_of_the_series_it_covers(
+    described: Any, about: list[dict[str, Any]] | None, values: list[Any]
+) -> None:
+    """A card lists the codes of every series it draws, a computed series those of the
+    variables it was composed from, and each drawn value those of the variables declaring
+    it. A code is exact where every series it is listed against is read from its provenance
+    and named by it alone, and never on a computed version's card."""
+    served = described()
+
+    assert served["about"].get("source_codes") == about
+    assert [
+        value.get("source_codes")
+        for dimension in served["about"].get("drawn", {}).get("dimensions", [])
+        for value in dimension.get("values", [])
+    ] == values
 
 
 @pytest.mark.parametrize(

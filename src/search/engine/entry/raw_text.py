@@ -99,6 +99,7 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.phase_rank_bind import holds_words, names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import (
@@ -118,6 +119,7 @@ from search.engine.role_text import (
     DoorRole,
     breakdown_axis,
     debt_axes,
+    debtor_possessive,
     every_member_breakdown_axis,
     receipt_axes,
 )
@@ -516,12 +518,16 @@ def _entity_roles(
 
     The query's debt wording sets the axes of a two-party debt relation
     (`role_text.debt_axes`), and its receipt wording sets each recipient's
-    (`role_text.receipt_axes`); every other place keeps its extracted axis. Preserve
-    distinct mentions in order, including self-flows on opposite axes. Collapse duplicate
-    mentions with the same axis and span. Store directional roles only, each recording
-    whether the query's words give its direction. A debt or receipt axis does by
-    construction, and an extracted axis does when its cue does (`_cue_states_direction`). Fall back to entity text for
-    the overlap anchor when translation leaves no span.
+    (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
+    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
+    its extracted axis. Preserve distinct mentions in order, including self-flows on
+    opposite axes. Collapse duplicate mentions with the same axis, span and reading. Store
+    directional roles only, each recording whether the query's words give its direction and
+    whether the mention asks for the place's members (`DoorRole.members`). A
+    debt or receipt axis does by construction, a possessive debtor does not, since it
+    reads the measure, and an extracted axis does when its cue does
+    (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
+    translation leaves no span.
     """
     places: dict[str, list[str]] = {}
     for entity in entities:
@@ -534,10 +540,11 @@ def _entity_roles(
     directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
     worded = receipt_axes(query, places=places) | debt
+    read = debtor_possessive(query, measures=measures, places=places, directed=directed)
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = worded.get(name)
+        axis = worded.get(name) or read.get(name)
         if axis is None:
             if entity.flow_role == "unspecified":
                 continue
@@ -545,7 +552,7 @@ def _entity_roles(
         occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
         stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
-        role = DoorRole(axis=axis, span=span, stated=stated)
+        role = DoorRole(axis=axis, span=span, stated=stated, members=entity.members)
         if role not in occurrences:
             occurrences.append(role)
     return roles
@@ -846,7 +853,8 @@ class _ExtractionPrep:
     it. `per_variable_exclusions` runs parallel to `unique`: the stretches qualifying each
     part and the requirements judging its answers on them (`state.exclusion_requirements`),
     read once for the request. A warning stands on a part whose answer does not leave its
-    phrase out, and on the envelope while one such part stands (`surviving`).
+    phrase out, and on the envelope while one such part stands (`surviving`). Its departure
+    stands on that part alone (`onto`).
     `per_variable_unit_texts` runs parallel to `unique`: each part's unit request, as the
     parsed door's `ParsedPart.unit_text` is (`_part_unit_text`).
     `per_variable_measure_qualifiers` runs parallel to `unique` too: the words that narrow
@@ -911,14 +919,14 @@ class _ExtractionPrep:
     per_variable_exclusions: list[PartExclusions] | None = None
     name_corrections: tuple[NameCorrection, ...] = ()
 
-    def _unmet_exclusion_warnings(
+    def _unmet_exclusions(
         self, regions: Sequence[RegionResult], *, parts: Sequence[int]
-    ) -> list[Warning]:
-        """The `exclusion_warnings` whose phrase qualifies one of `parts`, the positions in
-        `unique` of `regions`, whose region does not leave it out. One that refuses shows
-        nothing that leaves it out, whatever it judged before refusing."""
+    ) -> list[tuple[Warning, LeftOut]]:
+        """Each of `exclusions` with its warning whose phrase qualifies one of `parts`, the
+        positions in `unique` of `regions`, whose region does not leave it out. One that
+        refuses shows nothing that leaves it out, whatever it judged before refusing."""
         return [
-            warning
+            (warning, exclusion)
             for warning, exclusion, targets in zip(
                 self.exclusion_warnings, self.exclusions, self.exclusion_targets, strict=True
             )
@@ -936,7 +944,7 @@ class _ExtractionPrep:
         region of some part it qualifies does not leave out."""
         return _surviving_qualifier_warnings(
             self.qualifier_warnings, self.dropped_qualifier_phrases, regions
-        ) + self._unmet_exclusion_warnings(regions, parts=range(len(regions)))
+        ) + [warning for warning, _ in self._unmet_exclusions(regions, parts=range(len(regions)))]
 
     def dropped_phrases_of(self, i: int) -> list[str]:
         """The dropped phrases the part of `unique[i]` reads: the request's, then its own."""
@@ -951,7 +959,9 @@ class _ExtractionPrep:
         query's words for each entity and those its resolution read
         (`RegionResult.entity_surfaces`), the names read in place of the query's words
         (`RegionResult.name_corrections`), and that its door asks for members in the
-        question's words (`RegionResult.members_in_words`).
+        question's words (`RegionResult.members_in_words`). A stretch the query asks to leave
+        out raises its departure only on a part it qualifies whose answer does not leave it
+        out, so the envelope's warning shows it on no other part.
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value or a party named by it
@@ -972,7 +982,10 @@ class _ExtractionPrep:
             and not (region.specs and all(_binds_value_named(phrase, s) for s in region.specs))
         ]
         warnings = [qualifier_dropped_warning(phrase) for phrase in unapplied]
-        facts = dict(self.qualifier_facts)
+        unmet = self._unmet_exclusions([region], parts=[i])
+        facts = self.qualifier_facts | {
+            warning_key(warning): _exclusion_fact(exclusion) for warning, exclusion in unmet
+        }
         for warning, phrase in zip(warnings, unapplied, strict=True):
             if (fact := _dropped_phrase_fact(phrase)) is not None:
                 facts[warning_key(warning)] = fact
@@ -988,7 +1001,7 @@ class _ExtractionPrep:
                 with_departure_facts(region, facts),
                 unapplied_qualifier_warnings=(
                     *request_unapplied,
-                    *self._unmet_exclusion_warnings([region], parts=[i]),
+                    *(warning for warning, _ in unmet),
                 ),
                 name_corrections=self.name_corrections,
                 members_in_words=True,
@@ -996,6 +1009,11 @@ class _ExtractionPrep:
             self.entity_words,
             surfaces=self.entity_surfaces,
         )
+
+
+def _exclusion_fact(stretch: LeftOut) -> DepartureFact:
+    """The `measure_not_applied` departure of a stretch a part's answer does not leave out."""
+    return exclusion_not_applied(asked=stretch.phrase[: settings().max_dropped_qualifier_length])
 
 
 def _binds_value_named(phrase: str, spec: Spec) -> bool:
@@ -1229,7 +1247,7 @@ def _prepare_extraction(
         for words in narrowing
     ]
     dropped = [phrase for phrase in dropped if not _held_by_one(phrase, narrowing)]
-    naming_sources = source_phrases(dropped, [m for ms in per_variable_sources for m in ms])
+    naming_sources = source_phrases(dropped, query=query, hits=scan.hits)
     unit_text, dropped_qualifier_phrases = _split_unit_phrases(
         [phrase for phrase in dropped if phrase not in naming_sources]
     )
@@ -1273,11 +1291,6 @@ def _prepare_extraction(
         warning_key(warning): fact
         for warning, phrase in zip(qualifier_warnings, dropped_qualifier_phrases, strict=True)
         if (fact := _dropped_phrase_fact(phrase)) is not None
-    } | {
-        warning_key(warning): exclusion_not_applied(
-            asked=stretch.phrase[: settings().max_dropped_qualifier_length]
-        )
-        for warning, stretch in zip(exclusion_warnings, exclusions, strict=True)
     }
     request_phrases = {_normalize(phrase) for phrase in dropped}
     per_variable_measure_qualifiers = [
@@ -1319,7 +1332,8 @@ def _prepare_extraction(
         unique=unique,
         entities=entities,
         entity_roles=entity_roles,
-        # One text holds one reading: a mention that asks for the members decides it.
+        # A text any mention asks the members of. A directed mention asks on its own end
+        # (`DoorRole.members`).
         member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
@@ -1624,6 +1638,18 @@ async def _handle_multi_variable(
             graph=graph,
             start_ms=start_ms,
             params=params,
+            # Built once every part's own source scope has exited, so the reads run
+            # through the request's own catalogue.
+            preview_reads=ComponentReads(
+                graph=graph,
+                sdmx=sdmx,
+                coverage=params.coverage,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                deadline=params.deadline,
+                catalogue=current_catalogue(),
+            ),
             scope=scope,
         )
     ) as events:

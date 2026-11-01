@@ -27,7 +27,9 @@ from search.engine.retrieval.facts import FiveTuple
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, ReadPlan
 from search.engine.unit.base_year import TABLE_PROVENANCES
 from search.engine.unit.conversion import (
+    CountedConversion,
     conversion_unavailable_warning,
+    counted_conversion,
     unit_conversion,
     with_unit_conversion,
 )
@@ -309,6 +311,69 @@ def _requested(spec: Spec, request: IdentityUnitRequest | None = None) -> Spec:
     )
     definition = spec.definition.model_copy(update={"identity": identity})
     return spec.model_copy(update={"definition": definition})
+
+
+_INR_CATALOGUE = ConversionCatalogue(
+    recipes=_CATALOGUE.recipes,
+    tables={
+        **_CATALOGUE.tables,
+        "ConversionRecipeIMF": RecipeTables(
+            rate_years={"INR": _years(1980, 2031), "USD": _years(1960, 2031)},
+            deflator_years={"country/IND": _years(1980, 2026)},
+            base_year_min=1980,
+            base_year_max=2025,
+        ),
+    },
+    national_currencies={"country/IND": "INR"},
+    default_base_year=2024,
+)
+"""IMF tables holding rupee and dollar rates, and India's deflator."""
+_INR_PLAN = _plan((1990, 2024), (("observationAbout", "country/IND"),), provenance=_WEO, unit="INR")
+
+
+def test_a_bare_iso_code_unit_offers_and_counts_its_conversions():
+    """India's nominal GDP is served in the base Data Commons unit `INR`, which the unit
+    registry reads as rupees: the answer offers its tables' currencies, a current-price
+    rupee request leaves its counts alone, and a dollar request counts the rows it keeps."""
+    spec = _spec(
+        facets={
+            "unit": ResolvedFacet(basis="fallback", ref="INR", currency="INR"),
+            "provenance": ResolvedFacet(basis="fallback", ref=_WEO),
+        }
+    )
+    served = spec.model_copy(
+        update={
+            "resolved": spec.resolved.model_copy(
+                update={
+                    "download": DownloadFacts(
+                        rows=35, rows_exact=True, series=1, window=_run(1990, 2024)
+                    )
+                }
+            )
+        }
+    )
+    offer = unit_conversion(
+        served,
+        members=_members(population_type="EconomicProduction"),
+        plans=(_INR_PLAN,),
+        catalogue=_INR_CATALOGUE,
+    )
+    assert offer is not None
+    assert [(c.code, c.current_years) for c in offer.currencies] == [
+        ("INR", _run(1990, 2024)),
+        ("USD", _run(1990, 2024)),
+    ]
+
+    def counted(currency: str):
+        request = IdentityUnitRequest(currency=currency, prices="current")
+        return counted_conversion(
+            _INR_PLAN,
+            {"unit": IdentityFacetValueRequest(request=request)},
+            catalogue=_INR_CATALOGUE,
+        )
+
+    assert counted("INR") is None
+    assert isinstance(counted("USD"), CountedConversion)
 
 
 def test_a_converted_answer_still_offers_conversion():

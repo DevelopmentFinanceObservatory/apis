@@ -99,6 +99,7 @@ def _fully_populated_output_options() -> manifest_models.OutputOptionsModel:
                 coverage=manifest_models.EnrichmentCoverageCountsModel(entities=54, covered=51),
                 missing=[manifest_models.MissingEntityModel(ref="dcid:africa", label="Africa")],
                 truncated=False,
+                in_long_layout=False,
             )
         ],
         long_layout_defaults=["recipient_label", "recipient_kind"],

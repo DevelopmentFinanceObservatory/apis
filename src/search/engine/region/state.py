@@ -23,7 +23,7 @@ from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.facets import FacetSelection
 from materialise.rate_tables import RateTableCache
-from origin_catalogue import UnUnserved
+from origin_catalogue import Catalogue, UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
@@ -165,6 +165,7 @@ if TYPE_CHECKING:
 
     # `requirements` imports this module.
     from search.engine.region.requirements import Judgement
+    from search.engine.region.scope_decision import ScopeDecision
 
 __all__ = ["EngineOptions", "ResolveState", "UnLeg", "raised_facts"]
 
@@ -865,6 +866,10 @@ class ResolveState:
     # the record of each axis they settle, from which the pass's definite answer states its
     # scope choices (`pipeline._with_scope_choices`).
     scope_selection: ScopeState = field(default_factory=ScopeState)
+    # The scope the definite answer states, decided before its preview launches
+    # (`phase_answer._decide_answer_scope`), which `pipeline._with_scope_choices` reuses for
+    # that answer. None until then.
+    scope_decision: ScopeDecision | None = None
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
     # The departure facts raised beside warnings, each under its warning's key
@@ -1024,6 +1029,11 @@ class ResolveState:
     # candidacy (`phase_rank_bind._dataset_candidates`) and every election read it, and the
     # read applies it through the bound catalogue (`pipeline.resolve_variable`).
     scope: SourceScope | None = None
+    # The request's catalogue before the part's reads narrow it to `scope`, which a composite
+    # answer's component reads bind so each reads under its own pin alone
+    # (`composite_answer.ComponentReads.catalogue`). `resolve_variable` captures it. A state
+    # built elsewhere holds None, and its reads use the catalogue bound when they run.
+    request_catalogue: Catalogue | None = None
     # The StatVars the part's series code names (`search.engine.source_code`), which recall
     # reads in place of the embedding resolve (`interpret.recall`), or `None` when the part
     # names no code.
@@ -1206,6 +1216,10 @@ class ResolveState:
     # (`UnsettledPlace.unread`); once the elected result stands it is the context the
     # answer is read over (`PlaceContext.settled`).
     place: PlaceContext = field(default_factory=empty_place_context)
+    # Whether a shape's places are installed in `place` (`_install_shape`). A part refused
+    # before then binds none of its places, whether or not a shape is elected
+    # (`place_roles.bound_entity_refs`).
+    places_bound: bool = False
     # The elected shape's places before its place sets settle. Materialisation settles
     # them on the shape's own read (`place_context.settle_sets`).
     unsettled_place: UnsettledPlace | None = None

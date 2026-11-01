@@ -15,7 +15,7 @@ import asyncio
 import dataclasses
 import functools
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import cast
 
 from materialise import GraphReader
@@ -69,10 +69,11 @@ from search.engine.region.materialise_step import (
     family_total_absent_departure,
     lone_breakdown_absent,
 )
-from search.engine.region.observations.bulk_scope import BulkScope, bulk_scope_for
+from search.engine.region.observations.bulk_scope import bulk_scope_for
 from search.engine.region.observations.dispatch import (
+    PreviewRead,
+    PreviewReader,
     _attach_observations,
-    _resolve_spec_observations,
 )
 from search.engine.region.observations.entities import (
     _flat_obs_entities,
@@ -81,7 +82,6 @@ from search.engine.region.observations.entities import (
     open_role_axis,
     scope_axis_dcids,
 )
-from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.option_coverage import (
     CountedSlotOptions,
     RoleServedFilter,
@@ -115,6 +115,13 @@ from search.engine.region.scope import (
     scope_axis,
     stated_scope_members,
 )
+from search.engine.region.scope_decision import (
+    ScopeDecision,
+    answer_scope_facts,
+    decide_scope,
+    decide_spec_scope,
+    guarded_scope_decision,
+)
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
@@ -131,7 +138,9 @@ from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import ReadPlan, plan_probes
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft, UnsupportedDraft
 from search.engine.spec_build import (
+    AnswerIdentity,
     RoleAxisFactInput,
+    answer_identity,
     bind_when_slot,
     build_shape_model,
     build_spec,
@@ -596,9 +605,9 @@ class _DefiniteSetup:
     obs_entities: dict[str, list[str]]
     probe_role_entities: dict[str, list[str]]
     flat_probe_entities: list[str]
-    bulk_scope: BulkScope | None
     role_axis_facts: list[RoleAxisFactInput]
-    obs_fetch_facet_filter: Mapping[str, FacetAxisFilter] | None
+    # What the answer's preview reads, buffered or streamed (`dispatch.PreviewRead`).
+    preview: PreviewRead
     entity_task: asyncio.Task[tuple[list[EntityOptions], list[EntityOptions], Warning | None]]
     slot_options_raw: list[SlotOptions]
     facet_probe: FacetProbe
@@ -681,8 +690,17 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
 
     # Request-form elections filter observations through the elected selections. A flat
     # literal-unit predicate would reject converted series, whose facets report native units.
-    obs_fetch_facet_filter = (
-        None if state.unit_request is not None else _answer_unit_filter(state, mat_result)
+    preview = PreviewRead(
+        sv_dcids=tuple(mat_result.sv_dcids),
+        obs_entities=obs_entities,
+        plan=state.elected_plan,
+        facet_filter=(
+            None if state.unit_request is not None else _answer_unit_filter(state, mat_result)
+        ),
+        bulk_places=bulk_scope.places if bulk_scope is not None else None,
+        member_facts=mat_result.member_facts,
+        unit_request=state.unit_request,
+        elected=state.unit_elected_selections,
     )
 
     facet_bindings = _answer_facet_bindings(state, mat_result)
@@ -692,9 +710,8 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
         obs_entities=obs_entities,
         probe_role_entities=probe_role_entities,
         flat_probe_entities=_flat_obs_entities(probe_role_entities),
-        bulk_scope=bulk_scope,
         role_axis_facts=role_axis_facts,
-        obs_fetch_facet_filter=obs_fetch_facet_filter,
+        preview=preview,
         entity_task=entity_task,
         slot_options_raw=state.slot_options,
         facet_probe=_answer_facet_probe(state, mat_result, probe_role_entities),
@@ -715,28 +732,90 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
     )
 
 
-async def _fetch_definite_observations(
-    mat_result: Materialised, setup: _DefiniteSetup, state: ResolveState
-) -> tuple[SpecObservations, Warning | None]:
-    """Fetch observations with the shared arguments used by buffered and SSE paths."""
-    return await asyncio.to_thread(
-        _build_observations,
-        state.elected_plan,
-        list(mat_result.sv_dcids),
-        setup.obs_entities,
+def _preview_reader(state: ResolveState, read: PreviewRead) -> PreviewReader:
+    """`read` bound to the request's clients."""
+    return PreviewReader(
+        read=read,
         graph=state.graph,
+        sdmx=state.sdmx,
         materialise_graph=state.materialise_graph,
         materialise_sdmx=state.materialise_sdmx,
-        facet_filter=setup.obs_fetch_facet_filter,
-        scope=setup.bulk_scope,
-        sdmx=state.sdmx,
-        deadline=state.deadline,
-        member_facts=mat_result.member_facts,
         rate_cache=state.rate_cache,
-        unit_request=state.unit_request,
-        elected=state.unit_elected_selections,
+        deadline=state.deadline,
         coverage=state.coverage,
     )
+
+
+async def _fetch_definite_observations(
+    setup: _DefiniteSetup, state: ResolveState
+) -> tuple[SpecObservations, Warning | None]:
+    """Read the answer's preview in a worker thread, for the buffered and SSE paths alike."""
+    return await asyncio.to_thread(_preview_reader(state, setup.preview).observations)
+
+
+@dataclasses.dataclass(frozen=True)
+class _AnswerScope:
+    """The identity `build_spec` mints for the answer (`answer`) and the scope decided over
+    it (`decision`)."""
+
+    answer: AnswerIdentity
+    decision: ScopeDecision
+
+
+def _decide_answer_scope(
+    state: ResolveState, mat_result: Materialised, slots: list[Slot], setup: _DefiniteSetup
+) -> _AnswerScope:
+    """The scope the answer `_build_definite_spec` builds from `slots` states
+    (`scope_decision.decide_scope`), decided over the identity `build_spec` mints from the
+    same arguments (`spec_build.answer_identity`) before the options are counted, so a
+    composite answer launches no preview of the one table it resolved. `build_spec` takes
+    that identity as given, since every argument it reads (`state`, `slots`,
+    `mat_result.open_axes` and `setup.facet_bindings`) holds unchanged from here to there.
+    A decision that raises leaves the answer as a single table that states no scope
+    (`scope_decision.guarded_scope_decision`)."""
+    answer = answer_identity(
+        state.shape_model,
+        slots,
+        state.stat_vars,
+        state.entity_objects,
+        identity_entities=state.identity_entities,
+        open_roles=mat_result.open_axes,
+        requested_window=requested_window_from_date_request(state.date_request),
+        facet_bindings=setup.facet_bindings,
+        facets=state.answer_facets,
+        resolved_sources=state.source_refs,
+        plan=state.elected_plan,
+        pin_served_provenance=state.pin_served_provenance,
+        named_groups=request_named_groups(state, state.place.roles),
+    )
+
+    def decide() -> ScopeDecision:
+        facts = answer_scope_facts(
+            entity_groups=answer.entity_groups,
+            facets=answer.facets or {},
+            sources=answer.resolved_sources,
+            operations=state.operations,
+            coverage=state.coverage,
+        )
+        return decide_scope(
+            answer.spec_id, answer.identity, selection=state.scope_selection, facts=facts
+        )
+
+    decision = guarded_scope_decision(
+        answer.spec_id, decide, operations=state.operations, coverage=state.coverage
+    )
+    return _AnswerScope(answer=answer, decision=decision)
+
+
+async def _preview_unless_composite(
+    scope: asyncio.Task[_AnswerScope], setup: _DefiniteSetup, state: ResolveState
+) -> tuple[SpecObservations, Warning | None] | None:
+    """The answer's preview (`_fetch_definite_observations`), read once its scope is
+    decided. It is None for an answer restated as a composite, whose preview reads each
+    component (`pipeline._with_composite_preview`)."""
+    if (await scope).decision.composite:
+        return None
+    return await _fetch_definite_observations(setup, state)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -745,6 +824,8 @@ class _DefiniteCoverage:
 
     # The answer's counted menus and what they were counted from (`counted_slot_options`).
     counted: CountedSlotOptions
+    # The identity the answer's scope was decided over, which `build_spec` mints the Spec from.
+    answer: AnswerIdentity
     slot_options: list[SlotOptions]
     facet_options: list[FacetOptions]
     entity_options_raw: list[EntityOptions]
@@ -787,13 +868,18 @@ async def _gather_definite_coverage(
     mat_result: Materialised,
     setup: _DefiniteSetup,
     count_task: asyncio.Task[CountedSlotOptions],
+    decision_task: asyncio.Task[_AnswerScope],
 ) -> RegionResult | _DefiniteCoverage:
     """Check bound-unit availability, run eligible coverage probes, and await their tasks.
 
     `count_task` counts the answer's menus (`counted_slot_options`) beside the entity,
     facet and observation reads; the slot probe starts from its counted menus once it
-    ends. Unit refusals return a terminal result before slot/facet probes launch. Record
-    option probe timing and return the coverage bundle otherwise.
+    ends. `decision_task` decides the answer's scope (`_decide_answer_scope`), which the
+    preview read waits on. An answer restated as a composite reads no preview here,
+    buffered or streamed, and the decision is kept for `pipeline._with_scope_choices`
+    (`ResolveState.scope_decision`). Unit refusals return a terminal result before
+    slot/facet probes launch. Record option probe timing and return the coverage bundle
+    otherwise.
     """
     # Skip option probes when a known carve-out guarantees no definite result.
     skip_coverage_probe = _gate_carve_out(state, mat_result) or not state.stat_vars
@@ -805,9 +891,10 @@ async def _gather_definite_coverage(
     if state.bound_unit_outcome is not None and not skip_coverage_probe:
         refusal = _bound_unit_refusal(state, mat_result, setup)
         if refusal is not None:
-            setup.entity_task.cancel()
-            count_task.cancel()
-            await asyncio.gather(setup.entity_task, count_task, return_exceptions=True)
+            tasks = (setup.entity_task, count_task, decision_task)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             return refusal
 
     # Launch slot/facet probes with the buffered observations fetch to overlap network waits.
@@ -827,17 +914,20 @@ async def _gather_definite_coverage(
                 deadline=state.deadline,
             )
         )
-    obs_fetch_task: asyncio.Task[tuple[SpecObservations, Warning | None]] | None = None
+    obs_fetch_task: asyncio.Task[tuple[SpecObservations, Warning | None] | None] | None = None
     if state.include_observations and not state.stream_observations:
-        obs_fetch_task = asyncio.create_task(_fetch_definite_observations(mat_result, setup, state))
-    # Streaming defers points, but status and ``resolved.facets`` belong on the immediate
-    # response. Fetch eagerly for every streamed preview. A later task sends points.
-    eager_obs_availability: tuple[SpecObservations, Warning | None] | None = None
-    if state.stream_observations:
-        eager_obs_availability = await _fetch_definite_observations(mat_result, setup, state)
+        obs_fetch_task = asyncio.create_task(_preview_unless_composite(decision_task, setup, state))
     facet_options: list[FacetOptions] = []
     obs_result: tuple[SpecObservations, Warning | None] | None = None
+    eager_obs_availability: tuple[SpecObservations, Warning | None] | None = None
     try:
+        # Streaming defers points, but status and ``resolved.facets`` belong on the
+        # immediate response. Fetch eagerly for every streamed preview but a composite's.
+        # A later task sends points.
+        if state.stream_observations:
+            eager_obs_availability = await _preview_unless_composite(decision_task, setup, state)
+        answer_scope = await decision_task
+        state.scope_decision = answer_scope.decision
         counted = await count_task
         # Keep the counted options unless a coverage probe ran.
         slot_options = counted.options
@@ -857,7 +947,14 @@ async def _gather_definite_coverage(
         # Cancel and await pending worker tasks so cancellation cannot detach them.
         pending = [
             t
-            for t in (setup.entity_task, count_task, obs_fetch_task, slot_task, facet_task)
+            for t in (
+                setup.entity_task,
+                count_task,
+                decision_task,
+                obs_fetch_task,
+                slot_task,
+                facet_task,
+            )
             if t is not None and not t.done()
         ]
         if pending:
@@ -869,6 +966,7 @@ async def _gather_definite_coverage(
 
     return _DefiniteCoverage(
         counted=counted,
+        answer=answer_scope.answer,
         slot_options=slot_options,
         facet_options=facet_options,
         entity_options_raw=entity_options_raw,
@@ -955,8 +1053,7 @@ def _build_definite_spec(
         scope_labels, scope_types = fetch_scope_members(scope_member_dcids, graph=state.graph)
         scope = build_scope(scope_axis(mat_result), scope_member_dcids, scope_labels, scope_types)
 
-    # Assemble the Spec
-    slots = apply_slot_expansions(slots, slot_expansions(state.bindings))
+    # Assemble the Spec from the expanded slots (`_assemble_definite_answer`).
     # Grounding reads the family before assembly starts.
     measure_partition, measure_siblings = cast(MeasureFamily, state.measure_family)
     served_member_facts = mat_result.member_facts or {}
@@ -1024,6 +1121,7 @@ def _build_definite_spec(
         role_axis_facts=setup.role_axis_facts,
         named_groups=request_named_groups(state, state.place.roles),
         measure_served_rows=measure_served_counter(setup.served_filter),
+        answer=coverage.answer,
     )
     check_breakdown_settled(state.shape_draft, state.walked, spec)
     spec = with_unit_conversion(
@@ -1106,6 +1204,29 @@ async def _assemble_carve_outs(
     return None
 
 
+async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
+    """The scope `spec` states, as decided before its preview launched
+    (`ResolveState.scope_decision`). A decision made for another `spec_id` is decided again
+    from `spec` (`scope_decision.decide_spec_scope`) and kept for
+    `pipeline._with_scope_choices`."""
+    decision = cast(ScopeDecision, state.scope_decision)
+    if decision.spec_id == spec.spec_id:
+        return decision
+    logger.warning(
+        "scope decided for %s before the preview launched, but the answer is %s",
+        decision.spec_id,
+        spec.spec_id,
+    )
+    state.scope_decision = await asyncio.to_thread(
+        decide_spec_scope,
+        spec,
+        selection=state.scope_selection,
+        operations=state.operations,
+        coverage=state.coverage,
+    )
+    return state.scope_decision
+
+
 async def _finalize_definite_result(
     state: ResolveState,
     mat_result: Materialised,
@@ -1114,8 +1235,17 @@ async def _finalize_definite_result(
     definite_spec: _DefiniteSpec,
 ) -> RegionResult:
     """Attach eager SSE data and related measures, launch relaunch tasks, and return the
-    definite result."""
+    definite result. The preview follows the scope decided for the finished answer
+    (`_finished_scope`)."""
     spec = await with_related(definite_spec.spec, state.related_read)
+    decision = await _finished_scope(state, spec)
+    if not decision.composite and state.include_observations and not state.stream_observations:
+        # A bound-unit check fetches observations whether or not a preview is asked for.
+        # Without one the answer states nothing from that fetch, as its resubmit, which
+        # fetches only for a preview, states nothing. A preview the early decision skipped
+        # as a composite's is read here.
+        observations = coverage.obs_result or await _fetch_definite_observations(setup, state)
+        spec = _attach_observations(spec, observations, state.warnings)
     # Include facet data on the immediate SSE response, including for unbound axes.
     if state.stream_observations and coverage.eager_obs_availability is not None:
         spec = _attach_observations(
@@ -1164,33 +1294,13 @@ async def _finalize_definite_result(
     # Create the deferred SSE task only after the Spec has an ID for correlation.
     observations_task: asyncio.Task[_ObsProbeResult] | None = None
     observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
-    if state.stream_observations:
-        spec, observations_task, observations_relaunch = await _resolve_spec_observations(
-            spec,
-            list(mat_result.sv_dcids),
-            setup.obs_entities,
-            graph=state.graph,
-            materialise_graph=state.materialise_graph,
-            materialise_sdmx=state.materialise_sdmx,
-            include_observations=state.include_observations,
-            stream_observations=state.stream_observations,
-            warnings=state.warnings,
-            facet_filter=setup.obs_fetch_facet_filter,
-            scope=setup.bulk_scope,
-            sdmx=state.sdmx,
-            deadline=state.deadline,
-            member_facts=mat_result.member_facts,
-            rate_cache=state.rate_cache,
-            unit_request=state.unit_request,
-            elected=state.unit_elected_selections,
-            coverage=state.coverage,
-            plan=state.elected_plan,
+    # A composite's preview reads each component once the answer is restated
+    # (`pipeline._with_composite_preview`).
+    if not decision.composite and state.stream_observations:
+        observations_relaunch = _preview_reader(state, setup.preview).relaunch(
+            member_labels((spec,))
         )
-    elif coverage.obs_result is not None and state.include_observations:
-        # A bound-unit check fetches observations whether or not a preview is asked for.
-        # Without one the answer states nothing from that fetch, as its resubmit, which
-        # fetches only for a preview, states nothing.
-        spec = _attach_observations(spec, coverage.obs_result, state.warnings)
+        observations_task = observations_relaunch(spec.spec_id)
 
     return RegionResult(
         variable_text=state.variable,
@@ -1212,6 +1322,7 @@ async def _finalize_definite_result(
         place_options_relaunch=relaunch_place_options if stream_place_options else None,
         observations_task=observations_task,
         observations_relaunch=observations_relaunch,
+        preview_read=setup.preview,
         measure_partition=definite_spec.measure_partition,
         measure_siblings=definite_spec.measure_siblings,
         open_axis_facts=definite_spec.open_axis_facts,
@@ -1219,6 +1330,8 @@ async def _finalize_definite_result(
         served_filter=setup.served_filter,
         served_members=tuple((mat_result.member_facts or {})[dcid] for dcid in mat_result.sv_dcids),
         served_plans=(state.elected_plan,) if state.elected_plan is not None else (),
+        coverage_form=mat_result.coverage_form,
+        units_elected=state.unit_request is not None,
         role_axis_facts=tuple(setup.role_axis_facts),
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),
@@ -1230,7 +1343,10 @@ async def _assemble_definite_answer(state: ResolveState) -> RegionResult:
     mat_result = cast(Materialised, state.mat_result)
 
     # Bind the when-slot to the extracted window before assembling the Spec
-    slots = bind_when_slot(state.slots, window=state.elected_coverage.window)
+    slots = apply_slot_expansions(
+        bind_when_slot(state.slots, window=state.elected_coverage.window),
+        slot_expansions(state.bindings),
+    )
 
     setup = _start_assemble_definite(state, mat_result)
     # Every menu the answer, its coverage probe and its trailing events offer is counted
@@ -1253,7 +1369,12 @@ async def _assemble_definite_answer(state: ResolveState) -> RegionResult:
         )
     )
 
-    gathered = await _gather_definite_coverage(state, mat_result, setup, count_task)
+    # The scope is decided from the answer's identity beside the coverage reads, so the
+    # preview read can wait on it (`_gather_definite_coverage`).
+    decision_task = asyncio.create_task(
+        asyncio.to_thread(_decide_answer_scope, state, mat_result, slots, setup)
+    )
+    gathered = await _gather_definite_coverage(state, mat_result, setup, count_task, decision_task)
     if isinstance(gathered, RegionResult):
         return gathered
     coverage = gathered

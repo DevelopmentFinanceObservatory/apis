@@ -32,8 +32,10 @@ the read needs no short-of-latest guard.
 
 Reads run on the surface's read executor with `submit_with_context`, so the request's origin
 catalogue stays bound. The frame load and decode hold a permit of the surface's materialise
-semaphore, since the frame loads whole. A canonical frame is read without its `status` column,
-which the preview never reads.
+semaphore, since the frame loads whole. A version recording more rows than
+`groupby_fold_max_rows`, and a frame1 document past its decode bound, refuse `over_ceiling` before
+the permit is taken. A canonical frame is read without its `status` column, which the preview
+never reads.
 """
 
 from __future__ import annotations
@@ -302,6 +304,23 @@ def _series_reads(
     return reads
 
 
+def _refuse_past_row_bound(rows: int, *, cap: int) -> None:
+    """Raises `OverCeilingError` (`rows`) when the version records more than `cap` rows, the
+    `groupby_fold_max_rows` the frame1 decode bound derives from. A preview decodes every row of
+    the stored frame to Python objects, 250 to 370 bytes a row measured over canonical frames of
+    300,000 and 1,000,000 rows, within the 1,083 a fold at that ceiling holds, so this bounds a
+    canonical frame's read as `refuse_frame1_past_decode_bound` bounds a frame1 document's."""
+    if rows > cap:
+        raise OverCeilingError(
+            f"the stored frame holds {rows} rows, past the ceiling of {cap} rows a preview "
+            "decodes. Narrow the identity (another slot binding, a shorter window) to bring the "
+            "frame under the ceiling.",
+            ceiling_kind="rows",
+            count=rows,
+            cap=cap,
+        )
+
+
 def _load_series_reads(
     frame: StoredArtifactLocation,
     *,
@@ -312,9 +331,10 @@ def _load_series_reads(
     content_version: str,
 ) -> dict[SeriesKey, SeriesRead]:
     """Read the stored frame at `frame`, decode it and group its rows (`_series_reads`). The
-    caller refused a frame1 document past the decode bound before it took the materialise
-    permit it holds, and binds neither the bytes nor the decoded rows, so both are freed when
-    this returns, before the permit is released."""
+    caller refused a frame1 document past the decode bound and a version past the row bound
+    (`_refuse_past_row_bound`) before it took the materialise permit it holds, and binds neither
+    the bytes nor the decoded rows, so both are freed when this returns, before the permit is
+    released."""
     with phase("frame_load"):
         data = deps.artifact_store.get(artifact_digest=frame.artifact_digest, tier=Tier(frame.tier))
     with phase("frame_decode"):
@@ -421,9 +441,11 @@ def read_snapshot_observations(*, id: str, content_version: str, deps: Deps) -> 
                 id=id, content_version=content_version, reason="holds no servable stored frame"
             )
         conversions = stored_series_conversions(facts)
-        # The recorded size decides it, so it refuses before the permit, which a refusal
-        # bound to come would otherwise wait on.
-        refuse_frame1_past_decode_bound(frame, fold_max_rows=deps.settings.groupby_fold_max_rows)
+        # The recorded size and rows decide these, so they refuse before the permit, which a
+        # refusal bound to come would otherwise wait on.
+        fold_max_rows = deps.settings.groupby_fold_max_rows
+        refuse_frame1_past_decode_bound(frame, fold_max_rows=fold_max_rows)
+        _refuse_past_row_bound(manifest.coverage.rows, cap=fold_max_rows)
         try:
             with bounded_materialise_slot(
                 deps.materialise_semaphore, wait_seconds=deps.settings.materialise_wait_seconds
@@ -562,19 +584,26 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             ObservationsBackpressure,
             ObservationsGraphUnavailable,
             StoredFrameCorrupt,
-            # A stored frame1 document past the decode bound refuses before it is read.
+            # A frame1 document past the decode bound, or a version past the row bound,
+            # refuses before its frame is read.
             OverCeilingError,
         ),
-        exception_exemplars=(
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            ObservationsUnavailable(
-                id="spec_exemplar", content_version="cv_exemplar", reason="holds no frame1"
-            ),
-            ObservationsBackpressure(),
-            ObservationsGraphUnavailable(),
-            StoredFrameCorrupt(
-                id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
-            ),
-            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
-        ),
+        endpoint_exemplars={
+            "datasets.observations": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                ObservationsUnavailable(
+                    id="spec_exemplar", content_version="cv_exemplar", reason="holds no frame1"
+                ),
+                ObservationsBackpressure(),
+                ObservationsGraphUnavailable(),
+                StoredFrameCorrupt(
+                    id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
+                ),
+                OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
+            )
+        },
     )

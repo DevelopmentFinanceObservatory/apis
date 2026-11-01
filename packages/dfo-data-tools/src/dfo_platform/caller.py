@@ -29,7 +29,7 @@ callers it forwards (its `src/lib/proxy/caller.ts`), so a client has one key on 
 and no raw address is stored. A request whose `x-dfo-caller-principal` matches
 `DFO_CALLER_PRINCIPAL` comes from the website, which names its client in `x-dfo-caller`. A
 request that carries `x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL`
-is unset, refuses 503 `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
+is unset, refuses `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
 address would put every client of the website on the website's own allowance. A request with no
 `x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
 from the right, the entry the proxies in front of this service appended. `request.client` goes
@@ -222,10 +222,11 @@ class CallerHeaderInvalid(Refusal):
 class CallerUnresolved(Refusal):
     """This service cannot name a caller, because a presented `x-dfo-caller-principal` does not
     match `DFO_CALLER_PRINCIPAL`, `DFO_CALLER_HMAC_KEY` is unset, or the X-Forwarded-For entry
-    `DFO_TRUSTED_PROXY_HOPS` names is missing or not an address. Each is a deployment fault, so
-    it answers a 503 a retry does not clear, and is logged."""
+    `DFO_TRUSTED_PROXY_HOPS` names is missing or not an address. Each is a deployment fault a
+    retry does not clear, so it answers non-retryable `internal_error` (500) on every door, and
+    is logged. `service_unavailable` would tell the client a retry is expected to succeed."""
 
-    code = "service_unavailable"
+    code = "internal_error"
 
     def __init__(self, reason: str) -> None:
         super().__init__(f"this service cannot name the caller a write counts against: {reason}")

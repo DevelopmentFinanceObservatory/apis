@@ -16,8 +16,8 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_grounding as candidate_grounding_module
 from search.engine.region import candidates as candidates_module
 from search.engine.region import materialise_step as materialise_step_module
-from search.engine.region import phase_answer as phase_answer_module
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.retrieve import Materialised
@@ -304,7 +304,7 @@ def test_bound_unit_can_confirm_only_the_second_provider(monkeypatch):
             None,
         )
 
-    monkeypatch.setattr(phase_answer_module, "_build_observations", _unit_match)
+    monkeypatch.setattr(preview_dispatch, "_build_observations", _unit_match)
     # Conversion uses a separate materialise client.
     # This test checks the entity list in the fetch.
     materialise_body = _csv_header(["creditor", "debtor"]) + _csv_row(

@@ -14,6 +14,8 @@ from search.models import IdentityCurrencyRole, IdentityUnitRequest
 from tests.fixtures import FakeGraph
 
 _UNITS = {"CurrencyUSD": "USD", "CurrencyEUR": "EUR", "CurrencyGBP": "GBP"}
+# A unit the registry leaves untyped, so only the graph's currency units can name its code.
+_GRAPH_ONLY_UNIT = "dc/u/GraphOnlyCurrency"
 
 
 def _graph(units: dict | None = None, *, raise_on_call: bool = False) -> FakeGraph:
@@ -46,7 +48,7 @@ def test_satisfies_rejects_a_mismatched_currency():
 
 @pytest.mark.parametrize(
     "dcid",
-    ["dc/unknown/unit", "", "USD", "CurrencyUSD_2023", "NotInTheGraph"],
+    ["dc/unknown/unit", "", "CurrencyUSD_2023", "NotInTheGraph"],
 )
 def test_satisfies_is_total_over_dcids_the_graph_does_not_map(dcid):
     """An unmapped dcid satisfies no current-price request for any mapped currency."""
@@ -62,8 +64,26 @@ def test_satisfies_never_honours_a_constant_price_request():
 
 def test_satisfies_fails_closed_on_a_failed_currency_units_read():
     assert not satisfies(
-        _graph(raise_on_call=True), _request("USD", "current"), "CurrencyUSD", deadline=None
+        _graph(raise_on_call=True), _request("USD", "current"), _GRAPH_ONLY_UNIT, deadline=None
     )
+
+
+@pytest.mark.parametrize(
+    ("dcid", "request_", "expected"),
+    [
+        pytest.param("SDG_CU_USD", ("USD", "current"), True, id="current"),
+        pytest.param("undata/UNIT_MEASURE-CR_USD_K", ("USD", "current"), False, id="constant"),
+        pytest.param(
+            "ConstantPriceUSDollar2015", ("USD", "constant", 2015), True, id="constant-of-a-year"
+        ),
+        pytest.param("ChainedUSDollarBaseYr2017", ("USD", "constant", 2017), False, id="chained"),
+    ],
+)
+def test_a_registry_priced_unit_satisfies_its_own_prices(dcid, request_, expected):
+    """A unit the registry prices states its prices and base year with no graph read, and a
+    chain-linked one equals no fixed-base request."""
+    graph = _graph(raise_on_call=True)
+    assert satisfies(graph, _request(*request_), dcid, deadline=None) is expected
 
 
 @pytest.mark.parametrize("prices", ["current", "constant"])
@@ -134,7 +154,11 @@ def test_satisfies_native_facets_the_graph_types_without_an_iso_code_through_the
     [
         pytest.param("CurrencyKES", {}, "KES", False, id="currency-unit-convention"),
         pytest.param("USDollar", {}, "USD", False, id="currency-unit-of-measure"),
-        pytest.param("INR", {"INR": "INR"}, "INR", True, id="base-dc-currency-member"),
+        pytest.param("INR", {}, "INR", False, id="base-dc-currency-member"),
+        pytest.param("BGN", {}, "BGN", False, id="withdrawn-bare-code"),
+        pytest.param(
+            _GRAPH_ONLY_UNIT, {_GRAPH_ONLY_UNIT: "INR"}, "INR", True, id="graph-only-unit"
+        ),
         pytest.param("Tonne", {"INR": "INR"}, None, True, id="no-currency"),
         pytest.param("Percent", {"INR": "INR"}, None, False, id="percent"),
         pytest.param("PPPInternationalDollar", {}, None, False, id="purchasing-power"),
@@ -159,8 +183,8 @@ def test_unit_currency_reads_the_graph_only_past_the_currency_conventions(
 
 def test_unit_currency_names_no_currency_and_logs_the_unit_when_the_graph_read_fails(caplog):
     with caplog.at_level(logging.WARNING, logger="search.engine.unit.refs"):
-        assert unit_currency(_graph(raise_on_call=True), "INR", deadline=None) is None
-    assert [record.args[0] for record in caplog.records] == ["INR"]
+        assert unit_currency(_graph(raise_on_call=True), _GRAPH_ONLY_UNIT, deadline=None) is None
+    assert [record.args[0] for record in caplog.records] == [_GRAPH_ONLY_UNIT]
 
 
 def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):
@@ -173,6 +197,6 @@ def test_an_expired_deadline_raises_rather_than_naming_no_currency(monkeypatch):
 
     monkeypatch.setattr(graph, "currency_units", expired)
     with pytest.raises(GraphDeadlineFailure):
-        unit_currency(graph, "INR", deadline=0.0)
+        unit_currency(graph, _GRAPH_ONLY_UNIT, deadline=0.0)
     with pytest.raises(GraphDeadlineFailure):
-        satisfies(graph, _request("USD", "current"), "CurrencyUSD", deadline=0.0)
+        satisfies(graph, _request("USD", "current"), _GRAPH_ONLY_UNIT, deadline=0.0)

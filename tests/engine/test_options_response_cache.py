@@ -21,7 +21,7 @@ from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError
 from origin_catalogue import note_un_blocked_places, record_un_read_failure
 from search.engine import config
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads, note_degraded_read
 from search.engine.options import surface
 from search.engine.options.options_response_cache import (
     ComputedOptions,
@@ -440,6 +440,28 @@ class TestDegradedResultsAreNeverCached:
 
         asyncio.run(scenario())
         assert len(calls) == computes
+
+    @pytest.mark.parametrize(("cut", "computes"), [(False, 1), (True, 2)], ids=["read", "cut"])
+    def test_a_compute_whose_read_its_budget_cut_is_not_cached(self, cut: bool, computes: int):
+        """A read the compute's own fail-open budget cut leaves the result as it is, with no
+        warning, and keeps it out of the cache, so the repeat computes again."""
+        calls: list[float] = []
+
+        def compute(deadline: float) -> ComputedOptions:
+            calls.append(deadline)
+            if cut:
+                with fail_open_reads("option coverage", budget_s=0.0):
+                    raise TimeoutError("the coverage read ran past its budget")
+            return ComputedOptions(options=_EMPTY_OPTIONS, warnings=())
+
+        async def scenario() -> list[ComputedOptions]:
+            cache = OptionsResponseCache(enabled=True, max_entries=10)
+            deadline = time.monotonic() + 5
+            return [await cache.get_or_compute("k", compute, deadline=deadline) for _ in range(2)]
+
+        results = asyncio.run(scenario())
+        assert len(calls) == computes
+        assert [result.warnings for result in results] == [(), ()]
 
 
 def _refused_by_the_un_front_door() -> None:

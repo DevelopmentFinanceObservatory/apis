@@ -2722,7 +2722,9 @@ def test_a_named_whole_population_asks_for_its_side():
     """ "France to all recipients" names the recipient side as a whole population, so a
     shape must declare that side, as it must for a named recipient: a donor-only table
     cannot answer it."""
-    france = PlaceSet(name="France", kind="place", node=PlaceNode(dcid=_FRA, graph_type="Country"))
+    france = PlaceSet(
+        name="France", kind="place", node=PlaceNode(dcid=_FRA, graph_types=("Country",))
+    )
     state = SimpleNamespace(
         entities=["France", "all recipients"],
         place_sets={"France": france},

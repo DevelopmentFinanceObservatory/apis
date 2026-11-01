@@ -47,7 +47,7 @@ from search.engine.region.result import (
     with_runnable_operations,
 )
 from search.engine.region.state import EngineOptions
-from search.engine.role_text import DoorRole, role_text_for_axis
+from search.engine.role_text import DoorRole, asks_members, role_text_for_axis
 from search.engine.source_code import (
     PartCode,
     SeriesCodeMembers,
@@ -215,7 +215,8 @@ def _leg_parsed_form(
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
-    without an axis appears bare. An entity of `member_entities` states `members`.
+    without an axis appears bare. An entity of `member_entities` states `members` on each
+    end it asks for them on (`role_text.asks_members`).
     `sources` are the mentions it echoes (`restated_sources`), so a reposted part answers
     from the same sources, and `source_code` is the series code it names. The leg's own
     open roles appear as their axes in `open_roles`, and the axes its operations open ride
@@ -230,7 +231,7 @@ def _leg_parsed_form(
                 ParsedEntity(
                     text=e,
                     role_text=role_text_for_axis(axis) if axis is not None else None,
-                    members=e in member_entities,
+                    members=asks_members(roles.get(e) or (), axis, asked=e in member_entities),
                 )
                 for e in entities
                 for axis in (dict.fromkeys(role.axis for role in roles.get(e) or ()) or [None])
@@ -266,19 +267,12 @@ def _leg_restatement(
     """Build the parsed-door echo, or `None` when no echo is safe.
 
     The echo is the leg's parsed form (`_leg_parsed_form`) when every direction is
-    named. If one name occurs on both axes, or direction is known but no entity has
-    an axis, return `None`; an entity-free directional leg can still echo. If
-    `ParsedPart` bounds reject any input, return `None`.
+    named. If direction is known but no entity has an axis, return `None`; an
+    entity-free directional leg can still echo. If `ParsedPart` bounds reject any input,
+    return `None`.
     """
     roles = entity_roles or {}
-    axes: set[RoleAxis] = set()
-    for name in entities:
-        occurrences = roles.get(name) or ()
-        if len({role.axis for role in occurrences}) > 1:
-            return None
-        if occurrences:
-            axes.add(occurrences[0].axis)
-    if entities and directional and not axes:
+    if entities and directional and not any(roles.get(name) for name in entities):
         return None
     return _leg_parsed_form(
         variable_text,

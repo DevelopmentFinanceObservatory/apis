@@ -1143,7 +1143,8 @@ class TestPinnedDcidC2:
     def test_confirm_part_pins_names_each_pin_by_its_graph_label_or_dcid(self):
         """confirm_part_pins files each pin under the caller's text as a
         PinnedResolved named by the graph's label, and falls back to the dcid
-        for a typed node the graph gives no label."""
+        for a typed node the graph gives no label. Each pin carries every graph
+        type in the graph's order and the kind they give together."""
 
         graph = FakeGraph()
         part = ParsedPart(
@@ -1157,7 +1158,7 @@ class TestPinnedDcidC2:
             patch.object(
                 graph,
                 "node_types_batch",
-                side_effect=lambda dcids: dict.fromkeys(dcids, "Country"),
+                side_effect=lambda dcids: dict.fromkeys(dcids, ("Place", "Country")),
             ),
             patch.object(
                 graph,
@@ -1174,13 +1175,15 @@ class TestPinnedDcidC2:
                 )
             )
 
-        named: dict[str, tuple[str, str]] = {}
+        named: dict[str, tuple[str, str, str, tuple[str, ...]]] = {}
         for identity, pin in pins.items():
             assert isinstance(pin, PinnedResolved)
-            named[identity] = (pin.entity.dcid, pin.entity.name)
+            entity = pin.entity
+            named[identity] = (entity.dcid, entity.name, entity.kind, entity.graph_types)
+        types = ("Place", "Country")
         assert named == {
-            "country/USA": ("country/USA", "United States of America"),
-            "country/XYZ": ("country/XYZ", "country/XYZ"),
+            "country/USA": ("country/USA", "United States of America", "country", types),
+            "country/XYZ": ("country/XYZ", "country/XYZ", "country", types),
         }
 
     def test_confirm_part_pins_falls_back_to_dcid_when_label_read_fails(self, caplog):
@@ -1195,7 +1198,7 @@ class TestPinnedDcidC2:
             patch.object(
                 graph,
                 "node_types_batch",
-                side_effect=lambda dcids: dict.fromkeys(dcids, "Country"),
+                side_effect=lambda dcids: dict.fromkeys(dcids, ("Country",)),
             ),
             patch.object(
                 graph,
@@ -1305,15 +1308,19 @@ class TestPinnedDcidC2:
         assert result.parts[1].status == "no_data", result.parts[1]
         assert result.parts[1].no_data.reason == "no_observations"
 
-    def test_one_part_posting_one_text_with_both_members_values_refuses_request_invalid(self):
-        """One text asked for as its members and as a whole in one part refuses
-        `request_invalid`."""
+    @pytest.mark.parametrize(
+        "whole",
+        [ParsedEntity(text="Africa", role_text="from"), ParsedEntity(text="Africa")],
+        ids=["same-end", "no-end"],
+    )
+    def test_one_text_with_both_members_values_on_one_end_refuses_request_invalid(
+        self, whole: ParsedEntity
+    ):
+        """One text asked for as its members and as a whole on one end of one part, or by
+        a row on no end, refuses `request_invalid`."""
         part = ParsedPart(
-            variable_text="aid from Africa to Africa",
-            entities=[
-                ParsedEntity(text="Africa", role_text="from", members=True),
-                ParsedEntity(text="Africa", role_text="to"),
-            ],
+            variable_text="aid from Africa",
+            entities=[ParsedEntity(text="Africa", role_text="from", members=True), whole],
         )
         with pytest.raises(EngineInputError) as exc_info:
             _resolve_parsed([part])

@@ -91,13 +91,14 @@ from code_index.types import (
 from dc_graph import GraphDeadlineExceededError, GraphReadError, parse_arcs
 from dfo_platform.lru_memo import LruMemo
 from dfo_platform.named import cut, named_capped
+from dfo_platform.request_deadline import bounded_deadline
 from graph_release.context import served_origin_key
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
 from origin_catalogue import current_catalogue
 from origin_catalogue.families import FamilyKey
 from origin_catalogue.graph import mirrored_arcs
 from origin_catalogue.origins import UN_ID_PREFIX
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import note_lost_read
 from search.engine.errors import (
     EngineInputError,
     FamilyNotResolvableError,
@@ -2882,7 +2883,7 @@ def _shared_held_members(memo_key: _HeldKey, catalogue: Catalogue) -> _HeldMembe
         else:
             decoding = False
     if not decoding:
-        return flight.result()
+        return _joined(flight)
     try:
         held = _decode_held_members(memo_key[2], catalogue)
     except BaseException as exc:
@@ -2895,6 +2896,16 @@ def _shared_held_members(memo_key: _HeldKey, catalogue: Catalogue) -> _HeldMembe
         del _held_flights[memo_key]
     flight.set_result(held)
     return held
+
+
+def _joined[T](flight: Future[T]) -> T:
+    """`flight`'s result, waited on until the bound request deadline (`bounded_deadline`) at
+    most, which raises `TimeoutError` while the flight runs on, so a fail-open budget bounds
+    the wait as it bounds a read."""
+    deadline = bounded_deadline(None)
+    return flight.result(
+        timeout=None if deadline is None else max(0.0, deadline - time.monotonic())
+    )
 
 
 def _decode_held_members(key: FamilyKey, catalogue: Catalogue) -> _HeldMembers:
@@ -3117,10 +3128,12 @@ class RoleClassWalks:
 
     A first answer's walk is seeded with its recalled members and bound by
     `_ROLE_CLASS_WALK_BUDGET_S`. A read failure or a crossed bound settles nothing and
-    notes the lost read (`degraded_reads.note_degraded_read`), as does a failed read of the
+    notes the lost read (`degraded_reads.note_lost_read`), as does a failed read of the
     arcs of members it adds (`elected_role_class_shape`): the answer then stands on less
-    than the walk would have read, so no cache stores it. A resubmit's walk (`resubmit`)
-    takes no seed and raises those errors, since no recalled member can answer for it.
+    than the walk would have read, so no cache stores it. A walk cut by the budget of an
+    enclosing fail-open scope (`degraded_reads.scope_budget_ran_out`) is noted as cut. A
+    resubmit's walk (`resubmit`) takes no seed and raises those errors, since no recalled
+    member can answer for it.
     """
 
     def __init__(
@@ -3153,7 +3166,7 @@ class RoleClassWalks:
         nothing, a `FAILED` resolution with no group, when it runs past that bound, when a
         graph read fails, when it truncates without proof or leaves a candidate unread, and
         when it finds no member. The first two also note a degraded read
-        (`degraded_reads.note_degraded_read`), and the last, a family read whole that holds
+        (`degraded_reads.note_lost_read`), and the last, a family read whole that holds
         no member under the query, says so (`MembershipResolution.no_member`). A reverse read
         holding no candidate is such a read whatever the seeds left unsettled, since the
         mint reads no seed.
@@ -3245,7 +3258,7 @@ class RoleClassWalks:
             return _WALK_FAILED
         except (GraphReadError, GraphInfraError, TimeoutError) as exc:
             if resubmit is None:
-                note_degraded_read("member walk")
+                note_lost_read("member walk", exc)
                 return _WALK_FAILED
             if isinstance(exc, GraphDeadlineExceededError):
                 raise TimeoutError(f"the member walk's graph read timed out: {exc}") from exc
@@ -3317,7 +3330,7 @@ def _held_family_group(key: FamilyKey, query: FamilyQuery) -> MemberGroup | _Hel
         if flight is None:
             flight = groups[walk] = Future()
     if not electing:
-        return flight.result()
+        return _joined(flight)
     try:
         group = _elect_held_family(key, query)
     except BaseException as exc:
@@ -3403,7 +3416,7 @@ def elected_role_class_shape(
     shape holds no catalogue family (`ShapeDraft.held_family`). An exact shape
     (`ShapeDraft.sv_arc_facts_complete`) stays exact, holding the family in place of its
     members. A failed read of the members' arcs notes a degraded read
-    (`degraded_reads.note_degraded_read`).
+    (`degraded_reads.note_lost_read`).
 
     The authority is `AUTHORITATIVE` when the index decides the shape, and when the
     catalogue's tables hold its five-tuple whole (`_tables_hold_five_tuple`), which no walk
@@ -3464,8 +3477,8 @@ def elected_role_class_shape(
     if unread:
         try:
             arcs_by_dcid = arcs_graph.node_arcs_batch(unread, deadline=walked.value.bound)
-        except GraphInfraError:
-            note_degraded_read("walked family arcs")
+        except GraphInfraError as exc:
+            note_lost_read("walked family arcs", exc)
             return MembershipResolution(narrowed, MembershipAuthority.FAILED)
     # The shape's own members keep their order, which later readers rank by, and the
     # members the walk adds follow.

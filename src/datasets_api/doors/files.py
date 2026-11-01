@@ -136,23 +136,24 @@ def classify_files_exception(exc: BaseException) -> ProblemSpec | None:
         if signing_failure_is_permanent(
             error_class_name=exc.error_class_name, status_code=exc.status_code
         ):
-            logger.error(
-                "Datasets download door failed to sign a GET url for a stored artifact "
-                "for a permanent, operator-clearable reason: %s",
-                exc,
-                exc_info=exc,
+            return ProblemSpec(
+                status=500,
+                code="internal_error",
+                detail=str(exc),
+                retryable=False,
+                log=(
+                    "Datasets download door failed to sign a GET url for a stored artifact "
+                    f"for a permanent, operator-clearable reason: {exc}"
+                ),
+                log_traceback=True,
             )
-            return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
-        logger.error(
-            "Datasets download door failed to sign a GET url for a stored artifact: %s",
-            exc,
-            exc_info=exc,
-        )
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail="signing this snapshot's artifact download url failed; retry",
             retryable=True,
+            log=f"Datasets download door failed to sign a GET url for a stored artifact: {exc}",
+            log_traceback=True,
         )
     # A selector render raises the mint's rendering refusals, which its classifier maps.
     return classify_mint_exception(exc)
@@ -826,34 +827,41 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             QueryOptionsInvalid,
             *SELECTOR_RENDERING_EXCEPTION_TYPES,
         ),
-        exception_exemplars=(
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            ArtifactNotFound(
-                id="spec_exemplar", content_version="cv_exemplar", artifact_digest="sha256:exemplar"
-            ),
-            ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
-            DownloadBackpressure(),
-            SnapshotSigningFailed(
-                bucket="exemplar-bucket",
-                object_name="sha256:exemplar",
-                digest="sha256:exemplar",
-                error_class_name=None,
-                status_code=None,
-            ),
-            ArtifactSigningError(
-                bucket="exemplar-bucket", object_name="sha256:exemplar", digest="sha256:exemplar"
-            ),
-            QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
-            StoredTraceMissingResolvedStatVars(
-                subject_id="spec_exemplar", content_version="cv_exemplar"
-            ),
-            *(
-                exemplar
-                for exemplar in MINT_EXCEPTION_EXEMPLARS
-                if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
-            ),
-        ),
+        endpoint_exemplars={
+            "datasets.files": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactNotFound(
+                    id="spec_exemplar",
+                    content_version="cv_exemplar",
+                    artifact_digest="sha256:exemplar",
+                ),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                DownloadBackpressure(),
+                MintBackpressure(),
+                SnapshotSigningFailed(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                    error_class_name=None,
+                    status_code=None,
+                ),
+                ArtifactSigningError(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                ),
+                QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
+                StoredTraceMissingResolvedStatVars(
+                    subject_id="spec_exemplar", content_version="cv_exemplar"
+                ),
+                *(
+                    exemplar
+                    for exemplar in MINT_EXCEPTION_EXEMPLARS
+                    if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
+                ),
+            )
+        },
     )

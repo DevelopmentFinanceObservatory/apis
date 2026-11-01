@@ -30,7 +30,6 @@ class LiveVocabularySource:
             measure_index=get_measure_index(),
             labels={},
             sources={},
-            currency_units={},
             graph_generation=None,
             catalogue_build=None,
         )

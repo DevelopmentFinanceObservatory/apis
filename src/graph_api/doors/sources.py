@@ -289,8 +289,13 @@ def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
             status=400, code="request_invalid", detail=str(exc), pointer="/dcid", retryable=False
         )
     if isinstance(exc, TooManyChildProvenances):
-        logger.error("Graph sources door refused a truncated child set: %s", exc)
-        return ProblemSpec(status=503, code="service_unavailable", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail=str(exc),
+            retryable=False,
+            log=f"Graph sources door refused a truncated child set: {exc}",
+        )
     if isinstance(exc, GraphDeadlineExceededError):
         # This subclass maps to 504, so it must precede `GraphReadError`.
         return ProblemSpec(
@@ -300,11 +305,14 @@ def classify_sources_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=TIMEOUT_DEFAULT.retryable,
         )
     if isinstance(exc, GraphReadError):
-        logger.error("Graph sources door's DCP read failed: %s", exc, exc_info=exc)
         upstream_status = exc.upstream_status
-        if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
-            return ProblemSpec(status=502, code="upstream_error", retryable=True)
-        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+        client_side = isinstance(upstream_status, int) and 400 <= upstream_status < 500
+        spec = (
+            ProblemSpec(status=502, code="upstream_error", retryable=True)
+            if client_side
+            else ProblemSpec(status=503, code="service_unavailable", retryable=True)
+        )
+        return spec._replace(log=f"Graph sources door's DCP read failed: {exc}", log_traceback=True)
     return None
 
 

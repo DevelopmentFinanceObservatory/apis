@@ -287,7 +287,7 @@ def test_pruning_keeps_only_the_role_bearing_shape():
             "Asian Development Bank": PlaceSet(
                 name="Asian Development Bank",
                 kind="place",
-                node=PlaceNode(dcid="AsianDevelopmentBank", graph_type="Organization"),
+                node=PlaceNode(dcid="AsianDevelopmentBank", graph_types=("Organization",)),
             )
         }
     )
@@ -306,7 +306,7 @@ def _set(
     return PlaceSet(
         name=name,
         kind=kind,
-        node=None if node is None else PlaceNode(dcid=node[0], graph_type=node[1]),
+        node=None if node is None else PlaceNode(dcid=node[0], graph_types=(node[1],)),
         members=None if member_type is None else (f"{name}/m1", f"{name}/m2"),
         member_type=member_type,
     )
@@ -375,7 +375,7 @@ def test_a_set_neither_of_whose_types_a_role_admits_is_refused(
 @pytest.mark.parametrize(
     "recipient",
     [
-        PlaceSet(name="Kenya", kind="place", node=PlaceNode("country/KEN", "Country")),
+        PlaceSet(name="Kenya", kind="place", node=PlaceNode("country/KEN", ("Country",))),
         _set("Africa", ("africa", "Continent"), "Country", "region"),
     ],
     ids=["country", "region-of-countries"],
@@ -402,7 +402,7 @@ def test_the_party_a_word_names_passes_role_admission_like_a_named_set(
         "DACMultilaterals": PlaceSet(
             name="multilaterals (DAC)",
             kind="place",
-            node=PlaceNode(dcid="DACMultilaterals", graph_type=graph_type),
+            node=PlaceNode(dcid="DACMultilaterals", graph_types=(graph_type,)),
         )
     }
     shape = dataclasses.replace(_ROLE_BEARING_SHAPE, datasets=("provenance/OECDDAC2A",))

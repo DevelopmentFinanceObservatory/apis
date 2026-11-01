@@ -20,8 +20,8 @@ release once a swap serves a new one, and stores none for a replaced release aft
 Each entry weighs one plus its family size, the dcids of every confirmed candidate
 before antichain reduction, since a deep root's family runs to about 14,000 dcids.
 Concurrent misses on one key run one enumeration. The others wait, each bounded by its
-own deadline, then take the group that walk returned, stored or not, or, when it raised,
-walk themselves. Only settled `MemberGroup` values are stored for later calls, so a
+own deadline narrowed by the bound request deadline (`bounded_deadline`), then take the
+group that walk returned, stored or not, or, when it raised, walk themselves. Only settled `MemberGroup` values are stored for later calls, so a
 refusal, a read failure, a deadline crossing or a group with undismissed candidates
 stays uncached.
 """
@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 import cachetools
 
+from dfo_platform.request_deadline import bounded_deadline
 from statvar_members.enumerate import (
     CANDIDATE_CAP,
     DEFAULT_MEMBER_CAP,
@@ -168,8 +169,9 @@ class MemberEnumerator:
         bound release's id (`_served_walk`), the five-tuple, slots, readings,
         `subject_ceiling`, extra candidates, and bound and open role keys. `deadline`
         bounds the walk's first page and `full_read_deadline`, which defaults to `deadline` and
-        stays out of the key, its full read. The later of the two bounds any wait for another
-        call's walk of the same key. A read or wait past its bound raises `MemberReadDeadline`.
+        stays out of the key, its full read. The later of the two, narrowed by the bound
+        request deadline (`bounded_deadline`), bounds any wait for another call's walk of the
+        same key. A read or wait past its bound raises `MemberReadDeadline`.
         `spec_id` names the walk in its log line. Enumeration errors propagate uncached. A group
         with undismissed candidates is returned uncached, so a call after its walk's flight ends
         reads them again; calls waiting on that flight take the group it returned. A group whose
@@ -232,8 +234,11 @@ class MemberEnumerator:
     def _flight(
         self, key: _CacheKey, *, five_tuple: FiveTuple, window: int, deadline: float | None
     ) -> Iterator[_Flight]:
-        """Hold `key`'s walk lock, waiting at most until `deadline` for another call's walk,
-        and yield its flight."""
+        """Hold `key`'s walk lock, waiting at most until `deadline`, narrowed by the bound
+        request deadline (`bounded_deadline`), for another call's walk, and yield its flight.
+        The narrowing holds a caller to a nearer bound, such as a fail-open budget, whatever
+        deadline it passes."""
+        deadline = bounded_deadline(deadline)
         with self._lock:
             flight = self._flights.setdefault(key, _Flight())
             flight.users += 1

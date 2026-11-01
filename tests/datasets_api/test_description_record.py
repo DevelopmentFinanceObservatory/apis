@@ -927,7 +927,6 @@ def test_a_set_binding_names_its_codes_in_the_version_title(collapsed: bool) -> 
         ),
         labels={},
         sources={},
-        currency_units={},
         graph_generation="gen-1",
         catalogue_build="fake-catalogue",
     )
@@ -1222,7 +1221,6 @@ def test_a_definitions_shape_names_its_measure_through_the_fixture_indexes() -> 
         measure_index=get_measure_index(),
         labels=labels,
         sources={},
-        currency_units={},
         graph_generation=None,
         catalogue_build=None,
     )
@@ -1362,13 +1360,19 @@ def test_a_base_variables_title_leads_with_its_label(
             "country/FRA",
             id="entity-a-side-holds",
         ),
+        pytest.param(
+            "params",
+            {"numerator_entity": {"donor": "dcid:country/GBR"}},
+            "country/GBR",
+            id="entity-a-side-is-narrowed-to",
+        ),
     ],
 )
 def test_a_ref_a_step_names_outside_its_inputs_is_a_named_ref(
     member: str, value: dict[str, object], ref: str
 ) -> None:
     """Its label is read with the others, so the unit's denominator and the entity a side
-    holds are worded."""
+    holds or is narrowed to are worded."""
     steps = quotient_steps()
     steps[2][member] = value
 
@@ -1416,7 +1420,6 @@ def _vocabulary() -> Vocabulary:
         measure_index=MeasureIndex(axes=(), values=(), partition_labels=()),
         labels={},
         sources={},
-        currency_units={},
         graph_generation="gen-1",
         catalogue_build="fake-catalogue",
     )

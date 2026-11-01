@@ -6,34 +6,44 @@ refuse is not offered."""
 from __future__ import annotations
 
 import dataclasses
+from typing import NoReturn
 
 from search.engine.errors import EngineInputError
 from search.engine.qualifier_match import _normalize
+from search.engine.role_text import role_axis_for_text
 from search.engine.surface_resolution import is_surface
-from search.models import ParsedPart
+from search.models import ParsedPart, RoleAxis
 
 
 def _member_entities_for_part(part: ParsedPart, *, pointer_prefix: str) -> frozenset[str]:
-    """The identities of the entities the part asks for as their members
+    """The identities of the entities any row of the part asks for as their members
     (`ParsedEntity.members`).
 
-    One part names a set once, so an entity posted with both values raises
-    `request_invalid` at the part's entities.
+    One part names a set once on each flow end its rows' `role_text` gives, so an entity
+    posted with both values on one end, or with both values and a row on no end, raises
+    `request_invalid` at the part's entities. An entity can be asked for as its members on
+    one end and as a whole on the other.
     """
-    asked: dict[str, bool] = {}
+    asked: dict[str, dict[RoleAxis | None, bool]] = {}
     for entity in part.entities or ():
+        ends = asked.setdefault(entity.identity, {})
         members = bool(entity.members)
-        if asked.setdefault(entity.identity, members) != members:
-            detail = (
-                f"part posts entity {entity.identity!r} with members both true and false; "
-                "one entity names one set within a single part, as its members or as a whole"
-            )
-            raise EngineInputError(
-                detail,
-                code="request_invalid",
-                pointer=f"{pointer_prefix}/entities",
-            )
-    return frozenset(identity for identity, members in asked.items() if members)
+        if ends.setdefault(role_axis_for_text(entity.role_text), members) != members:
+            _refuse_both_readings(entity.identity, pointer_prefix=pointer_prefix)
+    for identity, ends in asked.items():
+        if None in ends and len(set(ends.values())) > 1:
+            _refuse_both_readings(identity, pointer_prefix=pointer_prefix)
+    return frozenset(identity for identity, ends in asked.items() if any(ends.values()))
+
+
+def _refuse_both_readings(identity: str, *, pointer_prefix: str) -> NoReturn:
+    """Raise `request_invalid` at the part's entities for `identity` posted with both
+    `members` values on one end."""
+    detail = (
+        f"part posts entity {identity!r} with members both true and false on one end; one "
+        "entity names one set on each end of a single part, as its members or as a whole"
+    )
+    raise EngineInputError(detail, code="request_invalid", pointer=f"{pointer_prefix}/entities")
 
 
 def _check_no_name_is_a_pin(part: ParsedPart, *, pointer_prefix: str) -> None:

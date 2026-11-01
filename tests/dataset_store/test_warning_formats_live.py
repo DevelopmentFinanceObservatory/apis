@@ -6,13 +6,12 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, cast
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pg8000.exceptions
 import pytest
 
-from dataset_store import LiveDatasetStore, connect, warning_formats
+from dataset_store import LiveDatasetStore, warning_formats
 from dataset_store.dbapi import DBAPIConnection
 from dataset_store.warning_formats import OLD_FORMATS, REWRITE_SQL, dry_run, findings
 from tests.dataset_store._warning_refs import (
@@ -20,6 +19,11 @@ from tests.dataset_store._warning_refs import (
     old_unserved_sentence,
     rewrite_cases,
     trace_for,
+)
+from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
+    connect_live,
+    live_database,
+    live_params,
 )
 from tests.dataset_store.test_live import (
     _DSN,
@@ -30,6 +34,7 @@ from tests.dataset_store.test_live import (
 
 pytestmark = [
     pytest.mark.live,
+    pytest.mark.usefixtures("live_database"),
     pytest.mark.skipif(
         not _DSN, reason="set DFO_DATASET_STORE_LIVE_DSN to run live dataset_store tests"
     ),
@@ -72,16 +77,7 @@ _CHECKED = {
 
 
 def _connect() -> DBAPIConnection:
-    parts = urlsplit(_DSN)
-    return connect(
-        connector=None,
-        instance_connection_name=None,
-        host=parts.hostname,
-        port=parts.port or 5432,
-        database=parts.path.lstrip("/"),
-        user=parts.username,
-        password=parts.password,
-    )
+    return connect_live()
 
 
 def _execute(conn: DBAPIConnection, sql: str, params: tuple = ()) -> Any:
@@ -138,10 +134,10 @@ def scratch_table():
 def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch_table):
     """The dry run reads in a read-only transaction and leaves the rows and no function behind.
     By format it counts the rows a real run of the same SQL then changes, the rows holding a
-    member sentence or a code the SQL leaves, the rows holding a code still written in its old
-    shape, and the residual rows: a list holding a name with a comma, and a member sentence on
-    a trace holding no `resolved_stat_vars`. It counts, without a finding, the row whose body
-    and column differ and whose body the rewrite changes; a stored
+    member sentence the SQL leaves to the backfill, and the residual rows: a list holding a
+    name with a comma, and a member sentence on a trace holding no `resolved_stat_vars`. It
+    counts, without a finding, the row whose body and column differ and whose body the
+    rewrite changes; a stored
     `member_count` equal to, different from and without the trace's `resolved_stat_vars`; a
     currency warning that neither names nor counts its entities; and by code the rows naming a
     ref in no format. The real run, under `standard_conforming_strings` off, writes each
@@ -198,14 +194,10 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
     zero = dict.fromkeys(_NAMES.values(), 0)
     assert report.read_only == "on"
     assert (report.rewritten_rows, report.rewritten) == (
-        7,
-        {**zero, _COVERAGE: 3, _CURRENCY: 2, _DEFLATOR: 2},
+        13,
+        {_COVERAGE: 3, _CURRENCY: 2, _DEFLATOR: 2, _WITHHELD: 2, _UN: 2, _PROJECTED: 2},
     )
-    assert (report.left_rows, report.left) == (3, {**zero, _COVERAGE: 2, _PROJECTED: 1})
-    assert (report.still_written_rows, report.still_written) == (
-        2,
-        {**zero, _WITHHELD: 1, _UN: 1},
-    )
+    assert (report.left_rows, report.left) == (2, {**zero, _COVERAGE: 2})
     assert (report.residual_rows, report.residual) == (2, {**zero, _COVERAGE: 2})
     assert (report.body_mismatch_rows, report.body_rewritten_rows) == (1, 1)
     assert (
@@ -227,13 +219,13 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
         "coverage_below_scope": [9, 6, 0],
         "currency_unmapped_omitted": [4, 2, 0],
         "deflator_missing_omitted": [3, 2, 0],
-        "deflator_projected": [1, 1, 0],
+        "deflator_projected": [3, 2, 0],
         "empty_result": [3, 0, 0],
         "facet_default_selected": [1, 1, 1],
         "revision_unavailable": [1, 1, 1],
         "stat_vars_summed": [1, 1, 1],
-        "un_system_unavailable": [1, 1, 0],
-        "withheld_by_registry": [1, 1, 0],
+        "un_system_unavailable": [3, 2, 0],
+        "withheld_by_registry": [3, 2, 0],
     }
     assert findings(report) == [
         "2 residual rows",
@@ -266,12 +258,7 @@ def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch
         after = dry_run(conn, table=scratch_table)
     finally:
         conn.close()
-    assert (
-        after.rewritten_rows,
-        after.left_rows,
-        after.still_written_rows,
-        after.residual_rows,
-    ) == (0, 3, 2, 2)
+    assert (after.rewritten_rows, after.left_rows, after.residual_rows) == (0, 2, 2)
 
 
 def test_the_dry_run_refuses_a_statement_holding_a_second_command(scratch_table, monkeypatch):
@@ -354,15 +341,8 @@ def test_the_command_reports_read_only_changes_nothing_and_exits_1_on_a_finding(
         before = _warnings()
         assert len(before) == len(subjects)
 
-        parts = urlsplit(_DSN)
-        for name, value in {
-            "DATASET_STORE_HOST": parts.hostname,
-            "DATASET_STORE_PORT": str(parts.port or 5432),
-            "DATASET_STORE_DATABASE": parts.path.lstrip("/"),
-            "DATASET_STORE_MIGRATOR_DB_USER": parts.username,
-            "DATASET_STORE_MIGRATOR_DB_PASSWORD": parts.password,
-        }.items():
-            monkeypatch.setenv(name, cast(str, value))
+        for name, value in live_params().items():
+            monkeypatch.setenv(name, value)
         monkeypatch.delenv("DATASET_STORE_INSTANCE_CONNECTION_NAME", raising=False)
         capsys.readouterr()
 

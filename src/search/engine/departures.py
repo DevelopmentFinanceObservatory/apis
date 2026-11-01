@@ -52,7 +52,9 @@ from search.models import (
     ObservationSeries,
     Operation,
     OperationVerb,
+    ProvenanceRef,
     ProviderBinding,
+    ResolvedFacet,
     RoleAxis,
     Slot,
     SlotBinding,
@@ -386,13 +388,20 @@ def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
 
 
 def served_datasets(spec: Spec) -> frozenset[str]:
-    """The datasets `spec` is served from: the provenance its facets bind, the tables of its
-    components for a composite (`code_index.composites`), else every source its trace
-    resolved."""
-    provenance = spec.resolved.facets.get("provenance")
+    """The datasets `spec` is served from (`datasets_served`)."""
+    return datasets_served(spec.resolved.facets, spec.resolved.trace.resolved_sources)
+
+
+def datasets_served(
+    facets: Mapping[str, ResolvedFacet], sources: Iterable[ProvenanceRef]
+) -> frozenset[str]:
+    """The datasets an answer stating `facets` and naming `sources` is served from: the
+    provenance its facets bind, the tables of its components for a composite
+    (`code_index.composites`), else every source it names."""
+    provenance = facets.get("provenance")
     if provenance is not None and provenance.ref is not None:
         return frozenset(provenance_datasets(provenance.ref))
-    return frozenset(source.ref for source in spec.resolved.trace.resolved_sources)
+    return frozenset(source.ref for source in sources)
 
 
 def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[str, ...], bool]:

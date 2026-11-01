@@ -956,7 +956,7 @@ def _same_shape_region_with_obs_task(
 
 
 def test_same_shape_merge_reconciles_every_observations_task(monkeypatch):
-    """A same-shape merge cancels superseded tasks and drains the merged region's relaunch."""
+    """A same-shape merge takes over its members' running reads and drains them with the stream."""
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _mock_extract(["var A", "var B"]))
     created_tasks: list[asyncio.Task] = []
 
@@ -1000,8 +1000,9 @@ def test_same_shape_merge_reconciles_every_observations_task(monkeypatch):
             "the two same-shape legs must have collapsed onto a single merged definite spec"
         )
 
-        # Two eagerly-launched legs + one relaunch for the merged region's new spec_id.
-        assert len(created_tasks) == 3
+        # The two eagerly-launched legs only: the merged region's preview is a resubmit of
+        # its identity, and neither leg's own read is relaunched.
+        assert len(created_tasks) == 2
         assert all(t.done() for t in created_tasks), (
             "every observations task tied to a same-shape merge must be done or "
             "cancelled by the time the stream is fully drained -- a still-pending "

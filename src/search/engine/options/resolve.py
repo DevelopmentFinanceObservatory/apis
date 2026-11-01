@@ -129,18 +129,19 @@ from search.role_kinds import graph_types
 def _typed_anchors(
     identity: BaseIdentity, *, graph: EngineGraphClient
 ) -> tuple[ResolvedEntity, ...]:
-    """Type every bound entity with one `node_types_batch` call.
+    """Type every bound entity with one `node_types_batch` call, by its first type.
 
     A missing or type-less dcid raises `invalid_role_ref`/422 at its role.
     """
     role_dcids = {role: dcids for role, dcids in identity.entities.items() if dcids}
     if not role_dcids:
         return ()
-    type_by_dcid = confirm_dcids_present(
+    types_by_dcid = confirm_dcids_present(
         role_dcids,
         read=graph.node_types_batch,
         pointer_for=lambda role, _absent: f"/identity/entities/{role}",
     )
+    type_by_dcid = {dcid: types[0] for dcid, types in types_by_dcid.items()}
     return tuple(
         ResolvedEntity(ref=dcid, entity_type=type_by_dcid.get(dcid), role=cast(EntityRoleKey, role))
         for role, dcids in role_dcids.items()

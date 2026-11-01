@@ -589,19 +589,22 @@ def _latest_point(points: Sequence[tuple[str, float | None]]) -> tuple[str, floa
     return points[-1] if points else None
 
 
-def _ranked(
-    series: Sequence[tuple[SeriesKey, ObservationSeries]],
-) -> list[ObservationSeries]:
-    """`series` in `series_rank` order, grouped by unit: series in one unit stay together,
-    and each unit's group stands where its first series ranks, so values are compared only
-    within a unit."""
+def wire_series_key(series: ObservationSeries) -> SeriesKey:
+    """The identity of wire `series`: its StatVar and its `(role, dcid)` entities in order."""
+    return series.stat_var.ref, tuple((entity.role, entity.ref) for entity in series.entities)
 
-    def rank(keyed: tuple[SeriesKey, ObservationSeries]) -> SeriesRank:
-        key, row = keyed
-        return series_rank(key, (row.points[-1].date, row.points[-1].value) if row.points else None)
+
+def ranked_series(series: Sequence[ObservationSeries]) -> list[ObservationSeries]:
+    """`series` in `series_rank` order over each one's identity (`wire_series_key`) and
+    latest point, grouped by unit: series in one unit stay together, and each unit's group
+    stands where its first series ranks, so values are compared only within a unit."""
+
+    def rank(row: ObservationSeries) -> SeriesRank:
+        latest = (row.points[-1].date, row.points[-1].value) if row.points else None
+        return series_rank(wire_series_key(row), latest)
 
     by_unit: dict[str | None, list[ObservationSeries]] = {}
-    for _key, row in sorted(series, key=rank):
+    for row in sorted(series, key=rank):
         unit = row.facet.get("unit")
         by_unit.setdefault(unit.ref if unit is not None else None, []).append(row)
     return [row for rows in by_unit.values() for row in rows]
@@ -623,7 +626,7 @@ def assemble_per_series(
     and source refs. Each origin and destination entity carries the party kind `index` lists
     for it (`_series`). A converted read shows `target_currency_ref` (the `CurrencyUnit` a
     currency request converts to, `currency_unit_ref`) as its unit, or no unit for a role
-    currency. Series sort by `series_rank` within groups of one unit (`_ranked`).
+    currency. Series sort by `series_rank` within groups of one unit (`ranked_series`).
 
     `total_obs` sums every read's `total_rows`. Above `obs_inline_max` every series keeps
     its last `obs_preview_points` points. `truncated` is set then, or when any read holds
@@ -642,19 +645,16 @@ def assemble_per_series(
     total_obs = sum(read.total_rows for read in reads.values())
     over_inline = total_obs > settings.obs_inline_max
     row_limited = any(len(read.points) < read.total_rows for read in reads.values())
-    series = _ranked(
+    series = ranked_series(
         [
-            (
+            _series(
                 key,
-                _series(
-                    key,
-                    read,
-                    read.points[-settings.obs_preview_points :] if over_inline else read.points,
-                    labels=labels,
-                    index=index,
-                    member_constraints=member_constraints,
-                    target_currency_ref=target_currency_ref,
-                ),
+                read,
+                read.points[-settings.obs_preview_points :] if over_inline else read.points,
+                labels=labels,
+                index=index,
+                member_constraints=member_constraints,
+                target_currency_ref=target_currency_ref,
             )
             for key, read in reads.items()
         ]
@@ -664,35 +664,49 @@ def assemble_per_series(
     )
 
 
-def role_bulk_shown(
-    reads: Mapping[SeriesKey, SeriesRead], *, order: PreviewOrder
+def role_bulk_selection(
+    latest: Mapping[SeriesKey, tuple[str, float | None] | None], *, order: PreviewOrder
 ) -> list[SeriesKey]:
-    """The keys `assemble_role_bulk` shows, at most `role_bulk_series_max`, in
+    """The keys of `latest`, each mapped to its series' latest `(date, value)` point, that a
+    role-bearing bulk preview shows under `order`: at most `role_bulk_series_max`, in
     `series_rank` order.
 
     `ranked` shows the first keys by `series_rank`. `fixed` shows `fixed_selection` over
     each StatVar's keys in identity order, StatVars in `member_year_order` by the year of
-    their newest point. A live fixed read holds only the series it selected, so this keeps
-    them all. The Datasets observations door holds every series and selects the same way.
+    their newest point, and compares no values. One answer selects its reads by it
+    (`role_bulk_shown`).
     """
     limit = observation_settings().role_bulk_series_max
 
     def rank(key: SeriesKey) -> SeriesRank:
-        return series_rank(key, _latest_point(reads[key].points))
+        return series_rank(key, latest[key])
 
     if order == "ranked":
-        return sorted(reads, key=rank)[:limit]
+        return sorted(latest, key=rank)[:limit]
     by_sv: dict[str, list[SeriesKey]] = {}
-    for key in sorted(reads):
+    for key in sorted(latest):
         by_sv.setdefault(key[0], []).append(key)
     years = {
         sv: max(
-            (int(reads[key].points[-1][0][:4]) for key in keys if reads[key].points), default=None
+            (int(point[0][:4]) for key in keys if (point := latest[key]) is not None),
+            default=None,
         )
         for sv, keys in by_sv.items()
     }
     picked = fixed_selection([by_sv[sv] for sv in member_year_order(years)], limit)
     return sorted(picked, key=rank)
+
+
+def role_bulk_shown(
+    reads: Mapping[SeriesKey, SeriesRead], *, order: PreviewOrder
+) -> list[SeriesKey]:
+    """The keys `assemble_role_bulk` shows, which are `role_bulk_selection` over each read's
+    latest point. A live fixed read holds only the series it selected, so this keeps them all. The
+    Datasets observations door holds every series and selects the same way.
+    """
+    return role_bulk_selection(
+        {key: _latest_point(read.points) for key, read in reads.items()}, order=order
+    )
 
 
 def assemble_role_bulk(
@@ -766,7 +780,7 @@ def assemble_scope_bulk(
 
     Each series shows its latest point alone, labelled as `assemble_per_series` labels them
     from one `label_source` batch, and sorted by `series_rank` within groups of one unit
-    (`_ranked`). A converted read shows `target_currency_ref` as its unit, or no unit
+    (`ranked_series`). A converted read shows `target_currency_ref` as its unit, or no unit
     for a role currency, as `assemble_per_series` shows it. `total_obs` sums every read's
     `total_rows`, and the preview is `truncated` when `total_obs` exceeds the series shown,
     each holding one point.
@@ -780,19 +794,16 @@ def assemble_scope_bulk(
         member_constraints=member_constraints,
         target_currency_ref=target_currency_ref,
     )
-    series = _ranked(
+    series = ranked_series(
         [
-            (
+            _series(
                 key,
-                _series(
-                    key,
-                    read,
-                    read.points[-1:],
-                    labels=labels,
-                    index=index,
-                    member_constraints=member_constraints,
-                    target_currency_ref=target_currency_ref,
-                ),
+                read,
+                read.points[-1:],
+                labels=labels,
+                index=index,
+                member_constraints=member_constraints,
+                target_currency_ref=target_currency_ref,
             )
             for key, read in reads.items()
         ]

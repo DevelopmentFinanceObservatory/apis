@@ -10,6 +10,7 @@ from unittest.mock import patch
 import search.engine.fanout as fanout_module
 from search.engine.binders import Fallbacks
 from search.engine.core import resolve_async, resolve_events
+from search.engine.degraded_reads import DegradedReads
 from search.engine.envelope import now_ms
 from search.engine.events import DoneEvent, Event, ResponseEvent, StepEvent
 from search.engine.extract import Extraction, ExtractionResult
@@ -55,6 +56,7 @@ def _make_scope(cache: ResponseCache | None, *, deadline: float | None = None) -
         build_commit=_BUILD_COMMIT,
         binder=KeyedBinder(model=_MODEL),
         fallbacks=Fallbacks(),
+        request_reads=DegradedReads(),
         seed=_SEED,
         today=_TODAY,
         max_candidates=_MAX_CANDIDATES,

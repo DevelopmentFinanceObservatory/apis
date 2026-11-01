@@ -29,8 +29,10 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Protocol, Self, cast
@@ -39,6 +41,7 @@ from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dc_sdmx import SdmxClientError
 from dfo_platform.executor import submit_with_context
+from dfo_platform.request_deadline import bounded_deadline
 from materialise import (
     DefaultFacetUndefinedError,
     FacetBinding,
@@ -184,8 +187,7 @@ def _native_unit_refs(
 _OBS_PREVIEW_TOTAL_SEMAPHORE = threading.BoundedSemaphore(settings().obs_preview_total_concurrency)
 """Process-wide gate on in-flight per-pair preview fetches, sized by
 settings().obs_preview_total_concurrency. Each pair's `materialise_preview` dispatch in
-`_preview_one` acquires it for the call's duration, waiting at most
-settings().graph_timeout_s, and releases it in a finally, however many
+`_preview_one` holds a permit for the call's duration (`_preview_permit`), however many
 `_build_observations` calls fan out at once. settings().obs_preview_concurrency bounds one
 call's pool; this bounds the sum across calls. Bulk reads and label lookups are outside it.
 Tests that need a different bound patch this attribute directly, since
@@ -193,12 +195,39 @@ Tests that need a different bound patch this attribute directly, since
 """
 
 
+@contextmanager
+def _preview_permit(deadline: float | None) -> Iterator[None]:
+    """Hold one `_OBS_PREVIEW_TOTAL_SEMAPHORE` permit for the block. The wait ends after
+    `graph_timeout_s`, which raises `UpstreamResponseError`, or at `deadline` narrowed by the
+    bound request deadline (`bounded_deadline`) when that comes first, which raises
+    `TimeoutError`, as a read past the deadline does."""
+    timeout = settings().graph_timeout_s
+    bound = bounded_deadline(deadline)
+    remaining = None if bound is None else max(0.0, bound - time.monotonic())
+    if remaining is not None and remaining < timeout:
+        if not _OBS_PREVIEW_TOTAL_SEMAPHORE.acquire(timeout=remaining):
+            raise TimeoutError(
+                "observation-preview permit not acquired before the deadline "
+                "(process-wide semaphore held by other in-flight preview calls)"
+            )
+    elif not _OBS_PREVIEW_TOTAL_SEMAPHORE.acquire(timeout=timeout):
+        raise UpstreamResponseError(
+            f"observation-preview permit not acquired within {timeout}s "
+            "(process-wide semaphore held by other in-flight preview calls)"
+        )
+    try:
+        yield
+    finally:
+        _OBS_PREVIEW_TOTAL_SEMAPHORE.release()
+
+
 # `obs_preview_max_pairs` caps role products, the series a plan serves, and actual dispatch
 # items. Overflow skips the whole preview. Partial series would misstate coverage.
 #
 # Reads run in a pool of at most `obs_preview_concurrency` workers (about 0.2 s per
 # `materialise_preview` call) under the process-wide semaphore. Permit waits end after
-# `graph_timeout_s`. Bulk reads and label lookups are outside this gate.
+# `graph_timeout_s` or at the deadline (`_preview_permit`). Bulk reads and label lookups
+# are outside this gate.
 
 
 _READ_GRAPH = "graph"
@@ -672,15 +701,8 @@ def _finish_preview_one(prepared: PreparedPreview, *, time_period: str | None) -
 
     Role-shaped conversion can lazily load its tables during finalisation.
     """
-    if not _OBS_PREVIEW_TOTAL_SEMAPHORE.acquire(timeout=settings().graph_timeout_s):
-        raise UpstreamResponseError(
-            f"observation-preview permit not acquired within {settings().graph_timeout_s}s "
-            "(process-wide semaphore held by other in-flight preview calls)"
-        )
-    try:
+    with _preview_permit(None):
         return finish_materialise_preview(prepared, time_period=time_period)
-    finally:
-        _OBS_PREVIEW_TOTAL_SEMAPHORE.release()
 
 
 def _preview_one(
@@ -706,10 +728,10 @@ def _preview_one(
     finalises at the StatVar's one period before converting. Each series the read
     returns keeps its most recent `obs_preview_max_rows` rows (`series_limit`), and the read's
     `limit` and `ceiling`, which sizes its raw fetch, are that many per planned series. Shared
-    inputs are passed explicitly. No worker reads ambient request state. Resolve
+    inputs are passed explicitly. Only the permit wait reads the bound request deadline. Resolve
     `materialise_preview` at call time so tests can patch this module global. The process-wide
-    permit covers only the upstream call and waits at most `graph_timeout_s`. Timeout raises
-    `UpstreamResponseError` for this read, while other reads continue. A read whose conversion
+    permit covers only the upstream call (`_preview_permit`), and a wait that runs out fails
+    this read, while other reads continue. A read whose conversion
     omitted every row returns them empty, with the omitted entities on its conversion records:
     whether the request refuses is the bound-unit gate's decision
     (`convertibility.unit_coverage`).
@@ -736,13 +758,7 @@ def _preview_one(
         # An answer may state that its facet names no source.
         requires_provenance=False,
     )
-    if not _OBS_PREVIEW_TOTAL_SEMAPHORE.acquire(timeout=settings().graph_timeout_s):
-        raise UpstreamResponseError(
-            f"observation-preview permit not acquired within "
-            f"{settings().graph_timeout_s}s (process-wide semaphore held by "
-            "other in-flight preview calls)"
-        )
-    try:
+    with _preview_permit(deadline):
         if prepare_only:
             return prepare_materialise_preview(
                 request,
@@ -780,8 +796,6 @@ def _preview_one(
             series_roles=dispatch.open_roles,
             refuse_when_every_row_omitted=False,
         )
-    finally:
-        _OBS_PREVIEW_TOTAL_SEMAPHORE.release()
 
 
 @dataclass(frozen=True)

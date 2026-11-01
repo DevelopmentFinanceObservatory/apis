@@ -23,6 +23,10 @@ re-read names an entity only where the catalogue admits none of the series' face
 - When some subject entities came back with no rows, `withheld_finding` re-reads the first such
   request's variable at those entities and warns `withheld_by_registry`.
 
+Both warnings count in their message and name no ref: the places, the series and the withheld
+provenances ride `unserved_entities`, `withheld_members` and `withheld_provenances` as
+`dcid:` refs, the first `MAX_COUNTED_REFS` of each, for a reader to label.
+
 In the last two a failed re-read is logged and leaves the answer as it was, since the answer
 itself was read in full.
 
@@ -36,14 +40,14 @@ what UN observation reads could not serve. These are places the UN front door re
 reads that failed inside a read that served our variables. A facet probe made
 before the record opened carries its own record, and the materialisation that reuses the probe
 adds it to this one, so the record covers the probe at every door. `un_unavailable_warnings`
-names those places as `un_system_unavailable`. Each warning has an `OriginGap` beside it, the
+counts those places as `un_system_unavailable`. Each warning has an `OriginGap` beside it, the
 places it names as the manifest's trace records them. A UN member with no candidate, or with no
 default on a facet axis, refuses `upstream_error` (`UnSystemUnavailable`) at such a place,
 since its probe says nothing about data there. A member that binds no entity covers every
 country, including the few the UN front door refuses on every read, so a retry would meet the
 same refusal. It refuses `upstream_error` only
 when a UN read failed, and otherwise serves the empty result with the `un_system_unavailable`
-warning naming the refused places.
+warning counting the refused places.
 """
 
 from __future__ import annotations
@@ -54,13 +58,13 @@ from dataclasses import dataclass
 from typing import Final, Literal, Protocol, runtime_checkable
 
 from datasets_api.codes_materialise import ExcludedByRegistry, UnSystemUnavailable
-from datasets_api.manifest_models import WarningModel
+from datasets_api.manifest_models import CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphCapExceededError, GraphReadError
 from dc_sdmx import ContainedIn
-from dfo_platform.named import named_capped
 from materialise import MaterialisationRequest
 from materialise.facets import binds_no_place
+from materialise.finish import MAX_COUNTED_REFS
 from materialise.graph import GraphReader
 from materialise.place_scope import (
     DEFAULT_SCOPE_PARENT,
@@ -75,7 +79,7 @@ from origin_catalogue.graph import is_un_dcid
 logger = logging.getLogger(__name__)
 
 _SUBJECT_ROLE: Final[str] = "observationAbout"
-_STAT_VAR_REF_PREFIX: Final[str] = "dcid:"
+_DCID_REF_PREFIX: Final[str] = "dcid:"
 
 WITHHELD_READ_MAX_BYTES: Final[int] = 16 * 1024 * 1024
 """Caps the unfiltered re-read's response. It reads one variable's facets, without dates, at
@@ -210,7 +214,7 @@ def _un_unavailable(
     a failed read naming its variable for a member that binds no place, and a refused place or
     a failed read among its entities for one bound to a plain entity list. `None` otherwise,
     and for a role-bearing member or a `ContainedIn` scope."""
-    variable = request.stat_var.removeprefix(_STAT_VAR_REF_PREFIX)
+    variable = request.stat_var.removeprefix(_DCID_REF_PREFIX)
     if binds_no_place(request.role_bindings, request.declared_roles):
         places = _un_unserved(blocked, variable=variable, refused=False)
     elif (bound := _subject_binding(request)) is not None:
@@ -223,7 +227,8 @@ def _un_unavailable(
 def un_unavailable_warnings(
     blocked: UnBlockedPlaces, *, request: MaterialisationRequest | None = None
 ) -> tuple[WarningModel, ...]:
-    """`un_system_unavailable` naming the places `blocked` recorded, when there are any.
+    """`un_system_unavailable` counting the places `blocked` recorded, when there are any
+    (`un_system_unavailable_warning`).
 
     With `request`, the warning is that member's alone: none for a variable outside the UN, and
     for a plain-bound member only the recorded places among its entities."""
@@ -233,18 +238,21 @@ def un_unavailable_warnings(
         bound = _subject_binding(request)
         places = _un_unserved(
             blocked,
-            variable=request.stat_var.removeprefix(_STAT_VAR_REF_PREFIX),
+            variable=request.stat_var.removeprefix(_DCID_REF_PREFIX),
             entities=None if bound is None else bound[1],
         )
-    if not places:
-        return ()
+    return (un_system_unavailable_warning(places),) if places else ()
+
+
+def un_system_unavailable_warning(places: Sequence[str]) -> WarningModel:
+    """`un_system_unavailable` counting `places`, bare dcids in the order the UN reads
+    recorded them, which `unserved_entities` carries."""
     _title, detail, severity = DATASETS_WARNING_CATALOGUE["un_system_unavailable"]
-    return (
-        WarningModel(
-            code="un_system_unavailable",
-            severity=severity,
-            message=f"{detail} No UN data was read for {named_capped(places)}.",
-        ),
+    return WarningModel(
+        code="un_system_unavailable",
+        severity=severity,
+        message=f"{detail} No UN data was read for {len(places)} {_entities(len(places))}.",
+        unserved_entities=_counted_refs(places),
     )
 
 
@@ -289,7 +297,7 @@ def withheld_finding(
         return None
     for index, (request, coverage) in enumerate(served):
         if binds_no_place(request.role_bindings, request.declared_roles):
-            scope = (request.stat_var.removeprefix(_STAT_VAR_REF_PREFIX), list(default_scope))
+            scope = (request.stat_var.removeprefix(_DCID_REF_PREFIX), list(default_scope))
         else:
             scope = _subject_binding(request)
         if scope is None:
@@ -310,7 +318,7 @@ def withheld_finding(
                 dict.fromkeys(provenance for held in withheld.values() for provenance in held)
             ),
         )
-        return index, _withheld_warning(variable, withheld), gap
+        return index, withheld_by_registry_warning(variable, withheld), gap
     return None
 
 
@@ -381,7 +389,7 @@ def _subject_binding(request: MaterialisationRequest) -> tuple[str, list[str]] |
         or isinstance(bound, ContainedIn)
     ):
         return None
-    return request.stat_var.removeprefix(_STAT_VAR_REF_PREFIX), list(dict.fromkeys(bound))
+    return request.stat_var.removeprefix(_DCID_REF_PREFIX), list(dict.fromkeys(bound))
 
 
 def _refusal_scopes(
@@ -404,7 +412,7 @@ def _refusal_scopes(
     unbound: dict[str, None] = {}
     for request in requests:
         if binds_no_place(request.role_bindings, request.declared_roles):
-            unbound[request.stat_var.removeprefix(_STAT_VAR_REF_PREFIX)] = None
+            unbound[request.stat_var.removeprefix(_DCID_REF_PREFIX)] = None
         elif (bound := _subject_binding(request)) is not None:
             variable, entities = bound
             scopes.setdefault(tuple(entities), {})[variable] = None
@@ -454,15 +462,43 @@ def _un_unserved(
     return tuple(places)
 
 
-def _withheld_warning(variable: str, withheld: Mapping[str, tuple[str, ...]]) -> WarningModel:
+def withheld_by_registry_warning(
+    variable: str, withheld: Mapping[str, tuple[str, ...]]
+) -> WarningModel:
+    """`withheld_by_registry` counting the places of `withheld`, in the order the request names
+    them, and the provenances withheld there, in the order they first occur across those
+    places. `unserved_entities`, `withheld_members` and `withheld_provenances` carry the
+    places, the bare dcid `variable` and the provenances."""
     _title, detail, severity = DATASETS_WARNING_CATALOGUE["withheld_by_registry"]
-    provenances = dict.fromkeys(provenance for held in withheld.values() for provenance in held)
+    places = tuple(withheld)
+    provenances = tuple(
+        dict.fromkeys(provenance for held in withheld.values() for provenance in held)
+    )
+    holds = "holds" if len(provenances) == 1 else "hold"
     return WarningModel(
         code="withheld_by_registry",
         severity=severity,
-        message=f"{detail} {variable} served no observations for {named_capped(tuple(withheld))}; "
-        f"withheld provenances holding data there: {', '.join(provenances)}.",
+        message=(
+            f"{detail} No observations were served for {len(places)} {_entities(len(places))}, "
+            f"where {len(provenances)} withheld "
+            f"{'provenance' if len(provenances) == 1 else 'provenances'} {holds} data."
+        ),
+        unserved_entities=_counted_refs(places),
+        withheld_members=_counted_refs((variable,)),
+        withheld_provenances=_counted_refs(provenances),
     )
+
+
+def _counted_refs(dcids: Sequence[str]) -> CountedRefsModel:
+    """How many `dcids`, and the first `MAX_COUNTED_REFS` as `dcid:` refs."""
+    return CountedRefsModel(
+        count=len(dcids),
+        refs=[f"{_DCID_REF_PREFIX}{dcid}" for dcid in dcids[:MAX_COUNTED_REFS]],
+    )
+
+
+def _entities(count: int) -> str:
+    return "entity" if count == 1 else "entities"
 
 
 __all__ = [
@@ -473,8 +509,10 @@ __all__ = [
     "refuse_unserved_empty_probe",
     "refuse_unserved_selection",
     "stale_warnings",
+    "un_system_unavailable_warning",
     "un_unavailable_gaps",
     "un_unavailable_warnings",
+    "withheld_by_registry_warning",
     "withheld_finding",
     "withheld_warning",
     "withheld_warnings",

@@ -53,6 +53,7 @@ from dfo_platform.problem import (
     ProblemDetails,
     ProblemSpec,
     UnregisteredCode,
+    log_problem,
 )
 from dfo_platform.trace import (
     TRACE_ID_HEADER,
@@ -820,10 +821,11 @@ def _registry_endpoint(surface: Surface, scope: Scope) -> str | None:
     return None
 
 
-def _log_refusal(surface: Surface, spec: ProblemSpec) -> None:
-    """Log the line a classifier or admission check named for this refusal, so both stay pure."""
-    if spec.log is not None:
-        logger.log(spec.log_level, "%s: %s", surface.name, spec.log)
+def _log_refusal(surface: Surface | None, spec: ProblemSpec, exc: BaseException | None) -> None:
+    """Log the line a classifier or admission check named for this refusal, after the name of
+    the surface that classified it, with `exc`'s traceback when the spec asks for it, so both
+    stay pure. The platform default's line, `surface` `None`, carries no name."""
+    log_problem(spec, exc, logger=logger, context=None if surface is None else surface.name)
 
 
 async def _admission_dispatch(
@@ -843,7 +845,7 @@ async def _admission_dispatch(
             with codes.bound_registry_endpoint(endpoint):
                 spec = check(request)
             if spec is not None:
-                _log_refusal(surface, spec)
+                _log_refusal(surface, spec, None)
                 response = _envelope_for(request, ctx).render(spec)
                 trace_id = getattr(request.state, "trace_id", None)
                 response.headers[TRACE_ID_HEADER] = (
@@ -881,7 +883,7 @@ def _classify_and_envelope(
             )
             spec = None
         if spec is not None:
-            _log_refusal(surface, spec)
+            _log_refusal(surface, spec, exc)
             if set(type(exc).__mro__).isdisjoint(surface.exception_types):
                 logger.warning(
                     "surface %r's classify() recognized %s, which is absent "
@@ -894,7 +896,9 @@ def _classify_and_envelope(
                     type(exc).__name__,
                 )
             return spec, envelope, surface.name
-    return refusal.classify_default(exc), envelope, None
+    spec = refusal.classify_default(exc)
+    _log_refusal(None, spec, exc)
+    return spec, envelope, None
 
 
 def _request_body_model(request: Request) -> object | None:

@@ -243,6 +243,29 @@ class SearchSettings(BaseSettings):
     # connect, read, write, and pool timeouts alike.
     graph_timeout_s: float = 30
 
+    # Seconds the graph reads of one site on the request's critical path may take when their
+    # failure is swallowed, so the answer stands without them and notes the lost read
+    # (`degraded_reads.fail_open_reads`). When this budget itself ran out first the answer
+    # stands unwarned, and no cache stores it. It bounds the place-availability probe, menu
+    # and breakdown availability, the withheld re-read and its label read, a resubmit's named
+    # groups' label and type reads, and the label read of a value the bind drafted off the
+    # elected shape. The place probe's reads took 15 to 253 ms against dfo-dev, and the
+    # resubmit's label and type reads under 250 ms, so this leaves about eight times that. A
+    # stalled read then costs the request at most this long. A read that fails closed keeps
+    # the request deadline, as `convertibility._dated_plan` does, because a healthy read
+    # slower than this budget would turn a served answer into a gap.
+    fail_open_read_budget_s: float = 2.0
+
+    # Seconds the nearest-real probe of a no-data answer may take in all: its relaxations'
+    # member walks, its presence read and its suggestions' reads
+    # (`phase_place_materialise._nearest_real_for`). On a buffered request each suggestion's
+    # preview runs afterwards under `fail_open_read_budget_s`. Probes against
+    # dfo-dev took 0.6 s at the median and 4.2 s at the 95th percentile. This budget would
+    # have cut 5 of 47, slow walks over gendered or age-banded population shapes, which then
+    # answer with no suggestion. A read cut by this budget notes no lost read, so those
+    # answers carry no warning, and no cache stores them.
+    nearest_real_budget_s: float = 3.0
+
     # Gemini HTTP timeout in seconds. genai expects milliseconds. This bounds each call so
     # pipeline deadline handling can proceed.
     llm_timeout_s: float = 30
@@ -807,6 +830,14 @@ class SearchSettings(BaseSettings):
         """Graph/LLM/Jev/request timeouts, Gemini, Jev and observation-preview concurrency."""
         if self.graph_timeout_s <= 0:
             raise ValueError(f"SEARCH_GRAPH_TIMEOUT_S must be > 0; got {self.graph_timeout_s!r}")
+        if self.fail_open_read_budget_s <= 0:
+            raise ValueError(
+                f"SEARCH_FAIL_OPEN_READ_BUDGET_S must be > 0; got {self.fail_open_read_budget_s!r}"
+            )
+        if self.nearest_real_budget_s <= 0:
+            raise ValueError(
+                f"SEARCH_NEAREST_REAL_BUDGET_S must be > 0; got {self.nearest_real_budget_s!r}"
+            )
         if self.llm_timeout_s <= 0:
             raise ValueError(f"SEARCH_LLM_TIMEOUT_S must be > 0; got {self.llm_timeout_s!r}")
         if self.llm_max_concurrency < 1:

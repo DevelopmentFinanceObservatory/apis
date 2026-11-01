@@ -1,7 +1,7 @@
 """Tests fan-out restatement of direction and absence reasons (#625).
 
-Directional legs echo each entity's role. A name bound on both axes has no restatement because
-`ParsedEntity` stores one role. Tests use offline resolutions or `_leg_restatement` directly.
+Directional legs echo each entity's role, and a name bound on both axes echoes one row per axis.
+Tests use offline resolutions or `_leg_restatement` directly.
 """
 
 from __future__ import annotations
@@ -94,8 +94,8 @@ class TestDirectionalLegEchoesItsAxis:
 
 
 class TestOneAxisRule:
-    def test_a_name_on_both_axes_yields_no_echo(self):
-        """One `role_text` cannot represent a self-flow's two axes."""
+    def test_a_name_on_both_axes_echoes_one_row_per_axis(self):
+        """A self-flow's two axes post back as two rows, as the parsed door reads them."""
         restatement = _leg_restatement(
             "aid",
             entities=["Kenya"],
@@ -108,7 +108,11 @@ class TestOneAxisRule:
                 ]
             },
         )
-        assert restatement is None
+        assert restatement is not None
+        assert [(e.text, e.role_text) for e in restatement.entities or ()] == [
+            ("Kenya", "from"),
+            ("Kenya", "to"),
+        ]
 
     def test_a_name_on_one_axis_echoes_that_axis(self):
         restatement = _leg_restatement(

@@ -14,8 +14,9 @@ from search.engine import binders
 from search.engine.bind import _UniversalBindOutput
 from search.engine.binders import JevBinder, jev_client
 from search.engine.core import resolve_async, resolve_events
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads, note_degraded_read
 from search.engine.errors import GraphInfraError, LLMInfraError
+from search.engine.events import DoneEvent, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.response_cache import ResponseCache
@@ -33,7 +34,7 @@ from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.engine._binders import FakeAsk, elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import EMPTY_SDMX, make_request, member_walk_reader
+from tests.engine._harness import EMPTY_SDMX, make_request, member_walk_reader, offline_events
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
 
@@ -236,6 +237,67 @@ def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch, lose):
         "QuantityOutput",
         "_UniversalBindOutput",
     ]
+    assert cache.stats().entries == 0
+
+
+def _cut_withheld_re_read(monkeypatch) -> list[str]:
+    """Run the withheld re-read as a read its own fail-open budget cuts. Returns the list it
+    notes each cut in."""
+    from search.engine.region import pipeline
+
+    fired: list[str] = []
+
+    async def _cut_re_read(result, graph, *, deadline):
+        with fail_open_reads("withheld re-read", budget_s=0.0):
+            fired.append("withheld re-read")
+            raise TimeoutError("the re-read ran past its budget")
+        return result
+
+    monkeypatch.setattr(pipeline, "with_withheld_warning", _cut_re_read)
+    return fired
+
+
+def _buffered(cache: ResponseCache | None) -> tuple[dict, DoneEvent]:
+    """The buffered answer to `_QUERY_A`, less what describes one run, and its `done`."""
+    graph = FakeGraph()
+    events = offline_events(
+        make_request(_QUERY_A),
+        graph=graph,
+        materialise_graph=member_walk_reader(graph),
+        response_cache=cache,
+    )
+    response = next(e.response for e in events if isinstance(e, ResponseEvent))
+    document = response.model_dump(mode="json")
+    for key in ("trace_id", "timing_ms", "llm_usage"):
+        document["diagnostics"].pop(key, None)
+    for part in document.get("parts", []):
+        part.pop("timing_ms", None)
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    return document, done
+
+
+def test_a_first_answer_whose_read_its_budget_cut_is_served_whole_and_not_stored(monkeypatch):
+    """A read cut by its own fail-open budget changes nothing the answer sends: the body, its
+    warnings and the `done` flags (`degraded_leg` sets the buffered route's header) equal a
+    run whose read answered. Neither layer stores it."""
+    clean, clean_done = _buffered(None)
+    fired = _cut_withheld_re_read(monkeypatch)
+    cache = ResponseCache()
+
+    cut, cut_done = _buffered(cache)
+
+    assert fired == ["withheld re-read"]
+    assert cut == clean
+    assert (
+        (cut_done.degraded_leg, cut_done.timed_out, cut_done.warnings)
+        == (
+            clean_done.degraded_leg,
+            clean_done.timed_out,
+            clean_done.warnings,
+        )
+        == (False, False, [])
+    )
     assert cache.stats().entries == 0
 
 

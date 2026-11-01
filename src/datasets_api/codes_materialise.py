@@ -80,7 +80,6 @@ MATERIALISE_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "excel_limit": FORMATS_CODE_CATALOGUE["excel_limit"],
     "excel_illegal_character": FORMATS_CODE_CATALOGUE["excel_illegal_character"],
     "parquet_size_bound": FORMATS_CODE_CATALOGUE["parquet_size_bound"],
-    "entities_unbound": MATERIALISE_CODE_CATALOGUE["entities_unbound"],
     "default_facet_undefined": MATERIALISE_CODE_CATALOGUE["default_facet_undefined"],
     "over_ceiling": MATERIALISE_CODE_CATALOGUE["over_ceiling"],
     "collection_probe_ceiling": MATERIALISE_CODE_CATALOGUE["collection_probe_ceiling"],

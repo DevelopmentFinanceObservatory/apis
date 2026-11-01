@@ -64,8 +64,10 @@ from search.render.no_data import UnlistedPopulation
 
 if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
+    from search.engine.region.observations.dispatch import PreviewRead
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.region.promote_relaunch import PromoteRelaunch
+    from search.engine.retrieval.coverage import CoverageForm
     from search.engine.retrieval.read_plan import ReadPlan
 
 FacetPredicate = Callable[[Facet], bool]
@@ -104,8 +106,8 @@ class AmbiguousEntityCandidate:
 class AmbiguousEntity:
     """Query wording with multiple graph candidates.
 
-    `role` is the flow axis the door gave the wording, or `None` when it gave none
-    or gave both.
+    `role` is the flow axis this group asks the wording on, or `None` when the door gave
+    it none. A wording on both flow ends is one group per end.
     """
 
     text: str
@@ -343,6 +345,12 @@ class RegionResult:
     # stores the region without closures and binds them again for the request it serves.
     # None off the resubmit's definite path.
     promote_relaunch: PromoteRelaunch | None = None
+    # What the definite answer's observation preview reads, apart from the request's
+    # clients (`dispatch.PreviewRead`): the buffered read, the streamed task and the part
+    # memo's rebound relaunch all read it. Set on a fresh or resubmitted definite answer and
+    # a lone candidate survivor; None elsewhere, a same-shape merge included, whose preview
+    # is a read of its merged identity (`same_shape._with_merged_preview`).
+    preview_read: PreviewRead | None = None
     # Role-to-entity lists probed by resubmit resolution: the identity's own dcids on
     # each role. Populated on definite resubmit results.
     observation_entities: dict[str, list[str]] | None = None
@@ -396,6 +404,15 @@ class RegionResult:
     served_filter: RoleServedFilter | None = None
     served_members: tuple[MemberFacts, ...] = ()
     served_plans: tuple[ReadPlan, ...] = ()
+    # The form the Spec states its plan's coverage in (`retrieval.coverage.CoverageForm`),
+    # which a same-shape merge states the merged plan's coverage in
+    # (`same_shape._merged_counts`). None off the definite path and for a carrier that
+    # keeps its own coverage.
+    coverage_form: CoverageForm | None = None
+    # Whether `served_plans` were narrowed to the units a unit request elected over this
+    # answer's own group (`facets.FacetAdmission.elected_units`). A same-shape merge then
+    # rebuilds no plan, since a resolve of the merged identity elects over the merged group.
+    units_elected: bool = False
     # Each open directional role's member population behind this region's Spec, the
     # input its `ResolvedSpec.role_axis_facts` were counted from. A same-shape merge
     # counts the merged answer's members from the union of these, since the wire
@@ -445,8 +462,9 @@ class RegionResult:
     members_in_words: bool = False
     # The places the answer binds for each entity text of the part, by that text
     # (`place_roles.bound_entity_refs`), read once the part's places have settled. A text
-    # absent here binds none: an ambiguous or unresolved one, every text of a part refused
-    # before its places are bound, and every text of a soft-deadline placeholder.
+    # absent here binds none: an ambiguous or unresolved one, a group or a set read as its
+    # members in a part refused before its places are bound, and every text of a
+    # soft-deadline placeholder.
     entity_refs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # The flow sides a whole population the part asks for member by member opens
     # (`ResolveState.whole_listed`). The leg warns for each one the answer drops as it
@@ -546,11 +564,19 @@ def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     return shape.declared_roles or ("observationAbout",)
 
 
-def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
+def with_composite_answer(
+    region: RegionResult,
+    spec: Spec,
+    *,
+    observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]],
+) -> RegionResult:
     """`region` answering `spec`, the composite its definite answer was restated as
     (`scope.composite.assemble_composite`). Its trailing slot options, place options and
     observation preview read the one table the region resolved, under that answer's spec_id,
-    so the composite carries none. A task already launched is cancelled and none relaunches."""
+    so a task already launched is cancelled and the composite carries no slot or place
+    options. Its preview is read per component by `observations_relaunch`
+    (`composite_answer.CompositeRelaunch`), which the caller launches on the
+    event loop where the request streams observations (`enrichment._launch_trailing_tasks`)."""
     for task in (region.slot_options_task, region.place_options_task, region.observations_task):
         if task is not None:
             task.cancel()
@@ -562,7 +588,7 @@ def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
         place_options_task=None,
         place_options_relaunch=None,
         observations_task=None,
-        observations_relaunch=None,
+        observations_relaunch=observations_relaunch,
     )
 
 

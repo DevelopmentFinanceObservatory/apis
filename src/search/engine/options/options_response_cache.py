@@ -40,9 +40,9 @@ result transient and leave it uncached. Places in that set are a fact of the bui
 which the key holds, so a result naming only them is stored and a hit
 returns their warning. A compute that noted a degraded read
 (`degraded_reads.note_degraded_read`), such as a place's facet tie left to the unit's
-name because its whole-variable breadth was not read, remains uncached; refusals and
-infrastructure failures raise and remain uncached. A later request retries every
-uncached result.
+name because its whole-variable breadth was not read, or a read its own fail-open budget
+cut, remains uncached; refusals and infrastructure failures raise and remain uncached. A
+later request retries every uncached result.
 
 Each entry's generation stamp is part of its key and sets its `max_age_s`.
 A coverage republish changes the caller-supplied key. Single-flight starts
@@ -212,12 +212,13 @@ def _recording_degraded(
     compute: Callable[[float], ComputedOptions],
 ) -> Callable[[float], ComputedOptions]:
     """`compute` under its own degraded-read record, marking the result `degraded` when the
-    record noted any read."""
+    record noted any read, a read its own fail-open budget cut among them
+    (`DegradedReads.storable`)."""
 
     def recorded(deadline: float) -> ComputedOptions:
         with recording_degraded_reads() as lost:
             computed = compute(deadline)
-        return replace(computed, degraded=True) if lost.degraded else computed
+        return computed if lost.storable else replace(computed, degraded=True)
 
     return recorded
 

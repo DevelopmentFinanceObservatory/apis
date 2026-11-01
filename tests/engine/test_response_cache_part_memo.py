@@ -16,9 +16,11 @@ from origin_catalogue import bound_catalogue
 from search.engine import core
 from search.engine.binders import GeminiBinder
 from search.engine.core import ResolveRecord, resolve_events
+from search.engine.degraded_reads import DegradedReads, fail_open_reads
 from search.engine.errors import GraphInfraError
 from search.engine.events import ObservationsEvent, ResponseEvent
 from search.engine.region import resolve_spec_resubmit
+from search.engine.region import resubmit as resubmit_module
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
@@ -162,7 +164,11 @@ def test_equal_inputs_built_independently_share_a_key():
 def test_the_scope_keys_on_the_origin_catalogue_it_was_built_under(live, same: bool):
     def scope_key() -> str:
         scope = PartMemoScope(
-            PartMemo(), build_commit="b", today="2026-10-06", coverage=empty_coverage_snapshot()
+            PartMemo(),
+            request_reads=DegradedReads(),
+            build_commit="b",
+            today="2026-10-06",
+            coverage=empty_coverage_snapshot(),
         )
         return scope.key(_payload(), EngineOptions())
 
@@ -237,7 +243,11 @@ def test_a_region_that_swallowed_a_failed_read_is_not_stored(group_read_fails, s
     )
     memo = PartMemo()
     scope = PartMemoScope(
-        memo, build_commit="b", today="2026-10-06", coverage=empty_coverage_snapshot()
+        memo,
+        request_reads=DegradedReads(),
+        build_commit="b",
+        today="2026-10-06",
+        coverage=empty_coverage_snapshot(),
     )
 
     scope.store(scope.key(payload, EngineOptions()), region)
@@ -424,6 +434,43 @@ def test_cold_and_warm_buffered_responses_are_equal_except_timing():
     assert _without_timing(warm) == _without_timing(cold)
 
 
+def test_a_part_whose_read_its_budget_cut_is_served_whole_and_not_stored(monkeypatch):
+    """A read the promote's own fail-open budget cut leaves the region unmarked and its
+    answer equal to one whose read answered, and the memo stores no region of the request,
+    so the repeat resolves afresh."""
+    materialise_graph, materialise_sdmx = _fertility_materialise()
+    request = _fertility_request(ResolveOptions(include_observations=True))
+
+    def _resolve(memo: PartMemo) -> ResolveResponse:
+        return offline_resolve(
+            request,
+            graph=FakeGraph(),
+            sdmx=FakeSdmxClient(),
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            part_memo=memo,
+        )
+
+    clean = _resolve(PartMemo())
+    promote = resubmit_module._resolve_standard_promote
+    fired: list[str] = []
+
+    def cut_then_promote(*args, **kwargs):
+        with fail_open_reads("promote read", budget_s=0.0):
+            fired.append("promote read")
+            raise TimeoutError("the promote read ran past its budget")
+        return promote(*args, **kwargs)
+
+    monkeypatch.setattr(resubmit_module, "_resolve_standard_promote", cut_then_promote)
+    memo = PartMemo()
+    cut = _resolve(memo)
+    repeat = _resolve(memo)
+
+    assert fired == ["promote read", "promote read"]
+    assert _without_timing(cut) == _without_timing(repeat) == _without_timing(clean)
+    assert memo.stats()["entries"] == 0
+
+
 def test_a_streamed_hit_still_emits_its_trailing_observations_event():
     """The stored region holds no closure, so the hit binds this request's own and its
     observations read streams after the response as on the fresh run."""
@@ -565,7 +612,11 @@ def test_the_total_bound_evicts_the_least_recently_used_region_by_bytes():
 def test_a_zero_byte_bound_turns_the_memo_off():
     memo = PartMemo(max_bytes=0)
     scope = PartMemoScope(
-        memo, build_commit="b", today="2026-10-06", coverage=empty_coverage_snapshot()
+        memo,
+        request_reads=DegradedReads(),
+        build_commit="b",
+        today="2026-10-06",
+        coverage=empty_coverage_snapshot(),
     )
     assert not scope.active
 

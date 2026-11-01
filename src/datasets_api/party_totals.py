@@ -35,6 +35,7 @@ import pyarrow.compute as pc
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame
 
 from code_index.types import PartyRow
+from datasets_api.manifest_models import PartyTotalsLeftOutModel
 from dfo_platform.roles import role_key_axis
 from materialise.bundle_columns import PROVENANCE_COLUMN
 from materialise.content_version import stream_frame_sha256
@@ -122,7 +123,7 @@ class PartyTotalsCut:
 
         return cut
 
-    def trace_entries(self) -> list[dict[str, object]]:
+    def trace_entries(self) -> list[PartyTotalsLeftOutModel]:
         """The trace's `party_totals_left_out` entries: one `{role, provenance, entities}` per
         role and provenance it lost rows in, in role order and then provenance order (`None`
         first), its entities in ref order. A party left out of one dataset's rows is named for
@@ -151,7 +152,7 @@ class CutFrame:
     frame_sha256: str
     rows: int
     distinct: Mapping[str, int]
-    left_out: tuple[dict[str, object], ...]
+    left_out: tuple[PartyTotalsLeftOutModel, ...]
 
 
 def cut_frame(

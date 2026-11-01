@@ -11,6 +11,7 @@ import time
 import pytest
 
 from search.engine import conjoin
+from search.engine.concurrency import scoped_concurrency
 from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
 from search.engine.deadline import _cancel_and_await
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
@@ -966,16 +967,21 @@ def test_stale_slot_options_task_cancelled_before_it_runs():
     asyncio.run(_body())
 
 
-def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse():
+def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse(monkeypatch):
     """Two parts of one shape fold into one merged Spec ("aid for health and education").
-    Its streamed read used projected rates, so `done` carries a late list for each part,
-    named by `part_index`. Each list is the part's shipped list plus `modelled_values`.
-    The folded part's list lacks the dropped-filter departure that part 0 raised."""
+    Its streamed read, a resubmit of the merged identity, used projected rates, so `done`
+    carries a late list for each part, named by `part_index`. Each list is the part's
+    shipped list plus `modelled_values`. The folded part's list lacks the dropped-filter
+    departure that part 0 raised."""
     import json
+    from typing import Any, cast
 
+    from origin_catalogue import current_catalogue
     from search.engine.departures import warning_key
     from search.engine.events import DoneEvent, DoneTelemetry, ObservationsEvent, serialize_sse
+    from search.engine.region import composite_answer
     from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+    from search.engine.region.composite_answer import ComponentReads
     from search.heading.departure_fact import DepartureFact
     from search.models import (
         ObservationSeries,
@@ -1017,6 +1023,23 @@ def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse():
     def _relaunch(spec_id: str) -> asyncio.Task:
         return asyncio.create_task(_read(spec_id))
 
+    def _resubmit(*, inp: Any, **_clients: object) -> RegionResult:
+        spec = _spec(_PERSON_SHAPE, "merged")
+        observed = spec.resolved.model_copy(update={"observations": _projected("merged")})
+        return _region(spec.model_copy(update={"resolved": observed}), "merged")
+
+    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", _resubmit)
+    reads = ComponentReads(
+        graph=cast(Any, None),
+        sdmx=cast(Any, None),
+        coverage=cast(Any, None),
+        materialise_graph=None,
+        materialise_sdmx=None,
+        rate_cache=None,
+        deadline=None,
+        catalogue=current_catalogue(),
+    )
+
     async def _body():
         spec_a = _spec(_PERSON_SHAPE, "ValA")
         spec_b = _spec(_PERSON_SHAPE, "ValB")
@@ -1032,20 +1055,24 @@ def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse():
                 observations_relaunch=_relaunch,
             ),
         ]
-        response, effective = combine_regions(regions, **_assemble_kwargs(regions[0]))
-        streaming, stale = _reconcile_after_collapse(regions, effective)
-        await asyncio.gather(*(_cancel_and_await(t) for t in stale), return_exceptions=True)
+        response, effective = combine_regions(
+            regions, **_assemble_kwargs(regions[0], preview_reads=reads)
+        )
         late: list = []
-        async for _event in _stream_slot_options(
-            streaming,
-            deadline=time.monotonic() + 5,
-            warnings_out=[],
-            late_departures_out=late,
-            incomplete_out=[],
-            response=response,
-            answered=regions,
-        ):
-            pass
+        # The merged preview's task is request-owned (`composite_answer.IdentityPreview`).
+        async with scoped_concurrency():
+            streaming, stale = _reconcile_after_collapse(regions, effective)
+            await asyncio.gather(*(_cancel_and_await(t) for t in stale), return_exceptions=True)
+            async for _event in _stream_slot_options(
+                streaming,
+                deadline=time.monotonic() + 5,
+                warnings_out=[],
+                late_departures_out=late,
+                incomplete_out=[],
+                response=response,
+                answered=regions,
+            ):
+                pass
         return response, late
 
     response, late = asyncio.run(_body())

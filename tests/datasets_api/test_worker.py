@@ -17,7 +17,7 @@ from code_index.shared import get_index
 from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation
 from datasets_api import current as current_module
 from datasets_api import serve as serve_module
-from datasets_api.adapter import MemberReadBounds
+from datasets_api.adapter import MemberReadBounds, family_basis
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import (
     DefinitionDeps,
@@ -38,6 +38,7 @@ from datasets_api.version_store import enriched_rendering_key
 from datasets_api.versions import HeadFence, HeadFenceLost, SubjectHead
 from materialise.errors import VariableBreadthUnreadError
 from materialise.facets import read_variable_breadths
+from materialise.trace import UNKNOWN_FAMILY, MemberFamily, RecordedFamily, StatedFamily
 from series_coverage.index import Estimate
 
 from ._graph_doubles import FakeMintGraphReader
@@ -184,7 +185,7 @@ def test_each_finished_chunk_writes_the_running_total_with_no_thread(
     """Progress is written from the materialiser's own `add` calls, on its own thread."""
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
-    seen: list[tuple[int, int]] = []
+    seen: list[tuple[int, int, frozenset[int | None]]] = []
 
     def _chunked_serve(
         stored,
@@ -202,16 +203,20 @@ def test_each_finished_chunk_writes_the_running_total_with_no_thread(
             progress.add(rows)
             current = operation_store.get(operation.id)
             assert current is not None
-            seen.append((current.rows_written, threading.active_count()))
+            started = frozenset(t.ident for t in threading.enumerate()) - threads_before
+            seen.append((current.rows_written, threading.get_ident(), started))
         return _stub_manifest()
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
     monkeypatch.setattr(worker_module, "serve_current", _chunked_serve)
-    threads_before = threading.active_count()
+    # Thread identities, not a count: a thread an earlier test left running can
+    # end mid-test and lower the count without this code starting or ending one.
+    threads_before = frozenset(t.ident for t in threading.enumerate())
+    caller = threading.get_ident()
 
     run_operation(operation=operation, deps=_deps(), operation_store=operation_store)
 
-    assert seen == [(100, threads_before), (123, threads_before)]
+    assert seen == [(100, caller, frozenset()), (123, caller, frozenset())]
     stored = operation_store.get(operation.id)
     assert stored is not None and stored.state == "done"
 
@@ -397,10 +402,12 @@ def test_deterministic_failure_fails_regardless_of_final_attempt(failure, code):
     assert stored.refusal_code == code
     # Resubmitting the identical request repeats this deterministic failure.
     assert stored.retryable is False
-    # The row stores the refusal the synchronous door classifies for the same exception.
+    # The row stores the refusal the synchronous door classifies for the same exception, its
+    # wire fields alone: the line a classification names is logged, not stored.
     classified = classify_definition_exception(failure())
     assert classified is not None
-    assert stored.refusal == classified
+    assert stored.refusal is not None
+    assert stored.refusal.to_canonical_data() == classified.to_canonical_data()
 
 
 @pytest.mark.parametrize("is_final_attempt", [False, True], ids=["early", "final"])
@@ -629,6 +636,7 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
 _STUB_STORED = SimpleNamespace(identity={})
 _INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
 """A stored definition of a plain identity, which binds no composite."""
+_SERVED_FAMILY = {"family_member_digest": "b" * 64, "family_member_count": 4}
 
 
 def _stub_resolve(*, spec_id, deps):
@@ -639,7 +647,11 @@ def _stub_manifest(content_version: str = "cv_stub") -> SimpleNamespace:
     return SimpleNamespace(
         definition=SimpleNamespace(spec_id=_SUBJECT_ID),
         content_version=content_version,
-        trace={"served_from": "materialise", "confirmed_at": _CONFIRMED_AT.isoformat()},
+        trace={
+            "served_from": "materialise",
+            "confirmed_at": _CONFIRMED_AT.isoformat(),
+            **_SERVED_FAMILY,
+        },
     )
 
 
@@ -751,11 +763,13 @@ class _FencedHeadStore:
     def read_head(self, subject_id: str) -> SubjectHead | None:
         return self.heads.get(subject_id)
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+    def confirm_head(
+        self, *, subject_id: str, content_version: str, family, basis
+    ) -> SubjectHead | None:
         return None
 
     def advance_head(
-        self, *, materialisation, expected_materialisation_id: int | None, fence=None
+        self, *, materialisation, family, basis, expected_materialisation_id: int | None, fence=None
     ) -> SubjectHead | None:
         self.fences.append(fence)
         if fence is not None:
@@ -774,6 +788,7 @@ class _FencedHeadStore:
             materialised_at=now,
             materialisation_id=len(self.heads) + 1,
             dependencies=materialisation.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=now, basis=basis),
         )
         self.heads[materialisation.subject_id] = head
         return head
@@ -808,7 +823,11 @@ def test_a_run_whose_attempt_is_reclaimed_after_its_version_write_leaves_the_hea
     monkeypatch.setattr(
         serve_module,
         "prewrite_definition",
-        lambda **_: SimpleNamespace(result=SimpleNamespace(content_version="cv_stub")),
+        lambda **_: SimpleNamespace(
+            result=SimpleNamespace(
+                content_version="cv_stub", trace=SimpleNamespace(family_statement=UNKNOWN_FAMILY)
+            )
+        ),
     )
     monkeypatch.setattr(serve_module, "_write_definition_artifacts", _write_then_lose_the_claim)
     monkeypatch.setattr(
@@ -1044,6 +1063,16 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
     assert row.retryable == retryable
     assert row.content_version == (completed.content_version if state == "done" else None)
     assert row.confirmed_at == (_CONFIRMED_AT if state == "done" else None)
+    done = state == "done"
+    assert row.family == (
+        RecordedFamily(
+            stated=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
+            confirmed_at=_CONFIRMED_AT,
+            basis=family_basis(_deps(linked)),
+        )
+        if done
+        else None
+    )
 
 
 def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
@@ -1073,6 +1102,7 @@ def test_a_worker_run_at_one_place_reads_the_breadth_a_sync_mint_reads():
         return SimpleNamespace(
             manifest=_stub_manifest(),
             head=SimpleNamespace(confirmed_at=datetime.now(UTC)),
+            family=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
             latest_years={},
             read_series={},
         )

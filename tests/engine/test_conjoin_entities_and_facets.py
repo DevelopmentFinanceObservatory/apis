@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+from origin_catalogue import current_catalogue
 from search.engine.binders import GeminiBinder
 from search.engine.concurrency import scoped_concurrency
 from search.engine.conjoin import BINDING_FOLDED, combine_regions
@@ -24,6 +25,7 @@ from search.engine.errors import GraphInfraError
 from search.engine.events import FacetOptionsEvent, ResponseEvent
 from search.engine.facet_refusals import facet_refusal
 from search.engine.region import OPTION_COVERAGE_PROBE_FAILED, RegionResult
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.facet_probe import facet_pins, facet_probe, merge_facet_probes
 from search.engine.region.option_coverage import _facet_options, _maybe_build_facet_options
 from search.engine.region.relaunch import _relaunch_slot_options
@@ -1109,6 +1111,17 @@ def test_a_multi_variable_answer_offers_the_merged_facet_options():
             graph=_MERGE_GRAPH,
             start_ms=0,
             params=params,
+            # The members preview nothing, so the merge reads through none of them.
+            preview_reads=ComponentReads(
+                graph=_MERGE_GRAPH,
+                sdmx=cast(Any, None),
+                coverage=params.coverage,
+                materialise_graph=None,
+                materialise_sdmx=None,
+                rate_cache=None,
+                deadline=params.deadline,
+                catalogue=current_catalogue(),
+            ),
         ):
             if isinstance(event, ResponseEvent):
                 return event.response
@@ -1244,10 +1257,12 @@ def test_collapse_same_shape_merges_differing_fallback_resolved_facets():
     The merged facet records `selection="per_series"` instead of one member's pick.
     """
     facets_a = {
-        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/A", label="Method A")
+        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/A", label="Method A"),
+        "unit": ResolvedFacet(basis="fallback", ref="CurrencyUSD"),
     }
     facets_b = {
-        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/B", label="Method B")
+        "measurementMethod": ResolvedFacet(basis="fallback", ref="method/B", label="Method B"),
+        "unit": ResolvedFacet(basis="fallback", selection="per_series", refs=["CurrencyKES"]),
     }
     spec_a = _spec_with_resolved_facets(_PERSON_SHAPE, "ValA", "sv_a", facets_a)
     spec_b = _spec_with_resolved_facets(_PERSON_SHAPE, "ValB", "sv_b", facets_b)
@@ -1260,7 +1275,10 @@ def test_collapse_same_shape_merges_differing_fallback_resolved_facets():
     assert residual == []
     merged = effective[0].spec
     assert merged.resolved.facets == {
-        "measurementMethod": ResolvedFacet(basis="fallback", selection="per_series")
+        "measurementMethod": ResolvedFacet(basis="fallback", selection="per_series"),
+        "unit": ResolvedFacet(
+            basis="fallback", selection="per_series", refs=["CurrencyUSD", "CurrencyKES"]
+        ),
     }
 
 

@@ -10,8 +10,8 @@ import threading
 
 import pytest
 
-import search.engine.region.candidate_collapse as candidate_collapse_module
 import search.engine.region.candidate_options as candidate_options_module
+import search.engine.region.observations.dispatch as region_dispatch
 from materialise import (
     GraphReader,
 )
@@ -524,31 +524,27 @@ def test_candidates_lone_survivor_collapse_launches_place_options_task():
 def test_candidates_lone_survivor_cancellation_does_not_leak_observations_task(monkeypatch):
     """The facet probe blocks on an Event so cancellation lands inside `gather`.
     This await precedes observation-task creation; the wrapper records any task
-    returned by `_resolve_spec_observations`. If that call ran first, the task would
-    exist and leak uncancelled. Captured tasks must be cancelled, since fast fakes
-    can finish one before the assertion.
+    the survivor's preview launches (`dispatch._launch_observations_task`). If that launch
+    ran first, the task would exist and leak uncancelled. Captured tasks must be cancelled,
+    since fast fakes can finish one before the assertion.
     """
     entered = threading.Event()
     release = threading.Event()
     captured_tasks: list[asyncio.Task | None] = []
 
-    real_resolve_spec_observations = candidate_collapse_module._resolve_spec_observations
+    real_launch = region_dispatch._launch_observations_task
 
-    async def _capturing_resolve_spec_observations(*args, **kwargs):
-        result = await real_resolve_spec_observations(*args, **kwargs)
-        captured_tasks.append(result[1])
-        return result
+    def _capturing_launch(*args, **kwargs):
+        task = real_launch(*args, **kwargs)
+        captured_tasks.append(task)
+        return task
 
     def _blocking_maybe_build_facet_options(*args, **kwargs):
         entered.set()
         release.wait(timeout=5)
         return [], None
 
-    monkeypatch.setattr(
-        candidate_collapse_module,
-        "_resolve_spec_observations",
-        _capturing_resolve_spec_observations,
-    )
+    monkeypatch.setattr(region_dispatch, "_launch_observations_task", _capturing_launch)
     monkeypatch.setattr(
         candidate_options_module, "_maybe_build_facet_options", _blocking_maybe_build_facet_options
     )

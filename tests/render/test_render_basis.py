@@ -18,6 +18,10 @@ def _unit(ref: str, label: str | None, currency: str | None = None) -> dict[str,
     return {"unit": ResolvedFacet(basis="fallback", ref=ref, label=label, currency=currency)}
 
 
+def _per_series(*refs: str) -> dict[str, ResolvedFacet]:
+    return {"unit": ResolvedFacet(basis="fallback", selection="per_series", refs=list(refs))}
+
+
 def _provenance(ref: str) -> dict[str, ResolvedFacet]:
     return {"provenance": ResolvedFacet(basis="fallback", ref=ref)}
 
@@ -47,13 +51,190 @@ def test_a_unit_that_keeps_the_magnitude_stays_out_of_the_heading(facets):
 
 @pytest.mark.parametrize("denominator", ["Count_Person", "PerCapita"])
 def test_a_per_head_denominator_reads_per_capita(denominator: str):
-    """Both per-head denominators read "per capita", whatever the unit."""
+    """Both per-head denominators read "per capita" under a money unit."""
     spec = _spec(
         measured_property=_ref("valueAdded", "Value added"),
         measurement_denominator=_ref(denominator, "Total population"),
         facets=_unit("USDollar", "US dollar"),
     )
-    assert _rendered(spec) == "Value added per capita."
+    assert (
+        sentence_from_plan([t for t in render_sentence_plan(spec) if t.segment == "heading"])
+        == "Value added per capita."
+    )
+
+
+@pytest.mark.parametrize(
+    ("denominator", "unit", "expected"),
+    [
+        pytest.param(
+            _ref("Count_Person", "Total population"),
+            _unit("Per1000Persons", "Per 1000 people"),
+            "Crude birth rate per 1,000 people.",
+            id="per-1000-people-over-count-person",
+        ),
+        pytest.param(
+            _ref("Count_BirthEvent_LiveBirth", "Live births"),
+            _unit("Per1000LiveBirths", "Per 1000 live births"),
+            "Crude birth rate per 1,000 live births.",
+            id="per-1000-live-births-over-live-births",
+        ),
+        pytest.param(
+            None,
+            _unit(
+                "undata/UNIT_MEASURE-RATIO_COUNT_PER_10000_COUNT_POP", "Count per 10,000 persons"
+            ),
+            "Crude birth rate per 10,000 people.",
+            id="un-unit-with-no-denominator",
+        ),
+        pytest.param(
+            None,
+            _unit("undata/UNIT_MEASURE-RATE_DEATH_PER_1000_COUNT", "Death rate per 1,000"),
+            "Crude birth rate per 1,000.",
+            id="base-of-nothing-the-ref-states",
+        ),
+    ],
+)
+def test_a_rate_states_its_base(denominator, unit, expected):
+    """A rate reads its base in place of "per capita" or "relative to" the denominator, and
+    its token states the unit."""
+    spec = _spec(
+        measured_property=_ref("crudeBirthRate", "Crude birth rate"),
+        measurement_denominator=denominator,
+        facets=unit,
+    )
+    plan = render_sentence_plan(spec)
+    assert sentence_from_plan([t for t in plan if t.segment == "heading"]) == expected
+    (token,) = [t for t in plan if t.axis == "unit"]
+    assert token.states == [UNIT_REF]
+
+
+@pytest.mark.parametrize(
+    ("label", "unit", "expected"),
+    [
+        pytest.param(
+            "Homicides per 100,000 population",
+            "Per100000Persons",
+            "Homicides per 100,000 population.",
+            id="digits",
+        ),
+        pytest.param(
+            "Researchers per million inhabitants",
+            "SDG_PER_1000000_POP",
+            "Researchers per million inhabitants.",
+            id="a-word-for-the-base",
+        ),
+        pytest.param(
+            "Homicides per 100 000 population",
+            "Per100000Persons",
+            "Homicides per 100 000 population.",
+            id="digits-grouped-by-spaces",
+        ),
+        pytest.param(
+            "Homicides per hundred thousand people",
+            "Per100000Persons",
+            "Homicides per hundred thousand people.",
+            id="scale-words",
+        ),
+    ],
+)
+def test_a_rate_the_graph_name_states_reads_once(label, unit, expected):
+    spec = _spec(
+        measured_property=_ref("value", "value"),
+        facets=_unit(unit, None),
+        stat_vars=[
+            StatVar(
+                ref=_ref("Value_Rate", label),
+                shape_id="test-shape",
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+    )
+    assert _rendered(spec) == expected
+
+
+@pytest.mark.parametrize(
+    ("measure", "facets", "expected"),
+    [
+        pytest.param("GDP", {}, "GDP per capita.", id="no-unit"),
+        pytest.param("GDP", _unit("CurrencyKES", None), "GDP per capita.", id="money"),
+        pytest.param(
+            "GDP",
+            _unit("PPPInternationalDollar", None),
+            "GDP per capita in PPP international dollars.",
+            id="purchasing-power",
+        ),
+        pytest.param(
+            "Electricity use",
+            _unit("KilowattHour", None),
+            "Electricity use per capita.",
+            id="physical-unit",
+        ),
+        pytest.param(
+            "Households with electricity",
+            _unit("Percent", None),
+            "Households with electricity in percent.",
+            id="kenya-census-percent",
+        ),
+        pytest.param(
+            "GDP",
+            _per_series("CurrencyUSD", "CurrencyKES"),
+            "GDP per capita.",
+            id="weo-two-currency",
+        ),
+        pytest.param(
+            "Deaths",
+            _per_series("Per1000Persons"),
+            "Deaths.",
+            id="france-deaths-per-1000-beside-no-unit",
+        ),
+        pytest.param(
+            "GDP", _per_series("CurrencyUSD", "Percent"), "GDP.", id="money-beside-a-percent"
+        ),
+        pytest.param(
+            "GDP",
+            {"unit": ResolvedFacet(basis="fallback", selection="per_series")},
+            "GDP per capita.",
+            id="units-not-listed",
+        ),
+    ],
+)
+def test_count_person_reads_per_capita_under_any_unit_but_a_rate_or_percent(
+    measure, facets, expected
+):
+    """A `Count_Person` denominator is a per-head amount whatever the unit, a physical one
+    included. A rate states its own base and a percent is a share, so neither reads "per
+    capita", and series that select several units read it only when every one does:
+    France's deaths, per 1,000 people beside series with no unit, do not."""
+    spec = _spec(
+        measured_property=_ref("measure", measure),
+        measurement_denominator=_ref("Count_Person", "Total population"),
+        facets=facets,
+    )
+    heading = [t for t in render_sentence_plan(spec) if t.segment == "heading"]
+    assert sentence_from_plan(heading) == expected
+
+
+def test_a_rate_the_graph_name_states_differently_reads_the_unit_base():
+    """A murder rate the graph names "per capita" but serves per 100,000 people reads the
+    unit's base."""
+    spec = _spec(
+        measured_property=_ref("value", "value"),
+        measurement_denominator=_ref("Count_Person", "Total population"),
+        facets=_unit("Per100000Persons", None),
+        stat_vars=[
+            StatVar(
+                ref=_ref(
+                    "Count_CriminalActivities_MurderAndNonNegligentManslaughter_PerCapita",
+                    "Murder rate per capita",
+                ),
+                shape_id="test-shape",
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+    )
+    assert _rendered(spec) == "Murder rate per capita per 100,000 people."
 
 
 def test_purchasing_power_per_capita_is_one_unit_token():
@@ -224,7 +405,10 @@ def test_a_heading_never_states_per_capita_twice():
             )
         ],
     )
-    assert _rendered(spec) == "CO2 emissions per capita."
+    assert (
+        sentence_from_plan([t for t in render_sentence_plan(spec) if t.segment == "heading"])
+        == "CO2 emissions per capita."
+    )
 
 
 def _shape(denominator) -> Shape:
@@ -241,17 +425,29 @@ def _shape(denominator) -> Shape:
     )
 
 
-def test_a_pre_materialise_plan_states_only_the_per_head_unit():
-    """Before facets resolve (`facets=None`, the bind-time sentence event) the shape
-    alone fixes a per-head rate, so "per capita" reads; a ratio waits for the unit,
-    which decides "as a share of" against "relative to". An empty mapping is a resolved
-    answer and states the ratio."""
+def test_a_pre_materialise_plan_states_no_denominator():
+    """Before facets resolve (`facets=None`, the bind-time sentence event) the unit is
+    unknown, and it decides whether a per-head denominator reads "per capita" (no percent
+    or rate) and whether a ratio reads "as a share of" or "relative to". So the streamed
+    heading states neither, and the final heading adds to it. An empty mapping is a
+    resolved answer with no unit, and states both."""
     per_head = plan_tokens(
         heading_from_parts(
             [], [], _shape(_ref("Count_Person", "")), window=None, pinned_properties=frozenset()
         )
     )
-    assert sentence_from_plan(per_head) == "Adolescent birth rate per capita."
+    assert sentence_from_plan(per_head) == "Adolescent birth rate."
+    per_head_resolved = plan_tokens(
+        heading_from_parts(
+            [],
+            [],
+            _shape(_ref("Count_Person", "")),
+            window=None,
+            facets={},
+            pinned_properties=frozenset(),
+        )
+    )
+    assert sentence_from_plan(per_head_resolved) == "Adolescent birth rate per capita."
     pre = plan_tokens(
         heading_from_parts([], [], _shape(_LIVE_BIRTHS), window=None, pinned_properties=frozenset())
     )

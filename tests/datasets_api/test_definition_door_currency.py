@@ -5,6 +5,7 @@ UTC clock.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import threading
 from collections.abc import Iterator, Mapping
@@ -28,6 +29,7 @@ from datasets_api.versions import SubjectHead
 from dc_graph import GraphReadError
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
+from materialise.trace import RecordedFamily
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
@@ -262,6 +264,8 @@ class _FakeHeadStore:
         self,
         *,
         materialisation,
+        family,
+        basis,
         expected_materialisation_id: int | None,
         fence=None,
     ) -> SubjectHead | None:
@@ -280,28 +284,37 @@ class _FakeHeadStore:
             materialised_at=now,
             materialisation_id=next(self._runs),
             dependencies=materialisation.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=now, basis=basis),
         )
         self._heads[subject_id] = written
         return written
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+    def confirm_head(
+        self, *, subject_id: str, content_version: str, family, basis
+    ) -> SubjectHead | None:
         self.confirm_head_calls += 1
         existing = self._heads.get(subject_id)
         if existing is None or existing.content_version != content_version:
             return None
+        confirmed_at = datetime.now(UTC)
         written = SubjectHead(
             subject_id=existing.subject_id,
             content_version=existing.content_version,
-            confirmed_at=datetime.now(UTC),
+            confirmed_at=confirmed_at,
             materialised_at=existing.materialised_at,
             materialisation_id=existing.materialisation_id,
             dependencies=existing.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=confirmed_at, basis=basis),
         )
         self._heads[subject_id] = written
         return written
 
     def head_for(self, subject_id: str) -> SubjectHead:
         return self._heads[subject_id]
+
+    def drop_family(self, subject_id: str) -> None:
+        """Leave the head as an image recording no family wrote it."""
+        self._heads[subject_id] = dataclasses.replace(self._heads[subject_id], family=None)
 
     def age_head(
         self, subject_id: str, *, age: timedelta, materialised_age: timedelta | None = None
@@ -315,13 +328,19 @@ class _FakeHeadStore:
         """
         resolved_materialised_age = age if materialised_age is None else materialised_age
         existing = self._heads[subject_id]
+        confirmed_at = datetime.now(UTC) - age
         self._heads[subject_id] = SubjectHead(
             subject_id=existing.subject_id,
             content_version=existing.content_version,
-            confirmed_at=datetime.now(UTC) - age,
+            confirmed_at=confirmed_at,
             materialised_at=datetime.now(UTC) - resolved_materialised_age,
             materialisation_id=existing.materialisation_id,
             dependencies=existing.dependencies,
+            family=(
+                dataclasses.replace(existing.family, confirmed_at=confirmed_at)
+                if existing.family is not None
+                else None
+            ),
         )
 
 
@@ -335,12 +354,14 @@ class _RaisingHeadStore:
         self,
         *,
         materialisation,
+        family,
+        basis,
         expected_materialisation_id: int | None,
         fence=None,
     ) -> None:
         raise DatasetsStoreUnavailable("malformed head row")
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> None:
+    def confirm_head(self, *, subject_id: str, content_version: str, family, basis) -> None:
         raise DatasetsStoreUnavailable("malformed head row")
 
 
@@ -754,7 +775,12 @@ def test_options_route_currency_confirms_and_advances_the_head_as_a_get_does():
     within = client.get(f"/api/datasets/{spec_id}/options")
     assert within.status_code == 200, within.text
     assert within.json()["trace"]["served_from"] == "head"
+    assert within.json()["trace"]["family_member_digest"] is not None
     assert head_store.advance_head_calls == writes_after_definition_get
+    # A head with no recorded family states it unknown, as null keys on the wire.
+    head_store.drop_family(spec_id)
+    unknown = client.get(f"/api/datasets/{spec_id}/options").json()["trace"]
+    assert (unknown["family_member_digest"], unknown["family_member_count"]) == (None, None)
 
     # `/options` confirms the head when the fingerprint matches, as a GET does.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
@@ -1341,7 +1367,7 @@ def _unit_sdmx_transport(body_ref: dict[str, str]) -> httpx.MockTransport:
 
 
 def test_a_rebuild_after_the_native_unit_turns_non_currency_remints_the_422():
-    """When the elected unit changes from native `CurrencyUSD` to plain `USD` with no source
+    """When the elected unit changes from native `CurrencyUSD` to `Percent` with no source
     date moving, the head serves until its maximum age. The rebuild then returns 422
     `facet_binding_unsupported` without a pointer because the binding belongs to the stored
     identity."""
@@ -1385,11 +1411,11 @@ def test_a_rebuild_after_the_native_unit_turns_non_currency_remints_the_422():
     )
     assert minted.status_code == 200, minted.text
 
-    # The unit changes to plain `USD`, and the head reaches its maximum age.
+    # The unit changes to `Percent`, and the head reaches its maximum age.
     head_store.age_head(spec_id, age=_PAST_MAX_AGE)
-    body_ref["text"] = _unit_row(unit="USD")
+    body_ref["text"] = _unit_row(unit="Percent")
     facets[(_UNIT_STAT_VAR, _RECIPIENT)] = [
-        replace(facets[(_UNIT_STAT_VAR, _RECIPIENT)][0], unit="USD")
+        replace(facets[(_UNIT_STAT_VAR, _RECIPIENT)][0], unit="Percent")
     ]
 
     rechecked = client.get(f"/api/datasets/{spec_id}")

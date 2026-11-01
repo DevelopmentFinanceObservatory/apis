@@ -264,13 +264,15 @@ def test_deadline_synthesized_event_is_emitted_through_the_real_pipeline(
     """
     released = threading.Event()
 
-    def _held_build_observations(*args, **kwargs):
+    def _held_observations_events(*args, **kwargs):
         released.wait(timeout=30)
         raise AssertionError("should have been cancelled by the request deadline")
 
+    # Hold the trailing read alone. The answer phase's own read of the same preview, which
+    # states the immediate response's facets, runs as usual.
     monkeypatch.setattr(
-        "search.engine.region.observations.dispatch._build_observations",
-        _held_build_observations,
+        "search.engine.region.observations.dispatch._observations_events",
+        _held_observations_events,
     )
     timeout_s = search_settings().request_timeout_s
     monkeypatch.setattr(

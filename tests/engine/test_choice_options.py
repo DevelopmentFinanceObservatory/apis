@@ -380,6 +380,50 @@ def test_two_names_written_alike_ask_each_choice_apart():
         _assert_options_settle(client, again)
 
 
+def test_one_name_on_both_ends_asks_each_choice_apart():
+    """The live extraction names "Congo" twice, so one name holds both ends. Each end still
+    asks its own choice, each option pins its own row alone, the restatement states both
+    rows, and two picks bind each end to its own country."""
+    client = _congo_flow_client(
+        ExtractedEntity(text="Congo", flow_role="origin", role_span="from"),
+        ExtractedEntity(text="Congo", flow_role="destination", role_span="to"),
+    )
+
+    part = _raw_part(client, "aid from Congo to Congo")
+
+    no_data = part["no_data"]
+    assert no_data["reason"] == "entity_ambiguous"
+    assert no_data["entity_terms"] == ["Congo", "Congo"]
+    assert [group["text"] for group in no_data["ambiguous_entities"]] == ["Congo", "Congo"]
+    assert _congo_rows(part["restatement"]["entities"]) == [
+        ("Congo", None, "from"),
+        ("Congo", None, "to"),
+    ]
+    assert [(o["entity_choice"], _pins(o)) for o in no_data["options"]] == [
+        (0, [("from", _COD), ("to", None)]),
+        (0, [("from", _COG), ("to", None)]),
+        (1, [("from", None), ("to", _COD)]),
+        (1, [("from", None), ("to", _COG)]),
+    ]
+    for option in no_data["options"]:
+        answered = client.post("/api/search/resolve", json={"input": option["data_query"]})
+        assert answered.status_code == 200, answered.text
+        again = answered.json()["parts"][0]["no_data"]
+        assert [group["text"] for group in again["ambiguous_entities"]] == ["Congo"]
+        _assert_options_settle(client, again)
+
+    again = _no_data(client, no_data["options"][0]["data_query"]["parts"][0])
+    (chosen,) = [o for o in again["options"] if _pins(o) == [("from", _COD), ("to", _COG)]]
+    settled = client.post("/api/search/resolve", json={"input": chosen["data_query"]})
+    assert settled.status_code == 200, settled.text
+    (answered,) = settled.json()["parts"]
+    assert not answered.get("no_data", {}).get("ambiguous_entities")
+    assert answered["entity_refs"] == [
+        {"text": "Congo", "refs": [_COD]},
+        {"text": "Congo", "refs": [_COG]},
+    ]
+
+
 def test_a_candidate_named_by_another_row_s_words_is_pinned_apart_from_it():
     """The destination posts the candidate label "Congo [Republic]" pinned to the Republic,
     and the origin "Congo" is asked. Every option answers, and the Republic option pins

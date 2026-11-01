@@ -85,7 +85,6 @@ from materialise.facets import (
 )
 from materialise.frame_build import (
     Frame,
-    ParquetFrameChunks,
     ParquetFrameSink,
     build_frame_from_member_tables,
     build_frame_from_table,
@@ -2933,10 +2932,9 @@ def _assemble_group_outcome(
         entity_refs=streamer.totals.entity_refs,
     )
     check_ceiling(coverage, ceiling=ceiling)
-    parquet_bytes = streamer.parquet_sink.finish()
 
     return _GroupOutcome(
-        frame_chunks=ParquetFrameChunks(parquet_bytes, columns=streamer.frame_columns[0]),
+        frame_chunks=streamer.parquet_sink.finish(columns=streamer.frame_columns[0]),
         frame_sha256=frame_sha256,
         series_statistics=streamer.statistics_sink.finish(),
         row_count=coverage.rows,

@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from dfo_platform import ProblemDetails
 from search.engine.extract import ExtractedDate
@@ -396,6 +396,23 @@ class ObservationsEvent(BaseModel):
             "the same payload shape Spec.resolved.observations carries on the buffered path"
         )
     )
+    # Whether the read behind this preview swallowed a read (`degraded_reads`), so the answer
+    # it completes stands on less than a later request may read. The stream reports such an
+    # event as incomplete (`enrichment._stream_slot_options`), so no cache stores the bundle.
+    # It stays off the wire.
+    _degraded: bool = PrivateAttr(default=False)
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the read behind this preview swallowed a read."""
+        return self._degraded
+
+    def stating_degraded(self, degraded: bool) -> ObservationsEvent:
+        """A copy whose `degraded` is `degraded`."""
+        stated = self.model_copy()
+        # Pydantic sets a private attribute on a frozen model, but ty reads it as a field.
+        stated._degraded = degraded  # noqa: SLF001  # ty: ignore[invalid-assignment]
+        return stated
 
 
 class DoneTelemetry(BaseModel):

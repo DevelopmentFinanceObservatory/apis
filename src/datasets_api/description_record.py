@@ -32,7 +32,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import importlib.resources
-import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
 from typing import Literal, NamedTuple, cast
@@ -859,11 +858,6 @@ def _projected_caveat(
     )
 
 
-_WITHHELD_MESSAGE = re.compile(r"(?P<variable>\S+) served no observations for (?P<places>.+?); ")
-_UN_UNREAD_MESSAGE = re.compile(r"No UN data was read for (?P<places>.+)\.$")
-_MORE_NAMED = re.compile(r"^(?P<named>.+) and (?P<more>\d+) more$")
-
-
 def _withheld_caveat(
     warning: Mapping[str, object],
     facts: ManifestFacts,
@@ -872,18 +866,9 @@ def _withheld_caveat(
 ) -> None:
     if any(gap.get("code") == "withheld_by_registry" for gap in _origin_gaps(facts)):
         return
-    match = _WITHHELD_MESSAGE.search(cast(str, warning.get("message", "")))
-    if match is None:
-        raise _Unstated
-    entities, count = _named_places(match["places"])
-    caveats.append(
-        CaveatFact(
-            kind="coverage_gap",
-            series=[_bare(match["variable"])],
-            entities=entities,
-            count=count,
-        )
-    )
+    series, _count = _counted_refs(warning, "withheld_members")
+    entities, count = _counted_refs(warning, "unserved_entities")
+    caveats.append(CaveatFact(kind="coverage_gap", series=series, entities=entities, count=count))
 
 
 def _un_unread_caveat(
@@ -894,21 +879,20 @@ def _un_unread_caveat(
 ) -> None:
     if any(gap.get("code") == "un_system_unavailable" for gap in _origin_gaps(facts)):
         return
-    match = _UN_UNREAD_MESSAGE.search(cast(str, warning.get("message", "")))
-    if match is None:
-        raise _Unstated
-    entities, count = _named_places(match["places"])
+    entities, count = _counted_refs(warning, "unserved_entities")
     caveats.append(CaveatFact(kind="coverage_gap", entities=entities, count=count))
 
 
-def _named_places(named: str) -> tuple[list[str], int | None]:
-    """The places a message lists (`dfo_platform.named.named_capped`), and how many it
-    counts in all when it names only some."""
-    more = 0
-    if (capped := _MORE_NAMED.match(named)) is not None:
-        named, more = capped["named"], int(capped["more"])
-    places = [_bare(place) for place in named.split(", ")]
-    return places, len(places) + more if more else None
+def _counted_refs(warning: Mapping[str, object], field: str) -> tuple[list[str], int | None]:
+    """The bare dcids of the refs a warning's counted `field` carries, and how many it counts
+    in all when it carries only some (`CountedRefsModel`). Raises `_Unstated` when the warning
+    carries no such field."""
+    counted = cast("Mapping[str, object] | None", warning.get(field))
+    if not counted or not counted.get("refs"):
+        raise _Unstated
+    refs = [_bare(ref) for ref in cast("Sequence[str]", counted["refs"])]
+    total = cast(int, counted["count"])
+    return refs, total if total > len(refs) else None
 
 
 _STORED_WARNING_TRANSLATIONS: Mapping[str, _Translation] = {
@@ -1071,6 +1055,46 @@ def _bindings(
         else:
             open_slots[prop] = []
     return fixed, open_slots
+
+
+class UnrecordedSets(NamedTuple):
+    """The sets a `spec_` record written before sets were recorded leaves out
+    (`unrecorded_sets`)."""
+
+    fills: dict[int, list[str]]
+    """Each dimension the record holds without its set, by its position in
+    `variables.dimensions`, with the set a fresh record narrows it to."""
+    dropped: list[str]
+    """Each property the definition narrows to a set that the record holds no dimension for,
+    as a summed collapse made before sets were recorded sums the set's dimension away."""
+
+
+def unrecorded_sets(
+    record: DescriptionRecord, *, definition: Mapping[str, object], code_index: CodeIndex
+) -> UnrecordedSets:
+    """The sets `definition`, the `spec_` version's stored definition, narrows a dimension of
+    `record` to that `record` does not hold.
+
+    A slot bound to a set of two or more codes narrows its dimension to that set, read as
+    `variable_facts` reads it (`_bindings`). A dimension of that property holding neither
+    `within` nor `within_set` was recorded before sets were, and is in `fills`. A
+    property with no dimension in a record that holds dimensions is in `dropped`. A record
+    whose dimensions are unknown, or a computed one, leaves out none."""
+    variables = record.variables
+    if variables is None or variables.dimensions is None or record.computed is not None:
+        return UnrecordedSets(fills={}, dropped=[])
+    identity = cast("Mapping[str, object]", definition["identity"])
+    _, open_slots = _bindings(identity, code_index, declared=())
+    sets = {prop: refs for prop, refs in open_slots.items() if len(refs) > 1}
+    fills = {
+        position: sets[dimension.property]
+        for position, dimension in enumerate(variables.dimensions)
+        if dimension.property in sets
+        and dimension.within is None
+        and dimension.within_set is MISSING
+    }
+    held = {dimension.property for dimension in variables.dimensions}
+    return UnrecordedSets(fills=fills, dropped=[prop for prop in sets if prop not in held])
 
 
 def role_dimensions(
@@ -1468,8 +1492,9 @@ def source_evidence(citation: Mapping[str, object]) -> list[SourceEvidence]:
 def named_refs(record: DescriptionRecord) -> list[str]:
     """The dcids a record's facts name, sorted: its one variable, fixed values, dimension
     values and the codes they narrow to, the refs inside its steps and the entities their
-    sides hold (`bound_entities`), the variables a unit counts, such as the population of a
-    per-capita denominator, and the series and entities its caveats name."""
+    sides hold or are narrowed to (`bound_entities`), the variables a unit counts, such as
+    the population of a per-capita denominator, and the series and entities its caveats
+    name."""
     refs: set[str] = set()
     if (variables := record.variables) is not None:
         if variables.variable is not None:

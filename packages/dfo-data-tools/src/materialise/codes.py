@@ -66,7 +66,8 @@ class MaterialisationWarning(TypedDict):
     carries `unserved_entities`, the bound entities that served no observation,
     `currency_unmapped_omitted` `omitted_entities`, the entities whose rows the conversion
     left out, and `deflator_missing_omitted` `omitted_entity_years`, those entities with the
-    years of their rows. Each message counts what these fields hold
+    years of their rows. `deflator_projected` counts its rows, and the trace's conversion
+    entries hold its examples. Each message counts what these fields hold
     and names none of it, so a stored version holds no name that can go stale. A
     `coverage_below_scope` whose data covers fewer years than its range asked carries
     `requested_years`, the range asked, and `served_years`, the years served, and its message
@@ -91,10 +92,6 @@ class MaterialisationWarning(TypedDict):
 
 
 MATERIALISE_CODE_CATALOGUE: CodeCatalogue = {
-    "entities_unbound": (
-        "Entities Unbound",
-        "The request binds no entity dcid to probe for a facet candidate set.",
-    ),
     "default_facet_undefined": (
         "Default Facet Undefined",
         "An unbound facet axis has no probed candidate to draw a default from.",

@@ -842,8 +842,8 @@ def test_a_clipped_scope_window_notes_where_the_served_series_starts() -> None:
     spec = result.specs[0]
     assert spec.resolved.scope is not None
     assert [m.ref for m in spec.resolved.scope.members] == ["country/A2", "country/A3"]
-    sentence = sentence_from_plan(render_sentence_plan(spec))
-    assert sentence.endswith(", 2016 to 2020."), sentence
+    heading = sentence_from_plan([t for t in render_sentence_plan(spec) if t.segment == "heading"])
+    assert heading.endswith(", 2016 to 2020."), heading
     assert [
         fact.shown
         for fact in spec_departure_facts(spec, operations=())

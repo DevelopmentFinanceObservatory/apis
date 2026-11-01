@@ -20,8 +20,6 @@ from dfo_platform.trace import get_trace_id
 if TYPE_CHECKING:
     from fastapi.responses import JSONResponse
 
-_logger = logging.getLogger(__name__)
-
 PROBLEM_JSON = "application/problem+json"
 
 
@@ -220,10 +218,12 @@ class ProblemSpec(NamedTuple):
     count: int | None = None
     cap: int | None = None
     headers: Mapping[str, str] | None = None
-    # What `dfo_platform.app._log_refusal` logs for a refusal a surface's classifier or admission
-    # check returns, so both stay pure. Neither reaches the wire or `to_canonical_data`.
+    # What `log_problem` logs for a refusal a surface's classifier or admission check returns,
+    # so both stay pure, with the classified exception's traceback when `log_traceback`. None
+    # reaches the wire or `to_canonical_data`.
     log: str | None = None
     log_level: int = logging.ERROR
+    log_traceback: bool = False
 
     def to_canonical_data(self) -> dict[str, object]:
         """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes."""
@@ -264,7 +264,7 @@ class ProblemSpec(NamedTuple):
 
 def _without_log_fields(data: object) -> object:
     """`data`, refused if it names a field `to_canonical_data` does not write."""
-    if isinstance(data, Mapping) and data.keys() & {"log", "log_level"}:
+    if isinstance(data, Mapping) and data.keys() & {"log", "log_level", "log_traceback"}:
         raise ValueError("canonical problem data holds no log fields")
     return data
 
@@ -294,6 +294,7 @@ def refused(
     headers: Mapping[str, str] | None = None,
     log: str | None = None,
     log_level: int = logging.ERROR,
+    log_traceback: bool = False,
 ) -> ProblemSpec:
     """`code`'s problem at the status the code registry gives it on the bound endpoint, so a
     classifier cannot state one apart from the other.
@@ -315,7 +316,28 @@ def refused(
         headers=headers,
         log=log,
         log_level=log_level,
+        log_traceback=log_traceback,
     )
+
+
+def log_problem(
+    spec: ProblemSpec,
+    exc: BaseException | None,
+    *,
+    logger: logging.Logger,
+    context: str | None,
+) -> None:
+    """Log the line `spec` names (`ProblemSpec.log`) at its level, after `context` when one is
+    given, with `exc`'s traceback when `spec.log_traceback`. A spec naming no line logs
+    nothing. The request path calls this once per classified request, and a reader that
+    classifies outside a request calls it itself."""
+    if spec.log is None:
+        return
+    exc_info = exc if spec.log_traceback else None
+    if context is None:
+        logger.log(spec.log_level, "%s", spec.log, exc_info=exc_info)
+    else:
+        logger.log(spec.log_level, "%s: %s", context, spec.log, exc_info=exc_info)
 
 
 class Refusal(Exception):
@@ -347,14 +369,13 @@ class Refusal(Exception):
 
 
 def classify_refusal(exc: BaseException) -> ProblemSpec | None:
-    """Render a `Refusal` from its attributes, logging a server-side one a retry cannot clear.
-    `count` and `cap` belong to the ceiling extension and render only beside `ceiling_kind`.
-    Return `None` for any other exception."""
+    """Render a `Refusal` from its attributes, naming a log line with its traceback for a
+    server-side one a retry cannot clear. `count` and `cap` belong to the ceiling extension and
+    render only beside `ceiling_kind`. Return `None` for any other exception."""
     if not isinstance(exc, Refusal):
         return None
     status = registered_status(exc.code)
-    if status >= http.HTTPStatus.INTERNAL_SERVER_ERROR and not exc.retryable:
-        _logger.error("Refusal %s: %s", exc.code, exc, exc_info=exc)
+    server_fault = status >= http.HTTPStatus.INTERNAL_SERVER_ERROR and not exc.retryable
     pointer, issues = exc.pointer, list(exc.issues) if exc.issues else None
     if exc.strip_pointer:
         pointer = None
@@ -374,6 +395,8 @@ def classify_refusal(exc: BaseException) -> ProblemSpec | None:
         count=exc.count if ceiling else None,
         cap=exc.cap if ceiling else None,
         headers=exc.headers,
+        log=f"Refusal {exc.code}: {exc}" if server_fault else None,
+        log_traceback=server_fault,
     )
 
 

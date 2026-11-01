@@ -6,9 +6,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Annotated, Literal, NotRequired
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+    with_config,
+)
+from typing_extensions import TypedDict  # `extra_items` (PEP 728) reaches `typing` in 3.15
 
 from dfo_platform.roles import RoleAxis
 from materialise.roles import axis_for_role
@@ -263,7 +272,8 @@ class CountedRefsModel(BaseModel):
     `materialise.codes.CountedRefs`). A message states the count and may name none, so a
     reader labels the refs. A group's members come in request order and entities sorted;
     for `withheld_by_registry`, `unserved_entities` come in the order the request names them
-    and `withheld_provenances` in the order they first occur across those places."""
+    and `withheld_provenances` in the order they first occur across those places; for
+    `un_system_unavailable`, `unserved_entities` come in the order the UN reads recorded them."""
 
     model_config = ConfigDict(extra="forbid")
     count: int = Field(description="how many there are")
@@ -317,8 +327,8 @@ class WarningModel(BaseModel):
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
     `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
-    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`.
-    A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
+    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`, and
+    `un_system_unavailable` `unserved_entities`. A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
     withhold with none of its three. A `None` field is left out of every dump, so other codes'
     warnings, on the wire and in stored version bodies, stay exactly `{code, severity,
     message}`.
@@ -395,7 +405,9 @@ class WarningModel(BaseModel):
         description=(
             "coverage_below_scope: the entities the request binds that served no observation, "
             "sorted; withheld_by_registry: the places among them at which the registry "
-            "withholds data, in the order the request names them; absent when there are none"
+            "withholds data, in the order the request names them; un_system_unavailable: the "
+            "places the UN System Data Commons could not serve, in the order its reads "
+            "recorded them; absent when there are none"
         ),
     )
     requested_years: YearRangeModel | None = Field(
@@ -547,6 +559,15 @@ class EnrichmentOptionModel(BaseModel):
     coverage: EnrichmentCoverageCountsModel
     missing: list[MissingEntityModel] = Field(default_factory=list)
     truncated: bool = False
+    in_long_layout: bool = Field(
+        default=False,
+        description=(
+            "true when a long-layout download writes this information with no columns token, "
+            "so naming the token there adds nothing: {role}_label, and the party fields of a "
+            "role on a flow axis, which its {role}_kind column reads in words. Pivot output and "
+            "the frame layout write the column only when the token asks for it"
+        ),
+    )
 
 
 class VaryingColumnModel(BaseModel):
@@ -666,9 +687,60 @@ class RetentionModel(BaseModel):
     )
 
 
+@with_config(ConfigDict(extra="forbid"))
+class PartyTotalsLeftOutModel(TypedDict):
+    """One role's group totals a `without_party_totals` cut left out of one provenance's rows
+    (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
+    `provenance`, which a version recorded before the trace named the provenance holds, left its
+    parties out of the rows of every dataset."""
+
+    role: Annotated[str, Field(description="the party role whose rows lost the totals")]
+    provenance: NotRequired[
+        Annotated[
+            str | None,
+            Field(
+                description="the dataset whose rows lost the totals, null for rows with no "
+                "provenance. Absent on a version recorded before the trace named the "
+                "provenance, whose totals left the rows of every dataset"
+            ),
+        ]
+    ]
+    entities: Annotated[
+        list[str],
+        Field(description="the dcid refs of the totals left out, in ref order"),
+    ]
+
+
+# Set here so the enclosing model's `extra="forbid"` does not reach the open keys.
+@with_config(ConfigDict(extra="allow"))
+class TraceModel(TypedDict, extra_items=object):
+    """A manifest's `trace` (`materialise.trace.ManifestTrace.to_dict()`, plus the keys each
+    door attaches). It types `party_totals_left_out` and keeps every other key open."""
+
+    party_totals_left_out: NotRequired[
+        Annotated[
+            list[PartyTotalsLeftOutModel],
+            Field(
+                description="the parties whose total rows a without_party_totals rendering "
+                "left out of this version's frame: one entry per open party role and "
+                "provenance that lost rows, in role order and then provenance order (null "
+                "first). Absent when the rendering left nothing out or was not asked to"
+            ),
+        ]
+    ]
+
+
+# A trace states what is unknown as null (`family_member_digest`, a `party_totals_left_out`
+# entry's `provenance`), and the doors dump responses with `exclude_none=True`, which drops
+# null keys from a typed dict. A trace serialises as the dict it validated to, so its nulls
+# reach the wire, while validation and the JSON schema stay `TraceModel`'s.
+Trace = Annotated[TraceModel, PlainSerializer(lambda trace: trace)]
+
+
 class Manifest(BaseModel):
-    """`trace` stays a plain dict, since `materialise.trace.ManifestTrace.to_dict()`
-    is already this field's exact wire shape.
+    """`trace` is a plain dict at run time, since `materialise.trace.ManifestTrace.to_dict()`
+    is already this field's wire shape. Its type (`TraceModel`) fixes the shape of
+    `party_totals_left_out` and leaves every other key open.
 
     `series_count` is the number of distinct series this definition
     resolves, as the version's description counts them (`statistics.SeriesFigures.series`): a
@@ -695,7 +767,7 @@ class Manifest(BaseModel):
     prepared_at: AwareDatetime
     coverage: CoverageModel
     citation: CitationModel
-    trace: dict[str, object]
+    trace: Trace
     warnings: list[WarningModel] = Field(default_factory=list)
     diagnostics: list[DiagnosticModel] = Field(
         default_factory=list,
@@ -747,4 +819,4 @@ class OptionsEnvelope(BaseModel):
     coverage: CoverageModel
     output_options: OutputOptionsModel | None = None
     warnings: list[WarningModel] = Field(default_factory=list)
-    trace: dict[str, object]
+    trace: Trace

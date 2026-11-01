@@ -32,7 +32,7 @@ from dfo_platform.roles import GENERIC_ROLE_WORDING, ROLE_WORDING, FlowFamily, R
 from unit_words.currency_nouns import CURRENCY_NOUNS
 from unit_words.unit_class import classify_unit
 
-COMPOSER_VERSION: Final = "3"
+COMPOSER_VERSION: Final = "6"
 """The version of how the composer phrases sentences from the same words. Raising it moves
 every `voc_` revision. An edit to the packaged word tables moves the revision on its own
 (`vocabulary_revision`)."""
@@ -78,8 +78,7 @@ class Vocabulary:
     read-only copies of the caller's inputs and hold non-empty strings only. `labels` maps any
     other dcid (a place, an organisation, a variable, a source) to its current label, and
     `definitions` maps any other dcid to its current definition, read through `definition`.
-    `currency_units` maps a unit dcid to its ISO 4217 code, as the graph gives it
-    (`unit_noun`). `role_wording` holds the provider and recipient nouns of each flow family.
+    `role_wording` holds the provider and recipient nouns of each flow family.
     `publishers` maps a `Source` dcid to the short name people cite it by ("OECD"). `sources`
     maps a source's provenance or dataset dcid to what its document says today.
     """
@@ -89,7 +88,6 @@ class Vocabulary:
     measure_index: MeasureIndex
     labels: Mapping[str, str]
     definitions: Mapping[str, str]
-    currency_units: Mapping[str, str]
     role_wording: Mapping[FlowFamily, RoleWording]
     publishers: Mapping[str, str]
     sources: Mapping[str, SourceDocumentFacts]
@@ -173,9 +171,7 @@ class Vocabulary:
     def unit_noun(self, unit: str) -> str | None:
         """The plural currency noun of a unit dcid ("US dollars" for `CurrencyUSD`), or `None`
         for a unit that is no currency or a currency with no authored noun."""
-        currency = classify_unit(
-            unit=unit, denominator=None, currency_units=self.currency_units
-        ).currency
+        currency = classify_unit(unit=unit, denominator=None, currency_units={}).currency
         return CURRENCY_NOUNS.get(currency) if currency is not None else None
 
     def roles(self, family: FlowFamily | None) -> RoleWording:
@@ -252,7 +248,6 @@ def build_vocabulary(
     measure_index: MeasureIndex,
     labels: Mapping[str, str],
     sources: Mapping[str, SourceDocumentFacts],
-    currency_units: Mapping[str, str],
     graph_generation: str | None,
     catalogue_build: str | None,
     definitions: Mapping[str, str] = MappingProxyType({}),
@@ -267,7 +262,6 @@ def build_vocabulary(
         labels: the labels the caller read for places, organisations, variables and sources,
             by dcid. A code's or measure value's index label takes precedence (`Vocabulary.label`).
         sources: each source's document facts, by provenance or dataset dcid.
-        currency_units: unit dcid to ISO 4217 code, as the graph gives it.
         graph_generation: the graph generation token the labels were read at.
         catalogue_build: the origin catalogue build id joined to the bound release
             (`origin_catalogue.context.current_words_build`).
@@ -292,7 +286,6 @@ def build_vocabulary(
                 if (text := _definition(raw)) is not None
             }
         ),
-        currency_units=MappingProxyType(dict(currency_units)),
         role_wording=ROLE_WORDING,
         publishers=publisher_names(),
         sources=MappingProxyType(

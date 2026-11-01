@@ -300,26 +300,31 @@ def _table_label(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
     return catalogue.arc_label(dcid) or _OMITTED
 
 
-def _table_type(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
-    """A dcid's first type, as `GraphClient.node_type` picks it: a held node's first
-    `typeOf` target, `Topic` for a topic, or the type an arc naming the node carries.
-    An arc of ours naming a node of several types carries them in no order the
-    graph's `typeOf` read is known to share, so that node's type is read live."""
+def _table_types(catalogue: Catalogue, dcid: str) -> tuple[str, ...] | _Unmirrored:
+    """A dcid's distinct types in the graph's order, as `GraphClient.node_types_batch` reads
+    them: a held node's `typeOf` targets, `Topic` for a topic, or the type an arc naming the
+    node carries. An arc of ours naming a node of several types carries them in no order the
+    graph's `typeOf` read is known to share, so that node's types are read live."""
     arcs = _node_arcs(catalogue, dcid)
     if arcs is not None:
-        types = _types(arcs)
-        return types[0] if types else _OMITTED
+        return tuple(dict.fromkeys(_types(arcs))) or _OMITTED
     if is_un_dcid(dcid):
         if catalogue.un_topic_leaves(dcid) is not None:
-            return _TOPIC_TYPE
+            return (_TOPIC_TYPE,)
         if catalogue.superseded_by(dcid) is not None:
             return _OMITTED
         node = catalogue.un_node(dcid)
-        return node.types[0] if node is not None and node.types else _LIVE
+        return tuple(dict.fromkeys(node.types)) if node is not None and node.types else _LIVE
     if catalogue.mixer_topic_leaves(dcid) is not None:
-        return _TOPIC_TYPE
+        return (_TOPIC_TYPE,)
     target = catalogue.arc_target(dcid)
-    return target.types[0] if target is not None and len(target.types) == 1 else _LIVE
+    return tuple(target.types) if target is not None and len(target.types) == 1 else _LIVE
+
+
+def _table_type(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
+    """A dcid's first type (`_table_types`), as `GraphClient.node_type` picks it."""
+    types = _table_types(catalogue, dcid)
+    return types if isinstance(types, _Unmirrored) else types[0]
 
 
 def _table_subjects(
@@ -488,12 +493,12 @@ class OriginGraphClient:
             tables=_table_label,
         )
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         return self._route_many(
             current_catalogue(),
             dcids,
             lambda backend, part: backend.node_types_batch(part),
-            tables=_table_type,
+            tables=_table_types,
         )
 
     def node_arcs(self, dcid: str) -> dict | None:

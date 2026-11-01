@@ -12,12 +12,17 @@ import json
 import re
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 from urllib.parse import quote
 
+from dfo_frame_grammar import STAT_VAR_COLUMN
+from pydantic.experimental.missing_sentinel import MISSING
+
+from code_index.query import CodeIndex
 from description.caveats_text import caveat_text
 from description.facts import (
     CaveatFact,
+    ComposedVariable,
     DescriptionRecord,
     DimensionFacts,
     DrawnSeries,
@@ -29,7 +34,7 @@ from description.facts import (
     StatusCounts,
     VariableFacts,
 )
-from description.steps import ComposedUnit, SimpleUnit, Step, Unit, VariableSide
+from description.steps import ComposedUnit, SimpleUnit, Step, Unit, VariableSide, VersionRef
 from description.vocabulary import MeasureWords, Vocabulary
 from description.world_bank import world_bank_definition
 from dfo_platform.roles import FlowFamily, axis_for_role
@@ -47,6 +52,8 @@ CAVEATS_MAX = 50
 """The most caveats a description serves, the description schema's bound."""
 DRAWN_VALUES_MAX = 50
 """The most values a drawn dimension lists, the description schema's bound."""
+SOURCE_CODES_MAX = 50
+"""The most publisher codes a `source_codes` list holds, the description schema's bound."""
 DRAWN_VALUES_BUDGET_BYTES = 256 * 1024
 """The most bytes the drawn dimensions' `values` take together, as compact UTF-8 JSON. A
 card's envelope holds at most `assembler.limits.MAX_ENVELOPE_BYTES` (2 MiB). The schema lets
@@ -374,8 +381,10 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
     series first draw them, each with its definition where the vocabulary holds one, unless it
     draws more than `DRAWN_VALUES_MAX`, so a list that is served is complete. A dimension
     with a drawn code that neither the vocabulary nor the evidence labels serves no `values`,
-    with one gap naming the list, so a served list labels every code. The lists are held to
-    `DRAWN_VALUES_BUDGET_BYTES` (`_within_budget`)."""
+    with one gap naming the list, so a served list labels every code. A value the drawn
+    variables declare on their own index rows carries the publisher codes of the series
+    holding it (`source_codes`). The lists are held to `DRAWN_VALUES_BUDGET_BYTES`
+    (`_within_budget`)."""
     held = {
         dimension.property: {value.value for value in dimension.values}
         for dimension in (record.variables.dimensions or [] if record.variables else [])
@@ -386,6 +395,12 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
         for prop, code in _series_codes(series, words.vocabulary):
             if prop in held and code in held[prop]:
                 taken[prop][code] = None
+    declaring: dict[tuple[str, str], list[DrawnSeries]] = {}
+    for series in selection.series:
+        variable = _drawn_variable(series)
+        row = words.vocabulary.index.statvar_by_dcid(variable) if variable is not None else None
+        for pair in row.constraint_properties.items() if row is not None else ():
+            declaring.setdefault(pair, []).append(series)
     dimensions = [prop for prop in held if taken[prop]]
     wire: Wire = {
         "dimensions": _within_budget(
@@ -396,6 +411,12 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
                     of=len(held[prop]),
                     words=words,
                     path=f"about.drawn.dimensions.{n}",
+                    coded={
+                        code: codes
+                        for code in taken[prop]
+                        if (prop, code) in declaring
+                        and (codes := source_codes(record, declaring[prop, code], words.vocabulary))
+                    },
                 )
                 for n, prop in enumerate(dimensions)
             ],
@@ -407,7 +428,17 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
     return wire
 
 
-def _drawn_dimension(prop: str, codes: Sequence[str], *, of: int, words: Words, path: str) -> Wire:
+def _drawn_dimension(
+    prop: str,
+    codes: Sequence[str],
+    *,
+    of: int,
+    words: Words,
+    path: str,
+    coded: Mapping[str, list[Wire]],
+) -> Wire:
+    """A drawn dimension at `path`, its values each with its definition and the publisher
+    codes `coded` gives it."""
     dimension: Wire = {
         "property": words.property(prop, f"{path}.property"),
         "count": len(codes),
@@ -419,7 +450,9 @@ def _drawn_dimension(prop: str, codes: Sequence[str], *, of: int, words: Words, 
         words.gap(f"{path}.values")
         return dimension
     dimension["values"] = [
-        words.defined_ref(code, f"{path}.values.{n}") for n, code in enumerate(codes)
+        words.defined_ref(code, f"{path}.values.{n}")
+        | ({"source_codes": coded[code]} if code in coded else {})
+        for n, code in enumerate(codes)
     ]
     return dimension
 
@@ -476,6 +509,94 @@ def drawn_unit(selection: SelectionFacts, words: Words) -> Wire | None:
     return _one_unit([series.unit for series in selection.series], words, "about.unit")
 
 
+# Source codes
+
+type _Coded = tuple[frozenset[tuple[str, str]], str | None]
+"""The `(provenance, code)` pairs naming one series' variable, and the source it is read
+from."""
+
+
+def source_codes(
+    record: DescriptionRecord, series: Sequence[DrawnSeries], vocabulary: Vocabulary
+) -> list[Wire] | None:
+    """The publisher codes of the variables `series` hold (`served_codes`). A series of a
+    computed version whose variable the code index gives no code takes the codes of the
+    variables it was composed from (`_variable_codes`)."""
+    composed = {
+        variable.variable: variable
+        for variable in (record.computed.composed or [] if record.computed else [])
+    }
+    index = vocabulary.index
+    return served_codes(
+        [(_variable_codes(_drawn_variable(one), index, composed), one.source) for one in series],
+        index,
+        computed=record.computed is not None,
+    )
+
+
+def version_source_codes(record: DescriptionRecord, vocabulary: Vocabulary) -> list[Wire] | None:
+    """The publisher codes of the one variable a dataset version's definition resolved to,
+    read from each source its series name (`served_codes`). `None` for a version of several
+    variables, which its record does not list."""
+    variables = record.variables
+    if variables is None or variables.variable is None:
+        return None
+    codes = frozenset(vocabulary.index.source_codes_of(variables.variable))
+    counts = source_counts(record.series)
+    sources = (list(counts) if counts is not None else []) or [None]
+    return served_codes([(codes, source) for source in sources], vocabulary.index, computed=False)
+
+
+def served_codes(held: Sequence[_Coded], index: CodeIndex, *, computed: bool) -> list[Wire] | None:
+    """The `(provenance, code)` pairs `held` names, each once, sorted by provenance and then
+    code, as Search serves `stat_vars.source_codes`. `None` when there are none, or more
+    than `SOURCE_CODES_MAX`, so a list that is served is complete.
+
+    A code is `exact`, as Search's is when its Spec is the series the provenance files
+    under it (`search.engine.source_code.stands_for_code`), when every series of `held` is
+    read from its provenance and named by it, and the provenance gives none of the code's
+    variables another code. A computed version's series were made from the variables the
+    codes name, so none of their codes is exact."""
+    pairs = sorted({pair for codes, _ in held for pair in codes})
+    if not pairs or len(pairs) > SOURCE_CODES_MAX:
+        return None
+    return [
+        {"provenance": provenance, "code": code}
+        | ({"exact": True} if not computed and _names_all(provenance, code, held, index) else {})
+        for provenance, code in pairs
+    ]
+
+
+def _names_all(provenance: str, code: str, held: Sequence[_Coded], index: CodeIndex) -> bool:
+    return not index.shared_codes(provenance, code) and all(
+        source == provenance and (provenance, code) in codes for codes, source in held
+    )
+
+
+def _variable_codes(
+    variable: str | None,
+    index: CodeIndex,
+    composed: Mapping[str, ComposedVariable],
+    seen: frozenset[str] = frozenset(),
+) -> frozenset[tuple[str, str]]:
+    """The `(provenance, code)` pairs naming `variable` in the code index, else those of the
+    variables a computed version composed it from, followed back through each composed
+    variable. Empty for a variable that neither names."""
+    if variable is None:
+        return frozenset()
+    if own := index.source_codes_of(variable):
+        return frozenset(own)
+    parts = composed.get(variable)
+    if parts is None or variable in seen:
+        return frozenset()
+    return frozenset().union(
+        *(
+            _variable_codes(part, index, composed, seen | {variable})
+            for part in [*parts.first, *parts.second]
+        )
+    )
+
+
 # sources
 
 
@@ -492,26 +613,151 @@ def dataset_sources(record: DescriptionRecord, words: Words) -> list[Wire]:
     ]
 
 
-def drawn_sources(record: DescriptionRecord, selection: SelectionFacts, words: Words) -> list[Wire]:
-    """The sources of the series a card draws, each with how many it draws. A drawn series
-    of a computed version that names no source of its own was computed from the version's
-    inputs, which follow (`input_source`)."""
-    counts: dict[str, int] = {}
+MAX_SOURCES: Final = 64
+"""The most entries a description's `sources` may hold, the bound the kit's description schema
+sets on `sources`."""
+
+
+@dataclass(frozen=True, slots=True)
+class Credit:
+    """A source a computed version's inputs credit, and how many described series draw on
+    it, `None` where unknown."""
+
+    source: SourceEvidence
+    series: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ServedSources:
+    """A description's `sources` entries, and the sources among them its citation line
+    names, in their order."""
+
+    entries: list[Wire]
+    cited: list[SourceEvidence]
+
+
+def drawn_sources(
+    record: DescriptionRecord,
+    selection: SelectionFacts,
+    words: Words,
+    *,
+    inputs: Sequence[DescriptionRecord] = (),
+) -> ServedSources:
+    """The sources of the series a card draws, each with how many it draws.
+
+    A drawn series of a computed version that names no source of its own was computed from
+    the inputs its variable depends on (`drawn_credits`). The sources those inputs' records
+    (`inputs`) credit follow the named sources, then those inputs (`computed_sources`). A
+    computed version's card cites the sources it serves; any other card cites none here, and
+    its citation line names its version's."""
+    counts: dict[str | None, int] = {}
+    for series in selection.series:
+        counts[series.source] = counts.get(series.source, 0) + 1
+    credits: list[Credit] = []
+    drawn: list[InputVersion] = []
+    if record.computed is not None and None in counts:
+        credits, drawn = drawn_credits(record, selection, inputs)
+    shown = {credit.source.ref for credit in credits}
+    named = recorded_sources(
+        record, [ref for ref in counts if ref is not None and ref not in shown]
+    )
+    entries = [
+        source_entry(source, series=counts[source.ref], words=words, path=f"sources.{n}")
+        for n, source in enumerate(named)
+    ]
+    if not drawn and not credits:
+        return ServedSources(entries=entries, cited=named if record.computed else [])
+    served = computed_sources(credits, drawn, words, start=len(entries))
+    return ServedSources(entries=[*entries, *served.entries], cited=[*named, *served.cited])
+
+
+def drawn_credits(
+    record: DescriptionRecord, selection: SelectionFacts, inputs: Sequence[DescriptionRecord]
+) -> tuple[list[Credit], list[InputVersion]]:
+    """The sources a card's drawn series that name no source draw on, and the inputs of the
+    computed version they were computed from, in the version's input order.
+
+    Each such series reads the inputs its variable depends on (`_read_inputs`), and draws on
+    every source the records of those inputs (`inputs`) credit. A credit counts the series
+    drawing on it, and the drawn series naming it. An input whose record is not held credits
+    nothing."""
+    computed = record.computed
+    assert computed is not None, "a computed version's record holds what it was computed from"
+    held = {record.content_version: record for record in inputs}
+    named: dict[str, int] = {}
+    drawing: dict[str, int] = {}
     for series in selection.series:
         if series.source is not None:
-            counts[series.source] = counts.get(series.source, 0) + 1
-    sources = [
-        source_entry(source, series=count, words=words, path=f"sources.{n}")
-        for n, (source, count) in enumerate(
-            zip(recorded_sources(record, list(counts)), counts.values(), strict=True)
-        )
+            named[series.source] = named.get(series.source, 0) + 1
+            continue
+        versions = _read_inputs(record, _drawn_variable(series))
+        refs = {
+            source.ref
+            for version in versions
+            if version in held
+            for source in held[version].evidence.sources
+        }
+        for ref in refs:
+            drawing[ref] = drawing.get(ref, 0) + 1
+    drawn = drawn_inputs(record, selection)
+    evidence = input_evidence([held[v.content_version] for v in drawn if v.content_version in held])
+    credits = [
+        Credit(source=source, series=drawing[source.ref] + named.get(source.ref, 0))
+        for source in evidence
+        if source.ref in drawing
     ]
-    if record.computed is not None and any(series.source is None for series in selection.series):
-        sources.extend(
-            input_source(version, words, path=f"sources.{n}")
-            for n, version in enumerate(record.computed.inputs, start=len(sources))
-        )
-    return sources
+    return credits, drawn
+
+
+def drawn_inputs(record: DescriptionRecord, selection: SelectionFacts) -> list[InputVersion]:
+    """The inputs of a computed version that the drawn series naming no source were computed
+    from (`_read_inputs`), in the version's input order."""
+    computed = record.computed
+    assert computed is not None, "a computed version's record holds what it was computed from"
+    read: set[str] = set()
+    for series in selection.series:
+        if series.source is None:
+            read |= _read_inputs(record, _drawn_variable(series))
+    return [version for version in computed.inputs if version.content_version in read]
+
+
+def _drawn_variable(series: DrawnSeries) -> str | None:
+    """The bare dcid of the variable a drawn series holds, `None` where it names none."""
+    return next((one.value for one in series.coordinates if one.column == STAT_VAR_COLUMN), None)
+
+
+def _read_inputs(record: DescriptionRecord, variable: str | None) -> set[str]:
+    """The content versions of the inputs a computed version's `variable` was computed from:
+    the versions the `retrieve` steps behind each step writing it read, followed back through
+    each step's inputs. A variable no step writes, such as one retrieved as published, steps
+    that are unknown, and a step input naming no recorded step read every input."""
+    computed = record.computed
+    assert computed is not None, "a computed version's record holds what it was computed from"
+    every = {version.content_version for version in computed.inputs}
+    steps = {step.id: step for step in record.steps or ()}
+    pending = [
+        step for step in steps.values() if variable is not None and step.stat_var == variable
+    ]
+    if not pending:
+        return every
+    read: set[str] = set()
+    seen: set[str] = set()
+    while pending:
+        step = pending.pop()
+        if step.id in seen:
+            continue
+        seen.add(step.id)
+        given = [] if step.input is MISSING else [step.input]
+        if step.inputs is not MISSING:
+            given.extend(step.inputs.values())
+        for one in given:
+            if isinstance(one, VersionRef):
+                read.add(one.content_version)
+            elif one in steps:
+                pending.append(steps[one])
+            else:
+                return every
+    return read & every or every
 
 
 def input_source(version: InputVersion, words: Words, *, path: str) -> Wire:
@@ -528,6 +774,82 @@ def input_source(version: InputVersion, words: Words, *, path: str) -> Wire:
     else:
         source["description"] = f"{version_link(version.id, version.content_version)}/description"
     return source
+
+
+def input_evidence(inputs: Sequence[DescriptionRecord]) -> list[SourceEvidence]:
+    """The sources the records of a computed version's inputs credit, each once by ref, in
+    input order and then each input's own order. An input that credits no source, such as a
+    computed version, adds none."""
+    credited: dict[str, SourceEvidence] = {}
+    for record in inputs:
+        for source in record.evidence.sources:
+            credited.setdefault(source.ref, source)
+    return list(credited.values())
+
+
+def version_credits(record: DescriptionRecord, inputs: Sequence[DescriptionRecord]) -> list[Credit]:
+    """The sources the records of a computed version's inputs credit (`input_evidence`), each
+    counting the version's series naming it and those naming none, which were computed from
+    the inputs. The version's counts by source hold no variable to trace a series to the inputs
+    it read, so a series naming no source counts toward every credit. With its counts by
+    source unknown, each count is unknown. The credit reaches one level, since an input that
+    is itself a computed version credits no source of its own and adds none."""
+    counts = source_counts(record.series)
+    return [
+        Credit(
+            source=source,
+            series=None if counts is None else counts.get(source.ref, 0) + counts.get(None, 0),
+        )
+        for source in input_evidence(inputs)
+    ]
+
+
+def computed_sources(
+    credits: Sequence[Credit],
+    inputs: Sequence[InputVersion],
+    words: Words,
+    *,
+    start: int = 0,
+) -> ServedSources:
+    """A computed version's sources from path `sources.{start}` on: its credits, then each
+    input with the link to its own description (`input_source`). The credits served, which
+    the citation line names, are those that fit in `MAX_SOURCES` beside the inputs
+    (`_most_drawn`)."""
+    kept = _most_drawn(credits, room=MAX_SOURCES - start - len(inputs))
+    entries = [
+        source_entry(credit.source, series=credit.series, words=words, path=f"sources.{n}")
+        for n, credit in enumerate(kept, start=start)
+    ]
+    entries.extend(
+        input_source(version, words, path=f"sources.{n}")
+        for n, version in enumerate(inputs, start=start + len(entries))
+    )
+    return ServedSources(entries=entries, cited=[credit.source for credit in kept])
+
+
+def _most_drawn(credits: Sequence[Credit], *, room: int) -> list[Credit]:
+    """`credits`, or past `room` the `room` that most series draw on, an unknown count
+    last and ties to the earlier, in their order. The inputs are always served, since each
+    links to the description that credits what is left out."""
+    if len(credits) <= room:
+        return list(credits)
+    ranked = sorted(
+        range(len(credits)),
+        key=lambda n: -1 if credits[n].series is None else credits[n].series,
+        reverse=True,
+    )
+    return [credits[n] for n in sorted(ranked[: max(room, 0)])]
+
+
+def source_counts(series: SeriesFacts) -> dict[str | None, int] | None:
+    """A version's series by the source each names, `None` for those naming none, or `None`
+    where its counts by source are unknown."""
+    if series.by_source_unit is None:
+        return None
+    counts: dict[str | None, int] = {}
+    for count in series.by_source_unit:
+        counts[count.source] = counts.get(count.source, 0) + count.series
+    return counts
 
 
 def recorded_sources(record: DescriptionRecord, refs: Sequence[str]) -> list[SourceEvidence]:

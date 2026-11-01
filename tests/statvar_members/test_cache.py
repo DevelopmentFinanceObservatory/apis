@@ -14,12 +14,14 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from dc_graph import parse_arcs
+from dfo_platform.request_deadline import request_deadline
 from graph_generation.config import (
     GRAPH_CACHE_MAX_AGE_SECONDS,
     GRAPH_CACHE_UNKNOWN_GENERATION_MAX_AGE_SECONDS,
@@ -32,6 +34,7 @@ from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.catalogue import CatalogueSnapshot
 from origin_catalogue.families import FamilyKey
 from origin_catalogue.frozen_arcs import served_arcs
+from search.engine.degraded_reads import fail_open_reads, recording_degraded_reads
 from statvar_members.cache import MemberEnumerator
 from statvar_members.enumerate import (
     _REPROBE_BUDGET,
@@ -401,7 +404,17 @@ def test_a_call_waiting_on_an_uncached_walk_takes_its_group():
     assert results[0].undismissed_candidates == ("LifeExpectancy_Person_Male",)
 
 
-def test_a_waiting_call_refuses_at_its_own_deadline():
+@pytest.mark.parametrize(
+    ("deadline_in_s", "request_in_s"),
+    [(0.05, None), (8.0, 0.05), (None, 0.05)],
+    ids=["own-deadline", "request-nearer", "request-only"],
+)
+def test_a_waiting_call_refuses_at_the_nearer_of_its_deadline_and_the_request_s(
+    deadline_in_s: float | None, request_in_s: float | None
+):
+    """A call joining a walk in flight stops waiting at its own deadline or the bound request
+    deadline (`bounded_deadline`), whichever comes first, so a fail-open budget bounds it
+    whatever deadline it passes."""
     reader = _GatedReader()
     enumerator = MemberEnumerator()
     first = threading.Thread(
@@ -410,13 +423,47 @@ def test_a_waiting_call_refuses_at_its_own_deadline():
     first.start()
     assert reader.entered.wait(timeout=5)
 
-    with pytest.raises(MemberReadDeadline) as exc_info:
-        _kenya(enumerator, reader, deadline=time.monotonic() + 0.05)
-
-    reader.release.set()
-    first.join(timeout=5)
+    started = time.monotonic()
+    deadline = None if deadline_in_s is None else started + deadline_in_s
+    bound = nullcontext() if request_in_s is None else request_deadline(started + request_in_s)
+    try:
+        with bound, pytest.raises(MemberReadDeadline) as exc_info:
+            _kenya(enumerator, reader, deadline=deadline)
+        waited = time.monotonic() - started
+    finally:
+        reader.release.set()
+        first.join(timeout=5)
+    assert waited < 1.0
     assert (exc_info.value.candidates_considered, exc_info.value.candidate_cap) == (0, 4_000)
     assert reader.calls["node_subjects"] == 1
+
+
+def test_a_call_joining_a_walk_in_a_fail_open_scope_returns_within_its_budget():
+    """Search's nearest-real walks join the shared walk under an 8 s bound of their own
+    inside a fail-open scope of a fraction of that. The join ends at the scope's budget, which
+    has run out, so the scope drops it and notes no lost read."""
+    reader = _GatedReader()
+    enumerator = MemberEnumerator()
+    first = threading.Thread(
+        target=contextvars.copy_context().run, args=(lambda: _kenya(enumerator, reader),)
+    )
+    first.start()
+    assert reader.entered.wait(timeout=5)
+
+    started = time.monotonic()
+    try:
+        with (
+            request_deadline(started + 60),
+            recording_degraded_reads() as lost,
+            fail_open_reads("member walk", budget_s=0.05),
+        ):
+            _kenya(enumerator, reader, deadline=started + 8)
+        waited = time.monotonic() - started
+    finally:
+        reader.release.set()
+        first.join(timeout=5)
+    assert waited < 1.0
+    assert lost.reads == []
 
 
 def test_each_walk_logs_one_info_line(caplog: pytest.LogCaptureFixture):

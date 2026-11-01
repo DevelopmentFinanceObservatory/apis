@@ -15,6 +15,7 @@ from materialise.graph import Facet as MaterialiseFacet
 from search.engine.core import resolve_async, resolve_events
 from search.engine.region import materialise_step as region_materialise_step
 from search.engine.region import phase_answer as region_phase_answer
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.retrieval.standard import standard_option_coverage
 from search.models import (
     CoverageExact,
@@ -201,7 +202,7 @@ def test_buffered_observations_fetch_overlaps_slot_options_coverage_probe(monkey
     """
 
     real_option_coverage = standard_option_coverage
-    real_build_observations = region_phase_answer._build_observations
+    real_build_observations = preview_dispatch._build_observations
     barrier = threading.Barrier(2, timeout=5)
 
     def _barrier_option_coverage(*args, **kwargs):
@@ -215,7 +216,7 @@ def test_buffered_observations_fetch_overlaps_slot_options_coverage_probe(monkey
     monkeypatch.setattr(
         "search.engine.region.option_coverage.standard_option_coverage", _barrier_option_coverage
     )
-    monkeypatch.setattr(region_phase_answer, "_build_observations", _barrier_build_observations)
+    monkeypatch.setattr(preview_dispatch, "_build_observations", _barrier_build_observations)
 
     result = run_pinned(
         resolve_async(

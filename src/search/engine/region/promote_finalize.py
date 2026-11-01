@@ -11,8 +11,11 @@ from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_se
 from search.engine.region.convertibility import option_pins
 from search.engine.region.facet_probe import FacetProbe, facet_probe
 from search.engine.region.observations.bulk_scope import bulk_scope_for
-from search.engine.region.observations.dispatch import _attach_observations
-from search.engine.region.observations.fetch import _build_observations
+from search.engine.region.observations.dispatch import (
+    PreviewRead,
+    PreviewReader,
+    _attach_observations,
+)
 from search.engine.region.option_coverage import (
     _build_and_enrich_entity_options,
     _maybe_build_facet_options,
@@ -60,40 +63,54 @@ def _request_form_unit(state: _PromoteState) -> IdentityUnitRequest | None:
     return _unit_binding.request if isinstance(_unit_binding, IdentityFacetValueRequest) else None
 
 
-def _fetch_finalize_observations(
+def _preview_read(
     state: _PromoteState,
     mat_result: Materialised,
     *,
     unit_request: IdentityUnitRequest | None,
+) -> PreviewRead:
+    """What the resubmitted answer's preview reads, buffered or streamed. Declared roles are
+    read from the resolved arcs, because flagged carriers omit `member_facts`."""
+    bulk = bulk_scope_for(state.place, mat_result, sdmx=state.sdmx)
+    return PreviewRead(
+        sv_dcids=tuple(mat_result.sv_dcids),
+        obs_entities=state.obs_entities,
+        plan=state.narrowed_plan,
+        facet_filter=state.facet_filter,
+        bulk_places=bulk.places if bulk is not None else None,
+        member_facts={
+            dcid: ArcsMemberFacts(arcs=arcs) for dcid, arcs in state.resolved_arcs.items()
+        },
+        unit_request=unit_request,
+        elected=state.elected_unit,
+    )
+
+
+def _preview_reader(state: _PromoteState, read: PreviewRead) -> PreviewReader:
+    """`read` bound to the resubmit's clients."""
+    return PreviewReader(
+        read=read,
+        graph=state.graph,
+        sdmx=state.sdmx,
+        materialise_graph=state.materialise_graph,
+        materialise_sdmx=state.materialise_sdmx,
+        rate_cache=state.rate_cache,
+        deadline=state.deadline,
+        coverage=state.coverage,
+    )
+
+
+def _fetch_finalize_observations(
+    state: _PromoteState, read: PreviewRead
 ) -> tuple[SpecObservations, Warning | None] | None:
     """Fetch the preview when streamed or included observations are requested.
 
-    Return the fetch with its own warning, or None when no preview is requested."""
+    Return the fetch with its own warning, or None when no preview is requested. A streamed
+    request reads it for the immediate response's facets; the relaunch sends the points."""
     state.fetched_obs = None
     if not (state.stream_observations or state.include_observations):
         return None
-    # Fetch facets for the immediate response; the relaunch sends streamed points. Read
-    # declared roles from resolved arcs because flagged carriers omit `member_facts`.
-    _obs_member_facts = {
-        dcid: ArcsMemberFacts(arcs=arcs) for dcid, arcs in state.resolved_arcs.items()
-    }
-    _fetch = _build_observations(
-        state.narrowed_plan,
-        list(mat_result.sv_dcids),
-        state.obs_entities,
-        graph=state.graph,
-        materialise_graph=state.materialise_graph,
-        materialise_sdmx=state.materialise_sdmx,
-        facet_filter=state.facet_filter,
-        scope=bulk_scope_for(state.place, mat_result, sdmx=state.sdmx),
-        sdmx=state.sdmx,
-        deadline=state.deadline,
-        rate_cache=state.rate_cache,
-        unit_request=unit_request,
-        elected=state.elected_unit,
-        member_facts=_obs_member_facts,
-        coverage=state.coverage,
-    )
+    _fetch = _preview_reader(state, read).observations()
     state.fetched_obs = _fetch[0]
     return _fetch
 
@@ -244,15 +261,11 @@ def _attach_finalize_observations(
 
 
 def _promote_relaunch(
-    state: _PromoteState,
-    mat_result: Materialised,
-    spec: Spec,
-    unit_request: IdentityUnitRequest | None,
+    state: _PromoteState, mat_result: Materialised, spec: Spec
 ) -> PromoteRelaunch:
-    """The facts the definite answer's trailing probes read, apart from the request's clients.
+    """The facts the definite answer's options probes read, apart from the request's clients.
     Built after options are enriched, since the slot-options probe carries the raw entity
     options finalisation fills."""
-    bulk = bulk_scope_for(state.place, mat_result, sdmx=state.sdmx)
     return PromoteRelaunch(
         shape_draft=state.shape_draft,
         bindings=state.bindings,
@@ -263,13 +276,6 @@ def _promote_relaunch(
         entity_options=state.entity_options_raw,
         facet_probe=_promote_facet_probe(state, mat_result),
         facets_pinned=bool(state.inp.identity.facets),
-        sv_dcids=list(mat_result.sv_dcids),
-        obs_entities=state.obs_entities,
-        facet_filter=state.facet_filter,
-        bulk_places=bulk.places if bulk is not None else None,
-        unit_request=unit_request,
-        elected=state.elected_unit,
-        plan=state.narrowed_plan,
         variable_labels=member_labels((spec,)),
     )
 
@@ -305,8 +311,9 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         (refusal := _bound_unit_refusal(state, mat_result)) is not None
     ):
         return refusal
+    preview_read = _preview_read(state, mat_result, unit_request=_unit_request)
     with timed_step(state, "finalize_preview"):
-        _fetch = _fetch_finalize_observations(state, mat_result, unit_request=_unit_request)
+        _fetch = _fetch_finalize_observations(state, preview_read)
     # A requested preview's warning joins the answer, stamped with its Spec.
     resubmit_warnings = state.definite_warnings(spec.spec_id)
     _fetched_obs = None
@@ -331,7 +338,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         )
 
     relaunch_t0 = now_ms()
-    relaunch = _promote_relaunch(state, mat_result, spec, _unit_request)
+    relaunch = _promote_relaunch(state, mat_result, spec)
     region = RegionResult(
         variable_text=state.variable_text,
         status="definite",
@@ -341,6 +348,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         timing_by_step=dict(state.timing),
         facet_probe=_promote_facet_probe(state, mat_result),
         promote_relaunch=relaunch,
+        preview_read=preview_read,
         observation_entities=state.obs_entities,
         facet_filter=state.facet_filter,
         measure_partition=state.measure_partition,
@@ -350,6 +358,8 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         served_filter=state.served_filter,
         served_members=state.served_members,
         served_plans=(state.narrowed_plan,) if state.narrowed_plan is not None else (),
+        coverage_form=mat_result.coverage_form,
+        units_elected=state.elected_units is not None,
         role_axis_facts=state.role_axis_facts,
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),

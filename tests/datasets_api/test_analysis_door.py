@@ -8,6 +8,7 @@ The door's roots come from a double source (`_analysis_doubles.FakeRootSource`) 
 from __future__ import annotations
 
 import contextvars
+import logging
 import threading
 from typing import Any
 
@@ -22,6 +23,7 @@ from datasets_api.analysis import LocatedRoot, RootExpired
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses
+from datasets_api.doors.publish import PublishRecordMissing
 from datasets_api.version_store import LiveVersionLister
 from presentation_api.newest_frames import DatasetsNewestFrames, NewestPending
 from spec_registry import LiveSpecRegistry
@@ -381,6 +383,35 @@ def test_a_run_that_fails_releases_its_key(monkeypatch: pytest.MonkeyPatch) -> N
     assert failed.json()["code"] == "artifact_expired", failed.text
     assert retried.status_code == 200, retried.text
     assert roots.reads == 2
+
+
+class _PublishFailingSource(FakeRootSource):
+    """Refuses every frame read with a server fault the route renders itself."""
+
+    def __init__(self, base: FakeRootSource) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+
+    def read(self, root: LocatedRoot) -> Frame:
+        raise PublishRecordMissing(
+            spec_id=root.dataset.spec_id, content_version=root.dataset.content_version
+        )
+
+
+def test_a_server_fault_the_route_renders_logs_its_traceback_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    stores = Stores()
+    with (
+        _client(stores, _PublishFailingSource(source(stores)), monkeypatch) as client,
+        caplog.at_level(logging.ERROR),
+    ):
+        response = client.post(_PATH, json={"tree": _TREE})
+
+    assert response.status_code == 500, response.text
+    assert response.json()["code"] == "internal_error"
+    logged = [r for r in caplog.records if r.exc_info is not None]
+    assert len(logged) == 1, [r.getMessage() for r in caplog.records]
+    assert isinstance(logged[0].exc_info[1], PublishRecordMissing)
 
 
 def _member(spec_id: str, content_version: str) -> dict[str, Any]:

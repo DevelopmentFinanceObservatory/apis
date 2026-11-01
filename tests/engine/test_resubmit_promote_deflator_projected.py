@@ -157,8 +157,7 @@ def test_promote_door_raises_deflator_projected_through_the_shared_attach():
     assert len(matches) == 1, (
         f"expected exactly one deflator_projected warning, got {region.warnings}"
     )
-    assert "1 row(s)" in matches[0].message
-    assert f"{_EUR}@{_YEAR}" in matches[0].message
+    assert matches[0].params == {"count": 1, "examples": [f"{_EUR}@{_YEAR}"]}
     assert matches[0].spec_id == region.specs[0].spec_id
 
     # An actual rate for the same entity and year removes the warning.

@@ -587,8 +587,9 @@ def publish_built_frame(
     ceiling, the shared unit key, the recipe store, then the store, record and verify steps.
 
     Raises:
-        StoredFrameUnreadable: The pair records no frame hash and its stored frame, read to
-            take one (`_recorded_frame_matches`), does not decode.
+        StoredFrameUnreadable: The pair records no frame hash, and a copy of its stored frame,
+            read to take one (`_recorded_frame_matches`), does not decode and no other copy
+            reads (`render.linked_stored_frame`).
     """
     if recipe is not None and recipe_store is None:
         raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)
@@ -1090,43 +1091,45 @@ def build_publish_door(
             # Surface-level classification handles exceptions version writes can raise.
             DatasetsStoreUnavailable,
         ),
-        exception_exemplars=(
-            PublishFrameInvalid(category="schema_violation", message="exemplar"),
-            PublishBodyTooLarge(content_length=1, limit=1),
-            PublishBodyEncodingInvalid("exemplar"),
-            PublishContentLengthRequired(content_length_header=None),
-            PublishBytesDiverge(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            PublishLineageDiverge(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
-            PublishRecordMissing(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            PublishRecipeStoreMissing(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            PublishNotPermitted(),
-            OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
-            PublishBackpressure(),
-            ArtifactRecordConflictError(
-                digest="sha256:exemplar",
-                tier=Tier.working,
-                stored_bucket="exemplar-bucket",
-                stored_object_name="sha256:exemplar",
-                stored_size_bytes=1,
-                incoming_bucket="exemplar-bucket-2",
-                incoming_object_name="sha256:exemplar",
-                incoming_size_bytes=2,
-            ),
-            ArtifactInventoryError(digest="sha256:exemplar"),
-            ArtifactWriteError(object_name="sha256:exemplar", digest="sha256:exemplar"),
-            RecipeDiverges(
-                spec_id="ops_exemplar", content_version="ocv_exemplar", field="normal_form_hash"
-            ),
-            ReplayKeyHeld(
-                replay_key="rpk_exemplar",
-                spec_id="ops_exemplar",
-                content_version="ocv_exemplar",
-                holder_spec_id="ops_holder",
-                holder_content_version="ocv_holder",
-            ),
-            DatasetsStoreUnavailable("exemplar"),
-        ),
+        endpoint_exemplars={
+            "datasets.publish": (
+                PublishFrameInvalid(category="schema_violation", message="exemplar"),
+                PublishBodyTooLarge(content_length=1, limit=1),
+                PublishBodyEncodingInvalid("exemplar"),
+                PublishContentLengthRequired(content_length_header=None),
+                PublishBytesDiverge(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                PublishLineageDiverge(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
+                PublishRecordMissing(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                PublishRecipeStoreMissing(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                PublishNotPermitted(),
+                OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
+                PublishBackpressure(),
+                ArtifactRecordConflictError(
+                    digest="sha256:exemplar",
+                    tier=Tier.working,
+                    stored_bucket="exemplar-bucket",
+                    stored_object_name="sha256:exemplar",
+                    stored_size_bytes=1,
+                    incoming_bucket="exemplar-bucket-2",
+                    incoming_object_name="sha256:exemplar",
+                    incoming_size_bytes=2,
+                ),
+                ArtifactInventoryError(digest="sha256:exemplar"),
+                ArtifactWriteError(object_name="sha256:exemplar", digest="sha256:exemplar"),
+                RecipeDiverges(
+                    spec_id="ops_exemplar", content_version="ocv_exemplar", field="normal_form_hash"
+                ),
+                ReplayKeyHeld(
+                    replay_key="rpk_exemplar",
+                    spec_id="ops_exemplar",
+                    content_version="ocv_exemplar",
+                    holder_spec_id="ops_holder",
+                    holder_content_version="ocv_holder",
+                ),
+                DatasetsStoreUnavailable("exemplar"),
+            )
+        },
         middleware=(_admit_publish_content_encoding, _admit_publish_body_size),
     )
 

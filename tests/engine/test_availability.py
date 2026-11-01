@@ -8,22 +8,26 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from typing import ClassVar
+import time
+from typing import ClassVar, cast
 
 import pytest
 
+from dfo_platform.request_deadline import bounded_deadline
 from search.engine.bind import SlotBindingDraft
+from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphCapExceededError, GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
 from search.engine.reading_coverage import observed_years
-from search.engine.region import resolve_spec_resubmit, resolve_variable
+from search.engine.region import availability, resolve_spec_resubmit, resolve_variable
 from search.engine.region.availability import (
     _subject_has_data,
     has_data_where_asked,
     menu_read_places,
+    read_coverage,
     read_menu_availability,
 )
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
@@ -34,6 +38,11 @@ from search.engine.shape import ShapeDraft
 from search.models import RawTextInput, ResolveRequest, ResubmitIdentityPayload, TimeWindow
 from tests.engine._base_identity import make_identity
 from tests.engine._binders import elected_reply
+from tests.engine._fail_open_deadline import (
+    FAIL_OPEN_REQUESTS,
+    assert_fail_open_deadline,
+    request_deadline,
+)
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
@@ -506,6 +515,17 @@ class _BoundedGraph:
         raise self.error
 
 
+class _RecordingFacetGraph:
+    """Records the deadline each facet read it serves is bound by, and answers none."""
+
+    def __init__(self) -> None:
+        self.deadlines: list[float | None] = []
+
+    def observation_facets_batch(self, stat_vars, entities, needs_dates=False, **bounds):
+        self.deadlines.append(bounded_deadline(bounds["deadline"]))
+        return {sv: {entity: [] for entity in entities} for sv in stat_vars}
+
+
 class TestMenuAvailabilityRead:
     @pytest.mark.parametrize(
         "error",
@@ -527,13 +547,14 @@ class TestMenuAvailabilityRead:
             availability_places=frozenset({_SET_MEMBERS[0]}),
         )
         graph = _BoundedGraph(error)
+        requested = time.monotonic() + 1.0
 
         with recording_degraded_reads() as record:
             (read,), failed = read_menu_availability(
-                [shape], graph=graph, places=_SET_MEMBERS, deadline=123.0
+                [shape], graph=graph, places=_SET_MEMBERS, deadline=requested
             )
 
-        assert graph.bounds == {"max_bytes": settings().sdmx_max_bytes, "deadline": 123.0}
+        assert graph.bounds == {"max_bytes": settings().sdmx_max_bytes, "deadline": requested}
         assert failed is True
         assert read.named_place_coverage is None
         assert _subject_has_data(read, None, asked=_SET_MEMBERS) is None
@@ -551,6 +572,29 @@ class TestMenuAvailabilityRead:
         assert _subject_has_data(outside, dates, asked=_SET_MEMBERS) is None
         assert _subject_has_data(outside, dates, asked=_SET_MEMBERS[:1]) is False
         assert record.reads == ["menu availability"]
+
+    @FAIL_OPEN_REQUESTS
+    def test_each_facet_read_runs_under_the_fail_open_budget(self, request_in_s, monkeypatch):
+        """A read whose failure leaves availability unknown gets the fail-open budget, so a
+        stalled graph holds the part for the budget at most. The chunks of a many-StatVar
+        read share one budget, so the read as a whole holds the part no longer."""
+        monkeypatch.setattr(availability, "_facet_reads", lambda *_args: [["a", "b"], ["c"]])
+        graph = _RecordingFacetGraph()
+        requested = request_deadline(request_in_s)
+        started = time.monotonic()
+
+        coverage = read_coverage(
+            ["a", "b", "c"],
+            graph=cast(EngineGraphClient, graph),
+            places=_SET_MEMBERS,
+            deadline=requested,
+            read="test",
+        )
+
+        assert coverage is not None
+        first, second = graph.deadlines
+        assert_fail_open_deadline(first, requested=requested, started=started)
+        assert second == first
 
     @pytest.mark.parametrize(
         ("start", "end", "has_data"),
@@ -588,7 +632,9 @@ def test_an_absence_read_at_the_named_country_alone_is_unknown_for_a_set_and_not
     state = _pruning_state(
         {
             "Kenya": PlaceSet(
-                name="Kenya", kind="place", node=PlaceNode(dcid="country/KEN", graph_type="Country")
+                name="Kenya",
+                kind="place",
+                node=PlaceNode(dcid="country/KEN", graph_types=("Country",)),
             ),
             "Africa": _set("Africa", ("africa", "Continent"), "Country"),
         }
