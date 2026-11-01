@@ -113,6 +113,9 @@ _DATASET_STORE = {
     "0044_export.sql": ("9678288ce977ce82d4accb1778bf65e383faa1b72d23c1b53469fc59ee2c3e79"),
     "0045_copy_claim.sql": ("2c490124414409610278f2d05081f768af1f78898b0b625c8f528f82fe57e736"),
     "0046_head_family.sql": "a0cf451cf35cb6890e8e934585a8568d8400f781e983662a0f2c336b40159840",
+    "0047_warning_counted_refs.sql": (
+        "e5df5c4e8c117f5f09c136de67b292b59373e220b6dd25792f1ce071cf98f97b"
+    ),
 }
 
 _PRESENTATION_STORE = {

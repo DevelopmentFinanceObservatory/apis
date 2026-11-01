@@ -55,8 +55,12 @@ an old revision finishes after this task: migration 0030's fills the facts of a 
 only `immutable_body`, and migration 0033's renames the enrichment `party_kind`. The facts count
 is therefore above 0 only for a row whose body holds neither `prepared_at` nor
 `input_content_versions`, which `settle` leaves as it is, and the enrichment count only when
-0033's trigger is missing. When any count is above 0 the line has `ERROR` severity and the task
-exits 1. It reads only the runtime database settings.
+0033's trigger is missing. In a second transaction, once the first has committed and released
+its lock, the line counts the version rows holding a warning, in the column or the body, in an
+old format (`dataset_store.warning_formats.OLD_FORMATS`): migration 0047 rewrites all but the
+member sentence, which `backfill-warnings` rewrites in the deploy step before this one. When any
+count is above 0 the line has `ERROR` severity and the task exits 1. It reads only the runtime
+database settings.
 
 `backfill-descriptions` runs on every deploy, after the services move and the code index they
 run is recorded. It first fills the `continuations` of every published frame's version row
@@ -95,7 +99,8 @@ failed transiently and left for the next run. It exits 1 when the store is unrea
 it read no version and at least one failed for a cause a retry clears (`_clears_on_retry`).
 It reads the settings `sweep` reads.
 
-`backfill-warnings [--dry-run]` rewrites each stored `coverage_below_scope` member sentence
+`backfill-warnings [--dry-run]` runs on every deploy, after the services move and before
+`settle`. It rewrites each stored `coverage_below_scope` member sentence
 that names members by ref into the counts and member fields a mint writes, in the `warnings`
 column and in `immutable_body`, reading each row's members from the graph
 (`warning_backfill`), one row per transaction, starting none once
@@ -104,7 +109,7 @@ column and in `immutable_body`, reading each row's members from the graph
 `datasets_warnings_backfilled` line with the counts. It stops at a store outage
 (`_clears_on_retry`), and exits 1 when a row failed transiently, lost the compare or was left.
 A row refused for good is refused again on every run from what it stores, so it is reported
-each time and sets no exit code. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
+each time and sets no exit code; `settle` counts it. `--dry-run` writes nothing, adds one `datasets_warning_backfill_row` line
 per row, and compares its split with the stored one on rows a mint already split. When no row
 matches it opens no release and builds no client. It reads the runtime database settings,
 `DatasetsSettings`, `DATASETS_GRAPH_TOKEN`, `DATASETS_SDMX_TIMEOUT_SECONDS`, the served graph
@@ -318,6 +323,7 @@ from dataset_store.snapshot import (
     select_servable_locations,
 )
 from dataset_store.store import LiveDatasetStore
+from dataset_store.warning_formats import count_old_format_rows
 from datasets_api.allowance import LiveAllowanceLedger
 from datasets_api.analysis import AnalysisTooLarge, FrameUnavailable
 from datasets_api.config import (
@@ -590,8 +596,10 @@ row the count reports."""
 
 def run_settle(*, store: DatasetStore) -> int:
     """Run `SETTLE_STATEMENTS` in one transaction, emit the pin references holding a raw
-    secret, the version rows holding no facts and the version rows whose output profile still
-    names the enrichment `kind`, at `ERROR` when any exists, and return their number."""
+    secret, the version rows holding no facts, the version rows whose output profile still
+    names the enrichment `kind` and, read in a second transaction once the first commits, the
+    version rows holding a warning in an old format, at `ERROR` when any exists, and return
+    their number."""
     with store.transaction() as tx:
         for statement in SETTLE_STATEMENTS:
             tx.execute(statement)
@@ -612,13 +620,17 @@ def run_settle(*, store: DatasetStore) -> int:
             "OR immutable_body -> 'output_profile' -> 'enrichments' "
             '@> \'[{"field": "kind"}]\'',
         )
-    unsettled = factless + raw + legacy_party_kind
+    # The first transaction holds pins back until it commits; this scan reads every warning.
+    with store.transaction() as tx:
+        legacy_warning_refs = count_old_format_rows(tx)
+    unsettled = factless + raw + legacy_party_kind + legacy_warning_refs
     emit(
         "datasets_settled",
         severity="ERROR" if unsettled else "INFO",
         factless_versions=factless,
         raw_pin_principals=raw,
         legacy_party_kind_profiles=legacy_party_kind,
+        legacy_warning_refs=legacy_warning_refs,
     )
     return unsettled
 
