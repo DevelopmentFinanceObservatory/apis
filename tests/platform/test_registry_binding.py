@@ -205,25 +205,6 @@ _PLATFORM_ANSWERED: frozenset[tuple[str, int]] = frozenset(
     }
 )
 
-# Mappings the registry holds that no route of the endpoint raises. Nothing in Datasets raises
-# `entities_unbound` or `resolution_ambiguous`, and the definition and options routes admit a
-# posted definition with no scope, so no scope role refuses there.
-_REGISTERED_NOT_RAISED: dict[str, frozenset[tuple[str, int]]] = {
-    "datasets.definition": frozenset(
-        {
-            ("entities_unbound", 422),
-            ("invalid_role_ref", 422),
-            ("resolution_ambiguous", 422),
-            ("role_incompatible", 422),
-        }
-    ),
-    "datasets.options": frozenset(
-        {("entities_unbound", 422), ("resolution_ambiguous", 422), ("role_incompatible", 422)}
-    ),
-    "datasets.mint": frozenset({("entities_unbound", 422), ("resolution_ambiguous", 422)}),
-}
-
-
 # A declared type a door never raises bare, so it has no exemplar of its own: the mint declares
 # `Refusal`, the base of every refusal, so the surface handles each subclass, and each subclass
 # the mint raises has its exemplar.
@@ -347,9 +328,7 @@ def _assert_endpoint_bijection(*, endpoint: str, served: frozenset[tuple[str, in
     unregistered = sorted(served - registered)
     unserved = sorted(registered - served - _PLATFORM_ANSWERED)
     assert not unregistered, f"{endpoint}: served but not registered: {unregistered}"
-    assert unserved == sorted(_REGISTERED_NOT_RAISED.get(endpoint, ())), (
-        f"{endpoint}: registered but never served: {unserved}"
-    )
+    assert not unserved, f"{endpoint}: registered but never served: {unserved}"
 
 
 def test_every_datasets_endpoint_binds_a_door(datasets_exemplars):

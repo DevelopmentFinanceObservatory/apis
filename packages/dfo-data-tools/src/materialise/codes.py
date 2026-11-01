@@ -92,10 +92,6 @@ class MaterialisationWarning(TypedDict):
 
 
 MATERIALISE_CODE_CATALOGUE: CodeCatalogue = {
-    "entities_unbound": (
-        "Entities Unbound",
-        "The request binds no entity dcid to probe for a facet candidate set.",
-    ),
     "default_facet_undefined": (
         "Default Facet Undefined",
         "An unbound facet axis has no probed candidate to draw a default from.",
