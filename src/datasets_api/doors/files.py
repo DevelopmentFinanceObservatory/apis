@@ -827,34 +827,41 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
             QueryOptionsInvalid,
             *SELECTOR_RENDERING_EXCEPTION_TYPES,
         ),
-        exception_exemplars=(
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            ArtifactNotFound(
-                id="spec_exemplar", content_version="cv_exemplar", artifact_digest="sha256:exemplar"
-            ),
-            ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
-            DownloadBackpressure(),
-            SnapshotSigningFailed(
-                bucket="exemplar-bucket",
-                object_name="sha256:exemplar",
-                digest="sha256:exemplar",
-                error_class_name=None,
-                status_code=None,
-            ),
-            ArtifactSigningError(
-                bucket="exemplar-bucket", object_name="sha256:exemplar", digest="sha256:exemplar"
-            ),
-            QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
-            StoredTraceMissingResolvedStatVars(
-                subject_id="spec_exemplar", content_version="cv_exemplar"
-            ),
-            *(
-                exemplar
-                for exemplar in MINT_EXCEPTION_EXEMPLARS
-                if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
-            ),
-        ),
+        endpoint_exemplars={
+            "datasets.files": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactNotFound(
+                    id="spec_exemplar",
+                    content_version="cv_exemplar",
+                    artifact_digest="sha256:exemplar",
+                ),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                DownloadBackpressure(),
+                MintBackpressure(),
+                SnapshotSigningFailed(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                    error_class_name=None,
+                    status_code=None,
+                ),
+                ArtifactSigningError(
+                    bucket="exemplar-bucket",
+                    object_name="sha256:exemplar",
+                    digest="sha256:exemplar",
+                ),
+                QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
+                StoredTraceMissingResolvedStatVars(
+                    subject_id="spec_exemplar", content_version="cv_exemplar"
+                ),
+                *(
+                    exemplar
+                    for exemplar in MINT_EXCEPTION_EXEMPLARS
+                    if isinstance(exemplar, SELECTOR_RENDERING_EXCEPTION_TYPES)
+                ),
+            )
+        },
     )

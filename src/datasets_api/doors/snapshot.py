@@ -492,12 +492,14 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
             ArtifactExpired,
             SnapshotBackpressure,
         ),
-        exception_exemplars=(
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotBackpressure(),
-        ),
+        endpoint_exemplars={
+            "datasets.snapshot": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotBackpressure(),
+            )
+        },
     )

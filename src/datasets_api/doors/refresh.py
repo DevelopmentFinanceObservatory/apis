@@ -86,6 +86,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.current import DefinitionDeps, head_rendering, load_stored
 from datasets_api.deps import DepsCell
 from datasets_api.doors.definition import (
+    SERVING_EXCEPTION_EXEMPLARS,
     SERVING_EXCEPTION_TYPES,
     _run_retrieval,
     request_definition_deps,
@@ -539,14 +540,21 @@ def build_refresh_door(
             # `stored_rendering` reads the frame's version, which may not exist.
             SnapshotNotFound,
         ),
-        exception_exemplars=(
-            FrameNotRefreshable(spec_id="ops_exemplar"),
-            RenderingNotRecorded(spec_id="spec_exemplar", content_version="cv_exemplar"),
-            RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
-            RefreshBackpressure(),
-            RefreshNotPermitted(presented=False),
-            SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
-        ),
+        endpoint_exemplars={
+            "datasets.refresh": (
+                *SERVING_EXCEPTION_EXEMPLARS,
+                ParquetSizeBoundError("exemplar"),
+                RollupNotSummableError(
+                    "exemplar", axis="exemplar-axis", precondition="exemplar-precondition"
+                ),
+                FrameNotRefreshable(spec_id="ops_exemplar"),
+                RenderingNotRecorded(spec_id="spec_exemplar", content_version="cv_exemplar"),
+                RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
+                RefreshBackpressure(),
+                RefreshNotPermitted(presented=False),
+                SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
+            )
+        },
     )
 
 

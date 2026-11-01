@@ -485,12 +485,14 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
             OperationBackpressure,
             OperationBacklogFull,
         ),
-        exception_exemplars=(
-            OperationNotFound(operation_id="op_exemplar"),
-            OperationFailed(operation_id="op_exemplar", refusal_code="excel_limit"),
-            OperationBackpressure(),
-            OperationBacklogFull(in_flight=1, limit=1),
-        ),
+        endpoint_exemplars={
+            "datasets.operations": (
+                OperationNotFound(operation_id="op_exemplar"),
+                OperationFailed(operation_id="op_exemplar", refusal_code="excel_limit"),
+                OperationBackpressure(),
+                OperationBacklogFull(in_flight=1, limit=1),
+            )
+        },
         registry_endpoints=path_registry_endpoints(
             router, {"/api/datasets/operations/{operation_id}": "datasets.operations"}
         ),

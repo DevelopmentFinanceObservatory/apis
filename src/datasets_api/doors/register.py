@@ -124,12 +124,14 @@ def build_register_door(*, deps: DepsCell) -> DoorContribution:
             RegistryBackpressure,
             IdentityError,
         ),
-        exception_exemplars=(
-            SpecIdMismatch(supplied="urn:spec:supplied", computed="urn:spec:computed"),
-            IdentityCollision(subject_id="urn:spec:collision"),
-            IdentityQuarantined(subject_id="urn:spec:quarantined", id_kind="spec"),
-            SpecRegistryUnavailable("registry write pool exhausted"),
-            RegistryBackpressure(),
-            IdentityError("schema_violation", "identity document failed schema validation"),
-        ),
+        endpoint_exemplars={
+            "datasets.register": (
+                SpecIdMismatch(supplied="urn:spec:supplied", computed="urn:spec:computed"),
+                IdentityCollision(subject_id="urn:spec:collision"),
+                IdentityQuarantined(subject_id="urn:spec:quarantined", id_kind="spec"),
+                SpecRegistryUnavailable("registry write pool exhausted"),
+                RegistryBackpressure(),
+                IdentityError("schema_violation", "identity document failed schema validation"),
+            )
+        },
     )
