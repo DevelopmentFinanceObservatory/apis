@@ -109,34 +109,51 @@ def _settle(
 # One set on two roles.
 
 
+_EU_NODE = "EuropeanUnion"
+
+
 @pytest.mark.parametrize(
-    ("rows", "refused_role", "expected"),
+    ("place_set", "rows", "refused_role", "expected"),
     [
-        pytest.param([("africa", "africa")], None, ("africa",), id="node-holds-rows-on-both-roles"),
         pytest.param(
-            [("africa", _KEN), (_GHA, "africa")],
+            _EU, [(_EU_NODE, _EU_NODE)], None, (_EU_NODE,), id="node-holds-rows-on-both-roles"
+        ),
+        pytest.param(
+            _EU,
+            [(_EU_NODE, _FRA), (_DEU, _EU_NODE)],
             None,
-            (_GHA, _KEN, _TZA),
+            (_DEU, _FRA),
             id="node-holds-rows-on-one-role-at-a-time",
         ),
         pytest.param(
-            [("africa", "africa")],
+            _EU,
+            [(_EU_NODE, _EU_NODE)],
             "destination",
-            (_GHA, _KEN, _TZA),
+            (_DEU, _FRA),
             id="one-role-refuses-the-node",
+        ),
+        pytest.param(
+            _AFRICA,
+            [("africa", "africa")],
+            None,
+            (_GHA, _KEN, _TZA),
+            id="the-provider-role-takes-no-continent",
         ),
     ],
 )
-def test_a_set_on_two_roles_takes_one_reading(rows, refused_role, expected) -> None:
+def test_a_set_on_two_roles_takes_one_reading(place_set, rows, refused_role, expected) -> None:
     """A set named once that fills both flow roles binds its node only when both roles
-    admit the node's type and the series holds rows with the node on both. Otherwise it
-    binds its members on both."""
-    assignment = PlaceAssignment(sets={"origin": (_AFRICA,), "destination": (_AFRICA,)})
+    admit the node, by its type and by its kind (`role_kinds.role_takes`), and the series
+    holds rows with the node on both. Otherwise it binds its members on both. No release
+    lists a continent as a provider, so Africa binds its members though its node holds rows
+    on both roles."""
+    assignment = PlaceAssignment(sets={"origin": (place_set,), "destination": (place_set,)})
+    node = cast(PlaceNode, place_set.node)
 
     settled = _settle(
         assignment,
         _flow_holds(*rows),
-        admits=lambda key, graph_type: not (key == refused_role and graph_type == "Continent"),
+        admits=lambda key, graph_type: not (key == refused_role and graph_type == node.graph_type),
     )
 
     assert settled == {"origin": expected, "destination": expected}

@@ -48,7 +48,7 @@ from search.engine.interpret import PinnedResolved
 from search.engine.qualifier_match import CONNECTIVES, read_by_vocabulary
 from search.engine.region.coverage_series import holds_series
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
-from search.engine.region.place_set import PlaceSet
+from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.whole_totals import (
     WholeReading,
     containing_reading,
@@ -77,6 +77,7 @@ from search.engine.shape import (
 )
 from search.engine.spec_build import NamedGroup
 from search.models import EntityRoleKey, Entry, RoleAxis
+from search.role_kinds import role_takes
 from search.scope.region import (
     REGION_RULE,
     counts_oecd_region,
@@ -629,7 +630,7 @@ def place_set_kinds(
     if choice == "node":
         return frozenset({_node_kind(state, place_set)})
     node = place_set.node
-    if node is not None and all(admits(role, node.graph_type) for role in roles):
+    if node is not None and _node_admitted(node, roles, admits=admits):
         return frozenset({members, _node_kind(state, place_set)})
     return frozenset({members})
 
@@ -1269,16 +1270,36 @@ def _wholes(
     admits: Callable[[EntityRoleKey, str], bool],
 ) -> tuple[str, ...]:
     """The places that can read `place_set` whole on `roles`, in the order a Spec tries them:
-    its node when every role admits the node's type, then its total (`PlaceSet.total`) when
+    its node when every role admits it (`_node_admitted`), then its total (`PlaceSet.total`) when
     every role is a flow axis. A total is admitted by no type: the Spec's read decides whether
     its dataset publishes the total on the role."""
-    node = place_set.node
     wholes: list[str] = []
-    if node is not None and all(admits(role, node.graph_type) for role in roles):
-        wholes.append(node.dcid)
+    if place_set.node is not None and _node_admitted(place_set.node, roles, admits=admits):
+        wholes.append(place_set.node.dcid)
     if place_set.total is not None and roles and "observationAbout" not in roles:
         wholes.append(place_set.total)
     return tuple(wholes)
+
+
+def _roles_take(node: PlaceNode, roles: Sequence[EntityRoleKey]) -> bool:
+    """Whether every flow role of `roles` takes `node` by its kind (`role_kinds.role_takes`),
+    the rule a resubmit and the Datasets mint refuse a bound entity by, so no answer binds a
+    node its own resubmit refuses: no DAC or CRS series lists a continent or subregion as a
+    provider. The subject role takes any node."""
+    index = get_index()
+    return all(
+        role_takes(node.dcid, (node.graph_type,), role, code_index=index)
+        for role in roles
+        if role != "observationAbout"
+    )
+
+
+def _node_admitted(
+    node: PlaceNode, roles: Sequence[EntityRoleKey], *, admits: Callable[[EntityRoleKey, str], bool]
+) -> bool:
+    """Whether every role of `roles` admits `node`: its range admits the node's type
+    (`admits`), and a flow role takes the node's kind (`_roles_take`)."""
+    return all(admits(role, node.graph_type) for role in roles) and _roles_take(node, roles)
 
 
 def set_choices(
@@ -1295,17 +1316,18 @@ def set_choices(
     the node is admitted, its members when it cannot read whole, and no reading when neither
     holds. A set with no member reads its node, and a set with no node its members, when
     admitted. Members that share no stated type are admitted on no role, as role admission
-    judges them (`phase_intake._admission_types`).
+    judges them (`phase_intake._admission_types`). A node is read only on flow roles that take
+    its kind (`_roles_take`), so a set with no member whose node no role takes has no reading.
     """
     choices: dict[str, SetChoice | None] = {}
     for place_set in assignment.distinct_sets:
         key = place_key(place_set)
-        if not place_set.members:
-            choices[key] = "node"
-            continue
         roles = assignment.roles_of(place_set)
         node = place_set.node
-        node_ok = node is not None and all(admits(role, node.graph_type) for role in roles)
+        if not place_set.members:
+            choices[key] = "node" if node is None or _roles_take(node, roles) else None
+            continue
+        node_ok = node is not None and _node_admitted(node, roles, admits=admits)
         member_type = place_set.member_type
         members_ok = member_type is not None and all(admits(role, member_type) for role in roles)
         if key in assignment.members_asked:

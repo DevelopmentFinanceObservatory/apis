@@ -426,6 +426,26 @@ def test_a_set_on_two_roles_takes_one_reading(doors: Doors) -> None:
     check_three_doors(doors, AID, spec)
 
 
+def test_a_subregion_named_as_the_provider_binds_its_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sub-Saharan Africa named as the provider of aid to Kenya, where the world's provider
+    range admits a subregion and the series holds a row from the subregion's node to Kenya.
+    No release lists a subregion as a provider (`role_kinds.role_takes`), and a resubmit
+    refuses one there, so the first answer binds the members, whose row from Ghana holds
+    data, and every door reads that binding."""
+    rows = (*world.FLOW_DATA[AID], (SUB_SAHARAN, KEN))
+    monkeypatch.setattr(world, "FLOW_DATA", {**world.FLOW_DATA, AID: rows})
+    doors = Doors(monkeypatch)
+    assert NODE_TYPE[SUB_SAHARAN] in ROLE_RANGE[PROVIDER]
+    assert flow_reading(AID, SUB_SAHARAN, PROVIDER, [KEN]) == [SUB_SAHARAN]
+
+    spec = the_spec(doors.first_answer(AID, origin(LABEL[SUB_SAHARAN]), destination("Kenya")))
+
+    assert bound(spec) == {"origin": sorted(EXPANSION[SUB_SAHARAN]), "destination": [KEN]}
+    check_three_doors(doors, AID, spec)
+
+
 def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

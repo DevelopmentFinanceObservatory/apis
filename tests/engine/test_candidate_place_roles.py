@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import dataclasses
 import logging
+import sys
 import threading
 import time
 from collections.abc import Callable, Collection, Coroutine, Sequence
@@ -30,7 +32,9 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
+from code_index import shared as code_index_shared
 from code_index.shared import get_index
+from code_index.types import PartyRow
 from dfo_platform.trace import reset_trace_id, set_trace_id
 from entity_resolution import Entity, Resolved
 from graph_generation import UNKNOWN_GENERATION
@@ -518,9 +522,25 @@ _NORDIA_MEMBERS = ["country/DNK", "country/NOR", "country/SWE"]
 
 
 @pytest.fixture(autouse=True)
-def _regions(declare_regions):
-    """Search reads Nordia's members from the membership policy."""
+def _regions(declare_regions, monkeypatch):
+    """Search reads Nordia's members from the membership policy, and the code index lists
+    Nordia as a provider in IDS, so the provider role takes its node
+    (`role_kinds.role_takes`) as a resubmit of it does."""
     declare_regions({_NORDIA: _NORDIA_MEMBERS})
+    packaged = code_index_shared.get_index
+    index = copy.copy(packaged())
+    index.parties = {
+        **index.parties,
+        _NORDIA: PartyRow(
+            dcid=_NORDIA,
+            kind="party",
+            datasets=("provenance/WorldBankInternationalDebtStatistics",),
+            axes=("origin",),
+        ),
+    }
+    for module in list(sys.modules.values()):
+        if vars(module).get("get_index") is packaged:
+            monkeypatch.setattr(module, "get_index", lambda: index)
 
 
 def _nordia_graph(order: list[str], scores: list[float], query: str = _NORDIA_QUERY) -> FakeGraph:

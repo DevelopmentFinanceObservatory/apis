@@ -14,7 +14,9 @@ A posted entity takes the kind resolve and the Graph API's node route serve
 (`entity_resolution.kinds.classify`), over its graph types. Search's role routes and the
 Datasets mint both run `check_role_kinds` on the entities a role-bearing request binds, before
 anything is built, and both refuse a `RoleKindRefused` as `invalid_role_ref`. An entity neither
-the graph nor the membership policy holds refuses too.
+the graph nor the membership policy holds refuses too. A first answer binds a place's own node
+on a flow role only where `role_takes` says the role takes it, the same rule, so it never binds
+a node its own resubmit refuses (`place_roles.set_choices`).
 
 The membership policy is built from resolvekit's stores, so the `datasets` extra installs
 dfo-data-tools's `resolve` extra (`tests/datasets_api/test_independence.py`). `entity_resolution`
@@ -164,7 +166,6 @@ def check_role_kinds(
     derived from it, and a group or region the membership policy holds takes the policy's kind
     whatever its types (`classify`), so neither is read. One call of `read_types` types the
     rest, and none runs when nothing is left."""
-    from entity_resolution.kinds import classify
     from entity_resolution.shared import shared_membership_policy
 
     policy = shared_membership_policy()
@@ -185,9 +186,7 @@ def check_role_kinds(
         kind = (
             None
             if dcid in types and node_types is None
-            else classify(
-                dcid=dcid, types=node_types or (), code_index=code_index, membership=policy
-            )
+            else _kind(dcid, node_types or (), code_index=code_index)
         )
         allowed = allowed_by_axis[axis]
         if kind not in allowed:
@@ -199,6 +198,29 @@ def check_role_kinds(
                 allowed=[k for k in _KIND_PHRASES if k in allowed],
                 family=family,
             )
+
+
+def role_takes(dcid: str, types: Sequence[str], axis: RoleAxis, *, code_index: CodeIndex) -> bool:
+    """Whether the flow role on `axis` takes the entity `dcid` whose graph types are `types`,
+    by the rule `check_role_kinds` refuses by: the index lists it as a party on `axis`, the
+    axis has no kinds to judge by, or the entity's kind is one the axis takes."""
+    allowed = role_kinds(code_index)[axis]
+    return (
+        not allowed
+        or _listed_on(code_index, dcid, axis)
+        or _kind(dcid, types, code_index=code_index) in allowed
+    )
+
+
+def _kind(dcid: str, types: Sequence[str], *, code_index: CodeIndex) -> Kind:
+    """The kind of the entity `dcid` whose graph types are `types` (`classify`), under the
+    shared membership policy."""
+    from entity_resolution.kinds import classify
+    from entity_resolution.shared import shared_membership_policy
+
+    return classify(
+        dcid=dcid, types=types, code_index=code_index, membership=shared_membership_policy()
+    )
 
 
 def _listed_on(code_index: CodeIndex, dcid: str, axis: RoleAxis) -> bool:
