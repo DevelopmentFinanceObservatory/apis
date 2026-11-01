@@ -18,7 +18,12 @@ import tests.fixtures
 from artifact_store import Tier
 from code_index import CodeIndex, CodeRow, IndexStamp, StatVarRow
 from code_index.types import PartyRow
-from dataset_store.snapshot import WORKING_TIER_RETENTION, Revocation, StoredVersion
+from dataset_store.snapshot import (
+    WORKING_TIER_RETENTION,
+    ManifestFacts,
+    Revocation,
+    StoredVersion,
+)
 from datasets_api.admission import MaterialisePermits
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.doors.observations import build_observations_door, observations_body
@@ -465,8 +470,8 @@ def test_a_frame1_document_past_the_decode_bound_refuses_before_it_is_read(frame
     frame1 document alone may take, so the document refuses `over_ceiling` (`bytes`) unread, as
     Presentation's frame store refuses it (`tests/presentation_store/test_frame_store.py`). Its
     record decides that, so it refuses with the materialise permit held, where a wait for the
-    permit would refuse a retryable 503. A canonical frame's rows are bounded where they are
-    read, so it serves."""
+    permit would refuse a retryable 503. A canonical frame is bounded by the rows its version
+    records instead, so it serves."""
     world = _standard_world()
     csv, frame = world.reader.locations[(_SPEC, _CV)]
     world.reader.locations[(_SPEC, _CV)] = [csv, replace(frame, size_bytes=250_000_000)]
@@ -483,6 +488,25 @@ def test_a_frame1_document_past_the_decode_bound_refuses_before_it_is_read(frame
         assert frame.artifact_digest not in {digest for digest, _tier in world.store.gets}
     else:
         assert world.get().status_code == 200
+
+
+def test_a_version_past_the_row_bound_refuses_before_its_frame_is_read():
+    """A preview decodes every row of the stored frame, so a version recording more rows than
+    `groupby_fold_max_rows` refuses `over_ceiling` (`rows`) on its record, with the materialise
+    permit held and its frame never fetched, however the frame is stored."""
+    world = _standard_world()
+    version = world.reader.versions[(_SPEC, _CV)]
+    facts = cast(ManifestFacts, version.facts)
+    past = replace(facts, coverage={**facts.coverage, "rows": 2_000_001})
+    world.reader.versions[(_SPEC, _CV)] = replace(version, facts=past)
+    _csv, frame = world.reader.locations[(_SPEC, _CV)]
+
+    assert world.permits.acquire(timeout=0)
+    response = world.get()
+
+    assert response.status_code == 422, response.text
+    assert (response.json()["code"], response.json()["ceiling_kind"]) == ("over_ceiling", "rows")
+    assert frame.artifact_digest not in {digest for digest, _tier in world.store.gets}
 
 
 def test_a_groupby_collapse_refuses_observations_unavailable():

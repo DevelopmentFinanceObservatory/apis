@@ -72,7 +72,7 @@ from materialise.finish import (
     currency_unmapped_omitted_warning,
     deflator_missing_omitted_warning,
 )
-from materialise.frame_build import ParquetFrameChunks, ParquetFrameSink, build_frame
+from materialise.frame_build import ParquetFrameSink, build_frame
 from materialise.profile import OutputProfileFold
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace
@@ -274,7 +274,7 @@ def compose_components(
             _composed_chunks(components, plan=plan, composite=composite, role_columns=role_columns)
         )
     )
-    frame_chunks = ParquetFrameChunks(sink.finish(), columns=columns[0])
+    frame_chunks = sink.finish(columns=columns[0])
     output_profile = profile.finish(frame_chunks)
     served_bounds = (min(fold.all_years), max(fold.all_years)) if fold.all_years else None
     applied = compute_applied_window(window, served_bounds)
