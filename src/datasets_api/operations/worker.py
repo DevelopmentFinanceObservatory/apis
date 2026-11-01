@@ -63,6 +63,7 @@ from datasets_api.render import artifact_rendering_keys
 from datasets_api.timings import collecting, door_call
 from datasets_api.versions import HeadFence, HeadFenceLost
 from dfo_platform.codes import bound_registry_endpoint
+from dfo_platform.problem import log_problem
 from materialise import MaterialisationCancelled, RowProgress
 from materialise.errors import UpstreamVersionChangedError
 from series_coverage.shared import CoverageSnapshot
@@ -273,6 +274,9 @@ def run_operation(
                 retryable=True,
             )
             return
+        if spec is not None:
+            # Classifiers log nothing, so the run logs the line the problem names.
+            log_problem(spec, exc, logger=logger, context="datasets")
         if spec is not None and (not spec.retryable or isinstance(exc, _MembersChanged)):
             logger.info(
                 "Datasets operation %r failed without a retry (%s): %s",

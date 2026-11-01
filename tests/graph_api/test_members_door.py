@@ -545,14 +545,16 @@ class _HoldReadFails(FakeGraphNodeReader):
 
 def test_a_failed_hold_read_is_classified_and_logged_by_the_members_door(caplog):
     """Every Graph door recognises `GraphReadError`. On the composed surface the members
-    route's own classifier answers, so the failure is logged as the members door's."""
+    route's own classifier answers, so the line logged is the members door's."""
     client = make_client(graph=_HoldReadFails())
 
-    with client, caplog.at_level(logging.ERROR, logger="graph_api.doors"):
+    with client, caplog.at_level(logging.ERROR):
         response = _get(client, "dc/Nothing", relation="codes")
 
     assert response.status_code == 502, response.text
     assert response.json()["code"] == "upstream_error"
-    assert {
-        record.name for record in caplog.records if record.name.startswith("graph_api.doors")
-    } == {"graph_api.doors.members"}
+    assert [
+        record.getMessage().split(" door's")[0]
+        for record in caplog.records
+        if record.getMessage().startswith("graph: Graph ")
+    ] == ["graph: Graph members"]

@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import logging
 import textwrap
 from collections.abc import Callable
 
@@ -280,12 +281,19 @@ def _classify_on_some_endpoint(surface: Surface, exemplar: BaseException) -> Pro
 
 
 @pytest.mark.parametrize("surface", _SURFACES, ids=_SURFACE_IDS)
-def test_classify_conforms_to_the_registered_catalogue_for_every_exemplar(surface: Surface):
-    """Exemplars classify to `None` or to codes declared by their surface."""
+def test_classify_conforms_to_the_registered_catalogue_for_every_exemplar(
+    surface: Surface, caplog: pytest.LogCaptureFixture
+):
+    """Exemplars classify to `None` or to codes declared by their surface, and classifying
+    logs nothing: a refusal names its line (`ProblemSpec.log`) for the request path to log, so
+    a startup sweep of the exemplars stays silent."""
     registry = _registered_codes_for(surface)
-    for exemplar in (*surface.exception_exemplars, _NeverDeclaredError("never declared")):
-        spec = _classify_on_some_endpoint(surface, exemplar)
-        assert spec is None or spec.code in registry
+    with caplog.at_level(logging.DEBUG):
+        for exemplar in (*surface.exception_exemplars, _NeverDeclaredError("never declared")):
+            spec = _classify_on_some_endpoint(surface, exemplar)
+            assert spec is None or spec.code in registry
+
+    assert [(record.name, record.getMessage()) for record in caplog.records] == []
 
 
 @pytest.mark.parametrize("surface", _SURFACES, ids=_SURFACE_IDS)
