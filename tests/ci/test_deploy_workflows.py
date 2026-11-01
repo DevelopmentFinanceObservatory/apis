@@ -191,13 +191,13 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, and two service updates.
+    # Six job updates, eleven job executions, and two service updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
-            "JOB_DATASETS_MAINTENANCE": 3,
+            "JOB_DATASETS_MAINTENANCE": 4,
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
@@ -360,10 +360,13 @@ def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
 
 def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_new_image():
     """The previous image writes rows in the old shape, and versions without a description
-    record, until both services move, so the settle and then the description backfill run after
-    the apis service moves, and they are the deploy's only maintenance executions. The backfill
-    runs after the settle, so its failure never holds the settle back."""
+    record, until both services move, so the warning backfill, the settle and then the
+    description backfill run after the apis service moves, and they are the deploy's only
+    maintenance executions. The warning backfill runs before the settle, which counts the
+    warnings it leaves. The description backfill runs after the settle, so its failure never
+    holds the settle back."""
     names = [step.get("name") for step in _steps()]
+    warnings = "Backfill warning counts"
     settle = "Settle rows the previous image wrote"
     backfill = "Backfill description records"
     executions = [
@@ -372,13 +375,14 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
         if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
     ]
 
-    assert executions == [settle, backfill]
+    assert executions == [warnings, settle, backfill]
+    assert "--args=backfill-warnings" in _named(warnings)["run"]
     assert "--args=settle" in _named(settle)["run"]
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
-    for name in (settle, backfill):
+    for name in (warnings, settle, backfill):
         assert "--wait" in _named(name)["run"]
-    assert names.index("Point Cloud Run at the new image") < names.index(settle)
-    assert names.index(settle) < names.index(backfill)
+    assert names.index("Point Cloud Run at the new image") < names.index(warnings)
+    assert names.index(warnings) < names.index(settle) < names.index(backfill)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -402,6 +406,7 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     ]
     for name in (
         "Point the datasets maintenance job at the new image",
+        "Backfill warning counts",
         "Settle rows the previous image wrote",
         "Backfill description records",
     ):
@@ -411,9 +416,10 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
 def test_worker_then_service_move_then_the_maintenance_steps_run():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-4:] == [
+    assert names[-5:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
+        "Backfill warning counts",
         "Settle rows the previous image wrote",
         "Backfill description records",
     ]
@@ -434,7 +440,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 18
+    assert len(later) == 19
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

@@ -56,9 +56,9 @@ name: Deploy
 # with nothing new to apply, each reports nothing to apply and exits 0, so
 # every deploy runs both rather than trying to detect whether any is needed.
 # The datasets maintenance job is pointed at the new image after both
-# migrations and left to its Scheduler, and runs `settle` once the apis
-# service has moved and `backfill-descriptions` as the last step (see those
-# steps). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
+# migrations and left to its Scheduler, and runs `backfill-warnings` and
+# `settle` once the apis service has moved and `backfill-descriptions` as the
+# last step (see those steps). The environment must set vars.JOB_DATASETS_MAINTENANCE; the upfront
 # variable check refuses the deploy when it is missing.
 # The origin catalogue job is pointed at the new image on every deploy but
 # built only when no compatible artifact is published for the image's
@@ -489,6 +489,31 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
+      # Migration 0046 rewrote every stored warning that names refs in its
+      # message but the old `coverage_below_scope` member sentence, since
+      # splitting its members into off-cadence and out-of-window ones needs
+      # graph reads. `datasets-maintenance backfill-warnings` rewrites those,
+      # in the `warnings` column and in `immutable_body`, one row per
+      # transaction; a rewritten row no longer matches the selection, so a
+      # repeat run touches only the rows that remain, and with none it exits 0
+      # after one query. It reads the graph, SDMX and UN base URLs and the
+      # origin catalogue from the maintenance job's environment. It starts no
+      # row after 45 minutes, within the Job's 3600-second timeout. The step
+      # fails when a row failed for a cause a retry can clear, lost to a
+      # concurrent write or was left by the budget, and the next deploy
+      # carries on from the rows that remain. A row it refuses for good is
+      # logged as one ERROR line and fails the settle step after it, which
+      # counts every version row still holding an old warning shape.
+      - name: Backfill warning counts
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=backfill-warnings
+
       # Until the apis service moved, the previous image could still write a
       # pin reference holding the raw shared secret, the shape migration 0026
       # converted. `datasets-maintenance settle` repeats that migration's
@@ -500,7 +525,9 @@ jobs:
       # with only immutable_body, and that of migration 0033 renames the
       # party-kind enrichment `kind` to `party_kind`. settle counts the version
       # rows holding no facts, those still naming `kind` and the pin references
-      # still raw, and fails the step when any count is above 0. It runs as an execution of the maintenance job, whose
+      # still raw, then, in a second transaction, the version rows still holding
+      # a warning in an old shape (`dataset_store.warning_formats`), and fails
+      # the step when any count is above 0. It runs as an execution of the maintenance job, whose
       # container command is `datasets-maintenance`, with the task as its
       # args. The step must run on every deploy: a raw pin reference matches
       # no caller's label.

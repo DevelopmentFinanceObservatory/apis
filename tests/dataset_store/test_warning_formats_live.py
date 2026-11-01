@@ -1,35 +1,40 @@
-"""`python -m dataset_store.warning_formats` against a real Postgres. Skipped unless
-DFO_DATASET_STORE_LIVE_DSN is set, as `test_live.py` is."""
+"""Migration 0046 and the count of old warning formats `datasets-maintenance settle` reads,
+against a real Postgres. Skipped unless DFO_DATASET_STORE_LIVE_DSN is set, as `test_live.py`
+is."""
 
 from __future__ import annotations
 
 import json
-import re
-from typing import Any, cast
+from typing import cast
 from uuid import uuid4
 
-import pg8000.exceptions
 import pytest
 
-from dataset_store import LiveDatasetStore, warning_formats
-from dataset_store.dbapi import DBAPIConnection
-from dataset_store.warning_formats import OLD_FORMATS, REWRITE_SQL, dry_run, findings
+from dataset_store import LiveDatasetStore
+from dataset_store.migrate import MIGRATIONS_DIR
+from datasets_api.maintenance import run_settle
 from tests.dataset_store._warning_refs import (
     COVERAGE_DETAIL,
+    ONE_WITHHELD,
+    UNSERVED,
+    StoredWarning,
+    new_coverage,
+    new_withheld,
     old_unserved_sentence,
+    old_withheld,
     rewrite_cases,
     trace_for,
 )
 from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
     connect_live,
+    database_name,
     live_database,
-    live_params,
 )
 from tests.dataset_store.test_live import (
     _DSN,
-    _delete_versions,
     _insert_as_the_previous_image,
     _pool,
+    _rerun_migration,
 )
 
 pytestmark = [
@@ -40,64 +45,19 @@ pytestmark = [
     ),
 ]
 
-_NAMES = {code: name for name, code, _pattern in OLD_FORMATS}
-_PATTERNS = {code: pattern for _name, code, pattern in OLD_FORMATS}
-_COVERAGE, _CURRENCY, _DEFLATOR, _WITHHELD, _UN, _PROJECTED = _NAMES.values()
-_EMPTY = {"code": "empty_result", "severity": "warn", "message": "No rows."}
-# A row whose stored body holds an old unserved list its warnings column no longer holds.
-_BODY_DIFFERS = {
+_MIGRATION = "0046_warning_counted_refs.sql"
+_PREPARED_AT = "2026-10-20T00:00:00Z"
+_EMPTY: StoredWarning = {"code": "empty_result", "severity": "warn", "message": "No rows."}
+_OLD_UNSERVED: StoredWarning = {
     "code": "coverage_below_scope",
     "severity": "warn",
-    "message": COVERAGE_DETAIL + old_unserved_sentence(["country/KEN"]),
+    "message": COVERAGE_DETAIL + old_unserved_sentence(UNSERVED[:1]),
 }
-_COUNTED_MEMBERS = {
-    "code": "coverage_below_scope",
+_OLD_WITHHELD: StoredWarning = {
+    "code": "withheld_by_registry",
     "severity": "warn",
-    "message": COVERAGE_DETAIL + " 1 of 4 series report at a different frequency and are left "
-    "out of the figures.",
-    "member_count": 4,
-    "off_cadence_members": {"count": 1, "refs": ["dcid:YouthRate"]},
+    "message": old_withheld("Rate", ONE_WITHHELD),
 }
-# Rows the old checks read: a stored `member_count` against a trace resolving three members and
-# against none, and a currency warning holding only its detail.
-_CHECKED = {
-    "member_count_differs": ([_COUNTED_MEMBERS], {"resolved_stat_vars": [{}, {}, {}]}),
-    "member_count_without_trace": ([_COUNTED_MEMBERS], None),
-    "currency_detail_only": (
-        [
-            {
-                "code": "currency_unmapped_omitted",
-                "severity": "warn",
-                "message": "A conversion into each entity's own currency left out rows.",
-            }
-        ],
-        None,
-    ),
-}
-
-
-def _connect() -> DBAPIConnection:
-    return connect_live()
-
-
-def _execute(conn: DBAPIConnection, sql: str, params: tuple = ()) -> Any:
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, params)
-        return cast(Any, cursor).rowcount
-    finally:
-        cursor.close()
-
-
-def _stored(conn: DBAPIConnection, table: str) -> dict[str, list]:
-    cursor = conn.cursor()
-    try:
-        cursor.execute(f"SELECT subject_id, warnings FROM {table}")
-        rows = cursor.fetchall()
-    finally:
-        cursor.close()
-        conn.rollback()
-    return {cast(str, subject): cast(list, warnings) for subject, warnings in rows}
 
 
 @pytest.fixture
@@ -109,250 +69,126 @@ def live_store():
         pool.close_all()
 
 
-@pytest.fixture
-def scratch_table():
-    """A version table in a schema of its own, holding only what a test inserts."""
-    schema = f"warning_formats_{uuid4().hex}"
-    conn = _connect()
-    try:
-        _execute(conn, f"CREATE SCHEMA {schema}")
-        _execute(
-            conn,
-            f"CREATE TABLE {schema}.version_record (subject_id text, content_version text, "
-            "warnings jsonb, immutable_body jsonb, trace jsonb, "
-            "PRIMARY KEY (subject_id, content_version))",
-        )
-        conn.commit()
-        yield f"{schema}.version_record"
-    finally:
-        conn.rollback()
-        _execute(conn, f"DROP SCHEMA {schema} CASCADE")
-        conn.commit()
-        conn.close()
-
-
-def test_the_dry_run_changes_nothing_and_counts_what_the_rewrite_changes(scratch_table):
-    """The dry run reads in a read-only transaction and leaves the rows and no function behind.
-    By format it counts the rows a real run of the same SQL then changes, the rows holding a
-    member sentence the SQL leaves to the backfill, and the residual rows: a list holding a
-    name with a comma, and a member sentence on a trace holding no `resolved_stat_vars`. It
-    counts, without a finding, the row whose body and column differ and whose body the
-    rewrite changes; a stored
-    `member_count` equal to, different from and without the trace's `resolved_stat_vars`; a
-    currency warning that neither names nor counts its entities; and by code the rows naming a
-    ref in no format. The real run, under `standard_conforming_strings` off, writes each
-    writer's shape, and a second dry run finds nothing left for the SQL."""
-    cases = rewrite_cases()
-    conn = _connect()
-    try:
-        for case, (stored, _rewritten) in cases.items():
-            trace = trace_for(case)
-            _execute(
-                conn,
-                f"INSERT INTO {scratch_table} VALUES (%s, 'cv1', %s::jsonb, %s::jsonb, %s::jsonb)",
-                (
-                    case,
-                    json.dumps(stored),
-                    json.dumps({"trace": trace, "warnings": stored}),
-                    json.dumps(trace),
-                ),
-            )
-        _execute(
-            conn,
-            f"INSERT INTO {scratch_table} VALUES ('body_differs', 'cv1', %s::jsonb, %s::jsonb, "
-            "NULL)",
-            (json.dumps([_EMPTY]), json.dumps({"warnings": [_BODY_DIFFERS, _EMPTY]})),
-        )
-        for case, (stored, trace) in _CHECKED.items():
-            _execute(
-                conn,
-                f"INSERT INTO {scratch_table} VALUES (%s, 'cv1', %s::jsonb, %s::jsonb, %s::jsonb)",
-                (
-                    case,
-                    json.dumps(stored),
-                    json.dumps({"warnings": stored}),
-                    json.dumps(trace),
-                ),
-            )
-        conn.commit()
-        before = _stored(conn, scratch_table)
-
-        report = dry_run(conn, table=scratch_table)
-
-        assert _stored(conn, scratch_table) == before
-        assert (
-            _execute(
-                conn,
-                "SELECT 1 WHERE to_regprocedure('pg_temp.warning_counted_refs(jsonb)') IS NULL",
-            )
-            == 1
-        )
-        conn.rollback()
-    finally:
-        conn.close()
-
-    zero = dict.fromkeys(_NAMES.values(), 0)
-    assert report.read_only == "on"
-    assert (report.rewritten_rows, report.rewritten) == (
-        13,
-        {_COVERAGE: 3, _CURRENCY: 2, _DEFLATOR: 2, _WITHHELD: 2, _UN: 2, _PROJECTED: 2},
+def _insert(
+    live_store,
+    subject_id: str,
+    *,
+    warnings: list[StoredWarning] | None,
+    column: list[StoredWarning] | None = None,
+    trace: dict[str, object] | None = None,
+) -> None:
+    """A version row whose body holds `warnings` (none when `None`) and `trace`, and whose
+    column holds `column` when given, else what the insert trigger copies from the body."""
+    body: dict[str, object] = {"prepared_at": _PREPARED_AT}
+    if trace is not None:
+        body["trace"] = trace
+    if warnings is not None:
+        body["warnings"] = warnings
+    _insert_as_the_previous_image(
+        live_store, subject_id=subject_id, content_version="cv1", body=body
     )
-    assert (report.left_rows, report.left) == (2, {**zero, _COVERAGE: 2})
-    assert (report.residual_rows, report.residual) == (2, {**zero, _COVERAGE: 2})
-    assert (report.body_mismatch_rows, report.body_rewritten_rows) == (1, 1)
-    assert (
-        report.member_count_equal_rows,
-        report.member_count_differs_rows,
-        report.member_count_without_trace_rows,
-        report.uncounted_conversion_rows,
-    ) == (2, 1, 1, 1)
-    expected_samples: dict[str, list[tuple[str, str]]] = {name: [] for name in _NAMES.values()}
-    for stored, rewritten in cases.values():
-        for old, new in zip(stored, rewritten, strict=True):
-            code, message = cast(str, old["code"]), cast(str, old["message"])
-            if code in _PATTERNS and re.search(_PATTERNS[code], message):
-                expected_samples[_NAMES[code]].append((message, cast(str, new["message"])))
-    assert {name: sorted(samples) for name, samples in report.samples.items()} == {
-        name: sorted(samples) for name, samples in expected_samples.items()
-    }
-    assert {code: counts for code, *counts in report.census} == {
-        "coverage_below_scope": [9, 6, 0],
-        "currency_unmapped_omitted": [4, 2, 0],
-        "deflator_missing_omitted": [3, 2, 0],
-        "deflator_projected": [3, 2, 0],
-        "empty_result": [3, 0, 0],
-        "facet_default_selected": [1, 1, 1],
-        "revision_unavailable": [1, 1, 1],
-        "stat_vars_summed": [1, 1, 1],
-        "un_system_unavailable": [3, 2, 0],
-        "withheld_by_registry": [3, 2, 0],
-    }
-    assert findings(report) == [
-        "2 residual rows",
-        "1 rows of facet_default_selected name a ref in no format",
-        "1 rows of revision_unavailable name a ref in no format",
-        "1 rows of stat_vars_summed name a ref in no format",
-    ]
-
-    conn = _connect()
-    try:
-        _execute(conn, "SET standard_conforming_strings = off")
-        _execute(conn, REWRITE_SQL.read_text())
-        updated = _execute(
-            conn,
-            f"UPDATE {scratch_table} SET warnings = pg_temp.warnings_counted_refs(warnings) "
-            "WHERE warnings IS DISTINCT FROM pg_temp.warnings_counted_refs(warnings)",
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    assert updated == report.rewritten_rows
-
-    conn = _connect()
-    try:
-        assert _stored(conn, scratch_table) == {
-            **{case: rewritten for case, (_stored_warnings, rewritten) in cases.items()},
-            "body_differs": [_EMPTY],
-            **{case: stored for case, (stored, _trace) in _CHECKED.items()},
-        }
-        after = dry_run(conn, table=scratch_table)
-    finally:
-        conn.close()
-    assert (after.rewritten_rows, after.left_rows, after.residual_rows) == (0, 2, 2)
-
-
-def test_the_dry_run_refuses_a_statement_holding_a_second_command(scratch_table, monkeypatch):
-    """Each definition runs through the extended query protocol, so a second command hidden in
-    one fails the run before it executes."""
-    monkeypatch.setattr(
-        warning_formats,
-        "definitions",
-        lambda _sql: [
-            "CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS $f$ SELECT 1 $f$; "
-            f"DROP TABLE {scratch_table}"
-        ],
-    )
-    conn = _connect()
-    try:
-        with pytest.raises(pg8000.exceptions.DatabaseError):
-            dry_run(conn, table=scratch_table)
-        assert _stored(conn, scratch_table) == {}
-    finally:
-        conn.close()
-
-
-def test_a_ref_named_in_no_format_fails_the_run(scratch_table):
-    """A `revision_unavailable` message naming `dcid:Foo` is a finding on its own."""
-    message = "The revision of dcid:Foo could not be read."
-    conn = _connect()
-    try:
-        _execute(
-            conn,
-            f"INSERT INTO {scratch_table} VALUES ('unlisted', 'cv1', %s::jsonb, %s::jsonb, NULL)",
-            (
-                json.dumps(
-                    [{"code": "revision_unavailable", "severity": "warn", "message": message}]
-                ),
-                json.dumps(
-                    {
-                        "warnings": [
-                            {"code": "revision_unavailable", "severity": "warn", "message": message}
-                        ]
-                    }
-                ),
-            ),
-        )
-        conn.commit()
-        report = dry_run(conn, table=scratch_table)
-    finally:
-        conn.close()
-    assert findings(report) == ["1 rows of revision_unavailable name a ref in no format"]
-
-
-def test_the_command_reports_read_only_changes_nothing_and_exits_1_on_a_finding(
-    live_store, monkeypatch, capsys
-):
-    """The command against `datasets.version_record` prints that its transaction is read
-    only, leaves the stored warnings as they were, and exits 1 while a residual row exists."""
-    cases = rewrite_cases()
-    subjects = {case: f"spec_warning_formats_{case}_{uuid4().hex}" for case in cases}
-
-    def _warnings() -> dict[str, object]:
+    if column is not None:
         with live_store.transaction() as tx:
-            rows = tx.fetch_all(
-                "SELECT subject_id, warnings FROM datasets.version_record "
-                "WHERE subject_id = ANY(%s)",
-                (list(subjects.values()),),
+            tx.execute(
+                "UPDATE datasets.version_record SET warnings = %s::jsonb WHERE subject_id = %s",
+                (json.dumps(column), subject_id),
             )
-        return {cast(str, row["subject_id"]): row["warnings"] for row in rows}
 
+
+def _rows(live_store, subjects: list[str]) -> dict[str, tuple[str, object, object]]:
+    """Each row's `xmin`, which only an UPDATE of the row moves, its column and its body."""
+    with live_store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, xmin::text AS xmin, warnings, immutable_body "
+            "FROM datasets.version_record WHERE subject_id = ANY(%s)",
+            (subjects,),
+        )
+    return {
+        cast(str, row["subject_id"]): (
+            cast(str, row["xmin"]),
+            row["warnings"],
+            row["immutable_body"],
+        )
+        for row in rows
+    }
+
+
+@pytest.mark.parametrize("standard_conforming_strings", ["on", "off"])
+def test_0046_rewrites_each_old_shape_in_the_column_and_the_body(
+    live_store, standard_conforming_strings
+):
+    """Every old shape but the member sentence becomes the writer's shape, in the column and in
+    the body's `warnings`, each rewritten from its own stored value, whatever
+    `standard_conforming_strings` the session runs under. A row whose warnings are already in
+    the new shape, hold a member sentence alone or a name with a comma, or that holds no
+    warnings at all, is not updated, and a rerun updates no row."""
+    with live_store.transaction() as tx:
+        tx.execute(
+            f'ALTER DATABASE "{database_name()}" '
+            f"SET standard_conforming_strings = {standard_conforming_strings}"
+        )
+    cases = rewrite_cases()
+    suffix = uuid4().hex
+    subjects = {case: f"spec_0046_{case}_{suffix}" for case in cases}
+    body_differs = f"spec_0046_body_differs_{suffix}"
+    no_warnings = f"spec_0046_no_warnings_{suffix}"
+    for case, (stored, _rewritten) in cases.items():
+        _insert(live_store, subjects[case], warnings=stored, trace=trace_for(case))
+    _insert(live_store, body_differs, warnings=[_OLD_UNSERVED, _EMPTY], column=[_EMPTY])
+    _insert(live_store, no_warnings, warnings=None)
+    every = [*subjects.values(), body_differs, no_warnings]
+    before = _rows(live_store, every)
+
+    assert _rerun_migration(live_store, _MIGRATION) == [_MIGRATION]
+
+    after = _rows(live_store, every)
+    for case, (stored, rewritten) in cases.items():
+        xmin, column, body = after[subjects[case]]
+        assert column == rewritten, case
+        assert body == {**cast(dict, before[subjects[case]][2]), "warnings": rewritten}, case
+        assert (xmin == before[subjects[case]][0]) == (stored == rewritten), case
+    xmin, column, body = after[body_differs]
+    assert column == [_EMPTY]
+    assert cast(dict, body)["warnings"] == [new_coverage(unserved=UNSERVED[:1]), _EMPTY]
+    assert xmin != before[body_differs][0]
+    assert after[no_warnings] == before[no_warnings]
+    assert before[no_warnings][1] is None
+
+    assert _rerun_migration(live_store, _MIGRATION) == [_MIGRATION]
+    assert _rows(live_store, every) == after
+
+
+def test_0046_leaves_no_function_behind_in_its_session():
+    """The rewrite's functions live in the migration's session and are dropped before it
+    commits, so a later migration in the same session defines its own."""
+    conn = connect_live()
     try:
-        for case, (stored, _rewritten) in cases.items():
-            _insert_as_the_previous_image(
-                live_store,
-                subject_id=subjects[case],
-                content_version="cv1",
-                body={
-                    "prepared_at": "2026-10-20T00:00:00Z",
-                    "trace": trace_for(case),
-                    "warnings": stored,
-                },
-            )
-        before = _warnings()
-        assert len(before) == len(subjects)
-
-        for name, value in live_params().items():
-            monkeypatch.setenv(name, value)
-        monkeypatch.delenv("DATASET_STORE_INSTANCE_CONNECTION_NAME", raising=False)
-        capsys.readouterr()
-
-        assert warning_formats.main() == 1
-
-        lines = capsys.readouterr().out.splitlines()
-        assert lines[0] == "transaction read only: on"
-        residual = next(line for line in lines if line.startswith("residual rows: "))
-        assert int(residual.removeprefix("residual rows: ")) >= 2
-        assert any(line.startswith("FINDING: ") for line in lines)
-        assert _warnings() == before
+        cursor = conn.cursor()
+        cursor.execute((MIGRATIONS_DIR / _MIGRATION).read_text())
+        cursor.execute(
+            "SELECT count(*) FROM pg_proc "
+            "WHERE pronamespace = pg_my_temp_schema() AND proname LIKE 'warning%'"
+        )
+        assert cast(list, cursor.fetchone())[0] == 0
     finally:
-        _delete_versions(live_store, list(subjects.values()))
+        conn.rollback()
+        conn.close()
+
+
+def test_settle_counts_a_row_holding_an_old_warning_until_0046_rewrites_it(live_store):
+    """A row holding an old shape in its column, and one holding it in its body alone, each add
+    one to settle's count until migration 0046 rewrites them; a row in the new shape adds none."""
+    suffix = uuid4().hex
+    _insert(live_store, f"spec_settle_withheld_{suffix}", warnings=[_OLD_WITHHELD])
+    _insert(
+        live_store,
+        f"spec_settle_body_{suffix}",
+        warnings=[_OLD_UNSERVED, _EMPTY],
+        column=[_EMPTY],
+    )
+    _insert(live_store, f"spec_settle_new_{suffix}", warnings=[new_withheld("Rate", ONE_WITHHELD)])
+
+    assert run_settle(store=live_store) == 2
+
+    assert _rerun_migration(live_store, _MIGRATION) == [_MIGRATION]
+    assert run_settle(store=live_store) == 0
