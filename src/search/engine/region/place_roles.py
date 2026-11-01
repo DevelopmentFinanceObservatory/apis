@@ -1834,17 +1834,17 @@ def single_node_dcids(state: ResolveState) -> dict[str, str]:
 
 def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
     """The places the part's settled binding (`ResolveState.place`) holds for each entity
-    text, in `place_order` (`RegionResult.entity_refs`).
+    text (`RegionResult.entity_refs`).
 
     A text is read on the flow ends it is directed to where the binding has them, and on
     every role otherwise. On each, its set as the binding read that end
     (`PlaceRoles.readings`) binds one reading (`settle_place_sets`): its node when the
     binding holds it there, else its total (`PlaceSet.total`), else the members the binding
-    holds there. Each end adds what it binds: its whole, else its members the binding holds
-    there, else nothing, so a text bound whole on one end keeps that ref whatever its other
-    ends hold. A set whose members an end holds states its own ref first, so a client
-    matches the set it named (`_own_ref`, as read on the first end not bound whole), then
-    those members, then the wholes. A text naming a whole population ("all donors",
+    holds there. A text bound whole on each end that binds it states those wholes, so a text
+    bound whole on one end and holding none of its members on another keeps that ref. A set
+    whose members some end not bound whole holds states its own ref first, so a client
+    matches the set it named (`_own_ref`, as read on the first such end), then those
+    members in `place_order`. A text naming a whole population ("all donors",
     `ResolveState.whole_named`) binds the parties it names that the binding holds. A text
     no end binds, ambiguous or unresolved, is left out.
 
@@ -1876,8 +1876,8 @@ def bound_entity_refs(state: ResolveState) -> dict[str, tuple[str, ...]]:
             for d in place_set.members or ()
             if d in end
         )
-        own = _own_ref(by_members[0]) if held else None
-        if text_refs := tuple(dict.fromkeys(d for d in (own, *held, *wholes) if d is not None)):
+        stated = (_own_ref(by_members[0]), *held) if held else wholes
+        if text_refs := tuple(dict.fromkeys(d for d in stated if d is not None)):
             refs[text] = text_refs
     for text, dcids in state.whole_named.items():
         if held := place_order(d for d in dcids if d in bound):

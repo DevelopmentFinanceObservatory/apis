@@ -4,6 +4,8 @@ facts count the composite file's rows in memory, zero rows included."""
 
 from __future__ import annotations
 
+import pytest
+
 from code_index.composites import ComponentIdentity
 from code_index.declarations import COMPOSITES
 from code_index.shared import get_index
@@ -143,10 +145,13 @@ def _download(
     members: tuple[frozenset[str] | None, frozenset[str] | None],
     series: list[tuple[str, str, list[int]]],
     served: range | tuple[range, range],
+    *,
+    settled: bool = False,
 ) -> DownloadFacts | None:
     """`composite_download` of the provider-inclusive composite whose bilateral and imputed
     components serve `members` in `served`, one range for both or one each, over a snapshot
-    holding each of `series`, a (StatVar, recipient, years) from the United States."""
+    holding each of `series`, a (StatVar, recipient, years) from the United States, and
+    which settles each component's years when `settled`."""
     coverage = build_coverage_index(
         [(dcid, "facet", _USA, recipient, years) for dcid, recipient, years in series],
         role_names=dict.fromkeys(
@@ -158,7 +163,7 @@ def _download(
     components = [
         ServedComponent(
             component=ComponentIdentity(role=recipe.role, recipe=recipe, identity=identity),
-            years=YearCounts(counts={}),
+            years=YearCounts(counts={}, settled=settled),
             served=frozenset(years),
             members=held,
         )
@@ -210,13 +215,22 @@ def test_a_component_whose_members_are_not_settled_states_no_rows() -> None:
     )
 
 
-def test_a_component_serving_no_year_writes_nothing_whatever_its_members() -> None:
-    # The bilateral component serves no year, so its unsettled members write no row. The
-    # imputed member fills its own Kenya 2020 cell.
+@pytest.mark.parametrize("settled", [True, False], ids=["settled", "unknown-to-the-snapshot"])
+def test_a_component_serving_no_year_writes_nothing_only_where_the_snapshot_settles_it(
+    settled: bool,
+) -> None:
+    # The bilateral component serves no year and its members are not settled in memory. Where
+    # the snapshot settles its years it writes no row, and the imputed member fills its own
+    # Kenya 2020 cell. Where the snapshot may not know its years, the count is unknown.
     download = _download(
-        (None, frozenset({"c"})), [("c", _KEN, [2020])], (range(0), range(2020, 2021))
+        (None, frozenset({"c"})),
+        [("c", _KEN, [2020])],
+        (range(0), range(2020, 2021)),
+        settled=settled,
     )
     assert download is not None
-    assert (download.rows, download.series) == (1, 1)
-    assert download.window is not None
-    assert (download.window.start_year, download.window.end_year) == (2020, 2020)
+    window = (
+        None if download.window is None else (download.window.start_year, download.window.end_year)
+    )
+    expected = (1, 1, (2020, 2020)) if settled else (None, None, None)
+    assert (download.rows, download.series, window) == expected
