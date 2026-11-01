@@ -18,7 +18,6 @@ worker until it returns.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 
 from fastapi import APIRouter, Request
@@ -57,8 +56,6 @@ from graph_api.resolve_models import (
     ResolveResult,
 )
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
-
-logger = logging.getLogger(__name__)
 
 # The relation a held group's or region's link names, by the kind the policy gives it.
 _RELATION_BY_KIND: dict[str, LinkRelation] = {
@@ -215,11 +212,16 @@ def classify_resolve_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=TIMEOUT_DEFAULT.retryable,
         )
     if isinstance(exc, GraphReadError):
-        logger.error("Graph resolve door's DCP confirmation read failed: %s", exc, exc_info=exc)
         upstream_status = exc.upstream_status
-        if isinstance(upstream_status, int) and 400 <= upstream_status < 500:
-            return ProblemSpec(status=502, code="upstream_error", retryable=True)
-        return ProblemSpec(status=503, code="service_unavailable", retryable=True)
+        client_side = isinstance(upstream_status, int) and 400 <= upstream_status < 500
+        spec = (
+            ProblemSpec(status=502, code="upstream_error", retryable=True)
+            if client_side
+            else ProblemSpec(status=503, code="service_unavailable", retryable=True)
+        )
+        return spec._replace(
+            log=f"Graph resolve door's DCP confirmation read failed: {exc}", log_traceback=True
+        )
     return None
 
 

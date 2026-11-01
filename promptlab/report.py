@@ -414,7 +414,7 @@ class _NoLiveGraph:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         return self._unreachable("node_labels_batch")
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         return self._unreachable("node_types_batch")
 
     def node_arcs_batch(

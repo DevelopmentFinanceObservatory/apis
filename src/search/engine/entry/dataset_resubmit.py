@@ -36,19 +36,23 @@ deadline `resubmit_full_read_timeout_s` (90 s) from request start, and the promo
 phases share it. The wait for promotes is bound by that deadline, since a promote's own
 reads end at `params.deadline` (45 s) unless its walk ran the full read. The trailing
 stream runs to the latest `RegionResult.reads_deadline` among the parts, so it keeps the
-request deadline unless a promote ran the full read.
+request deadline unless a promote ran the full read. A composite entry's component reads run
+to its own region's `reads_deadline` too, so a composite whose walk ran the full read previews
+its components past the request deadline.
 
 An identity entry's part books the time `_served_entry` and `_as_composite` take under the
-`served_entry` and `as_composite` steps of its `timing_by_step`, beside the steps
-`resolve_spec_resubmit` books, so the part's total covers the scope compile and the composite
-answer.
+`served_entry` and `as_composite` steps of its `timing_by_step`, and a buffered composite
+preview's read under `composite_preview`, beside the steps `resolve_spec_resubmit` books, so
+the part's total covers the scope compile and the composite answer.
 
 An identity entry that posts `scope_entries` compiles them over its identity
 (`scope.build.build_part_scope`), resolves the identity they compile to, and carries the
 scope on its definite part (`_compiled_scope`, `_served_scope`). A composite identity, posted
 or compiled, resolves the identity its option was set on
-(`identity_edit.composite_table_identity`) and answers as the composite (`_as_composite`). A
-posted identity, as a posted candidate, is read as a fresh search of it would serve it
+(`identity_edit.composite_table_identity`), with no observation preview, and answers as the
+composite (`_as_composite`). The composite's preview reads each of its components through the
+part memo (`composite_answer`), in a trailing task where the request streams observations
+and inline where it embeds them. A posted identity, as a posted candidate, is read as a fresh search of it would serve it
 (`dataset_entries.served_posted_identity`): a flow side it leaves open binds its dataset's
 containing total, and an inclusive composite whose providers a fresh search would not offer
 the inclusive scope answers its bilateral line, its scope reporting the inclusive scope
@@ -81,6 +85,7 @@ from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
 from materialise.member_conversion import request_conversion_reader
 from materialise.rate_tables import RateTableCache
+from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -105,6 +110,12 @@ from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.identity_edit import composite_table_identity
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
+from search.engine.region.composite_answer import (
+    ComponentReads,
+    CompositeRelaunch,
+    composite_served,
+    with_composite_observations,
+)
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import (
@@ -220,13 +231,24 @@ def _as_composite(
     *,
     scope: PartScope | None,
     facts: ScopeFacts,
+    reads: ComponentReads,
 ) -> RegionResult:
     """`region`, resolved for composite `identity`'s table identity, answering the composite
     (`scope.composite.assemble_composite`) under its own spec_id, which is the compiled
-    scope's when `scope` compiled it."""
+    scope's when `scope` compiled it. It carries the closure that reads the composite's
+    preview per component over `reads` (`composite_answer.CompositeRelaunch`), over the
+    components it was restated over (`composite_served`), which `_launch_trailing_tasks`
+    launches once every promote has returned, or `with_composite_observations` reads inline.
+    The closure reads the composite's identity alone, so a table identity the part memo held
+    answers with one too."""
     spec_id = scope.compiled.spec_id if scope is not None else identity_spec_id(identity)
-    spec, _ = assemble_composite(region.spec, identity, spec_id, facts=facts)
-    return with_composite_answer(region, spec)
+    served = composite_served(identity, reads=reads)
+    spec, _ = assemble_composite(region.spec, identity, spec_id, served=served, facts=facts)
+    return with_composite_answer(
+        region,
+        spec,
+        observations_relaunch=CompositeRelaunch(spec=spec, reads=reads, served=served),
+    )
 
 
 def _served_scope(scope: PartScope | None, region: RegionResult) -> PartScope | None:
@@ -399,6 +421,18 @@ async def handle(
         deadline=params.deadline,
     )
 
+    component_reads = ComponentReads(
+        graph=graph,
+        sdmx=sdmx,
+        coverage=params.coverage,
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        rate_cache=rate_cache,
+        deadline=params.deadline,
+        catalogue=current_catalogue(),
+        memo=memo,
+    )
+
     def _promote(index: int, entry: ResubmitIdentityEntry) -> _Promoted:
         """`entry` promoted in one worker thread: its posted identity read as a fresh search
         would serve it and its scope compiled (`_served_entry`), both of which read coverage
@@ -413,6 +447,13 @@ async def handle(
             elect_latest_window(entry.identity, facts) if scope is None else scope.compiled.identity
         )
         read = composite_table_identity(identity, pointer=f"/input/entries/{index}/identity")
+        # A composite's preview reads its components (`_as_composite`), so the table identity
+        # it is resolved for reads none.
+        read_options = (
+            options
+            if read is identity
+            else dataclasses.replace(options, include_observations=False, stream_observations=False)
+        )
         # A compiled scope may switch the region's reading, so its groups are restated.
         groups = (
             entry.entity_groups
@@ -424,7 +465,7 @@ async def handle(
             if scope is None and read is identity
             else ResubmitIdentityPayload(identity=read, entity_groups=groups)
         )
-        key = memo.key(payload, options) if memo is not None and memo.active else None
+        key = memo.key(payload, read_options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None
         if stored is not None:
             return _Promoted(
@@ -443,7 +484,7 @@ async def handle(
                 graph=graph,
                 sdmx=sdmx,
                 coverage=params.coverage,
-                options=options,
+                options=read_options,
                 full_read_deadline=full_read_deadline,
             )
         except EngineInputError as exc:
@@ -475,8 +516,21 @@ async def handle(
         steps = {"served_entry": promoted.served_entry_ms}
         if promoted.read is not promoted.identity and region.status == "definite":
             started = now_ms()
-            region = _as_composite(region, promoted.identity, scope=scope, facts=promoted.facts)
+            # The components read to the deadline the entry's own reads ran to, the
+            # full-read bound where its member walk ran the full read.
+            reads = (
+                component_reads
+                if region.reads_deadline is None
+                else dataclasses.replace(component_reads, deadline=region.reads_deadline)
+            )
+            region = _as_composite(
+                region, promoted.identity, scope=scope, facts=promoted.facts, reads=reads
+            )
             steps["as_composite"] = now_ms() - started
+            if params.include_observations and not params.stream_observations:
+                region = await with_composite_observations(region, semaphore=sem)
+            elif not params.stream_observations:
+                region = dataclasses.replace(region, observations_relaunch=None)
         return dataclasses.replace(
             region,
             timing_by_step={**region.timing_by_step, **steps},
@@ -694,6 +748,7 @@ async def handle(
             graph=graph,
             start_ms=start_ms,
             params=dataclasses.replace(params, deadline=trailing_deadline),
+            preview_reads=component_reads,
         )
     ) as events:
         async for event in events:

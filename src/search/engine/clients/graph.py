@@ -697,10 +697,11 @@ class EngineGraphClient(Protocol):
         """
         ...
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
-        """Fetch the first ``->typeOf`` dcid for each node in one ``POST /v2/node``.
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Fetch every distinct ``->typeOf`` dcid of each node, in the graph's order, in one
+        ``POST /v2/node``.
 
-        Omit missing and type-less nodes. Reads share a cache with ``node_type``.
+        Omit missing and type-less nodes. Reads share a cache with ``node_type``, the first.
         Transport and HTTP failures raise ``GraphInfraError``.
         """
         ...

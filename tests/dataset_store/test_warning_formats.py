@@ -1,5 +1,5 @@
 """`dataset_store.warning_formats`'s definitions against the messages old and current writers
-store. Migration 0046 and the count `settle` reads are tested against Postgres in
+store. Migration 0047 and the count `settle` reads are tested against Postgres in
 `test_warning_formats_live.py`."""
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def test_a_current_shape_matches_no_format(code, message):
 )
 def test_each_old_format_matches_its_code_s_format(case, warning):
     """Every old message matches its code's format, a name holding a comma included, which
-    migration 0046 leaves as stored."""
+    migration 0047 leaves as stored."""
     assert _matches(cast(str, warning["code"]), cast(str, warning["message"])), case
 
 

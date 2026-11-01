@@ -11,10 +11,13 @@ status the wire sends, so any gap fails here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 from dfo_spec_kit.registry import REGISTRY
 
 import datasets_api.app  # noqa: F401 -- imports every door module, so every refusal class loads
+from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses, build_analysis_door
@@ -35,8 +38,14 @@ from datasets_api.doors.snapshot import build_snapshot_door
 from datasets_api.doors.versions import build_versions_door
 from datasets_api.operation_store import classify_operation_store_exception
 from datasets_api.store_errors import classify_store_exception
+from dfo_platform import codes
 from dfo_platform.codes import bound_registry_endpoint, registered_status
-from dfo_platform.doors import DoorContribution, combine_classifiers, route_keys
+from dfo_platform.doors import (
+    DoorContribution,
+    combine_classifiers,
+    endpoint_exemplars,
+    route_keys,
+)
 from dfo_platform.problem import Refusal
 from spec_registry import IdentityQuarantined
 from tests.code_registry import problem_statuses
@@ -207,7 +216,7 @@ def test_every_refusal_exemplar_goes_out_at_its_registered_status(doors):
     its code on that endpoint."""
     sent: set[tuple[str, str, int]] = set()
     for name, door in doors.items():
-        for exemplar in door.exception_exemplars:
+        for exemplar in endpoint_exemplars((door,)):
             for endpoint, declared in _inventories(doors)[name].items():
                 if not isinstance(exemplar, declared):
                     continue
@@ -243,7 +252,7 @@ def _raising_types(declared_types: tuple[type, ...]) -> tuple[type, ...]:
 
 
 def _surface_exemplars(doors: dict[str, DoorContribution]) -> tuple[BaseException, ...]:
-    return tuple(exemplar for door in doors.values() for exemplar in door.exception_exemplars)
+    return endpoint_exemplars(doors.values())
 
 
 def test_every_type_a_route_raises_has_a_surface_exemplar(doors):
@@ -282,3 +291,31 @@ def test_every_exemplar_a_route_raises_maps_on_its_endpoint_under_the_surface_cl
                 if spec is not None and problem_statuses(spec.code, endpoint) != {spec.status}:
                     unmapped.add((type(exemplar).__qualname__, endpoint))
     assert sorted(unmapped) == []
+
+
+@pytest.mark.parametrize(
+    ("code", "endpoint"),
+    [
+        ("observations_unavailable", "datasets.observations"),
+        # Mapped on eight more endpoints, so only a check bound per endpoint sees the gap.
+        ("snapshot_not_found", "datasets.observations"),
+    ],
+)
+def test_a_registry_that_drops_a_raised_code_fails_the_surface_build(
+    monkeypatch: pytest.MonkeyPatch, code: str, endpoint: str
+):
+    """The surface build classifies every door's exemplars with its endpoint bound, so a code
+    the registry stops mapping on an endpoint that raises it fails at startup, before a request
+    meets it, whatever other endpoints still map it."""
+    real = codes._problem_statuses
+
+    def dropped(asked: str) -> Mapping[str, frozenset[int]]:
+        statuses = real(asked)
+        if asked != code:
+            return statuses
+        return {name: found for name, found in statuses.items() if name != endpoint}
+
+    monkeypatch.setattr(codes, "_problem_statuses", dropped)
+
+    with pytest.raises(LookupError, match=code):
+        datasets_surface()

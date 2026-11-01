@@ -249,12 +249,14 @@ def build_derived_door(*, deps: DepsCell) -> DoorContribution:
             ArtifactExpired,
             DerivedBackpressure,
         ),
-        exception_exemplars=(
-            SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
-            SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
-            ArtifactExpired(id="ops_exemplar", content_version="ocv_exemplar"),
-            DerivedBackpressure(),
-        ),
+        endpoint_exemplars={
+            "datasets.snapshot": (
+                SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
+                SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
+                ArtifactExpired(id="ops_exemplar", content_version="ocv_exemplar"),
+                DerivedBackpressure(),
+            )
+        },
     )
 
 
@@ -299,14 +301,20 @@ def build_derived_files_door(*, deps: DepsCell) -> DoorContribution:
             MintBackpressure,
             *_FILE_EXCEPTION_TYPES,
         ),
-        exception_exemplars=(
-            SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
-            SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
-            ArtifactExpired(id="ops_exemplar", content_version="ocv_exemplar"),
-            QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
-            DerivedBackpressure(),
-            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
-        ),
+        endpoint_exemplars={
+            "datasets.files": (
+                SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
+                SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
+                ArtifactExpired(id="ops_exemplar", content_version="ocv_exemplar"),
+                QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
+                DerivedBackpressure(),
+                MintBackpressure(),
+                OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
+                ExcelLimitError("exemplar"),
+                ExcelIllegalCharacterError("exemplar", row=0, column=0),
+                ParquetSizeBoundError("exemplar"),
+            )
+        },
     )
 
 

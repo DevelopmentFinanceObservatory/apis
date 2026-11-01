@@ -96,10 +96,11 @@ class CallerSettings(BaseSettings):
 
     `caller_principal` (`DFO_CALLER_PRINCIPAL`) is the secret the website sends in
     `x-dfo-caller-principal` beside the caller it resolved (`x-dfo-caller`). A request whose
-    principal header does not match it, or arrives while it is empty, refuses 503. Empty trusts
-    no `x-dfo-caller`. `caller_hmac_key` (`DFO_CALLER_HMAC_KEY`) keys the caller digest of a request
-    that reaches this service directly, and must equal the website's `CALLER_HMAC_KEY` so both
-    paths name a client by one key. Empty refuses such callers wherever an allowance applies.
+    principal header does not match it, or arrives while it is empty, refuses `internal_error` (500,
+    not retryable). Empty trusts no `x-dfo-caller`. `caller_hmac_key` (`DFO_CALLER_HMAC_KEY`) keys
+    the caller digest of a request that reaches this service directly, and must equal the website's
+    `CALLER_HMAC_KEY` so both paths name a client by one key. Empty refuses such callers wherever an
+    allowance applies.
     `trusted_proxy_hops` (`DFO_TRUSTED_PROXY_HOPS`, default 0) is how many X-Forwarded-For
     entries from the right the proxies in front of this service appended after the client's,
     as the website's `TRUSTED_PROXY_HOPS` counts them.

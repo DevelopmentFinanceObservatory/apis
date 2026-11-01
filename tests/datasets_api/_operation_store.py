@@ -41,7 +41,8 @@ CREATE TABLE datasets.operation (
     origin_catalogue_build_id TEXT,
     refusal TEXT,
     final_delivery INTEGER,
-    confirmed_at TEXT
+    confirmed_at TEXT,
+    family TEXT
 );
 """
 
@@ -83,7 +84,7 @@ def _sqlite_param(value: object) -> object:
     return value
 
 
-_JSON_COLUMNS = frozenset({"request_identity", "options", "refusal"})
+_JSON_COLUMNS = frozenset({"request_identity", "options", "refusal", "family"})
 _TIMESTAMP_COLUMNS = frozenset(
     {"claimed_at", "created_at", "updated_at", "dispatched_at", "submitted_at", "confirmed_at"}
 )

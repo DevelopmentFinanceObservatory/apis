@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
@@ -14,6 +15,7 @@ from fastapi.responses import JSONResponse
 from artifact_store import Tier
 from code_index.shared import get_index
 from dataset_store.snapshot import Revocation, StoredArtifactLocation
+from datasets_api.adapter import family_basis
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import (
@@ -52,16 +54,31 @@ from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
+from graph_release.context import bound_release
+from materialise.trace import UNKNOWN_FAMILY, MemberFamily, StatedFamily, parse_recorded_family
+from origin_catalogue import current_catalogue
 from series_coverage.index import Estimate
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._operation_store import FakeOperationDatasetStore
-from ._snapshot_doubles import FakeSnapshotReader, FakeSpecReader, _store_and_locate, _version
+from ._snapshot_doubles import (
+    FakeSnapshotReader,
+    FakeSpecReader,
+    _store_and_locate,
+    _version,
+    version_body,
+)
+from ._version_facts import facts_from_body
+from ._version_record_store import TEST_BASIS
 from .conftest import FakeDatasetStore
+from .test_head_freshness import _redeployed
 from .test_pin_door import FakeArtifactReferenceWriter
+from .test_worker_app import _client as _worker_client
+from .test_worker_app import _run_path, _task_body
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _OP_NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -92,7 +109,15 @@ class _FixedOperationStore:
         return None
 
     def complete(
-        self, id: str, *, attempt: int, subject_id: str, content_version: str, confirmed_at
+        self,
+        id: str,
+        *,
+        attempt: int,
+        subject_id: str,
+        content_version: str,
+        confirmed_at,
+        family,
+        basis,
     ):
         return None
 
@@ -126,6 +151,7 @@ def _operation(
     created_at: datetime = _OP_NOW,
     options: MintOptions = _PARQUET_BUNDLE,
     confirmed_at: datetime | None = None,
+    family: dict[str, object] | None = None,
 ) -> Operation:
     return Operation(
         id=id,
@@ -150,6 +176,7 @@ def _operation(
         origin_catalogue_build_id="fake-catalogue",
         refusal=refusal,
         confirmed_at=confirmed_at,
+        family=parse_recorded_family(family),
     )
 
 
@@ -323,6 +350,7 @@ def test_an_unfinished_poll_paces_by_the_age_of_the_operation(state: str) -> Non
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
+        serving_basis=lambda: TEST_BASIS,
     )
 
     assert resource.operation.retry_after_ms == 5_000
@@ -626,20 +654,109 @@ def test_failed_operation_poll_keeps_its_own_detail_when_the_stored_refusal_has_
     assert body["cause"]["code"] == "spec_not_found"
 
 
+_CONFIRMED_CURRENCY = {"served_from": "materialise", "confirmed_at": "2026-01-01T00:00:00+00:00"}
+_EARLIER_COMPLETION = "2025-12-31T00:00:00+00:00"
+_UNKNOWN_FAMILY_FIELDS = {"family_member_digest": None, "family_member_count": None}
+# The stored version keeps its first mint's family, which a poll never states.
+_FIRST_MINT_VERSION = _version(
+    facts=facts_from_body(
+        {
+            **version_body("cv1"),
+            "trace": {
+                "family_member_digest": "f" * 64,
+                "family_member_count": 9,
+                "stub_candidates": ["dcid:Stub_A"],
+            },
+        }
+    )
+)
+
+
+def _serving_basis() -> str:
+    """The basis the poll serves under (`adapter.family_basis` of the test app's deps)."""
+    return family_basis(SimpleNamespace(code_index=get_index(), materialiser_build=build_commit()))
+
+
+def _basis_before_a_redeploy() -> str:
+    """The basis a run resolved its family under before the graph release moved."""
+    with bound_release(_redeployed()):
+        return _serving_basis()
+
+
 @pytest.mark.parametrize(
-    ("confirmed_at", "currency"),
+    ("confirmed_at", "family", "currency"),
     [
         pytest.param(
             _CONFIRMED_AT,
-            {"served_from": "materialise", "confirmed_at": "2026-01-01T00:00:00+00:00"},
+            {
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+                "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+                "basis": _serving_basis,
+            },
+            {
+                **_CONFIRMED_CURRENCY,
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+            },
             id="confirmed",
         ),
-        pytest.param(None, {}, id="completed-by-an-image-recording-no-instant"),
+        # The graph release moved after the run completed, so its family may not hold now.
+        pytest.param(
+            _CONFIRMED_AT,
+            {
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+                "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+                "basis": _basis_before_a_redeploy,
+            },
+            {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
+            id="release-moved-since-completion",
+        ),
+        pytest.param(
+            _CONFIRMED_AT,
+            {
+                "family_member_digest": None,
+                "family_member_count": None,
+                "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+                "basis": _serving_basis,
+            },
+            {**_CONFIRMED_CURRENCY, "family_member_digest": None, "family_member_count": None},
+            id="run-stating-no-family",
+        ),
+        # An older image reset the row and completed it again without writing the column, so
+        # the family recorded at the earlier completion is left behind and stated unknown.
+        pytest.param(
+            _CONFIRMED_AT,
+            {
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+                "confirmed_at": _EARLIER_COMPLETION,
+                "basis": _serving_basis,
+            },
+            {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
+            id="family-of-an-earlier-completion",
+        ),
+        pytest.param(
+            _CONFIRMED_AT,
+            None,
+            {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
+            id="completed-before-families-were-recorded",
+        ),
+        pytest.param(
+            None, None, _UNKNOWN_FAMILY_FIELDS, id="completed-by-an-image-recording-no-instant"
+        ),
     ],
 )
 def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal(
-    confirmed_at: datetime | None, currency: dict[str, str]
+    confirmed_at: datetime | None, family: dict[str, object] | None, currency: dict[str, object]
 ) -> None:
+    """A row the run completed states the run's currency and the family it served in place of
+    the stored version's first-mint family (`Operation.family`). A row that recorded no family
+    at its `confirmed_at` under the serving basis states the family unknown, with no stub
+    candidates. A row family's `basis` is a function, called under the test's bound release."""
+    if family is not None:
+        family = {key: value() if callable(value) else value for key, value in family.items()}
     artifact_store = FakeArtifactStore()
     location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
     client = make_client(
@@ -647,7 +764,7 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
         settings=_SITE_SETTINGS,
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=FakeSnapshotReader(
-            versions={("spec_a", "cv1"): _version()},
+            versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
             locations={("spec_a", "cv1"): [location]},
         ),
         artifact_store=artifact_store,
@@ -660,6 +777,7 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
                     subject_id="spec_a",
                     content_version="cv1",
                     confirmed_at=confirmed_at,
+                    family=family,
                 )
             }
         ),
@@ -672,12 +790,87 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
     assert "retry-after" not in resp.headers
     trace = body["manifest"]["trace"]
-    assert {key: trace[key] for key in ("served_from", "confirmed_at") if key in trace} == currency
+    stated = (
+        "served_from",
+        "confirmed_at",
+        "family_member_digest",
+        "family_member_count",
+        "stub_candidates",
+    )
+    assert {key: trace[key] for key in stated if key in trace} == currency
     assert body["manifest"]["content_version"] == "cv1"
     assert body["manifest"]["definition"]["spec_id"] == "spec_a"
     assert len(body["manifest"]["artifacts"]) == 1
     assert body["manifest"]["artifacts"][0]["artifact_digest"] == location.artifact_digest
     assert "error" not in body
+
+
+_WORKER_BUILD = "catalogue-the-worker-binds"
+
+
+def test_a_worker_run_records_its_family_under_the_basis_the_poll_serves():
+    """The worker binds the operation's catalogue and the served release around its run
+    (`operations.worker_app`), and the API binds its own around the poll (`request_scope`).
+    A family the run recorded under its bindings is the one the poll states, so neither side
+    reads its basis outside its bindings. The test's ambient catalogue is another build."""
+    assert current_catalogue().build_id != _WORKER_BUILD
+    catalogue = FakeCatalogue(build_id=_WORKER_BUILD)
+    operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    operation = operation_store.create_or_get(
+        request_identity={"input": {"spec_id": "spec_a"}},
+        options=_PARQUET_BUNDLE.model_dump(mode="json"),
+        coverage_stamp="cov_1",
+        origin_catalogue_build_id=_WORKER_BUILD,
+        estimate=_DEFAULT_ESTIMATE,
+    )
+    served = StatedFamily(members=MemberFamily(digest="b" * 64, count=4))
+
+    def run(*, operation, operation_store, **_) -> None:
+        # The basis `run_operation` records: `family_basis` of the run's deps, in the run.
+        basis = family_basis(
+            SimpleNamespace(code_index=get_index(), materialiser_build=build_commit())
+        )
+        operation_store.complete(
+            operation.id,
+            attempt=operation.attempt_count,
+            subject_id="spec_a",
+            content_version="cv1",
+            confirmed_at=_CONFIRMED_AT,
+            family=served,
+            basis=basis,
+        )
+
+    worker = _worker_client(
+        operation_store=operation_store,
+        run_in_thread=run,
+        catalogue=fake_catalogue_service(catalogue),
+    )
+    ran = worker.post(
+        _run_path(operation.id), json=_task_body(), headers={"Authorization": "Bearer t"}
+    )
+    assert ran.status_code == 200, ran.text
+    artifact_store = FakeArtifactStore()
+    location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
+            locations={("spec_a", "cv1"): [location]},
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=operation_store,
+        catalogue=fake_catalogue_service(catalogue),
+    )
+
+    polled = client.get(f"/api/datasets/operations/{operation.id}")
+
+    assert polled.status_code == 200, polled.text
+    trace = polled.json()["manifest"]["trace"]
+    assert (trace["family_member_digest"], trace["family_member_count"]) == ("b" * 64, 4)
 
 
 class _QuarantinedSpecReader(FakeSpecReader):
@@ -896,7 +1089,13 @@ def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit
         is not None
     )
     assert operation_store.complete(
-        op.id, attempt=1, subject_id="spec_a", content_version="cv1", confirmed_at=_CONFIRMED_AT
+        op.id,
+        attempt=1,
+        subject_id="spec_a",
+        content_version="cv1",
+        confirmed_at=_CONFIRMED_AT,
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
@@ -986,6 +1185,7 @@ def test_a_poll_that_loses_the_demotion_race_answers_from_the_rows_current_state
             now=lambda: _OP_NOW,
             settings=_SITE_SETTINGS,
             enrichment_digest=get_index().enrichment_digest,
+            serving_basis=lambda: TEST_BASIS,
         )
 
     if current is None:
@@ -1023,6 +1223,7 @@ def _poll_at(operation_store: LiveOperationStore, operation_id: str, at: datetim
         now=lambda: at,
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
+        serving_basis=lambda: TEST_BASIS,
     )
 
 
@@ -1300,6 +1501,7 @@ def _poll(
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
+        serving_basis=lambda: TEST_BASIS,
     )
 
 

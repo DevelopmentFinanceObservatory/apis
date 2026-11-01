@@ -22,13 +22,14 @@ from entity_resolution.shared import shared_membership_policy
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.interpret import PinnedResolved
-from search.engine.region.decisions import PlaceSetTooLargeError
+from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
 from search.engine.region.phase_intake import oecd_reading
 from search.engine.region.place_context import PlaceContext, UnsettledPlace
 from search.engine.region.place_roles import (
     PlaceAssignment,
     PlaceLists,
     bind_place_roles,
+    bound_entity_refs,
     group_request_names,
     part_sets,
     place_key,
@@ -51,25 +52,25 @@ _GHA, _KEN, _TZA = "country/GHA", "country/KEN", "country/TZA"
 _DEU, _FRA = "country/DEU", "country/FRA"
 _IDN, _IND = "country/IDN", "country/IND"
 
-_KENYA = PlaceSet(name="Kenya", kind="place", node=PlaceNode(_KEN, "Country"))
+_KENYA = PlaceSet(name="Kenya", kind="place", node=PlaceNode(_KEN, ("Country",)))
 _AFRICA = PlaceSet(
     name="Africa",
     kind="region",
-    node=PlaceNode("africa", "Continent"),
+    node=PlaceNode("africa", ("Continent",)),
     members=(_GHA, _KEN, _TZA),
     member_type="Country",
 )
 _ASIA = PlaceSet(
     name="Asia",
     kind="region",
-    node=PlaceNode("asia", "Continent"),
+    node=PlaceNode("asia", ("Continent",)),
     members=(_IDN, _IND),
     member_type="Country",
 )
 _EU = PlaceSet(
     name="European Union",
     kind="group",
-    node=PlaceNode("EuropeanUnion", "ContinentalUnion"),
+    node=PlaceNode("EuropeanUnion", ("ContinentalUnion",)),
     members=(_DEU, _FRA),
     member_type="Country",
 )
@@ -103,43 +104,80 @@ def _settle(
     admits: Callable[[str, str], bool] = _admits_every_type,
     bound: int | None = None,
 ) -> PlaceLists:
-    return settle_place_sets(assignment, admits=admits, has_data=has_data, bound=bound)
+    return settle_place_sets(
+        assignment, admits=admits, index=get_index(), has_data=has_data, bound=bound
+    )
 
 
 # One set on two roles.
 
 
+_EU_NODE = "EuropeanUnion"
+
+
 @pytest.mark.parametrize(
-    ("rows", "refused_role", "expected"),
+    ("place_set", "rows", "refused_role", "expected"),
     [
-        pytest.param([("africa", "africa")], None, ("africa",), id="node-holds-rows-on-both-roles"),
         pytest.param(
-            [("africa", _KEN), (_GHA, "africa")],
+            _EU, [(_EU_NODE, _EU_NODE)], None, (_EU_NODE,), id="node-holds-rows-on-both-roles"
+        ),
+        pytest.param(
+            _EU,
+            [(_EU_NODE, _FRA), (_DEU, _EU_NODE)],
             None,
-            (_GHA, _KEN, _TZA),
+            (_DEU, _FRA),
             id="node-holds-rows-on-one-role-at-a-time",
         ),
         pytest.param(
-            [("africa", "africa")],
+            _EU,
+            [(_EU_NODE, _EU_NODE)],
             "destination",
-            (_GHA, _KEN, _TZA),
+            (_DEU, _FRA),
             id="one-role-refuses-the-node",
+        ),
+        pytest.param(
+            _AFRICA,
+            [("africa", "africa")],
+            None,
+            (_GHA, _KEN, _TZA),
+            id="the-provider-role-takes-no-continent",
         ),
     ],
 )
-def test_a_set_on_two_roles_takes_one_reading(rows, refused_role, expected) -> None:
+def test_a_set_on_two_roles_takes_one_reading(place_set, rows, refused_role, expected) -> None:
     """A set named once that fills both flow roles binds its node only when both roles
-    admit the node's type and the series holds rows with the node on both. Otherwise it
-    binds its members on both."""
-    assignment = PlaceAssignment(sets={"origin": (_AFRICA,), "destination": (_AFRICA,)})
+    admit the node, by its type and by its kind (`role_kinds.role_takes`), and the series
+    holds rows with the node on both. Otherwise it binds its members on both. No release
+    lists a continent as a provider, so Africa binds its members though its node holds rows
+    on both roles."""
+    assignment = PlaceAssignment(sets={"origin": (place_set,), "destination": (place_set,)})
+    node = cast(PlaceNode, place_set.node)
 
     settled = _settle(
         assignment,
         _flow_holds(*rows),
-        admits=lambda key, graph_type: not (key == refused_role and graph_type == "Continent"),
+        admits=lambda key, graph_type: not (key == refused_role and graph_type == node.graph_type),
     )
 
     assert settled == {"origin": expected, "destination": expected}
+
+
+def test_a_set_with_no_members_reads_its_node_only_on_a_flow_role_that_takes_it() -> None:
+    """A set with no members reads its node. Kenya, a country, does so on the provider role,
+    but a continent the membership policy holds no members for has no reading there, since
+    the provider role takes no continent (`role_kinds.role_takes`), so settling refuses it
+    before any read."""
+    reads: list[PlaceLists] = []
+    africa = PlaceSet(name="Africa", kind="region", node=PlaceNode("africa", ("Continent",)))
+
+    def has_data(places: PlaceLists) -> bool:
+        reads.append(places)
+        return True
+
+    assert _settle(PlaceAssignment(sets={"origin": (_KENYA,)}), has_data) == {"origin": (_KEN,)}
+    with pytest.raises(PlaceSetNotAdmittedError):
+        _settle(PlaceAssignment(sets={"origin": (africa,)}), has_data)
+    assert reads == []
 
 
 def test_a_node_no_role_admits_is_not_read() -> None:
@@ -212,7 +250,7 @@ def test_a_node_is_read_alone_on_its_role() -> None:
 
 # A group's published total.
 
-_FRANCE = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, "Country"))
+_FRANCE = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, ("Country",)))
 _AFRICA_TOTAL = dataclasses.replace(_AFRICA, total="DACAfrica")
 _G7_TOTAL = PlaceSet(
     name="G7",
@@ -320,7 +358,7 @@ def test_a_subject_reads_no_total() -> None:
         pytest.param(_AFRICA, True, (_GHA, _KEN, _TZA), id="a-set-asked-for-its-members"),
         pytest.param(
             PlaceSet(
-                name="Nowhere", kind="region", node=PlaceNode("nowhere", "Continent"), members=()
+                name="Nowhere", kind="region", node=PlaceNode("nowhere", ("Continent",)), members=()
             ),
             False,
             ("nowhere",),
@@ -399,12 +437,12 @@ def test_the_bound_sums_the_places_of_every_role() -> None:
 
 def _places(*dcids: str) -> tuple[PlaceSet, ...]:
     return tuple(
-        PlaceSet(name=dcid, kind="place", node=PlaceNode(dcid, "Country")) for dcid in dcids
+        PlaceSet(name=dcid, kind="place", node=PlaceNode(dcid, ("Country",))) for dcid in dcids
     )
 
 
 _EMPTY_REGION = PlaceSet(
-    name="Empty", kind="region", node=PlaceNode("empty", "Continent"), members=()
+    name="Empty", kind="region", node=PlaceNode("empty", ("Continent",)), members=()
 )
 
 
@@ -503,7 +541,7 @@ def _state(
                             dcid=cast(PlaceNode, place_set.node).dcid,
                             name=pins[place_set.name],
                             kind="place",
-                            graph_type=cast(PlaceNode, place_set.node).graph_type,
+                            graph_types=cast(PlaceNode, place_set.node).graph_types,
                         )
                     )
                     for place_set in sets
@@ -580,7 +618,7 @@ def test_a_rank_over_place_asks_the_members_of_a_parts_only_set(destinations) ->
     """France beside Africa on a flow shape, ranked over place: Africa is the only set of
     the part that expands, so the rank asks for its members. Africa named by two texts is
     still the only set."""
-    france = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, "Country"))
+    france = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, ("Country",)))
     state = _state(
         [france, *destinations],
         axes={"France": "origin"} | {named.name: "destination" for named in destinations},
@@ -658,7 +696,7 @@ def test_a_group_is_asked_in_the_request_s_words_unless_its_label_is_a_text(othe
     other = PlaceSet(
         name="Africa",
         kind="region",
-        node=PlaceNode("SubSaharanAfrica", "UNGeoRegion"),
+        node=PlaceNode("SubSaharanAfrica", ("UNGeoRegion",)),
         members=(_GHA, _KEN),
         member_type="Country",
     )
@@ -817,7 +855,7 @@ _SDN = "country/SDN"
 _SSA = PlaceSet(
     name="sub-Saharan Africa",
     kind="region",
-    node=PlaceNode("SubSaharanAfrica", "UNGeoRegion"),
+    node=PlaceNode("SubSaharanAfrica", ("UNGeoRegion",)),
     members=(_GHA, _KEN, _TZA),
     member_type="Country",
     label="Sub-Saharan Africa",
@@ -906,6 +944,44 @@ def test_a_subject_reads_a_graph_region_as_the_graph_does() -> None:
     }
 
 
+def test_a_region_split_by_end_reads_as_the_oecds_on_the_recipient_end_alone() -> None:
+    """Aid from sub-Saharan African countries to sub-Saharan Africa, summed on the CRS. The
+    recipient end reads the OECD's region and binds its members, Sudan among them, and its
+    residuals. The provider end binds the graph region's members, and the text's ref and
+    the provider's group name the graph region, after the recipient's registry group."""
+    name = "sub-Saharan Africa"
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD, reading="members")
+    state = _state([region])
+    state.entity_roles = {
+        name: [
+            DoorRole(axis="origin", span=name, members=True),
+            DoorRole(axis="destination", span=name),
+        ]
+    }
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=(_CRS,))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    places = _settle(assignment, _flow_holds((_KEN, _SDN)))
+    graph_members = (_GHA, _KEN, _TZA)
+    assert places == {
+        "origin": graph_members,
+        "destination": tuple(sorted((_GHA, _KEN, _SDN, _TZA, *_SSA_RESIDUALS))),
+    }
+    roles = settled_roles(shape, assignment, places)
+    assert [
+        (group.dcid, group.group_id, group.member_dcids)
+        for group in request_named_groups(state, roles)
+    ] == [
+        (None, "groups/OECD.DAC.Region.SouthOfSahara", {_GHA, _KEN, _SDN, _TZA}),
+        ("SubSaharanAfrica", None, set(graph_members)),
+    ]
+    state.places_bound = True
+    state.place = SimpleNamespace(roles=roles)
+    assert bound_entity_refs(state) == {name: ("SubSaharanAfrica", _GHA, _KEN, _SDN, _TZA)}
+
+
 # Settling over a Spec's own read.
 
 _SERIES = "Amount_SettleSeries"
@@ -965,6 +1041,7 @@ def _settled_read(
     unsettled = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": tuple(sets)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
     )
 
@@ -1068,11 +1145,13 @@ def test_the_context_before_the_read_holds_each_undecided_set_at_its_members(
     undecided = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": (_AFRICA,)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
     )
     refused_node = UnsettledPlace(
         shape,
         PlaceAssignment(sets={"observationAbout": (_AFRICA,)}),
+        get_index(),
         admitted=frozenset({("observationAbout", "Country")}),
     )
 
@@ -1097,7 +1176,7 @@ def test_place_resolution_gives_each_declared_region_the_oecds_reading(row) -> N
     place = PlaceSet(
         name=row.name,
         kind="region",
-        node=PlaceNode(row.region, "UNGeoRegion"),
+        node=PlaceNode(row.region, ("UNGeoRegion",)),
         members=graph_members,
         member_type="Country",
     )

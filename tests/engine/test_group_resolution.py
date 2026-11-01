@@ -69,7 +69,7 @@ _SOURCE = "dc/base/PlaceFixture"
 
 
 def _country(dcid: str, name: str) -> Entity:
-    return Entity(dcid=dcid, name=name, kind="country", graph_type="Country")
+    return Entity(dcid=dcid, name=name, kind="country", graph_types=("Country",))
 
 
 def _registry_members(group: str) -> list[str]:
@@ -299,7 +299,7 @@ class TestGroupRoleBearingExpansion:
         assert result.no_data_reason == "role_not_resolved"
 
     _GROUP_NODE = Entity(
-        dcid="TestlandUnion", name="Testland Union", kind="aggregate", graph_type="Place"
+        dcid="TestlandUnion", name="Testland Union", kind="aggregate", graph_types=("Place",)
     )
 
     @pytest.mark.parametrize(
@@ -626,7 +626,9 @@ class TestGroupRoleBearingExpansion:
     ):
         """The recipient role admits countries and refuses a continent. The series holds
         rows to the continent's node and to one member, and the Spec binds the members."""
-        region = Entity(dcid="testonia", name="Testonia", kind="continent", graph_type="Continent")
+        region = Entity(
+            dcid="testonia", name="Testonia", kind="continent", graph_types=("Continent",)
+        )
         declare_regions({region.dcid: ["country/T1", "country/T2"]})
         coverage = patch_coverage(
             monkeypatch,
@@ -732,7 +734,7 @@ class TestGroupNamedBesideAnAmbiguousEntity:
         _country("country/T2", "Testland Two"),
     )
     _NODE = Entity(
-        dcid="TestlandUnion", name="Testland Union", kind="aggregate", graph_type="Place"
+        dcid="TestlandUnion", name="Testland Union", kind="aggregate", graph_types=("Place",)
     )
 
     @pytest.mark.parametrize("node", [None, _NODE], ids=["no-node", "with-node"])

@@ -10,8 +10,8 @@ its own (`finish.member_sentences`) and names them in `off_cadence_members`,
 This task rewrites each stored warning holding the old sentence that way, in the `warnings`
 column and in the `warnings` of `immutable_body`, which encodes the same facts for an image
 that reads bodies (`manifest.version_body`); this image reads the column alone
-(`manifest.stored_manifest`). It rewrites no other format: migration 0046
-(`0046_warning_counted_refs.sql`) rewrites the rest.
+(`manifest.stored_manifest`). It rewrites no other format: migration 0047
+(`0047_warning_counted_refs.sql`) rewrites the rest.
 
 For one version row, the old sentence names the first five members it left out, in the
 trace's dcid order, and counts K in all. The members holding no observation are those the

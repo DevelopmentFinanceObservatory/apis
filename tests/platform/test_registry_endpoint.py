@@ -23,6 +23,10 @@ class _Unsupported(Refusal):
     code = _CODE
 
 
+class _Boom(RuntimeError):
+    """A failure no classifier recognises."""
+
+
 @pytest.fixture(autouse=True)
 def _two_statuses(monkeypatch: pytest.MonkeyPatch) -> None:
     real = codes._problem_statuses
@@ -59,6 +63,10 @@ def _client(**overrides: object) -> TestClient:
     @router.get("/api/t/unbound")
     async def route_unbound() -> None:
         raise _Unsupported()
+
+    @router.get("/api/t/boom")
+    async def route_boom() -> None:
+        raise _Boom("boom")
 
     surface = Surface(
         name="t",
@@ -113,6 +121,36 @@ def test_a_refused_log_line_is_logged_on_the_request_path(
 
     (record,) = [record for record in caplog.records if record.name == "dfo_platform.app"]
     assert (record.levelno, record.args) == (logging.WARNING, ("t", "exemplar"))
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "args", "raised"),
+    [
+        pytest.param(
+            "/api/t/b/x", 501, ("t", f"Refusal {_CODE}: "), _Unsupported, id="surface-refusal"
+        ),
+        pytest.param(
+            "/api/t/boom", 500, ("Unhandled platform error: boom",), _Boom, id="platform-default"
+        ),
+    ],
+)
+def test_a_server_fault_is_logged_once_on_the_request_path_with_its_traceback(
+    caplog: pytest.LogCaptureFixture,
+    path: str,
+    status: int,
+    args: tuple[str, ...],
+    raised: type[BaseException],
+) -> None:
+    """`classify_refusal` names the line of a refusal at 5xx a retry cannot clear, and the
+    platform default the line of a failure nothing classifies. Neither logs, so the platform
+    writes each once, with the failure's traceback."""
+    with caplog.at_level(logging.DEBUG):
+        response = _client().get(path)
+
+    assert response.status_code == status, response.text
+    (record,) = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert (record.name, record.levelno, record.args) == ("dfo_platform.app", logging.ERROR, args)
+    assert record.exc_info is not None and record.exc_info[0] is raised
 
 
 def test_a_path_binding_covers_every_method_and_refuses_an_unrouted_path() -> None:

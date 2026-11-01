@@ -79,6 +79,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.adapter import (
     composite_components,
+    family_basis,
     identity_requested_window,
     pinned_provenance_scope,
 )
@@ -182,6 +183,7 @@ from materialise.statistics import (
     SeriesStatisticsSink,
     compute_series_statistics_table,
 )
+from materialise.trace import StatedFamily
 from materialise.window import Coverage
 from origin_catalogue import UnBlockedPlaces, current_catalogue, recording_un_blocked_places
 from series_coverage.index import CoverageIndex, Estimate
@@ -946,11 +948,14 @@ def prewrite_definition(
 
 @dataclass(frozen=True)
 class ServedDefinition:
-    """A serve's response and the head its run advanced to, `None` when a concurrent writer
-    advanced it first."""
+    """A serve's response, the head its run advanced to, `None` when a concurrent writer
+    advanced it first, and the member family the run's trace states. The response states that
+    family whatever version it serves, derived ones included, and whichever writer won the
+    head."""
 
     manifest: Manifest
     head: SubjectHead | None
+    family: StatedFamily
 
 
 def serve_definition(
@@ -1023,7 +1028,9 @@ def serve_definition(
                 expected_head.materialisation_id if expected_head is not None else None
             ),
         )
-        return ServedDefinition(manifest=manifest, head=head)
+        return ServedDefinition(
+            manifest=manifest, head=head, family=prewrite.result.trace.family_statement
+        )
 
     with bounded_materialise_slot(
         deps.materialise_semaphore,
@@ -1620,10 +1627,11 @@ def _record_run(
     trace_id: str | None,
     expected_materialisation_id: int | None,
 ) -> SubjectHead | None:
-    """Record the run and advance the subject's head to its version by compare-and-set on the
-    observed run in the same transaction, returning the head written. A lost race keeps the run's
-    row, leaves the head the winner wrote, and returns `None`. A worker run's `deps.head_fence`
-    that no longer holds raises `HeadFenceLost` and writes neither."""
+    """Record the run and advance the subject's head to its version, with the family its trace
+    states and the member-resolution inputs it was resolved under (`adapter.family_basis`), by
+    compare-and-set on the observed run in the same transaction, returning the head written. A
+    lost race keeps the run's row, leaves the head the winner wrote, and returns `None`. A worker
+    run's `deps.head_fence` that no longer holds raises `HeadFenceLost` and writes neither."""
     result = prewrite.result
     with phase("head_advance"):
         materialisation = _materialisation_record(
@@ -1631,6 +1639,8 @@ def _record_run(
         )
         written = deps.head_store.advance_head(
             materialisation=materialisation,
+            family=result.trace.family_statement,
+            basis=family_basis(deps),
             expected_materialisation_id=expected_materialisation_id,
             fence=deps.head_fence,
         )

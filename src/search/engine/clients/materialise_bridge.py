@@ -25,6 +25,7 @@ from dc_graph import (
     GraphReadError,
 )
 from dfo_platform.executor import submit_with_context
+from dfo_platform.request_deadline import bounded_deadline
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise.graph import GraphReader
 from search.engine.clients.materialise_sdmx_cache import CachingMaterialiseSdmxClient
@@ -89,9 +90,9 @@ _FACET_PROBE_SEMAPHORE = threading.BoundedSemaphore(config.settings().facet_prob
 """Process-wide limit for concurrent ``/v2/observation`` facet probes.
 
 Each chunk holds a permit only during its POST. Acquisition waits up to
-``graph_timeout_s`` or, with a deadline, the smaller of that timeout and the
-remaining budget. Deadline expiry raises ``GraphDeadlineExceededError``.
-Other wait timeouts raise ``GraphReadError``. Tests can replace this
+``graph_timeout_s`` or, with a deadline (the caller's narrowed by the bound request
+deadline, ``bounded_deadline``), the smaller of that timeout and the remaining budget.
+Deadline expiry raises ``GraphDeadlineExceededError``. Other wait timeouts raise ``GraphReadError``. Tests can replace this
 attribute because ``BoundedSemaphore`` has no resize method.
 """
 
@@ -112,7 +113,8 @@ def observation_facets_via_materialise(
     Chunks submit concurrently. Results are consumed in submission order, and
     the first failure in that order wins. Each POST holds the shared semaphore
     for its duration.
-    The absolute monotonic ``deadline`` reaches every read and permit wait.
+    The absolute monotonic ``deadline``, narrowed by the bound request deadline
+    (``bounded_deadline``), reaches every read and permit wait.
 
     A ``GraphReadError`` becomes ``GraphInfraError`` with its upstream status.
     Results return only after all chunks succeed. Failure cancels queued chunks
@@ -123,6 +125,7 @@ def observation_facets_via_materialise(
     if not stat_vars_list or not entities_list:
         return {}
 
+    deadline = bounded_deadline(deadline)
     chunk_size = max(1, _FACET_PROBE_MAX_PAIRS_PER_POST // len(entities_list))
     chunks = [stat_vars_list[i : i + chunk_size] for i in range(0, len(stat_vars_list), chunk_size)]
 

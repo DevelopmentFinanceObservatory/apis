@@ -238,11 +238,14 @@ def test_a_first_answers_27_member_group_identity_resubmits_with_its_group():
     graph = _eu_graph()
     group = Group(
         members=tuple(
-            Entity(dcid=dcid, name=f"Member {dcid[-2:]}", kind="country", graph_type="Country")
+            Entity(dcid=dcid, name=f"Member {dcid[-2:]}", kind="country", graph_types=("Country",))
             for dcid in _EU_MEMBERS
         ),
         entity=Entity(
-            dcid=_EU_NODE, name="European Union", kind="aggregate", graph_type="ContinentalUnion"
+            dcid=_EU_NODE,
+            name="European Union",
+            kind="aggregate",
+            graph_types=("ContinentalUnion",),
         ),
     )
     first = asyncio.run(

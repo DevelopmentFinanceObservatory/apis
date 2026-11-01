@@ -254,7 +254,8 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is spec-kit 1ac1fc4, which adds the unit registry's `rate` kind, reads the
+# The pin is spec-kit 9de5ae1, which maps `internal_error` (500) on datasets.pin,
+# adds the unit registry's `rate` kind, reads the
 # withdrawn ANG, BGN and ZWL as currency codes, and
 # includes dev's 5132aa0, the share import route's refusal codes. It adds ref format 2 (derived
 # members) with roots that may carry the groupby DFO read them with, `mv_`
@@ -304,8 +305,8 @@ dfo-analysis-engine = { workspace = true }
 # recipe.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "1ac1fc43ba7e7d28ecf0b9d9df21026ae49d4781", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ad77392b3ca9ae61d4c0522981878682d7d2b90", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "4ad77392b3ca9ae61d4c0522981878682d7d2b90", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]

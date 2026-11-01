@@ -90,6 +90,30 @@ _EXCLUSION_ROWS = [
 ]
 
 
+@pytest.mark.parametrize(
+    ("query", "read", "written"),
+    [
+        pytest.param(
+            "ODA to Kenya excluding the CRS", "Excluding the CRS", "excluding the CRS", id="cue"
+        ),
+        pytest.param("gross ODA, not net, to Kenya in 2022", "Not net", "not net", id="short"),
+        pytest.param(
+            "ODA to Kenya Excluding humanitarian aid",
+            "excluding humanitarian aid",
+            "Excluding humanitarian aid",
+            id="the-query-capitalises",
+        ),
+    ],
+)
+def test_a_stretch_read_in_another_case_is_admitted_as_the_query_writes_it(query, read, written):
+    reading = admit_exclusions(query, _read(read))
+
+    assert reading.text == query.replace(written, ";")
+    assert [(stretch.phrase, reading.text[stretch.at]) for stretch in reading.left_out] == [
+        (written, ";")
+    ]
+
+
 @pytest.mark.parametrize(("query", "phrase"), _EXCLUSION_ROWS)
 def test_an_admitted_stretch_leaves_no_word_of_itself_in_the_text(query, phrase):
     """Only what the stretch alone wrote leaves the text, and the rest of the query stays in
@@ -1081,7 +1105,11 @@ def test_a_stretch_warns_only_on_the_parts_it_qualifies(met, part, envelope):
         )
         for left_out in met
     ]
-    unmet = raw_text._ExtractionPrep._unmet_exclusion_warnings
 
-    assert [unmet(prep, [region], parts=[i]) for i, region in enumerate(regions)] == part
-    assert unmet(prep, regions, parts=range(2)) == envelope
+    def unmet(regions, *, parts):
+        return [
+            w for w, _ in raw_text._ExtractionPrep._unmet_exclusions(prep, regions, parts=parts)
+        ]
+
+    assert [unmet([region], parts=[i]) for i, region in enumerate(regions)] == part
+    assert unmet(regions, parts=range(2)) == envelope

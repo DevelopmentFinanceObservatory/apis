@@ -36,7 +36,7 @@ from datasets_api.versions import (
     unlinked_state,
 )
 from dfo_platform.app import Surface, create_app
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, endpoint_exemplars
 from spec_registry.reader import StoredDefinition
 
 from ._artifact_doubles import FakeArtifactStore
@@ -351,7 +351,7 @@ def make_client_for_door(door: DoorContribution) -> TestClient:
         codes=DATASETS_CODE_CATALOGUE,
         classify=door.classify,
         exception_types=door.exception_types,
-        exception_exemplars=door.exception_exemplars,
+        exception_exemplars=endpoint_exemplars((door,)),
         middleware=door.middleware,
     )
     return TestClient(create_app([surface]), raise_server_exceptions=False)

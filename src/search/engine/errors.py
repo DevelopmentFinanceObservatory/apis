@@ -12,7 +12,6 @@ HTTP error bodies use the shared RFC 9457 `ProblemDetails` type from
 from __future__ import annotations
 
 import logging
-from typing import NamedTuple
 
 from fastapi.exceptions import RequestValidationError
 
@@ -66,7 +65,7 @@ RATE_TABLE_REFUSALS = (
 )
 """Conversion-table failures that refuse the whole request on every door: an
 inadmissible table or base year (501 `capability_unavailable`) or a table version
-that moved mid-load (503, retryable). `search_problem` maps them, and a
+that moved mid-load (503, retryable). `classify_refusal` maps them, and a
 degrading fan-out re-raises them as it does `EngineInfraError`."""
 
 UPSTREAM_READ_ERRORS = (
@@ -81,56 +80,45 @@ as failed reads and omits what they leave unread, beside `TimeoutError` for the 
 SDMX deadline (`observations.fetch`, `observations.bulk_conversion`)."""
 
 
-class SearchRefusal(NamedTuple):
-    """The refusal Search answers an exception with and the line its logging reader writes,
-    so a refusal type cannot serve without its line."""
-
-    problem: ProblemSpec
-    log_level: int = logging.NOTSET
-    log_line: str = ""
-    log_traceback: bool = False
-
-
-def classify_refusal(exc: BaseException) -> SearchRefusal | None:
-    """Search's one dispatch over `exc`, or `None` to defer to the platform. It logs nothing."""
+def classify_refusal(exc: BaseException) -> ProblemSpec | None:
+    """Search's one dispatch over `exc`, or `None` to defer to the platform. It logs nothing:
+    a refusal that wants a line names it (`ProblemSpec.log`), which its reader logs
+    (`dfo_platform.problem.log_problem`)."""
     if isinstance(exc, EngineInputError):
         # Code-less routing failures keep generic code and detail to prevent ID probing.
         code = exc.code if exc.code is not None else "request_invalid"
         detail = None if exc.code is None else str(exc)
-        return SearchRefusal(
-            ProblemSpec(
-                status=exc.status,
-                code=code,
-                detail=detail,
-                pointer=exc.pointer,
-                alternatives=exc.alternatives,
-                cause=exc.cause,
-                retryable=False,
-            )
+        return ProblemSpec(
+            status=exc.status,
+            code=code,
+            detail=detail,
+            pointer=exc.pointer,
+            alternatives=exc.alternatives,
+            cause=exc.cause,
+            retryable=False,
         )
     if isinstance(exc, RATE_TABLE_REFUSALS):
         # The materialise library refuses an inadmissible rate table with 501
         # `capability_unavailable` and a table version that moved mid-load with 503, retryable.
-        return SearchRefusal(
-            ProblemSpec(
-                status=exc.status, code=exc.code, detail=exc.detail, retryable=exc.retryable
-            ),
-            logging.WARNING,
-            f"Rate table refusal {exc.code}: {exc.detail}",
+        return ProblemSpec(
+            status=exc.status,
+            code=exc.code,
+            detail=exc.detail,
+            retryable=exc.retryable,
+            log=f"Rate table refusal {exc.code}: {exc.detail}",
+            log_level=logging.WARNING,
         )
     if isinstance(exc, EngineInfraError):
         # Upstream 4xx responses (e.g. graph returned 404) map to 502 Bad Gateway
         # so callers can distinguish client-side upstream errors from transient failures.
         upstream_status = getattr(exc, "upstream_status", None)
         client_side = isinstance(upstream_status, int) and 400 <= upstream_status < 500
-        return SearchRefusal(
+        problem = (
             ProblemSpec(status=502, code="upstream_error", retryable=True)
             if client_side
-            else ProblemSpec(status=503, code="service_unavailable", retryable=True),
-            logging.ERROR,
-            f"Engine infrastructure error: {exc}",
-            log_traceback=True,
+            else ProblemSpec(status=503, code="service_unavailable", retryable=True)
         )
+        return problem._replace(log=f"Engine infrastructure error: {exc}", log_traceback=True)
     if isinstance(exc, RequestValidationError):
         # The platform maps body errors to 400 and schema-version errors to 422. Search adds
         # a field-specific refinement below.
@@ -156,24 +144,15 @@ def classify_refusal(exc: BaseException) -> SearchRefusal | None:
                     pointer=pointer_for_error(exc, version_error),
                     detail=None,
                 )
-        return SearchRefusal(problem)
+        return problem
     if isinstance(exc, TimeoutError):
-        return SearchRefusal(
-            refusal.render_timeout_refusal(), logging.ERROR, "Request hit its hard deadline"
-        )
+        return refusal.render_timeout_refusal()._replace(log="Request hit its hard deadline")
     return None
-
-
-def search_problem(exc: BaseException) -> ProblemSpec | None:
-    """The refusal Search answers `exc` with, or `None` to defer to the platform's. It logs
-    nothing (`app.classify_search_exception` is the logging reader)."""
-    classified = classify_refusal(exc)
-    return classified.problem if classified is not None else None
 
 
 def served_problem(exc: BaseException) -> ProblemSpec:
     """The refusal the route serves for `exc`, Search's own else the platform's."""
-    return search_problem(exc) or refusal.default_problem(exc)
+    return classify_refusal(exc) or refusal.default_problem(exc)
 
 
 class LLMInfraError(EngineInfraError):

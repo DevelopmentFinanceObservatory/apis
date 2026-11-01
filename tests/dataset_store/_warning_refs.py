@@ -1,5 +1,5 @@
 """Stored warnings in every format `dataset_store.warning_formats` lists, for the tests of its
-definitions and of migration 0046 (`0046_warning_counted_refs.sql`).
+definitions and of migration 0047 (`0047_warning_counted_refs.sql`).
 
 Each old format is the message a writer stored before warnings counted their refs. The new
 shapes come from the current writers in `materialise.finish` and `datasets_api.origin`.
@@ -163,7 +163,7 @@ def trace_for(case: str) -> dict[str, object]:
 
 
 def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]]:
-    """Stored warning arrays by case, each with the array migration 0046 leaves."""
+    """Stored warning arrays by case, each with the array migration 0047 leaves."""
     deflator_detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"][1]
     unserved_one = cast(str, new_coverage(unserved=UNSERVED[:1])["message"])
     members_counted = new_coverage(members=MEMBERS, member_count=4)

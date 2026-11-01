@@ -1,4 +1,4 @@
-"""Migration 0046 and the count of old warning formats `datasets-maintenance settle` reads,
+"""Migration 0047 and the count of old warning formats `datasets-maintenance settle` reads,
 against a real Postgres. Skipped unless DFO_DATASET_STORE_LIVE_DSN is set, as `test_live.py`
 is."""
 
@@ -45,7 +45,7 @@ pytestmark = [
     ),
 ]
 
-_MIGRATION = "0046_warning_counted_refs.sql"
+_MIGRATION = "0047_warning_counted_refs.sql"
 _PREPARED_AT = "2026-10-20T00:00:00Z"
 _EMPTY: StoredWarning = {"code": "empty_result", "severity": "warn", "message": "No rows."}
 _OLD_UNSERVED: StoredWarning = {
@@ -114,7 +114,7 @@ def _rows(live_store, subjects: list[str]) -> dict[str, tuple[str, object, objec
 
 
 @pytest.mark.parametrize("standard_conforming_strings", ["on", "off"])
-def test_0046_rewrites_each_old_shape_in_the_column_and_the_body(
+def test_0047_rewrites_each_old_shape_in_the_column_and_the_body(
     live_store, standard_conforming_strings
 ):
     """Every old shape but the member sentence becomes the writer's shape, in the column and in
@@ -129,9 +129,9 @@ def test_0046_rewrites_each_old_shape_in_the_column_and_the_body(
         )
     cases = rewrite_cases()
     suffix = uuid4().hex
-    subjects = {case: f"spec_0046_{case}_{suffix}" for case in cases}
-    body_differs = f"spec_0046_body_differs_{suffix}"
-    no_warnings = f"spec_0046_no_warnings_{suffix}"
+    subjects = {case: f"spec_0047_{case}_{suffix}" for case in cases}
+    body_differs = f"spec_0047_body_differs_{suffix}"
+    no_warnings = f"spec_0047_no_warnings_{suffix}"
     for case, (stored, _rewritten) in cases.items():
         _insert(live_store, subjects[case], warnings=stored, trace=trace_for(case))
     _insert(live_store, body_differs, warnings=[_OLD_UNSERVED, _EMPTY], column=[_EMPTY])
@@ -158,7 +158,7 @@ def test_0046_rewrites_each_old_shape_in_the_column_and_the_body(
     assert _rows(live_store, every) == after
 
 
-def test_0046_leaves_no_function_behind_in_its_session():
+def test_0047_leaves_no_function_behind_in_its_session():
     """The rewrite's functions live in the migration's session and are dropped before it
     commits, so a later migration in the same session defines its own."""
     conn = connect_live()
@@ -175,9 +175,9 @@ def test_0046_leaves_no_function_behind_in_its_session():
         conn.close()
 
 
-def test_settle_counts_a_row_holding_an_old_warning_until_0046_rewrites_it(live_store):
+def test_settle_counts_a_row_holding_an_old_warning_until_0047_rewrites_it(live_store):
     """A row holding an old shape in its column, and one holding it in its body alone, each add
-    one to settle's count until migration 0046 rewrites them; a row in the new shape adds none."""
+    one to settle's count until migration 0047 rewrites them; a row in the new shape adds none."""
     suffix = uuid4().hex
     _insert(live_store, f"spec_settle_withheld_{suffix}", warnings=[_OLD_WITHHELD])
     _insert(

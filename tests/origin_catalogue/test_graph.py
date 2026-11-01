@@ -545,9 +545,9 @@ def test_a_un_variables_facts_come_from_the_un_tables_with_no_un_request(
     }
     assert client.node_label(_UN_FEMALE) == "Female"
     assert client.node_types_batch([_UN_MORTALITY, _UN_TOPIC, _UN_FEMALE]) == {
-        _UN_MORTALITY: "StatisticalVariable",
-        _UN_TOPIC: "Topic",
-        _UN_FEMALE: "Enumeration",
+        _UN_MORTALITY: ("StatisticalVariable",),
+        _UN_TOPIC: ("Topic",),
+        _UN_FEMALE: ("Enumeration",),
     }
     assert client.node_type(_UN_MORTALITY) == "StatisticalVariable"
     assert client.node_observation_properties_batch(members) == dict.fromkeys(members, ())
@@ -772,10 +772,10 @@ def test_our_nodes_facts_come_from_the_arc_tables_with_no_request(
     assert client.node_types_batch(
         [_CRS_VARIABLE, _HOUSEHOLDS, _RECIPIENT, "measuredValue", _OUR_TOPIC]
     ) == {
-        _CRS_VARIABLE: "StatisticalVariable",
-        _HOUSEHOLDS: "StatisticalVariable",
-        "measuredValue": "Property",
-        _OUR_TOPIC: "Topic",
+        _CRS_VARIABLE: ("StatisticalVariable",),
+        _HOUSEHOLDS: ("StatisticalVariable",),
+        "measuredValue": ("Property",),
+        _OUR_TOPIC: ("Topic",),
     }
     assert client.node_type(_GDP) == "StatisticalVariable"
     assert client.node_names_many([_GDP]) == {

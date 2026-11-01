@@ -497,7 +497,7 @@ class GraphClient:
             else None
         )
         self._arc_targets_counters = _CacheCounters()
-        self._type_cache: cachetools.TLRUCache[tuple[str, str], str | None] | None = (
+        self._type_cache: cachetools.TLRUCache[tuple[str, str], tuple[str, ...] | None] | None = (
             cachetools.TLRUCache(
                 maxsize=type_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
             )
@@ -779,21 +779,22 @@ class GraphClient:
         )
 
     def node_type(self, dcid: str) -> str | None:
-        """Return the first `->typeOf` dcid, or `None`. Shares the optional type cache with
-        `node_types_batch`.
+        """Return the first `->typeOf` dcid, or `None`. Shares the optional type cache, which
+        holds every type, with `node_types_batch`.
         """
         stamp = self._generation.stamp()
-        return self._cached_single_arc(
+        types = self._cached_single_arc(
             dcid,
             arc_property="->typeOf",
             field="dcid",
             cache=self._type_cache,
             counters=self._type_counters,
-            pick=_pick_first,
+            pick=_pick_types,
             stamp=stamp,
         )
+        return types[0] if types else None
 
-    def _cached_single_arc(
+    def _cached_single_arc[T](
         self,
         dcid: str,
         *,
@@ -801,9 +802,9 @@ class GraphClient:
         field: str,
         cache: cachetools.TLRUCache | None,
         counters: _CacheCounters,
-        pick: Callable[[list[str], str], str | None],
+        pick: Callable[[list[str], str], T | None],
         stamp: GenerationStamp,
-    ) -> str | None:
+    ) -> T | None:
         cache_key = (stamp.key, dcid)
         if cache is not None:
             with self._cache_lock:
@@ -840,9 +841,10 @@ class GraphClient:
             pick=label_or_self_name,
         )
 
-    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
-        """Fetch the first `->typeOf` dcid in chunks of at most `single_arc_batch_chunk_size`.
-        Omit nodes without a type arc. Results share `node_type`'s cache.
+    def node_types_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Fetch every distinct `->typeOf` dcid, in the graph's order, in chunks of at most
+        `single_arc_batch_chunk_size`. Omit nodes without a type arc. Results share
+        `node_type`'s cache.
         """
         return self._single_arc_batch(
             dcids,
@@ -851,10 +853,10 @@ class GraphClient:
             field="dcid",
             cache=self._type_cache,
             counters=self._type_counters,
-            pick=_pick_first,
+            pick=_pick_types,
         )
 
-    def _single_arc_batch(
+    def _single_arc_batch[T](
         self,
         dcids: list[str],
         *,
@@ -863,8 +865,8 @@ class GraphClient:
         field: str,
         cache: cachetools.TLRUCache | None,
         counters: _CacheCounters,
-        pick: Callable[[list[str], str], str | None],
-    ) -> dict[str, str]:
+        pick: Callable[[list[str], str], T | None],
+    ) -> dict[str, T]:
         """Fetch uncached dcids in chunks and merge hits with results in first-occurrence input
         order. A dcid the graph answered without a value is omitted from the result, and caches as
         `None` only when it was the one dcid read; a dcid missing from the response caches
@@ -874,7 +876,7 @@ class GraphClient:
             return {}
         stamp = self._generation.stamp()
         unique_dcids = list(dict.fromkeys(dcids))
-        hits: dict[str, str | None] = {}
+        hits: dict[str, T | None] = {}
         if cache is not None:
             with self._cache_lock:
                 misses = []
@@ -900,7 +902,7 @@ class GraphClient:
             if misses
             else {}
         )
-        fetched: dict[str, str | None] = {}
+        fetched: dict[str, T | None] = {}
         read_alone = len(misses) == 1
         for dcid in misses:
             node_data = data.get(dcid)
@@ -2427,8 +2429,9 @@ class GraphClient:
             self._blocked_observation_entities = ("", frozenset())
 
 
-def _pick_first(values: list[str], dcid: str) -> str | None:
-    return values[0] if values else None
+def _pick_types(values: list[str], dcid: str) -> tuple[str, ...] | None:
+    """The distinct non-empty `values` in first-occurrence order, `None` for none."""
+    return tuple(dict.fromkeys(value for value in values if value)) or None
 
 
 def _arc_entries(arcs: dict, prop: str) -> list[dict]:

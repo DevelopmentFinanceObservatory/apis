@@ -16,7 +16,6 @@ through `stored_frame_rows`, and both refuse a stored frame that does not read a
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -27,8 +26,6 @@ from dfo_platform.store_errors import store_failure_is_permanent
 from materialise import formats
 from materialise.formats import Frame
 from spec_registry.errors import SpecRegistryStoreError
-
-logger = logging.getLogger(__name__)
 
 
 class DatasetsStoreUnavailable(Exception):
@@ -115,26 +112,26 @@ def _readable_rows(rows: Iterator[tuple[object, ...]], digest: str) -> Iterator[
 def classify_store_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, DatasetsStoreUnavailable):
         if store_failure_is_permanent(exc.sqlstate):
-            logger.error("Datasets store write failed with a permanent cause: %s", exc)
             return ProblemSpec(
                 status=500,
                 code="internal_error",
                 detail="a datasets store write failed with a non-retryable cause",
                 retryable=False,
+                log=f"Datasets store write failed with a permanent cause: {exc}",
             )
-        logger.error("Datasets store write failed: %s", exc)
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail="a datasets store write failed; retry",
             retryable=True,
+            log=f"Datasets store write failed: {exc}",
         )
     if isinstance(exc, SpecRegistryStoreError):
-        logger.error("Spec registry store call failed: %s", exc)
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail="a spec registry store call failed; retry",
             retryable=True,
+            log=f"Spec registry store call failed: {exc}",
         )
     return None

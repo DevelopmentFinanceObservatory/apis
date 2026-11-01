@@ -648,13 +648,17 @@ def test_a_bare_spec_id_without_a_datasets_surface_is_frame_unavailable(client: 
 
 
 def test_a_bare_spec_id_whose_rebuild_failed_for_good_is_internal_error(
-    newest_client: TestClient, newest_specs: FakeNewestSpecs
+    newest_client: TestClient, newest_specs: FakeNewestSpecs, caplog: pytest.LogCaptureFixture
 ):
-    """A server fault answers 500, as the analysis route answers it."""
-    newest_specs.answer = RefreshRebuildFailed(operation_id="op_1", refusal_code="over_ceiling")
+    """A server fault answers 500, as the analysis route answers it, and logs its traceback
+    once, on the request path."""
+    newest_specs.answer = failed = RefreshRebuildFailed(
+        operation_id="op_1", refusal_code="over_ceiling"
+    )
 
     resp = newest_client.get(f"/api/presentation/frames/{BARE_SPEC_ID}")
 
     assert resp.status_code == 500, resp.text
     assert resp.json()["code"] == "internal_error"
     assert resp.json()["retryable"] is False
+    assert [r.exc_info[1] for r in caplog.records if r.exc_info is not None] == [failed]

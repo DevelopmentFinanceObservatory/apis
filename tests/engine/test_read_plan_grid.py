@@ -31,7 +31,8 @@ from dc_sdmx import SdmxObservation
 from search.engine.clients.graph import Facet
 from search.engine.errors import EngineInputError
 from search.engine.extract import DateRequest
-from search.engine.region import promote_finalize, resolve_spec_resubmit
+from search.engine.region import resolve_spec_resubmit
+from search.engine.region.observations import dispatch as preview_dispatch
 from search.engine.region.observations.bulk_scope import BulkScope
 from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.state import EngineOptions
@@ -574,13 +575,13 @@ def test_a_pinned_resubmit_counts_the_points_its_preview_serves(
     dispatches = _record_dispatches(monkeypatch)
     bulk_reads = _record_bulk_reads(monkeypatch)
     previews: list[object] = []
-    real_build = promote_finalize._build_observations
+    real_build = preview_dispatch._build_observations
 
     def _build(plan, *args, **kwargs):
         previews.append(plan)
         return real_build(plan, *args, **kwargs)
 
-    monkeypatch.setattr(promote_finalize, "_build_observations", _build)
+    monkeypatch.setattr(preview_dispatch, "_build_observations", _build)
     try:
         region = resolve_spec_resubmit(
             inp=echo,

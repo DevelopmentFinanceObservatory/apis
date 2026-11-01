@@ -296,6 +296,8 @@ def compose_components(
     summaries = tuple(_summary(component, plan=plan, fold=fold) for component in components)
     first = components[0].result
     traces = [component.result.trace for component in components]
+    all_requests = [request for component in components for request in component.requests]
+    family = pipeline.definition_family(all_requests)
     trace = ManifestTrace(
         applied_window=coverage.window,
         graph_revision=first.trace.graph_revision,
@@ -318,16 +320,13 @@ def compose_components(
         frame_grammar_version=first.trace.frame_grammar_version,
         materialiser_build=first.trace.materialiser_build,
         capability_version=first.trace.capability_version,
-        family=None,
-        stub_candidates=tuple(
-            dict.fromkeys(ref for trace in traces for ref in trace.stub_candidates)
-        ),
+        family=family.members,
+        stub_candidates=family.stub_candidates,
         coverage_gaps=_union_entries(trace.coverage_gaps for trace in traces),
         choices=_union_entries(trace.choices for trace in traces),
         continuations=_union_entries(trace.continuations for trace in traces),
         components=tuple(summary.as_trace_entry() for summary in summaries),
     )
-    all_requests = [request for component in components for request in component.requests]
     return pipeline.MaterialisationResult(
         frame_chunks=frame_chunks,
         frame_sha256=frame_digest,

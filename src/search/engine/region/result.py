@@ -64,6 +64,7 @@ from search.render.no_data import UnlistedPopulation
 
 if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
+    from search.engine.region.observations.dispatch import PreviewRead
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.region.promote_relaunch import PromoteRelaunch
     from search.engine.retrieval.read_plan import ReadPlan
@@ -343,6 +344,12 @@ class RegionResult:
     # stores the region without closures and binds them again for the request it serves.
     # None off the resubmit's definite path.
     promote_relaunch: PromoteRelaunch | None = None
+    # What the definite answer's observation preview reads, apart from the request's
+    # clients (`dispatch.PreviewRead`): the buffered read, the streamed task and the part
+    # memo's rebound relaunch all read it. Set on a fresh or resubmitted definite answer and
+    # a lone candidate survivor; None elsewhere, a same-shape merge included, whose preview
+    # is a read of its merged identity (`same_shape._with_merged_preview`).
+    preview_read: PreviewRead | None = None
     # Role-to-entity lists probed by resubmit resolution: the identity's own dcids on
     # each role. Populated on definite resubmit results.
     observation_entities: dict[str, list[str]] | None = None
@@ -547,11 +554,19 @@ def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     return shape.declared_roles or ("observationAbout",)
 
 
-def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
+def with_composite_answer(
+    region: RegionResult,
+    spec: Spec,
+    *,
+    observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]],
+) -> RegionResult:
     """`region` answering `spec`, the composite its definite answer was restated as
     (`scope.composite.assemble_composite`). Its trailing slot options, place options and
     observation preview read the one table the region resolved, under that answer's spec_id,
-    so the composite carries none. A task already launched is cancelled and none relaunches."""
+    so a task already launched is cancelled and the composite carries no slot or place
+    options. Its preview is read per component by `observations_relaunch`
+    (`composite_answer.CompositeRelaunch`), which the caller launches on the
+    event loop where the request streams observations (`enrichment._launch_trailing_tasks`)."""
     for task in (region.slot_options_task, region.place_options_task, region.observations_task):
         if task is not None:
             task.cancel()
@@ -563,7 +578,7 @@ def with_composite_answer(region: RegionResult, spec: Spec) -> RegionResult:
         place_options_task=None,
         place_options_relaunch=None,
         observations_task=None,
-        observations_relaunch=None,
+        observations_relaunch=observations_relaunch,
     )
 
 

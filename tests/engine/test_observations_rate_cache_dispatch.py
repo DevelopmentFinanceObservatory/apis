@@ -7,7 +7,6 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-import search.engine.region.candidate_collapse as candidate_collapse_module
 import search.engine.region.observations.dispatch as region_dispatch
 import search.engine.region.pipeline as region_pipeline
 from materialise.errors import MaterialisationUsageError
@@ -16,16 +15,15 @@ from search.engine.concurrency import scoped_concurrency
 from search.engine.region.candidates import resolve_candidates
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
 from search.engine.region.observations.dispatch import (
+    PreviewRead,
+    PreviewReader,
     _launch_observations_task,
     _observations_events,
-    _observations_relaunch_closure,
-    _resolve_spec_observations,
 )
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.state import ResolveState
 from search.engine.region.un_system import NO_LABELS
-from search.models import Spec, omitted_observations
-from tests.conftest import minimal_spec
+from search.models import omitted_observations
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import sdmx_double
 from tests.engine.test_observations_candidates_fanout import (
@@ -117,9 +115,32 @@ def test_launch_observations_task_forwards_rate_cache():
     assert captured == [sentinel]
 
 
-def test_observations_relaunch_closure_forwards_rate_cache():
-    """_observations_relaunch_closure -> _launch_observations_task ->
-    _observations_events -> _build_observations."""
+def _reader(rate_cache: RateTableCache) -> PreviewReader:
+    return PreviewReader(
+        read=PreviewRead(
+            sv_dcids=("Count_Person",),
+            obs_entities={"observationAbout": ["country/IND"]},
+            plan=None,
+            facet_filter=None,
+            bulk_places=None,
+            member_facts=None,
+            unit_request=None,
+            elected=None,
+        ),
+        graph=FakeGraph(),
+        sdmx=None,
+        materialise_graph=FakeGraphReader(),
+        materialise_sdmx=sdmx_double(),
+        rate_cache=rate_cache,
+        deadline=None,
+        coverage=empty_coverage_snapshot(),
+    )
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_preview_reader_forwards_rate_cache(streamed: bool):
+    """`PreviewReader.observations`, and `relaunch` through `_launch_observations_task` and
+    `_observations_events`, reach `_build_observations` with the reader's cache."""
     captured: list[object] = []
     sentinel = RateTableCache()
 
@@ -127,80 +148,11 @@ def test_observations_relaunch_closure_forwards_rate_cache():
         async with scoped_concurrency():
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(region_dispatch, "_build_observations", _rate_cache_spy(captured))
-                relaunch = _observations_relaunch_closure(
-                    ["Count_Person"],
-                    {"observationAbout": ["country/IND"]},
-                    graph=FakeGraph(),
-                    materialise_graph=FakeGraphReader(),
-                    materialise_sdmx=sdmx_double(),
-                    rate_cache=sentinel,
-                    coverage=empty_coverage_snapshot(),
-                    variable_labels=NO_LABELS,
-                )
-                await relaunch("spec-1")
-
-    asyncio.run(_run())
-    assert captured == [sentinel]
-
-
-def test_resolve_spec_observations_buffered_forwards_rate_cache():
-    """The buffered (include_observations=True, stream_observations=False)
-    branch forwards rate_cache straight into its own _build_observations
-    call."""
-    captured: list[object] = []
-    sentinel = RateTableCache()
-    spec = Spec.model_validate(minimal_spec())
-    spec = spec.model_copy(update={"resolved": spec.resolved.stating_members([])})
-
-    async def _run() -> None:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(region_dispatch, "_build_observations", _rate_cache_spy(captured))
-            await _resolve_spec_observations(
-                spec,
-                ["Count_Person"],
-                {"observationAbout": ["country/IND"]},
-                graph=FakeGraph(),
-                materialise_graph=FakeGraphReader(),
-                materialise_sdmx=sdmx_double(),
-                include_observations=True,
-                stream_observations=False,
-                warnings=[],
-                rate_cache=sentinel,
-                coverage=empty_coverage_snapshot(),
-            )
-
-    asyncio.run(_run())
-    assert captured == [sentinel]
-
-
-def test_resolve_spec_observations_stream_forwards_rate_cache():
-    """The deferred (stream_observations=True) branch forwards rate_cache
-    through its own relaunch closure -- _observations_relaunch_closure ->
-    _launch_observations_task -> _observations_events -> _build_observations."""
-    captured: list[object] = []
-    sentinel = RateTableCache()
-    spec = Spec.model_validate(minimal_spec())
-    spec = spec.model_copy(update={"resolved": spec.resolved.stating_members([])})
-
-    async def _run() -> None:
-        async with scoped_concurrency():
-            with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(region_dispatch, "_build_observations", _rate_cache_spy(captured))
-                _, task, _ = await _resolve_spec_observations(
-                    spec,
-                    ["Count_Person"],
-                    {"observationAbout": ["country/IND"]},
-                    graph=FakeGraph(),
-                    materialise_graph=FakeGraphReader(),
-                    materialise_sdmx=sdmx_double(),
-                    include_observations=False,
-                    stream_observations=True,
-                    warnings=[],
-                    rate_cache=sentinel,
-                    coverage=empty_coverage_snapshot(),
-                )
-                assert task is not None
-                await task
+                reader = _reader(sentinel)
+                if streamed:
+                    await reader.relaunch(NO_LABELS)("spec-1")
+                else:
+                    await asyncio.to_thread(reader.observations)
 
     asyncio.run(_run())
     assert captured == [sentinel]
@@ -241,13 +193,13 @@ def _resolve_candidates_in_pass(
 def test_resolve_candidates_forwards_rate_cache_to_build_observations(monkeypatch):
     captured: list[object] = []
     sentinel = RateTableCache()
-    real_build_observations = candidate_collapse_module._build_observations
+    real_build_observations = region_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("rate_cache"))
         return real_build_observations(*args, **kwargs)
 
-    monkeypatch.setattr(candidate_collapse_module, "_build_observations", _spy)
+    monkeypatch.setattr(region_dispatch, "_build_observations", _spy)
 
     async def _body(state: ResolveState) -> None:
         assert state.bound_unit_outcome is not None, (
@@ -268,13 +220,13 @@ def test_resolve_candidates_omits_rate_cache_by_default(monkeypatch):
 
     The spy records the missing cache before the real builder checks it."""
     captured: list[object] = []
-    real_build_observations = candidate_collapse_module._build_observations
+    real_build_observations = region_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("rate_cache"))
         return real_build_observations(*args, **kwargs)
 
-    monkeypatch.setattr(candidate_collapse_module, "_build_observations", _spy)
+    monkeypatch.setattr(region_dispatch, "_build_observations", _spy)
 
     async def _body(state: ResolveState) -> None:
         with pytest.raises(MaterialisationUsageError):

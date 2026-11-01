@@ -13,14 +13,16 @@ offers is the window the mint serves.
 `assemble_composite` restates a Search answer resolved for the composite's table identity
 (`code_index.composites.table_identity`) as the composite: its identity and spec_id, its
 coverage over the composite's years, its provenance facet naming the composite, and one
-`Component` per component with the years it serves. The observation preview is left out, since
-it reads one table.
+`Component` per component with the years it serves, and the facts of the file a mint of it
+writes (`composite_download`). The table identity's observation preview reads one table, so the
+restated answer carries none. The engine reads the composite's preview per component and
+composes it here (`compose_observations`, `search.engine.region.composite_answer`).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -42,15 +44,22 @@ from search.models import (
     Component,
     CoverageExact,
     DateRange,
+    DownloadFacts,
+    DownloadLicence,
     Headline,
     HeadlineYear,
+    ObservationSeries,
+    ObservationsOmissionReason,
+    PreviewOrder,
     ProvenanceRef,
     ResolvedFacet,
     ResolvedStatVars,
     SlotValue,
     Spec,
     SpecDefinition,
+    SpecObservations,
     TimeWindow,
+    omitted_observations,
 )
 from search.observations import provenance_refs
 from search.render.labels import join_labels
@@ -60,6 +69,9 @@ from series_coverage.index import CoverageIndex, elected_year
 
 _ROLES: Mapping[str, Role] = {"origin": "donor", "destination": "recipient"}
 """The coverage role each flow role of an identity's entities reads."""
+
+_NO_POINTS: ObservationsOmissionReason = "observations_no_points"
+"""The omission of a composite whose components read and found no point in their years."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,29 +265,156 @@ def _declaration(index: CodeIndex, identity: Mapping[str, object]) -> CompositeD
     return declaration
 
 
+def compose_observations(
+    served: Sequence[ServedComponent], reads: Sequence[SpecObservations | None]
+) -> SpecObservations:
+    """The composite's observation preview, composed from each component's own preview as
+    the mint composes its frame (`materialise.composite`).
+
+    `reads` holds each component's preview in `served`'s order, None for a component with
+    no read (one serving no year, no definite answer, a failed resolve, or one past the
+    deadline). Each component
+    keeps the points of its series dated in a year it serves (`ServedComponent.served`) and
+    its recipe's periods hold, so a spliced component read for `latest` keeps only its own
+    periods, and a series left with no point is dropped. A kept series keeps its own StatVar
+    and is a copy of the component's, so its private estimate marker survives. No zero rows
+    are written for a zero-filling stacked component, since the composite's coverage counts
+    none.
+
+    `total_obs`, on each series and in sum, subtracts the points dropped: every point of a
+    dropped series, and the visible points cut from a kept one. A truncated series shows only
+    its latest points, so a cut among its hidden earlier points goes uncounted. The cut
+    falls at the tail in practice, where a stacked composite's shared years end before a
+    component's do. A spliced component read for a range holds only its periods' years, so
+    nothing is cut from it. `truncated` is true when a kept component preview was, and
+    `order` is the kept previews' when they agree, else None.
+
+    With no series left, the preview is omitted: `observations_no_points` when every
+    component serving a year read and found no point in the years it serves; else the
+    first omission (in component order) of another reason a component's preview carries;
+    else, when a component serving a year has no read, `observations_probe_failed`. A
+    component serving no year is not read, so it bears on none of these."""
+    series: list[ObservationSeries] = []
+    total = 0
+    truncated = False
+    orders: set[PreviewOrder | None] = set()
+    for item, read in zip(served, reads, strict=True):
+        if read is None or read.omitted is not None:
+            continue
+        removed = 0
+        kept_any = False
+        for each in read.series:
+            points = [point for point in each.points if _serves(item, point.date)]
+            if not points:
+                removed += each.total_obs
+                continue
+            cut = len(each.points) - len(points)
+            removed += cut
+            series.append(
+                each.model_copy(update={"points": points, "total_obs": each.total_obs - cut})
+            )
+            kept_any = True
+        if kept_any:
+            total += max(read.total_obs - removed, 0)
+            truncated = truncated or read.truncated
+            orders.add(read.order)
+    if series:
+        order = next(iter(orders)) if len(orders) == 1 else None
+        return SpecObservations(series=series, total_obs=total, truncated=truncated, order=order)
+    return _composite_omission(
+        [read for item, read in zip(served, reads, strict=True) if item.served]
+    )
+
+
+def _serves(item: ServedComponent, date: str) -> bool:
+    """Whether a point of `item` dated `date` lies in a year it serves and its recipe's
+    periods hold. A date with no leading year is kept, as `search.models.in_window` keeps
+    it."""
+    try:
+        year = int(date[:4])
+    except ValueError:
+        return True
+    return _serves_year(item, year)
+
+
+def _serves_year(item: ServedComponent, year: int) -> bool:
+    """Whether `item` serves `year` and its recipe's periods hold it."""
+    periods = item.component.recipe.periods
+    return year in item.served and (periods is None or periods.holds(year))
+
+
+def _composite_omission(reads: Sequence[SpecObservations | None]) -> SpecObservations:
+    """Why a composite whose components serving a year, read as `reads`, kept no series
+    shows none (`compose_observations`)."""
+    if all(
+        read is not None and (read.omitted is None or read.omitted.reason == _NO_POINTS)
+        for read in reads
+    ):
+        dispatched = sum(_dispatched(read) for read in reads if read is not None)
+        return omitted_observations(
+            _NO_POINTS,
+            f"the composite's components read {dispatched} (stat_var, role_tuple) pairs and "
+            "found no point in the years each component serves.",
+            dispatched=dispatched,
+            empty=dispatched,
+            hard_failed=0,
+            facet_rejected=0,
+        )
+    own = next(
+        (
+            read.omitted
+            for read in reads
+            if read is not None and read.omitted is not None and read.omitted.reason != _NO_POINTS
+        ),
+        None,
+    )
+    if own is not None:
+        return SpecObservations(series=[], total_obs=0, truncated=False, omitted=own)
+    return omitted_observations(
+        "observations_probe_failed",
+        "a component of the composite was not read; Spec.resolved.observations holds no series.",
+    )
+
+
+def _dispatched(read: SpecObservations) -> int:
+    """The pairs a component's preview dispatched: its series, or the count its
+    `observations_no_points` omission states."""
+    if read.omitted is None:
+        return len(read.series)
+    return read.omitted.dispatched or 0
+
+
 def assemble_composite(
-    spec: Spec, identity: BaseIdentity, spec_id: str, *, facts: ScopeFacts
+    spec: Spec,
+    identity: BaseIdentity,
+    spec_id: str,
+    *,
+    served: Sequence[ServedComponent],
+    facts: ScopeFacts,
 ) -> tuple[Spec, list[Component]]:
     """`spec`, the answer resolved for composite `identity`'s table identity
     (`code_index.composites.table_identity`), restated as the composite under `spec_id`, and
     the composite's components (`CompiledScope.components`).
 
-    The restated answer's definition is `identity`; its coverage counts every component's
-    series in the years each serves (`served_components`), over the window those years span; its
+    `served` holds `identity`'s components with the years each serves (`served_components`),
+    which the composite's preview filters by too. The restated answer's definition is
+    `identity`; its coverage counts every component's series in the years each serves, over
+    the window those years span; its
     headline counts the latest of those years over every component serving it
     (`_headline`); its StatVar counts are the components' summed (`_stat_vars`); its
     provenance facet names the composite, with the composite's label and the account its
     component tables give; its sources are its component tables, whose labels its
     `published_tables` joins, and its measure label reads the declaration's `measure_noun`
     (`_measure_label`), so its sentence cites both tables and names the composite's measure;
-    its concept label stays the table identity's answer's, which names no basis; and it
-    carries no observation preview, which reads one table.
+    its concept label stays the table identity's answer's, which names no basis; its download
+    facts are the composite file's (`composite_download`); and it carries no observation
+    preview, since the table identity's reads one table. The engine reads the composite's
+    preview per component (`search.engine.region.composite_answer`).
     Each component names its role, the table it reads, the years it serves, how many
     StatVars it serves and its own identity. Raises
     `code_index.composites.CompositeNotServable` as `component_identities` does."""
     document = identity.model_dump(mode="json", exclude_none=True)
     index = facts.index
-    served = served_components(document, facts=facts)
     declaration = _declaration(index, document)
     years = sorted({year for item in served for year in item.served})
     observations = sum(item.years.counts.get(year, 0) for item in served for year in item.served)
@@ -305,7 +444,7 @@ def assemble_composite(
                 else slot
                 for slot in spec.resolved.slots
             ],
-            "download": None,
+            "download": composite_download(served, identity, facts=facts),
             "measure_label": _measure_label(declaration, spec.resolved.measure_label),
             "published_tables": join_labels([source.label for source in sources]),
             "trace": spec.resolved.trace.model_copy(update={"resolved_sources": sources}),
@@ -413,6 +552,109 @@ def _stat_vars(
             ),
         }
     )
+
+
+def composite_download(
+    served: Sequence[ServedComponent], identity: BaseIdentity, *, facts: ScopeFacts
+) -> DownloadFacts | None:
+    """The facts of the default file a Datasets mint of composite `identity` writes, counted
+    from `facts`' coverage snapshot in memory as `materialise.composite` composes the frame.
+
+    Each component writes its members' series-years in the years it serves (`served`, as
+    `ServedComponent.served` and its recipe's periods state them). A zero-filling component
+    (`ComponentRecipe.zero_absent`) writes, for each member a mint of it serves, one row per
+    cell, a (recipient, donor, year), that some component's series fills in the years it
+    serves, its own rows and its zero rows alike. Series count the distinct (StatVar,
+    recipient, donor) keys written, zero-filled ones included. The window spans the years
+    written. The licence is the one every component table's source-index entry names, else
+    None.
+
+    The count reads no facet: it keeps a member's rows under a source, unit or method the
+    mint's facet election leaves out, and counts the zero rows of such a member, and under a
+    unit request it keeps rows a conversion would drop (`unit.conversion.counted_conversion`).
+    So `rows` can overstate the file, and `rows_exact` is always false. `rows`, `series` and
+    `window` are None where some component's members are not settled in memory
+    (`ServedComponent.members`), as for a family of `observationAbout` members, whose rows
+    only facet metadata counts, and where the coverage snapshot holds no row of some member
+    (`CoverageIndex.covers`) of a component that writes its members' own rows, as
+    `download._coverage_extent` returns None for a plan reading one, since the count would
+    leave that member's rows out. A zero-filling component's members count one row per cell
+    whether or not the snapshot holds them. None for a `latest` window, which no mint of a
+    composite serves."""
+    if identity.requested_window.kind == "latest":
+        return None
+    licence = _shared_licence(served)
+    coverage = facts.coverage.index
+    if any(
+        item.members is None
+        or not (
+            item.component.recipe.zero_absent or all(coverage.covers(sv) for sv in item.members)
+        )
+        for item in served
+    ):
+        return DownloadFacts(rows=None, rows_exact=False, series=None, window=None, licence=licence)
+    rows = series = 0
+    years: set[int] = set()
+    cells: set[tuple[str, str, int]] = set()
+    for item in served:
+        for (_variable, recipient, donor), held in _served_series(item, coverage):
+            cells.update((recipient, donor, year) for year in held)
+            if not item.component.recipe.zero_absent:
+                rows += len(held)
+                series += 1
+                years.update(held)
+    places = {(recipient, donor) for recipient, donor, _year in cells}
+    for item in served:
+        if item.component.recipe.zero_absent and cells:
+            members = len(cast("frozenset[str]", item.members))
+            rows += members * len(cells)
+            series += members * len(places)
+            years.update(year for _recipient, _donor, year in cells)
+    return DownloadFacts(
+        rows=rows,
+        rows_exact=False,
+        series=series,
+        window=TimeWindow(start_year=min(years), end_year=max(years)) if years else None,
+        licence=licence,
+    )
+
+
+def _served_series(
+    item: ServedComponent, coverage: CoverageIndex
+) -> Iterator[tuple[tuple[str, str, str], frozenset[int]]]:
+    """Each series of `item`'s members under its identity's places, with the years of it
+    that `item` serves (`_serves_year`), for a series holding one."""
+    if item.members is None or not item.served:
+        return
+    found = coverage.series_years(
+        variables=sorted(item.members),
+        bound=_bound(item.component.identity),
+        first_year=min(item.served),
+        last_year=max(item.served),
+    )
+    if found is None:
+        return
+    epoch = coverage.horizon.epoch_year
+    for key, bits in zip(found.keys(), found.year_bits(), strict=True):
+        held = frozenset(
+            year
+            for offset in range(bits.bit_length())
+            if bits >> offset & 1 and _serves_year(item, year := epoch + offset)
+        )
+        if held:
+            yield key, held
+
+
+def _shared_licence(served: Sequence[ServedComponent]) -> DownloadLicence | None:
+    """The licence every component table of `served` names (`download.provenance_licence`),
+    or None when they name different ones or one names none."""
+    # download.py imports the unit conversion catalogue, which imports the graph client,
+    # which imports scope.basis, which imports this module.
+    from search.engine.retrieval.download import provenance_licence
+
+    licences = [provenance_licence(item.component.recipe.dataset) for item in served]
+    first = licences[0] if licences else None
+    return first if all(licence == first for licence in licences) else None
 
 
 def _headline(

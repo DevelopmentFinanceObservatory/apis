@@ -15,6 +15,7 @@ and cancels the speculative parse on a hit (`entry.raw_text._read_and_extract`).
 from __future__ import annotations
 
 import logging
+import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -193,16 +194,15 @@ def _base(query: str) -> _Base:
 
 
 def _occurrences(phrase: str, text: str) -> list[tuple[int, int]]:
-    """The character ranges of `text` where `phrase` stands as whole words."""
+    """The character ranges of `text` where `phrase` stands as whole words, in any case: the
+    read may capitalise a cue the query writes in lower case."""
     ranges: list[tuple[int, int]] = []
-    start = text.find(phrase)
-    while start != -1:
-        end = start + len(phrase)
+    for match in re.finditer(f"(?=({re.escape(phrase)}))", text, re.IGNORECASE):
+        start, end = match.span(1)
         if not (start > 0 and text[start - 1].isalnum()) and not (
             end < len(text) and text[end].isalnum()
         ):
             ranges.append((start, end))
-        start = text.find(phrase, start + 1)
     return ranges
 
 
@@ -331,7 +331,8 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
     query's own characters; where NFKC cannot be mapped back, in the query's NFC text
     (`_base`). A stretch is admitted when:
 
-    1. it occurs in the query as whole words and is shorter than the query;
+    1. it occurs in the query as whole words, in any case, and is shorter than the query, and
+       is quoted as the query writes it;
     2. no occurrence lies inside a run of words the query uses as one code, measure or party
        label (`qualifier_match.label_runs`): "excluding debt relief" in "official development
        assistance excluding debt relief" belongs to DAC2a's aid type 250;
@@ -362,6 +363,8 @@ def admit_exclusions(query: str, read: ExclusionRead) -> QueryReading:
             continue
         found = _occurrences(phrase, normal)
         if found:
+            # The stretch is quoted in the query's own words, whatever case the read used.
+            phrase = normal[slice(*found[0])]
             if labels is None:
                 labels = label_runs(normal, get_index(), get_measure_index())
             if any(lo <= s and e <= hi for s, e in found for lo, hi in labels):

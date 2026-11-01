@@ -490,7 +490,7 @@ jobs:
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
 
-      # Migration 0046 rewrote every stored warning that names refs in its
+      # Migration 0047 rewrote every stored warning that names refs in its
       # message but the old `coverage_below_scope` member sentence, since
       # splitting its members into off-cadence and out-of-window ones needs
       # graph reads. `datasets-maintenance backfill-warnings` rewrites those,

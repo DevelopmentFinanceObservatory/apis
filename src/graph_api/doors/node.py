@@ -766,8 +766,9 @@ def classify_node_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=TIMEOUT_DEFAULT.retryable,
         )
     if isinstance(exc, GraphReadError):
-        logger.error("Graph node door's DCP read failed: %s", exc, exc_info=exc)
-        return graph_read_problem(exc)
+        return graph_read_problem(exc)._replace(
+            log=f"Graph node door's DCP read failed: {exc}", log_traceback=True
+        )
     return None
 
 

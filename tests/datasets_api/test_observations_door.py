@@ -30,6 +30,7 @@ from datasets_api.doors.observations import build_observations_door, observation
 from datasets_api.doors.pin import pin_artifact
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform.app import Surface, create_app
+from dfo_platform.doors import endpoint_exemplars
 from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, FRAME1_MEDIA_TYPE
 from materialise.graph import GraphReadError
 from materialise.series_conversion import SeriesConversion, encode_series_conversions
@@ -316,7 +317,7 @@ class _World:
             codes=DATASETS_CODE_CATALOGUE,
             classify=door.classify,
             exception_types=door.exception_types,
-            exception_exemplars=door.exception_exemplars,
+            exception_exemplars=endpoint_exemplars((door,)),
             # Binds `datasets.observations`, so a refusal takes its status from that endpoint's
             # registry mappings, as it does when served.
             registry_endpoints=door.registry_endpoints,

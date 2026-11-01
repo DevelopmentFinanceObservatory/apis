@@ -3,8 +3,8 @@ holding one.
 
 `OLD_FORMATS` holds the only definition of each format: one detection pattern per warning
 code, valid in both Python `re` and Postgres ARE. Detection is loose: it asks whether a
-message names something, so a message no rewrite can parse still counts. Migration 0046
-(`migrations/0046_warning_counted_refs.sql`) rewrites every format but one: the old member
+message names something, so a message no rewrite can parse still counts. Migration 0047
+(`migrations/0047_warning_counted_refs.sql`) rewrites every format but one: the old member
 sentence (`MEMBER_SENTENCE`), whose split into off-cadence and out-of-window members needs
 graph reads, is left to `datasets_api.warning_backfill`. `datasets-maintenance settle` counts
 the rows still holding any format (`count_old_format_rows`) and fails the deploy when one

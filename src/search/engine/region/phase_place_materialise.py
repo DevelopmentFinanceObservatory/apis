@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, cast
 
 import dc_graph
+from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
 from materialise.roles import RoleAxis, axis_for_role
@@ -23,7 +24,12 @@ from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import SEARCH_MAX_UNIT_ALTERNATIVES, settings
-from search.engine.degraded_reads import DegradedReads, carry, recording_degraded_reads
+from search.engine.degraded_reads import (
+    DegradedReads,
+    carry,
+    fail_open_reads,
+    recording_degraded_reads,
+)
 from search.engine.departures import direction_inferred
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
@@ -57,6 +63,7 @@ from search.engine.region.candidates import (
 from search.engine.region.codes import (
     DENOMINATOR_UNVERIFIED,
     MEMBERSHIP_UNVERIFIED,
+    OBSERVATIONS_TIMED_OUT,
     SEAM_OFF_INFO_CODE,
     _elect_no_data_reason,
 )
@@ -67,6 +74,7 @@ from search.engine.region.decisions import (
     PlaceSetTooLargeError,
 )
 from search.engine.region.grounding import (
+    SuggestionRead,
     _suggest_nearest_real,
     membership_unverified_warning,
     memoised_labels,
@@ -178,6 +186,7 @@ from search.models import (
     NearestRealSpec,
     NoDataDenominator,
     Relaxation,
+    SpecObservations,
     TimeWindow,
     UnitAlternative,
     Warning,
@@ -894,15 +903,17 @@ async def _unsettled_places(
     the scopes of the StatVars a Datasets mint serves for it (`served_stat_vars`).
 
     Settling uses a set's reading only on roles that admit its type, so role admission is
-    asked here, once per pass for each role and the type of each set's node and members
+    asked here, once per pass for each role and the types of each set's node and members
     (`UnsettledPlace.admission_questions`, `state.node_admissions`), and every question it
     has not answered is asked at once.
     """
     await _read_taker_stat_vars(state, shapes)
+    index = get_index()
     places = [
         UnsettledPlace(
             shape,
             roles,
+            index,
             stat_vars=_stat_vars_of(state, (shape, bindings, roles)).served
             if takes_default_scope(shape, roles)
             else (),
@@ -2332,6 +2343,16 @@ def _constraint_properties(shape: ShapeDraft) -> frozenset[str]:
     return frozenset(key.property_dcid for key in shape.slot_keys if key.property_dcid)
 
 
+@dataclass(frozen=True, slots=True)
+class _NearestRealProbe:
+    """What one nearest-real probe found (`_suggest_nearest_real`)."""
+
+    specs: list[NearestRealSpec]
+    warnings: list[Warning]
+    reads: dict[str, SuggestionRead]
+    presence: ConsultedPresence | None
+
+
 async def _nearest_real_for(
     state: ResolveState, *, level: tuple[ShapeDraft, Relaxation] | None = None
 ) -> tuple[NearestRealSpec, ...] | None:
@@ -2343,7 +2364,52 @@ async def _nearest_real_for(
     suggestion's StatVars settle on, and a suggestion whose scope warning the shape in play
     does not hold carries it stamped with its `spec_id`. Fetch observations for survivors
     only on the buffered path. Return ``None`` when no relaxation finds data.
+
+    The probe runs under `nearest_real_budget_s` from here
+    (`degraded_reads.fail_open_reads`), so a slow or stalled graph holds the no-data answer
+    for the budget at most. The probe notes each read it loses and answers without it.
+    When the budget runs out first, the answer carries no suggestions. Each suggestion's
+    preview runs after the probe, under a budget of its own (`_read_preview`), and a lost
+    preview leaves its suggestion without observations.
     """
+    probe: _NearestRealProbe | None = None
+    with fail_open_reads("nearest-real suggestions", budget_s=settings().nearest_real_budget_s):
+        probe = await _probe_nearest_real(state, level=level)
+    if probe is None:
+        return None
+    if probe.presence is not None:
+        known = state.default_presence
+        state.default_presence = probe.presence if known is None else known.merged(probe.presence)
+    state.warnings.extend(
+        warning
+        for warning in probe.warnings
+        if warning.code != MEMBERSHIP_UNVERIFIED
+        or all(held.code != MEMBERSHIP_UNVERIFIED for held in state.warnings)
+    )
+    if not probe.specs:
+        return None
+    near_specs = probe.specs
+    stamp_offered_place_warnings(
+        state.warnings,
+        [(spec.spec_id, probe.reads[spec.spec_id].place) for spec in near_specs],
+        departure_facts=state.departure_facts,
+    )
+    entity_warnings, previews = await _suggestion_previews(state, near_specs, probe.reads)
+    for warning in entity_warnings:
+        if warning not in state.warnings:
+            state.warnings.append(warning)
+    for index, result in previews.items():
+        near_specs[index] = cast(
+            NearestRealSpec, _attach_observations(near_specs[index], result, state.warnings)
+        )
+    return tuple(near_specs)
+
+
+async def _probe_nearest_real(
+    state: ResolveState, *, level: tuple[ShapeDraft, Relaxation] | None
+) -> _NearestRealProbe:
+    """`_nearest_real_for`'s probe: the relaxed specs, each reconfirmed against the graph,
+    with their warnings and the reads that found them."""
     near_specs, near_warnings, near_reads, near_presence = await asyncio.to_thread(
         _suggest_nearest_real,
         graph=state.graph,
@@ -2369,27 +2435,23 @@ async def _nearest_real_for(
         pin_served_provenance=state.pin_served_provenance,
         level=level,
     )
-    if near_presence is not None:
-        known = state.default_presence
-        state.default_presence = near_presence if known is None else known.merged(near_presence)
-    state.warnings.extend(
-        warning
-        for warning in near_warnings
-        if warning.code != MEMBERSHIP_UNVERIFIED
-        or all(held.code != MEMBERSHIP_UNVERIFIED for held in state.warnings)
+    return _NearestRealProbe(
+        specs=near_specs, warnings=near_warnings, reads=near_reads, presence=near_presence
     )
-    if not near_specs:
-        return None
-    stamp_offered_place_warnings(
-        state.warnings,
-        [(spec.spec_id, near_reads[spec.spec_id].place) for spec in near_specs],
-        departure_facts=state.departure_facts,
-    )
-    # Relaxed specs were reconfirmed against the graph. Fetch previews only when requested
-    # on the buffered path. Nearest-real suggestions have no SSE observation event.
+
+
+async def _suggestion_previews(
+    state: ResolveState,
+    near_specs: Sequence[NearestRealSpec],
+    near_reads: Mapping[str, SuggestionRead],
+) -> tuple[list[Warning], dict[int, tuple[SpecObservations, Warning | None]]]:
+    """The warnings choosing each suggestion's preview entities raised, in suggestion order,
+    and the observations each previewed suggestion reads, by index in `near_specs`. Only a
+    buffered request previews: nearest-real suggestions have no SSE observation event."""
     if not state.include_observations or state.stream_observations:
-        return tuple(near_specs)
-    previews: list[tuple[int, dict[str, list[str]]]] = []
+        return [], {}
+    entity_warnings: list[Warning] = []
+    jobs: list[tuple[int, dict[str, list[str]]]] = []
     for index, near_spec in enumerate(near_specs):
         place = near_reads[near_spec.spec_id].place
         obs_entities, obs_entities_warn = _observation_entities(
@@ -2398,30 +2460,56 @@ async def _nearest_real_for(
             destination_dcid=place.roles.obs_destination_dcid,
             origin_dcids=place.roles.origin_dcids,
         )
-        if obs_entities_warn is not None and obs_entities_warn not in state.warnings:
-            state.warnings.append(obs_entities_warn)
+        if obs_entities_warn is not None:
+            entity_warnings.append(obs_entities_warn)
         if obs_entities:
-            previews.append((index, obs_entities))
+            jobs.append((index, obs_entities))
     results = await asyncio.gather(
         *[
-            asyncio.to_thread(
-                _build_observations,
-                near_reads[near_specs[index].spec_id].plan,
-                [sv.ref.ref for sv in near_specs[index].resolved.members],
-                obs_entities,
-                graph=state.graph,
-                materialise_graph=state.materialise_graph,
-                materialise_sdmx=state.materialise_sdmx,
-                sdmx=state.sdmx,
-                rate_cache=state.rate_cache,
-                coverage=state.coverage,
-                member_facts=near_reads[near_specs[index].spec_id].member_facts,
-            )
-            for index, obs_entities in previews
+            _read_preview(state, near_specs[index], near_reads[near_specs[index].spec_id], entities)
+            for index, entities in jobs
         ]
     )
-    for (index, _), result in zip(previews, results, strict=True):
-        near_specs[index] = cast(
-            NearestRealSpec, _attach_observations(near_specs[index], result, state.warnings)
+    return entity_warnings, {
+        index: result
+        for (index, _), result in zip(jobs, results, strict=True)
+        if result is not None
+    }
+
+
+async def _read_preview(
+    state: ResolveState,
+    near_spec: NearestRealSpec,
+    near_read: SuggestionRead,
+    obs_entities: dict[str, list[str]],
+) -> tuple[SpecObservations, Warning | None] | None:
+    """`near_spec`'s observations at `obs_entities`, read under their own fail-open budget
+    (`fail_open_reads`, `fail_open_read_budget_s`), or `None` when the read is lost: the
+    suggestion stands without its preview. A preview `_build_observations` omits as
+    `observations_timed_out` is lost the same way, with its warning. Its read crossed a
+    deadline, so it is noted as a lost read unless the budget ran out first
+    (`degraded_reads.scope_budget_ran_out`)."""
+    preview: tuple[SpecObservations, Warning | None] | None = None
+    with fail_open_reads(
+        "nearest-real preview",
+        budget_s=settings().fail_open_read_budget_s,
+        about={"spec_id": near_spec.spec_id, "entities": obs_entities},
+    ):
+        read = await asyncio.to_thread(
+            _build_observations,
+            near_read.plan,
+            [sv.ref.ref for sv in near_spec.resolved.members],
+            obs_entities,
+            graph=state.graph,
+            materialise_graph=state.materialise_graph,
+            materialise_sdmx=state.materialise_sdmx,
+            sdmx=state.sdmx,
+            rate_cache=state.rate_cache,
+            coverage=state.coverage,
+            member_facts=near_read.member_facts,
         )
-    return tuple(near_specs)
+        omitted = read[0].omitted
+        if omitted is not None and omitted.reason == OBSERVATIONS_TIMED_OUT:
+            raise TimeoutError(f"the preview of {near_spec.spec_id} timed out: {omitted.message}")
+        preview = read
+    return preview

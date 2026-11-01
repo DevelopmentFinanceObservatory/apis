@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 
 from materialise.errors import UpstreamVersionChangedError
-from search.engine.region import candidate_collapse as candidate_collapse_module
 from search.engine.region import candidate_unit_election as candidate_unit_election_module
+from search.engine.region.observations import dispatch as dispatch_module
 from search.engine.region.observations import fetch as fetch_module
 from tests.engine.test_facet_unit_gate_multi_statvar import (
     _SV_A,
@@ -51,7 +51,7 @@ def test_the_candidates_gate_reads_no_preview(monkeypatch):
     def _no_read(*args, **kwargs):
         raise AssertionError("the bound-unit gate must not read observations")
 
-    monkeypatch.setattr(candidate_collapse_module, "_build_observations", _no_read)
+    monkeypatch.setattr(dispatch_module, "_build_observations", _no_read)
     result = _three_way()
 
     assert result.status == "candidates", result
