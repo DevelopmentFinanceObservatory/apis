@@ -13,6 +13,7 @@ import pytest
 from dataset_store import LiveDatasetStore
 from datasets_api.maintenance import _clears_on_retry
 from datasets_api.warning_backfill import Readers, run_backfill_warnings, select_rows
+from tests.dataset_store.live_database import live_database  # noqa: F401  (a fixture)
 from tests.dataset_store.test_live import _DSN, _delete_versions, _pool
 from tests.materialise._scope_availability import ScopeAvailability
 from tests.materialise.conftest import FakeGraphReader
@@ -21,6 +22,7 @@ from .test_warning_backfill import _FACETS, _IN, _NOW, _OUT, _code_index, _row, 
 
 pytestmark = [
     pytest.mark.live,
+    pytest.mark.usefixtures("live_database"),
     pytest.mark.skipif(
         not _DSN, reason="set DFO_DATASET_STORE_LIVE_DSN to run live dataset_store tests"
     ),
