@@ -18,7 +18,9 @@ settings, the keys the synchronous definition door narrows by, so the poll lists
 that rendering's artifact plus statistics artifacts, as the synchronous mint does.
 Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
 recorded at completion, the currency pair a synchronous mint that materialised
-reports. A row an image recording no `confirmed_at` completed carries neither.
+reports, and the family fields the run served (`Operation.family`) in place of the
+stored version's. A row an image recording no `confirmed_at` completed carries neither
+currency field.
 When the snapshot lists no artifact under that key (a bundle the worker could not
 link, a bundle of a superseded rendition, an expired working-tier artifact), the
 poll calls `OperationStore.fail_unservable_done` and answers retryable
@@ -113,6 +115,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
+from materialise.trace import with_family
 from spec_registry import IdentityQuarantined
 from spec_registry.reader import SpecReader
 
@@ -216,8 +219,10 @@ def _load_done_manifest(
     """The done operation's manifest, narrowed to the rendering its request posted.
 
     Its `trace` carries the currency pair a synchronous mint that materialised reports:
-    `served_from: materialise` and the `confirmed_at` the row recorded. It carries the
-    version's `retention` (`datasets_api.retention`).
+    `served_from: materialise` and the `confirmed_at` the row recorded, with the member family
+    the row recorded in place of the stored version's. A row completed before families were
+    recorded keeps the stored version's. It carries the version's `retention`
+    (`datasets_api.retention`).
 
     The rendering keys are `resolved_rendering_keys` of the row's `options` under this
     service's `settings.site` and the serving code index's `enrichment_digest`, the keys the
@@ -285,6 +290,9 @@ def _load_done_manifest(
     trace = served_trace(
         manifest.trace, served_from="materialise", confirmed_at=operation.confirmed_at
     )
+    family = operation.family
+    if family is not None and family.confirmed_at == operation.confirmed_at:
+        trace = with_family(trace, family.stated)
     return manifest.model_copy(update={"trace": trace})
 
 

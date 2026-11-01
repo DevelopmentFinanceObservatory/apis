@@ -56,7 +56,7 @@ from materialise.rate_tables import RateTableCache
 from materialise.reshape import TableLike
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsFile
-from materialise.trace import ManifestTrace, MemberFamily
+from materialise.trace import UNKNOWN_FAMILY, ManifestTrace, MemberFamily, StatedFamily
 from materialise.window import Coverage, LatestYear, ReadSeries, RequestedWindow
 from origin_catalogue import note_un_unserved
 
@@ -126,6 +126,26 @@ class MaterialisationRequest:
                     f"a {binding.state}-state facet binding only applies to the unit axis, "
                     f"not {axis!r}"
                 )
+
+
+def shared_family(requests: Sequence[MaterialisationRequest]) -> StatedFamily:
+    """The family the requests of one definition, or of one composite component, share and a
+    run over them states in its trace (`MaterialisationRequest.family` and `stub_candidates`),
+    unknown for no request."""
+    if not requests:
+        return UNKNOWN_FAMILY
+    return StatedFamily(members=requests[0].family, stub_candidates=requests[0].stub_candidates)
+
+
+def definition_family(requests: Sequence[MaterialisationRequest]) -> StatedFamily:
+    """The family a run over every request of one definition states in its trace. A plain
+    definition states the family its requests share (`shared_family`). A composite's requests
+    each read a component (`MaterialisationRequest.component`), so it states no one family, and
+    the stub candidates of every component in their order (`materialise.composite`)."""
+    if not requests or requests[0].component is None:
+        return shared_family(requests)
+    stubs = dict.fromkeys(ref for request in requests for ref in request.stub_candidates)
+    return StatedFamily(members=None, stub_candidates=tuple(stubs))
 
 
 @dataclass(frozen=True)

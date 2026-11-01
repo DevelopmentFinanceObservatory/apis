@@ -24,6 +24,7 @@ from datasets_api.operations.submit import (
 from datasets_api.operations.task_client import FakeTaskClient
 from dc_sdmx import SdmxClient
 from materialise.errors import OverCeilingError
+from materialise.trace import UNKNOWN_FAMILY
 from origin_catalogue.service import get_catalogue_service
 from series_coverage.index import Estimate
 from spec_registry import LiveSpecRegistry
@@ -193,6 +194,7 @@ def test_a_submit_under_a_new_catalogue_build_starts_a_new_operation(
         subject_id="spec_done",
         content_version="cv_1",
         confirmed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        family=UNKNOWN_FAMILY,
     )
     rebuilt = FakeCatalogue(build_id="20261006T000000Z-ef567890")
     monkeypatch.setattr(get_catalogue_service(), "snapshot", lambda: rebuilt)

@@ -227,6 +227,7 @@ def _finish_member(
     output_profile_seconds = time.perf_counter() - profile_start
     method_periods: dict[str, tuple[str, str]] = {}
     fold_method_periods(method_periods, outcome.frame)
+    family = pipeline.shared_family((request,))
 
     trace = ManifestTrace(
         applied_window=(
@@ -253,8 +254,8 @@ def _finish_member(
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
-        family=request.family,
-        stub_candidates=request.stub_candidates,
+        family=family.members,
+        stub_candidates=family.stub_candidates,
         coverage_gaps=tuple(gap.as_trace_entry() for gap in outcome.coverage_gaps),
     )
 
@@ -355,6 +356,9 @@ def _finish_group(
         for request in sorted(requests, key=lambda r: r.stat_var)
     )
 
+    # Every request of a group is a member of one definition, or one composite component,
+    # and carries its family.
+    family = pipeline.shared_family(requests)
     trace = ManifestTrace(
         applied_window=(
             outcome.applied_window.as_trace_entry() if outcome.applied_window is not None else None
@@ -370,9 +374,8 @@ def _finish_group(
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
-        # Every request of a group is a member of one definition and carries its family.
-        family=requests[0].family,
-        stub_candidates=requests[0].stub_candidates,
+        family=family.members,
+        stub_candidates=family.stub_candidates,
     )
 
     return pipeline.MaterialisationResult(

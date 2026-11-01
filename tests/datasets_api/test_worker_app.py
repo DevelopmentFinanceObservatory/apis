@@ -35,6 +35,7 @@ from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dc_sdmx import SdmxClient
 from materialise.graph import GraphReader
+from materialise.trace import UNKNOWN_FAMILY
 from origin_catalogue import Catalogue, current_catalogue
 from origin_catalogue.service import CatalogueService
 from series_coverage.index import Estimate
@@ -81,6 +82,7 @@ def _complete_run(
         subject_id=_SUBJECT_ID,
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
+        family=UNKNOWN_FAMILY,
     )
 
 
@@ -280,6 +282,7 @@ class TestLeaseSemantics:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run)
@@ -322,6 +325,7 @@ class TestLeaseSemantics:
             subject_id=_SUBJECT_ID,
             content_version="cv_1",
             confirmed_at=_CONFIRMED_AT,
+            family=UNKNOWN_FAMILY,
         )
         ran: list[int] = []
         client = _client(operation_store=operation_store, run_in_thread=lambda **kw: ran.append(1))
@@ -555,6 +559,7 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -638,6 +643,7 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -665,6 +671,7 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -695,6 +702,7 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -721,6 +729,7 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)

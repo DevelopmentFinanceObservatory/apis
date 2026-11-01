@@ -65,6 +65,7 @@ from datasets_api.versions import HeadFence, HeadFenceLost
 from dfo_platform.codes import bound_registry_endpoint
 from materialise import MaterialisationCancelled, RowProgress
 from materialise.errors import UpstreamVersionChangedError
+from materialise.trace import trace_family
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -320,6 +321,7 @@ def run_operation(
         subject_id=completed_subject_id,
         content_version=manifest.content_version,
         confirmed_at=trace_confirmed_at(manifest.trace),
+        family=trace_family(manifest.trace),
     )
     if completed is None:
         # The operation row has moved on. Its durable artifact has no operation reference.

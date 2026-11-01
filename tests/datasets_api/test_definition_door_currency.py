@@ -5,6 +5,7 @@ UTC clock.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import threading
 from collections.abc import Iterator, Mapping
@@ -28,6 +29,7 @@ from datasets_api.versions import SubjectHead
 from dc_graph import GraphReadError
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
+from materialise.trace import RecordedFamily
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
@@ -262,6 +264,8 @@ class _FakeHeadStore:
         self,
         *,
         materialisation,
+        family,
+        basis,
         expected_materialisation_id: int | None,
         fence=None,
     ) -> SubjectHead | None:
@@ -280,22 +284,27 @@ class _FakeHeadStore:
             materialised_at=now,
             materialisation_id=next(self._runs),
             dependencies=materialisation.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=now, basis=basis),
         )
         self._heads[subject_id] = written
         return written
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+    def confirm_head(
+        self, *, subject_id: str, content_version: str, family, basis
+    ) -> SubjectHead | None:
         self.confirm_head_calls += 1
         existing = self._heads.get(subject_id)
         if existing is None or existing.content_version != content_version:
             return None
+        confirmed_at = datetime.now(UTC)
         written = SubjectHead(
             subject_id=existing.subject_id,
             content_version=existing.content_version,
-            confirmed_at=datetime.now(UTC),
+            confirmed_at=confirmed_at,
             materialised_at=existing.materialised_at,
             materialisation_id=existing.materialisation_id,
             dependencies=existing.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=confirmed_at, basis=basis),
         )
         self._heads[subject_id] = written
         return written
@@ -315,13 +324,19 @@ class _FakeHeadStore:
         """
         resolved_materialised_age = age if materialised_age is None else materialised_age
         existing = self._heads[subject_id]
+        confirmed_at = datetime.now(UTC) - age
         self._heads[subject_id] = SubjectHead(
             subject_id=existing.subject_id,
             content_version=existing.content_version,
-            confirmed_at=datetime.now(UTC) - age,
+            confirmed_at=confirmed_at,
             materialised_at=datetime.now(UTC) - resolved_materialised_age,
             materialisation_id=existing.materialisation_id,
             dependencies=existing.dependencies,
+            family=(
+                dataclasses.replace(existing.family, confirmed_at=confirmed_at)
+                if existing.family is not None
+                else None
+            ),
         )
 
 
@@ -335,12 +350,14 @@ class _RaisingHeadStore:
         self,
         *,
         materialisation,
+        family,
+        basis,
         expected_materialisation_id: int | None,
         fence=None,
     ) -> None:
         raise DatasetsStoreUnavailable("malformed head row")
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> None:
+    def confirm_head(self, *, subject_id: str, content_version: str, family, basis) -> None:
         raise DatasetsStoreUnavailable("malformed head row")
 
 

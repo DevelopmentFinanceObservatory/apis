@@ -52,6 +52,7 @@ from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
+from materialise.trace import UNKNOWN_FAMILY, parse_recorded_family
 from series_coverage.index import Estimate
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
 
@@ -92,7 +93,14 @@ class _FixedOperationStore:
         return None
 
     def complete(
-        self, id: str, *, attempt: int, subject_id: str, content_version: str, confirmed_at
+        self,
+        id: str,
+        *,
+        attempt: int,
+        subject_id: str,
+        content_version: str,
+        confirmed_at,
+        family,
     ):
         return None
 
@@ -126,6 +134,7 @@ def _operation(
     created_at: datetime = _OP_NOW,
     options: MintOptions = _PARQUET_BUNDLE,
     confirmed_at: datetime | None = None,
+    family: dict[str, object] | None = None,
 ) -> Operation:
     return Operation(
         id=id,
@@ -150,6 +159,7 @@ def _operation(
         origin_catalogue_build_id="fake-catalogue",
         refusal=refusal,
         confirmed_at=confirmed_at,
+        family=parse_recorded_family(family),
     )
 
 
@@ -626,20 +636,63 @@ def test_failed_operation_poll_keeps_its_own_detail_when_the_stored_refusal_has_
     assert body["cause"]["code"] == "spec_not_found"
 
 
+_CONFIRMED_CURRENCY = {"served_from": "materialise", "confirmed_at": "2026-01-01T00:00:00+00:00"}
+_EARLIER_COMPLETION = "2025-12-31T00:00:00+00:00"
+
+
 @pytest.mark.parametrize(
-    ("confirmed_at", "currency"),
+    ("confirmed_at", "family", "currency"),
     [
         pytest.param(
             _CONFIRMED_AT,
-            {"served_from": "materialise", "confirmed_at": "2026-01-01T00:00:00+00:00"},
+            {
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+                "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+            },
+            {
+                **_CONFIRMED_CURRENCY,
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+            },
             id="confirmed",
         ),
-        pytest.param(None, {}, id="completed-by-an-image-recording-no-instant"),
+        pytest.param(
+            _CONFIRMED_AT,
+            {
+                "family_member_digest": None,
+                "family_member_count": None,
+                "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+            },
+            {**_CONFIRMED_CURRENCY, "family_member_digest": None, "family_member_count": None},
+            id="run-stating-no-family",
+        ),
+        # An older image reset the row and completed it again without writing the column, so
+        # the family recorded at the earlier completion is left behind and the stored
+        # version's, which states none, is served.
+        pytest.param(
+            _CONFIRMED_AT,
+            {
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+                "confirmed_at": _EARLIER_COMPLETION,
+            },
+            _CONFIRMED_CURRENCY,
+            id="family-of-an-earlier-completion",
+        ),
+        # The stored version, written before the family fields existed, states none.
+        pytest.param(
+            _CONFIRMED_AT, None, _CONFIRMED_CURRENCY, id="completed-before-families-were-recorded"
+        ),
+        pytest.param(None, None, {}, id="completed-by-an-image-recording-no-instant"),
     ],
 )
 def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal(
-    confirmed_at: datetime | None, currency: dict[str, str]
+    confirmed_at: datetime | None, family: dict[str, object] | None, currency: dict[str, object]
 ) -> None:
+    """A row the run completed states the run's currency and the family it served in place of
+    the stored version's (`Operation.family`). A row completed before families were recorded,
+    or whose family was recorded at another completion, keeps the stored version's."""
     artifact_store = FakeArtifactStore()
     location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
     client = make_client(
@@ -660,6 +713,7 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
                     subject_id="spec_a",
                     content_version="cv1",
                     confirmed_at=confirmed_at,
+                    family=family,
                 )
             }
         ),
@@ -672,7 +726,8 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
     assert "retry-after" not in resp.headers
     trace = body["manifest"]["trace"]
-    assert {key: trace[key] for key in ("served_from", "confirmed_at") if key in trace} == currency
+    stated = ("served_from", "confirmed_at", "family_member_digest", "family_member_count")
+    assert {key: trace[key] for key in stated if key in trace} == currency
     assert body["manifest"]["content_version"] == "cv1"
     assert body["manifest"]["definition"]["spec_id"] == "spec_a"
     assert len(body["manifest"]["artifacts"]) == 1
@@ -896,7 +951,12 @@ def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit
         is not None
     )
     assert operation_store.complete(
-        op.id, attempt=1, subject_id="spec_a", content_version="cv1", confirmed_at=_CONFIRMED_AT
+        op.id,
+        attempt=1,
+        subject_id="spec_a",
+        content_version="cv1",
+        confirmed_at=_CONFIRMED_AT,
+        family=UNKNOWN_FAMILY,
     )
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),

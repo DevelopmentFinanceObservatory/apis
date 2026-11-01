@@ -104,6 +104,12 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import rendering_key
 from dfo_platform import ProblemSpec
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
+from materialise.trace import (
+    RecordedFamily,
+    StatedFamily,
+    parse_recorded_family,
+    recorded_family_json,
+)
 from series_coverage.index import Estimate
 
 logger = logging.getLogger(__name__)
@@ -117,7 +123,7 @@ _COLUMNS = (
     "estimate_requests, rows_written, subject_id, content_version, refusal_code, "
     "attempt_count, claimed_at, lease_seconds, created_at, updated_at, "
     "submission_count, retryable, dispatched_at, submitted_at, origin_catalogue_build_id, "
-    "refusal, final_delivery, confirmed_at"
+    "refusal, final_delivery, confirmed_at, family"
 )
 
 # The end of a running row's static lease.
@@ -242,10 +248,16 @@ def classify_operation_store_exception(exc: BaseException) -> ProblemSpec | None
 class Operation:
     """One durable async operation.
 
-    `subject_id`, `content_version` and `confirmed_at` are set together on completion. The poll
-    uses them to rebuild a done row's manifest, `confirmed_at` being the instant the run
-    confirmed the subject head, and `None` on a row an image recording no such instant
-    completed. Failed rows carry `refusal_code` and `retryable` to mark
+    `subject_id`, `content_version`, `confirmed_at` and `family` are set together on completion.
+    The poll uses them to rebuild a done row's manifest. `confirmed_at` is the instant the run
+    confirmed the subject head, `None` on a row completed by an image that records no such
+    instant. `family` is the member family the run served, recorded with the head confirmation
+    it completed at. The poll states it in place of the stored version's only while that
+    confirmation equals `confirmed_at`. It is `None` on a row completed before families were
+    recorded or reset by this image since its last completion. An older image's reset leaves
+    it in place. When that image completes the row at another confirmation the poll states the
+    stored version's family, and when it writes the confirmation the family was recorded at,
+    the poll states that family. Failed rows carry `refusal_code` and `retryable` to mark
     transient failures. `refusal` is the classified refusal a deterministic failure ended on,
     and `None` on every other row, including one whose stored refusal this image cannot parse.
     `submission_count` starts at 0 and increments on each reset. Monotonic `attempt_count`
@@ -282,6 +294,7 @@ class Operation:
     refusal: ProblemSpec | None = None
     final_delivery: bool | None = None
     confirmed_at: datetime | None = None
+    family: RecordedFamily | None = None
 
     def lease_ended(self, now: datetime) -> bool:
         """Whether this is a `running` row whose claim has stopped owning it at `now`, the rule
@@ -358,10 +371,12 @@ class OperationStore(Protocol):
         subject_id: str,
         content_version: str,
         confirmed_at: datetime,
+        family: StatedFamily,
     ) -> Operation | None:
-        """Marks a running row `done` with the version its run served and the instant that run
-        confirmed the subject head. Returns `None` when this attempt token does not match a
-        running row."""
+        """Marks a running row `done` with the version its run served, the instant that run
+        confirmed the subject head, and the member `family` it served, `UNKNOWN_FAMILY` when
+        the run could not state the whole family. Returns `None` when this attempt token does
+        not match a running row."""
         ...
 
     def fail(
@@ -441,6 +456,7 @@ class NullOperationStore:
         subject_id: str,
         content_version: str,
         confirmed_at: datetime,
+        family: StatedFamily,
     ) -> Operation | None:
         return None
 
@@ -495,6 +511,7 @@ def _operation_from_row(row: Mapping[str, object]) -> Operation:
         refusal=_stored_refusal(row),
         final_delivery=cast("bool | None", row["final_delivery"]),
         confirmed_at=cast("datetime | None", row["confirmed_at"]),
+        family=parse_recorded_family(row["family"]),
     )
 
 
@@ -706,6 +723,7 @@ class LiveOperationStore:
             "UPDATE datasets.operation SET state = 'pending', "
             "claimed_at = NULL, lease_seconds = NULL, final_delivery = NULL, "
             "refusal_code = NULL, refusal = NULL, retryable = NULL, rows_written = 0, "
+            "family = NULL, "
             "submission_count = submission_count + 1, dispatched_at = NULL, "
             "submitted_at = %s, updated_at = %s "
             f"WHERE id = %s AND {_RESETTABLE} RETURNING {_COLUMNS}",
@@ -774,15 +792,24 @@ class LiveOperationStore:
         subject_id: str,
         content_version: str,
         confirmed_at: datetime,
+        family: StatedFamily,
     ) -> Operation | None:
         now = self._now()
         return self._update_one(
             "completing",
             id,
             "UPDATE datasets.operation SET state = 'done', subject_id = %s, "
-            "content_version = %s, confirmed_at = %s, updated_at = %s "
+            "content_version = %s, confirmed_at = %s, family = %s, updated_at = %s "
             "WHERE id = %s AND state = 'running' AND attempt_count = %s",
-            (subject_id, content_version, confirmed_at, now, id, attempt),
+            (
+                subject_id,
+                content_version,
+                confirmed_at,
+                recorded_family_json(RecordedFamily(stated=family, confirmed_at=confirmed_at)),
+                now,
+                id,
+                attempt,
+            ),
         )
 
     def fail(
