@@ -248,4 +248,6 @@ DFO_DATASET_STORE_LIVE_DSN="postgresql://postgres:postgres@127.0.0.1:5432/datase
     pytest tests/dataset_store/test_live.py
 ```
 
+The DSN names a database with every migration applied. Each live test runs against its own copy of that database, cloned with `CREATE DATABASE ... TEMPLATE` when the test starts and dropped when it ends (`tests/dataset_store/live_database.py`), so tests share no rows and pytest-xdist (`-n N`) gives the result of a serial run. The DSN's role needs CREATEDB and a login on the `postgres` database, and no session may be connected to the named database while tests run.
+
 Live tests verify PostgreSQL transactional DDL semantics, JSONB and BYTEA data type behaviour, unique constraints, foreign key cascades, and pg8000 parameter escaping rules.
