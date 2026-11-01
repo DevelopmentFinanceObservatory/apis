@@ -67,9 +67,12 @@ name: Deploy
 # opens the published release and builds one when it does not (see its step).
 # The search catalogue job is pointed at the new image and run once on it,
 # waiting for it, then verified to have a build published, before the worker
-# and the apis service move (see its steps). A failed step stops the job before any step after it
-# runs, so a failed migration or artifact build leaves both services on their
-# current image.
+# and the apis service move (see its steps). Up to the apis service move, a failed
+# step stops the job before any step after it runs, so a failed migration or
+# artifact build leaves both services on their current image. Once the apis
+# service has moved, `settle` and `backfill-descriptions` run even when a step
+# before them failed; a cancelled run starts neither, and a `workflow_dispatch`
+# run then settles the rows.
 
 on:
   workflow_call:
