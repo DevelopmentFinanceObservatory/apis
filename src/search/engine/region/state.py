@@ -23,7 +23,7 @@ from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.facets import FacetSelection
 from materialise.rate_tables import RateTableCache
-from origin_catalogue import UnUnserved
+from origin_catalogue import Catalogue, UnUnserved
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, BindResult, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
@@ -1024,6 +1024,11 @@ class ResolveState:
     # candidacy (`phase_rank_bind._dataset_candidates`) and every election read it, and the
     # read applies it through the bound catalogue (`pipeline.resolve_variable`).
     scope: SourceScope | None = None
+    # The request's catalogue before the part's reads narrow it to `scope`, which a composite
+    # answer's component reads bind so each reads under its own pin alone
+    # (`composite_answer.ComponentReads.catalogue`). `resolve_variable` captures it. A state
+    # built elsewhere holds None, and its reads use the catalogue bound when they run.
+    request_catalogue: Catalogue | None = None
     # The StatVars the part's series code names (`search.engine.source_code`), which recall
     # reads in place of the embedding resolve (`interpret.recall`), or `None` when the part
     # names no code.

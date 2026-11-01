@@ -124,7 +124,8 @@ async def _stream_slot_options(
     only the primary fan-out.
 
     Every slot-options or observations task whose result did not reach the stream in full,
-    through a timeout or a graph failure, appends its kind to `incomplete_out`. The caller
+    through a timeout or a graph failure, or whose preview swallowed a read
+    (`ObservationsEvent.degraded`), appends its kind to `incomplete_out`. The caller
     reports it to the response cache, which then stores no bundle. A place-options task
     appends nothing, since the bundle holds no place options. The list stays inside the
     process.
@@ -236,6 +237,9 @@ async def _stream_slot_options(
                     logger.warning("trailing enrichment probe task failed", exc_info=True)
                     incomplete_out.append(task_kind[t])
                     continue
+                if any(isinstance(ev, ObservationsEvent) and ev.degraded for ev in events):
+                    # The preview stands on a read it swallowed, so no bundle stores it.
+                    incomplete_out.append(task_kind[t])
                 warnings_out.extend(warns)
                 late_departures_out.extend(
                     late

@@ -55,6 +55,7 @@ from search.engine.fanout import (
 )
 from search.engine.interpret import PinnedResolved
 from search.engine.options.population_memo import OptionsPopulationMemo
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.result import RegionResult, any_degraded, with_entity_words
@@ -811,6 +812,18 @@ async def handle(
             graph=graph,
             start_ms=start_ms,
             params=params,
+            # Built once every part's own source scope has exited, so the reads run
+            # through the request's own catalogue.
+            preview_reads=ComponentReads(
+                graph=graph,
+                sdmx=sdmx,
+                coverage=params.coverage,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                deadline=params.deadline,
+                catalogue=current_catalogue(),
+            ),
             scope=scope,
         )
     ) as events:

@@ -18,7 +18,13 @@ from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise.member_conversion import request_conversion_reader
-from origin_catalogue import note_un_unserved, recording_un_blocked_places, scoped_reads
+from origin_catalogue import (
+    bound_catalogue,
+    current_catalogue,
+    note_un_unserved,
+    recording_un_blocked_places,
+    scoped_reads,
+)
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM, recording_llm_usage
@@ -44,6 +50,12 @@ from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
+from search.engine.region.composite_answer import (
+    ComponentReads,
+    CompositeRelaunch,
+    composite_served,
+    with_composite_observations,
+)
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -272,6 +284,8 @@ async def resolve_variable(
     _admission = admission if admission is not None else Admission(graph=graph)
     _options = options if options is not None else EngineOptions()
     _binder = binder if binder is not None else GeminiBinder()
+    # Captured before any read narrows it to the part's source scope (`scoped_reads`).
+    request_catalogue = current_catalogue()
 
     # One conversion memo serves every unit decision, coverage check and preview of the call.
     materialise_graph = (
@@ -333,6 +347,7 @@ async def resolve_variable(
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
             scope=source_scope,
+            request_catalogue=request_catalogue,
             source_code=source_code,
             pin_served_provenance=source_scope is not None,
             materialise_graph=materialise_graph,
@@ -607,7 +622,9 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
 
     When the binders settle a composite option (the inclusive provider scope, the OECD
     headline per year), the scope's base is the composite, and the answer is restated as it
-    (`composite.assemble_composite`)."""
+    (`composite.assemble_composite`), carrying the closure that reads its preview per
+    component (`composite_answer.CompositeRelaunch`) for
+    `_with_composite_preview` to launch on the event loop."""
     selection = state.scope_selection
     if result.status != "definite":
         return result
@@ -644,13 +661,61 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
         return result
     if composite_ref(built.compiled.identity.model_dump(mode="json", include={"facets"})) is None:
         return dataclasses.replace(result, scope_choices=built)
-    composite, _ = assemble_composite(
-        spec,
-        built.compiled.identity,
-        built.compiled.spec_id,
-        facts=facts,
+    reads = _component_reads(state)
+    # The composite follows its mint, which reads each component under its own pin alone, so
+    # its years, coverage, headline, download and compiled components read the catalogue its
+    # preview reads, and its served years are the ones its preview filters by. `facts`
+    # remembers the years its components hold under the part's source scope, so they are
+    # read afresh.
+    served = composite_served(built.compiled.identity, reads=reads)
+    with bound_catalogue(reads.catalogue):
+        composite, components = assemble_composite(
+            spec,
+            built.compiled.identity,
+            built.compiled.spec_id,
+            served=served,
+            facts=facts,
+        )
+    compiled = built.compiled.model_copy(update={"components": components})
+    relaunch = CompositeRelaunch(spec=composite, reads=reads, served=served)
+    return dataclasses.replace(
+        with_composite_answer(result, composite, observations_relaunch=relaunch),
+        scope_choices=built.model_copy(update={"compiled": compiled}),
     )
-    return dataclasses.replace(with_composite_answer(result, composite), scope_choices=built)
+
+
+def _component_reads(state: ResolveState) -> ComponentReads:
+    """The request clients a composite answer's component reads run on, with the request's
+    catalogue as the part found it, before its source scope narrowed it."""
+    return ComponentReads(
+        graph=state.graph,
+        sdmx=state.sdmx,
+        coverage=state.coverage,
+        materialise_graph=state.materialise_graph,
+        materialise_sdmx=state.materialise_sdmx,
+        rate_cache=state.rate_cache,
+        deadline=state.deadline,
+        catalogue=state.request_catalogue or current_catalogue(),
+    )
+
+
+async def _with_composite_preview(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result` with the preview of the composite it answers, which `_with_scope_choices`
+    leaves unlaunched (`with_composite_answer`). It launches as a trailing task where
+    the request streams observations, so the `response` event waits on nothing new, and reads
+    inline where the request embeds them. Any other result returns unchanged.
+
+    The inline read takes no permit of the request semaphore, since the part's own leg holds
+    one while it resolves (`fanout`), and a request whose legs held every permit would wait
+    on itself."""
+    relaunch = result.observations_relaunch
+    if relaunch is None or result.observations_task is not None:
+        return result
+    if state.stream_observations:
+        return dataclasses.replace(result, observations_task=relaunch(result.spec.spec_id))
+    if state.include_observations:
+        return await with_composite_observations(result, semaphore=None)
+    return dataclasses.replace(result, observations_relaunch=None)
 
 
 def scope_facts(
@@ -1072,9 +1137,10 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     )
                     # The scope build reads coverage and scans families, so it runs off
                     # the event loop.
-                    return await asyncio.to_thread(
+                    answered = await asyncio.to_thread(
                         _with_scope_choices, _stating_unpublished_wholes(result, state), state
                     )
+                    return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))
                     scoped = True

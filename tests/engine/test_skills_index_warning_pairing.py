@@ -106,7 +106,7 @@ def test_the_sweep_actually_finds_every_known_call_site():
     assert set(calls_by_site) == {
         "engine/core.py::_quick_no_data",
         "engine/conjoin.py::assemble_region",
-        "engine/conjoin.py::combine_regions",
+        "engine/conjoin.py::combine_collapsed",
         "engine/entry/raw_text.py::_empty_query_response",
         "engine/entry/raw_text.py::_no_variables_response",
     }

@@ -11,6 +11,7 @@ import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from code_index.composites import composite_ref
 from code_index.shared import get_index
 from search.engine.config import settings
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
@@ -51,6 +52,7 @@ from search.models import (
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
+    from search.engine.region.composite_answer import ComponentReads
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
@@ -590,6 +592,7 @@ def collapse_same_shape(
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
     scope_for: ScopeReader | None = None,
+    preview_reads: ComponentReads | None = None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
     """Merge definite regions with the same fold key (`fold_key`) when their identities
     align.
@@ -618,7 +621,10 @@ def collapse_same_shape(
     Merges rebuild the spec id and slot filters, union slot and entity options, judge
     facet options over the merged spec (`_merge_facet_options`), preserve shared
     identity facets, and set ``earliest_index`` to the group's minimum. A merged region
-    states the scope ``scope_for`` builds over the merged identity, none without it. Returns
+    states the scope ``scope_for`` builds over the merged identity, none without it. A group
+    of composite answers merges into the composite over the merged identity, its components
+    read over ``preview_reads``, the request's component reads
+    (`composite_answer.as_merged_composite`); without them such a group refuses. Returns
     effective regions and residual ``(variable_text, earliest_index)`` pairs;
     ``variable_text`` may be ``None`` for dataset-resubmit entries.
     """
@@ -633,7 +639,7 @@ def collapse_same_shape(
     residual_texts: list[tuple[str | None, int]] = []
     for group in groups.values():
         group_effective, group_residual = _collapse_group(
-            group, set_ref_for, facet_options_for, scope_for
+            group, set_ref_for, facet_options_for, scope_for, preview_reads
         )
         effective.extend(group_effective)
         residual_texts.extend(group_residual)
@@ -649,23 +655,43 @@ def _collapse_group(
     set_ref_for: Callable[[list[str]], GraphRef | None] | None,
     facet_options_for: FacetOptionsReader | None,
     scope_for: ScopeReader | None,
+    preview_reads: ComponentReads | None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge one group; keep the first member and residualise the rest on refusal. The
+    """Merge one group; keep the first member and residualise the rest on refusal. A group
+    of composite answers merges into the composite over the merged identity, read over
+    `preview_reads` (`composite_answer.as_merged_composite`), and refuses without them. The
     merged region states the scope `scope_for` builds over its identity, none without it."""
     if len(group) == 1:
         return [group[0]], []
+    composite = _binds_composite(group[0].spec)
     try:
+        if composite and preview_reads is None:
+            raise _RefuseMerge
         merged_region = _merge_group(group, set_ref_for, facet_options_for)
     except _RefuseMerge:
         residual = [(r.variable_text, r.earliest_index) for r in group[1:]]
         return [group[0]], residual
+    if composite:
+        assert preview_reads is not None
+        # composite_answer reads through resubmit, which imports conjoin, which imports this
+        # module.
+        from search.engine.region.composite_answer import as_merged_composite
+
+        merged_region = as_merged_composite(merged_region, group, reads=preview_reads)
     scope = scope_for(merged_region, group) if scope_for is not None else None
     return [dataclasses.replace(merged_region, scope_choices=scope)], []
 
 
+def _binds_composite(spec: Spec) -> bool:
+    """Whether `spec`'s identity binds a declared composite provenance (`composite_ref`)."""
+    facets = spec.definition.identity.model_dump(mode="json", include={"facets"})
+    return composite_ref(facets) is not None
+
+
 def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
     """Reject differences in shared window, scope, identity facets and open roles, trace
-    versions, or request-bound facet values.
+    versions, or request-bound facet values, and a composite answer beside one that is not
+    (`_binds_composite`).
 
     These fields become group-wide after merging, so a difference would be lost.
     """
@@ -679,6 +705,9 @@ def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
 
     base_facets = base_spec.definition.identity.facets
     if any(r.spec.definition.identity.facets != base_facets for r in group[1:]):
+        raise _RefuseMerge
+    # A composite answer merges only with composites, so the merge restates the composite.
+    if len({_binds_composite(r.spec) for r in group}) > 1:
         raise _RefuseMerge
 
     base_open_roles = base_spec.definition.identity.open_roles
