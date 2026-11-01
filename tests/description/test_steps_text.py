@@ -803,7 +803,7 @@ def test_a_ratio_names_each_side_with_its_narrowing(step: Step, text: str, name:
 
 
 _NAME_BY_COMPOSER_VERSION = {
-    "4": "gross ODA disbursements (United Kingdom) per gross ODA disbursements (France)",
+    "5": "gross ODA disbursements (United Kingdom) per gross ODA disbursements (France)",
 }
 """The name each composer version gives a quotient whose step narrows its sides apart."""
 
@@ -812,7 +812,8 @@ def test_a_wording_change_ships_with_its_composer_version() -> None:
     """A stored card description is revalidated by its `voc_` revision, which moves with
     `COMPOSER_VERSION` but not with the composer's code. Wording the composer changes must
     raise the version and record its wording here, else a conditional read keeps the old
-    words. Version 4 names each side a step narrows with its entities."""
+    words. Version 4 names each side a step narrows with its entities, and version 5 adds
+    the publishers' series codes."""
     steps = [_retrieve("s1", _ODA), _narrowed("quotient", _GBR, _FRA)]
 
     name = name_computed(steps, _vocabulary(_COMPARED))
