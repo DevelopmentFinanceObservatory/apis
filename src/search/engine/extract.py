@@ -700,11 +700,14 @@ class RoleCuePairing:
 
     `cue_first` holds when the cue precedes the span. `adjacent` holds when nothing but
     an article, list separators and coordinated entity spans stands between them
-    ("from the United States", "from Norway and Sweden").
+    ("from the United States", "from Norway and Sweden"). `coordinated` holds when another
+    entity's span stands between them, as Norway's does for Sweden in "from Norway and
+    Sweden".
     """
 
     cue_first: bool
     adjacent: bool
+    coordinated: bool
 
 
 def _role_cue_check(
@@ -758,7 +761,7 @@ def _role_cue_check(
     if crossers and not _coordination_exempt(between, entity, crossers):
         return "role_span crosses another entity's span", None
     adjacent = all(t in _ADJACENT_FILLER_WORDS for t in _residue_words(between, crossers))
-    return None, RoleCuePairing(cue_first=cue_first, adjacent=adjacent)
+    return None, RoleCuePairing(cue_first=cue_first, adjacent=adjacent, coordinated=bool(crossers))
 
 
 def role_cue_pairing(
@@ -779,7 +782,8 @@ def _validate_role_spans(
     query: str, entities: list[ExtractedEntity], variables: list[str]
 ) -> list[ExtractedEntity]:
     """Downgrade invalid roles to `unspecified`, then read a lender named before the measure
-    as the origin.
+    as the origin, then give each later conjunct of a coordinated list the role of the cue
+    that opens it (`_carry_coordinated_roles`).
 
     A missing or blank `role_span` fails. Other cues are checked against the query.
     `variables` supports the national-adjective measure check and the lender rule
@@ -821,7 +825,72 @@ def _validate_role_spans(
             entity.span,
         )
         validated.append(entity.model_copy(update={"flow_role": "unspecified", "role_span": None}))
-    return validated
+    return _carry_coordinated_roles(normalized_query, validated, variables)
+
+
+def _carry_coordinated_roles(
+    normalized_query: str, entities: list[ExtractedEntity], variables: list[str]
+) -> list[ExtractedEntity]:
+    """`entities` with each unspecified one that closes a coordinated list given the role
+    of the cue that opens the list.
+
+    A cue before a list governs every place in it: in "ODA to Kenya and Uganda" the "to"
+    makes Uganda a recipient as well as Kenya. An unspecified entity takes a directed
+    entity's flow role and role span when role-span validation would accept that cue for
+    it (`_role_cue_check`) with the cue first, adjacent and with at least one entity's span
+    between them, every such span on the same role. A place that heads its own noun phrase
+    (`_heads_own_phrase`) takes none, so Uganda in "aid to Kenya and Uganda's GDP" keeps no
+    role. Entities are read in the order their spans first occur in the query, so each
+    conjunct a cue reaches counts as coordinated for the next. An entity two such cues on
+    opposite axes reach keeps no role.
+    """
+    carried = list(entities)
+    for i in sorted(range(len(carried)), key=lambda k: _first_offset(normalized_query, carried[k])):
+        entity = carried[i]
+        if entity.flow_role != "unspecified" or not entity.span:
+            continue
+        own_ranges = _all_normalized_text_ranges(entity.span, normalized_query)
+        if _heads_own_phrase(own_ranges, normalized_query, variables):
+            continue
+        readings: dict[str, ExtractedEntity] = {}
+        for source in carried:
+            if source.flow_role == "unspecified" or source.flow_role in readings:
+                continue
+            reading = entity.model_copy(
+                update={"flow_role": source.flow_role, "role_span": source.role_span}
+            )
+            peers = [reading if j == i else other for j, other in enumerate(carried)]
+            reason, pairing = _role_cue_check(normalized_query, reading, peers, variables)
+            if (
+                reason is None
+                and pairing is not None
+                and pairing.cue_first
+                and pairing.adjacent
+                and pairing.coordinated
+            ):
+                readings[source.flow_role] = reading
+        if len(readings) == 1:
+            carried[i] = next(iter(readings.values()))
+    return carried
+
+
+def _first_offset(normalized_query: str, entity: ExtractedEntity) -> int:
+    """Where `entity`'s span first occurs in `normalized_query`; past its end when the span
+    is missing or absent."""
+    ranges = _all_normalized_text_ranges(entity.span or "", normalized_query)
+    return min((start for start, _end in ranges), default=len(normalized_query))
+
+
+def _heads_own_phrase(
+    own_ranges: list[tuple[int, int]], normalized_query: str, variables: list[str]
+) -> bool:
+    """Whether a span occurrence is followed by a possessive ("Uganda's GDP") or straight
+    by the first word of a measure ("Uganda GDP"), so the place heads a noun phrase of its
+    own. Only a measure's first word counts, since a measure folds in its qualifiers
+    ("aid for health"), and "Uganda for health" heads no phrase."""
+    possessed = any(normalized_query.startswith(("'", "\u2019"), end) for _start, end in own_ranges)
+    heads = [words[0] for words in (variable.split() for variable in variables) if words]
+    return possessed or _modifies_measure_word(own_ranges, normalized_query, heads)
 
 
 def _lends_the_measure(

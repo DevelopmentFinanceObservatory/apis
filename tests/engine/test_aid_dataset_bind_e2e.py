@@ -1572,6 +1572,34 @@ class _CountingLLM(_ScriptedLLM):
         return answer, {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
 
 
+@pytest.mark.parametrize(
+    "query", ["aid to Kenya and Uganda", "aid to kenya and uganda.", "aid to Kenya and Uganda "]
+)
+def test_a_cue_before_a_list_puts_every_place_of_it_on_its_end(
+    monkeypatch: pytest.MonkeyPatch, query: str
+):
+    """The model directs Kenya alone, and the "to" before the list makes Uganda a recipient
+    too, so the part answers both on the recipient end. The question leaves nothing out."""
+
+    async def nothing_left_out(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
+        return ExclusionRead(exclusions=[]), None
+
+    monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
+    _aid, _to, kenya, _and, uganda = query.rstrip(" .").split()
+    llm = _ScriptedLLM(
+        "aid",
+        entities=(
+            ExtractedEntity(text="Kenya", span=kenya, flow_role="destination", role_span="to"),
+            ExtractedEntity(text="Uganda", span=uganda),
+        ),
+    )
+    graph = _graph("aid", members=(_CRS_MEMBER,), countries={"Uganda": _UGA})
+
+    (spec,) = _specs(_resolve_scripted(query, llm, graph=graph))
+
+    assert spec.definition.identity.entities == {"destination": [_KEN, _UGA]}
+
+
 def _resolve_scripted(
     query: str,
     llm: _ScriptedLLM,
