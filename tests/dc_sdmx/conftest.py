@@ -149,6 +149,8 @@ class KeyedConcurrentTransport(httpx.BaseTransport):
     """Route concurrent requests by `c[variableMeasured]`, not arrival order.
 
     `release` events can force a completion order. A lock protects request and concurrency counts.
+    `completed` lists the keys whose responses have been returned, and `wait_completed` blocks
+    until a number of them have.
     """
 
     def __init__(
@@ -162,7 +164,9 @@ class KeyedConcurrentTransport(httpx.BaseTransport):
         self._release = dict(release or {})
         self._content_type = content_type
         self._lock = threading.Lock()
+        self._completion = threading.Condition(self._lock)
         self.requests: list[httpx.Request] = []
+        self.completed: list[str] = []
         self._in_flight = 0
         self.peak_concurrent = 0
 
@@ -182,8 +186,15 @@ class KeyedConcurrentTransport(httpx.BaseTransport):
                 200, headers={"content-type": self._content_type}, content=self._bodies[key]
             )
         finally:
-            with self._lock:
+            with self._completion:
                 self._in_flight -= 1
+                self.completed.append(key)
+                self._completion.notify_all()
+
+    def wait_completed(self, count: int, *, timeout: float = 5) -> bool:
+        """Whether `count` requests have been answered within `timeout` seconds."""
+        with self._completion:
+            return self._completion.wait_for(lambda: len(self.completed) >= count, timeout=timeout)
 
 
 @pytest.fixture
